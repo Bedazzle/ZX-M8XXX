@@ -2,6 +2,37 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.6.5
+- **AY-3-8910 Sound**: Full PSG emulation with Web Audio API output
+  - 3 tone generators with 12-bit period counters
+  - Noise generator with 17-bit LFSR
+  - Envelope generator with all 16 shapes
+  - Stereo modes: Mono, ABC (A-left, B-center, C-right), ACB
+  - Volume control and mute button
+  - State saved/restored in projects
+  - Register logging for future PSG export
+  - Works on 128K, Pentagon, and optionally 48K
+- **Z80 Q Factor**: Implemented undocumented Q register for accurate CCF/SCF behavior
+  - Q register tracks whether previous instruction modified flags
+  - CCF/SCF bits 3,5 computed as `((Q ^ F) | A) & 0x28`
+  - Block instructions (LDIR/LDDR/CPIR/CPDR) set Y/X from PC when repeating
+  - I/O block instructions (INIR/INDR/OTIR/OTDR) have additional PF/HF modifications
+  - Passes all z80ccf tests including edge cases (LDIR->NOP', INIR->NOP', etc.)
+
+## v0.6.4
+- **SCL Disk Image Fix**: Fixed SCL→TRD conversion for proper file loading
+  - Corrected logical track/sector calculation (16 sectors per logical track)
+  - Fixed directory entries to use 0-based sectors matching TRD format
+  - Files now start at logical track 1 (physical track 0, side 1)
+  - Data offsets now match real TRD disk layout
+- **Pentagon Beta Disk Fix**: Fixed "RUN USR 0" hang in Basic 128
+  - TR-DOS auto-paging now only activates when ROM 1 (48K BASIC) is selected
+  - Prevents spurious TR-DOS activation when running 128K editor code
+  - Explicit TR-DOS activation when booting via menu
+- **Z80 MEMPTR Fix**: Fixed undocumented MEMPTR behavior for block I/O instructions
+  - INIR, INDR, OTIR, OTDR now set MEMPTR = PC + 1 when repeating (B ≠ 0)
+  - Passes z80memptr test v1.2a (INIR->NOP', INDR->NOP' tests)
+
 ## v0.6.3
 - **Graphics Viewer UI Improvements**:
   - Reorganized layout: Canvas | Address+Navigation+Settings | Comment+Actions

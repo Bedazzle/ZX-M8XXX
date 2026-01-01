@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.6.3** | [Changelog](CHANGELOG.md)
+**Version 0.6.5** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -11,6 +11,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - 48K, 128K, and Pentagon machine support
 - Memory banking and contention emulation
 - Pixel-perfect ULA video timing with border effects
+- AY-3-8910 sound chip emulation (stereo modes: Mono/ABC/ACB)
 - SNA/Z80 snapshot loading/saving
 - TAP tape loading with ROM traps (instant load)
 - TRD/SCL disk image support (TR-DOS format)
@@ -76,6 +77,7 @@ spectrum.js    - Machine integration
 z80.js         - Z80 CPU emulation
 memory.js      - Memory banking
 ula.js         - Video/keyboard
+ay.js          - AY-3-8910 sound chip
 loaders.js     - File format handlers
 disasm.js      - Z80 disassembler
 ```
@@ -87,6 +89,11 @@ Open test files directly in browser (no ROM files needed):
 - `fuse-test.html` - FUSE Z80 CPU test suite
 - `system-test.html` - System tests (memory banking, paging)
 - `asm-test.html` - Assembler tests
+
+External test suites (load as TAP/SNA in emulator):
+
+- [ZEXALL](https://mdfs.net/Software/Z80/Exerciser/Spectrum/) - Z80 Instruction Exerciser
+- [z80test](https://github.com/raxoft/z80test) - Z80 flags tests (z80ccf, z80doc, z80full, z80memptr)
 
 ## Known Limitations
 

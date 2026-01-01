@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - Memory Management
- * @version 0.5.3
+ * @version 0.6.5
  * @license GPL-3.0
  *
  * Supports 48K, 128K, and Pentagon memory banking.
@@ -10,7 +10,7 @@
 (function(global) {
     'use strict';
 
-    const VERSION = '0.5.3';
+    const VERSION = '0.6.5';
 
     class Memory {
         static get VERSION() { return VERSION; }

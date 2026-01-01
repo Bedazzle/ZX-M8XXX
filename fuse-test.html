@@ -48,6 +48,7 @@
     <div class="test-resources">
         <h3>Additional Test Resources</h3>
         <p><strong>CPU:</strong> <a href="https://github.com/raxoft/z80test" target="_blank">Raxoft Z80 Test Suite</a> - Exhaustive flag testing (TAP files)</p>
+        <p><strong>CPU:</strong> <a href="https://mdfs.net/Software/Z80/Exerciser/Spectrum/" target="_blank">ZEXALL</a> - Z80 Instruction Exerciser (TAP/SNA)</p>
         <p><strong>System:</strong> <a href="https://github.com/brendanalford/zx-diagnostics" target="_blank">ZX-Diagnostics</a> - RAM, ROM, keyboard, interrupts (TAP/ROM)</p>
         <p><strong>ULA/Timing:</strong> <a href="http://blog.retroleum.co.uk/electronics-articles/a-diagnostic-rom-image-for-the-zx-spectrum/" target="_blank">Retroleum DiagROM</a> - ULA, floating bus, contention</p>
         <p><strong>Contention:</strong> <a href="http://www.zxdesign.info/memContention.shtml" target="_blank">ZX Design Info</a> - Memory contention documentation</p>
@@ -378,10 +379,19 @@
             log(`FUSE Z80 Test Runner v${TEST_VERSION}`, 'info');
             log(`RESULTS: ${passed} passed, ${failed} failed out of ${testCount}`, passed === testCount ? 'pass' : 'fail');
             log(`Pass rate: ${(100 * passed / testCount).toFixed(1)}%`, 'info');
-            
-            document.getElementById('summary').innerHTML = 
+
+            // Check for Q factor related failures
+            const qFactorTests = ['37_1', '3f', 'edb2_1', 'edb3_1', 'edb9_2', 'edba_1', 'edbb_1'];
+            const qFactorFailures = failures.filter(f => qFactorTests.includes(f.name));
+            if (qFactorFailures.length > 0) {
+                log('', '');
+                log(`Note: ${qFactorFailures.length} failures are Q factor related (SCF, CCF, block I/O).`, 'info');
+                log(`FUSE expected values predate Q factor research. See z80ccf tests for accurate behavior.`, 'info');
+            }
+
+            document.getElementById('summary').innerHTML =
                 `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | <span class="fail">Fail: ${failed}</span> | Total: ${testCount} | Rate: ${(100 * passed / testCount).toFixed(1)}%`;
-            
+
             if (failures.length > 50) {
                 log(`(Showing first 50 failures of ${failures.length} total)`, 'info');
             }

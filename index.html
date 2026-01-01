@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.6.3</title>
+    <title>ZX-M8XXX v0.6.5</title>
     <style>
         * { box-sizing: border-box; }
         
@@ -3975,7 +3975,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.6.3</span>
+            <span class="app-name">ZX-M8XXX v0.6.5</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -4029,6 +4029,7 @@
                 <option value="400">400%</option>
                 <option value="0">Max</option>
             </select>
+            <button id="btnSound" title="Toggle sound (AY-3-8910)">🔇</button>
         </div>
         <input type="file" id="rom48Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="rom128Input" class="file-input" accept=".rom,.bin">
@@ -4658,6 +4659,32 @@ start:
                 </div>
 
                 <div class="settings-section">
+                    <h4>Audio</h4>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Enable AY-3-8910 sound output">
+                            <input type="checkbox" id="chkSound"> Sound
+                        </label>
+                        <label class="checkbox-label" title="Enable AY chip in 48K mode (like Melodik interface)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAY48k"> AY in 48K
+                        </label>
+                        <button id="btnMute" class="control-btn" style="margin-left: 15px;" title="Mute/unmute sound">🔊</button>
+                    </div>
+                    <div class="settings-row">
+                        <label for="volumeSlider" style="min-width: 60px;">Volume:</label>
+                        <input type="range" id="volumeSlider" min="0" max="100" value="50" style="width: 120px;">
+                        <span id="volumeValue" style="min-width: 35px; text-align: right;">50%</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="stereoMode">Stereo:</label>
+                        <select id="stereoMode" title="Stereo panning mode">
+                            <option value="mono">Mono</option>
+                            <option value="abc" selected>ABC (A-left, B-center, C-right)</option>
+                            <option value="acb">ACB (A-left, C-center, B-right)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="settings-section">
                     <h4>Display</h4>
                     <div class="settings-row">
                         <label class="checkbox-label" title="Show full hardware border (all scanlines)">
@@ -5086,7 +5113,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.6.3</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.6.5</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -5594,6 +5621,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="ula.js"></script>
     <script src="loaders.js"></script>
     <script src="spectrum.js"></script>
+    <script src="ay.js"></script>
     <script src="disasm.js"></script>
     <!-- sjasmplus-js assembler -->
     <script src="sjasmplus/errors.js"></script>
@@ -5612,7 +5640,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.6.3';
+        const APP_VERSION = '0.6.5';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -8961,8 +8989,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const btnSaveSnapshot = document.getElementById('btnSaveSnapshot');
         const machineSelect = document.getElementById('machineSelect');
         const speedSelect = document.getElementById('speedSelect');
+        const btnSound = document.getElementById('btnSound');
         const chkKempston = document.getElementById('chkKempston');
         const chkFullBorder = document.getElementById('chkFullBorder');
+        const chkSound = document.getElementById('chkSound');
+        const chkAY48k = document.getElementById('chkAY48k');
+        const btnMute = document.getElementById('btnMute');
+        const volumeSlider = document.getElementById('volumeSlider');
+        const volumeValue = document.getElementById('volumeValue');
+        const stereoMode = document.getElementById('stereoMode');
         const fileInput = document.getElementById('fileInput');
         const statusEl = document.getElementById('status');
         const fpsEl = document.getElementById('fps');
@@ -16957,7 +16992,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     ulaState: {
                         borderColor: spectrum.ula.borderColor,
                         borderChanges: spectrum.ula.borderChanges.slice()  // Copy of border change array
-                    }
+                    },
+                    // AY-3-8910 sound chip state
+                    ayState: spectrum.ay ? spectrum.ay.exportState() : null
                 };
 
                 // Add source file name if loaded
@@ -17272,6 +17309,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     }
                 }
 
+                // Restore AY-3-8910 sound chip state
+                if (project.ayState && spectrum.ay) {
+                    spectrum.ay.importState(project.ayState);
+                }
+
                 // Restore source file name and update status display
                 if (project.sourceFile) {
                     labelManager.currentFile = project.sourceFile;
@@ -17482,6 +17524,108 @@ labelManager.importJSON(jsonStr, merge)</pre>
             spectrum.kempstonEnabled = chkKempston.checked;
             showMessage(chkKempston.checked ? 'Kempston joystick enabled (Numpad)' : 'Kempston joystick disabled');
         });
+
+        // Audio controls
+        async function initAudioOnUserGesture() {
+            if (!spectrum.audio) {
+                const audio = spectrum.initAudio();
+                await audio.start();
+                // Restore settings
+                audio.setVolume(volumeSlider.value / 100);
+                audio.setMuted(!chkSound.checked);
+                spectrum.ay.stereoMode = stereoMode.value;
+                spectrum.ay.updateStereoPanning();
+            }
+        }
+
+        function updateSoundButtons(enabled) {
+            const icon = enabled ? '🔊' : '🔇';
+            btnSound.textContent = icon;
+            btnMute.textContent = icon;
+        }
+
+        async function toggleSound(enable) {
+            if (enable) {
+                await initAudioOnUserGesture();
+                if (spectrum.audio) {
+                    spectrum.audio.setMuted(false);
+                }
+                showMessage('Sound enabled');
+            } else {
+                if (spectrum.audio) {
+                    spectrum.audio.setMuted(true);
+                }
+                showMessage('Sound disabled');
+            }
+            chkSound.checked = enable;
+            updateSoundButtons(enable);
+            localStorage.setItem('zx-sound-enabled', enable);
+        }
+
+        // Main sound button (in controls area)
+        btnSound.addEventListener('click', async () => {
+            await toggleSound(!chkSound.checked);
+        });
+
+        // Settings checkbox
+        chkSound.addEventListener('change', async () => {
+            await toggleSound(chkSound.checked);
+        });
+
+        chkAY48k.addEventListener('change', () => {
+            spectrum.ay48kEnabled = chkAY48k.checked;
+            showMessage(chkAY48k.checked ? 'AY enabled in 48K mode' : 'AY disabled in 48K mode');
+            localStorage.setItem('zx-ay-48k', chkAY48k.checked);
+        });
+
+        btnMute.addEventListener('click', async () => {
+            await toggleSound(!chkSound.checked);
+        });
+
+        volumeSlider.addEventListener('input', () => {
+            const vol = volumeSlider.value;
+            volumeValue.textContent = vol + '%';
+            if (spectrum.audio) {
+                spectrum.audio.setVolume(vol / 100);
+            }
+            localStorage.setItem('zx-volume', vol);
+        });
+
+        stereoMode.addEventListener('change', () => {
+            spectrum.ay.stereoMode = stereoMode.value;
+            spectrum.ay.updateStereoPanning();
+            localStorage.setItem('zx-stereo-mode', stereoMode.value);
+            showMessage(`Stereo mode: ${stereoMode.value.toUpperCase()}`);
+        });
+
+        // Restore audio settings from localStorage
+        const savedSoundEnabled = localStorage.getItem('zx-sound-enabled') === 'true';
+        const savedAY48k = localStorage.getItem('zx-ay-48k') === 'true';
+        const savedVolume = localStorage.getItem('zx-volume');
+        const savedStereoMode = localStorage.getItem('zx-stereo-mode');
+
+        chkSound.checked = savedSoundEnabled;
+        chkAY48k.checked = savedAY48k;
+        spectrum.ay48kEnabled = savedAY48k;
+        updateSoundButtons(savedSoundEnabled);
+
+        if (savedVolume !== null) {
+            volumeSlider.value = savedVolume;
+            volumeValue.textContent = savedVolume + '%';
+        }
+        if (savedStereoMode) {
+            stereoMode.value = savedStereoMode;
+            spectrum.ay.stereoMode = savedStereoMode;
+            spectrum.ay.updateStereoPanning();
+        }
+
+        // Auto-initialize audio on first user click if sound is enabled
+        if (savedSoundEnabled) {
+            document.addEventListener('click', async function initAudioOnce() {
+                await initAudioOnUserGesture();
+                document.removeEventListener('click', initAudioOnce);
+            }, { once: true });
+        }
 
         // Overlay mode button (cycles through modes, shows CURRENT mode)
         const btnOverlay = document.getElementById('btnOverlay');

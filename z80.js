@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - Z80 CPU Emulation
- * @version 0.5.3
+ * @version 0.6.5
  * @license GPL-3.0
  * 
  * Full Z80 CPU emulation including all documented and undocumented opcodes.
@@ -10,7 +10,7 @@
 (function(global) {
     'use strict';
     
-    const VERSION = '0.5.3';
+    const VERSION = '0.6.5';
 
     class Z80 {
         static get VERSION() { return VERSION; }
@@ -54,7 +54,8 @@
             
             // Q flag for SCF/CCF - undocumented behavior
             this.q = 0;
-            
+            this.lastQ = 0;
+
             // Cycle counter
             this.tStates = 0;
             
@@ -110,6 +111,7 @@
             this.halted = false;
             this.memptr = 0;
             this.q = 0;
+            this.lastQ = 0;
             this.tStates = 0;
         }
         
@@ -271,6 +273,7 @@
                      this.halfcarryAddTable[lookup & 0x07] |
                      this.overflowAddTable[lookup >> 4] |
                      this.sz53Table[this.a];
+            this.q = this.f;
         }
         
         adc8(val) {
@@ -282,6 +285,7 @@
                      this.halfcarryAddTable[lookup & 0x07] |
                      this.overflowAddTable[lookup >> 4] |
                      this.sz53Table[this.a];
+            this.q = this.f;
         }
         
         sub8(val) {
@@ -293,8 +297,9 @@
                      this.halfcarrySubTable[lookup & 0x07] |
                      this.overflowSubTable[lookup >> 4] |
                      this.sz53Table[this.a];
+            this.q = this.f;
         }
-        
+
         sbc8(val) {
             const carry = this.f & this.FLAG_C;
             const result = this.a - val - carry;
@@ -305,23 +310,27 @@
                      this.halfcarrySubTable[lookup & 0x07] |
                      this.overflowSubTable[lookup >> 4] |
                      this.sz53Table[this.a];
+            this.q = this.f;
         }
-        
+
         and8(val) {
             this.a &= val;
             this.f = this.FLAG_H | this.sz53pTable[this.a];
+            this.q = this.f;
         }
-        
+
         xor8(val) {
             this.a ^= val;
             this.f = this.sz53pTable[this.a];
+            this.q = this.f;
         }
-        
+
         or8(val) {
             this.a |= val;
             this.f = this.sz53pTable[this.a];
+            this.q = this.f;
         }
-        
+
         cp8(val) {
             const result = this.a - val;
             const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
@@ -332,17 +341,19 @@
                      (result & 0x80) |
                      (result & 0xff ? 0 : this.FLAG_Z) |
                      (val & 0x28);
+            this.q = this.f;
         }
-        
+
         inc8(val) {
             const result = (val + 1) & 0xff;
             this.f = (this.f & this.FLAG_C) |
                      (result === 0x80 ? this.FLAG_PV : 0) |
                      ((result & 0x0f) ? 0 : this.FLAG_H) |
                      this.sz53Table[result];
+            this.q = this.f;
             return result;
         }
-        
+
         dec8(val) {
             const result = (val - 1) & 0xff;
             this.f = (this.f & this.FLAG_C) |
@@ -350,9 +361,10 @@
                      ((val & 0x0f) ? 0 : this.FLAG_H) |
                      this.FLAG_N |
                      this.sz53Table[result];
+            this.q = this.f;
             return result;
         }
-        
+
         add16(hl, val) {
             const result = hl + val;
             const lookup = ((hl & 0x0800) >> 11) | ((val & 0x0800) >> 10) | ((result & 0x0800) >> 9);
@@ -361,9 +373,10 @@
                      (result & 0x10000 ? this.FLAG_C : 0) |
                      ((result >> 8) & 0x28) |
                      this.halfcarryAddTable[lookup];
+            this.q = this.f;
             return result & 0xffff;
         }
-        
+
         adc16(val) {
             const hl = this.hl;
             const carry = this.f & this.FLAG_C;
@@ -377,8 +390,9 @@
                      this.halfcarryAddTable[lookup & 0x07] |
                      (this.hl ? 0 : this.FLAG_Z) |
                      ((result >> 8) & this.FLAG_S);
+            this.q = this.f;
         }
-        
+
         sbc16(val) {
             const hl = this.hl;
             const carry = this.f & this.FLAG_C;
@@ -393,58 +407,67 @@
                      this.halfcarrySubTable[lookup & 0x07] |
                      (this.hl ? 0 : this.FLAG_Z) |
                      ((result >> 8) & this.FLAG_S);
+            this.q = this.f;
         }
         
         // Rotate/shift operations
         rlc(val) {
             const result = ((val << 1) | (val >> 7)) & 0xff;
             this.f = (val >> 7) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         rrc(val) {
             const result = ((val >> 1) | (val << 7)) & 0xff;
             this.f = (val & 0x01) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         rl(val) {
             const result = ((val << 1) | (this.f & this.FLAG_C)) & 0xff;
             this.f = (val >> 7) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         rr(val) {
             const result = ((val >> 1) | ((this.f & this.FLAG_C) << 7)) & 0xff;
             this.f = (val & 0x01) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         sla(val) {
             const result = (val << 1) & 0xff;
             this.f = (val >> 7) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         sra(val) {
             const result = ((val >> 1) | (val & 0x80)) & 0xff;
             this.f = (val & 0x01) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         // Undocumented SLL (shift left logical, bit 0 = 1)
         sll(val) {
             const result = ((val << 1) | 0x01) & 0xff;
             this.f = (val >> 7) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         srl(val) {
             const result = (val >> 1) & 0xff;
             this.f = (val & 0x01) | this.sz53pTable[result];
+            this.q = this.f;
             return result;
         }
-        
+
         // Bit operations
         bit(n, val) {
             const result = val & (1 << n);
@@ -453,8 +476,9 @@
                      (result ? 0 : this.FLAG_Z | this.FLAG_PV) |
                      (result & this.FLAG_S) |
                      (val & 0x28);
+            this.q = this.f;
         }
-        
+
         bitMemptr(n, val) {
             const result = val & (1 << n);
             this.f = (this.f & this.FLAG_C) |
@@ -462,18 +486,21 @@
                      (result ? 0 : this.FLAG_Z | this.FLAG_PV) |
                      (result & this.FLAG_S) |
                      ((this.memptr >> 8) & 0x28);
+            this.q = this.f;
         }
         
         // Execute single instruction
         execute() {
             this.incR();
+            // Save Q from previous instruction for CCF/SCF, then reset
+            this.lastQ = this.q;
             this.q = 0;
-            
+
             if (this.eiPending) {
                 this.eiPending = false;
                 this.iff1 = this.iff2 = true;
             }
-            
+
             const opcode = this.fetchByte();
             this.executeMain(opcode);
         }
@@ -498,6 +525,7 @@
                 case 0x07: // RLCA
                     this.a = ((this.a << 1) | (this.a >> 7)) & 0xff;
                     this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & (this.FLAG_C | 0x28));
+                    this.q = this.f;
                     this.tStates += 4;
                     break;
                 case 0x08: // EX AF,AF'
@@ -515,6 +543,7 @@
                     this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & this.FLAG_C);
                     this.a = ((this.a >> 1) | (this.a << 7)) & 0xff;
                     this.f |= (this.a & 0x28);
+                    this.q = this.f;
                     this.tStates += 4;
                     break;
                 case 0x10: // DJNZ d
@@ -539,6 +568,7 @@
                         const newCarry = this.a >> 7;
                         this.a = ((this.a << 1) | (this.f & this.FLAG_C)) & 0xff;
                         this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | newCarry | (this.a & 0x28);
+                        this.q = this.f;
                     }
                     this.tStates += 4;
                     break;
@@ -560,6 +590,7 @@
                         const newCarry = this.a & 0x01;
                         this.a = ((this.a >> 1) | ((this.f & this.FLAG_C) << 7)) & 0xff;
                         this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | newCarry | (this.a & 0x28);
+                        this.q = this.f;
                     }
                     this.tStates += 4;
                     break;
@@ -598,6 +629,7 @@
                             this.add8(add);
                         }
                         this.f = (this.f & ~(this.FLAG_C | this.FLAG_PV)) | carry | this.parityTable[this.a];
+                        this.q = this.f;
                     }
                     this.tStates += 4;
                     break;
@@ -627,6 +659,7 @@
                 case 0x2f: // CPL
                     this.a ^= 0xff;
                     this.f = (this.f & (this.FLAG_C | this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & 0x28) | this.FLAG_N | this.FLAG_H;
+                    this.q = this.f;
                     this.tStates += 4;
                     break;
                 case 0x30: // JR NC,d
@@ -654,7 +687,7 @@
                 case 0x36: this.writeByte(this.hl, this.fetchByte()); this.tStates += 10; break; // LD (HL),n
                 case 0x37: // SCF
                     this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) |
-                             (this.a & 0x28) |
+                             (((this.lastQ ^ this.f) | this.a) & 0x28) |
                              this.FLAG_C;
                     this.q = this.f;
                     this.tStates += 4;
@@ -685,7 +718,7 @@
                 case 0x3f: // CCF
                     this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) |
                              ((this.f & this.FLAG_C) ? this.FLAG_H : this.FLAG_C) |
-                             (this.a & 0x28);
+                             (((this.lastQ ^ this.f) | this.a) & 0x28);
                     this.q = this.f;
                     this.tStates += 4;
                     break;
@@ -937,6 +970,7 @@
                 this.bit(op - 8, val);
                 if (reg === 6) {
                     this.f = (this.f & ~0x28) | ((this.memptr >> 8) & 0x28);
+                    this.q = this.f;
                     this.tStates += 8;
                 } else {
                     this.tStates += 8;
@@ -1204,7 +1238,7 @@
             const opcode = this.fetchByte();
             
             switch (opcode) {
-                case 0x40: this.b = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.b]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN B,(C)
+                case 0x40: this.b = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.b]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN B,(C)
                 case 0x41: this.outPort(this.bc, this.b); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),B
                 case 0x42: this.sbc16(this.bc); this.tStates += 15; break; // SBC HL,BC
                 case 0x43: { const addr = this.fetchWord(); this.writeWord(addr, this.bc); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),BC
@@ -1223,12 +1257,12 @@
                     break;
                 case 0x46: case 0x4e: case 0x66: case 0x6e: this.im = 0; this.tStates += 8; break; // IM 0
                 case 0x47: this.i = this.a; this.tStates += 9; break; // LD I,A
-                case 0x48: this.c = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.c]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN C,(C)
+                case 0x48: this.c = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.c]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN C,(C)
                 case 0x49: this.outPort(this.bc, this.c); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),C
                 case 0x4a: this.adc16(this.bc); this.tStates += 15; break; // ADC HL,BC
                 case 0x4b: { const addr = this.fetchWord(); this.bc = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD BC,(nn)
                 case 0x4f: this.rFull = this.a; this.tStates += 9; break; // LD R,A
-                case 0x50: this.d = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.d]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN D,(C)
+                case 0x50: this.d = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.d]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN D,(C)
                 case 0x51: this.outPort(this.bc, this.d); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),D
                 case 0x52: this.sbc16(this.de); this.tStates += 15; break; // SBC HL,DE
                 case 0x53: { const addr = this.fetchWord(); this.writeWord(addr, this.de); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),DE
@@ -1236,9 +1270,10 @@
                 case 0x57: // LD A,I
                     this.a = this.i;
                     this.f = (this.f & this.FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? this.FLAG_PV : 0);
+                    this.q = this.f;
                     this.tStates += 9;
                     break;
-                case 0x58: this.e = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.e]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN E,(C)
+                case 0x58: this.e = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.e]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN E,(C)
                 case 0x59: this.outPort(this.bc, this.e); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),E
                 case 0x5a: this.adc16(this.de); this.tStates += 15; break; // ADC HL,DE
                 case 0x5b: { const addr = this.fetchWord(); this.de = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD DE,(nn)
@@ -1246,9 +1281,10 @@
                 case 0x5f: // LD A,R
                     this.a = this.rFull;
                     this.f = (this.f & this.FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? this.FLAG_PV : 0);
+                    this.q = this.f;
                     this.tStates += 9;
                     break;
-                case 0x60: this.h = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.h]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN H,(C)
+                case 0x60: this.h = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.h]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN H,(C)
                 case 0x61: this.outPort(this.bc, this.h); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),H
                 case 0x62: this.sbc16(this.hl); this.tStates += 15; break; // SBC HL,HL
                 case 0x63: { const addr = this.fetchWord(); this.writeWord(addr, this.hl); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),HL
@@ -1258,11 +1294,12 @@
                         this.writeByte(this.hl, ((this.a << 4) | (tmp >> 4)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp & 0x0f);
                         this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a];
+                        this.q = this.f;
                         this.memptr = (this.hl + 1) & 0xffff;
                     }
                     this.tStates += 18;
                     break;
-                case 0x68: this.l = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.l]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN L,(C)
+                case 0x68: this.l = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.l]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN L,(C)
                 case 0x69: this.outPort(this.bc, this.l); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),L
                 case 0x6a: this.adc16(this.hl); this.tStates += 15; break; // ADC HL,HL
                 case 0x6b: { const addr = this.fetchWord(); this.hl = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD HL,(nn)
@@ -1272,15 +1309,16 @@
                         this.writeByte(this.hl, ((tmp << 4) | (this.a & 0x0f)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp >> 4);
                         this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a];
+                        this.q = this.f;
                         this.memptr = (this.hl + 1) & 0xffff;
                     }
                     this.tStates += 18;
                     break;
-                case 0x70: { const tmp = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[tmp]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; } break; // IN (C) / IN F,(C)
+                case 0x70: { const tmp = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[tmp]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; } break; // IN (C) / IN F,(C)
                 case 0x71: this.outPort(this.bc, 0); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),0
                 case 0x72: this.sbc16(this.sp); this.tStates += 15; break; // SBC HL,SP
                 case 0x73: { const addr = this.fetchWord(); this.writeWord(addr, this.sp); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),SP
-                case 0x78: this.a = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a]; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN A,(C)
+                case 0x78: this.a = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN A,(C)
                 case 0x79: this.outPort(this.bc, this.a); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),A
                 case 0x7a: this.adc16(this.sp); this.tStates += 15; break; // ADC HL,SP
                 case 0x7b: { const addr = this.fetchWord(); this.sp = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD SP,(nn)
@@ -1297,6 +1335,7 @@
                         this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
                                  (this.bc ? this.FLAG_PV : 0) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1317,6 +1356,7 @@
                                  (result ? 0 : this.FLAG_Z) |
                                  (result & this.FLAG_S) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                        this.q = this.f;
                         this.memptr = (this.memptr + 1) & 0xffff;
                     }
                     this.tStates += 16;
@@ -1335,6 +1375,7 @@
                                  (val & 0x80 ? this.FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1352,6 +1393,7 @@
                                  (val & 0x80 ? this.FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1366,6 +1408,7 @@
                         this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
                                  (this.bc ? this.FLAG_PV : 0) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1386,6 +1429,7 @@
                                  (result ? 0 : this.FLAG_Z) |
                                  (result & this.FLAG_S) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                        this.q = this.f;
                         this.memptr = (this.memptr - 1) & 0xffff;
                     }
                     this.tStates += 16;
@@ -1404,6 +1448,7 @@
                                  (val & 0x80 ? this.FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1421,6 +1466,7 @@
                                  (val & 0x80 ? this.FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
+                        this.q = this.f;
                     }
                     this.tStates += 16;
                     break;
@@ -1430,14 +1476,21 @@
                         this.writeByte(this.de, val);
                         this.bc = (this.bc - 1) & 0xffff;
                         const n = (this.a + val) & 0xff;
-                        this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                 (this.bc ? this.FLAG_PV : 0) |
-                                 (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         if (this.bc) {
+                            // When repeating: Y/X from PC high byte, P/V set
+                            const pch = (this.pc >> 8) & 0xff;
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                                     this.FLAG_PV |
+                                     (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            // Normal completion: Y/X from (A + val)
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                                     (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                         this.de = (this.de + 1) & 0xffff;
@@ -1460,10 +1513,15 @@
                         if (this.f & this.FLAG_H) n = (n - 1) & 0xff;
                         this.f |= (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         if ((this.f & (this.FLAG_PV | this.FLAG_Z)) === this.FLAG_PV) {
+                            // When repeating: Y/X from PC high byte
+                            const pch = (this.pc >> 8) & 0xff;
+                            this.f = (this.f & ~0x28) | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.memptr = (this.memptr + 1) & 0xffff;
                             this.tStates += 16;
                         }
@@ -1485,9 +1543,29 @@
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
+                            // When repeating: additional PF/HF modifications + Y/X from PC
+                            const pch = (this.pc >> 8) & 0xff;
+                            let pf = this.f & this.FLAG_PV;
+                            let hf = 0;
+                            if (this.f & this.FLAG_C) {
+                                if (val & 0x80) {
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                } else {
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                }
+                            } else {
+                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                            }
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                                     pf | hf | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
+                            this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                     }
@@ -1507,9 +1585,29 @@
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
+                            // When repeating: additional PF/HF modifications + Y/X from PC
+                            const pch = (this.pc >> 8) & 0xff;
+                            let pf = this.f & this.FLAG_PV;
+                            let hf = 0;
+                            if (this.f & this.FLAG_C) {
+                                if (val & 0x80) {
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                } else {
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                }
+                            } else {
+                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                            }
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                                     pf | hf | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
+                            this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                     }
@@ -1520,14 +1618,21 @@
                         this.writeByte(this.de, val);
                         this.bc = (this.bc - 1) & 0xffff;
                         const n = (this.a + val) & 0xff;
-                        this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                 (this.bc ? this.FLAG_PV : 0) |
-                                 (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         if (this.bc) {
+                            // When repeating: Y/X from PC high byte, P/V set
+                            const pch = (this.pc >> 8) & 0xff;
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                                     this.FLAG_PV |
+                                     (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            // Normal completion: Y/X from (A + val)
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                                     (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                         this.de = (this.de - 1) & 0xffff;
@@ -1550,10 +1655,15 @@
                         if (this.f & this.FLAG_H) n = (n - 1) & 0xff;
                         this.f |= (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         if ((this.f & (this.FLAG_PV | this.FLAG_Z)) === this.FLAG_PV) {
+                            // When repeating: Y/X from PC high byte
+                            const pch = (this.pc >> 8) & 0xff;
+                            this.f = (this.f & ~0x28) | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.memptr = (this.memptr - 1) & 0xffff;
                             this.tStates += 16;
                         }
@@ -1575,9 +1685,29 @@
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
+                            // When repeating: additional PF/HF modifications + Y/X from PC
+                            const pch = (this.pc >> 8) & 0xff;
+                            let pf = this.f & this.FLAG_PV;
+                            let hf = 0;
+                            if (this.f & this.FLAG_C) {
+                                if (val & 0x80) {
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                } else {
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                }
+                            } else {
+                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                            }
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                                     pf | hf | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
+                            this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                     }
@@ -1597,9 +1727,29 @@
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
+                            // When repeating: additional PF/HF modifications + Y/X from PC
+                            const pch = (this.pc >> 8) & 0xff;
+                            let pf = this.f & this.FLAG_PV;
+                            let hf = 0;
+                            if (this.f & this.FLAG_C) {
+                                if (val & 0x80) {
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                } else {
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                }
+                            } else {
+                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                            }
+                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                                     pf | hf | (pch & 0x28);
+                            this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
+                            this.memptr = (this.pc + 1) & 0xffff;
                             this.tStates += 21;
                         } else {
+                            this.q = this.f;
                             this.tStates += 16;
                         }
                     }

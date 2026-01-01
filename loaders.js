@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - File Loaders (TAP, SNA, Z80, TRD, SCL)
- * @version 0.5.3
+ * @version 0.6.4
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.5.3';
+    const VERSION = '0.6.4';
 
     class TapeLoader {
         static get VERSION() { return VERSION; }
@@ -754,51 +754,107 @@
             trd.fill(0);
 
             const fileCount = scl[8];
-            let sclOffset = 9;  // After signature + file count
-            let trdSector = 16; // First data sector (after directory on track 0)
-            let dirEntry = 0;
+            console.log(`[SCL->TRD] Converting SCL with ${fileCount} files, total size ${scl.length} bytes`);
 
-            // Process each file
-            for (let i = 0; i < fileCount && dirEntry < 128; i++) {
-                // Read SCL directory entry (14 bytes)
-                const name = scl.slice(sclOffset, sclOffset + 8);
-                const type = scl[sclOffset + 8];
-                const start = scl[sclOffset + 9] | (scl[sclOffset + 10] << 8);
-                const length = scl[sclOffset + 11] | (scl[sclOffset + 12] << 8);
-                const sectorCount = scl[sclOffset + 13];
-                sclOffset += 14;
-
-                // Write TRD directory entry (16 bytes at track 0)
-                const dirOffset = dirEntry * 16;
-                trd.set(name, dirOffset);           // Filename (8 bytes)
-                trd[dirOffset + 8] = type;          // File type
-                trd[dirOffset + 9] = start & 0xFF;  // Start address low
-                trd[dirOffset + 10] = (start >> 8) & 0xFF;
-                trd[dirOffset + 11] = length & 0xFF; // Length low
-                trd[dirOffset + 12] = (length >> 8) & 0xFF;
-                trd[dirOffset + 13] = sectorCount;  // Sector count
-                trd[dirOffset + 14] = trdSector & 0x0F;  // First sector
-                trd[dirOffset + 15] = trdSector >> 4;    // First track
-
-                // Copy file data
-                const fileSize = sectorCount * 256;
-                const dataOffset = trdSector * 256;
-                trd.set(scl.slice(sclOffset, sclOffset + fileSize), dataOffset);
-                sclOffset += fileSize;
-                trdSector += sectorCount;
-                dirEntry++;
+            // SCL format: signature(8) + count(1) + ALL headers(14*n) + ALL data
+            // First pass: read all directory entries
+            const files = [];
+            let headerOffset = 9;  // After signature + file count
+            for (let i = 0; i < fileCount && i < 128; i++) {
+                const file = {
+                    name: scl.slice(headerOffset, headerOffset + 8),
+                    type: scl[headerOffset + 8],
+                    start: scl[headerOffset + 9] | (scl[headerOffset + 10] << 8),
+                    length: scl[headerOffset + 11] | (scl[headerOffset + 12] << 8),
+                    sectorCount: scl[headerOffset + 13]
+                };
+                files.push(file);
+                const nameStr = String.fromCharCode(...file.name).trim();
+                const typeChar = String.fromCharCode(file.type);
+                console.log(`[SCL] Header ${i}: "${nameStr}" type='${typeChar}' start=${file.start} len=${file.length} sectors=${file.sectorCount}`);
+                headerOffset += 14;
             }
 
-            // Set up disk info sector (sector 9 of track 0, offset 0x8E1)
-            const infoOffset = 8 * 256 + 0xE1;
-            trd[infoOffset] = 0;              // First free sector
-            trd[infoOffset + 1] = trdSector >> 4;  // First free track
-            trd[infoOffset + 2] = 0x16;       // Disk type (80 tracks, DS)
-            trd[infoOffset + 3] = dirEntry;   // File count
+            // File data starts after all headers
+            let dataOffset = headerOffset;
+            console.log(`[SCL->TRD] Headers end at offset ${headerOffset}, data starts at offset ${dataOffset}`);
+
+            // First free data sector on TRD - start at logical track 1, sector 0
+            // TR-DOS uses logical tracks 0-159 (each side is a separate logical track)
+            // Track 0 = directory/system (physical track 0, side 0)
+            // Track 1 = first data track (physical track 0, side 1)
+            // Each logical track has 16 sectors (0-15)
+            let trdSector = 16;  // = track 1 * 16 sectors + sector 0
+
+            // Second pass: write TRD directory entries and copy file data
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const nameStr = String.fromCharCode(...file.name).trim();
+
+                // Write TRD directory entry (16 bytes at track 0)
+                const dirOffset = i * 16;
+                trd.set(file.name, dirOffset);           // Filename (8 bytes)
+                trd[dirOffset + 8] = file.type;          // File type
+                trd[dirOffset + 9] = file.start & 0xFF;  // Start address low
+                trd[dirOffset + 10] = (file.start >> 8) & 0xFF;
+                trd[dirOffset + 11] = file.length & 0xFF; // Length low
+                trd[dirOffset + 12] = (file.length >> 8) & 0xFF;
+                trd[dirOffset + 13] = file.sectorCount;  // Sector count
+
+                // Convert linear sector to logical track/sector for directory
+                // TR-DOS uses logical tracks 0-159 (160 total: 80 physical tracks × 2 sides)
+                // Sectors are 0-based (0-15) in directory entries
+                const logTrack = Math.floor(trdSector / 16);  // 16 sectors per logical track
+                const logSector = trdSector % 16;  // Sector 0-15
+
+                trd[dirOffset + 14] = logSector;   // First sector (0-15)
+                trd[dirOffset + 15] = logTrack;    // First logical track (0-159)
+
+                // Copy file data from SCL to TRD
+                // TRD uses interleaved format: linear sector number maps directly to byte offset
+                const fileSize = file.sectorCount * 256;
+
+                // Verify source data bounds
+                if (dataOffset + fileSize > scl.length) {
+                    console.error(`[SCL] ERROR: File "${nameStr}" data extends past SCL end! dataOffset=${dataOffset} fileSize=${fileSize} sclLen=${scl.length}`);
+                }
+
+                // In interleaved TRD, byte offset = linear sector * 256
+                const trdDataOffset = trdSector * 256;
+                trd.set(scl.slice(dataOffset, dataOffset + fileSize), trdDataOffset);
+
+                // Log first 16 bytes of file data for verification
+                const preview = Array.from(scl.slice(dataOffset, dataOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                console.log(`[SCL->TRD] File ${i} "${nameStr}": SCL[${dataOffset}] -> TRD[${trdDataOffset}] (logTrack=${logTrack} sector=${logSector}), first bytes: ${preview}`);
+
+                dataOffset += fileSize;
+                trdSector += file.sectorCount;
+            }
+
+            // Set up disk info sector (sector 9 of track 0)
+            // Sector 9 starts at offset 8 * 256 = 2048
+            const sector9 = 8 * 256;
+
+            // Fill sector 9 with standard TR-DOS values
+            // First free position: sector (0-15), logical track (0-159)
+            const freeSector = trdSector % 16;                 // Sector 0-15
+            const freeTrack = Math.floor(trdSector / 16);      // Logical track 0-159
+            trd[sector9 + 0xE1] = freeSector;
+            trd[sector9 + 0xE2] = freeTrack;
+            trd[sector9 + 0xE3] = 0x16;       // Disk type (80 tracks, DS)
+            trd[sector9 + 0xE4] = files.length;   // File count
             const freeSectors = 2544 - trdSector;
-            trd[infoOffset + 4] = freeSectors & 0xFF;
-            trd[infoOffset + 5] = (freeSectors >> 8) & 0xFF;
-            trd[infoOffset + 6] = 0x10;       // TR-DOS ID
+            trd[sector9 + 0xE5] = freeSectors & 0xFF;
+            trd[sector9 + 0xE6] = (freeSectors >> 8) & 0xFF;
+            trd[sector9 + 0xE7] = 0x10;       // TR-DOS ID
+
+            // Disk label at 0xF5-0xFC (8 bytes, space-padded)
+            const label = "        ";  // 8 spaces
+            for (let i = 0; i < 8; i++) {
+                trd[sector9 + 0xF5 + i] = label.charCodeAt(i);
+            }
+
+            console.log(`[SCL->TRD] Conversion complete. ${files.length} files, next free at logTrack ${freeTrack} sector ${freeSector}`);
 
             return trd;
         }
@@ -815,9 +871,15 @@
 
         // Calculate sector offset in disk image
         getSectorOffset(track, side, sector) {
-            // TRD layout: track 0 side 0, track 0 side 1, track 1 side 0, etc.
-            const absoluteTrack = track * 2 + side;
-            const sectorIndex = (absoluteTrack * this.sectorsPerTrack) + (sector - 1);
+            // TRD layout: interleaved (track 0 side 0, track 0 side 1, track 1 side 0, ...)
+            // Each track-side has 16 sectors of 256 bytes = 4096 bytes
+            const logicalTrack = track * 2 + side;
+            // WD1793 sectors are 1-16, convert to 0-based index
+            const sectorIndex = (logicalTrack * this.sectorsPerTrack) + (sector - 1);
+            // Handle sector 0 as invalid but don't crash
+            if (sector < 1 || sector > 16) {
+                console.warn(`[BetaDisk] Invalid sector ${sector} for track ${track}`);
+            }
             return sectorIndex * this.bytesPerSector;
         }
 
@@ -912,7 +974,7 @@
                 case 0xFF: // System register
                     this.system = value;
                     this.drive = value & 0x03;
-                    // Side bit is inverted: bit 4 = 1 means side 0, bit 4 = 0 means side 1
+                    // Side bit is active-low: bit 4 = 1 means side 0, bit 4 = 0 means side 1
                     this.side = (value & 0x10) ? 0 : 1;
                     // Bit 0x04 = reset (active low)
                     if (!(value & 0x04)) {
@@ -1031,8 +1093,11 @@
 
         readSector() {
             const offset = this.getSectorOffset(this.track, this.side, this.sector);
+            // Also compute what linear offset would be for comparison
+            const linearOffset = (this.track * 16 + (this.sector - 1)) * 256;
 
             if (offset + this.bytesPerSector > this.diskData.length) {
+                console.warn(`[BetaDisk] READ failed: offset ${offset} + ${this.bytesPerSector} > ${this.diskData.length}`);
                 this.status |= this.RNF;
                 this.status &= ~this.BUSY;
                 this.intrq = true;
@@ -1040,6 +1105,11 @@
             }
 
             this.dataBuffer = this.diskData.slice(offset, offset + this.bytesPerSector);
+
+            // Log sector read with first 16 bytes for debugging
+            const preview = Array.from(this.dataBuffer.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+            console.log(`[BetaDisk] READ track=${this.track}, side=${this.side}, sector=${this.sector} -> interleavedOffset=${offset}, linearOffset=${linearOffset}, first bytes: ${preview}`);
+
             this.dataPos = 0;
             this.dataLen = this.bytesPerSector;
             this.reading = true;

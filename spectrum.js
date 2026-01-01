@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.6.3
+ * @version 0.6.5
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.6.3';
+    const VERSION = '0.6.5';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -35,6 +35,15 @@
             this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
             this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
+
+            // AY-3-8910 sound chip
+            this.ay = new AY(this.machineType === 'pentagon' ? 1750000 : 1773400);
+            this.ayEnabled = this.machineType !== '48k';  // AY enabled by default for 128K/Pentagon
+            this.ay48kEnabled = false;  // Optional AY for 48K (like Melodik interface)
+            this.aySelectedRegister = 0;
+
+            // Audio manager (initialized on user interaction due to browser autoplay policy)
+            this.audio = null;
             
             this.cpu.portRead = this.portRead.bind(this);
             this.cpu.portWrite = this.portWrite.bind(this);
@@ -330,6 +339,7 @@
             this.ula.reset();
             this.tapeLoader.rewind();
             this.rzxStop();
+            if (this.ay) this.ay.reset();
 
             // Clear auto-map data
             this.autoMap.executed.clear();
@@ -404,6 +414,11 @@
                 } else if (lowByte === 0x1f) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
                     result = this.kempstonEnabled ? this.kempstonState : 0x00;
+                } else if ((port & 0xC002) === 0xC000) {
+                    // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
+                    if (this.ayEnabled || (this.machineType === '48k' && this.ay48kEnabled)) {
+                        result = this.ay.readRegister();
+                    }
                 }
             }
 
@@ -482,6 +497,17 @@
                     // OUTI (16T): bank change at tStates + 14
                     const bankChangeTime = this.cpu.tStates + (instructionTiming - 2);
                     this.ula.setScreenBankAt(newScreenBank, bankChangeTime);
+                }
+            }
+
+            // AY-3-8910 ports (128K/Pentagon, or 48K with AY enabled)
+            if (this.ayEnabled || (this.machineType === '48k' && this.ay48kEnabled)) {
+                if ((port & 0xC002) === 0xC000) {
+                    // Port 0xFFFD: AY register select
+                    this.ay.selectRegister(val);
+                } else if ((port & 0xC002) === 0x8000) {
+                    // Port 0xBFFD: AY register write
+                    this.ay.writeRegister(val);
                 }
             }
         }
@@ -712,6 +738,16 @@
 
             this.frameCount++;
             if (this.onFrame) this.onFrame(this.frameCount);
+
+            // Process AY audio for this frame
+            if (this.audio && this.audio.enabled) {
+                this.audio.processFrame(tstatesPerFrame);
+            }
+
+            // Advance AY logging frame counter
+            if (this.ay) {
+                this.ay.advanceLogFrame();
+            }
 
             // RZX: advance frames based on accumulated T-states
             if (this.rzxPlaying && this.rzxPlayer) {
@@ -1482,8 +1518,10 @@
             }
             const pc = this.cpu.pc;
             if (pc >= 0x3D00 && pc <= 0x3DFF) {
-                // Entering TR-DOS area - page in TR-DOS ROM
-                if (!this.memory.trdosActive) {
+                // Entering TR-DOS magic area - page in TR-DOS ROM
+                // Only activate when ROM 1 (48K BASIC) is selected, not ROM 0 (128K editor)
+                // This prevents spurious TR-DOS activation when running 128K BASIC
+                if (!this.memory.trdosActive && this.memory.currentRomBank === 1) {
                     this.memory.trdosActive = true;
                 }
             } else if (pc >= 0x4000) {
@@ -2920,11 +2958,13 @@
             }
 
             // Don't reset CPU - just jump to TR-DOS entry point
-            // The automatic paging will page in TR-DOS ROM when PC enters 3D00-3DFF
             // 0x3D13 is the TR-DOS command interpreter entry (not 0x3D00 which is "exit to BASIC")
             this.cpu.pc = 0x3D13;  // TR-DOS command entry point
             this.cpu.sp = 0x5D00;  // TR-DOS workspace stack
             this.cpu.af = 0x00FF;  // A=0 (drive A), F=default
+
+            // Explicitly activate TR-DOS ROM (don't rely on auto-paging which checks ROM bank)
+            this.memory.trdosActive = true;
 
             // Clear screen area for TR-DOS display
             for (let i = 0x4000; i < 0x5800; i++) {
@@ -3471,6 +3511,224 @@
 
         getFps() { return this.actualFps; }
         isRunning() { return this.running; }
+
+        // ========== Audio ==========
+
+        /**
+         * Initialize audio system (must be called from user interaction)
+         */
+        initAudio() {
+            if (this.audio) return this.audio;
+            this.audio = new AudioManager(this.ay, this.timing);
+            return this.audio;
+        }
+
+        /**
+         * Get audio manager (may be null if not initialized)
+         */
+        getAudio() {
+            return this.audio;
+        }
+    }
+
+    /**
+     * AudioManager - Handles Web Audio output for AY chip
+     */
+    class AudioManager {
+        constructor(ay, timing) {
+            this.ay = ay;
+            this.timing = timing;
+            this.context = null;
+            this.gainNode = null;
+            this.processor = null;
+            this.enabled = false;
+            this.volume = 0.5;
+            this.muted = false;
+
+            // Ring buffer for audio samples
+            this.bufferSize = 8192;
+            this.buffer = [
+                new Float32Array(this.bufferSize),
+                new Float32Array(this.bufferSize)
+            ];
+            this.writePos = 0;
+            this.readPos = 0;
+
+            // Timing
+            this.sampleRate = 44100;
+            this.cpuClock = timing.cpuClock || 3500000;
+            this.ayClock = ay.clockRate;
+
+            // Samples per frame at 50Hz
+            this.samplesPerFrame = Math.floor(this.sampleRate / 50);
+
+            // CPU cycles per audio sample
+            this.cyclesPerSample = this.cpuClock / this.sampleRate;
+
+            // AY cycles per CPU cycle (AY runs at ~half CPU speed)
+            this.ayPerCpu = this.ayClock / this.cpuClock;
+        }
+
+        /**
+         * Start audio output
+         */
+        async start() {
+            if (this.context) return;
+
+            try {
+                this.context = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: this.sampleRate
+                });
+
+                // Update sample rate if browser chose different
+                this.sampleRate = this.context.sampleRate;
+                this.samplesPerFrame = Math.floor(this.sampleRate / 50);
+                this.cyclesPerSample = this.cpuClock / this.sampleRate;
+
+                // Create gain node for volume control
+                this.gainNode = this.context.createGain();
+                this.gainNode.gain.value = this.muted ? 0 : this.volume;
+                this.gainNode.connect(this.context.destination);
+
+                // Create script processor for audio output
+                // Note: ScriptProcessorNode is deprecated but widely supported
+                // AudioWorklet is the modern replacement but more complex
+                this.processor = this.context.createScriptProcessor(2048, 0, 2);
+                this.processor.onaudioprocess = this.audioCallback.bind(this);
+                this.processor.connect(this.gainNode);
+
+                // Resume context (may be suspended due to autoplay policy)
+                if (this.context.state === 'suspended') {
+                    await this.context.resume();
+                }
+
+                this.enabled = true;
+            } catch (e) {
+                console.error('Failed to initialize audio:', e);
+                this.enabled = false;
+            }
+        }
+
+        /**
+         * Stop audio output
+         */
+        stop() {
+            if (this.processor) {
+                this.processor.disconnect();
+                this.processor = null;
+            }
+            if (this.gainNode) {
+                this.gainNode.disconnect();
+                this.gainNode = null;
+            }
+            if (this.context) {
+                this.context.close();
+                this.context = null;
+            }
+            this.enabled = false;
+        }
+
+        /**
+         * Set volume (0-1)
+         */
+        setVolume(vol) {
+            this.volume = Math.max(0, Math.min(1, vol));
+            if (this.gainNode && !this.muted) {
+                this.gainNode.gain.value = this.volume;
+            }
+        }
+
+        /**
+         * Set mute state
+         */
+        setMuted(muted) {
+            this.muted = muted;
+            if (this.gainNode) {
+                this.gainNode.gain.value = muted ? 0 : this.volume;
+            }
+        }
+
+        /**
+         * Toggle mute
+         */
+        toggleMute() {
+            this.setMuted(!this.muted);
+            return this.muted;
+        }
+
+        /**
+         * Process one frame of audio
+         * Called at end of each emulated frame
+         */
+        processFrame(frameTstates) {
+            if (!this.enabled || !this.ay) return;
+
+            // Generate samples for this frame
+            const samplesToGenerate = this.samplesPerFrame;
+
+            // CPU cycles per sample for this frame
+            const cyclesPerSample = frameTstates / samplesToGenerate;
+
+            // AY steps per sample
+            const ayStepsPerSample = cyclesPerSample * this.ayPerCpu;
+
+            for (let i = 0; i < samplesToGenerate; i++) {
+                // Step AY chip
+                this.ay.stepMultiple(Math.round(ayStepsPerSample));
+
+                // Get sample
+                const [left, right] = this.ay.getAveragedSample();
+
+                // Write to ring buffer
+                const pos = this.writePos;
+                this.buffer[0][pos] = left;
+                this.buffer[1][pos] = right;
+                this.writePos = (pos + 1) % this.bufferSize;
+            }
+        }
+
+        /**
+         * Audio callback - fills output buffer from ring buffer
+         */
+        audioCallback(event) {
+            const outputL = event.outputBuffer.getChannelData(0);
+            const outputR = event.outputBuffer.getChannelData(1);
+            const length = outputL.length;
+
+            for (let i = 0; i < length; i++) {
+                // Read from ring buffer
+                const pos = this.readPos;
+
+                // Check if we have data
+                if (pos !== this.writePos) {
+                    outputL[i] = this.buffer[0][pos];
+                    outputR[i] = this.buffer[1][pos];
+                    this.readPos = (pos + 1) % this.bufferSize;
+                } else {
+                    // Buffer underrun - output silence
+                    outputL[i] = 0;
+                    outputR[i] = 0;
+                }
+            }
+        }
+
+        /**
+         * Get buffer fill level (0-1)
+         */
+        getBufferLevel() {
+            let fill = this.writePos - this.readPos;
+            if (fill < 0) fill += this.bufferSize;
+            return fill / this.bufferSize;
+        }
+
+        /**
+         * Resume audio context (call from user interaction)
+         */
+        async resume() {
+            if (this.context && this.context.state === 'suspended') {
+                await this.context.resume();
+            }
+        }
     }
 
     if (typeof module !== 'undefined' && module.exports) {
