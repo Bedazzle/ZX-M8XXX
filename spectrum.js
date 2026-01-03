@@ -67,6 +67,19 @@
             // Speed control (100 = normal, 0 = max)
             this.speed = 100;
             this.rafId = null;
+
+            // Late timing model (affects when INT is recognized during HALT)
+            // Early = cold ULA, Late = warm ULA (+4 T-states)
+            // Real hardware drifts from early to late as ULA warms up
+            // Early: INT recognized at T=0 (immediate at frame start)
+            // Late: INT recognized at T=4 (one HALT NOP cycle delay)
+            this.lateTimings = false;
+            this.INT_LATE_OFFSET = 4;  // Late timing offset (one HALT NOP cycle)
+            this.INT_PULSE_DURATION = 32;  // INT signal active for 32 T-states (48K) or 36 (128K)
+            this.pendingInt = false;   // INT waiting to fire
+            this.pendingIntAt = 0;     // T-state when pending INT should fire
+            this.pendingIntEnd = 0;    // T-state when pending INT pulse ends
+            this._debugIntTiming = false; // Debug: log INT timing to console
             
             // Unified trigger system - replaces separate breakpoints/watchpoints/port breakpoints
             // Trigger types: 'exec', 'read', 'write', 'rw', 'port_in', 'port_out', 'port_io'
@@ -96,6 +109,7 @@
             this.tracePortOps = []; // Port operations during current instruction
             this.traceMemOps = []; // Memory write operations during current instruction
             this.traceMemOpsLimit = 8; // Max memory ops to record per instruction
+            this.haltTraced = false; // Track if current HALT state has been traced
 
             // Media storage for project save/load
             // Stores original TAP/TRD/SCL data so programs can load additional files
@@ -188,6 +202,14 @@
             this.memory.loadRom(data, bank);
             this.romLoaded = true;
             if (this.onRomLoaded) this.onRomLoaded();
+        }
+
+        // ========== Debug Properties ==========
+
+        get debugIntTiming() { return this._debugIntTiming; }
+        set debugIntTiming(val) {
+            this._debugIntTiming = val;
+            if (this.cpu) this.cpu.debugInterrupts = val;
         }
 
         // ========== Memory & Contention ==========
@@ -401,8 +423,9 @@
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
                     // Bit 5: unused (1)
-                    // Bit 6: EAR input (0 when idle)
+                    // Bit 6: EAR input (directly mirrors bit 5 on most hardware)
                     // Bit 7: unused (1)
+                    // Returns 0xBF when idle (FUSE-compatible for z80 tests)
                     result = (this.ula.readKeyboard(highByte) & 0x1f) | 0xa0;
                 } else if (betaDiskActive && (lowByte === 0x1f || lowByte === 0x3f ||
                            lowByte === 0x5f || lowByte === 0x7f)) {
@@ -418,6 +441,12 @@
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this.ayEnabled || (this.machineType === '48k' && this.ay48kEnabled)) {
                         result = this.ay.readRegister();
+                    }
+                } else {
+                    // Floating bus: return video data being read by ULA
+                    // Only active during screen display on 48K
+                    if (this.machineType === '48k') {
+                        result = this.getFloatingBusValue();
                     }
                 }
             }
@@ -528,16 +557,16 @@
             let nextLineToRender = 0;
             const totalLines = Math.floor(tstatesPerFrame / tstatesPerLine);
 
-            // Fire interrupt
+            // Fire interrupt at frame START (original behavior)
             if (this.cpu.iff1) {
                 const intTstates = this.cpu.interrupt();
                 this.cpu.tStates += intTstates;
             }
 
+            // Main frame loop - runs until tstatesPerFrame
             while (this.cpu.tStates < tstatesPerFrame) {
 
                 // Render complete scanline (paper + border) at line END
-                // This is simpler and matches how other emulators handle it
                 while (nextLineToRender < totalLines) {
                     const lineEndT = (nextLineToRender + 1) * tstatesPerLine;
                     if (this.cpu.tStates >= lineEndT) {
@@ -597,7 +626,14 @@
                 if (this.cpu.halted) {
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    // Record trace for first HALT only (avoids flooding trace with repeated HALTs)
+                    if (this.runtimeTraceEnabled && this.onBeforeStep && !this.haltTraced) {
+                        this.haltTraced = true;
+                        this.onBeforeStep(this.cpu, this.memory, this.cpu.pc, null, null);
+                    }
                 } else {
+                    // Reset HALT traced flag when CPU exits HALT
+                    this.haltTraced = false;
                     // Clear trace ops and capture state before execution
                     const tracing = this.runtimeTraceEnabled && this.onBeforeStep;
                     if (tracing) {
@@ -772,6 +808,96 @@
                     if (this.onRZXEnd) this.onRZXEnd();
                 }
             }
+        }
+
+        // ========== Headless Execution (for test suite) ==========
+
+        /**
+         * Run a frame without rendering - for fast test execution
+         * Returns the number of T-states executed
+         */
+        runFrameHeadless() {
+            const tstatesPerFrame = this.timing.tstatesPerFrame;
+            const tstatesPerLine = this.timing.tstatesPerLine;
+
+            // Reset T-states at frame start
+            this.cpu.tStates = 0;
+
+            this.ula.startFrame();
+            this.lastContentionLine = -1;
+
+            // Fire interrupt at frame START
+            if (this.cpu.iff1) {
+                const intTstates = this.cpu.interrupt();
+                this.cpu.tStates += intTstates;
+            }
+
+            // Main frame loop - runs until tstatesPerFrame (no rendering)
+            while (this.cpu.tStates < tstatesPerFrame) {
+                // Beta Disk automatic ROM paging (Pentagon only)
+                this.updateBetaDiskPaging();
+
+                // Tape traps still active for test loading
+                if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
+                if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+
+                // Apply ULA contention per-line for 48K and 128K
+                if ((this.machineType === '48k' || this.machineType === '128k') && this.contentionEnabled) {
+                    const ulaContention = this.ula.ULA_CONTENTION_TSTATES || 0;
+                    if (ulaContention > 0) {
+                        const line = Math.floor(this.cpu.tStates / tstatesPerLine);
+                        const firstScreenLine = this.ula.FIRST_SCREEN_LINE;
+                        const screenLine = line - firstScreenLine;
+
+                        if (screenLine >= 0 && screenLine < 192) {
+                            if (this.lastContentionLine !== line) {
+                                this.lastContentionLine = line;
+                                this.cpu.tStates += ulaContention;
+                            }
+                        }
+                    }
+                }
+
+                // Execute ONE instruction
+                if (this.cpu.halted) {
+                    this.cpu.tStates += 4;
+                    this.cpu.incR();
+                } else {
+                    this.cpu.execute();
+                }
+            }
+
+            this.frameCount++;
+
+            // Process AY audio for this frame
+            if (this.audio && this.audio.enabled) {
+                this.audio.processFrame(tstatesPerFrame);
+            }
+
+            // Advance AY logging frame counter
+            if (this.ay) {
+                this.ay.advanceLogFrame();
+            }
+
+            return tstatesPerFrame;
+        }
+
+        /**
+         * Render the current frame and return the screen buffer
+         * Call after runFrameHeadless() to get the final screen state
+         * @returns {Uint8ClampedArray} RGBA pixel data
+         */
+        renderAndCaptureScreen() {
+            // Use ULA's direct renderFrame() method - same as normal rendering
+            return this.ula.renderFrame();
+        }
+
+        /**
+         * Get the current screen dimensions
+         * @returns {{width: number, height: number, borderLeft: number, borderTop: number, screenWidth: number, screenHeight: number}}
+         */
+        getScreenDimensions() {
+            return this.ula.getDimensions();
         }
 
         // ========== Overlay Drawing ==========
@@ -1555,16 +1681,8 @@
             this.cpu.step();
             this.autoMap.inExecution = false;
 
-            // Handle frame boundary crossing during stepping
-            const tstatesPerFrame = this.getTstatesPerFrame();
-            if (this.cpu.tStates >= tstatesPerFrame) {
-                this.cpu.tStates -= tstatesPerFrame;
-                this.ula.startFrame();  // Clear border changes for new frame
-                // Fire INT if enabled
-                if (this.cpu.iff1) {
-                    this.cpu.interrupt();
-                }
-            }
+            // Handle frame boundary crossing during stepping (with late timing support)
+            this.handleFrameBoundary();
 
             // Record trace after execution (includes port/mem ops)
             if (tracing) {
@@ -1582,15 +1700,10 @@
             let cycles = 0;
 
             while (this.cpu.halted && cycles < maxCycles) {
-                // Check for frame boundary - fire INT
-                if (this.cpu.tStates >= tstatesPerFrame) {
-                    this.cpu.tStates -= tstatesPerFrame;  // Preserve overshoot for accurate timing
-                    this.ula.startFrame();  // Clear border changes for new frame
-                    if (this.cpu.iff1) {
-                        this.cpu.interrupt();
-                        // CPU is no longer halted after INT
-                        break;
-                    }
+                // Check for frame boundary and fire INT (with late timing support)
+                if (this.handleFrameBoundary()) {
+                    // INT was fired, CPU exits HALT
+                    break;
                 }
                 this.cpu.tStates += 4;
                 this.cpu.incR();
@@ -1722,14 +1835,8 @@
                 const instrPC = tracing ? this.cpu.pc : 0;
                 cycles += this.cpu.step();
 
-                // Handle frame boundary crossing
-                if (this.cpu.tStates >= tstatesPerFrame) {
-                    this.cpu.tStates -= tstatesPerFrame;
-                    this.ula.startFrame();  // Clear border changes for new frame
-                    if (this.cpu.iff1) {
-                        this.cpu.interrupt();
-                    }
-                }
+                // Handle frame boundary crossing (with late timing support)
+                this.handleFrameBoundary();
 
                 // Record trace after execution
                 if (tracing) {
@@ -1746,28 +1853,120 @@
         getTstatesPerFrame() {
             return this.timing.tstatesPerFrame;
         }
-        
+
+        // Get floating bus value based on current T-state
+        // Returns the byte the ULA is currently reading from video memory
+        // When not during active display, returns 0xFF
+        getFloatingBusValue() {
+            const t = this.cpu.tStates;
+            const tstatesPerLine = this.timing.tstatesPerLine;  // 224 for 48K
+            const line = Math.floor(t / tstatesPerLine);
+            const tInLine = t % tstatesPerLine;
+
+            // Screen display area: use ULA's first screen line
+            // Active display within line: T-states 0-127 (128 T-states = 256 pixels)
+            const firstScreenLine = this.ula.FIRST_SCREEN_LINE;
+            const screenLine = line - firstScreenLine;
+
+            if (screenLine < 0 || screenLine >= 192) {
+                return 0xff;  // Not in screen area
+            }
+
+            // Within a line, ULA fetches during T-states 0-127
+            // Each 8 T-states: 4 for bitmap, 4 for attribute
+            if (tInLine >= 128) {
+                return 0xff;  // Not during active fetch
+            }
+
+            // Calculate which byte is being fetched
+            const fetchCycle = Math.floor(tInLine / 4);  // 0-31 (32 columns)
+            const isBitmap = (tInLine % 8) < 4;
+
+            // Calculate screen address
+            const y = screenLine;
+            const x = fetchCycle;  // Column (0-31)
+
+            if (isBitmap) {
+                // Bitmap address: 010Y7Y6Y2Y1Y0Y5Y4Y3X4X3X2X1X0
+                const addr = 0x4000 | ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2) | x;
+                return this.memory.read(addr);
+            } else {
+                // Attribute address: 010110Y7Y6Y5Y4Y3X4X3X2X1X0
+                const addr = 0x5800 | ((y >> 3) << 5) | x;
+                return this.memory.read(addr);
+            }
+        }
+
+        // Get interrupt timing offset (0 for early, 4 for late timing)
+        getIntOffset() {
+            return this.lateTimings ? this.INT_LATE_OFFSET : 0;
+        }
+
+        // Handle frame boundary crossing and interrupt firing with late timing support
+        // Returns true if interrupt was fired
+        handleFrameBoundary() {
+            const tstatesPerFrame = this.getTstatesPerFrame();
+            const intPulseDuration = (this.machineType === '128k' || this.machineType === 'pentagon') ? 36 : 32;
+            const intOffset = this.getIntOffset();
+
+            // Set INT pending when we reach frame end
+            if (!this.pendingInt && this.cpu.tStates >= tstatesPerFrame) {
+                this.pendingInt = true;
+                this.pendingIntAt = tstatesPerFrame + intOffset;
+                this.pendingIntEnd = this.pendingIntAt + intPulseDuration;
+            }
+
+            // Check for pending INT
+            if (this.pendingInt) {
+                if (this.cpu.tStates >= this.pendingIntAt && this.cpu.iff1 && !this.cpu.eiPending) {
+                    if (this.debugIntTiming) {
+                        console.log(`[INT-step] FIRED at T=${this.cpu.tStates}, pendingIntAt=${this.pendingIntAt}, halted=${this.cpu.halted}`);
+                    }
+                    this.pendingInt = false;
+                    this.cpu.interrupt();
+                    // Adjust T-states for next frame
+                    if (this.cpu.tStates >= tstatesPerFrame) {
+                        this.cpu.tStates -= tstatesPerFrame;
+                        this.ula.startFrame();
+                    }
+                    return true;
+                } else if (this.cpu.tStates >= this.pendingIntEnd) {
+                    if (this.debugIntTiming) {
+                        console.log(`[INT-step] PULSE ENDED at T=${this.cpu.tStates}, IFF1=${this.cpu.iff1}, eiPending=${this.cpu.eiPending}`);
+                    }
+                    // INT pulse ended without firing
+                    this.pendingInt = false;
+                    // Adjust T-states for next frame
+                    if (this.cpu.tStates >= tstatesPerFrame) {
+                        this.cpu.tStates -= tstatesPerFrame;
+                        this.ula.startFrame();
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        // Set late timing mode
+        setLateTimings(late) {
+            this.lateTimings = !!late;
+        }
+
         // Run until next interrupt
         runToInterrupt(maxCycles = 10000000) {
             if (this.running || !this.romLoaded) return false;
             this.autoMap.inExecution = true;
             const tracing = this.traceEnabled && this.onBeforeStep;
             let cycles = 0;
-            const tstatesPerFrame = this.getTstatesPerFrame();
             const startPC = this.cpu.pc;  // Skip breakpoint check at starting PC (for HALT)
 
             while (cycles < maxCycles) {
                 // Beta Disk automatic ROM paging
                 this.updateBetaDiskPaging();
 
-                // Check if we've crossed a frame boundary (interrupt point)
-                if (this.cpu.tStates >= tstatesPerFrame) {
-                    // Reset for new frame and fire interrupt
-                    this.cpu.tStates -= tstatesPerFrame;
-                    this.ula.startFrame();  // Clear border changes for new frame
-                    if (this.cpu.iff1) {
-                        this.cpu.interrupt();
-                    }
+                // Check for frame boundary and interrupt (with late timing support)
+                if (this.handleFrameBoundary()) {
+                    // Interrupt was fired
                     this.autoMap.inExecution = false;
                     this.renderToScreen();
                     return true;
@@ -1859,14 +2058,8 @@
                 const instrPC = tracing ? this.cpu.pc : 0;
                 cycles += this.cpu.step();
 
-                // Handle frame boundary crossing
-                if (this.cpu.tStates >= tstatesPerFrame) {
-                    this.cpu.tStates -= tstatesPerFrame;
-                    this.ula.startFrame();  // Clear border changes for new frame
-                    if (this.cpu.iff1) {
-                        this.cpu.interrupt();
-                    }
-                }
+                // Handle frame boundary crossing (with late timing support)
+                this.handleFrameBoundary();
 
                 // Record trace after execution
                 if (tracing) {

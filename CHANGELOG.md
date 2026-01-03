@@ -2,6 +2,30 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.7.0
+- **Automated Test Suite**: New Tests tab for regression testing with native Spectrum programs
+  - Define tests in `tests.json` with machine type, timing settings, and screenshot steps
+  - Multi-step tests with key press simulation between screens
+  - Absolute frame numbering (frame count from test start, not relative to previous step)
+  - Screenshot comparison against reference PNG images
+  - Preview mode for calibrating frame numbers with Pause/Resume
+  - Screenshot button to capture reference images during preview
+  - Copy Frame# button to clipboard for easy test configuration
+  - Full border mode support for accurate border rendering in tests
+  - Step progress shown during test runs (e.g., "Test 1/10: z80ccf (3/8)")
+  - Frame number displayed on mismatch detection
+  - Author and source URL fields in tests.json for attribution
+  - Time elapsed and average FPS shown in test summary
+- **Test Key Simulation**: Flexible key press format for test automation
+  - Single keys: `ENTER`, `SPACE`, `a`, `1`
+  - Simultaneous keys: `SHIFT+a`, `CTRL+p` (Symbol Shift)
+  - Key sequences with delays: `ENTER,500ms,SPACE`
+  - Special keys: `UP`, `DOWN`, `LEFT`, `RIGHT`
+- **Bug Fixes**:
+  - Fixed preview state not resetting after errors (preview button would stop working)
+  - Fixed duplicate element ID for screenshot buttons
+  - Removed excessive debug logging from browser console
+
 ## v0.6.5
 - **AY-3-8910 Sound**: Full PSG emulation with Web Audio API output
   - 3 tone generators with 12-bit period counters
@@ -18,6 +42,25 @@ All notable changes to ZX-M8XXX are documented in this file.
   - Block instructions (LDIR/LDDR/CPIR/CPDR) set Y/X from PC when repeating
   - I/O block instructions (INIR/INDR/OTIR/OTDR) have additional PF/HF modifications
   - Passes all z80ccf tests including edge cases (LDIR->NOP', INIR->NOP', etc.)
+- **Z80 HALT Fix**: Corrected HALT behavior to match real hardware
+  - PC points to HALT instruction itself (traditional behavior)
+  - During HALT NOP cycles, CPU reads from PC+1 (next instruction), not HALT itself
+  - When interrupt fires, PC is incremented to point to next instruction
+  - Proper memory reads during HALT cycles for accurate contention timing
+- **Late Timing Option**: Configurable early/late interrupt timing
+  - INT now fires at frame END (T=tstatesPerFrame), matching real hardware
+  - Early timing: INT recognized at frame end
+  - Late timing: INT recognized 4 T-states after frame end
+  - INT pulse duration: 32 T-states (48K) or 36 T-states (128K/Pentagon)
+  - Models cold/warm ULA behavior (real hardware drifts over time)
+  - Fixed: INT now stays pending until IFF1 is true (EI works correctly)
+  - Fixed: Proper EI delay handling (INT not recognized immediately after EI)
+  - Checkbox in Settings → Timing
+  - Saved in projects and localStorage
+- **Floating Bus Emulation**: Basic floating bus support for 48K
+  - Returns video memory data during ULA active display
+  - Returns 0xFF during border/retrace periods
+  - Helps with timing-sensitive tests and some copy protection
 
 ## v0.6.4
 - **SCL Disk Image Fix**: Fixed SCL→TRD conversion for proper file loading

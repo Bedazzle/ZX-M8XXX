@@ -109,7 +109,7 @@
                 this.LINES_PER_FRAME = 312;
                 this.FIRST_SCREEN_LINE = 64;
                 this.VISIBLE_LINE_OFFSET = 0;
-                this.ULA_CONTENTION_TSTATES = 32;    // Per-line contention
+                this.ULA_CONTENTION_TSTATES = 32;     // Per-line contention
                 this.PAPER_START_TSTATE = 14;
                 // 48K timing - top-left PAPER pixel at T-state 14336
                 // With borderOffset=4 in spectrum.js, TIMING_ADJUST compensates: 10 - 4 = 6
@@ -973,7 +973,8 @@
         readPort(port) {
             if ((port & 0x01) === 0) {  // ULA port (even ports)
                 const highByte = (port >> 8) & 0xff;
-                return this.readKeyboard(highByte) | 0xA0;  // Bits 5,7 always set
+                // Bits 5,7 set, bit 6 mirrors bit 5 (returns 0xBF for FUSE compatibility)
+                return this.readKeyboard(highByte) | 0xA0;
             }
             return 0xFF;
         }
@@ -1210,6 +1211,35 @@
             this.frameBuffer[offset + 3] = color[3];
         }
         
+        // Calculate memory contention delay for a given T-state and address
+        // Returns the number of T-states to delay (0-6)
+        getMemoryContention(tStates, addr) {
+            // Only contended memory (0x4000-0x7FFF) is affected
+            if (addr < 0x4000 || addr >= 0x8000) return 0;
+
+            // No contention pattern defined (Pentagon has no contention)
+            if (!this.CONTENTION_PATTERN) return 0;
+
+            // Calculate which line we're on
+            const line = Math.floor(tStates / this.TSTATES_PER_LINE);
+
+            // Only screen lines have contention (lines 64-255 for 48K, 63-254 for 128K)
+            if (line < this.FIRST_SCREEN_LINE || line >= this.FIRST_SCREEN_LINE + 192) return 0;
+
+            // Calculate position within the line
+            const tInLine = tStates % this.TSTATES_PER_LINE;
+
+            // Only the paper area (128 T-states) has contention
+            const contentionStart = this.CONTENTION_AREA_START || 14;
+            const contentionEnd = contentionStart + (this.CONTENTION_AREA_LENGTH || 128);
+
+            if (tInLine < contentionStart || tInLine >= contentionEnd) return 0;
+
+            // Get delay from contention pattern (repeats every 8 T-states)
+            const patternPos = (tInLine - contentionStart) % 8;
+            return this.CONTENTION_PATTERN[patternPos];
+        }
+
         getTiming() {
             return {
                 tstatesPerLine: this.TSTATES_PER_LINE,

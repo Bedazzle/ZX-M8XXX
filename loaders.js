@@ -402,18 +402,29 @@
         }
         
         checkTrap() {
-            if (!this.enabled || !this.tapeLoader) return false;
+            if (!this.enabled) return false;
             const pc = this.cpu.pc;
             // LD-BYTES entry points in 48K ROM / 128K ROM1
             if (pc === 0x056c || pc === 0x0556) {
+                // No tape data or no blocks - return error immediately (no EAR emulation)
+                if (!this.tapeLoader || this.tapeLoader.getBlockCount() === 0 || !this.tapeLoader.hasMoreBlocks()) {
+                    this.cpu.f &= ~0x01;  // Clear carry = error
+                    this.returnFromTrap();
+                    return true;
+                }
                 return this.handleLoadTrap();
             }
             return false;
         }
-        
+
         handleLoadTrap() {
             const block = this.tapeLoader.getNextBlock();
-            if (!block) { this.cpu.f &= ~0x01; return true; }
+            if (!block) {
+                // All blocks consumed - return with error (carry clear)
+                this.cpu.f &= ~0x01;
+                this.returnFromTrap();
+                return true;
+            }
             
             const dest = this.cpu.ix;
             const length = this.cpu.de;

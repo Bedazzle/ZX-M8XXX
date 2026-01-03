@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.6.5</title>
+    <title>ZX-M8XXX v0.7.0</title>
     <style>
         * { box-sizing: border-box; }
-        
+        .hidden { display: none !important; }
+
         /* Theme variables */
         :root {
             --bg-primary: #1a1a2e;
@@ -2016,6 +2017,259 @@
             margin-top: 2px;
         }
 
+        /* Tests Tab */
+        .tests-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 10px;
+            height: 100%;
+            overflow: hidden;
+        }
+        .tests-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .tests-note {
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-style: italic;
+            margin: 4px 0;
+        }
+        .tests-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            background: var(--bg-button);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .tests-btn:hover:not(:disabled) {
+            background: var(--bg-tertiary);
+        }
+        .tests-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .tests-btn.primary {
+            background: var(--cyan);
+            color: var(--bg-primary);
+        }
+        .tests-btn.primary:hover:not(:disabled) {
+            background: #5dade2;
+        }
+        .tests-btn.danger {
+            background: #c0392b;
+            color: white;
+        }
+        .tests-btn.danger:hover:not(:disabled) {
+            background: #e74c3c;
+        }
+        .tests-status {
+            color: var(--text-secondary);
+            font-size: 11px;
+            margin-left: auto;
+        }
+        .tests-list-container {
+            flex: 1;
+            overflow-y: auto;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 4px;
+            min-height: 120px;
+            max-height: 300px;
+        }
+        .tests-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .tests-table th, .tests-table td {
+            padding: 6px 8px;
+            text-align: left;
+            border-bottom: 1px solid var(--bg-button);
+        }
+        .tests-table th {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-weight: normal;
+            text-transform: uppercase;
+            font-size: 10px;
+            position: sticky;
+            top: 0;
+        }
+        .tests-table tbody tr:hover {
+            background: var(--bg-secondary);
+        }
+        .tests-row-disabled {
+            opacity: 0.5;
+        }
+        .tests-row-disabled td {
+            color: var(--text-muted);
+        }
+        .tests-col-check { width: 30px; text-align: center; }
+        .tests-col-name { min-width: 150px; }
+        .tests-col-machine { width: 80px; }
+        .tests-col-file { min-width: 120px; color: var(--text-secondary); }
+        .tests-col-result { width: 80px; text-align: center; }
+        .tests-result-pass { color: #2ecc71; font-weight: bold; }
+        .tests-result-fail { color: #e74c3c; font-weight: bold; }
+        .tests-result-pending { color: var(--text-secondary); }
+        .tests-result-running { color: var(--yellow); }
+        .tests-progress {
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 4px;
+            padding: 10px;
+        }
+        .tests-progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+        .tests-progress-bar {
+            height: 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .tests-progress-fill {
+            height: 100%;
+            background: var(--cyan);
+            transition: width 0.1s;
+        }
+        .tests-progress-details {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 6px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        .tests-preview {
+            background: var(--bg-primary);
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .tests-preview-header {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .tests-preview-header strong {
+            color: var(--accent);
+            font-size: 16px;
+        }
+        .tests-preview-buttons {
+            display: flex;
+            gap: 4px;
+        }
+        .tests-preview-canvas-container {
+            display: flex;
+            justify-content: center;
+            background: #000;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .tests-preview-canvas-container canvas {
+            image-rendering: pixelated;
+        }
+        .tests-preview-info {
+            margin-top: 10px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-align: center;
+        }
+        .tests-comparison {
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 4px;
+            padding: 10px;
+        }
+        .tests-comparison-images {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        .tests-comparison-panel {
+            text-align: center;
+        }
+        .tests-comparison-label {
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+        .tests-comparison-panel canvas {
+            border: 1px solid var(--bg-button);
+            background: #000;
+            image-rendering: pixelated;
+        }
+        .tests-comparison-result {
+            text-align: center;
+            margin-top: 8px;
+            font-size: 12px;
+            padding: 6px;
+            border-radius: 4px;
+            background: var(--bg-secondary);
+        }
+        .tests-comparison-result.pass {
+            background: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+        }
+        .tests-comparison-result.fail {
+            background: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+        }
+        .tests-summary {
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 4px;
+            padding: 10px;
+        }
+        .tests-summary-header {
+            font-size: 12px;
+            color: var(--cyan);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        .tests-summary-stats {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 10px;
+        }
+        .tests-stat {
+            font-size: 12px;
+        }
+        .tests-stat.passed { color: #2ecc71; }
+        .tests-stat.failed { color: #e74c3c; }
+        .tests-stat.skipped { color: var(--text-secondary); }
+        .tests-results-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .tests-results-table th, .tests-results-table td {
+            padding: 4px 8px;
+            text-align: left;
+            border-bottom: 1px solid var(--bg-button);
+        }
+        .tests-results-table th {
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-weight: normal;
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
         /* Debugger Panel */
         .debugger-container {
             margin-top: 0;
@@ -3276,7 +3530,34 @@
             color: var(--accent);
         }
 
+        /* Trace Panel */
+        .trace-controls {
+            padding: 4px;
+        }
+        .trace-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+        }
+        .trace-row .search-label {
+            min-width: auto;
+        }
+        .trace-row button {
+            padding: 2px 6px;
+            font-size: 11px;
+        }
+        .trace-row select {
+            font-size: 11px;
+            padding: 2px 4px;
+        }
         /* Trace List */
+        #panel-trace .trace-list {
+            display: block;
+            max-height: calc(100% - 100px);
+            min-height: 80px;
+        }
         .trace-list {
             max-height: 120px;
             overflow-y: auto;
@@ -3975,7 +4256,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.6.5</span>
+            <span class="app-name">ZX-M8XXX v0.7.0</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -4048,6 +4329,7 @@
                 <button class="tab-btn" data-tab="info"><span class="arrow">▶</span>Info</button>
                 <button class="tab-btn" data-tab="settings"><span class="arrow">▶</span>Settings</button>
                 <button class="tab-btn" data-tab="calculator"><span class="arrow">▶</span>Calc</button>
+                <button class="tab-btn" data-tab="tests"><span class="arrow">▶</span>Tests</button>
             </div>
 
             <!-- Debugger Tab -->
@@ -4168,6 +4450,7 @@
                         <button class="panel-tab-btn" data-panel="labels">Labels</button>
                         <button class="panel-tab-btn" data-panel="watches">Watches</button>
                         <button class="panel-tab-btn" data-panel="tools">Tools</button>
+                        <button class="panel-tab-btn" data-panel="trace">Trace</button>
                     </div>
                     <!-- Breakpoints Panel -->
                     <div class="panel-tab-content active" id="panel-breakpoints">
@@ -4259,16 +4542,6 @@
                             <span id="xrefStats" class="automap-stats"></span>
                         </div>
                         <div class="tools-row">
-                            <span class="search-label">Trace:</span>
-                            <label class="search-option"><input type="checkbox" id="chkTraceEnabled" checked> Step</label>
-                            <label class="search-option"><input type="checkbox" id="chkTraceRuntime"> Runtime</label>
-                            <button id="btnTraceBack" title="Step back in history (Alt+←)">◀</button>
-                            <button id="btnTraceForward" title="Step forward in history (Alt+→)">▶</button>
-                            <button id="btnTraceLive" title="Return to live view">Live</button>
-                            <button id="btnTraceClear" title="Clear trace history">Clear</button>
-                            <span id="traceStatus" class="automap-stats"></span>
-                        </div>
-                        <div class="tools-row">
                             <span class="search-label">Text:</span>
                             <button id="btnTextScan" title="Scan memory for text strings">Scan</button>
                             <select id="textScanMode" title="Scan mode">
@@ -4295,6 +4568,39 @@
                             <button id="textScanNext" title="Next page">&gt;</button>
                         </div>
                         <div class="text-scan-results" id="textScanResults"></div>
+                    </div>
+                    <!-- Trace Panel -->
+                    <div class="panel-tab-content" id="panel-trace">
+                        <div class="trace-controls">
+                            <div class="trace-row">
+                                <label class="search-option"><input type="checkbox" id="chkTraceEnabled" checked> Step</label>
+                                <label class="search-option"><input type="checkbox" id="chkTraceRuntime"> Runtime</label>
+                                <button id="btnTraceBack" title="Step back in history (Alt+←)">◀</button>
+                                <button id="btnTraceForward" title="Step forward in history (Alt+→)">▶</button>
+                                <button id="btnTraceLive" title="Return to live view">Live</button>
+                                <button id="btnTraceClear" title="Clear trace history">Clear</button>
+                                <span id="traceStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="trace-row">
+                                <span class="search-label">Export:</span>
+                                <button id="btnTraceExport" title="Export trace to file">Export</button>
+                                <select id="selTraceExportMode" title="Export first or last N entries">
+                                    <option value="first" selected>First</option>
+                                    <option value="last">Last</option>
+                                </select>
+                                <input type="number" id="txtTraceExportCount" min="0" max="1000000" value="0" style="width:70px" title="Number of entries to export (0=all)">
+                                <span class="search-label">Stop:</span>
+                                <input type="number" id="txtTraceStopAfter" min="0" max="1000000" value="10000" style="width:70px" title="Stop after N entries (0=unlimited)">
+                            </div>
+                            <div class="trace-row">
+                                <span class="search-label">Include:</span>
+                                <label class="search-option"><input type="checkbox" id="chkTraceBytes"> Bytes</label>
+                                <label class="search-option"><input type="checkbox" id="chkTraceAlt"> Alt regs</label>
+                                <label class="search-option"><input type="checkbox" id="chkTraceSys"> Sys regs</label>
+                                <label class="search-option"><input type="checkbox" id="chkTracePorts"> Ports</label>
+                                <label class="search-option"><input type="checkbox" id="chkTraceSkipROM" checked> Skip ROM</label>
+                            </div>
+                        </div>
                         <div class="trace-list" id="traceList"></div>
                     </div>
                 </div>
@@ -4733,6 +5039,15 @@ start:
                     </div>
                 </div>
 
+                <div class="settings-section">
+                    <h4>Timing</h4>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Late interrupt timing (warm ULA behavior, +4 T-states). Affects when INT is recognized during HALT.">
+                            <input type="checkbox" id="chkLateTimings"> Late Timings
+                        </label>
+                    </div>
+                </div>
+
                 <div class="settings-section full-width">
                     <h4>Export</h4>
                     <div class="settings-row">
@@ -4893,6 +5208,112 @@ start:
             </div>
             </div>
         </div><!-- tab-calculator -->
+
+        <!-- Tests Tab -->
+        <div class="tab-content" id="tab-tests">
+            <div class="tests-container">
+                <!-- Controls Row -->
+                <div class="tests-controls">
+                    <button id="btnRunSelectedTests" class="tests-btn primary" disabled>Run Selected</button>
+                    <button id="btnPreviewTest" class="tests-btn" disabled>Preview</button>
+                    <button id="btnAbortTests" class="tests-btn danger hidden">Abort</button>
+                    <button id="btnReloadTests" class="tests-btn">Reload</button>
+                    <span class="tests-status" id="testsStatus">Loading tests...</span>
+                </div>
+
+                <!-- Developer Note -->
+                <div class="tests-note">This functionality is intended for emulator developers only, not for end users.</div>
+
+                <!-- Test List -->
+                <div class="tests-list-container">
+                    <table class="tests-table" id="testsTable">
+                        <thead>
+                            <tr>
+                                <th class="tests-col-check"><input type="checkbox" id="testsSelectAll" title="Select/deselect all"></th>
+                                <th class="tests-col-name">Test Name</th>
+                                <th class="tests-col-machine">Machine</th>
+                                <th class="tests-col-file">File</th>
+                                <th class="tests-col-result">Result</th>
+                            </tr>
+                        </thead>
+                        <tbody id="testsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Progress Section -->
+                <div class="tests-progress hidden" id="testsProgressSection">
+                    <div class="tests-progress-header">
+                        <span id="testsProgressText">Test 1/5: ULA 48K Timing</span>
+                        <span id="testsProgressPercent">0%</span>
+                    </div>
+                    <div class="tests-progress-bar">
+                        <div class="tests-progress-fill" id="testsProgressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="tests-progress-details">
+                        <span id="testsFrameCount">Frame: 0/500</span>
+                        <span id="testsTstateCount">T-states: 0</span>
+                    </div>
+                </div>
+
+                <!-- Preview Section (for calibration) -->
+                <div class="tests-preview hidden" id="testsPreviewSection">
+                    <div class="tests-preview-header">
+                        <span>Frame: <strong id="testsPreviewFrame">0</strong></span>
+                        <div class="tests-preview-buttons">
+                            <button id="btnPausePreview" class="tests-btn">Pause</button>
+                            <button id="btnCopyFrame" class="tests-btn">Copy Frame#</button>
+                            <button id="btnTestScreenshot" class="tests-btn">Screenshot</button>
+                            <button id="btnStopPreview" class="tests-btn danger">Stop</button>
+                        </div>
+                    </div>
+                    <div class="tests-preview-canvas-container">
+                        <canvas id="testsPreviewCanvas" width="320" height="240"></canvas>
+                    </div>
+                    <div class="tests-preview-info" id="testsPreviewInfo"></div>
+                </div>
+
+                <!-- Comparison Section -->
+                <div class="tests-comparison hidden" id="testsComparisonSection">
+                    <div class="tests-comparison-images">
+                        <div class="tests-comparison-panel">
+                            <div class="tests-comparison-label">Expected (Pristine)</div>
+                            <canvas id="testsExpectedCanvas" width="320" height="240"></canvas>
+                        </div>
+                        <div class="tests-comparison-panel">
+                            <div class="tests-comparison-label">Actual (Current)</div>
+                            <canvas id="testsActualCanvas" width="320" height="240"></canvas>
+                        </div>
+                    </div>
+                    <div class="tests-comparison-result" id="testsComparisonResult">
+                        No comparison yet
+                    </div>
+                </div>
+
+                <!-- Results Summary -->
+                <div class="tests-summary hidden" id="testsSummarySection">
+                    <div class="tests-summary-header">Results Summary</div>
+                    <div class="tests-summary-stats">
+                        <span class="tests-stat passed"><span id="testsPassed">0</span> passed</span>
+                        <span class="tests-stat failed"><span id="testsFailed">0</span> failed</span>
+                        <span class="tests-stat skipped"><span id="testsSkipped">0</span> skipped</span>
+                        <span class="tests-stat time"><span id="testsTime">0.0</span>s</span>
+                        <span class="tests-stat fps"><span id="testsFps">0</span> fps</span>
+                    </div>
+                    <table class="tests-results-table" id="testsResultsTable">
+                        <thead>
+                            <tr>
+                                <th>Test</th>
+                                <th>Result</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="testsResultsBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- tab-tests -->
 
         </div><!-- tab-container -->
     </div><!-- main-layout -->
@@ -5113,7 +5534,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.6.5</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.7.0</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -5129,6 +5550,7 @@ start:
                     <button class="fullhelp-nav-btn" data-section="regions">Regions</button>
                     <button class="fullhelp-nav-btn" data-section="xrefs">XRefs</button>
                     <button class="fullhelp-nav-btn" data-section="graphics">Graphics</button>
+                    <button class="fullhelp-nav-btn" data-section="tests">Tests</button>
                     <button class="fullhelp-nav-btn" data-section="api">API</button>
                     <button class="fullhelp-nav-btn" data-section="about">About</button>
                 </div>
@@ -5146,6 +5568,7 @@ start:
                         <li>TAP tape loading with ROM traps (instant load)</li>
                         <li>ZIP archive support</li>
                         <li>RZX playback (partial)</li>
+                        <li>Automated test suite with screenshot comparison</li>
                     </ul>
                     <h5>Quick Start</h5>
                     <ol>
@@ -5518,6 +5941,91 @@ start:
                         <li><strong>SLOT/PAGE</strong> - Memory paging (128K)</li>
                     </ul>
                 </div>
+                <div class="fullhelp-section hidden" id="help-tests">
+                    <h4>Automated Tests</h4>
+                    <p>The Tests tab provides automated regression testing for the emulator using native Spectrum programs.</p>
+
+                    <h5>Test Configuration (tests.json)</h5>
+                    <p>Tests are defined in <code>tests.json</code> with the following structure:</p>
+                    <pre>{
+    "tests": [
+        {
+            "id": "unique-id",
+            "name": "Display Name",
+            "file": "tests/program.tap",
+            "machine": "48k",           // 48k, 128k, pentagon
+            "earlyTimings": true,       // Use early ULA timings
+            "palette": "default",       // Color palette
+            "enabled": true,            // false to skip
+            "fullBorder": true,         // Include border in comparison
+            "author": "Author Name",    // Test program author
+            "source": "https://...",    // Source URL
+            "steps": [
+                { "frames": 500, "screen": "tests/screen1.png" }
+            ]
+        }
+    ]
+}</pre>
+
+                    <h5>Step Definition</h5>
+                    <table>
+                        <tr><th>Field</th><th>Description</th></tr>
+                        <tr><td><code>frames</code></td><td>Absolute frame number from test start (required)</td></tr>
+                        <tr><td><code>screen</code></td><td>Path to reference PNG screenshot (optional)</td></tr>
+                        <tr><td><code>keys</code></td><td>Keys to press before running this step (optional)</td></tr>
+                    </table>
+
+                    <h5>Multi-Step Tests</h5>
+                    <p>For programs with multiple screens (e.g., menu → game → results), use multiple steps with key presses:</p>
+                    <pre>{
+    "steps": [
+        { "frames": 2350, "screen": "tests/menu.png" },
+        { "frames": 5000, "screen": "tests/game.png", "keys": "ENTER" },
+        { "frames": 8000, "screen": "tests/results.png", "keys": "SPACE" }
+    ]
+}</pre>
+                    <p><em>Note: Frame counts are absolute from test start, not relative to previous step.</em></p>
+
+                    <h5>Key String Format</h5>
+                    <table>
+                        <tr><th>Format</th><th>Example</th><th>Description</th></tr>
+                        <tr><td>Single key</td><td><code>ENTER</code></td><td>Press Enter key</td></tr>
+                        <tr><td>Letter/digit</td><td><code>a</code>, <code>1</code></td><td>Press letter or digit</td></tr>
+                        <tr><td>Simultaneous</td><td><code>SHIFT+a</code></td><td>Press both keys together</td></tr>
+                        <tr><td>Symbol Shift</td><td><code>CTRL+p</code></td><td>Symbol Shift + P (produces ")</td></tr>
+                        <tr><td>Sequence</td><td><code>ENTER,500ms,SPACE</code></td><td>ENTER, wait 500ms, then SPACE</td></tr>
+                    </table>
+
+                    <h5>Special Keys</h5>
+                    <p><code>ENTER</code>, <code>SPACE</code>, <code>SHIFT</code>, <code>CTRL</code> (Symbol Shift),
+                       <code>UP</code>, <code>DOWN</code>, <code>LEFT</code>, <code>RIGHT</code></p>
+
+                    <h5>Preview Mode</h5>
+                    <p>Use <strong>Preview</strong> to run a test with live display for calibrating frame numbers:</p>
+                    <ol>
+                        <li>Select a test and click <strong>Preview</strong></li>
+                        <li>Click <strong>Pause</strong> when the desired screen appears</li>
+                        <li>Click <strong>Copy Frame#</strong> to copy the frame count</li>
+                        <li>Click <strong>Screenshot</strong> to save reference PNG</li>
+                        <li>Update tests.json with the frame number and screenshot path</li>
+                    </ol>
+
+                    <h5>Example: Raxoft Z80 Test</h5>
+                    <pre>{
+    "id": "z80ccf",
+    "name": "Raxoft z80ccf",
+    "file": "tests/z80ccf.tap",
+    "machine": "48k",
+    "earlyTimings": true,
+    "enabled": true,
+    "steps": [
+        { "frames": 2350, "screen": "tests/z80ccf_1.png" },
+        { "frames": 5076, "screen": "tests/z80ccf_2.png", "keys": "ENTER" },
+        { "frames": 6610, "screen": "tests/z80ccf_3.png", "keys": "ENTER" },
+        { "frames": 8430, "screen": "tests/z80ccf_4.png", "keys": "ENTER" }
+    ]
+}</pre>
+                </div>
                 <div class="fullhelp-section hidden" id="help-api">
                     <h4>JavaScript API</h4>
                     <p>Access emulator via browser console:</p>
@@ -5564,6 +6072,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     <p>This software is released under the <strong>GPL-3.0</strong> license.</p>
                     <p>You are free to use, modify, and distribute this software under the terms of the GNU General Public License version 3.</p>
                     <p><a href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" style="color: var(--cyan);">Read the full GPL-3.0 license text</a></p>
+                    <p><strong>Test Programs:</strong> The test programs in the <code>tests/</code> folder (z80ccf, z80doc, z80docflags, etc.) are copyright of their respective authors. These programs are included for emulator validation purposes only.</p>
                     <h5>Inspired By</h5>
                     <ul>
                         <li><strong>JSSpeccy 3</strong> - Matt Westcott's excellent JavaScript Spectrum emulator</li>
@@ -5640,7 +6149,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.6.5';
+        const APP_VERSION = '0.7.0';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -5711,11 +6220,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     if (tabId === 'graphics' && typeof updateGraphicsViewer === 'function') {
                         updateGraphicsViewer();
                     }
+                    // Load tests when switching to tests tab
+                    if (tabId === 'tests' && testRunner && testRunner.tests.length === 0) {
+                        testRunner.loadTests();
+                    }
                 }
             });
         });
 
-        // ========== Panel Tabs (Breakpoints/Labels/Tools) ==========
+        // ========== Panel Tabs (Breakpoints/Labels/Tools/Trace) ==========
         document.querySelectorAll('.panel-tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const panelId = btn.dataset.panel;
@@ -5725,6 +6238,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 // Update panels
                 document.querySelectorAll('.panel-tab-content').forEach(p => p.classList.remove('active'));
                 document.getElementById('panel-' + panelId).classList.add('active');
+                // Refresh trace list when trace panel is selected
+                if (panelId === 'trace' && typeof updateTraceList === 'function') {
+                    updateTraceList();
+                }
             });
         });
 
@@ -8634,18 +9151,32 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
         // ========== Execution Trace ==========
         class TraceManager {
-            constructor(maxHistory = 10000) {
+            constructor(maxHistory = 100000) {
                 this.history = [];        // Array of trace entries
                 this.maxHistory = maxHistory;
                 this.enabled = true;      // Can be toggled for performance
                 this.position = -1;       // Current viewing position (-1 = live)
+                this.stopAfter = 0;       // Stop recording after N entries (0 = no limit)
+                this.stopped = false;     // Recording stopped due to limit
+                this.onStopped = null;    // Callback when recording stops (for pausing emulator)
+                this.skipROM = true;      // Skip recording when PC < 0x4000 (ROM area)
             }
 
             record(cpu, memory, instrPC = null, portOps = null, memOps = null) {
-                if (!this.enabled) return;
+                if (this.stopped) return;
 
                 // Use provided PC (before execution) or fall back to current PC
                 const pc = instrPC !== null ? instrPC : cpu.pc;
+
+                // Skip ROM area if option enabled
+                if (this.skipROM && pc < 0x4000) return;
+
+                // Check stop limit
+                if (this.stopAfter > 0 && this.history.length >= this.stopAfter) {
+                    this.stopped = true;
+                    if (this.onStopped) this.onStopped();
+                    return;
+                }
                 const entry = {
                     pc: pc,
                     sp: cpu.sp,
@@ -8721,6 +9252,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             clear() {
                 this.history = [];
                 this.position = -1;
+                this.stopped = false;
             }
 
             goBack() {
@@ -8755,9 +9287,1292 @@ labelManager.importJSON(jsonStr, merge)</pre>
             getCurrentPosition() {
                 return this.position;
             }
+
+            // Export trace to text format for file download (Excel-compatible TSV)
+            exportToText(options = {}) {
+                const {
+                    includeBytes = true,     // Include instruction bytes
+                    includeAlt = false,      // Include alternate registers
+                    includeSys = false,      // Include system regs (I, R, IFF, IM, T)
+                    includePorts = false,    // Include port I/O
+                    includeMem = false,      // Include memory writes
+                    startIdx = 0,            // Start index in history
+                    endIdx = -1              // End index (-1 = to end)
+                } = options;
+
+                const lines = [];
+                let prev = null;  // Previous entry for change detection
+                const hex4 = v => v.toString(16).toUpperCase().padStart(4,'0');
+                const hex2 = v => v.toString(16).toUpperCase().padStart(2,'0');
+
+                // Calculate actual range
+                const start = Math.max(0, startIdx);
+                const end = endIdx < 0 ? this.history.length : Math.min(endIdx, this.history.length);
+
+                // Build header row
+                const headers = ['ADDR'];
+                if (includeBytes) headers.push('BYTES');
+                headers.push('INSTR', 'AF', 'BC', 'DE', 'HL', 'SP', 'IX', 'IY');
+                if (includeSys) headers.push('I', 'R', 'IFF', 'IM', 'T');
+                if (includeAlt) headers.push("AF'", "BC'", "DE'", "HL'");
+                if (includePorts) headers.push('PORT');
+                if (includeMem) headers.push('MEM');
+                lines.push(headers.join('\t'));
+
+                for (let i = start; i < end; i++) {
+                    const e = this.history[i];
+                    const isFirst = (i === start);
+
+                    // Create a fake memory object that reads from stored bytes
+                    const fakeMemory = { read: (addr) => e.bytes[(addr - e.pc) & 3] || 0 };
+                    const disasm = new Disassembler(fakeMemory);
+
+                    // Disassemble instruction
+                    const result = disasm.disassemble(e.pc);
+                    const bytesHex = e.bytes.slice(0, result.length).map(b => hex2(b)).join(' ');
+
+                    // Build columns array
+                    const cols = [];
+
+                    // Address (always shown)
+                    cols.push(hex4(e.pc));
+
+                    // Bytes (optional)
+                    if (includeBytes) cols.push(bytesHex);
+
+                    // Instruction (always shown)
+                    cols.push(result.mnemonic || '???');
+
+                    // Registers - show value if first row or changed, empty otherwise
+                    cols.push(isFirst || e.af !== prev.af ? hex4(e.af) : '');
+                    cols.push(isFirst || e.bc !== prev.bc ? hex4(e.bc) : '');
+                    cols.push(isFirst || e.de !== prev.de ? hex4(e.de) : '');
+                    cols.push(isFirst || e.hl !== prev.hl ? hex4(e.hl) : '');
+                    cols.push(isFirst || e.sp !== prev.sp ? hex4(e.sp) : '');
+                    cols.push(isFirst || e.ix !== prev.ix ? hex4(e.ix) : '');
+                    cols.push(isFirst || e.iy !== prev.iy ? hex4(e.iy) : '');
+
+                    // System registers (optional)
+                    if (includeSys) {
+                        cols.push(isFirst || e.i !== prev.i ? hex2(e.i) : '');
+                        cols.push(isFirst || e.r !== prev.r ? hex2(e.r) : '');
+                        cols.push(isFirst || e.iff1 !== prev.iff1 || e.iff2 !== prev.iff2 ? `${e.iff1?1:0}/${e.iff2?1:0}` : '');
+                        cols.push(isFirst || e.im !== prev.im ? e.im.toString() : '');
+                        cols.push(e.tStates.toString());  // T-states always shown
+                    }
+
+                    // Alternate registers (optional)
+                    if (includeAlt) {
+                        cols.push(isFirst || e.af_ !== prev.af_ ? hex4(e.af_) : '');
+                        cols.push(isFirst || e.bc_ !== prev.bc_ ? hex4(e.bc_) : '');
+                        cols.push(isFirst || e.de_ !== prev.de_ ? hex4(e.de_) : '');
+                        cols.push(isFirst || e.hl_ !== prev.hl_ ? hex4(e.hl_) : '');
+                    }
+
+                    // Port I/O (optional)
+                    if (includePorts) {
+                        if (e.ports && e.ports.length > 0) {
+                            const portStr = e.ports.map(p => `${p.dir}:${hex4(p.port)}=${hex2(p.val||0)}`).join(' ');
+                            cols.push(portStr);
+                        } else {
+                            cols.push('');
+                        }
+                    }
+
+                    // Memory writes (optional)
+                    if (includeMem) {
+                        if (e.mem && e.mem.length > 0) {
+                            const memStr = e.mem.map(m => `${hex4(m.addr)}=${hex2(m.val||0)}`).join(' ');
+                            cols.push(memStr);
+                        } else {
+                            cols.push('');
+                        }
+                    }
+
+                    lines.push(cols.join('\t'));
+                    prev = e;
+                }
+
+                return lines.join('\n');
+            }
         }
 
         const traceManager = new TraceManager();
+
+        // ========== Test Runner ==========
+        class TestRunner {
+            constructor(spectrum) {
+                this.spectrum = spectrum;
+                this.tests = [];
+                this.results = [];
+                this.running = false;
+                this.aborted = false;
+                this.currentTest = null;
+                this.currentStep = 0;
+                this.totalTstates = 0;
+
+                // UI elements
+                this.elements = {
+                    status: document.getElementById('testsStatus'),
+                    tableBody: document.getElementById('testsTableBody'),
+                    selectAll: document.getElementById('testsSelectAll'),
+                    btnRunSelected: document.getElementById('btnRunSelectedTests'),
+                    btnAbort: document.getElementById('btnAbortTests'),
+                    btnReload: document.getElementById('btnReloadTests'),
+                    progressSection: document.getElementById('testsProgressSection'),
+                    progressText: document.getElementById('testsProgressText'),
+                    progressPercent: document.getElementById('testsProgressPercent'),
+                    progressFill: document.getElementById('testsProgressFill'),
+                    frameCount: document.getElementById('testsFrameCount'),
+                    tstateCount: document.getElementById('testsTstateCount'),
+                    comparisonSection: document.getElementById('testsComparisonSection'),
+                    comparisonResult: document.getElementById('testsComparisonResult'),
+                    expectedCanvas: document.getElementById('testsExpectedCanvas'),
+                    actualCanvas: document.getElementById('testsActualCanvas'),
+                    summarySection: document.getElementById('testsSummarySection'),
+                    passed: document.getElementById('testsPassed'),
+                    failed: document.getElementById('testsFailed'),
+                    skipped: document.getElementById('testsSkipped'),
+                    time: document.getElementById('testsTime'),
+                    fps: document.getElementById('testsFps'),
+                    resultsBody: document.getElementById('testsResultsBody'),
+                    // Preview mode elements
+                    btnPreview: document.getElementById('btnPreviewTest'),
+                    btnPausePreview: document.getElementById('btnPausePreview'),
+                    btnCopyFrame: document.getElementById('btnCopyFrame'),
+                    btnScreenshot: document.getElementById('btnTestScreenshot'),
+                    btnStopPreview: document.getElementById('btnStopPreview'),
+                    previewSection: document.getElementById('testsPreviewSection'),
+                    previewFrame: document.getElementById('testsPreviewFrame'),
+                    previewCanvas: document.getElementById('testsPreviewCanvas'),
+                    previewInfo: document.getElementById('testsPreviewInfo')
+                };
+
+                // Preview mode state
+                this.previewing = false;
+                this.previewPaused = false;
+                this.previewFrameCount = 0;
+
+                // Keyboard map for special keys
+                this.keyMap = {
+                    'ENTER': 'Enter', 'SPACE': ' ', 'SHIFT': 'Shift', 'CTRL': 'Control',
+                    'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
+                    'BREAK': 'Escape', 'CAPS': 'CapsLock'
+                };
+
+                this.bindEvents();
+            }
+
+            bindEvents() {
+                this.elements.btnReload?.addEventListener('click', () => this.loadTests());
+                this.elements.btnRunSelected?.addEventListener('click', () => this.runSelected());
+                this.elements.btnAbort?.addEventListener('click', () => this.abort());
+                this.elements.selectAll?.addEventListener('change', (e) => this.toggleSelectAll(e.target.checked));
+                this.elements.btnPreview?.addEventListener('click', () => this.startPreview());
+                this.elements.btnPausePreview?.addEventListener('click', () => this.togglePausePreview());
+                this.elements.btnCopyFrame?.addEventListener('click', () => this.copyFrameCount());
+                this.elements.btnScreenshot?.addEventListener('click', () => this.saveScreenshot());
+                this.elements.btnStopPreview?.addEventListener('click', () => this.stopPreview());
+            }
+
+            async loadTests(url = 'tests.json') {
+                this.updateStatus('Loading tests...');
+                try {
+                    // Add cache-busting to ensure fresh data
+                    const cacheBuster = `?_=${Date.now()}`;
+                    const response = await fetch(url + cacheBuster);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    this.tests = data.tests || [];
+                    this.renderTestList();
+                    this.updateStatus(`${this.tests.length} tests loaded`);
+                    this.elements.btnRunSelected.disabled = false;
+                    this.elements.btnPreview.disabled = false;
+                } catch (e) {
+                    this.updateStatus(`Failed to load tests: ${e.message}`);
+                    this.tests = [];
+                    this.renderTestList();
+                }
+            }
+
+            renderTestList() {
+                const tbody = this.elements.tableBody;
+                tbody.innerHTML = '';
+
+                for (const test of this.tests) {
+                    const isEnabled = test.enabled !== false; // Default to true
+                    const tr = document.createElement('tr');
+                    tr.dataset.testId = test.id;
+                    if (!isEnabled) tr.classList.add('tests-row-disabled');
+                    tr.innerHTML = `
+                        <td class="tests-col-check"><input type="checkbox" class="test-checkbox" ${isEnabled ? 'checked' : 'disabled'}></td>
+                        <td class="tests-col-name">${this.escapeHtml(test.name)}</td>
+                        <td class="tests-col-machine">${test.machine || '48k'}</td>
+                        <td class="tests-col-file">${this.escapeHtml(test.file)}</td>
+                        <td class="tests-col-result tests-result-pending">${isEnabled ? '-' : 'disabled'}</td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+            }
+
+            escapeHtml(str) {
+                const div = document.createElement('div');
+                div.textContent = str;
+                return div.innerHTML;
+            }
+
+            toggleSelectAll(checked) {
+                const checkboxes = this.elements.tableBody.querySelectorAll('.test-checkbox:not(:disabled)');
+                checkboxes.forEach(cb => cb.checked = checked);
+            }
+
+            getSelectedTests() {
+                const selected = [];
+                const rows = this.elements.tableBody.querySelectorAll('tr');
+                rows.forEach(row => {
+                    const checkbox = row.querySelector('.test-checkbox');
+                    if (checkbox?.checked) {
+                        const testId = row.dataset.testId;
+                        const test = this.tests.find(t => t.id === testId);
+                        if (test) selected.push(test);
+                    }
+                });
+                return selected;
+            }
+
+            updateStatus(text) {
+                if (this.elements.status) this.elements.status.textContent = text;
+            }
+
+            async runAll() {
+                // Only run enabled tests
+                const enabledTests = this.tests.filter(t => t.enabled !== false);
+                await this.runTests(enabledTests);
+            }
+
+            async runSelected() {
+                const selected = this.getSelectedTests();
+                if (selected.length === 0) {
+                    this.updateStatus('No tests selected');
+                    return;
+                }
+                await this.runTests(selected);
+            }
+
+            async runTests(tests) {
+                if (this.running) return;
+                this.running = true;
+                this.aborted = false;
+                this.results = [];
+
+                let passed = 0, failed = 0, skipped = 0;
+                const startTime = performance.now();
+                let totalFramesRun = 0;
+
+                try {
+                    // UI updates
+                    this.elements.btnRunSelected.disabled = true;
+                    this.elements.btnAbort.classList.remove('hidden');
+                    this.elements.progressSection.classList.remove('hidden');
+                    this.elements.previewSection.classList.add('hidden');
+                    this.elements.comparisonSection.classList.add('hidden');
+                    this.elements.summarySection.classList.add('hidden');
+
+                    // Reset result column for enabled tests only
+                    this.elements.tableBody.querySelectorAll('tr').forEach(row => {
+                        const testId = row.dataset.testId;
+                        const test = this.tests.find(t => t.id === testId);
+                        const td = row.querySelector('.tests-col-result');
+                        if (td && test && test.enabled !== false) {
+                            td.textContent = '-';
+                            td.className = 'tests-col-result tests-result-pending';
+                        }
+                    });
+
+                    for (let i = 0; i < tests.length; i++) {
+                        if (this.aborted) {
+                            skipped = tests.length - i;
+                            break;
+                        }
+
+                        const test = tests[i];
+                        this.currentTest = test;
+                        this.updateProgress(i + 1, tests.length, test.name, 0, 1, 1, test.steps.length);
+
+                        // Update row to show running
+                        this.setTestResult(test.id, 'running', '...');
+
+                        try {
+                            const result = await this.runSingleTest(test);
+                            totalFramesRun += this.totalFrames;
+                            this.results.push({ test, result });
+
+                            if (result.passed) {
+                                passed++;
+                                this.setTestResult(test.id, 'pass', 'PASS');
+                            } else {
+                                failed++;
+                                const detail = result.diff ? `${result.diff.diffCount} pixels` : result.error || 'FAIL';
+                                this.setTestResult(test.id, 'fail', detail);
+                            }
+                        } catch (e) {
+                            failed++;
+                            totalFramesRun += this.totalFrames;
+                            this.results.push({ test, result: { passed: false, error: e.message } });
+                            this.setTestResult(test.id, 'fail', e.message);
+                        }
+                    }
+
+                    // Show summary
+                    const elapsedMs = performance.now() - startTime;
+                    const elapsedSec = elapsedMs / 1000;
+                    const avgFps = totalFramesRun > 0 ? Math.round(totalFramesRun / elapsedSec) : 0;
+
+                    this.elements.passed.textContent = passed;
+                    this.elements.failed.textContent = failed;
+                    this.elements.skipped.textContent = skipped;
+                    this.elements.time.textContent = elapsedSec.toFixed(1);
+                    this.elements.fps.textContent = avgFps;
+                    this.renderResultsSummary();
+                    this.elements.summarySection.classList.remove('hidden');
+                    this.updateStatus(`Done: ${passed} passed, ${failed} failed, ${skipped} skipped (${elapsedSec.toFixed(1)}s, ${avgFps} fps)`);
+
+                } finally {
+                    // Always reset state
+                    this.running = false;
+                    this.currentTest = null;
+                    this.elements.btnRunSelected.disabled = false;
+                    this.elements.btnPreview.disabled = false;
+                    this.elements.btnAbort.classList.add('hidden');
+                    this.elements.progressSection.classList.add('hidden');
+                }
+            }
+
+            setTestResult(testId, status, text) {
+                const row = this.elements.tableBody.querySelector(`tr[data-test-id="${testId}"]`);
+                if (row) {
+                    const td = row.querySelector('.tests-col-result');
+                    td.textContent = text;
+                    td.className = `tests-col-result tests-result-${status}`;
+                }
+            }
+
+            updateProgress(testNum, totalTests, testName, frame, totalFrames, stepNum, totalSteps) {
+                const percent = Math.round((frame / totalFrames) * 100);
+                const stepInfo = totalSteps > 1 ? ` (${stepNum}/${totalSteps})` : '';
+                this.elements.progressText.textContent = `Test ${testNum}/${totalTests}: ${testName}${stepInfo}`;
+                this.elements.progressPercent.textContent = `${percent}%`;
+                this.elements.progressFill.style.width = `${percent}%`;
+                this.elements.frameCount.textContent = `Frame: ${frame}/${totalFrames}`;
+                this.elements.tstateCount.textContent = `T-states: ${this.totalTstates.toLocaleString()}`;
+            }
+
+            async runSingleTest(test) {
+                // Save current machine state
+                const savedMachine = this.spectrum.machineType;
+                const savedPalette = paletteSelect?.value || 'default';
+                const savedFullBorder = this.spectrum.ula.fullBorderMode;
+                const wasRunning = this.spectrum.running;
+                if (wasRunning) this.spectrum.stop();
+
+                try {
+                    // Configure machine if needed
+                    if (test.machine && test.machine !== this.spectrum.machineType) {
+                        await this.switchMachine(test.machine);
+                    }
+
+                    // Apply timing settings if specified
+                    if (test.earlyTimings !== undefined) {
+                        this.spectrum.setEarlyTimings?.(test.earlyTimings);
+                    }
+
+                    // Apply palette if specified
+                    if (test.palette && typeof applyPalette === 'function') {
+                        applyPalette(test.palette);
+                    }
+
+                    // Apply full border mode if specified (default to true for tests)
+                    const useFullBorder = test.fullBorder !== undefined ? test.fullBorder : true;
+                    if (this.spectrum.ula.setFullBorder(useFullBorder)) {
+                        this.spectrum.updateDisplayDimensions();
+                    }
+
+                    // Reset and load file
+                    this.spectrum.reset();
+                    this.spectrum.tapeLoader.rewind();
+
+                    // Recreate tape trap to ensure clean state
+                    this.spectrum.tapeTrap = new TapeTrapHandler(
+                        this.spectrum.cpu,
+                        this.spectrum.memory,
+                        this.spectrum.tapeLoader
+                    );
+                    this.spectrum.tapeTrap.setEnabled(this.spectrum.tapeTrapsEnabled);
+
+                    // Ensure keyboard is fully released
+                    this.spectrum.ula.keyboardState.fill(0xFF);
+
+                    await this.loadTestFile(test.file, test.zipEntry);
+
+                    this.totalTstates = 0;
+                    this.totalFrames = 0;
+
+                    // Execute each step (frames are absolute from test start)
+                    for (let stepIdx = 0; stepIdx < test.steps.length; stepIdx++) {
+                        if (this.aborted) return { passed: false, error: 'Aborted' };
+
+                        const step = test.steps[stepIdx];
+                        this.currentStep = stepIdx;
+
+                        const stepResult = await this.runStep(step, test, stepIdx);
+                        if (!stepResult.passed) {
+                            return stepResult;
+                        }
+                    }
+
+                    return { passed: true };
+
+                } finally {
+                    // Restore full border mode
+                    if (this.spectrum.ula.setFullBorder(savedFullBorder)) {
+                        this.spectrum.updateDisplayDimensions();
+                    }
+                    // Restore palette if changed
+                    if (test.palette && typeof applyPalette === 'function') {
+                        applyPalette(savedPalette);
+                    }
+                    // Restore machine state if changed
+                    if (test.machine && test.machine !== savedMachine) {
+                        await this.switchMachine(savedMachine);
+                    }
+                }
+            }
+
+            async switchMachine(machineType) {
+                // Map test machine types to spectrum machine types
+                const machineMap = {
+                    '48k': '48k',
+                    '128k': '128k',
+                    'pentagon': 'pentagon',
+                    'p128': 'pentagon'
+                };
+                const targetMachine = machineMap[machineType.toLowerCase()] || '48k';
+
+                if (this.spectrum.machineType !== targetMachine) {
+                    this.spectrum.setMachineType(targetMachine);
+
+                    // Load appropriate ROM for the new machine type
+                    if (targetMachine === '48k' && rom48Data) {
+                        this.spectrum.memory.loadRom(rom48Data, 0);
+                        this.spectrum.romLoaded = true;
+                    } else if (targetMachine === '128k' && rom128Data) {
+                        this.spectrum.memory.loadRom(rom128Data.slice(0, 16384), 0);
+                        this.spectrum.memory.loadRom(rom128Data.slice(16384, 32768), 1);
+                        this.spectrum.romLoaded = true;
+                    } else if (targetMachine === 'pentagon' && romPentagonData) {
+                        this.spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
+                        this.spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
+                        if (romTrdosData) {
+                            this.spectrum.memory.loadTrdosRom(romTrdosData);
+                        }
+                        this.spectrum.romLoaded = true;
+                    }
+
+                    this.spectrum.reset();
+                }
+            }
+
+            async loadTestFile(filePath, zipEntry) {
+                const response = await fetch(filePath);
+                if (!response.ok) throw new Error(`Failed to load ${filePath}`);
+                const data = new Uint8Array(await response.arrayBuffer());
+
+                // Determine file type and load
+                const ext = filePath.split('.').pop().toLowerCase();
+
+                if (ext === 'tap') {
+                    // Load TAP file and set trap BEFORE simulating LOAD command
+                    this.spectrum.tapeLoader.load(data);
+                    this.spectrum.tapeTrap.setTape(this.spectrum.tapeLoader);
+
+                    // Simulate LOAD "" keypresses (trap is now ready)
+                    await this.injectLoadCommand();
+                } else if (ext === 'sna' || ext === 'z80') {
+                    const loader = new SnapshotLoader();
+                    if (ext === 'sna') {
+                        loader.loadSNA(data, this.spectrum.cpu, this.spectrum.memory);
+                    } else {
+                        loader.loadZ80(data, this.spectrum.cpu, this.spectrum.memory);
+                    }
+                } else if (ext === 'zip') {
+                    // Handle ZIP files - extract specific entry or first compatible file
+                    const spectrumFiles = await ZipLoader.findAllSpectrum(data.buffer);
+
+                    if (spectrumFiles.length === 0) {
+                        throw new Error('No compatible files found in ZIP');
+                    }
+
+                    let fileToLoad;
+                    if (zipEntry) {
+                        // Find specific entry by name
+                        fileToLoad = spectrumFiles.find(f =>
+                            f.name === zipEntry ||
+                            f.name.toLowerCase() === zipEntry.toLowerCase() ||
+                            f.name.endsWith('/' + zipEntry) ||
+                            f.name.toLowerCase().endsWith('/' + zipEntry.toLowerCase())
+                        );
+                        if (!fileToLoad) {
+                            throw new Error(`ZIP entry not found: ${zipEntry}`);
+                        }
+                    } else {
+                        // Use first compatible file
+                        fileToLoad = spectrumFiles[0];
+                    }
+
+                    // Load the extracted file
+                    const innerExt = fileToLoad.name.split('.').pop().toLowerCase();
+                    await this.loadExtractedFile(fileToLoad.data, fileToLoad.name, innerExt);
+                } else if (ext === 'trd' || ext === 'scl') {
+                    // Disk images - load disk and optionally boot TR-DOS
+                    this.spectrum.loadDiskImage(data.buffer, ext, filePath);
+                } else {
+                    throw new Error(`Unsupported file format: ${ext}`);
+                }
+            }
+
+            async loadExtractedFile(data, fileName, ext) {
+                if (ext === 'tap') {
+                    this.spectrum.tapeLoader.load(new Uint8Array(data));
+                    this.spectrum.tapeTrap.setTape(this.spectrum.tapeLoader);
+                    await this.injectLoadCommand();
+                } else if (ext === 'sna' || ext === 'z80') {
+                    const loader = new SnapshotLoader();
+                    if (ext === 'sna') {
+                        loader.loadSNA(data, this.spectrum.cpu, this.spectrum.memory);
+                    } else {
+                        loader.loadZ80(data, this.spectrum.cpu, this.spectrum.memory);
+                    }
+                } else if (ext === 'trd' || ext === 'scl') {
+                    this.spectrum.loadDiskImage(data, ext, fileName);
+                } else {
+                    throw new Error(`Unsupported extracted file format: ${ext}`);
+                }
+            }
+
+            // Inject LOAD "" command into edit line and trigger execution
+            async injectLoadCommand() {
+                const mem = this.spectrum.memory;
+                const cpu = this.spectrum.cpu;
+                const ula = this.spectrum.ula;
+                const is128K = this.spectrum.machineType === '128k';
+
+                if (is128K) {
+                    // 128K mode: select 128 BASIC from menu, then type LOAD "" like 48K
+                    // Ensure keyboard is clear during boot
+                    ula.keyboardState.fill(0xFF);
+
+                    // Run frames until menu is fully ready
+                    for (let i = 0; i < 200; i++) {
+                        ula.keyboardState.fill(0xFF);
+                        this.spectrum.runFrame();
+                    }
+
+                    // Press "1" to select 128 BASIC
+                    ula.keyDown('1');
+                    for (let i = 0; i < 15; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp('1');
+                    ula.keyboardState.fill(0xFF);
+
+                    // Wait for BASIC to initialize
+                    for (let i = 0; i < 100; i++) {
+                        ula.keyboardState.fill(0xFF);
+                        this.spectrum.runFrame();
+                    }
+
+                    // Now type LOAD "" just like 48K mode
+                    // In 128K BASIC, J key also gives LOAD in K mode
+
+                    // J = LOAD
+                    ula.keyDown('j');
+                    for (let i = 0; i < 15; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp('j');
+                    ula.keyboardState.fill(0xFF);
+                    for (let i = 0; i < 10; i++) {
+                        this.spectrum.runFrame();
+                    }
+
+                    // Symbol + P = "
+                    ula.keyDown('Control');
+                    ula.keyDown('p');
+                    for (let i = 0; i < 15; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp('p');
+                    ula.keyUp('Control');
+                    ula.keyboardState.fill(0xFF);
+                    for (let i = 0; i < 10; i++) {
+                        this.spectrum.runFrame();
+                    }
+
+                    // Symbol + P = " again
+                    ula.keyDown('Control');
+                    ula.keyDown('p');
+                    for (let i = 0; i < 15; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp('p');
+                    ula.keyUp('Control');
+                    ula.keyboardState.fill(0xFF);
+                    for (let i = 0; i < 10; i++) {
+                        this.spectrum.runFrame();
+                    }
+
+                    // ENTER
+                    ula.keyDown('Enter');
+                    for (let i = 0; i < 5; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp('Enter');
+                    ula.keyboardState.fill(0xFF);
+
+                    // Clear ROM keyboard variables
+                    for (let i = 0x5C00; i <= 0x5C08; i++) {
+                        mem.write(i, 0xFF);
+                    }
+
+                    // Run frames for loading with keyboard clear
+                    for (let i = 0; i < 300; i++) {
+                        ula.keyboardState.fill(0xFF);
+                        for (let j = 0x5C00; j <= 0x5C08; j++) {
+                            mem.write(j, 0xFF);
+                        }
+                        this.spectrum.runFrame();
+                    }
+                    return;
+                }
+
+                // 48K mode: type LOAD "" and press ENTER
+                // Run frames until ROM reaches main input loop
+                let frameCount = 0;
+
+                for (let i = 0; i < 200; i++) {
+                    this.spectrum.runFrame();
+                    frameCount++;
+
+                    const curDfSz = mem.read(0x5C6B);
+                    const curEline = mem.read(0x5C59) | (mem.read(0x5C5A) << 8);
+
+                    // Check if ROM has initialized
+                    if (curDfSz === 2 && curEline >= 0x5B00 && curEline < 0x6000) {
+                        break;
+                    }
+                }
+
+                // ROM init doesn't always CLS after setting ATTR_P - fix attrs manually
+                const attrP = mem.read(0x5C8D);
+                if (attrP !== 0 && mem.read(0x5800) === 0) {
+                    for (let i = 0x5800; i < 0x5B00; i++) {
+                        mem.write(i, attrP);
+                    }
+                }
+
+                // Get E_LINE address
+                const elineAddr = mem.read(0x5C59) | (mem.read(0x5C5A) << 8);
+
+                // Validate E_LINE
+                if (elineAddr < 0x5B00 || elineAddr >= 0x6000) {
+                    console.warn('E_LINE not valid:', elineAddr.toString(16));
+                    return; // Can't inject, ROM not ready
+                }
+
+                // Run a few more frames to ensure ROM is fully in input loop
+                for (let i = 0; i < 50; i++) {
+                    this.spectrum.runFrame();
+                }
+
+                // Ensure all keys are released before we start
+                this.spectrum.ula.keyboardState.fill(0xFF);
+
+                // Simulate typing LOAD "" and pressing ENTER
+                await this.simulateLoadCommand();
+            }
+
+            // Simulate typing LOAD "" and ENTER using keyboard emulation
+            async simulateLoadCommand() {
+                const ula = this.spectrum.ula;
+
+                // Helper to press a single key using ULA methods
+                const pressKey = async (key, holdFrames = 25, releaseFrames = 15) => {
+                    ula.keyDown(key);
+                    for (let i = 0; i < holdFrames; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp(key);
+                    for (let i = 0; i < releaseFrames; i++) {
+                        this.spectrum.runFrame();
+                    }
+                };
+
+                // Helper to press key with Symbol Shift (Control in browser terms)
+                const pressWithSymbol = async (key, holdFrames = 25, releaseFrames = 15) => {
+                    ula.keyDown('Control'); // Symbol Shift
+                    ula.keyDown(key);
+                    for (let i = 0; i < holdFrames; i++) {
+                        this.spectrum.runFrame();
+                    }
+                    ula.keyUp(key);
+                    ula.keyUp('Control');
+                    for (let i = 0; i < releaseFrames; i++) {
+                        this.spectrum.runFrame();
+                    }
+                };
+
+                // J = LOAD in K mode
+                await pressKey('j');
+
+                // Symbol Shift + P = " (quote)
+                await pressWithSymbol('p');
+
+                // Symbol Shift + P again for closing "
+                await pressWithSymbol('p');
+
+                // ENTER - press briefly then clear keyboard immediately
+                ula.keyDown('Enter');
+                for (let i = 0; i < 5; i++) {
+                    this.spectrum.runFrame();
+                }
+                ula.keyUp('Enter');
+                ula.keyboardState.fill(0xFF);
+
+                // Clear ROM keyboard system variables
+                const mem = this.spectrum.memory;
+                for (let i = 0x5C00; i <= 0x5C07; i++) {
+                    mem.write(i, 0xFF);
+                }
+                mem.write(0x5C08, 0xFF);
+
+                // Run frames with keyboard continuously cleared
+                // The tape trap will load instantly, then BASIC autorun executes
+                for (let i = 0; i < 200; i++) {
+                    ula.keyboardState.fill(0xFF);
+                    this.spectrum.runFrame();
+                }
+            }
+
+            // Directly load tape contents into memory, bypassing ROM (kept for reference)
+            directTapeLoad() {
+                const tape = this.spectrum.tapeLoader;
+                const mem = this.spectrum.memory;
+                const cpu = this.spectrum.cpu;
+
+                if (!tape || tape.getBlockCount() === 0) {
+                    console.warn('No tape data to load');
+                    return;
+                }
+
+                tape.rewind();
+                let pendingHeader = null;
+
+                // Process ALL tape blocks - load CODE files directly, skip BASIC
+                let lastCodeAddr = null;
+                let lastCodeExec = null;
+
+                while (tape.hasMoreBlocks()) {
+                    const block = tape.getNextBlock();
+                    if (!block || !block.data || block.data.length < 2) continue;
+
+                    const flag = block.flag;
+                    const data = block.data;
+
+                    if (flag === 0x00 && data.length >= 17) {
+                        // Header block
+                        const type = data[0];
+                        const name = String.fromCharCode(...data.slice(1, 11)).trim();
+                        const dataLen = data[11] | (data[12] << 8);
+                        const param1 = data[13] | (data[14] << 8);
+                        const param2 = data[15] | (data[16] << 8);
+
+                        pendingHeader = { type, name, dataLen, param1, param2 };
+
+                    } else if (flag === 0xFF && pendingHeader) {
+                        // Data block
+                        const h = pendingHeader;
+                        const dataBytes = data.slice(0, data.length - 1); // Remove checksum
+
+                        if (h.type === 3) {
+                            // CODE file - load directly to memory
+                            for (let i = 0; i < dataBytes.length; i++) {
+                                mem.write(h.param1 + i, dataBytes[i]);
+                            }
+                            lastCodeAddr = h.param1;
+                            lastCodeExec = h.param2;
+                        }
+                        pendingHeader = null;
+                    }
+                }
+
+                // Execute the last CODE file loaded
+                if (lastCodeAddr !== null) {
+                    const execAddr = (lastCodeExec !== 0 && lastCodeExec < 0x10000) ? lastCodeExec : lastCodeAddr;
+                    cpu.pc = execAddr;
+                    cpu.iff1 = false;
+                    cpu.iff2 = false;
+                    cpu.sp = 0xFF40; // Set stack below screen
+                }
+
+                tape.rewind();
+            }
+
+            async runStep(step, test, stepIdx) {
+                // Press keys if specified
+                if (step.keys) {
+                    await this.pressKeys(step.keys);
+                }
+
+                // Calculate target frames (absolute from test start)
+                const tstatesPerFrame = this.spectrum.timing.tstatesPerFrame;
+                let targetFrames = step.frames || 0;
+                if (step.tstates) {
+                    targetFrames = Math.ceil(step.tstates / tstatesPerFrame);
+                }
+
+                // Calculate how many frames to run (absolute - already run)
+                const framesToRun = Math.max(0, targetFrames - this.totalFrames);
+
+                // Run frames at full speed
+                for (let f = 0; f < framesToRun; f++) {
+                    if (this.aborted) return { passed: false, error: 'Aborted' };
+
+                    const tstates = this.spectrum.runFrameHeadless();
+                    this.totalTstates += tstates;
+                    this.totalFrames++;
+
+                    // Update progress
+                    if (f % 10 === 0) {
+                        this.updateProgress(
+                            this.tests.indexOf(test) + 1,
+                            this.tests.length,
+                            test.name,
+                            this.totalFrames,
+                            targetFrames,
+                            stepIdx + 1,
+                            test.steps.length
+                        );
+                        // Yield to UI
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+                }
+
+                // Final progress update
+                this.updateProgress(
+                    this.tests.indexOf(test) + 1,
+                    this.tests.length,
+                    test.name,
+                    this.totalFrames,
+                    targetFrames,
+                    stepIdx + 1,
+                    test.steps.length
+                );
+
+                // Compare screen if specified
+                if (step.screen) {
+                    // Render final frame for comparison
+                    const frameBuffer = this.spectrum.renderAndCaptureScreen();
+                    const dims = this.spectrum.getScreenDimensions();
+
+                    // Create ImageData from frame buffer
+                    const actualImageData = new ImageData(
+                        new Uint8ClampedArray(frameBuffer),
+                        dims.width,
+                        dims.height
+                    );
+
+                    // Load pristine image
+                    let expectedImageData;
+                    try {
+                        expectedImageData = await this.loadPristineImage(step.screen);
+                    } catch (e) {
+                        return { passed: false, error: `Failed to load pristine: ${e.message}` };
+                    }
+
+                    // Compare
+                    const tolerance = step.tolerance || 0;
+                    const diff = this.compareScreens(actualImageData, expectedImageData, tolerance);
+
+                    // Display comparison
+                    this.displayComparison(expectedImageData, actualImageData, diff, this.totalFrames);
+
+                    if (!diff.matches) {
+                        return { passed: false, diff, step: stepIdx, frame: this.totalFrames };
+                    }
+                }
+
+                return { passed: true };
+            }
+
+            async pressKeys(keyString) {
+                const parts = keyString.split(',');
+
+                for (const part of parts) {
+                    const trimmed = part.trim();
+
+                    // Check for delay: "500ms"
+                    const delayMatch = trimmed.match(/^(\d+)ms$/);
+                    if (delayMatch) {
+                        const ms = parseInt(delayMatch[1]);
+                        const frames = Math.ceil(ms / 20); // ~50fps
+                        for (let f = 0; f < frames; f++) {
+                            this.spectrum.runFrameHeadless();
+                        }
+                        continue;
+                    }
+
+                    // Simultaneous keys: "a+b"
+                    const keys = trimmed.split('+').map(k => this.mapKey(k.trim()));
+
+                    // Press all keys
+                    for (const key of keys) {
+                        this.spectrum.ula.keyDown(key);
+                    }
+
+                    // Hold for a few frames
+                    for (let f = 0; f < 5; f++) {
+                        this.spectrum.runFrameHeadless();
+                    }
+
+                    // Release all keys
+                    for (const key of keys) {
+                        this.spectrum.ula.keyUp(key);
+                    }
+
+                    // Wait a frame after release
+                    this.spectrum.runFrameHeadless();
+                }
+            }
+
+            mapKey(key) {
+                // Check special key names
+                const upper = key.toUpperCase();
+                if (this.keyMap[upper]) return this.keyMap[upper];
+                // Return as-is for regular characters
+                return key.toLowerCase();
+            }
+
+            async loadPristineImage(path) {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        resolve(ctx.getImageData(0, 0, img.width, img.height));
+                    };
+                    img.onerror = () => reject(new Error(`Failed to load image: ${path}`));
+                    img.src = path;
+                });
+            }
+
+            compareScreens(actual, expected, tolerance = 0) {
+                // Handle size mismatch by comparing overlapping region
+                const width = Math.min(actual.width, expected.width);
+                const height = Math.min(actual.height, expected.height);
+                let diffCount = 0;
+
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const aIdx = (y * actual.width + x) * 4;
+                        const eIdx = (y * expected.width + x) * 4;
+
+                        const dr = Math.abs(actual.data[aIdx] - expected.data[eIdx]);
+                        const dg = Math.abs(actual.data[aIdx + 1] - expected.data[eIdx + 1]);
+                        const db = Math.abs(actual.data[aIdx + 2] - expected.data[eIdx + 2]);
+
+                        if (dr > tolerance || dg > tolerance || db > tolerance) {
+                            diffCount++;
+                        }
+                    }
+                }
+
+                const totalPixels = width * height;
+                return {
+                    matches: diffCount === 0,
+                    diffCount,
+                    diffPercent: (diffCount / totalPixels * 100).toFixed(2),
+                    width,
+                    height
+                };
+            }
+
+            displayComparison(expected, actual, diff, frame) {
+                // Show comparison section
+                this.elements.comparisonSection.classList.remove('hidden');
+
+                // Draw expected
+                const expCtx = this.elements.expectedCanvas.getContext('2d');
+                this.elements.expectedCanvas.width = expected.width;
+                this.elements.expectedCanvas.height = expected.height;
+                expCtx.putImageData(expected, 0, 0);
+
+                // Draw actual
+                const actCtx = this.elements.actualCanvas.getContext('2d');
+                this.elements.actualCanvas.width = actual.width;
+                this.elements.actualCanvas.height = actual.height;
+                actCtx.putImageData(actual, 0, 0);
+
+                // Update result text
+                const resultEl = this.elements.comparisonResult;
+                if (diff.matches) {
+                    resultEl.textContent = 'MATCH - Screens are identical';
+                    resultEl.className = 'tests-comparison-result pass';
+                } else {
+                    resultEl.textContent = `MISMATCH at frame ${frame} - ${diff.diffCount} pixels differ (${diff.diffPercent}%)`;
+                    resultEl.className = 'tests-comparison-result fail';
+                }
+            }
+
+            renderResultsSummary() {
+                const tbody = this.elements.resultsBody;
+                tbody.innerHTML = '';
+
+                for (const { test, result } of this.results) {
+                    const tr = document.createElement('tr');
+                    const status = result.passed ? 'PASS' : 'FAIL';
+                    const statusClass = result.passed ? 'tests-result-pass' : 'tests-result-fail';
+                    let detail = '-';
+                    if (!result.passed) {
+                        if (result.error) detail = result.error;
+                        else if (result.diff) detail = `Step ${(result.step || 0) + 1}, frame ${result.frame}: ${result.diff.diffCount} pixels differ`;
+                    }
+                    tr.innerHTML = `
+                        <td>${this.escapeHtml(test.name)}</td>
+                        <td class="${statusClass}">${status}</td>
+                        <td>${this.escapeHtml(detail)}</td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+            }
+
+            abort() {
+                this.aborted = true;
+                this.previewing = false;
+                this.previewPaused = false;
+                this.updateStatus('Aborting...');
+            }
+
+            // Preview mode - run test file and show live screen with frame counter
+            async startPreview() {
+                const selected = this.getSelectedTests();
+                if (selected.length === 0) {
+                    this.updateStatus('Select a test to preview');
+                    return;
+                }
+
+                const test = selected[0]; // Preview first selected test
+                if (this.running || this.previewing) return;
+
+                // Save current state before any changes
+                const savedMachine = this.spectrum.machineType;
+                const savedPalette = paletteSelect?.value || 'default';
+                const savedFullBorder = this.spectrum.ula.fullBorderMode;
+                const wasRunning = this.spectrum.running;
+
+                this.previewing = true;
+                this.previewFrameCount = 0;
+
+                try {
+                    if (wasRunning) this.spectrum.stop();
+
+                    // UI updates
+                    this.elements.btnRunSelected.disabled = true;
+                    this.elements.btnPreview.disabled = true;
+                    this.elements.previewSection.classList.remove('hidden');
+                    this.elements.progressSection.classList.add('hidden');
+                    this.elements.comparisonSection.classList.add('hidden');
+                    this.elements.summarySection.classList.add('hidden');
+                    this.elements.previewFrame.textContent = '0';
+                    this.updateStatus(`Preview: ${test.name}`);
+                    // Configure machine
+                    if (test.machine && test.machine !== this.spectrum.machineType) {
+                        await this.switchMachine(test.machine);
+                    }
+
+                    if (test.earlyTimings !== undefined) {
+                        this.spectrum.setEarlyTimings?.(test.earlyTimings);
+                    }
+
+                    if (test.palette && typeof applyPalette === 'function') {
+                        applyPalette(test.palette);
+                    }
+
+                    // Apply full border mode if specified (default to true for tests)
+                    const useFullBorder = test.fullBorder !== undefined ? test.fullBorder : true;
+                    if (this.spectrum.ula.setFullBorder(useFullBorder)) {
+                        this.spectrum.updateDisplayDimensions();
+                    }
+
+                    // Reset and load file
+                    // Setup preview canvas (after full border mode is set)
+                    const dims = this.spectrum.getScreenDimensions();
+                    const previewCanvas = this.elements.previewCanvas;
+                    previewCanvas.width = dims.width;
+                    previewCanvas.height = dims.height;
+                    const previewCtx = previewCanvas.getContext('2d');
+
+                    // Full reset including tape state
+                    this.spectrum.reset();
+                    this.spectrum.tapeLoader.rewind();
+
+                    // Recreate tape trap to ensure clean state
+                    this.spectrum.tapeTrap = new TapeTrapHandler(
+                        this.spectrum.cpu,
+                        this.spectrum.memory,
+                        this.spectrum.tapeLoader
+                    );
+                    this.spectrum.tapeTrap.setEnabled(this.spectrum.tapeTrapsEnabled);
+
+                    // Ensure keyboard is fully released
+                    this.spectrum.ula.keyboardState.fill(0xFF);
+
+                    try {
+                        await this.loadTestFile(test.file, test.zipEntry);
+                    } catch (loadErr) {
+                        this.elements.previewInfo.textContent = `Load error: ${loadErr.message}`;
+                        this.updateStatus(`Load error: ${loadErr.message}`);
+                        this.previewing = false;
+                        return;
+                    }
+
+                    // Run frames with live display
+                    while (this.previewing) {
+                        // Wait while paused
+                        while (this.previewPaused && this.previewing) {
+                            await new Promise(r => setTimeout(r, 100));
+                        }
+                        if (!this.previewing) break;
+
+                        // runFrame() does cycle-accurate scanline rendering including border changes
+                        // and already puts the result on spectrum.ctx.canvas
+                        this.spectrum.runFrame();
+                        this.previewFrameCount++;
+
+                        // Update frame counter every frame so Copy Frame# is accurate
+                        this.elements.previewFrame.textContent = this.previewFrameCount;
+
+                        // Update canvas every 2 frames for performance
+                        if (this.previewFrameCount % 2 === 0) {
+                            // Use renderAndCaptureScreen for consistent border rendering
+                            const frameBuffer = this.spectrum.renderAndCaptureScreen();
+                            const imageData = new ImageData(
+                                new Uint8ClampedArray(frameBuffer),
+                                dims.width,
+                                dims.height
+                            );
+                            previewCtx.putImageData(imageData, 0, 0);
+                        }
+
+                        // Yield to UI every frame so Stop button works
+                        await new Promise(r => setTimeout(r, 0));
+                    }
+
+                } catch (err) {
+                    this.elements.previewInfo.textContent = `Error: ${err.message}`;
+                    this.updateStatus(`Preview error: ${err.message}`);
+                    console.error('Preview error:', err);
+                } finally {
+                    // Always reset preview state
+                    this.previewing = false;
+                    this.previewPaused = false;
+
+                    // Restore full border mode
+                    if (this.spectrum.ula.setFullBorder(savedFullBorder)) {
+                        this.spectrum.updateDisplayDimensions();
+                    }
+                    // Restore state
+                    if (test.palette && typeof applyPalette === 'function') {
+                        applyPalette(savedPalette);
+                    }
+                    if (test.machine && test.machine !== savedMachine) {
+                        await this.switchMachine(savedMachine);
+                    }
+
+                    this.elements.btnRunSelected.disabled = false;
+                    this.elements.btnPreview.disabled = false;
+                }
+            }
+
+            togglePausePreview() {
+                if (!this.previewing) return;
+
+                this.previewPaused = !this.previewPaused;
+
+                if (this.previewPaused) {
+                    this.elements.btnPausePreview.textContent = 'Resume';
+                    this.elements.previewInfo.textContent =
+                        `Paused at frame ${this.previewFrameCount}. Copy frame#, then Resume or Stop.`;
+                    this.updateStatus(`Preview paused at frame ${this.previewFrameCount}`);
+                } else {
+                    this.elements.btnPausePreview.textContent = 'Pause';
+                    this.elements.previewInfo.textContent = 'Running...';
+                    this.updateStatus(`Preview resumed from frame ${this.previewFrameCount}`);
+                }
+            }
+
+            async copyFrameCount() {
+                const frameCount = this.previewFrameCount;
+                try {
+                    await navigator.clipboard.writeText(frameCount.toString());
+                    this.elements.previewInfo.textContent =
+                        `Frame ${frameCount} copied to clipboard!`;
+                    this.updateStatus(`Frame count ${frameCount} copied`);
+                } catch (e) {
+                    this.elements.previewInfo.textContent =
+                        `Frame count: ${frameCount} (copy failed, note it manually)`;
+                }
+            }
+
+            saveScreenshot() {
+                const canvas = this.elements.previewCanvas;
+                const frameCount = this.previewFrameCount;
+
+                // Get selected test name for filename
+                const selected = this.getSelectedTests();
+                const testName = selected.length > 0 ? selected[0].id : 'preview';
+                const filename = `${testName}_${frameCount}.png`;
+
+                // Create download link and trigger download
+                const link = document.createElement('a');
+                link.download = filename;
+                link.href = canvas.toDataURL('image/png');
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                this.elements.previewInfo.textContent =
+                    `Screenshot saved: ${filename}`;
+                this.updateStatus(`Screenshot saved: ${filename}`);
+            }
+
+            stopPreview() {
+                if (!this.previewing) return;
+
+                this.previewing = false;
+                this.previewPaused = false;
+                this.elements.btnPausePreview.textContent = 'Pause';
+                this.elements.previewInfo.textContent =
+                    `Stopped at frame ${this.previewFrameCount}.`;
+                this.updateStatus(`Preview stopped at frame ${this.previewFrameCount}`);
+
+                // Keep preview section visible so user can see the final frame
+            }
+        }
+
+        let testRunner = null;
 
         // ========== Navigation History ==========
         const navHistory = [];
@@ -9024,6 +10839,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
             overlayCanvas: overlayCanvas
         });
         window.spectrum = spectrum;
+
+        // Initialize test runner
+        testRunner = new TestRunner(spectrum);
 
         // Apply default full border mode
         spectrum.ula.setFullBorder(true);
@@ -11777,7 +13595,6 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (path === currentProjectMainFile || !currentProjectMainFile) {
                 updateDefinesDropdown();
             }
-            console.log('openFileTab: switched to', path);
         }
 
         // Close a file tab
@@ -14194,6 +16011,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const btnTraceForward = document.getElementById('btnTraceForward');
         const btnTraceLive = document.getElementById('btnTraceLive');
         const btnTraceClear = document.getElementById('btnTraceClear');
+        const btnTraceExport = document.getElementById('btnTraceExport');
+        const selTraceExportMode = document.getElementById('selTraceExportMode');
+        const txtTraceExportCount = document.getElementById('txtTraceExportCount');
+        const txtTraceStopAfter = document.getElementById('txtTraceStopAfter');
+        const chkTraceBytes = document.getElementById('chkTraceBytes');
+        const chkTraceAlt = document.getElementById('chkTraceAlt');
+        const chkTraceSys = document.getElementById('chkTraceSys');
+        const chkTracePorts = document.getElementById('chkTracePorts');
+        const chkTraceSkipROM = document.getElementById('chkTraceSkipROM');
         const traceStatus = document.getElementById('traceStatus');
         const traceList = document.getElementById('traceList');
 
@@ -14210,12 +16036,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
         window.updateTraceStatus = function updateTraceStatus() {
             const len = traceManager.length;
             const pos = traceManager.getCurrentPosition();
+            const stopped = traceManager.stopped;
             if (pos === -1) {
-                traceStatus.textContent = `${len} instr`;
+                traceStatus.textContent = stopped ? `${len} STOPPED` : `${len} instr`;
                 traceStatus.classList.toggle('active', len > 0);
+                traceStatus.style.color = stopped ? '#f44' : '';
             } else {
                 traceStatus.textContent = `${pos + 1}/${len}`;
                 traceStatus.classList.add('active');
+                traceStatus.style.color = '';
             }
             btnTraceBack.disabled = len === 0 || pos === 0;
             btnTraceForward.disabled = pos === -1;
@@ -14223,7 +16052,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
         }
 
         window.updateTraceList = function updateTraceList() {
-            if (!traceList.classList.contains('visible')) return;
+            // Only update if trace panel is active
+            const tracePanel = document.getElementById('panel-trace');
+            if (!tracePanel || !tracePanel.classList.contains('active')) return;
 
             const currentPos = traceManager.getCurrentPosition();
             const totalLen = traceManager.length;
@@ -14381,12 +16212,88 @@ labelManager.importJSON(jsonStr, merge)</pre>
             showMessage('Trace cleared');
         });
 
-        // Toggle trace list visibility on status click
-        traceStatus.addEventListener('click', () => {
-            traceList.classList.toggle('visible');
-            if (traceList.classList.contains('visible')) {
-                updateTraceList();
+        btnTraceExport.addEventListener('click', () => {
+            if (traceManager.length === 0) {
+                showMessage('No trace data to export');
+                return;
             }
+
+            // Calculate range based on mode and count
+            const mode = selTraceExportMode.value;  // 'first' or 'last'
+            const count = parseInt(txtTraceExportCount.value, 10) || 0;
+            const total = traceManager.length;
+
+            let startIdx = 0;
+            let endIdx = total;
+
+            if (count > 0 && count < total) {
+                if (mode === 'first') {
+                    startIdx = 0;
+                    endIdx = count;
+                } else {
+                    startIdx = total - count;
+                    endIdx = total;
+                }
+            }
+
+            const exportCount = endIdx - startIdx;
+
+            const text = traceManager.exportToText({
+                includeBytes: chkTraceBytes.checked,
+                includeAlt: chkTraceAlt.checked,
+                includeSys: chkTraceSys.checked,
+                includePorts: chkTracePorts.checked,
+                includeMem: false,
+                startIdx: startIdx,
+                endIdx: endIdx
+            });
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trace_${spectrum.machineType}_${mode}${count || 'all'}_${Date.now()}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+            showMessage(`Exported ${exportCount} trace entries (${mode} ${count || 'all'})`);
+        });
+
+        // Update stopAfter on change or input
+        function updateTraceStopAfter() {
+            const val = parseInt(txtTraceStopAfter.value, 10) || 0;
+            traceManager.stopAfter = val;
+            traceManager.stopped = false;  // Reset stopped state when limit changes
+            // Ensure maxHistory is at least as large as stopAfter
+            if (val > 0 && val > traceManager.maxHistory) {
+                traceManager.maxHistory = val;
+            }
+        }
+        txtTraceStopAfter.addEventListener('change', () => {
+            updateTraceStopAfter();
+            showMessage(traceManager.stopAfter > 0 ? `Trace will stop after ${traceManager.stopAfter} entries` : 'Trace limit disabled');
+        });
+        txtTraceStopAfter.addEventListener('input', updateTraceStopAfter);
+
+        // Pause emulator when trace limit is reached
+        traceManager.onStopped = () => {
+            if (spectrum.running) {
+                spectrum.stop();
+                updateTraceStatus();
+                showMessage(`Trace stopped at ${traceManager.length} entries - emulator paused`);
+            }
+        };
+
+        // Initialize stopAfter from HTML default value
+        updateTraceStopAfter();
+
+        // Skip ROM checkbox
+        chkTraceSkipROM.addEventListener('change', () => {
+            traceManager.skipROM = chkTraceSkipROM.checked;
+        });
+        traceManager.skipROM = chkTraceSkipROM.checked;
+
+        // Click on trace status to update trace list
+        traceStatus.addEventListener('click', () => {
+            updateTraceList();
         });
 
         // Click on trace entry to navigate
@@ -16971,6 +18878,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         kempston: chkKempston.checked,
                         fullBorder: chkFullBorder.checked,
                         invertDisplay: chkInvertDisplay.checked,
+                        lateTimings: chkLateTimings.checked,
                         speed: parseInt(speedSelect.value),
                         palette: paletteSelect.value,
                         labelDisplayMode: document.getElementById('labelDisplayMode').value,
@@ -17274,6 +19182,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         chkInvertDisplay.checked = project.settings.invertDisplay;
                         applyInvertDisplay(project.settings.invertDisplay);
                     }
+                    if (project.settings.lateTimings !== undefined) {
+                        chkLateTimings.checked = project.settings.lateTimings;
+                        spectrum.setLateTimings(project.settings.lateTimings);
+                    }
                 }
 
                 // Restore CPU timing state (tStates, halted, IFF)
@@ -17435,7 +19347,6 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 const shouldRun = project.settings?.running !== undefined ?
                     project.settings.running : wasRunning;
 
-                console.log('[loadProject] shouldRun=', shouldRun, 'spectrum.running=', spectrum.running, 'romLoaded=', spectrum.romLoaded);
                 if (shouldRun) {
                     // Force start to ensure loop begins even if state is inconsistent
                     spectrum.start(true);
@@ -17444,7 +19355,6 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     // Render current state WITHOUT executing CPU (preserves tStates)
                     spectrum.renderToScreen();
                 }
-                console.log('[loadProject] after start, spectrum.running=', spectrum.running);
 
                 // Update all status displays including RZX
                 updateStatus();
@@ -17666,6 +19576,18 @@ labelManager.importJSON(jsonStr, merge)</pre>
             applyInvertDisplay(chkInvertDisplay.checked);
             localStorage.setItem('zxm8_invert', chkInvertDisplay.checked);
             showMessage(chkInvertDisplay.checked ? 'Display inverted' : 'Display normal');
+        });
+
+        // Late timing checkbox
+        const chkLateTimings = document.getElementById('chkLateTimings');
+        const savedLateTimings = localStorage.getItem('zxm8_lateTimings') === 'true';
+        chkLateTimings.checked = savedLateTimings;
+        spectrum.setLateTimings(savedLateTimings);
+
+        chkLateTimings.addEventListener('change', () => {
+            spectrum.setLateTimings(chkLateTimings.checked);
+            localStorage.setItem('zxm8_lateTimings', chkLateTimings.checked);
+            showMessage(chkLateTimings.checked ? 'Late timings enabled (+4T)' : 'Early timings enabled');
         });
 
         // Palette handling

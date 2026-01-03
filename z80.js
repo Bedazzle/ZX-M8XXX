@@ -25,6 +25,9 @@
             
             // Contention handler (set by Spectrum class)
             this.contend = null;
+
+            // Debug: trace EI/DI and interrupt handling
+            this.debugInterrupts = false;
             
             // Main registers
             this.a = 0; this.f = 0;
@@ -224,33 +227,40 @@
         // Interrupt handling
         interrupt() {
             if (!this.iff1) return 0;
-            
+
+            const wasHalted = this.halted;
+            const oldPC = this.pc;
+
+            // Exit halt state - PC points to HALT, need to increment to next instruction
             if (this.halted) {
                 this.halted = false;
                 this.pc = (this.pc + 1) & 0xffff;
             }
-            
+
             this.iff1 = this.iff2 = false;
             this.incR();
-            
+
             switch (this.im) {
                 case 0:
                 case 1:
                     this.push(this.pc);
                     this.pc = 0x0038;
                     this.memptr = this.pc;
+                    if (this.debugInterrupts) console.log(`[INT] IM${this.im}: wasHalted=${wasHalted}, oldPC=${oldPC.toString(16)}, newPC=0038, T=${this.tStates}`);
                     return 13;
                 case 2:
                     this.push(this.pc);
                     const vector = (this.i << 8) | 0xff;
                     this.pc = this.readWord(vector);
                     this.memptr = this.pc;
+                    if (this.debugInterrupts) console.log(`[INT] IM2: wasHalted=${wasHalted}, oldPC=${oldPC.toString(16)}, vector=${vector.toString(16)}, newPC=${this.pc.toString(16)}, T=${this.tStates}`);
                     return 19;
             }
             return 0;
         }
         
         nmi() {
+            // Exit halt state - PC points to HALT, need to increment to next instruction
             if (this.halted) {
                 this.halted = false;
                 this.pc = (this.pc + 1) & 0xffff;
@@ -266,49 +276,49 @@
         
         // ALU Operations
         add8(val) {
-            const result = this.a + val;
-            const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
+            const a = this.a;
+            const result = a + val;
             this.a = result & 0xff;
             this.f = (result & 0x100 ? this.FLAG_C : 0) |
-                     this.halfcarryAddTable[lookup & 0x07] |
-                     this.overflowAddTable[lookup >> 4] |
+                     ((a ^ val ^ result) & 0x10) |  // Half-carry
+                     (((a ^ result) & (val ^ result) & 0x80) >> 5) |  // Overflow
                      this.sz53Table[this.a];
             this.q = this.f;
         }
-        
+
         adc8(val) {
+            const a = this.a;
             const carry = this.f & this.FLAG_C;
-            const result = this.a + val + carry;
-            const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
+            const result = a + val + carry;
             this.a = result & 0xff;
             this.f = (result & 0x100 ? this.FLAG_C : 0) |
-                     this.halfcarryAddTable[lookup & 0x07] |
-                     this.overflowAddTable[lookup >> 4] |
+                     ((a ^ val ^ result) & 0x10) |  // Half-carry
+                     (((a ^ result) & (val ^ result) & 0x80) >> 5) |  // Overflow
                      this.sz53Table[this.a];
             this.q = this.f;
         }
-        
+
         sub8(val) {
-            const result = this.a - val;
-            const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
+            const a = this.a;
+            const result = a - val;
             this.a = result & 0xff;
             this.f = (result & 0x100 ? this.FLAG_C : 0) |
                      this.FLAG_N |
-                     this.halfcarrySubTable[lookup & 0x07] |
-                     this.overflowSubTable[lookup >> 4] |
+                     ((a ^ val ^ result) & 0x10) |  // Half-carry
+                     (((a ^ val) & (a ^ result) & 0x80) >> 5) |  // Overflow
                      this.sz53Table[this.a];
             this.q = this.f;
         }
 
         sbc8(val) {
+            const a = this.a;
             const carry = this.f & this.FLAG_C;
-            const result = this.a - val - carry;
-            const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
+            const result = a - val - carry;
             this.a = result & 0xff;
             this.f = (result & 0x100 ? this.FLAG_C : 0) |
                      this.FLAG_N |
-                     this.halfcarrySubTable[lookup & 0x07] |
-                     this.overflowSubTable[lookup >> 4] |
+                     ((a ^ val ^ result) & 0x10) |  // Half-carry
+                     (((a ^ val) & (a ^ result) & 0x80) >> 5) |  // Overflow
                      this.sz53Table[this.a];
             this.q = this.f;
         }
@@ -332,15 +342,15 @@
         }
 
         cp8(val) {
-            const result = this.a - val;
-            const lookup = ((this.a & 0x88) >> 3) | ((val & 0x88) >> 2) | ((result & 0x88) >> 1);
+            const a = this.a;
+            const result = a - val;
             this.f = (result & 0x100 ? this.FLAG_C : 0) |
                      this.FLAG_N |
-                     this.halfcarrySubTable[lookup & 0x07] |
-                     this.overflowSubTable[lookup >> 4] |
-                     (result & 0x80) |
+                     ((a ^ val ^ result) & 0x10) |  // Half-carry
+                     (((a ^ val) & (a ^ result) & 0x80) >> 5) |  // Overflow
+                     (result & 0x80) |  // Sign from result
                      (result & 0xff ? 0 : this.FLAG_Z) |
-                     (val & 0x28);
+                     (val & 0x28);  // Bits 5,3 from operand (not result)
             this.q = this.f;
         }
 
@@ -367,12 +377,11 @@
 
         add16(hl, val) {
             const result = hl + val;
-            const lookup = ((hl & 0x0800) >> 11) | ((val & 0x0800) >> 10) | ((result & 0x0800) >> 9);
             this.memptr = (hl + 1) & 0xffff;
             this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) |
                      (result & 0x10000 ? this.FLAG_C : 0) |
                      ((result >> 8) & 0x28) |
-                     this.halfcarryAddTable[lookup];
+                     (((hl ^ val ^ result) & 0x1000) >> 8);  // Half-carry at bit 11
             this.q = this.f;
             return result & 0xffff;
         }
@@ -381,13 +390,12 @@
             const hl = this.hl;
             const carry = this.f & this.FLAG_C;
             const result = hl + val + carry;
-            const lookup = ((hl & 0x8800) >> 11) | ((val & 0x8800) >> 10) | ((result & 0x8800) >> 9);
             this.memptr = (hl + 1) & 0xffff;
             this.hl = result & 0xffff;
             this.f = (result & 0x10000 ? this.FLAG_C : 0) |
-                     this.overflowAddTable[lookup >> 4] |
+                     (((hl ^ result) & (val ^ result) & 0x8000) >> 13) |  // Overflow
                      ((result >> 8) & 0x28) |
-                     this.halfcarryAddTable[lookup & 0x07] |
+                     (((hl ^ val ^ result) & 0x1000) >> 8) |  // Half-carry at bit 11
                      (this.hl ? 0 : this.FLAG_Z) |
                      ((result >> 8) & this.FLAG_S);
             this.q = this.f;
@@ -397,14 +405,13 @@
             const hl = this.hl;
             const carry = this.f & this.FLAG_C;
             const result = hl - val - carry;
-            const lookup = ((hl & 0x8800) >> 11) | ((val & 0x8800) >> 10) | ((result & 0x8800) >> 9);
             this.memptr = (hl + 1) & 0xffff;
             this.hl = result & 0xffff;
             this.f = (result & 0x10000 ? this.FLAG_C : 0) |
                      this.FLAG_N |
-                     this.overflowSubTable[lookup >> 4] |
+                     (((hl ^ val) & (hl ^ result) & 0x8000) >> 13) |  // Overflow
                      ((result >> 8) & 0x28) |
-                     this.halfcarrySubTable[lookup & 0x07] |
+                     (((hl ^ val ^ result) & 0x1000) >> 8) |  // Half-carry at bit 11
                      (this.hl ? 0 : this.FLAG_Z) |
                      ((result >> 8) & this.FLAG_S);
             this.q = this.f;
@@ -514,6 +521,8 @@
         
         // Main opcode execution
         executeMain(opcode) {
+            // Cache flag constants for faster access
+            const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             switch (opcode) {
                 case 0x00: this.tStates += 4; break; // NOP
                 case 0x01: this.bc = this.fetchWord(); this.tStates += 10; break; // LD BC,nn
@@ -524,7 +533,7 @@
                 case 0x06: this.b = this.fetchByte(); this.tStates += 7; break; // LD B,n
                 case 0x07: // RLCA
                     this.a = ((this.a << 1) | (this.a >> 7)) & 0xff;
-                    this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & (this.FLAG_C | 0x28));
+                    this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) | (this.a & (FLAG_C | 0x28));
                     this.q = this.f;
                     this.tStates += 4;
                     break;
@@ -540,7 +549,7 @@
                 case 0x0d: this.c = this.dec8(this.c); this.tStates += 4; break; // DEC C
                 case 0x0e: this.c = this.fetchByte(); this.tStates += 7; break; // LD C,n
                 case 0x0f: // RRCA
-                    this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & this.FLAG_C);
+                    this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) | (this.a & FLAG_C);
                     this.a = ((this.a >> 1) | (this.a << 7)) & 0xff;
                     this.f |= (this.a & 0x28);
                     this.q = this.f;
@@ -566,8 +575,8 @@
                 case 0x17: // RLA
                     {
                         const newCarry = this.a >> 7;
-                        this.a = ((this.a << 1) | (this.f & this.FLAG_C)) & 0xff;
-                        this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | newCarry | (this.a & 0x28);
+                        this.a = ((this.a << 1) | (this.f & FLAG_C)) & 0xff;
+                        this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) | newCarry | (this.a & 0x28);
                         this.q = this.f;
                     }
                     this.tStates += 4;
@@ -588,14 +597,14 @@
                 case 0x1f: // RRA
                     {
                         const newCarry = this.a & 0x01;
-                        this.a = ((this.a >> 1) | ((this.f & this.FLAG_C) << 7)) & 0xff;
-                        this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | newCarry | (this.a & 0x28);
+                        this.a = ((this.a >> 1) | ((this.f & FLAG_C) << 7)) & 0xff;
+                        this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) | newCarry | (this.a & 0x28);
                         this.q = this.f;
                     }
                     this.tStates += 4;
                     break;
                 case 0x20: // JR NZ,d
-                    if (!(this.f & this.FLAG_Z)) {
+                    if (!(this.f & FLAG_Z)) {
                         const d = this.fetchDisplacement();
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
@@ -620,21 +629,21 @@
                 case 0x27: // DAA
                     {
                         let add = 0;
-                        let carry = this.f & this.FLAG_C;
-                        if ((this.f & this.FLAG_H) || ((this.a & 0x0f) > 9)) add = 6;
-                        if (carry || (this.a > 0x99)) { add |= 0x60; carry = this.FLAG_C; }
-                        if (this.f & this.FLAG_N) {
+                        let carry = this.f & FLAG_C;
+                        if ((this.f & FLAG_H) || ((this.a & 0x0f) > 9)) add = 6;
+                        if (carry || (this.a > 0x99)) { add |= 0x60; carry = FLAG_C; }
+                        if (this.f & FLAG_N) {
                             this.sub8(add);
                         } else {
                             this.add8(add);
                         }
-                        this.f = (this.f & ~(this.FLAG_C | this.FLAG_PV)) | carry | this.parityTable[this.a];
+                        this.f = (this.f & ~(FLAG_C | FLAG_PV)) | carry | this.parityTable[this.a];
                         this.q = this.f;
                     }
                     this.tStates += 4;
                     break;
                 case 0x28: // JR Z,d
-                    if (this.f & this.FLAG_Z) {
+                    if (this.f & FLAG_Z) {
                         const d = this.fetchDisplacement();
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
@@ -658,12 +667,12 @@
                 case 0x2e: this.l = this.fetchByte(); this.tStates += 7; break; // LD L,n
                 case 0x2f: // CPL
                     this.a ^= 0xff;
-                    this.f = (this.f & (this.FLAG_C | this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) | (this.a & 0x28) | this.FLAG_N | this.FLAG_H;
+                    this.f = (this.f & (FLAG_C | FLAG_PV | FLAG_Z | FLAG_S)) | (this.a & 0x28) | FLAG_N | FLAG_H;
                     this.q = this.f;
                     this.tStates += 4;
                     break;
                 case 0x30: // JR NC,d
-                    if (!(this.f & this.FLAG_C)) {
+                    if (!(this.f & FLAG_C)) {
                         const d = this.fetchDisplacement();
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
@@ -686,14 +695,14 @@
                 case 0x35: this.writeByte(this.hl, this.dec8(this.readByte(this.hl))); this.tStates += 11; break; // DEC (HL)
                 case 0x36: this.writeByte(this.hl, this.fetchByte()); this.tStates += 10; break; // LD (HL),n
                 case 0x37: // SCF
-                    this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) |
+                    this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) |
                              (((this.lastQ ^ this.f) | this.a) & 0x28) |
-                             this.FLAG_C;
+                             FLAG_C;
                     this.q = this.f;
                     this.tStates += 4;
                     break;
                 case 0x38: // JR C,d
-                    if (this.f & this.FLAG_C) {
+                    if (this.f & FLAG_C) {
                         const d = this.fetchDisplacement();
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
@@ -716,8 +725,8 @@
                 case 0x3d: this.a = this.dec8(this.a); this.tStates += 4; break; // DEC A
                 case 0x3e: this.a = this.fetchByte(); this.tStates += 7; break; // LD A,n
                 case 0x3f: // CCF
-                    this.f = (this.f & (this.FLAG_PV | this.FLAG_Z | this.FLAG_S)) |
-                             ((this.f & this.FLAG_C) ? this.FLAG_H : this.FLAG_C) |
+                    this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) |
+                             ((this.f & FLAG_C) ? FLAG_H : FLAG_C) |
                              (((this.lastQ ^ this.f) | this.a) & 0x28);
                     this.q = this.f;
                     this.tStates += 4;
@@ -778,7 +787,9 @@
                 case 0x73: this.writeByte(this.hl, this.e); this.tStates += 7; break;
                 case 0x74: this.writeByte(this.hl, this.h); this.tStates += 7; break;
                 case 0x75: this.writeByte(this.hl, this.l); this.tStates += 7; break;
-                case 0x76: this.halted = true; this.pc = (this.pc - 1) & 0xffff; this.tStates += 4; break; // HALT
+                case 0x76: // HALT - PC points to HALT itself
+                    if (this.debugInterrupts) console.log(`[HALT] at PC=${(this.pc-1).toString(16)}, IFF1=${this.iff1}, T=${this.tStates}`);
+                    this.halted = true; this.pc = (this.pc - 1) & 0xffff; this.tStates += 4; break;
                 case 0x77: this.writeByte(this.hl, this.a); this.tStates += 7; break;
                 case 0x78: this.a = this.b; this.tStates += 4; break;
                 case 0x79: this.a = this.c; this.tStates += 4; break;
@@ -856,31 +867,31 @@
                 case 0xbf: this.cp8(this.a); this.tStates += 4; break;
                 
                 // 0xc0-0xff
-                case 0xc0: if (!(this.f & this.FLAG_Z)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET NZ
+                case 0xc0: if (!(this.f & FLAG_Z)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET NZ
                 case 0xc1: this.bc = this.pop(); this.tStates += 10; break; // POP BC
-                case 0xc2: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_Z)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP NZ,nn
+                case 0xc2: { const addr = this.fetchWord(); if (!(this.f & FLAG_Z)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP NZ,nn
                 case 0xc3: this.memptr = this.pc = this.fetchWord(); this.tStates += 10; break; // JP nn
-                case 0xc4: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_Z)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL NZ,nn
+                case 0xc4: { const addr = this.fetchWord(); if (!(this.f & FLAG_Z)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL NZ,nn
                 case 0xc5: this.push(this.bc); this.tStates += 11; break; // PUSH BC
                 case 0xc6: this.add8(this.fetchByte()); this.tStates += 7; break; // ADD A,n
                 case 0xc7: this.push(this.pc); this.memptr = this.pc = 0x00; this.tStates += 11; break; // RST 0
-                case 0xc8: if (this.f & this.FLAG_Z) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET Z
+                case 0xc8: if (this.f & FLAG_Z) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET Z
                 case 0xc9: this.memptr = this.pc = this.pop(); this.tStates += 10; break; // RET
-                case 0xca: { const addr = this.fetchWord(); if (this.f & this.FLAG_Z) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP Z,nn
+                case 0xca: { const addr = this.fetchWord(); if (this.f & FLAG_Z) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP Z,nn
                 case 0xcb: this.executeCB(); break; // CB prefix
-                case 0xcc: { const addr = this.fetchWord(); if (this.f & this.FLAG_Z) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL Z,nn
+                case 0xcc: { const addr = this.fetchWord(); if (this.f & FLAG_Z) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL Z,nn
                 case 0xcd: { const addr = this.fetchWord(); this.push(this.pc); this.memptr = this.pc = addr; this.tStates += 17; } break; // CALL nn
                 case 0xce: this.adc8(this.fetchByte()); this.tStates += 7; break; // ADC A,n
                 case 0xcf: this.push(this.pc); this.memptr = this.pc = 0x08; this.tStates += 11; break; // RST 8
-                case 0xd0: if (!(this.f & this.FLAG_C)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET NC
+                case 0xd0: if (!(this.f & FLAG_C)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET NC
                 case 0xd1: this.de = this.pop(); this.tStates += 10; break; // POP DE
-                case 0xd2: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_C)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP NC,nn
+                case 0xd2: { const addr = this.fetchWord(); if (!(this.f & FLAG_C)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP NC,nn
                 case 0xd3: { const port = this.fetchByte(); this.outPort((this.a << 8) | port, this.a, 11); this.memptr = ((this.a << 8) | ((port + 1) & 0xff)); this.tStates += 11; } break; // OUT (n),A
-                case 0xd4: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_C)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL NC,nn
+                case 0xd4: { const addr = this.fetchWord(); if (!(this.f & FLAG_C)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL NC,nn
                 case 0xd5: this.push(this.de); this.tStates += 11; break; // PUSH DE
                 case 0xd6: this.sub8(this.fetchByte()); this.tStates += 7; break; // SUB n
                 case 0xd7: this.push(this.pc); this.memptr = this.pc = 0x10; this.tStates += 11; break; // RST 16
-                case 0xd8: if (this.f & this.FLAG_C) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET C
+                case 0xd8: if (this.f & FLAG_C) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET C
                 case 0xd9: // EXX
                     {
                         let tmp = this.bc; this.bc = (this.b_ << 8) | this.c_; this.b_ = (tmp >> 8) & 0xff; this.c_ = tmp & 0xff;
@@ -889,41 +900,45 @@
                     }
                     this.tStates += 4;
                     break;
-                case 0xda: { const addr = this.fetchWord(); if (this.f & this.FLAG_C) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP C,nn
+                case 0xda: { const addr = this.fetchWord(); if (this.f & FLAG_C) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP C,nn
                 case 0xdb: { const port = this.fetchByte(); const portAddr = (this.a << 8) | port; this.a = this.inPort(portAddr); this.memptr = (portAddr + 1) & 0xffff; this.tStates += 11; } break; // IN A,(n)
-                case 0xdc: { const addr = this.fetchWord(); if (this.f & this.FLAG_C) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL C,nn
+                case 0xdc: { const addr = this.fetchWord(); if (this.f & FLAG_C) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL C,nn
                 case 0xdd: this.executeDD(); break; // DD prefix (IX)
                 case 0xde: this.sbc8(this.fetchByte()); this.tStates += 7; break; // SBC A,n
                 case 0xdf: this.push(this.pc); this.memptr = this.pc = 0x18; this.tStates += 11; break; // RST 24
-                case 0xe0: if (!(this.f & this.FLAG_PV)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET PO
+                case 0xe0: if (!(this.f & FLAG_PV)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET PO
                 case 0xe1: this.hl = this.pop(); this.tStates += 10; break; // POP HL
-                case 0xe2: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_PV)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP PO,nn
+                case 0xe2: { const addr = this.fetchWord(); if (!(this.f & FLAG_PV)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP PO,nn
                 case 0xe3: { const tmp = this.readWord(this.sp); this.writeWord(this.sp, this.hl); this.memptr = this.hl = tmp; this.tStates += 19; } break; // EX (SP),HL
-                case 0xe4: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_PV)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL PO,nn
+                case 0xe4: { const addr = this.fetchWord(); if (!(this.f & FLAG_PV)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL PO,nn
                 case 0xe5: this.push(this.hl); this.tStates += 11; break; // PUSH HL
                 case 0xe6: this.and8(this.fetchByte()); this.tStates += 7; break; // AND n
                 case 0xe7: this.push(this.pc); this.memptr = this.pc = 0x20; this.tStates += 11; break; // RST 32
-                case 0xe8: if (this.f & this.FLAG_PV) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET PE
+                case 0xe8: if (this.f & FLAG_PV) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET PE
                 case 0xe9: this.pc = this.hl; this.tStates += 4; break; // JP (HL)
-                case 0xea: { const addr = this.fetchWord(); if (this.f & this.FLAG_PV) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP PE,nn
+                case 0xea: { const addr = this.fetchWord(); if (this.f & FLAG_PV) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP PE,nn
                 case 0xeb: { const tmp = this.de; this.de = this.hl; this.hl = tmp; } this.tStates += 4; break; // EX DE,HL
-                case 0xec: { const addr = this.fetchWord(); if (this.f & this.FLAG_PV) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL PE,nn
+                case 0xec: { const addr = this.fetchWord(); if (this.f & FLAG_PV) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL PE,nn
                 case 0xed: this.executeED(); break; // ED prefix
                 case 0xee: this.xor8(this.fetchByte()); this.tStates += 7; break; // XOR n
                 case 0xef: this.push(this.pc); this.memptr = this.pc = 0x28; this.tStates += 11; break; // RST 40
-                case 0xf0: if (!(this.f & this.FLAG_S)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET P
+                case 0xf0: if (!(this.f & FLAG_S)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET P
                 case 0xf1: this.af = this.pop(); this.tStates += 10; break; // POP AF
-                case 0xf2: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_S)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP P,nn
-                case 0xf3: this.iff1 = this.iff2 = false; this.tStates += 4; break; // DI
-                case 0xf4: { const addr = this.fetchWord(); if (!(this.f & this.FLAG_S)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL P,nn
+                case 0xf2: { const addr = this.fetchWord(); if (!(this.f & FLAG_S)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP P,nn
+                case 0xf3: // DI
+                    if (this.debugInterrupts) console.log(`[DI] at PC=${(this.pc-1).toString(16)}, T=${this.tStates}`);
+                    this.iff1 = this.iff2 = false; this.tStates += 4; break;
+                case 0xf4: { const addr = this.fetchWord(); if (!(this.f & FLAG_S)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL P,nn
                 case 0xf5: this.push(this.af); this.tStates += 11; break; // PUSH AF
                 case 0xf6: this.or8(this.fetchByte()); this.tStates += 7; break; // OR n
                 case 0xf7: this.push(this.pc); this.memptr = this.pc = 0x30; this.tStates += 11; break; // RST 48
-                case 0xf8: if (this.f & this.FLAG_S) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET M
+                case 0xf8: if (this.f & FLAG_S) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET M
                 case 0xf9: this.sp = this.hl; this.tStates += 6; break; // LD SP,HL
-                case 0xfa: { const addr = this.fetchWord(); if (this.f & this.FLAG_S) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP M,nn
-                case 0xfb: this.iff1 = this.iff2 = true; this.eiPending = true; this.tStates += 4; break; // EI
-                case 0xfc: { const addr = this.fetchWord(); if (this.f & this.FLAG_S) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL M,nn
+                case 0xfa: { const addr = this.fetchWord(); if (this.f & FLAG_S) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP M,nn
+                case 0xfb: // EI
+                    if (this.debugInterrupts) console.log(`[EI] at PC=${(this.pc-1).toString(16)}, T=${this.tStates}`);
+                    this.iff1 = this.iff2 = true; this.eiPending = true; this.tStates += 4; break;
+                case 0xfc: { const addr = this.fetchWord(); if (this.f & FLAG_S) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL M,nn
                 case 0xfd: this.executeFD(); break; // FD prefix (IY)
                 case 0xfe: this.cp8(this.fetchByte()); this.tStates += 7; break; // CP n
                 case 0xff: this.push(this.pc); this.memptr = this.pc = 0x38; this.tStates += 11; break; // RST 56
@@ -932,6 +947,7 @@
         
         // CB prefix - bit operations
         executeCB() {
+            const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             this.incR();
             const opcode = this.fetchByte();
             const reg = opcode & 0x07;
@@ -1119,6 +1135,7 @@
         
         // Indexed operations (IX/IY)
         executeIndexed(opcode, reg) {
+            const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             const ir = reg === 'ix' ? this.ix : this.iy;
             const setIR = (v) => { if (reg === 'ix') this.ix = v; else this.iy = v; };
             const getH = () => reg === 'ix' ? this.ixh : this.iyh;
@@ -1234,11 +1251,12 @@
         
         // ED prefix
         executeED() {
+            const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             this.incR();
             const opcode = this.fetchByte();
-            
+
             switch (opcode) {
-                case 0x40: this.b = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.b]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN B,(C)
+                case 0x40: { const port = this.bc; this.b = this.inPort(port); this.f = (this.f & FLAG_C) | this.sz53pTable[this.b]; this.q = this.f; this.memptr = (port + 1) & 0xffff; this.tStates += 12; } break; // IN B,(C)
                 case 0x41: this.outPort(this.bc, this.b); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),B
                 case 0x42: this.sbc16(this.bc); this.tStates += 15; break; // SBC HL,BC
                 case 0x43: { const addr = this.fetchWord(); this.writeWord(addr, this.bc); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),BC
@@ -1257,34 +1275,34 @@
                     break;
                 case 0x46: case 0x4e: case 0x66: case 0x6e: this.im = 0; this.tStates += 8; break; // IM 0
                 case 0x47: this.i = this.a; this.tStates += 9; break; // LD I,A
-                case 0x48: this.c = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.c]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN C,(C)
+                case 0x48: { const port = this.bc; this.c = this.inPort(port); this.f = (this.f & FLAG_C) | this.sz53pTable[this.c]; this.q = this.f; this.memptr = (port + 1) & 0xffff; this.tStates += 12; } break; // IN C,(C)
                 case 0x49: this.outPort(this.bc, this.c); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),C
                 case 0x4a: this.adc16(this.bc); this.tStates += 15; break; // ADC HL,BC
                 case 0x4b: { const addr = this.fetchWord(); this.bc = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD BC,(nn)
                 case 0x4f: this.rFull = this.a; this.tStates += 9; break; // LD R,A
-                case 0x50: this.d = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.d]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN D,(C)
+                case 0x50: this.d = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.d]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN D,(C)
                 case 0x51: this.outPort(this.bc, this.d); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),D
                 case 0x52: this.sbc16(this.de); this.tStates += 15; break; // SBC HL,DE
                 case 0x53: { const addr = this.fetchWord(); this.writeWord(addr, this.de); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),DE
                 case 0x56: case 0x76: this.im = 1; this.tStates += 8; break; // IM 1
                 case 0x57: // LD A,I
                     this.a = this.i;
-                    this.f = (this.f & this.FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? this.FLAG_PV : 0);
+                    this.f = (this.f & FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? FLAG_PV : 0);
                     this.q = this.f;
                     this.tStates += 9;
                     break;
-                case 0x58: this.e = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.e]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN E,(C)
+                case 0x58: this.e = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.e]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN E,(C)
                 case 0x59: this.outPort(this.bc, this.e); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),E
                 case 0x5a: this.adc16(this.de); this.tStates += 15; break; // ADC HL,DE
                 case 0x5b: { const addr = this.fetchWord(); this.de = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD DE,(nn)
                 case 0x5e: case 0x7e: this.im = 2; this.tStates += 8; break; // IM 2
                 case 0x5f: // LD A,R
                     this.a = this.rFull;
-                    this.f = (this.f & this.FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? this.FLAG_PV : 0);
+                    this.f = (this.f & FLAG_C) | this.sz53Table[this.a] | (this.iff2 ? FLAG_PV : 0);
                     this.q = this.f;
                     this.tStates += 9;
                     break;
-                case 0x60: this.h = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.h]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN H,(C)
+                case 0x60: this.h = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.h]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN H,(C)
                 case 0x61: this.outPort(this.bc, this.h); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),H
                 case 0x62: this.sbc16(this.hl); this.tStates += 15; break; // SBC HL,HL
                 case 0x63: { const addr = this.fetchWord(); this.writeWord(addr, this.hl); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),HL
@@ -1293,13 +1311,13 @@
                         const tmp = this.readByte(this.hl);
                         this.writeByte(this.hl, ((this.a << 4) | (tmp >> 4)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp & 0x0f);
-                        this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a];
+                        this.f = (this.f & FLAG_C) | this.sz53pTable[this.a];
                         this.q = this.f;
                         this.memptr = (this.hl + 1) & 0xffff;
                     }
                     this.tStates += 18;
                     break;
-                case 0x68: this.l = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.l]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN L,(C)
+                case 0x68: this.l = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.l]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN L,(C)
                 case 0x69: this.outPort(this.bc, this.l); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),L
                 case 0x6a: this.adc16(this.hl); this.tStates += 15; break; // ADC HL,HL
                 case 0x6b: { const addr = this.fetchWord(); this.hl = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD HL,(nn)
@@ -1308,17 +1326,17 @@
                         const tmp = this.readByte(this.hl);
                         this.writeByte(this.hl, ((tmp << 4) | (this.a & 0x0f)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp >> 4);
-                        this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a];
+                        this.f = (this.f & FLAG_C) | this.sz53pTable[this.a];
                         this.q = this.f;
                         this.memptr = (this.hl + 1) & 0xffff;
                     }
                     this.tStates += 18;
                     break;
-                case 0x70: { const tmp = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[tmp]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; } break; // IN (C) / IN F,(C)
+                case 0x70: { const tmp = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[tmp]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; } break; // IN (C) / IN F,(C)
                 case 0x71: this.outPort(this.bc, 0); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),0
                 case 0x72: this.sbc16(this.sp); this.tStates += 15; break; // SBC HL,SP
                 case 0x73: { const addr = this.fetchWord(); this.writeWord(addr, this.sp); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),SP
-                case 0x78: this.a = this.inPort(this.bc); this.f = (this.f & this.FLAG_C) | this.sz53pTable[this.a]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN A,(C)
+                case 0x78: this.a = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.a]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN A,(C)
                 case 0x79: this.outPort(this.bc, this.a); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),A
                 case 0x7a: this.adc16(this.sp); this.tStates += 15; break; // ADC HL,SP
                 case 0x7b: { const addr = this.fetchWord(); this.sp = this.readWord(addr); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD SP,(nn)
@@ -1332,8 +1350,8 @@
                         this.de = (this.de + 1) & 0xffff;
                         this.hl = (this.hl + 1) & 0xffff;
                         const n = (this.a + val) & 0xff;
-                        this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                 (this.bc ? this.FLAG_PV : 0) |
+                        this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
+                                 (this.bc ? FLAG_PV : 0) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         this.q = this.f;
                     }
@@ -1343,18 +1361,17 @@
                     {
                         const val = this.readByte(this.hl);
                         const result = (this.a - val) & 0xff;
-                        const lookup = ((this.a & 0x08) >> 3) | ((val & 0x08) >> 2) | ((result & 0x08) >> 1);
-                        const hf = this.halfcarrySubTable[lookup];
+                        const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.hl = (this.hl + 1) & 0xffff;
                         this.bc = (this.bc - 1) & 0xffff;
                         let n = result;
                         if (hf) n = (n - 1) & 0xff;
-                        this.f = (this.f & this.FLAG_C) |
-                                 (this.bc ? this.FLAG_PV : 0) |
+                        this.f = (this.f & FLAG_C) |
+                                 (this.bc ? FLAG_PV : 0) |
                                  hf |
-                                 this.FLAG_N |
-                                 (result ? 0 : this.FLAG_Z) |
-                                 (result & this.FLAG_S) |
+                                 FLAG_N |
+                                 (result ? 0 : FLAG_Z) |
+                                 (result & FLAG_S) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         this.q = this.f;
                         this.memptr = (this.memptr + 1) & 0xffff;
@@ -1370,9 +1387,9 @@
                         this.hl = (this.hl + 1) & 0xffff;
                         // Flags: N = bit 7 of input value
                         const k = (val + ((this.c + 1) & 0xff));
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         this.q = this.f;
@@ -1388,9 +1405,9 @@
                         this.hl = (this.hl + 1) & 0xffff;
                         // Flags: N = bit 7 of val, H/C from k > 255
                         const k = (val + this.l);
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         this.q = this.f;
@@ -1405,8 +1422,8 @@
                         this.de = (this.de - 1) & 0xffff;
                         this.hl = (this.hl - 1) & 0xffff;
                         const n = (this.a + val) & 0xff;
-                        this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                 (this.bc ? this.FLAG_PV : 0) |
+                        this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
+                                 (this.bc ? FLAG_PV : 0) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         this.q = this.f;
                     }
@@ -1416,18 +1433,17 @@
                     {
                         const val = this.readByte(this.hl);
                         const result = (this.a - val) & 0xff;
-                        const lookup = ((this.a & 0x08) >> 3) | ((val & 0x08) >> 2) | ((result & 0x08) >> 1);
-                        const hf = this.halfcarrySubTable[lookup];
+                        const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.hl = (this.hl - 1) & 0xffff;
                         this.bc = (this.bc - 1) & 0xffff;
                         let n = result;
                         if (hf) n = (n - 1) & 0xff;
-                        this.f = (this.f & this.FLAG_C) |
-                                 (this.bc ? this.FLAG_PV : 0) |
+                        this.f = (this.f & FLAG_C) |
+                                 (this.bc ? FLAG_PV : 0) |
                                  hf |
-                                 this.FLAG_N |
-                                 (result ? 0 : this.FLAG_Z) |
-                                 (result & this.FLAG_S) |
+                                 FLAG_N |
+                                 (result ? 0 : FLAG_Z) |
+                                 (result & FLAG_S) |
                                  (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                         this.q = this.f;
                         this.memptr = (this.memptr - 1) & 0xffff;
@@ -1443,9 +1459,9 @@
                         this.hl = (this.hl - 1) & 0xffff;
                         // Flags: N = bit 7 of input value
                         const k = (val + ((this.c - 1) & 0xff));
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         this.q = this.f;
@@ -1461,9 +1477,9 @@
                         this.hl = (this.hl - 1) & 0xffff;
                         // Flags: N = bit 7 of val, H/C from k > 255
                         const k = (val + this.l);
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         this.q = this.f;
@@ -1479,8 +1495,8 @@
                         if (this.bc) {
                             // When repeating: Y/X from PC high byte, P/V set
                             const pch = (this.pc >> 8) & 0xff;
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                     this.FLAG_PV |
+                            this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
+                                     FLAG_PV |
                                      (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1488,7 +1504,7 @@
                             this.tStates += 21;
                         } else {
                             // Normal completion: Y/X from (A + val)
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
                                      (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                             this.q = this.f;
                             this.tStates += 16;
@@ -1501,18 +1517,18 @@
                     {
                         const val = this.readByte(this.hl);
                         const result = (this.a - val) & 0xff;
-                        const lookup = ((this.a & 0x08) >> 3) | ((val & 0x08) >> 2) | ((result & 0x08) >> 1);
+                        const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.bc = (this.bc - 1) & 0xffff;
                         let n = result;
-                        this.f = (this.f & this.FLAG_C) |
-                                 (this.bc ? this.FLAG_PV : 0) |
-                                 this.halfcarrySubTable[lookup] |
-                                 this.FLAG_N |
-                                 (result ? 0 : this.FLAG_Z) |
-                                 (result & this.FLAG_S);
-                        if (this.f & this.FLAG_H) n = (n - 1) & 0xff;
+                        this.f = (this.f & FLAG_C) |
+                                 (this.bc ? FLAG_PV : 0) |
+                                 hf |
+                                 FLAG_N |
+                                 (result ? 0 : FLAG_Z) |
+                                 (result & FLAG_S);
+                        if (hf) n = (n - 1) & 0xff;
                         this.f |= (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
-                        if ((this.f & (this.FLAG_PV | this.FLAG_Z)) === this.FLAG_PV) {
+                        if ((this.f & (FLAG_PV | FLAG_Z)) === FLAG_PV) {
                             // When repeating: Y/X from PC high byte
                             const pch = (this.pc >> 8) & 0xff;
                             this.f = (this.f & ~0x28) | (pch & 0x28);
@@ -1537,28 +1553,28 @@
                         this.hl = (this.hl + 1) & 0xffff;
                         // Flags: N = bit 7 of input value
                         const k = (val + ((this.c + 1) & 0xff));
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
                             // When repeating: additional PF/HF modifications + Y/X from PC
                             const pch = (this.pc >> 8) & 0xff;
-                            let pf = this.f & this.FLAG_PV;
+                            let pf = this.f & FLAG_PV;
                             let hf = 0;
-                            if (this.f & this.FLAG_C) {
+                            if (this.f & FLAG_C) {
                                 if (val & 0x80) {
-                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? FLAG_H : 0;
                                 } else {
-                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? FLAG_H : 0;
                                 }
                             } else {
-                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                                pf ^= this.parityTable[this.b & 0x07] ^ FLAG_PV;
                             }
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_N | FLAG_Z | FLAG_S)) |
                                      pf | hf | (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1579,28 +1595,28 @@
                         this.hl = (this.hl + 1) & 0xffff;
                         // Flags: N = bit 7 of val, H/C from k > 255
                         const k = (val + this.l);
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
                             // When repeating: additional PF/HF modifications + Y/X from PC
                             const pch = (this.pc >> 8) & 0xff;
-                            let pf = this.f & this.FLAG_PV;
+                            let pf = this.f & FLAG_PV;
                             let hf = 0;
-                            if (this.f & this.FLAG_C) {
+                            if (this.f & FLAG_C) {
                                 if (val & 0x80) {
-                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? FLAG_H : 0;
                                 } else {
-                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? FLAG_H : 0;
                                 }
                             } else {
-                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                                pf ^= this.parityTable[this.b & 0x07] ^ FLAG_PV;
                             }
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_N | FLAG_Z | FLAG_S)) |
                                      pf | hf | (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1621,8 +1637,8 @@
                         if (this.bc) {
                             // When repeating: Y/X from PC high byte, P/V set
                             const pch = (this.pc >> 8) & 0xff;
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
-                                     this.FLAG_PV |
+                            this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
+                                     FLAG_PV |
                                      (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1630,7 +1646,7 @@
                             this.tStates += 21;
                         } else {
                             // Normal completion: Y/X from (A + val)
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
                                      (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                             this.q = this.f;
                             this.tStates += 16;
@@ -1643,18 +1659,18 @@
                     {
                         const val = this.readByte(this.hl);
                         const result = (this.a - val) & 0xff;
-                        const lookup = ((this.a & 0x08) >> 3) | ((val & 0x08) >> 2) | ((result & 0x08) >> 1);
+                        const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.bc = (this.bc - 1) & 0xffff;
                         let n = result;
-                        this.f = (this.f & this.FLAG_C) |
-                                 (this.bc ? this.FLAG_PV : 0) |
-                                 this.halfcarrySubTable[lookup] |
-                                 this.FLAG_N |
-                                 (result ? 0 : this.FLAG_Z) |
-                                 (result & this.FLAG_S);
-                        if (this.f & this.FLAG_H) n = (n - 1) & 0xff;
+                        this.f = (this.f & FLAG_C) |
+                                 (this.bc ? FLAG_PV : 0) |
+                                 hf |
+                                 FLAG_N |
+                                 (result ? 0 : FLAG_Z) |
+                                 (result & FLAG_S);
+                        if (hf) n = (n - 1) & 0xff;
                         this.f |= (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
-                        if ((this.f & (this.FLAG_PV | this.FLAG_Z)) === this.FLAG_PV) {
+                        if ((this.f & (FLAG_PV | FLAG_Z)) === FLAG_PV) {
                             // When repeating: Y/X from PC high byte
                             const pch = (this.pc >> 8) & 0xff;
                             this.f = (this.f & ~0x28) | (pch & 0x28);
@@ -1679,28 +1695,28 @@
                         this.hl = (this.hl - 1) & 0xffff;
                         // Flags: N = bit 7 of input value
                         const k = (val + ((this.c - 1) & 0xff));
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
                             // When repeating: additional PF/HF modifications + Y/X from PC
                             const pch = (this.pc >> 8) & 0xff;
-                            let pf = this.f & this.FLAG_PV;
+                            let pf = this.f & FLAG_PV;
                             let hf = 0;
-                            if (this.f & this.FLAG_C) {
+                            if (this.f & FLAG_C) {
                                 if (val & 0x80) {
-                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? FLAG_H : 0;
                                 } else {
-                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? FLAG_H : 0;
                                 }
                             } else {
-                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                                pf ^= this.parityTable[this.b & 0x07] ^ FLAG_PV;
                             }
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_N | FLAG_Z | FLAG_S)) |
                                      pf | hf | (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1721,28 +1737,28 @@
                         this.hl = (this.hl - 1) & 0xffff;
                         // Flags: N = bit 7 of val, H/C from k > 255
                         const k = (val + this.l);
-                        const kFlag = k > 255 ? (this.FLAG_H | this.FLAG_C) : 0;
+                        const kFlag = k > 255 ? (FLAG_H | FLAG_C) : 0;
                         this.f = kFlag |
-                                 (val & 0x80 ? this.FLAG_N : 0) |
+                                 (val & 0x80 ? FLAG_N : 0) |
                                  this.parityTable[((k & 0x07) ^ this.b) & 0xff] |
                                  this.sz53Table[this.b];
                         if (this.b) {
                             // When repeating: additional PF/HF modifications + Y/X from PC
                             const pch = (this.pc >> 8) & 0xff;
-                            let pf = this.f & this.FLAG_PV;
+                            let pf = this.f & FLAG_PV;
                             let hf = 0;
-                            if (this.f & this.FLAG_C) {
+                            if (this.f & FLAG_C) {
                                 if (val & 0x80) {
-                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x00) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b - 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x00) ? FLAG_H : 0;
                                 } else {
-                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ this.FLAG_PV;
-                                    hf = ((this.b & 0x0f) === 0x0f) ? this.FLAG_H : 0;
+                                    pf ^= this.parityTable[(this.b + 1) & 0x07] ^ FLAG_PV;
+                                    hf = ((this.b & 0x0f) === 0x0f) ? FLAG_H : 0;
                                 }
                             } else {
-                                pf ^= this.parityTable[this.b & 0x07] ^ this.FLAG_PV;
+                                pf ^= this.parityTable[this.b & 0x07] ^ FLAG_PV;
                             }
-                            this.f = (this.f & (this.FLAG_C | this.FLAG_N | this.FLAG_Z | this.FLAG_S)) |
+                            this.f = (this.f & (FLAG_C | FLAG_N | FLAG_Z | FLAG_S)) |
                                      pf | hf | (pch & 0x28);
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
@@ -1795,7 +1811,9 @@
             const startTStates = this.tStates;
             while (this.tStates - startTStates < targetTStates) {
                 if (this.halted) {
-                    // Advance by 4 t-states per HALT
+                    // During HALT, CPU reads from PC+1 (next instruction after HALT) but discards data
+                    // PC points to HALT itself, but bus reads happen from next address
+                    this.readByte((this.pc + 1) & 0xffff);
                     this.tStates += 4;
                     this.incR();
                 } else {
@@ -1805,12 +1823,6 @@
             return this.tStates - startTStates;
         }
     }
-
-    // Lookup tables for carry/overflow
-    Z80.prototype.halfcarryAddTable = new Uint8Array([0, 0x10, 0x10, 0x10, 0, 0, 0, 0x10]);
-    Z80.prototype.halfcarrySubTable = new Uint8Array([0, 0, 0x10, 0, 0x10, 0, 0x10, 0x10]);
-    Z80.prototype.overflowAddTable = new Uint8Array([0, 0, 0, 0x04, 0x04, 0, 0, 0]);
-    Z80.prototype.overflowSubTable = new Uint8Array([0, 0x04, 0, 0, 0, 0, 0x04, 0]);
 
     // Export for both browser and Node.js
     if (typeof module !== 'undefined' && module.exports) {

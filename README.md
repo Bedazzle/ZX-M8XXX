@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.6.5** | [Changelog](CHANGELOG.md)
+**Version 0.7.0** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -84,13 +84,43 @@ disasm.js      - Z80 disassembler
 
 ## Testing
 
+### Built-in Test Suite
+
+The **Tests** tab provides automated regression testing using native Spectrum programs:
+
+- Run tests with screenshot comparison against reference PNGs
+- Multi-step tests with key press simulation between screens
+- Preview mode for calibrating frame numbers
+- Screenshot capture for creating reference images
+
+Test configuration is stored in `tests.json`. Example:
+
+```json
+{
+    "id": "z80ccf",
+    "name": "Raxoft z80ccf",
+    "file": "tests/z80ccf.tap",
+    "machine": "48k",
+    "author": "Patrik Rak",
+    "source": "https://github.com/raxoft/z80test",
+    "steps": [
+        { "frames": 2350, "screen": "tests/z80ccf_1.png" },
+        { "frames": 5076, "screen": "tests/z80ccf_2.png", "keys": "ENTER" }
+    ]
+}
+```
+
+### Unit Tests
+
 Open test files directly in browser (no ROM files needed):
 
 - `fuse-test.html` - FUSE Z80 CPU test suite
 - `system-test.html` - System tests (memory banking, paging)
 - `asm-test.html` - Assembler tests
 
-External test suites (load as TAP/SNA in emulator):
+### External Test Suites
+
+Load as TAP/SNA in emulator:
 
 - [ZEXALL](https://mdfs.net/Software/Z80/Exerciser/Spectrum/) - Z80 Instruction Exerciser
 - [z80test](https://github.com/raxoft/z80test) - Z80 flags tests (z80ccf, z80doc, z80full, z80memptr)
@@ -103,6 +133,8 @@ External test suites (load as TAP/SNA in emulator):
 ## License
 
 GPL-3.0
+
+**Test Programs:** The test programs in the `tests/` folder (z80ccf, z80doc, z80docflags, etc.) are copyright of their respective authors and included for emulator validation purposes only.
 
 ## Credits
 
