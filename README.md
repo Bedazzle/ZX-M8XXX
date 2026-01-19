@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.7.0** | [Changelog](CHANGELOG.md)
+**Version 0.9.1** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -12,11 +12,14 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory banking and contention emulation
 - Pixel-perfect ULA video timing with border effects
 - AY-3-8910 sound chip emulation (stereo modes: Mono/ABC/ACB)
-- SNA/Z80 snapshot loading/saving
+- SNA/Z80/SZX snapshot loading/saving
 - TAP tape loading with ROM traps (instant load)
 - TRD/SCL disk image support (TR-DOS format)
 - ZIP archive support
 - RZX playback
+- Kempston Joystick (numpad) with extended buttons support
+- Kempston Mouse with wheel support
+- Hardware gamepad support (USB/Bluetooth via Gamepad API)
 
 ### Debugger
 - Unified breakpoint system (execution, memory read/write, port I/O)
@@ -45,6 +48,8 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory Watches (up to 10 addresses)
 - Text Scanner for string search
 - Programmer Calculator (hex/dec/oct/bin)
+- Compare Tool (snapshots, binaries, emulator state)
+- Explorer (BASIC decoder, disassembly, hex dump for file analysis)
 - Z80 Opcodes reference
 
 ## Quick Start
@@ -61,74 +66,20 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 
 | Format | Description |
 |--------|-------------|
+| RZX | Input recording |
+| SCL | TR-DOS file archive |
 | SNA | Snapshot (48K/128K) |
-| Z80 | Snapshot (v1, v2, v3 with compression) |
+| SZX | Spectaculator snapshot format |
 | TAP | Tape format (instant load via ROM traps) |
 | TRD | TR-DOS disk image |
-| SCL | TR-DOS file archive |
-| RZX | Input recording |
+| Z80 | Snapshot (v1, v2, v3 with compression) |
 | ZIP | Archive support |
-
-## Architecture
-
-```
-index.html     - UI and main loop
-spectrum.js    - Machine integration
-z80.js         - Z80 CPU emulation
-memory.js      - Memory banking
-ula.js         - Video/keyboard
-ay.js          - AY-3-8910 sound chip
-loaders.js     - File format handlers
-disasm.js      - Z80 disassembler
-```
-
-## Testing
-
-### Built-in Test Suite
-
-The **Tests** tab provides automated regression testing using native Spectrum programs:
-
-- Run tests with screenshot comparison against reference PNGs
-- Multi-step tests with key press simulation between screens
-- Preview mode for calibrating frame numbers
-- Screenshot capture for creating reference images
-
-Test configuration is stored in `tests.json`. Example:
-
-```json
-{
-    "id": "z80ccf",
-    "name": "Raxoft z80ccf",
-    "file": "tests/z80ccf.tap",
-    "machine": "48k",
-    "author": "Patrik Rak",
-    "source": "https://github.com/raxoft/z80test",
-    "steps": [
-        { "frames": 2350, "screen": "tests/z80ccf_1.png" },
-        { "frames": 5076, "screen": "tests/z80ccf_2.png", "keys": "ENTER" }
-    ]
-}
-```
-
-### Unit Tests
-
-Open test files directly in browser (no ROM files needed):
-
-- `fuse-test.html` - FUSE Z80 CPU test suite
-- `system-test.html` - System tests (memory banking, paging)
-- `asm-test.html` - Assembler tests
-
-### External Test Suites
-
-Load as TAP/SNA in emulator:
-
-- [ZEXALL](https://mdfs.net/Software/Z80/Exerciser/Spectrum/) - Z80 Instruction Exerciser
-- [z80test](https://github.com/raxoft/z80test) - Z80 flags tests (z80ccf, z80doc, z80full, z80memptr)
 
 ## Known Limitations
 
-- **Multicolor effects**: 8x2 multicolor engines (Nirvana+, Bifrost) are not fully supported
+- **Multicolor effects**: 8x2 multicolor engines (Nirvana+, Bifrost) require enabling via console: `spectrum.multicolorEnabled = true`
 - **scroll17 left edge**: Minor artifact on left edge during screen bank switching effects
+- **Z80 save uncompressed**: Z80 snapshots are saved without RLE compression for maximum compatibility (~131KB for 128K, ~49KB for 48K)
 
 ## License
 
@@ -147,3 +98,15 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 ![Debugger View](docs/main_1.png)
 
 ![Graphics Viewer](docs/main_2.png)
+
+### Games
+
+<p>
+<img src="docs/screenshot_academy.png" width="49%">&nbsp;<img src="docs/screenshot_aquaplane.png" width="49%">
+</p>
+<p>
+<img src="docs/screenshot_comet_game.png" width="49%">&nbsp;<img src="docs/screenshot_shock.png" width="49%">
+</p>
+<p>
+<img src="docs/screenshot_venom.png" width="49%">&nbsp;<img src="docs/screenshot_yazzie.png" width="49%">
+</p>

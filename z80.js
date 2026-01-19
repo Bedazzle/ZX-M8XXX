@@ -25,6 +25,11 @@
             
             // Contention handler (set by Spectrum class)
             this.contend = null;
+            // Internal cycle contention handler - called for internal T-states (not memory accesses)
+            // addr: the address that would be on the bus during internal cycles
+            // tstates: number of internal T-states to contend
+            // baseOffset: T-states from instruction start to where internal cycles begin (optional, for accurate timing)
+            this.contendInternal = null;
 
             // Debug: trace EI/DI and interrupt handling
             this.debugInterrupts = false;
@@ -161,7 +166,10 @@
         writeByte(addr, val) {
             addr &= 0xffff;
             if (this.contend) this.contend(addr);
-            this.memory.write(addr, val & 0xff);
+            val = val & 0xff;
+            this.memory.write(addr, val);
+            // Multicolor tracking: notify after write (for attribute area)
+            if (this.onMemWrite) this.onMemWrite(addr, val);
         }
         
         readWord(addr) {
@@ -193,7 +201,11 @@
         }
         
         // Stack operations
-        push(val) {
+        push(val, skipInternalCycle = false) {
+            // PUSH has 1T internal cycle after opcode fetch, before memory writes
+            // This affects contention timing - writes happen at T+5 and T+8, not T+4 and T+7
+            // Skip for interrupt/NMI handling where there's no internal cycle before push
+            if (!skipInternalCycle && this.internalCycles) this.internalCycles(1);
             this.sp = (this.sp - 1) & 0xffff;
             this.writeByte(this.sp, (val >> 8) & 0xff);
             this.sp = (this.sp - 1) & 0xffff;
@@ -243,13 +255,15 @@
             switch (this.im) {
                 case 0:
                 case 1:
-                    this.push(this.pc);
+                    // Interrupt push has no internal cycle - it follows the acknowledge directly
+                    this.push(this.pc, true);
                     this.pc = 0x0038;
                     this.memptr = this.pc;
                     if (this.debugInterrupts) console.log(`[INT] IM${this.im}: wasHalted=${wasHalted}, oldPC=${oldPC.toString(16)}, newPC=0038, T=${this.tStates}`);
                     return 13;
                 case 2:
-                    this.push(this.pc);
+                    // Interrupt push has no internal cycle - it follows the acknowledge directly
+                    this.push(this.pc, true);
                     const vector = (this.i << 8) | 0xff;
                     this.pc = this.readWord(vector);
                     this.memptr = this.pc;
@@ -268,7 +282,8 @@
             this.iff2 = this.iff1;
             this.iff1 = false;
             this.incR();
-            this.push(this.pc);
+            // NMI push has no internal cycle - it follows the acknowledge directly
+            this.push(this.pc, true);
             this.pc = 0x0066;
             this.memptr = this.pc;
             return 11;
@@ -542,7 +557,12 @@
                     tmp = this.f; this.f = this.f_; this.f_ = tmp;
                     this.tStates += 4;
                     break;
-                case 0x09: this.hl = this.add16(this.hl, this.bc); this.tStates += 11; break; // ADD HL,BC
+                case 0x09: // ADD HL,BC
+                    // 7 internal T-states with IR on bus
+                    if (this.contendInternal) this.contendInternal((this.i << 8) | this.r, 7);
+                    this.hl = this.add16(this.hl, this.bc);
+                    this.tStates += 11;
+                    break;
                 case 0x0a: this.a = this.readByte(this.bc); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 7; break; // LD A,(BC)
                 case 0x0b: this.bc = (this.bc - 1) & 0xffff; this.tStates += 6; break; // DEC BC
                 case 0x0c: this.c = this.inc8(this.c); this.tStates += 4; break; // INC C
@@ -556,9 +576,15 @@
                     this.tStates += 4;
                     break;
                 case 0x10: // DJNZ d
+                    // Sinclair Wiki: pc:4,ir:1,pc+1:3,[pc+1:1×5]
+                    // 1 internal T-state with IR on bus
+                    if (this.contendInternal) this.contendInternal((this.i << 8) | this.r, 1);
                     this.b = (this.b - 1) & 0xff;
                     if (this.b) {
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 13;
                     } else {
@@ -583,12 +609,21 @@
                     break;
                 case 0x18: // JR d
                     {
+                        // Sinclair Wiki: pc:4,pc+1:3,[pc+1:1×5]
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                     }
                     this.tStates += 12;
                     break;
-                case 0x19: this.hl = this.add16(this.hl, this.de); this.tStates += 11; break; // ADD HL,DE
+                case 0x19: // ADD HL,DE
+                    // 7 internal T-states with IR on bus
+                    if (this.contendInternal) this.contendInternal((this.i << 8) | this.r, 7);
+                    this.hl = this.add16(this.hl, this.de);
+                    this.tStates += 11;
+                    break;
                 case 0x1a: this.a = this.readByte(this.de); this.memptr = (this.de + 1) & 0xffff; this.tStates += 7; break; // LD A,(DE)
                 case 0x1b: this.de = (this.de - 1) & 0xffff; this.tStates += 6; break; // DEC DE
                 case 0x1c: this.e = this.inc8(this.e); this.tStates += 4; break; // INC E
@@ -604,8 +639,12 @@
                     this.tStates += 4;
                     break;
                 case 0x20: // JR NZ,d
+                    // Sinclair Wiki: pc:4,pc+1:3,[pc+1:1×5]
                     if (!(this.f & FLAG_Z)) {
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
                     } else {
@@ -643,8 +682,12 @@
                     this.tStates += 4;
                     break;
                 case 0x28: // JR Z,d
+                    // Sinclair Wiki: pc:4,pc+1:3,[pc+1:1×5]
                     if (this.f & FLAG_Z) {
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
                     } else {
@@ -652,7 +695,12 @@
                         this.tStates += 7;
                     }
                     break;
-                case 0x29: this.hl = this.add16(this.hl, this.hl); this.tStates += 11; break; // ADD HL,HL
+                case 0x29: // ADD HL,HL
+                    // 7 internal T-states with IR on bus
+                    if (this.contendInternal) this.contendInternal((this.i << 8) | this.r, 7);
+                    this.hl = this.add16(this.hl, this.hl);
+                    this.tStates += 11;
+                    break;
                 case 0x2a: // LD HL,(nn)
                     {
                         const addr = this.fetchWord();
@@ -672,8 +720,12 @@
                     this.tStates += 4;
                     break;
                 case 0x30: // JR NC,d
+                    // Sinclair Wiki: pc:4,pc+1:3,[pc+1:1×5]
                     if (!(this.f & FLAG_C)) {
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
                     } else {
@@ -691,8 +743,24 @@
                     this.tStates += 13;
                     break;
                 case 0x33: this.sp = (this.sp + 1) & 0xffff; this.tStates += 6; break; // INC SP
-                case 0x34: this.writeByte(this.hl, this.inc8(this.readByte(this.hl))); this.tStates += 11; break; // INC (HL)
-                case 0x35: this.writeByte(this.hl, this.dec8(this.readByte(this.hl))); this.tStates += 11; break; // DEC (HL)
+                case 0x34: // INC (HL)
+                    {
+                        const val = this.readByte(this.hl);
+                        // 1 internal T-state with HL on bus
+                        if (this.contendInternal) this.contendInternal(this.hl, 1);
+                        this.writeByte(this.hl, this.inc8(val));
+                    }
+                    this.tStates += 11;
+                    break;
+                case 0x35: // DEC (HL)
+                    {
+                        const val = this.readByte(this.hl);
+                        // 1 internal T-state with HL on bus
+                        if (this.contendInternal) this.contendInternal(this.hl, 1);
+                        this.writeByte(this.hl, this.dec8(val));
+                    }
+                    this.tStates += 11;
+                    break;
                 case 0x36: this.writeByte(this.hl, this.fetchByte()); this.tStates += 10; break; // LD (HL),n
                 case 0x37: // SCF
                     this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) |
@@ -702,8 +770,12 @@
                     this.tStates += 4;
                     break;
                 case 0x38: // JR C,d
+                    // Sinclair Wiki: pc:4,pc+1:3,[pc+1:1×5]
                     if (this.f & FLAG_C) {
+                        const dispAddr = this.pc; // pc+1 = displacement byte address
                         const d = this.fetchDisplacement();
+                        // 5 internal T-states with pc+1 on bus (per Sinclair Wiki)
+                        if (this.contendInternal) this.contendInternal(dispAddr, 5);
                         this.memptr = this.pc = (this.pc + d) & 0xffff;
                         this.tStates += 12;
                     } else {
@@ -711,7 +783,12 @@
                         this.tStates += 7;
                     }
                     break;
-                case 0x39: this.hl = this.add16(this.hl, this.sp); this.tStates += 11; break; // ADD HL,SP
+                case 0x39: // ADD HL,SP
+                    // 7 internal T-states with IR on bus
+                    if (this.contendInternal) this.contendInternal((this.i << 8) | this.r, 7);
+                    this.hl = this.add16(this.hl, this.sp);
+                    this.tStates += 11;
+                    break;
                 case 0x3a: // LD A,(nn)
                     {
                         const addr = this.fetchWord();
@@ -788,7 +865,7 @@
                 case 0x74: this.writeByte(this.hl, this.h); this.tStates += 7; break;
                 case 0x75: this.writeByte(this.hl, this.l); this.tStates += 7; break;
                 case 0x76: // HALT - PC points to HALT itself
-                    if (this.debugInterrupts) console.log(`[HALT] at PC=${(this.pc-1).toString(16)}, IFF1=${this.iff1}, T=${this.tStates}`);
+                    if (this.debugInterrupts) console.log(`[HALT] executed at PC=${(this.pc-1).toString(16)}, IFF1=${this.iff1}, IFF2=${this.iff2}, T=${this.tStates}`);
                     this.halted = true; this.pc = (this.pc - 1) & 0xffff; this.tStates += 4; break;
                 case 0x77: this.writeByte(this.hl, this.a); this.tStates += 7; break;
                 case 0x78: this.a = this.b; this.tStates += 4; break;
@@ -876,7 +953,7 @@
                 case 0xc6: this.add8(this.fetchByte()); this.tStates += 7; break; // ADD A,n
                 case 0xc7: this.push(this.pc); this.memptr = this.pc = 0x00; this.tStates += 11; break; // RST 0
                 case 0xc8: if (this.f & FLAG_Z) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET Z
-                case 0xc9: this.memptr = this.pc = this.pop(); this.tStates += 10; break; // RET
+                case 0xc9: this.memptr = this.pc = this.pop(); if (this.debugInterrupts) console.log(`[RET] to PC=${this.pc.toString(16)}, T=${this.tStates}`); this.tStates += 10; break; // RET
                 case 0xca: { const addr = this.fetchWord(); if (this.f & FLAG_Z) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP Z,nn
                 case 0xcb: this.executeCB(); break; // CB prefix
                 case 0xcc: { const addr = this.fetchWord(); if (this.f & FLAG_Z) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL Z,nn
@@ -891,7 +968,7 @@
                 case 0xd5: this.push(this.de); this.tStates += 11; break; // PUSH DE
                 case 0xd6: this.sub8(this.fetchByte()); this.tStates += 7; break; // SUB n
                 case 0xd7: this.push(this.pc); this.memptr = this.pc = 0x10; this.tStates += 11; break; // RST 16
-                case 0xd8: if (this.f & FLAG_C) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET C
+                case 0xd8: if (this.f & FLAG_C) { this.memptr = this.pc = this.pop(); if (this.debugInterrupts) console.log(`[RET C] taken, to PC=${this.pc.toString(16)}, T=${this.tStates}`); this.tStates += 11; } else { if (this.debugInterrupts) console.log(`[RET C] not taken, C=0, T=${this.tStates}`); this.tStates += 5; } break; // RET C
                 case 0xd9: // EXX
                     {
                         let tmp = this.bc; this.bc = (this.b_ << 8) | this.c_; this.b_ = (tmp >> 8) & 0xff; this.c_ = tmp & 0xff;
@@ -956,6 +1033,8 @@
             let val;
             if (reg === 6) {
                 val = this.readByte(this.hl);
+                // 1T internal cycle with (HL) on bus - apply contention (FUSE timing model)
+                if (this.contendInternal) this.contendInternal(this.hl, 1);
                 this.tStates += 4;
             } else {
                 val = this.getRegister(reg);
@@ -1099,7 +1178,11 @@
         executeIndexedCB(opcode, addr) {
             const reg = opcode & 0x07;
             const op = opcode >> 3;
-            
+
+            // 5T internal cycles with (IX/IY+d) on bus before read - apply contention
+            // FUSE timing: M1(DD/FD)+M1(CB)+M2(d)+M1(op)+5T internal+4T read+3T write = 23T
+            if (this.contendInternal) this.contendInternal(addr, 5);
+
             let val = this.readByte(addr);
             let result;
             
@@ -1271,6 +1354,7 @@
                 case 0x45: case 0x4d: case 0x55: case 0x5d: case 0x65: case 0x6d: case 0x75: case 0x7d: // RETN/RETI
                     this.iff1 = this.iff2;
                     this.memptr = this.pc = this.pop();
+                    if (this.debugInterrupts) console.log(`[RETI] returning to PC=${this.pc.toString(16)}, T=${this.tStates}`);
                     this.tStates += 14;
                     break;
                 case 0x46: case 0x4e: case 0x66: case 0x6e: this.im = 0; this.tStates += 8; break; // IM 0
@@ -1309,6 +1393,8 @@
                 case 0x67: // RRD
                     {
                         const tmp = this.readByte(this.hl);
+                        // 4T internal cycles with HL on bus after read - apply contention
+                        if (this.contendInternal) this.contendInternal(this.hl, 4);
                         this.writeByte(this.hl, ((this.a << 4) | (tmp >> 4)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp & 0x0f);
                         this.f = (this.f & FLAG_C) | this.sz53pTable[this.a];
@@ -1324,6 +1410,8 @@
                 case 0x6f: // RLD
                     {
                         const tmp = this.readByte(this.hl);
+                        // 4T internal cycles with HL on bus after read - apply contention
+                        if (this.contendInternal) this.contendInternal(this.hl, 4);
                         this.writeByte(this.hl, ((tmp << 4) | (this.a & 0x0f)) & 0xff);
                         this.a = (this.a & 0xf0) | (tmp >> 4);
                         this.f = (this.f & FLAG_C) | this.sz53pTable[this.a];
@@ -1346,6 +1434,8 @@
                     {
                         const val = this.readByte(this.hl);
                         this.writeByte(this.de, val);
+                        // 2 internal T-states with DE on bus
+                        if (this.contendInternal) this.contendInternal(this.de, 2);
                         this.bc = (this.bc - 1) & 0xffff;
                         this.de = (this.de + 1) & 0xffff;
                         this.hl = (this.hl + 1) & 0xffff;
@@ -1418,6 +1508,8 @@
                     {
                         const val = this.readByte(this.hl);
                         this.writeByte(this.de, val);
+                        // 2 internal T-states with DE on bus
+                        if (this.contendInternal) this.contendInternal(this.de, 2);
                         this.bc = (this.bc - 1) & 0xffff;
                         this.de = (this.de - 1) & 0xffff;
                         this.hl = (this.hl - 1) & 0xffff;
@@ -1501,12 +1593,16 @@
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
+                            // 7 internal T-states with DE on bus when repeating (2+5 per Sinclair Wiki/Swan)
+                            if (this.contendInternal) this.contendInternal(this.de, 7);
                             this.tStates += 21;
                         } else {
                             // Normal completion: Y/X from (A + val)
                             this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
                                      (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                             this.q = this.f;
+                            // 2 internal T-states with DE on bus (same as LDI)
+                            if (this.contendInternal) this.contendInternal(this.de, 2);
                             this.tStates += 16;
                         }
                         this.de = (this.de + 1) & 0xffff;
@@ -1535,6 +1631,8 @@
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
+                            // 5 internal T-states with HL on bus when repeating
+                            if (this.contendInternal) this.contendInternal(this.hl, 5);
                             this.tStates += 21;
                         } else {
                             this.q = this.f;
@@ -1643,12 +1741,16 @@
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
+                            // 7 internal T-states with DE on bus when repeating (2+5 per Sinclair Wiki/Swan)
+                            if (this.contendInternal) this.contendInternal(this.de, 7);
                             this.tStates += 21;
                         } else {
                             // Normal completion: Y/X from (A + val)
                             this.f = (this.f & (FLAG_C | FLAG_Z | FLAG_S)) |
                                      (n & 0x08) | ((n & 0x02) ? 0x20 : 0);
                             this.q = this.f;
+                            // 2 internal T-states with DE on bus (same as LDD)
+                            if (this.contendInternal) this.contendInternal(this.de, 2);
                             this.tStates += 16;
                         }
                         this.de = (this.de - 1) & 0xffff;
@@ -1677,6 +1779,8 @@
                             this.q = this.f;
                             this.pc = (this.pc - 2) & 0xffff;
                             this.memptr = (this.pc + 1) & 0xffff;
+                            // 5 internal T-states with HL on bus when repeating
+                            if (this.contendInternal) this.contendInternal(this.hl, 5);
                             this.tStates += 21;
                         } else {
                             this.q = this.f;
@@ -1811,6 +1915,11 @@
             const startTStates = this.tStates;
             while (this.tStates - startTStates < targetTStates) {
                 if (this.halted) {
+                    // Process eiPending during HALT NOP cycles (same as instruction boundary)
+                    if (this.eiPending) {
+                        this.eiPending = false;
+                        this.iff1 = this.iff2 = true;
+                    }
                     // During HALT, CPU reads from PC+1 (next instruction after HALT) but discards data
                     // PC points to HALT itself, but bus reads happen from next address
                     this.readByte((this.pc + 1) & 0xffff);

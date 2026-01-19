@@ -40,6 +40,8 @@
                 case '48k':
                     this.rom = [new Uint8Array(0x4000)];
                     this.ram = [new Uint8Array(0xC000)];
+                    // TR-DOS ROM for Beta Disk interface (optional for 48K)
+                    this.trdosRom = new Uint8Array(0x4000);
                     break;
                 case '128k':
                 case 'pentagon':
@@ -48,10 +50,8 @@
                     for (let i = 0; i < 8; i++) {
                         this.ram.push(new Uint8Array(0x4000));
                     }
-                    // Pentagon has separate TR-DOS ROM
-                    if (this.machineType === 'pentagon') {
-                        this.trdosRom = new Uint8Array(0x4000);
-                    }
+                    // TR-DOS ROM for Beta Disk interface (128K and Pentagon)
+                    this.trdosRom = new Uint8Array(0x4000);
                     break;
             }
             this.reset();
@@ -103,8 +103,16 @@
             addr &= 0xffff;
             let val;
             if (this.machineType === '48k') {
-                if (addr < 0x4000) val = this.rom[0][addr];
-                else val = this.ram[0][addr - 0x4000];
+                if (addr < 0x4000) {
+                    // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
+                    if (this.trdosActive && this.trdosRom) {
+                        val = this.trdosRom[addr];
+                    } else {
+                        val = this.rom[0][addr];
+                    }
+                } else {
+                    val = this.ram[0][addr - 0x4000];
+                }
             } else {
                 if (addr < 0x4000) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
@@ -243,6 +251,40 @@
                 result[i] = this.read(startAddr + i);
             }
             return result;
+        }
+
+        // Get full memory snapshot (current 64K view for export)
+        getFullSnapshot() {
+            const snapshot = new Uint8Array(0x10000);
+            for (let addr = 0; addr < 0x10000; addr++) {
+                snapshot[addr] = this.read(addr);
+            }
+            return snapshot;
+        }
+
+        // Get full state including all banks (for complete snapshots)
+        getFullState() {
+            const state = {
+                machineType: this.machineType,
+                currentRomBank: this.currentRomBank,
+                currentRamBank: this.currentRamBank,
+                screenBank: this.screenBank,
+                pagingDisabled: this.pagingDisabled,
+                trdosActive: this.trdosActive
+            };
+
+            // Copy ROM banks
+            state.rom = this.rom.map(bank => new Uint8Array(bank));
+
+            // Copy RAM banks
+            state.ram = this.ram.map(bank => new Uint8Array(bank));
+
+            // Copy TR-DOS ROM if present
+            if (this.trdosRom) {
+                state.trdosRom = new Uint8Array(this.trdosRom);
+            }
+
+            return state;
         }
     }
 

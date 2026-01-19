@@ -2,7 +2,7 @@
     "tests": [
         {
             "id": "ula48",
-            "name": "ULA 48K Timing",
+            "name": "ULA 48K Timing (early)",
             "file": "tests/ula.zip",
             "zipEntry": "ula48.tap",
             "machine": "48k",
@@ -17,10 +17,11 @@
         },
         {
             "id": "ula128",
-            "name": "ULA 128K Timing",
+            "name": "ULA 128K Timing (early)",
             "file": "tests/ula.zip",
             "zipEntry": "ula128.tap",
             "machine": "128k",
+            "earlyTimings": true,
             "palette": "default",
             "enabled": true,
             "author": "",
@@ -43,6 +44,71 @@
                 { "frames": 50, "screen": "tests/pent128.png" }
             ]
         },
+
+        {
+            "id": "aquaplane",
+            "name": "Aquaplane 48K",
+            "file": "tests/Aquaplane.zip",
+            "zipEntry": "Aquaplane.sna",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 202, "screen": "tests/aquaplane_202.png" }
+            ]
+        },
+
+        {
+            "id": "comet",
+            "name": "Comet game 48K",
+            "file": "tests/CometGameThe.zip",
+            "zipEntry": "CometGameThe.sna",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 152, "screen": "tests/comet_153.png" }
+            ]
+        },
+
+        {
+            "id": "academy",
+            "name": "Academy 48K",
+            "file": "tests/Academy.zip",
+            "zipEntry": "Academy.sna",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 168, "screen": "tests/academy_169.png" }
+            ]
+        },
+
+        {
+            "id": "venom",
+            "name": "Venom 48K",
+            "file": "tests/Venom.zip",
+            "zipEntry": "Venom.sna",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 94, "screen": "tests/venom_94.png" }
+            ]
+        },
+
         {
             "id": "cpd-48k",
             "name": "CPD-test 48k",
@@ -71,138 +137,36 @@
                 { "frames": 786, "screen": "tests/cpd-128k.png" }
             ]
         },
+
         {
-            "id": "zexall",
-            "name": "zexall",
-            "file": "tests/zexall.tap",
+            "id": "halt2int early",
+            "name": "HALT2INT early",
+            "file": "tests/halt2int.tap",
             "machine": "48k",
             "earlyTimings": true,
             "palette": "default",
             "enabled": true,
-            "author": "Frank D. Cringle",
-            "source": "https://mdfs.net/Software/Z80/Exerciser/",
+            "author": "Woodmass, Mark",
+            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
             "steps": [
-                { "frames": 100000, "screen": "tests/zexall_0.png" },
-                { "frames": 200000, "screen": "tests/zexall_0.png" },
-                { "frames": 300000, "screen": "tests/zexall_0.png" },
-                { "frames": 450583, "screen": "tests/zexall_1.png" },
-                { "frames": 500000, "screen": "tests/zexall_1.png" },
-                { "frames": 600000, "screen": "tests/zexall_2.png" },
-                { "frames": 700000, "screen": "tests/zexall_3.png" },
-                { "frames": 750000, "screen": "tests/zexall_4.png" }
+                { "frames": 100, "screen": "tests/halt2int_early.png" }
+            ]
+        },
+        {
+            "id": "halt2int late",
+            "name": "HALT2INT late",
+            "file": "tests/halt2int.tap",
+            "machine": "48k",
+            "earlyTimings": false,
+            "palette": "default",
+            "enabled": true,
+            "author": "Woodmass, Mark",
+            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
+            "steps": [
+                { "frames": 100, "screen": "tests/halt2int_late.png" }
             ]
         },
 
-        {
-            "id": "zexdoc",
-            "name": "zexdoc",
-            "file": "tests/zexdoc.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": true,
-            "author": "Frank D. Cringle",
-            "source": "https://mdfs.net/Software/Z80/Exerciser/",
-            "steps": [
-                { "frames": 100000, "screen": "tests/zexdoc_1.png" },
-                { "frames": 200000, "screen": "tests/zexdoc_1.png" },
-                { "frames": 300000, "screen": "tests/zexdoc_1.png" },
-                { "frames": 400000, "screen": "tests/zexdoc_1.png" },
-                { "frames": 500000, "screen": "tests/zexdoc_2.png" },
-                { "frames": 600000, "screen": "tests/zexdoc_3.png" },
-                { "frames": 700000, "screen": "tests/zexdoc_4.png" },
-                { "frames": 750000, "screen": "tests/zexdoc_5.png" }
-            ]
-        },
-
-        {
-            "id": "z80ccf",
-            "name": "Raxoft z80ccf",
-            "file": "tests/raxoft.zip",
-			"zipEntry": "z80ccf.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": true,
-            "author": "Patrik Rak",
-            "source": "https://github.com/raxoft/z80test",
-            "steps": [
-                { "frames": 2350, "screen": "tests/z80ccf_1.png" },
-                { "frames": 5076, "screen": "tests/z80ccf_2.png", "keys": "ENTER" },
-                { "frames": 6610, "screen": "tests/z80ccf_3.png", "keys": "ENTER" },
-                { "frames": 8430, "screen": "tests/z80ccf_4.png", "keys": "ENTER" },
-                { "frames": 9884, "screen": "tests/z80ccf_5.png", "keys": "ENTER" },
-                { "frames": 10618, "screen": "tests/z80ccf_6.png", "keys": "ENTER" },
-                { "frames": 11064, "screen": "tests/z80ccf_7.png", "keys": "ENTER" },
-                { "frames": 11578, "screen": "tests/z80ccf_8.png", "keys": "ENTER" }
-            ]
-        },
-        {
-            "id": "z80doc",
-            "name": "Raxoft z80doc",
-            "file": "tests/raxoft.zip",
-			"zipEntry": "z80doc.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": true,
-            "author": "Patrik Rak",
-            "source": "https://github.com/raxoft/z80test",
-            "steps": [
-                { "frames": 4540, "screen": "tests/z80doc_1.png" },
-                { "frames": 9588, "screen": "tests/z80doc_2.png", "keys": "ENTER" },
-                { "frames": 12284, "screen": "tests/z80doc_3.png", "keys": "ENTER" },
-                { "frames": 15396, "screen": "tests/z80doc_4.png", "keys": "ENTER" },
-                { "frames": 17594, "screen": "tests/z80doc_5.png", "keys": "ENTER" },
-                { "frames": 18552, "screen": "tests/z80doc_6.png", "keys": "ENTER" },
-                { "frames": 19208, "screen": "tests/z80doc_7.png", "keys": "ENTER" },
-                { "frames": 19958, "screen": "tests/z80doc_8.png", "keys": "ENTER" }
-            ]
-        },
-        {
-            "id": "z80docflags",
-            "name": "Raxoft z80docflags",
-            "file": "tests/raxoft.zip",
-			"zipEntry": "z80docflags.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": true,
-            "author": "Patrik Rak",
-            "source": "https://github.com/raxoft/z80test",
-            "steps": [
-                { "frames": 2218, "screen": "tests/z80docflags_1.png" },
-                { "frames": 4906, "screen": "tests/z80docflags_2.png", "keys": "ENTER" },
-                { "frames": 6408, "screen": "tests/z80docflags_3.png", "keys": "ENTER" },
-                { "frames": 8132, "screen": "tests/z80docflags_4.png", "keys": "ENTER" },
-                { "frames": 9454, "screen": "tests/z80docflags_5.png", "keys": "ENTER" },
-                { "frames": 10130, "screen": "tests/z80docflags_6.png", "keys": "ENTER" },
-                { "frames": 10624, "screen": "tests/z80docflags_7.png", "keys": "ENTER" },
-                { "frames": 11248, "screen": "tests/z80docflags_8.png", "keys": "ENTER" }
-            ]
-        },
-        {
-            "id": "z80flags",
-            "name": "Raxoft z80flags",
-            "file": "tests/raxoft.zip",
-			"zipEntry": "z80flags.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": true,
-            "author": "Patrik Rak",
-            "source": "https://github.com/raxoft/z80test",
-            "steps": [
-                { "frames": 2130, "screen": "tests/z80flags_1.png" },
-                { "frames": 4654, "screen": "tests/z80flags_2.png", "keys": "ENTER" },
-                { "frames": 6009, "screen": "tests/z80flags_3.png", "keys": "ENTER" },
-                { "frames": 7533, "screen": "tests/z80flags_4.png", "keys": "ENTER" },
-                { "frames": 8751, "screen": "tests/z80flags_5.png", "keys": "ENTER" },
-                { "frames": 9320, "screen": "tests/z80flags_6.png", "keys": "ENTER" },
-                { "frames": 9661, "screen": "tests/z80flags_7.png", "keys": "ENTER" },
-                { "frames": 10102, "screen": "tests/z80flags_8.png", "keys": "ENTER" }
-            ]
-        },
         {
             "id": "z80full",
             "name": "Raxoft z80full",
@@ -226,6 +190,94 @@
             ]
         },
         {
+            "id": "z80ccf",
+            "name": "Raxoft z80ccf",
+            "file": "tests/raxoft.zip",
+			"zipEntry": "z80ccf.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Patrik Rak",
+            "source": "https://github.com/raxoft/z80test",
+            "steps": [
+                { "frames": 2350, "screen": "tests/z80ccf_1.png" },
+                { "frames": 5076, "screen": "tests/z80ccf_2.png", "keys": "ENTER" },
+                { "frames": 6610, "screen": "tests/z80ccf_3.png", "keys": "ENTER" },
+                { "frames": 8430, "screen": "tests/z80ccf_4.png", "keys": "ENTER" },
+                { "frames": 9884, "screen": "tests/z80ccf_5.png", "keys": "ENTER" },
+                { "frames": 10618, "screen": "tests/z80ccf_6.png", "keys": "ENTER" },
+                { "frames": 11064, "screen": "tests/z80ccf_7.png", "keys": "ENTER" },
+                { "frames": 11578, "screen": "tests/z80ccf_8.png", "keys": "ENTER" }
+            ]
+        },
+        {
+            "id": "z80doc",
+            "name": "Raxoft z80doc",
+            "file": "tests/raxoft.zip",
+			"zipEntry": "z80doc.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Patrik Rak",
+            "source": "https://github.com/raxoft/z80test",
+            "steps": [
+                { "frames": 4540, "screen": "tests/z80doc_1.png" },
+                { "frames": 9588, "screen": "tests/z80doc_2.png", "keys": "ENTER" },
+                { "frames": 12284, "screen": "tests/z80doc_3.png", "keys": "ENTER" },
+                { "frames": 15396, "screen": "tests/z80doc_4.png", "keys": "ENTER" },
+                { "frames": 17594, "screen": "tests/z80doc_5.png", "keys": "ENTER" },
+                { "frames": 18552, "screen": "tests/z80doc_6.png", "keys": "ENTER" },
+                { "frames": 19208, "screen": "tests/z80doc_7.png", "keys": "ENTER" },
+                { "frames": 19958, "screen": "tests/z80doc_8.png", "keys": "ENTER" }
+            ]
+        },
+        {
+            "id": "z80docflags",
+            "name": "Raxoft z80docflags",
+            "file": "tests/raxoft.zip",
+			"zipEntry": "z80docflags.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Patrik Rak",
+            "source": "https://github.com/raxoft/z80test",
+            "steps": [
+                { "frames": 2218, "screen": "tests/z80docflags_1.png" },
+                { "frames": 4906, "screen": "tests/z80docflags_2.png", "keys": "ENTER" },
+                { "frames": 6408, "screen": "tests/z80docflags_3.png", "keys": "ENTER" },
+                { "frames": 8132, "screen": "tests/z80docflags_4.png", "keys": "ENTER" },
+                { "frames": 9454, "screen": "tests/z80docflags_5.png", "keys": "ENTER" },
+                { "frames": 10130, "screen": "tests/z80docflags_6.png", "keys": "ENTER" },
+                { "frames": 10624, "screen": "tests/z80docflags_7.png", "keys": "ENTER" },
+                { "frames": 11248, "screen": "tests/z80docflags_8.png", "keys": "ENTER" }
+            ]
+        },
+        {
+            "id": "z80flags",
+            "name": "Raxoft z80flags",
+            "file": "tests/raxoft.zip",
+			"zipEntry": "z80flags.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Patrik Rak",
+            "source": "https://github.com/raxoft/z80test",
+            "steps": [
+                { "frames": 2130, "screen": "tests/z80flags_1.png" },
+                { "frames": 4654, "screen": "tests/z80flags_2.png", "keys": "ENTER" },
+                { "frames": 6009, "screen": "tests/z80flags_3.png", "keys": "ENTER" },
+                { "frames": 7533, "screen": "tests/z80flags_4.png", "keys": "ENTER" },
+                { "frames": 8751, "screen": "tests/z80flags_5.png", "keys": "ENTER" },
+                { "frames": 9320, "screen": "tests/z80flags_6.png", "keys": "ENTER" },
+                { "frames": 9661, "screen": "tests/z80flags_7.png", "keys": "ENTER" },
+                { "frames": 10102, "screen": "tests/z80flags_8.png", "keys": "ENTER" }
+            ]
+        },
+        {
             "id": "z80memptr",
             "name": "Raxoft z80memptr",
             "file": "tests/raxoft.zip",
@@ -233,7 +285,7 @@
             "machine": "48k",
             "earlyTimings": true,
             "palette": "default",
-            "enabled": true,
+            "enabled": false,
             "author": "Patrik Rak",
             "source": "https://github.com/raxoft/z80test",
             "steps": [
@@ -245,6 +297,49 @@
                 { "frames": 9375, "screen": "tests/z80memptr_6.png", "keys": "ENTER" },
                 { "frames": 9732, "screen": "tests/z80memptr_7.png", "keys": "ENTER" },
                 { "frames": 10166, "screen": "tests/z80memptr_8.png", "keys": "ENTER" }
+            ]
+        },
+        {
+            "id": "zexall",
+            "name": "zexall",
+            "file": "tests/zexall.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Frank D. Cringle",
+            "source": "https://mdfs.net/Software/Z80/Exerciser/",
+            "steps": [
+                { "frames": 100000, "screen": "tests/zexall_0.png" },
+                { "frames": 200000, "screen": "tests/zexall_0.png" },
+                { "frames": 300000, "screen": "tests/zexall_0.png" },
+                { "frames": 450583, "screen": "tests/zexall_1.png" },
+                { "frames": 500000, "screen": "tests/zexall_1.png" },
+                { "frames": 600000, "screen": "tests/zexall_2.png" },
+                { "frames": 700000, "screen": "tests/zexall_3.png" },
+                { "frames": 750000, "screen": "tests/zexall_4.png" }
+            ]
+        },
+
+        {
+            "id": "zexdoc",
+            "name": "zexdoc",
+            "file": "tests/zexdoc.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Frank D. Cringle",
+            "source": "https://mdfs.net/Software/Z80/Exerciser/",
+            "steps": [
+                { "frames": 100000, "screen": "tests/zexdoc_1.png" },
+                { "frames": 200000, "screen": "tests/zexdoc_1.png" },
+                { "frames": 300000, "screen": "tests/zexdoc_1.png" },
+                { "frames": 400000, "screen": "tests/zexdoc_1.png" },
+                { "frames": 500000, "screen": "tests/zexdoc_2.png" },
+                { "frames": 600000, "screen": "tests/zexdoc_3.png" },
+                { "frames": 700000, "screen": "tests/zexdoc_4.png" },
+                { "frames": 750000, "screen": "tests/zexdoc_5.png" }
             ]
         }
     ]

@@ -1,15 +1,15 @@
 /**
  * ZX-M8XXX - ULA (Video and Keyboard)
- * @version 0.6.4
+ * @version 0.9.0
  * @license GPL-3.0
- * 
+ *
  * Cycle-accurate scanline-based rendering for multicolor effects.
  */
 
 (function(global) {
     'use strict';
-    
-    const VERSION = '0.6.4';
+
+    const VERSION = '0.9.0';
 
     class ULA {
         static get VERSION() { return VERSION; }
@@ -17,16 +17,32 @@
         constructor(memory, machineType = '48k') {
             this.memory = memory;
             this.machineType = machineType;
-            this.fullBorderMode = false;
+            this.borderPreset = 'full';  // Current border preset
+            this.fullBorderMode = true;  // Derived from preset for backwards compatibility
             this.borderOnly = false;  // When true, don't draw paper area (256x192)
             this.debugBorderTiming = false;  // Enable to log border change timing
             this.debugScreenRendering = false;  // Enable to log screen vs border decisions
             this.debugMulticolor = false;  // Enable to log multicolor attribute changes
+            this.debugPaperBoundary = false;  // Enable to log paper boundary (line 64) timing
             this.mcTimingOffset = 0;  // Multicolor lookup offset (console: spectrum.ula.mcTimingOffset = X)
             this.mcWriteAdjust = 5;   // Write time adjustment - ADDED to recorded tStates (try 5-8 for PUSH)
+            this.mc128kOffset = 0;    // 128K-specific colTstate offset (console: spectrum.ula.mc128kOffset = X)
 
             this.SCREEN_WIDTH = 256;
             this.SCREEN_HEIGHT = 192;
+
+            // Border size presets (machine-independent display sizes)
+            // Full: uses actual machine hardware sizes
+            // Normal: standard cropped view (uses machine-specific normal sizes)
+            // Others: fixed sizes regardless of machine type
+            this.BORDER_PRESETS = {
+                'full':   null,  // Uses FULL_BORDER_SIZES (machine-specific)
+                'normal': null,  // Uses NORMAL_BORDER_SIZES (machine-specific)
+                'thick':  { top: 48, left: 48, right: 48, bottom: 48 },   // 352x288
+                'medium': { top: 32, left: 32, right: 32, bottom: 32 },   // 320x256
+                'small':  { top: 16, left: 16, right: 16, bottom: 16 },   // 288x224
+                'none':   { top: 0, left: 0, right: 0, bottom: 0 }        // 256x192
+            };
 
             // Full border sizes per machine type (actual hardware values)
             // 48K:  64 top, 48 left/right, 56 bottom (312 lines total)
@@ -69,9 +85,13 @@
                 this.ULA_CONTENTION_TSTATES = 0;     // Pentagon has no contention
                 this.PAPER_START_TSTATE = 68;  // H-blank(32) + left border(36)
                 // Pentagon timing - top-left PAPER pixel at line 80, T-state 68 within line
-                // With borderOffset=4 in spectrum.js, TIMING_ADJUST compensates: 14 - 4 = 10
+                // Reference: JSSpeccy3 mainScreenStartTstate = 17988
                 this.TOP_LEFT_PIXEL_TSTATE = 80 * 224 + 68;  // = 17988
-                this.TIMING_ADJUST = 10;  // Compensates for borderOffset=4
+                this.TIMING_ADJUST = 0;  // No adjustment - using reference values directly
+                this.VERTICAL_LINE_DRIFT = 0;  // No drift correction needed for Pentagon
+                this.BORDER_TIMING_OFFSET = 0;  // No border offset needed for Pentagon
+                this.BORDER_PHASE = 0;  // Pentagon has no 4T quantization
+                this.ULA_READ_AHEAD = 0;  // Pentagon has no contention, no read-ahead needed
             } else if (machineType === '128k') {
                 // 128K: 228 T-states/line × 311 lines = 70908 T-states/frame
                 // Line structure (from libspectrum): 24 left + 128 screen + 24 right + 52 retrace = 228
@@ -82,39 +102,47 @@
                 this.VISIBLE_LINE_OFFSET = 0;
                 this.ULA_CONTENTION_TSTATES = 0;  // Per-line contention (not used, we do per-cycle)
                 this.PAPER_START_TSTATE = 64;  // From ZXMAK2: c_ulaFirstPaperTact = 64
-                // I/O Contention timing for 128K
-                // Pattern 6,5,4,3,2,1,0,0 starts at T=14361, repeats every 8 T-states
-                // Contention applies during screen lines (128 T-states of each line)
-                this.CONTENTION_START_TSTATE = 14361;  // When contention pattern starts in frame
-                this.CONTENTION_PATTERN = [6, 5, 4, 3, 2, 1, 0, 0];  // Delays for each position
+                // I/O Contention timing for 128K - contention pattern starts at 14361
+                // (sinclair.wiki.zxnet.co.uk/wiki/Contended_memory)
+                this.CONTENTION_START_TSTATE = 14361;
+                this.CONTENTION_PATTERN = [6, 5, 4, 3, 2, 1, 0, 0];
                 this.CONTENTION_AREA_START = 24;  // Position within line where contention starts (after left border)
                 this.CONTENTION_AREA_LENGTH = 128; // 128 T-states of paper area
                 this.IO_CONTENTION_ENABLED = true;
-                // 128K timing - INTERRUPT-RELATIVE (T=0 when interrupt fires):
-                // Our emulator resets tStates=0 at interrupt, so we use interrupt-relative timing
-                // Different emulators use different values:
-                //   Fuse/libspectrum: 14362
-                //   Swan: 14361 (CentralScreenStart)
-                //   ZXMAK2: 14428 (used by some timing tests)
-                // Using Swan value since we use Swan's border timing formula (tStates - 8)
-                this.TOP_LEFT_PIXEL_TSTATE = 14361;
-                // TIMING_ADJUST shifts the display grid
-                //   INCREASE → shifts RIGHT, DECREASE → shifts LEFT
-                //   Each 1 T-state = 2 pixels
-                // Calibrated: was 15, now 15-12=3 for -24px shift
-                this.TIMING_ADJUST = 3;
+                // 128K timing: top-left pixel displayed 14364 T-states after interrupt
+                // Reference: sinclair.wiki.zxnet.co.uk/wiki/Contended_memory
+                // 14364 = 63 * 228 (start of line 63, first paper line)
+                this.TOP_LEFT_PIXEL_TSTATE = 14364;
+                this.TIMING_ADJUST = 0;
+                this.VERTICAL_LINE_DRIFT = 0;
+                // Border timing offset: 0 for aligned border/paper rendering
+                this.BORDER_TIMING_OFFSET = 0;
+                this.BORDER_PHASE = 0;  // 128K border phase (testing)
+                // ULA read-ahead: how many T-states before display the ULA reads attribute
+                // This is a hardware characteristic independent of TOP_LEFT_PIXEL_TSTATE
+                this.ULA_READ_AHEAD = 3;
             } else {
-                // 48K - pixel-perfect timing verified
+                // 48K timing
                 this.TSTATES_PER_LINE = 224;
                 this.LINES_PER_FRAME = 312;
                 this.FIRST_SCREEN_LINE = 64;
                 this.VISIBLE_LINE_OFFSET = 0;
-                this.ULA_CONTENTION_TSTATES = 32;     // Per-line contention
+                this.ULA_CONTENTION_TSTATES = 0;
                 this.PAPER_START_TSTATE = 14;
-                // 48K timing - top-left PAPER pixel at T-state 14336
-                // With borderOffset=4 in spectrum.js, TIMING_ADJUST compensates: 10 - 4 = 6
+                // 48K timing constants
                 this.TOP_LEFT_PIXEL_TSTATE = 14336;
-                this.TIMING_ADJUST = 6;  // Compensates for borderOffset=4
+                this.BORDER_TIMING_OFFSET = 0;
+                this.TIMING_ADJUST = 0;
+                this.VERTICAL_LINE_DRIFT = 0;
+                // Border phase: offset added after 4T quantization (like ZXMAK2 c_ulaBorder4Tstage)
+                this.BORDER_PHASE = 0;
+                // Memory contention pattern starts at 14335
+                this.CONTENTION_START_TSTATE = 14335;
+                this.CONTENTION_PATTERN = [6, 5, 4, 3, 2, 1, 0, 0];
+                this.IO_CONTENTION_ENABLED = true;  // Enable I/O contention for 48K
+                // ULA read-ahead: ULA reads attribute before pixel is displayed
+                // = TOP_LEFT_PIXEL_TSTATE - CONTENTION_START_TSTATE = 14336 - 14335 = 1
+                this.ULA_READ_AHEAD = 1;
             }
 
             // Calculate line timing base (when first visible line's left border starts)
@@ -137,6 +165,11 @@
             this.borderChanges = [{tState: 0, color: 7}];
             // Screen bank changes for scroll17-style effects (port $7FFC triggers both ULA and paging)
             this.screenBankChanges = [{tState: 0, bank: 5}];
+
+            // Per-scanline rendering: track beam position for immediate border rendering
+            // Instead of recording changes and replaying, we render as changes happen
+            this.beamRendering = true;  // Enable beam rendering mode
+            this.lastRenderedBeamT = 0;  // T-state up to which we've rendered border
 
             this.borderColor = 7;
             this.earOutput = 0;
@@ -175,11 +208,16 @@
             };
         }
 
-        // Update border dimensions based on current mode and machine type
+        // Update border dimensions based on current preset and machine type
         updateBorderDimensions() {
-            const sizes = this.fullBorderMode
-                ? this.FULL_BORDER_SIZES[this.machineType]
-                : this.NORMAL_BORDER_SIZES[this.machineType];
+            let sizes;
+            if (this.borderPreset === 'full') {
+                sizes = this.FULL_BORDER_SIZES[this.machineType];
+            } else if (this.borderPreset === 'normal') {
+                sizes = this.NORMAL_BORDER_SIZES[this.machineType];
+            } else {
+                sizes = this.BORDER_PRESETS[this.borderPreset] || this.FULL_BORDER_SIZES[this.machineType];
+            }
 
             this.BORDER_TOP = sizes.top;
             this.BORDER_BOTTOM = sizes.bottom;
@@ -192,15 +230,25 @@
             this.frameBuffer = new Uint8ClampedArray(this.TOTAL_WIDTH * this.TOTAL_HEIGHT * 4);
         }
 
-        // Toggle full border mode
-        setFullBorder(enabled) {
-            if (this.fullBorderMode !== enabled) {
-                this.fullBorderMode = enabled;
+        // Set border preset
+        setBorderPreset(preset) {
+            if (!this.BORDER_PRESETS.hasOwnProperty(preset)) {
+                preset = 'full';  // Default to full if invalid
+            }
+            if (this.borderPreset !== preset) {
+                this.borderPreset = preset;
+                // Update fullBorderMode for backwards compatibility
+                this.fullBorderMode = (preset === 'full');
                 this.updateBorderDimensions();
                 this.calculateLineTimes();
                 return true; // Dimensions changed, caller should resize canvas
             }
             return false;
+        }
+
+        // Toggle full border mode (backwards compatibility)
+        setFullBorder(enabled) {
+            return this.setBorderPreset(enabled ? 'full' : 'normal');
         }
 
         // Calculate T-state when each visible line's left border starts
@@ -231,6 +279,15 @@
             // Apply machine-specific timing correction
             // These values are calibrated against hardware timing tests
             this.LINE_TIMES_BASE -= this.TIMING_ADJUST || 0;
+
+            // Apply late timing offset if enabled (1T shift for warmed ULA)
+            // Base values are for EARLY timing (cold ULA)
+            // Late timing (warm ULA) = display starts 1T later = ADD 1 to TOP_LEFT_PIXEL_TSTATE
+            // This shifts border LEFT (earlier in relative frame position)
+            // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
+            if (this.lateTimings && this.machineType !== 'pentagon') {
+                this.LINE_TIMES_BASE += 1;
+            }
         }
 
         // Calculate T-state when a visible line starts being drawn
@@ -337,7 +394,122 @@
             this.flashCounter = 0;
             this.frameCounter = 0;
             this.lastRenderedLine = -1;
+            this.lastRenderedBeamT = 0;
             this.keyboardState.fill(0xff);
+        }
+
+        // Convert frame T-state to visible pixel coordinates
+        // Returns {visY, x, visible} where visible is false if outside visible area
+        // For beam rendering: this tells us where the ULA beam is at a given T-state
+        frameT2Pixel(frameT) {
+            // Calculate position relative to first visible pixel
+            const relT = frameT - this.LINE_TIMES_BASE;
+
+            // Calculate visible line and position within line
+            const visY = Math.floor(relT / this.TSTATES_PER_LINE);
+            const lineT = relT - (visY * this.TSTATES_PER_LINE);
+
+            // Convert T-state within line to pixel position (2 pixels per T-state)
+            const x = Math.floor(lineT * 2);
+
+            // Check if within visible area
+            const visible = visY >= 0 && visY < this.TOTAL_HEIGHT && x >= 0 && x < this.TOTAL_WIDTH;
+
+            return { visY, x, visible, lineT };
+        }
+
+        // Render border pixels from lastRenderedBeamT to toT
+        // This is called when border color changes to fill in pixels with the current color
+        // Optimized: render line by line for efficiency
+        renderBorderUpToT(toT) {
+            if (!this.beamRendering) return;
+
+            const fromT = this.lastRenderedBeamT;
+            if (toT <= fromT) return;  // Nothing to render
+
+            const color = this.palette[this.borderColor];
+            const tstatesPerLine = this.TSTATES_PER_LINE;
+            // Apply border timing offset: shifts border rendering down by BORDER_TIMING_OFFSET T-states
+            // This compensates for the difference between paper timing and border timing
+            const borderOffset = this.BORDER_TIMING_OFFSET || 0;
+            const lineBase = this.LINE_TIMES_BASE - borderOffset;
+
+            // Vertical-only drift correction: shifts later lines down without affecting horizontal position
+            // This compensates for ~2-3 lines of accumulated timing drift from top to bottom of screen
+            // Drift factor: how many extra lines to add per line (e.g., 0.012 = ~2.3 lines over 192 paper lines)
+            const verticalDrift = this.VERTICAL_LINE_DRIFT || 0;
+
+            const fromRelT = fromT - lineBase;
+            const toRelT = toT - lineBase;
+
+            // Calculate line and X position using standard T-states per line
+            // This keeps horizontal position accurate
+            const fromLineRaw = Math.floor(fromRelT / tstatesPerLine);
+            const fromLineT = fromRelT - (fromLineRaw * tstatesPerLine);
+            const fromX = Math.floor(fromLineT * 2);
+
+            // Apply vertical-only drift: shift line number down for later lines
+            const fromLine = Math.floor(fromLineRaw + fromLineRaw * verticalDrift);
+
+            const toLineRaw = Math.floor(toRelT / tstatesPerLine);
+            const toLineT = toRelT - (toLineRaw * tstatesPerLine);
+            const toX = Math.floor(toLineT * 2);
+
+            const toLine = Math.floor(toLineRaw + toLineRaw * verticalDrift);
+
+            // Render lines from fromLine to toLine
+            for (let line = fromLine; line <= toLine; line++) {
+                if (line < 0 || line >= this.TOTAL_HEIGHT) continue;
+
+                // Calculate x range for this line
+                const startX = (line === fromLine) ? Math.max(0, fromX) : 0;
+                const endX = (line === toLine) ? Math.min(this.TOTAL_WIDTH, toX) : this.TOTAL_WIDTH;
+
+                if (startX >= endX) continue;
+
+                // Determine if this is a border-only line or has paper
+                const isTopBorder = line < this.BORDER_TOP;
+                const isBottomBorder = line >= this.BORDER_TOP + this.SCREEN_HEIGHT;
+
+                if (isTopBorder || isBottomBorder) {
+                    // Pure border line - render all pixels
+                    for (let x = startX; x < endX; x++) {
+                        this.setPixelRGBA(x, line, color);
+                    }
+                } else {
+                    // Line with paper - render only border regions
+                    const paperStart = this.BORDER_LEFT;
+                    const paperEnd = this.BORDER_LEFT + this.SCREEN_WIDTH;
+
+                    // Left border
+                    if (startX < paperStart) {
+                        const leftEnd = Math.min(endX, paperStart);
+                        for (let x = startX; x < leftEnd; x++) {
+                            this.setPixelRGBA(x, line, color);
+                        }
+                    }
+
+                    // Right border
+                    if (endX > paperEnd) {
+                        const rightStart = Math.max(startX, paperEnd);
+                        for (let x = rightStart; x < endX; x++) {
+                            this.setPixelRGBA(x, line, color);
+                        }
+                    }
+                }
+            }
+
+            this.lastRenderedBeamT = toT;
+        }
+
+        // Complete border rendering for end of frame
+        // Renders from lastRenderedBeamT to end of visible area
+        finishBorderRendering() {
+            if (!this.beamRendering) return;
+
+            // Calculate T-state at end of visible area
+            const endT = this.LINE_TIMES_BASE + (this.TOTAL_HEIGHT * this.TSTATES_PER_LINE);
+            this.renderBorderUpToT(endT);
         }
 
         // Called at start of each frame
@@ -347,7 +519,17 @@
             this.hadScreenBankChanges = this.screenBankChanges && this.screenBankChanges.length > 1;
 
             this.lastRenderedLine = -1;
-            this.borderChanges = [{tState: 0, color: this.borderColor}];
+
+            // Initialize beam tracking for per-scanline rendering
+            // Start rendering from the first visible pixel's T-state
+            // Account for BORDER_TIMING_OFFSET so top lines get rendered
+            const borderOffset = this.BORDER_TIMING_OFFSET || 0;
+            this.lastRenderedBeamT = this.LINE_TIMES_BASE - borderOffset;
+
+            // Initialize border at LINE_TIMES_BASE to cover all visible lines
+            // (LINE_TIMES_BASE can be negative when first visible line is before T=0)
+            const initialT = Math.min(0, this.LINE_TIMES_BASE - 100);
+            this.borderChanges = [{tState: initialT, color: this.borderColor}];
             // Initialize screen bank from memory's current state
             const initialBank = this.memory.screenBank || 5;
             this.screenBankChanges = [{tState: 0, bank: initialBank}];
@@ -355,9 +537,17 @@
             // If previous frame had screen bank changes, we'll render paper at endFrame
             this.deferPaperRendering = this.hadScreenBankChanges;
 
-            // Multicolor tracking disabled (known limitation - see README)
+            // Multicolor tracking: capture initial attribute values at frame start
+            // This allows getAttrAt to return correct values for columns where writes
+            // happen AFTER the ULA scan time (the "initial" value is what the ULA sees)
             this.hadAttrChanges = false;
             this.attrChanges = {};
+            // Capture initial attrs NOW, before any writes happen this frame
+            const screen = this.memory.getScreenBase();
+            if (!this.attrInitial) {
+                this.attrInitial = new Uint8Array(768);
+            }
+            this.attrInitial.set(screen.ram.subarray(0x1800, 0x1B00));
         }
 
         // Called when attribute memory is written (for multicolor tracking)
@@ -379,11 +569,10 @@
         getAttrAt(attrOffset, tState, currentValue) {
             // Start with initial value from frame start
             let value = this.attrInitial ? this.attrInitial[attrOffset] : currentValue;
+            const initialValue = value;
 
-            // Apply any changes that happened before or at the lookup T-state
-            // mcLookupTolerance allows accepting writes slightly AFTER the nominal lookup time
-            // This accounts for Nirvana+ style engines where later columns are written
-            // after the ULA would nominally read them, but still affect the display
+            // Compare write times against the display T-state
+            // mcLookupTolerance allows fine-tuning if needed (default 0)
             const tolerance = this.mcLookupTolerance !== undefined ? this.mcLookupTolerance : 0;
             const effectiveTstate = tState + tolerance;
 
@@ -407,15 +596,78 @@
                     }
                 }
             }
+
+            // Debug: log multicolor timing (enable via spectrum.ula.debugMulticolor = true)
+            // debugMulticolor=true: show col 0-7 for first line only
+            // debugMulticolor=2: show col 0 and 16 for multiple lines
+            if (this.debugMulticolor) {
+                const showThis = (this.debugMulticolor === 2)
+                    ? ((attrOffset === 0 || attrOffset === 16) && tState < 16000)
+                    : (attrOffset < 8 && tState < 14600);  // First 8 cols, first pixel line only
+                if (showThis) {
+                    const machType = this.machineType;
+                    let appliedWrite = 'initial';
+                    if (changes) {
+                        for (const change of changes) {
+                            if (change.tState <= effectiveTstate) {
+                                appliedWrite = `@${change.tState}`;
+                            }
+                        }
+                    }
+                    console.log(`[MC-${machType}] col${attrOffset}: T=${tState} val=${value.toString(16)} ${appliedWrite}`);
+                }
+            }
+
             return value;
         }
 
         // Called when border color changes
+        // 48K/128K: ULA updates border color once every 4 T-states (8 pixels), borderTimeMask = 0xfc
+        // Pentagon: Border color changes every T-state (2 pixels), borderTimeMask = 0xff
         setBorderAt(color, tStates) {
             color = color & 0x07;
+            // Pentagon uses no quantization, 48K/128K quantize to 4T boundaries (round DOWN)
+            // BORDER_PHASE shifts the quantization phase (like ZXMAK2's c_ulaBorder4Tstage)
+            const borderPhase = this.BORDER_PHASE || 0;
+            const quantizedTStates = this.machineType === 'pentagon' ? tStates : ((tStates & ~3) + borderPhase);
             if (color !== this.borderColor) {
-                this.borderChanges.push({tState: tStates, color: color});
+                // Beam rendering: render all border pixels up to this point with the OLD color
+                // before changing to the new color
+                if (this.beamRendering) {
+                    this.renderBorderUpToT(quantizedTStates);
+                }
+
+                // Record the change (for fallback/debugging)
+                this.borderChanges.push({tState: quantizedTStates, color: color});
                 this.borderColor = color;
+
+                // Debug output if enabled (enable via console: spectrum.ula.debugBorderTiming = true)
+                if (this.debugBorderTiming || this.debugPaperBoundary) {
+                    // Calculate which visible line this change affects (with border offset)
+                    const borderOffset = this.BORDER_TIMING_OFFSET || 0;
+                    const offsetT = quantizedTStates - (this.LINE_TIMES_BASE - borderOffset);
+                    const visY = Math.floor(offsetT / this.TSTATES_PER_LINE);
+                    const lineT = offsetT % this.TSTATES_PER_LINE;
+                    const pixel = Math.floor(lineT * 2);
+                    // Visible line width is TOTAL_WIDTH pixels (176 T-states), rest is horizontal blanking
+                    const visibleTstates = this.TOTAL_WIDTH / 2;
+                    const inHBlank = lineT >= visibleTstates;
+
+                    // Determine which border region (left/paper/right/hblank)
+                    let region = 'hblank';
+                    if (!inHBlank) {
+                        if (pixel < this.BORDER_LEFT) region = 'left';
+                        else if (pixel < this.BORDER_LEFT + this.SCREEN_WIDTH) region = 'paper';
+                        else region = 'right';
+                    }
+                    const status = inHBlank ? `HBlank→line${visY+1}start` : `line${visY}@px${pixel}[${region}]`;
+
+                    // For paper boundary debug, only log around line 24 (first paper line, frame line 64)
+                    const isPaperBoundaryLine = visY >= 22 && visY <= 26;
+                    if (this.debugBorderTiming || (this.debugPaperBoundary && isPaperBoundaryLine)) {
+                        console.log(`[BORDER] color=${color} rawT=${tStates} quantT=${quantizedTStates} → ${status} (leftBorder=0-${this.BORDER_LEFT-1}, paper=${this.BORDER_LEFT}-${this.BORDER_LEFT+this.SCREEN_WIDTH-1}, rightBorder=${this.BORDER_LEFT+this.SCREEN_WIDTH}-${this.TOTAL_WIDTH-1})`);
+                    }
+                }
             }
         }
 
@@ -452,85 +704,6 @@
             }
             return color;
         }
-        
-        // Called BEFORE screen memory writes to render up to current T-state
-        // Swan approach: render everything that happened BEFORE this T-state
-        // This ensures pixels see OLD values before writes change them
-        renderBeforeWrite(tStates) {
-            // Don't render during deferred mode (scroll17 effects)
-            if (this.deferPaperRendering) return;
-
-            // Calculate which screen line and column we're at
-            const adjustedT = tStates - this.TOP_LEFT_PIXEL_TSTATE;
-            if (adjustedT < 0) return;  // Before paper area
-
-            const currentScreenLine = Math.floor(adjustedT / this.TSTATES_PER_LINE);
-            if (currentScreenLine >= 192) return;  // Past paper area
-
-            const lineT = adjustedT % this.TSTATES_PER_LINE;
-            const currentCol = Math.floor(lineT / 4);  // 4 T-states per column
-
-            const screen = this.memory.getScreenBase();
-            const screenRam = screen.ram;
-
-            // First, render all complete lines we haven't rendered yet
-            while (this.mcLastRenderedLine < currentScreenLine) {
-                const y = this.mcLastRenderedLine;
-                if (y >= 0 && y < 192) {
-                    this.renderPaperLineColumns(y, this.mcLastRenderedCol, 31, screenRam);
-                }
-                this.mcLastRenderedLine++;
-                this.mcLastRenderedCol = 0;
-            }
-
-            // Then render columns of current line up to (but not including) current column
-            if (currentScreenLine >= 0 && currentScreenLine < 192 && currentCol > this.mcLastRenderedCol) {
-                this.renderPaperLineColumns(currentScreenLine, this.mcLastRenderedCol, currentCol - 1, screenRam);
-                this.mcLastRenderedCol = currentCol;
-            }
-        }
-
-        // Render specific columns of a paper line (for multicolor render-before-write)
-        renderPaperLineColumns(y, startCol, endCol, screenRam) {
-            if (startCol > endCol || startCol > 31 || endCol < 0) return;
-            startCol = Math.max(0, startCol);
-            endCol = Math.min(31, endCol);
-
-            const visY = this.BORDER_TOP + y;
-            const third = Math.floor(y / 64);
-            const lineInThird = y & 0x07;
-            const charRow = Math.floor((y & 0x38) / 8);
-            const pixelAddr = (third << 11) | (lineInThird << 8) | (charRow << 5);
-            const attrAddr = 0x1800 + Math.floor(y / 8) * 32;
-
-            for (let col = startCol; col <= endCol; col++) {
-                const pixelByte = screenRam[pixelAddr + col];
-                const attr = screenRam[attrAddr + col];
-
-                let ink = attr & 0x07;
-                let paper = (attr >> 3) & 0x07;
-                const bright = (attr & 0x40) ? 8 : 0;
-                const flash = attr & 0x80;
-
-                if (flash && this.flashState) {
-                    const tmp = ink; ink = paper; paper = tmp;
-                }
-                ink += bright;
-                paper += bright;
-
-                for (let bit = 0; bit < 8; bit++) {
-                    const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                    const screenX = this.BORDER_LEFT + col * 8 + bit;
-                    this.setPixel(screenX, visY, pixel);
-                }
-            }
-        }
-
-        // Legacy method - kept for compatibility (no-op, multicolor disabled)
-        updateToTState(tStates) {
-            // Multicolor render-before-write disabled (known limitation)
-        }
-
         // Called during frame execution to render scanlines up to current T-state
         updateScanline(tStates) {
             // Calculate which line the beam is currently on
@@ -576,9 +749,12 @@
             const visY = line - firstVisibleLine;
             if (visY < 0 || visY >= this.TOTAL_HEIGHT) return;
 
+            // If beam rendering is active, skip border rendering here - it's handled by setBorderAt/finishBorderRendering
+            const skipBorderRendering = this.beamRendering;
+
             // Ensure borderChanges is sorted (should already be, but verify)
             // This is needed because the startColor loop assumes sorted order
-            if (this.borderChanges.length > 1 && visY === 0) {
+            if (!skipBorderRendering && this.borderChanges.length > 1 && visY === 0) {
                 let needsSort = false;
                 for (let i = 1; i < this.borderChanges.length; i++) {
                     if (this.borderChanges[i].tState < this.borderChanges[i-1].tState) {
@@ -598,6 +774,11 @@
             // Total visible width = TOTAL_WIDTH pixels = TOTAL_WIDTH/2 T-states
             const lineEndTstate = lineStartTstate + (this.TOTAL_WIDTH / 2);
 
+            // Debug output if enabled (only for first few lines with changes)
+            if (this.debugBorderTiming && visY < 5 && this.borderChanges.length > 1) {
+                console.log(`[LINE] visY=${visY} line=${line} start=${lineStartTstate} end=${lineEndTstate} changes=${this.borderChanges.length}`);
+            }
+
             // Find border color at the start of this line's visible area
             let startColor = this.borderChanges[0].color;
             for (const change of this.borderChanges) {
@@ -609,9 +790,14 @@
             }
 
             // Find changes during this line's visible range
-            const lineChanges = this.borderChanges.filter(c =>
+            const lineChanges = skipBorderRendering ? [] : this.borderChanges.filter(c =>
                 c.tState > lineStartTstate && c.tState <= lineEndTstate
             );
+
+            // Debug: log if changes are found
+            if (this.debugBorderTiming && lineChanges.length > 0) {
+                console.log(`[LINE] visY=${visY} lineChanges: ${lineChanges.map(c => `T=${c.tState},c=${c.color}`).join(', ')}`);
+            }
 
             // Is this a screen line (with paper) or pure border line?
             const screenLine = line - this.FIRST_SCREEN_LINE;
@@ -621,39 +807,46 @@
 
             if (screenLine < 0 || screenLine >= 192) {
                 // Pure border line (top/bottom border)
-                if (lineChanges.length === 0) {
-                    const borderColor = this.palette[startColor];
-                    for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                // Skip if beam rendering is handling border
+                if (!skipBorderRendering) {
+                    if (lineChanges.length === 0) {
+                        const borderColor = this.palette[startColor];
+                        for (let x = 0; x < this.TOTAL_WIDTH; x++) {
+                            this.setPixelRGBA(x, visY, borderColor);
+                        }
+                    } else {
+                        this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.TOTAL_WIDTH);
                     }
-                } else {
-                    this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.TOTAL_WIDTH);
                 }
             } else {
                 // Screen line - left border, paper, right border
                 const y = screenLine;
 
-                // Left border
-                if (lineChanges.length === 0) {
-                    const borderColor = this.palette[startColor];
-                    for (let x = 0; x < this.BORDER_LEFT; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                // Left border - skip if beam rendering
+                if (!skipBorderRendering) {
+                    if (lineChanges.length === 0) {
+                        const borderColor = this.palette[startColor];
+                        for (let x = 0; x < this.BORDER_LEFT; x++) {
+                            this.setPixelRGBA(x, visY, borderColor);
+                        }
+                    } else {
+                        this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.BORDER_LEFT, true);
                     }
-                } else {
-                    this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.BORDER_LEFT, true);
                 }
 
                 // Paper pixels (or border if borderOnly mode)
                 if (this.borderOnly) {
-                    // Draw border color instead of paper
-                    if (lineChanges.length === 0) {
-                        const borderColor = this.palette[startColor];
-                        for (let x = this.BORDER_LEFT; x < this.BORDER_LEFT + this.SCREEN_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, borderColor);
+                    // Draw border color instead of paper - skip if beam rendering
+                    if (!skipBorderRendering) {
+                        if (lineChanges.length === 0) {
+                            const borderColor = this.palette[startColor];
+                            for (let x = this.BORDER_LEFT; x < this.BORDER_LEFT + this.SCREEN_WIDTH; x++) {
+                                this.setPixelRGBA(x, visY, borderColor);
+                            }
+                        } else {
+                            this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
+                                this.BORDER_LEFT, this.BORDER_LEFT + this.SCREEN_WIDTH, true);
                         }
-                    } else {
-                        this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
-                            this.BORDER_LEFT, this.BORDER_LEFT + this.SCREEN_WIDTH, true);
                     }
                 } else if (this.deferPaperRendering) {
                     // Skip paper rendering - will be done at endFrame with all screen bank changes known
@@ -666,38 +859,85 @@
                     const pixelAddr = (third << 11) | (lineInThird << 8) | (charRow << 5);
                     const attrAddr = 0x1800 + Math.floor(y / 8) * 32;
 
-                    for (let col = 0; col < 32; col++) {
-                        const pixelByte = screenRam[pixelAddr + col];
-                        const attr = screenRam[attrAddr + col];
+                    // Calculate attribute row offset for multicolor tracking
+                    const attrRowOffset = Math.floor(y / 8) * 32;
 
-                        let ink = attr & 0x07;
-                        let paper = (attr >> 3) & 0x07;
-                        const bright = (attr & 0x40) ? 8 : 0;
-                        const flash = attr & 0x80;
+                    // Check if multicolor tracking detected attribute changes
+                    if (this.hadAttrChanges) {
+                        // Multicolor path: read attributes at ULA scan time
+                        const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+                        // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
+                        const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
 
-                        if (flash && this.flashState) {
-                            const tmp = ink; ink = paper; paper = tmp;
+                        // Debug timing calculation (enable via spectrum.ula.debugMcTiming = true)
+                        if (this.debugMcTiming && y < 2) {
+                            console.log(`[MCT-${this.machineType}] y=${y} visY=${visY} lineStart=${lineStartTstate} paperStart=${paperStartTstate} BORDER_LEFT=${this.BORDER_LEFT} BORDER_TOP=${this.BORDER_TOP}`);
                         }
-                        ink += bright;
-                        paper += bright;
 
-                        for (let bit = 0; bit < 8; bit++) {
-                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                            const screenX = this.BORDER_LEFT + col * 8 + bit;
-                            this.setPixel(screenX, visY, pixel);
+                        for (let col = 0; col < 32; col++) {
+                            const pixelByte = screenRam[pixelAddr + col];
+
+                            // Get attribute at the T-state when ULA scans this column
+                            // Each column is 8 pixels = 4 T-states
+                            const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                            const attrOffset = attrRowOffset + col;
+                            const currentAttr = screenRam[attrAddr + col];
+                            const attr = this.getAttrAt(attrOffset, colTstate, currentAttr);
+
+                            let ink = attr & 0x07;
+                            let paper = (attr >> 3) & 0x07;
+                            const bright = (attr & 0x40) ? 8 : 0;
+                            const flash = attr & 0x80;
+
+                            if (flash && this.flashState) {
+                                const tmp = ink; ink = paper; paper = tmp;
+                            }
+                            ink += bright;
+                            paper += bright;
+
+                            for (let bit = 0; bit < 8; bit++) {
+                                const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
+                                const screenX = this.BORDER_LEFT + col * 8 + bit;
+                                this.setPixel(screenX, visY, pixel);
+                            }
+                        }
+                    } else {
+                        // Fast path: no attribute changes, read current memory values
+                        for (let col = 0; col < 32; col++) {
+                            const pixelByte = screenRam[pixelAddr + col];
+                            const attr = screenRam[attrAddr + col];
+
+                            let ink = attr & 0x07;
+                            let paper = (attr >> 3) & 0x07;
+                            const bright = (attr & 0x40) ? 8 : 0;
+                            const flash = attr & 0x80;
+
+                            if (flash && this.flashState) {
+                                const tmp = ink; ink = paper; paper = tmp;
+                            }
+                            ink += bright;
+                            paper += bright;
+
+                            for (let bit = 0; bit < 8; bit++) {
+                                const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
+                                const screenX = this.BORDER_LEFT + col * 8 + bit;
+                                this.setPixel(screenX, visY, pixel);
+                            }
                         }
                     }
                 }
 
-                // Right border
-                if (lineChanges.length === 0) {
-                    const borderColor = this.palette[startColor];
-                    for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                // Right border - skip if beam rendering
+                if (!skipBorderRendering) {
+                    if (lineChanges.length === 0) {
+                        const borderColor = this.palette[startColor];
+                        for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
+                            this.setPixelRGBA(x, visY, borderColor);
+                        }
+                    } else {
+                        this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
+                            this.BORDER_LEFT + this.SCREEN_WIDTH, this.TOTAL_WIDTH, true);
                     }
-                } else {
-                    this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
-                        this.BORDER_LEFT + this.SCREEN_WIDTH, this.TOTAL_WIDTH, true);
                 }
             }
         }
@@ -735,27 +975,67 @@
             // Check if we have screen bank changes for scroll17-style effects
             const hasScreenBankChanges = this.screenBankChanges.length > 1;
 
+            // Calculate attribute row offset (0-767) for this screen line
+            const attrRowOffset = Math.floor(y / 8) * 32;
+
             if (!hasScreenBankChanges) {
-                // Fast path: no screen bank changes, render from current screen
-                for (let col = 0; col < 32; col++) {
-                    const pixelByte = screenRam[pixelAddr + col];
-                    const attr = screenRam[attrAddr + col];
+                // Check if multicolor tracking detected any attribute changes this frame
+                if (this.hadAttrChanges) {
+                    // Multicolor path: read attributes at ULA scan time
+                    const lineStartTstate = this.calculateLineStartTstate(visY);
+                    const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+                    // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
+                    const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
 
-                    let ink = attr & 0x07;
-                    let paper = (attr >> 3) & 0x07;
-                    const bright = (attr & 0x40) ? 8 : 0;
-                    const flash = attr & 0x80;
+                    for (let col = 0; col < 32; col++) {
+                        const pixelByte = screenRam[pixelAddr + col];
 
-                    if (flash && this.flashState) {
-                        const tmp = ink; ink = paper; paper = tmp;
+                        // Get attribute at the T-state when ULA scans this column
+                        // Each column is 8 pixels = 4 T-states
+                        const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                        const attrOffset = attrRowOffset + col;
+                        const currentAttr = screenRam[attrAddr + col];
+                        const attr = this.getAttrAt(attrOffset, colTstate, currentAttr);
+
+                        let ink = attr & 0x07;
+                        let paper = (attr >> 3) & 0x07;
+                        const bright = (attr & 0x40) ? 8 : 0;
+                        const flash = attr & 0x80;
+
+                        if (flash && this.flashState) {
+                            const tmp = ink; ink = paper; paper = tmp;
+                        }
+                        ink += bright;
+                        paper += bright;
+
+                        for (let bit = 0; bit < 8; bit++) {
+                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
+                            const screenX = this.BORDER_LEFT + col * 8 + bit;
+                            this.setPixel(screenX, visY, pixel);
+                        }
                     }
-                    ink += bright;
-                    paper += bright;
+                } else {
+                    // Fast path: no attribute changes, render from current screen
+                    for (let col = 0; col < 32; col++) {
+                        const pixelByte = screenRam[pixelAddr + col];
+                        const attr = screenRam[attrAddr + col];
 
-                    for (let bit = 0; bit < 8; bit++) {
-                        const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                        const screenX = this.BORDER_LEFT + col * 8 + bit;
-                        this.setPixel(screenX, visY, pixel);
+                        let ink = attr & 0x07;
+                        let paper = (attr >> 3) & 0x07;
+                        const bright = (attr & 0x40) ? 8 : 0;
+                        const flash = attr & 0x80;
+
+                        if (flash && this.flashState) {
+                            const tmp = ink; ink = paper; paper = tmp;
+                        }
+                        ink += bright;
+                        paper += bright;
+
+                        for (let bit = 0; bit < 8; bit++) {
+                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
+                            const screenX = this.BORDER_LEFT + col * 8 + bit;
+                            this.setPixel(screenX, visY, pixel);
+                        }
                     }
                 }
             } else {
@@ -872,16 +1152,24 @@
 
         // Render border pixels with horizontal stripe support
         // Uses T-state based timing for pixel-perfect positioning
+        // All timing quantized to 4T boundaries (ULA updates every 8 pixels)
+        // Pentagon has no quantization (0xff mask = every 2 pixels)
         renderBorderPixels(visY, lineStartTstate, changes, startColor, xStart, xEnd, isScreenLine = false) {
             let currentColor = startColor;
             let changeIdx = 0;
 
+            // Pentagon uses 0xff mask (no quantization), 48K/128K use 0xfc (4T quantization)
+            const isPentagon = this.machineType === 'pentagon';
+            const timingMask = isPentagon ? ~0 : ~3;  // ~0 = no mask, ~3 = clear lower 2 bits
+
             for (let x = xStart; x < xEnd; x++) {
                 // Calculate T-state for this pixel
                 // Each pixel is 0.5 T-states (2 pixels per T-state)
-                const pixelTstate = lineStartTstate + (x / 2);
+                // Floor to integer then apply mask for quantization
+                const rawTstate = Math.floor(lineStartTstate + (x / 2));
+                const pixelTstate = rawTstate & timingMask;
 
-                // Apply changes up to this T-state
+                // Apply changes when pixel T-state reaches change T-state
                 while (changeIdx < changes.length && changes[changeIdx].tState <= pixelTstate) {
                     currentColor = changes[changeIdx].color;
                     changeIdx++;
@@ -893,6 +1181,11 @@
         
         // Called at end of frame
         endFrame() {
+            // Beam rendering: finish rendering any remaining border pixels after the last color change
+            if (this.beamRendering) {
+                this.finishBorderRendering();
+            }
+
             // If paper rendering was deferred (scroll17-style effects), do it now
             // At this point all screen bank changes for the frame are known
             // KNOWN BUG: Left edge of screen shows thin vertical line artifact in scroll17
@@ -1102,8 +1395,8 @@
         
         renderBorderWithChanges(borderChanges) {
             // Border changes are stored in T-states
-            // Build a sorted list of changes
-            const changes = [{tState: 0, color: this.borderColor}].concat(borderChanges);
+            // borderChanges already contains initial color from startFrame(), just sort
+            const changes = borderChanges.slice(); // Copy to avoid mutating original
             changes.sort((a, b) => a.tState - b.tState);
 
             // For each visible line, render using same logic as renderScanline
@@ -1263,7 +1556,38 @@
         getBorderColor() {
             return this.borderColor;
         }
-        
+
+        // Set late timing mode
+        // Late timing (warmed ULA) is 1T later than early timing (cold ULA)
+        // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
+        setLateTimings(late) {
+            if (this.machineType === 'pentagon') return;
+            this.lateTimings = !!late;
+            // Recalculate LINE_TIMES_BASE with new timing mode
+            this.calculateLineTimes();
+        }
+
+        // Diagnostic: dump all border changes with their line/pixel positions
+        dumpBorderChanges() {
+            const borderOffset = this.BORDER_TIMING_OFFSET || 0;
+            const lineBase = this.LINE_TIMES_BASE - borderOffset;
+            console.log(`[BORDER_DUMP] offset=${borderOffset}, LINE_TIMES_BASE=${this.LINE_TIMES_BASE}, lineBase=${lineBase}`);
+            console.log(`[BORDER_DUMP] TOTAL_WIDTH=${this.TOTAL_WIDTH}, BORDER_LEFT=${this.BORDER_LEFT}, SCREEN_WIDTH=${this.SCREEN_WIDTH}`);
+            for (const change of this.borderChanges) {
+                const relT = change.tState - lineBase;
+                const line = Math.floor(relT / this.TSTATES_PER_LINE);
+                const lineT = relT - (line * this.TSTATES_PER_LINE);
+                const x = Math.floor(lineT * 2);
+                let region = 'hblank';
+                if (x < this.TOTAL_WIDTH) {
+                    if (x < this.BORDER_LEFT) region = 'left';
+                    else if (x < this.BORDER_LEFT + this.SCREEN_WIDTH) region = 'paper';
+                    else region = 'right';
+                }
+                console.log(`  T=${change.tState} → line=${line} x=${x} [${region}] color=${change.color}`);
+            }
+        }
+
         // Get border color at specific canvas Y coordinate
         getBorderColorAtLine(canvasY) {
             // Convert canvas Y to actual frame line

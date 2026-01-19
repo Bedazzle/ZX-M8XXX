@@ -2,6 +2,177 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.1
+- **48K Border Timing Fix**: Memory-location-aware I/O timing for OUT (n),A
+  - Contended memory ($4000-$7FFF): ioOffset=11 (fixes Aquaplane)
+  - Non-contended memory ($8000+): ioOffset=8 (fixes Venom)
+  - OUT (C),r unchanged at ioOffset=9 (ULA48 continues to pass)
+  - All border timing tests now pass: Aquaplane, ULA48, Venom, P128, Comet
+
+## v0.9.0
+- **128K Border Timing Fix**: Instruction-specific I/O timing for accurate border effects
+  - OUT (C),r (12T): ioOffset=13 for ULA128-style timing tests
+  - OUT (n),A (11T): ioOffset=9 for Shock-style multicolor demos
+  - Both ULA128 test and Shock megademo now display correctly on 128K
+- **128K Multicolor Timing**: Refined attribute timing calculations
+  - TOP_LEFT_PIXEL_TSTATE=14364 (documented value) now used consistently
+  - Border and paper rendering aligned (BORDER_TIMING_OFFSET=0)
+  - mc128kOffset tuning parameter for fine-grained control
+
+## v0.8.9
+- **Multicolor Support**: T-state accurate attribute tracking for Nirvana+ and similar engines
+  - Attribute writes ($5800-$5AFF) now tracked with precise T-state timing
+  - Rendering uses correct attribute value at each column's ULA scan time
+  - Shock megademo, Nirvana+ games now display correctly
+- **PUSH Contention Timing**: Fixed 1T internal cycle before memory writes
+  - PUSH writes now contended at T+5 and T+8, not T+4 and T+7
+  - Critical for multicolor engines that use PUSH for rapid attribute updates
+- **Interrupt Timing**: Fixed contention for interrupt/NMI handling
+  - IM1/IM2: 7T acknowledge cycle before push (no internal cycle)
+  - NMI: 5T acknowledge cycle before push
+  - Interrupt push correctly skips the 1T internal cycle
+- **Beta Disk for 48K/128K**: TR-DOS interface now available on all machine types
+  - New "Beta Disk (TR-DOS)" checkbox in Settings → Input section
+  - Allows loading TRD/SCL disk images on 48K and 128K machines
+  - Requires trdos.rom to be loaded; always enabled for Pentagon
+
+## v0.8.8
+- **Filename Display Fix**: Test runner now updates filename in status bar when loading files
+  - Previously, running tests would leave stale filename from previous manual load
+  - Both `loadTestFile` and `loadExtractedFile` now update the display
+- **Border Timing Improvements**: Instruction-specific timing for 48K border effects
+  - OUT (C),r (12T) uses ioOffset=9, OUT (n),A (11T) uses ioOffset=8
+  - Fixes Comet and similar demos that use OUT (C),r for border effects
+  - ULA48, Comet, Venom border tests now pass
+
+## v0.8.7
+- **Port 0xFE Emulation Fix**: Fixed IN instruction tests (Raxoft z80test)
+  - EAR input (bit 6) now LOW when no tape (Issue 2/3 ULA behavior)
+  - Bits 5,7 now consistently HIGH for port 0xFE reads
+  - Floating bus still available via other port reads
+- **ULA Timing Improvements**: Fixed early/late timing for 48K and 128K
+  - Settings preserved when loading files (only projects change settings)
+  - 48K: Early timing (14336T) now default and matches ULA48 test
+  - 128K: Late timing (14361T) matches ULA128 test
+
+## v0.8.6
+- **AudioWorklet Migration**: Replaced deprecated ScriptProcessorNode with modern AudioWorklet API
+  - New `audio-processor.js` runs on dedicated audio thread
+  - Lower latency, no UI jank during audio processing
+  - Supported in all modern browsers (Chrome 66+, Firefox 76+, Safari 14.1+)
+- **Code Cleanup**: Removed debug logging from console
+
+## v0.8.5
+- **Gamepad Calibration**: Configure any USB/Bluetooth gamepad
+  - Click "Calibrate" button next to Gamepad checkbox
+  - Assign Up/Down/Left/Right/Fire by moving stick or pressing buttons
+  - Extended buttons (C, A, Start) for Sega-style games
+  - Mapping saved to localStorage and project files
+- **Explorer BASIC**: USR VAL "number" addresses now clickable
+  - Supports quoted numbers: `USR VAL "24064"`
+  - Supports scientific notation: `USR VAL "2.4064E4"`
+  - Also works with PEEK VAL and POKE VAL
+- **Performance**: Audio disabled at speeds > 200% to reduce CPU usage
+- **Numpad Kempston**: Fixed cross-platform compatibility
+  - Uses `e.code` instead of deprecated `e.keyCode`
+  - Up/Down now work consistently on all keyboards
+- **Console**: Removed verbose SCL/TRD conversion debug messages
+
+## v0.8.4
+- **Kempston Mouse**: Full mouse emulation with pointer lock
+  - Click screen or 🖱️ button to capture mouse, Escape to release
+  - Ports: FADF (buttons), FBDF (X), FFDF (Y)
+  - Optional wheel support on bits 7:4 of button port
+- **Extended Kempston Joystick**: Sega Genesis/Mega Drive gamepad compatible
+  - Bit 5: C button ([ key)
+  - Bit 6: A button (] key)
+  - Bit 7: Start button (\ key)
+- **Hardware Gamepad Support**: USB/Bluetooth controllers via Gamepad API
+  - D-pad and analog stick for directions
+  - Standard button mapping (A=Fire, B/X=Extended buttons, Start)
+  - Auto-detection with status display
+- **Per-Panel Navigation**: Left and right disasm panels have independent history
+  - ◀/▶ buttons navigate within each panel
+  - Clicking CALL/JP targets navigates in the same panel
+
+## v0.8.3
+- **Snapshot Saving Formats**: Added Z80 and SZX snapshot saving
+  - Save dropdown replaces Save button - select SNA/Z80/SZX format
+  - Z80 v3 format (48K, 128K, Pentagon) - uncompressed for maximum compatibility
+  - SZX format with zlib compression (48K, 128K, Pentagon)
+  - Pentagon snapshots use hardware mode 9 in Z80 format
+
+## v0.8.2
+- **Calculator in Right Panel**: Moved calculator from tab to right panel dropdown
+  - Available as third option alongside Memory and Disasm
+  - Bits panel spans full width below calculator and history
+  - History preserved when switching between panel types
+  - Numeric system dropdown disabled when formula is present (prevents conversion errors)
+- **UI Improvements**:
+  - Reduced panel heights for better fit on smaller monitors
+  - Fixed dropdown styling in dark mode
+  - Compact calculator layout with optimized spacing
+
+## v0.8.1
+- **Configurable Debug Panels**: Left and right panels can independently show disasm or memory dump
+  - Panel type selector dropdown in each panel header
+  - All panel combinations supported: disasm+memory, disasm+disasm, memory+memory, memory+disasm
+  - Step controls appear in disasm panels, search controls in memory panels
+  - Bookmark emojis indicate panel type (🔍 disasm, 📦 memory)
+- **Improved Context Menu Navigation**: Unified navigation across all panels
+  - "Address XXXX" header shows target address
+  - Explicit "Disasm left/right" and "Memory left/right" options
+  - Right-click on memory address column now works
+  - Hover underline on memory addresses
+- **UI Improvements**:
+  - Fixed panel height alignment in portrait and landscape modes
+  - Fixed search mode sync between independent memory panels
+  - Region coloring in left memory panel matches right panel
+  - Consistent lowercase menu item text
+
+## v0.8.0
+- **Subroutine Detection**: Mark and display subroutines in disassembly
+  - Manual marking via right-click context menu
+  - Auto-detection during Auto-Map Apply (CALL instruction targets)
+  - IDA-style separator display with subroutine name
+  - End marker after RET instruction ("; end of sub_XXXX")
+  - Saved in projects and localStorage per file
+- **Explorer Tab**: New Explorer tab for analyzing ZX Spectrum files without loading into emulator
+  - Supports TAP, SNA, Z80, TRD, SCL, SZX, RZX, and ZIP formats
+  - File Info sub-tab: File structure, blocks, registers, disk catalogs
+  - BASIC sub-tab: Decode and display BASIC programs with syntax highlighting
+  - Disasm sub-tab: Z80 disassembly with ROM routine labels
+  - Hex Dump sub-tab: Raw hex view with ASCII column
+  - Screen preview for snapshots and graphics files
+  - Click on TRD/SCL BASIC files to decode, CODE files to disassemble
+  - Click USR addresses in BASIC to jump to disassembly view
+  - Blank lines after flow control instructions (JP, JR, CALL, RET, RST, DJNZ, HALT)
+  - Copy-friendly text format for disassembly and hex dump
+  - TR-DOS BASIC decoder with correct PROG address (0x5D3B)
+- **Code Refactoring**: Removed duplicate functions, shared flow-break detection
+- **Bug Fixes**:
+  - Fixed DJNZ not showing blank line in debugger disassembly
+  - Fixed text selection in Explorer outputs
+
+## v0.7.1
+- **Compare Tool**: New Compare tab for comparing snapshots and binary files
+  - Compare two snapshot files (.SNA or .Z80, 48K or 128K)
+  - Compare two raw binary files byte-by-byte
+  - Compare snapshot against current emulator state
+  - Side-by-side hex dump with ASCII representation
+  - Register comparison with main and alternate registers side-by-side
+  - Differences highlighted in red with marker
+  - Exclude screen memory option ($4000-$5AFF and 128K shadow screen)
+  - Pagination for large differences (50 blocks per page)
+  - Cross-format comparison (e.g., .SNA vs .Z80)
+- **Export ASM**: Enhanced disassembly export from Memory Map
+  - Uses memory regions to determine code vs data
+  - Code regions disassembled as Z80 instructions
+  - DB/DW/Text/Graphics regions exported with appropriate directives
+  - Includes labels and CPU state in header
+  - Addr+Bytes option for address and hex byte comments
+  - Screen memory exported as INCBIN directive
+
 ## v0.7.0
 - **Automated Test Suite**: New Tests tab for regression testing with native Spectrum programs
   - Define tests in `tests.json` with machine type, timing settings, and screenshot steps

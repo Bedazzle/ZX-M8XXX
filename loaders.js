@@ -62,11 +62,15 @@
             if (ext === 'sna') return 'sna';
             if (ext === 'tap') return 'tap';
             if (ext === 'z80') return 'z80';
+            if (ext === 'szx') return 'szx';
             if (ext === 'rzx') return 'rzx';
             if (ext === 'trd') return 'trd';
             if (ext === 'scl') return 'scl';
 
             const bytes = new Uint8Array(data);
+
+            // Check for SZX signature
+            if (SZXLoader.isSZX(data)) return 'szx';
 
             // Check for RZX signature
             if (RZXLoader.isRZX(data)) return 'rzx';
@@ -107,17 +111,21 @@
             cpu.sp = bytes[23] | (bytes[24] << 8);
             cpu.im = bytes[25];
             const border = bytes[26] & 0x07;
-            
+
+            // Reset CPU state flags not stored in SNA format
+            cpu.halted = false;
+            cpu.eiPending = false;
+
             for (let i = 0; i < 49152; i++) {
                 memory.write(0x4000 + i, bytes[27 + i]);
             }
-            
+
             cpu.pc = memory.read(cpu.sp) | (memory.read(cpu.sp + 1) << 8);
             cpu.sp = (cpu.sp + 2) & 0xffff;
             this.machineType = '48k';
             return { border, machineType: '48k' };
         }
-        
+
         loadSNA128(data, cpu, memory) {
             const bytes = new Uint8Array(data);
             if (bytes.length < 49181) return this.loadSNA48(data, cpu, memory);
@@ -149,6 +157,10 @@
             cpu.sp = bytes[23] | (bytes[24] << 8);
             cpu.im = bytes[25];
             const border = bytes[26] & 0x07;
+
+            // Reset CPU state flags not stored in SNA format
+            cpu.halted = false;
+            cpu.eiPending = false;
 
             // Now load 48KB section (banks 5, 2, and currently paged bank)
             for (let i = 0; i < 49152; i++) {
@@ -238,7 +250,139 @@
             }
             return bytes;
         }
-        
+
+        // Z80 v3 format saver
+        createZ80(cpu, memory, border = 7) {
+            const is128k = memory.machineType !== '48k';
+            const isPentagon = memory.machineType === 'pentagon';
+            const chunks = [];
+
+            // Build v3 header (30 + 54 = 84 bytes header)
+            const header = new Uint8Array(86);  // 30 + 2 (len) + 54
+
+            // Standard header (bytes 0-29)
+            header[0] = cpu.a;
+            header[1] = cpu.f;
+            header[2] = cpu.c; header[3] = cpu.b;
+            header[4] = cpu.l; header[5] = cpu.h;
+            header[6] = 0; header[7] = 0;  // PC=0 indicates v2/v3
+            header[8] = cpu.sp & 0xff; header[9] = (cpu.sp >> 8) & 0xff;
+            header[10] = cpu.i;
+            header[11] = cpu.rFull & 0x7f;
+            header[12] = ((cpu.rFull >> 7) & 0x01) | ((border & 0x07) << 1);
+            header[13] = cpu.e; header[14] = cpu.d;
+            header[15] = cpu.c_; header[16] = cpu.b_;
+            header[17] = cpu.e_; header[18] = cpu.d_;
+            header[19] = cpu.h_; header[20] = cpu.l_;
+            header[21] = cpu.a_; header[22] = cpu.f_;
+            header[23] = cpu.iy & 0xff; header[24] = (cpu.iy >> 8) & 0xff;
+            header[25] = cpu.ix & 0xff; header[26] = (cpu.ix >> 8) & 0xff;
+            header[27] = cpu.iff1 ? 1 : 0;
+            header[28] = cpu.iff2 ? 1 : 0;
+            header[29] = cpu.im & 0x03;
+
+            // Extended header length (54 bytes for v3)
+            header[30] = 54; header[31] = 0;
+
+            // Extended header (bytes 32-85)
+            header[32] = cpu.pc & 0xff; header[33] = (cpu.pc >> 8) & 0xff;
+            // Hardware mode: 0=48k, 4=128k, 9=Pentagon (v3)
+            header[34] = isPentagon ? 9 : (is128k ? 4 : 0);
+
+            // Port 7FFD for 128K
+            if (is128k) {
+                const ps = memory.getPagingState();
+                header[35] = (ps.ramBank & 0x07) | (ps.screenBank === 7 ? 0x08 : 0x00) |
+                             (ps.romBank ? 0x10 : 0x00) | (ps.pagingDisabled ? 0x20 : 0x00);
+            } else {
+                header[35] = 0;
+            }
+            header[36] = 0;  // Interface I paged (no)
+            header[37] = is128k ? 0x04 : 0x00;  // Bit 2: AY sound in use (128K)
+            header[38] = 0;  // Last OUT to port $FFFD (AY register)
+            // Bytes 39-54: AY registers (16 bytes) - leave as 0 for now
+            // Bytes 55-56: Low T-state counter, 57: Hi T-state counter
+            // Leave at 0 (not critical for loading)
+
+            chunks.push(header);
+
+            // Save memory pages (uncompressed for maximum compatibility)
+            if (is128k) {
+                // 128K: save all 8 RAM banks as pages 3-10
+                for (let bank = 0; bank < 8; bank++) {
+                    const pageData = memory.getRamBank(bank);
+                    // Use 0xFFFF to indicate uncompressed 16384 bytes
+                    const pageChunk = new Uint8Array(3 + 16384);
+                    pageChunk[0] = 0xFF;
+                    pageChunk[1] = 0xFF;
+                    pageChunk[2] = bank + 3;  // Page number (3-10 for banks 0-7)
+                    pageChunk.set(pageData.subarray(0, 16384), 3);
+                    chunks.push(pageChunk);
+                }
+            } else {
+                // 48K: save 3 pages (8, 4, 5 -> $4000, $8000, $C000)
+                const pages = [
+                    { num: 8, start: 0x4000 },  // $4000-$7FFF
+                    { num: 4, start: 0x8000 },  // $8000-$BFFF
+                    { num: 5, start: 0xC000 }   // $C000-$FFFF
+                ];
+                for (const page of pages) {
+                    const pageData = new Uint8Array(16384);
+                    for (let i = 0; i < 16384; i++) {
+                        pageData[i] = memory.read(page.start + i);
+                    }
+                    // Use 0xFFFF to indicate uncompressed 16384 bytes
+                    const pageChunk = new Uint8Array(3 + 16384);
+                    pageChunk[0] = 0xFF;
+                    pageChunk[1] = 0xFF;
+                    pageChunk[2] = page.num;
+                    pageChunk.set(pageData, 3);
+                    chunks.push(pageChunk);
+                }
+            }
+
+            // Combine all chunks
+            const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+            const result = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return result;
+        }
+
+        // Z80 RLE compression (ED ED nn xx = repeat xx nn times)
+        compressZ80Block(data) {
+            const result = [];
+            let i = 0;
+            while (i < data.length) {
+                // Look for runs of same byte
+                let runLen = 1;
+                while (i + runLen < data.length &&
+                       data[i + runLen] === data[i] && runLen < 255) {
+                    runLen++;
+                }
+
+                if (runLen >= 5 || (runLen >= 2 && data[i] === 0xED)) {
+                    // Use RLE encoding: ED ED count byte
+                    result.push(0xED, 0xED, runLen, data[i]);
+                    i += runLen;
+                } else {
+                    // Output literal bytes, but escape ED ED sequences
+                    if (data[i] === 0xED && i + 1 < data.length && data[i + 1] === 0xED) {
+                        // Escape ED ED as ED ED 02 ED
+                        result.push(0xED, 0xED, 0x02, 0xED);
+                        i += 2;
+                    } else {
+                        result.push(data[i]);
+                        i++;
+                    }
+                }
+            }
+            return new Uint8Array(result);
+        }
+
         // Z80 format loader
         loadZ80(data, cpu, memory) {
             const bytes = new Uint8Array(data);
@@ -268,7 +412,11 @@
             cpu.iff1 = bytes[27] !== 0;
             cpu.iff2 = bytes[28] !== 0;
             cpu.im = bytes[29] & 0x03;
-            
+
+            // Reset CPU state flags not stored in Z80 format
+            cpu.halted = false;
+            cpu.eiPending = false;
+
             // Determine version
             if (pc !== 0) {
                 // Version 1 - 48K only
@@ -293,12 +441,13 @@
                 // Version 2
                 if (hwMode === 3 || hwMode === 4) machineType = '128k';
             } else {
-                // Version 3
+                // Version 3: 4-6 = 128k, 9 = Pentagon
                 if (hwMode === 4 || hwMode === 5 || hwMode === 6) machineType = '128k';
+                else if (hwMode === 9) machineType = 'pentagon';
             }
             
             // Read 128K port 0x7FFD if applicable
-            if (machineType === '128k' && bytes.length > 35) {
+            if ((machineType === '128k' || machineType === 'pentagon') && bytes.length > 35) {
                 memory.writePaging(bytes[35]);
             }
             
@@ -393,25 +542,41 @@
 
     class TapeTrapHandler {
         static get VERSION() { return VERSION; }
-        
+
         constructor(cpu, memory, tapeLoader) {
             this.cpu = cpu;
             this.memory = memory;
             this.tapeLoader = tapeLoader;
             this.enabled = true;
         }
-        
+
         checkTrap() {
             if (!this.enabled) return false;
             const pc = this.cpu.pc;
             // LD-BYTES entry points in 48K ROM / 128K ROM1
             if (pc === 0x056c || pc === 0x0556) {
+                console.log(`[TapeTrap] PC=${pc.toString(16)}, machineType=${this.memory.machineType}, romBank=${this.memory.currentRomBank}, trdos=${this.memory.trdosActive}`);
+                // In 128K mode, only trap when ROM 1 (48K BASIC) is active
+                // ROM 0 is the 128K editor which has different code at these addresses
+                if (this.memory.machineType === '128k' || this.memory.machineType === 'pentagon') {
+                    if (this.memory.currentRomBank !== 1) {
+                        console.log(`[TapeTrap] Skipping - ROM bank ${this.memory.currentRomBank} active (need ROM 1)`);
+                        return false;  // Don't trap - wrong ROM bank
+                    }
+                }
+                // Also don't trap if TR-DOS ROM is active
+                if (this.memory.trdosActive) {
+                    console.log(`[TapeTrap] Skipping - TR-DOS ROM active`);
+                    return false;
+                }
                 // No tape data or no blocks - return error immediately (no EAR emulation)
                 if (!this.tapeLoader || this.tapeLoader.getBlockCount() === 0 || !this.tapeLoader.hasMoreBlocks()) {
+                    console.log(`[TapeTrap] No tape data or no more blocks`);
                     this.cpu.f &= ~0x01;  // Clear carry = error
                     this.returnFromTrap();
                     return true;
                 }
+                console.log(`[TapeTrap] Handling load trap`);
                 return this.handleLoadTrap();
             }
             return false;
@@ -695,6 +860,10 @@
             this.sector = 1;           // Sectors are 1-based in TR-DOS
             this.data = 0;
 
+            // Disk activity callback: function(type, track, sector, side)
+            // type: 'read', 'write', 'seek', 'idle'
+            this.onDiskActivity = null;
+
             // System register (#FF)
             this.system = 0x3F;        // Initial state: no disk, motor off
             this.drive = 0;            // Current drive (0-3)
@@ -738,16 +907,56 @@
 
         // Load disk image
         loadDisk(data, type) {
+            console.log(`[BetaDisk] loadDisk called, type=${type}, dataLen=${data.byteLength || data.length}`);
             if (type === 'scl') {
                 // Convert SCL to TRD format
                 this.diskData = this.sclToTrd(data);
+                console.log(`[BetaDisk] SCL converted to TRD, diskData.length=${this.diskData.length}`);
             } else {
                 this.diskData = new Uint8Array(data);
+                console.log(`[BetaDisk] TRD loaded, diskData.length=${this.diskData.length}`);
             }
             this.diskType = 'trd';
             this.status = 0;           // Disk ready
             this.track = 0;
             this.sector = 1;
+            console.log(`[BetaDisk] Disk loaded successfully, hasDisk=${this.hasDisk()}`);
+        }
+
+        // Create and insert a blank formatted TRD disk
+        createBlankDisk(label = 'BLANK') {
+            // Create blank TRD image (640KB = 2560 sectors)
+            const trd = new Uint8Array(655360);
+            trd.fill(0);
+
+            // Set up disk info sector (sector 9 of track 0, offset 0x800)
+            const sector9 = 8 * 256;
+
+            // First free position: track 1, sector 0 (after directory)
+            trd[sector9 + 0xE1] = 0;     // First free sector (0)
+            trd[sector9 + 0xE2] = 1;     // First free track (1)
+            trd[sector9 + 0xE3] = 0x16;  // Disk type (80 tracks, double-sided)
+            trd[sector9 + 0xE4] = 0;     // File count (0 = empty)
+            // Free sectors: 2544 (total) - 16 (track 0) = 2528
+            trd[sector9 + 0xE5] = 0xE0;  // Free sectors low (2528 & 0xFF)
+            trd[sector9 + 0xE6] = 0x09;  // Free sectors high (2528 >> 8)
+            trd[sector9 + 0xE7] = 0x10;  // TR-DOS ID
+
+            // Disk label at 0xF5-0xFC (8 bytes, space-padded)
+            const paddedLabel = label.substring(0, 8).padEnd(8, ' ');
+            for (let i = 0; i < 8; i++) {
+                trd[sector9 + 0xF5 + i] = paddedLabel.charCodeAt(i);
+            }
+
+            // Load the blank disk
+            this.diskData = trd;
+            this.diskType = 'trd';
+            this.status = 0;
+            this.track = 0;
+            this.sector = 1;
+
+            console.log(`[BetaDisk] Blank disk created with label "${paddedLabel.trim()}"`);
+            return true;
         }
 
         // Convert SCL to TRD format
@@ -765,7 +974,6 @@
             trd.fill(0);
 
             const fileCount = scl[8];
-            console.log(`[SCL->TRD] Converting SCL with ${fileCount} files, total size ${scl.length} bytes`);
 
             // SCL format: signature(8) + count(1) + ALL headers(14*n) + ALL data
             // First pass: read all directory entries
@@ -780,15 +988,11 @@
                     sectorCount: scl[headerOffset + 13]
                 };
                 files.push(file);
-                const nameStr = String.fromCharCode(...file.name).trim();
-                const typeChar = String.fromCharCode(file.type);
-                console.log(`[SCL] Header ${i}: "${nameStr}" type='${typeChar}' start=${file.start} len=${file.length} sectors=${file.sectorCount}`);
                 headerOffset += 14;
             }
 
             // File data starts after all headers
             let dataOffset = headerOffset;
-            console.log(`[SCL->TRD] Headers end at offset ${headerOffset}, data starts at offset ${dataOffset}`);
 
             // First free data sector on TRD - start at logical track 1, sector 0
             // TR-DOS uses logical tracks 0-159 (each side is a separate logical track)
@@ -834,10 +1038,6 @@
                 const trdDataOffset = trdSector * 256;
                 trd.set(scl.slice(dataOffset, dataOffset + fileSize), trdDataOffset);
 
-                // Log first 16 bytes of file data for verification
-                const preview = Array.from(scl.slice(dataOffset, dataOffset + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                console.log(`[SCL->TRD] File ${i} "${nameStr}": SCL[${dataOffset}] -> TRD[${trdDataOffset}] (logTrack=${logTrack} sector=${logSector}), first bytes: ${preview}`);
-
                 dataOffset += fileSize;
                 trdSector += file.sectorCount;
             }
@@ -864,8 +1064,6 @@
             for (let i = 0; i < 8; i++) {
                 trd[sector9 + 0xF5 + i] = label.charCodeAt(i);
             }
-
-            console.log(`[SCL->TRD] Conversion complete. ${files.length} files, next free at logTrack ${freeTrack} sector ${freeSector}`);
 
             return trd;
         }
@@ -902,6 +1100,7 @@
                 case 0x1F: // Status register
                     this.intrq = false;
                     if (!this.diskData) {
+                        console.log('[BetaDisk] Status read: NOT_READY (no diskData)');
                         return this.NOT_READY;
                     }
                     let st = this.status;
@@ -1107,6 +1306,11 @@
             // Also compute what linear offset would be for comparison
             const linearOffset = (this.track * 16 + (this.sector - 1)) * 256;
 
+            // Notify disk activity
+            if (this.onDiskActivity) {
+                this.onDiskActivity('read', this.track, this.sector, this.side);
+            }
+
             if (offset + this.bytesPerSector > this.diskData.length) {
                 console.warn(`[BetaDisk] READ failed: offset ${offset} + ${this.bytesPerSector} > ${this.diskData.length}`);
                 this.status |= this.RNF;
@@ -1117,10 +1321,6 @@
 
             this.dataBuffer = this.diskData.slice(offset, offset + this.bytesPerSector);
 
-            // Log sector read with first 16 bytes for debugging
-            const preview = Array.from(this.dataBuffer.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            console.log(`[BetaDisk] READ track=${this.track}, side=${this.side}, sector=${this.sector} -> interleavedOffset=${offset}, linearOffset=${linearOffset}, first bytes: ${preview}`);
-
             this.dataPos = 0;
             this.dataLen = this.bytesPerSector;
             this.reading = true;
@@ -1129,6 +1329,11 @@
 
         writeSector() {
             const offset = this.getSectorOffset(this.track, this.side, this.sector);
+
+            // Notify disk activity
+            if (this.onDiskActivity) {
+                this.onDiskActivity('write', this.track, this.sector, this.side);
+            }
 
             if (offset + this.bytesPerSector > this.diskData.length) {
                 this.status |= this.RNF;
@@ -2127,8 +2332,338 @@
         }
     }
 
+    /**
+     * SZX Loader - Modern ZX Spectrum snapshot format
+     * Used by Spectaculator, ZXSpin, Fuse, etc.
+     */
+    class SZXLoader {
+        static get VERSION() { return VERSION; }
+
+        static isSZX(data) {
+            const bytes = new Uint8Array(data);
+            return bytes.length >= 8 &&
+                   bytes[0] === 0x5A && bytes[1] === 0x58 &&  // "ZX"
+                   bytes[2] === 0x53 && bytes[3] === 0x54;    // "ST"
+        }
+
+        static getMachineType(machineId) {
+            const types = {
+                0: '16k', 1: '48k', 2: '128k', 3: '+2',
+                4: '+2A', 5: '+3', 6: '+3e', 7: 'pentagon',
+                8: 'scorpion', 9: 'didaktik', 10: '+2c', 11: '+2cs'
+            };
+            return types[machineId] || 'unknown';
+        }
+
+        /**
+         * Parse SZX file and return structure info
+         */
+        static parse(data) {
+            const bytes = new Uint8Array(data);
+            if (!this.isSZX(data)) throw new Error('Not a valid SZX file');
+
+            const info = {
+                majorVersion: bytes[4],
+                minorVersion: bytes[5],
+                machineId: bytes[6],
+                machineType: this.getMachineType(bytes[6]),
+                flags: bytes[7],
+                chunks: [],
+                is128: bytes[6] >= 2 && bytes[6] <= 8
+            };
+
+            let offset = 8;
+            while (offset < bytes.length - 8) {
+                const id = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+                const size = bytes[offset + 4] | (bytes[offset + 5] << 8) |
+                            (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24);
+
+                if (offset + 8 + size > bytes.length) break;
+
+                info.chunks.push({
+                    id: id,
+                    offset: offset + 8,
+                    size: size
+                });
+
+                offset += 8 + size;
+            }
+
+            return info;
+        }
+
+        /**
+         * Decompress zlib data (requires pako)
+         */
+        static decompress(data) {
+            if (typeof pako !== 'undefined') {
+                return pako.inflate(data);
+            }
+            throw new Error('pako library required for SZX decompression');
+        }
+
+        /**
+         * Extract RAM page from SZX (handles RAMP chunks)
+         */
+        static extractRAMPage(data, info, pageNum) {
+            const bytes = new Uint8Array(data);
+
+            for (const chunk of info.chunks) {
+                if (chunk.id === 'RAMP') {
+                    const flags = bytes[chunk.offset] | (bytes[chunk.offset + 1] << 8);
+                    const page = bytes[chunk.offset + 2];
+
+                    if (page === pageNum) {
+                        const compressed = (flags & 1) !== 0;
+                        const pageData = bytes.slice(chunk.offset + 3, chunk.offset + chunk.size);
+
+                        if (compressed) {
+                            return this.decompress(pageData);
+                        }
+                        return pageData;
+                    }
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Extract screen data (6912 bytes) from SZX
+         */
+        static extractScreen(data) {
+            const info = this.parse(data);
+
+            // Screen is in page 5 for 128K, or page 5 equivalent for 48K
+            // In SZX, 48K uses pages 0,2,5 mapped to 16K-48K range
+            // Page 5 is always at $4000-$7FFF
+            const screenPage = info.is128 ? 5 : 5;
+            const pageData = this.extractRAMPage(data, info, screenPage);
+
+            if (pageData && pageData.length >= 6912) {
+                return pageData.slice(0, 6912);
+            }
+            return null;
+        }
+
+        /**
+         * Load SZX into emulator
+         */
+        static load(data, cpu, memory, ula) {
+            const bytes = new Uint8Array(data);
+            const info = this.parse(data);
+
+            // Determine machine type
+            const machineType = info.is128 ? '128k' : '48k';
+
+            // Load Z80 registers (Z80R chunk)
+            for (const chunk of info.chunks) {
+                if (chunk.id === 'Z80R') {
+                    const r = bytes.slice(chunk.offset, chunk.offset + chunk.size);
+                    cpu.f = r[0]; cpu.a = r[1];
+                    cpu.c = r[2]; cpu.b = r[3];
+                    cpu.e = r[4]; cpu.d = r[5];
+                    cpu.l = r[6]; cpu.h = r[7];
+                    cpu.f_ = r[8]; cpu.a_ = r[9];
+                    cpu.c_ = r[10]; cpu.b_ = r[11];
+                    cpu.e_ = r[12]; cpu.d_ = r[13];
+                    cpu.l_ = r[14]; cpu.h_ = r[15];
+                    cpu.ixl = r[16]; cpu.ixh = r[17];
+                    cpu.iyl = r[18]; cpu.iyh = r[19];
+                    cpu.sp = r[20] | (r[21] << 8);
+                    cpu.pc = r[22] | (r[23] << 8);
+                    cpu.i = r[24];
+                    cpu.r = r[25];
+                    cpu.iff1 = r[26] & 1;
+                    cpu.iff2 = r[27] & 1;
+                    cpu.im = r[28];
+                    // r[29-32] are T-states (ignored for now)
+                    // r[33] is halt state
+                    if (r[33]) cpu.halted = true;
+                    break;
+                }
+            }
+
+            // Load Spectrum state (SPCR chunk)
+            let port7FFD = 0;
+            for (const chunk of info.chunks) {
+                if (chunk.id === 'SPCR') {
+                    const border = bytes[chunk.offset];
+                    port7FFD = bytes[chunk.offset + 1];
+                    // bytes[chunk.offset + 2] is port $FE (not needed)
+                    if (ula) ula.setBorder(border);
+                    break;
+                }
+            }
+
+            // Load RAM pages
+            if (info.is128) {
+                // 128K: load all 8 pages
+                for (let page = 0; page < 8; page++) {
+                    const pageData = this.extractRAMPage(data, info, page);
+                    if (pageData) {
+                        const bank = memory.getRamBank(page);
+                        if (bank) bank.set(pageData.slice(0, 16384));
+                    }
+                }
+                // Set paging state
+                memory.writePaging(port7FFD);
+            } else {
+                // 48K: pages 0, 2, 5 map to $C000, $8000, $4000
+                const page5 = this.extractRAMPage(data, info, 5);
+                const page2 = this.extractRAMPage(data, info, 2);
+                const page0 = this.extractRAMPage(data, info, 0);
+
+                if (page5) memory.setBlock(0x4000, page5.slice(0, 16384));
+                if (page2) memory.setBlock(0x8000, page2.slice(0, 16384));
+                if (page0) memory.setBlock(0xC000, page0.slice(0, 16384));
+            }
+
+            return { machineType, info };
+        }
+
+        /**
+         * Create SZX snapshot
+         */
+        static create(cpu, memory, border = 7) {
+            const is128k = memory.machineType !== '48k';
+            const chunks = [];
+
+            // Header (8 bytes): "ZXST" + version + machine ID + flags
+            const header = new Uint8Array(8);
+            header[0] = 0x5A; header[1] = 0x58;  // "ZX"
+            header[2] = 0x53; header[3] = 0x54;  // "ST"
+            header[4] = 1;    // Major version
+            header[5] = 4;    // Minor version
+            header[6] = is128k ? 2 : 1;  // Machine ID: 1=48k, 2=128k
+            header[7] = 0;    // Flags
+            chunks.push(header);
+
+            // Z80R chunk - CPU registers (37 bytes)
+            const z80rData = new Uint8Array(37);
+            z80rData[0] = cpu.f; z80rData[1] = cpu.a;
+            z80rData[2] = cpu.c; z80rData[3] = cpu.b;
+            z80rData[4] = cpu.e; z80rData[5] = cpu.d;
+            z80rData[6] = cpu.l; z80rData[7] = cpu.h;
+            z80rData[8] = cpu.f_; z80rData[9] = cpu.a_;
+            z80rData[10] = cpu.c_; z80rData[11] = cpu.b_;
+            z80rData[12] = cpu.e_; z80rData[13] = cpu.d_;
+            z80rData[14] = cpu.l_; z80rData[15] = cpu.h_;
+            z80rData[16] = cpu.ix & 0xff; z80rData[17] = (cpu.ix >> 8) & 0xff;
+            z80rData[18] = cpu.iy & 0xff; z80rData[19] = (cpu.iy >> 8) & 0xff;
+            z80rData[20] = cpu.sp & 0xff; z80rData[21] = (cpu.sp >> 8) & 0xff;
+            z80rData[22] = cpu.pc & 0xff; z80rData[23] = (cpu.pc >> 8) & 0xff;
+            z80rData[24] = cpu.i;
+            z80rData[25] = cpu.rFull;
+            z80rData[26] = cpu.iff1 ? 1 : 0;
+            z80rData[27] = cpu.iff2 ? 1 : 0;
+            z80rData[28] = cpu.im;
+            // T-states (bytes 29-32) - leave as 0
+            z80rData[33] = cpu.halted ? 1 : 0;
+            // Reserved (bytes 34-36) - leave as 0
+            chunks.push(this.makeChunk('Z80R', z80rData));
+
+            // SPCR chunk - Spectrum state (8 bytes)
+            const spcrData = new Uint8Array(8);
+            spcrData[0] = border & 0x07;
+            if (is128k) {
+                const ps = memory.getPagingState();
+                spcrData[1] = (ps.ramBank & 0x07) | (ps.screenBank === 7 ? 0x08 : 0x00) |
+                              (ps.romBank ? 0x10 : 0x00) | (ps.pagingDisabled ? 0x20 : 0x00);
+            }
+            spcrData[2] = border & 0x07;  // Port $FE
+            // Bytes 3-7: reserved
+            chunks.push(this.makeChunk('SPCR', spcrData));
+
+            // RAMP chunks - RAM pages
+            if (is128k) {
+                // 128K: save all 8 pages (0-7)
+                for (let page = 0; page < 8; page++) {
+                    const pageData = memory.getRamBank(page);
+                    chunks.push(this.makeRAMPChunk(page, pageData));
+                }
+            } else {
+                // 48K: save pages 5, 2, 0 (for $4000, $8000, $C000)
+                const pageMap = [
+                    { page: 5, start: 0x4000 },
+                    { page: 2, start: 0x8000 },
+                    { page: 0, start: 0xC000 }
+                ];
+                for (const { page, start } of pageMap) {
+                    const pageData = new Uint8Array(16384);
+                    for (let i = 0; i < 16384; i++) {
+                        pageData[i] = memory.read(start + i);
+                    }
+                    chunks.push(this.makeRAMPChunk(page, pageData));
+                }
+            }
+
+            // Combine all chunks
+            const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+            const result = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return result;
+        }
+
+        /**
+         * Create a generic SZX chunk
+         */
+        static makeChunk(id, data) {
+            const chunk = new Uint8Array(8 + data.length);
+            // Chunk ID (4 bytes)
+            for (let i = 0; i < 4; i++) {
+                chunk[i] = id.charCodeAt(i);
+            }
+            // Size (4 bytes, little endian)
+            chunk[4] = data.length & 0xff;
+            chunk[5] = (data.length >> 8) & 0xff;
+            chunk[6] = (data.length >> 16) & 0xff;
+            chunk[7] = (data.length >> 24) & 0xff;
+            // Data
+            chunk.set(data, 8);
+            return chunk;
+        }
+
+        /**
+         * Create a RAMP (RAM Page) chunk with optional compression
+         */
+        static makeRAMPChunk(pageNum, pageData) {
+            // Try to compress with pako if available
+            let compressed = null;
+            let useCompression = false;
+
+            if (typeof pako !== 'undefined') {
+                try {
+                    compressed = pako.deflate(pageData);
+                    // Only use compression if it actually saves space
+                    if (compressed.length < pageData.length - 100) {
+                        useCompression = true;
+                    }
+                } catch (e) {
+                    // Compression failed, use uncompressed
+                }
+            }
+
+            const data = useCompression ? compressed : pageData;
+            const rampData = new Uint8Array(3 + data.length);
+
+            // Flags (2 bytes): bit 0 = compressed
+            rampData[0] = useCompression ? 1 : 0;
+            rampData[1] = 0;
+            // Page number
+            rampData[2] = pageNum;
+            // Page data
+            rampData.set(data, 3);
+
+            return this.makeChunk('RAMP', rampData);
+        }
+    }
+
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { TapeLoader, SnapshotLoader, TapeTrapHandler, TRDOSTrapHandler, BetaDisk, ZipLoader, RZXLoader, TRDLoader, SCLLoader };
+        module.exports = { TapeLoader, SnapshotLoader, TapeTrapHandler, TRDOSTrapHandler, BetaDisk, ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader };
     }
     if (typeof global !== 'undefined') {
         global.TapeLoader = TapeLoader;
@@ -2140,6 +2675,7 @@
         global.RZXLoader = RZXLoader;
         global.TRDLoader = TRDLoader;
         global.SCLLoader = SCLLoader;
+        global.SZXLoader = SZXLoader;
     }
 
 })(typeof window !== 'undefined' ? window : global);
