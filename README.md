@@ -77,8 +77,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 
 ## Known Limitations
 
-- **Multicolor effects**: 8x2 multicolor engines (Nirvana+, Bifrost) require enabling via console: `spectrum.multicolorEnabled = true`
-- **scroll17 left edge**: Minor artifact on left edge during screen bank switching effects
+- **RZX playback**: Partial support - some recordings may desync due to timing differences
 - **Z80 save uncompressed**: Z80 snapshots are saved without RLE compression for maximum compatibility (~131KB for 128K, ~49KB for 48K)
 
 ## License
