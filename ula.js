@@ -191,8 +191,12 @@
                 [0x00, 0xff, 0x00, 0xff], [0x00, 0xff, 0xff, 0xff],
                 [0xff, 0xff, 0x00, 0xff], [0xff, 0xff, 0xff, 0xff]
             ];
-            
+            // Pre-compute 32-bit packed RGBA values for faster rendering
+            this.updatePalette32();
+
             this.frameBuffer = new Uint8ClampedArray(this.TOTAL_WIDTH * this.TOTAL_HEIGHT * 4);
+            // Create Uint32Array view for faster pixel writes (4 bytes at once)
+            this.frameBuffer32 = new Uint32Array(this.frameBuffer.buffer);
             
             this.keyMap = {
                 16: [0, 0], 90: [0, 1], 88: [0, 2], 67: [0, 3], 86: [0, 4],
@@ -228,6 +232,7 @@
 
             // Reallocate framebuffer for new dimensions
             this.frameBuffer = new Uint8ClampedArray(this.TOTAL_WIDTH * this.TOTAL_HEIGHT * 4);
+            this.frameBuffer32 = new Uint32Array(this.frameBuffer.buffer);
         }
 
         // Set border preset
@@ -249,6 +254,31 @@
         // Toggle full border mode (backwards compatibility)
         setFullBorder(enabled) {
             return this.setBorderPreset(enabled ? 'full' : 'normal');
+        }
+
+        // Pre-compute 32-bit packed RGBA values for faster rendering
+        updatePalette32() {
+            this.palette32 = new Uint32Array(16);
+
+            // Detect system endianness
+            const testBuffer = new ArrayBuffer(4);
+            const testView8 = new Uint8Array(testBuffer);
+            const testView32 = new Uint32Array(testBuffer);
+            testView32[0] = 0x01020304;
+            // Little-endian: bytes are [4, 3, 2, 1]
+            // Big-endian: bytes are [1, 2, 3, 4]
+            const isLittleEndian = (testView8[0] === 0x04);
+
+            for (let i = 0; i < 16; i++) {
+                const c = this.palette[i];
+                if (isLittleEndian) {
+                    // Little-endian: pack as ABGR so bytes in memory are RGBA
+                    this.palette32[i] = (c[3] << 24) | (c[2] << 16) | (c[1] << 8) | c[0];
+                } else {
+                    // Big-endian: pack as RGBA directly
+                    this.palette32[i] = (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3];
+                }
+            }
         }
 
         // Calculate T-state when each visible line's left border starts
@@ -288,12 +318,36 @@
             if (this.lateTimings && this.machineType !== 'pentagon') {
                 this.LINE_TIMES_BASE += 1;
             }
+
+            // Pre-compute line start T-states lookup table for faster rendering
+            this.precomputeLineTimesTable();
         }
 
-        // Calculate T-state when a visible line starts being drawn
+        // Pre-compute lookup table for line start T-states
+        precomputeLineTimesTable() {
+            const maxLines = this.TOTAL_HEIGHT;
+            this.lineStartTstates = new Int32Array(maxLines);
+
+            for (let visY = 0; visY < maxLines; visY++) {
+                // Use the full calculation method
+                this.lineStartTstates[visY] = this._calculateLineStartTstateFull(visY);
+            }
+        }
+
+        // Fast lookup for line start T-states
+        calculateLineStartTstate(visY) {
+            // Use pre-computed lookup table if available
+            if (this.lineStartTstates && visY >= 0 && visY < this.lineStartTstates.length) {
+                return this.lineStartTstates[visY];
+            }
+            // Fallback to full calculation
+            return this._calculateLineStartTstateFull(visY);
+        }
+
+        // Full calculation (used for pre-computing and fallback)
         // For 128K, uses region-based timing with different T-states per line for each region
         // For other machines, uses simple linear calculation
-        calculateLineStartTstate(visY) {
+        _calculateLineStartTstateFull(visY) {
             if (this.REGION_TIMING) {
                 // Region-based timing (128K)
                 const rt = this.REGION_TIMING;
@@ -420,14 +474,17 @@
 
         // Render border pixels from lastRenderedBeamT to toT
         // This is called when border color changes to fill in pixels with the current color
-        // Optimized: render line by line for efficiency
+        // Optimized: render line by line for efficiency, using 32-bit writes for consistency
         renderBorderUpToT(toT) {
             if (!this.beamRendering) return;
 
             const fromT = this.lastRenderedBeamT;
             if (toT <= fromT) return;  // Nothing to render
 
-            const color = this.palette[this.borderColor];
+            // Use palette32 for consistency with paper fast path
+            const color32 = this.palette32[this.borderColor];
+            const fb32 = this.frameBuffer32;
+            const totalWidth = this.TOTAL_WIDTH;
             const tstatesPerLine = this.TSTATES_PER_LINE;
             // Apply border timing offset: shifts border rendering down by BORDER_TIMING_OFFSET T-states
             // This compensates for the difference between paper timing and border timing
@@ -472,20 +529,22 @@
                 const isBottomBorder = line >= this.BORDER_TOP + this.SCREEN_HEIGHT;
 
                 if (isTopBorder || isBottomBorder) {
-                    // Pure border line - render all pixels
+                    // Pure border line - render all pixels using 32-bit writes
+                    const rowOffset = line * totalWidth;
                     for (let x = startX; x < endX; x++) {
-                        this.setPixelRGBA(x, line, color);
+                        fb32[rowOffset + x] = color32;
                     }
                 } else {
                     // Line with paper - render only border regions
                     const paperStart = this.BORDER_LEFT;
                     const paperEnd = this.BORDER_LEFT + this.SCREEN_WIDTH;
+                    const rowOffset = line * totalWidth;
 
                     // Left border
                     if (startX < paperStart) {
                         const leftEnd = Math.min(endX, paperStart);
                         for (let x = startX; x < leftEnd; x++) {
-                            this.setPixelRGBA(x, line, color);
+                            fb32[rowOffset + x] = color32;
                         }
                     }
 
@@ -493,7 +552,7 @@
                     if (endX > paperEnd) {
                         const rightStart = Math.max(startX, paperEnd);
                         for (let x = rightStart; x < endX; x++) {
-                            this.setPixelRGBA(x, line, color);
+                            fb32[rowOffset + x] = color32;
                         }
                     }
                 }
@@ -810,9 +869,12 @@
                 // Skip if beam rendering is handling border
                 if (!skipBorderRendering) {
                     if (lineChanges.length === 0) {
-                        const borderColor = this.palette[startColor];
+                        // Optimized: fill entire line using 32-bit writes
+                        const borderColor32 = this.palette32[startColor];
+                        const rowOffset = visY * this.TOTAL_WIDTH;
+                        const fb32 = this.frameBuffer32;
                         for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, borderColor);
+                            fb32[rowOffset + x] = borderColor32;
                         }
                     } else {
                         this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.TOTAL_WIDTH);
@@ -825,9 +887,12 @@
                 // Left border - skip if beam rendering
                 if (!skipBorderRendering) {
                     if (lineChanges.length === 0) {
-                        const borderColor = this.palette[startColor];
+                        // Optimized: fill left border using 32-bit writes
+                        const borderColor32 = this.palette32[startColor];
+                        const rowOffset = visY * this.TOTAL_WIDTH;
+                        const fb32 = this.frameBuffer32;
                         for (let x = 0; x < this.BORDER_LEFT; x++) {
-                            this.setPixelRGBA(x, visY, borderColor);
+                            fb32[rowOffset + x] = borderColor32;
                         }
                     } else {
                         this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.BORDER_LEFT, true);
@@ -839,9 +904,12 @@
                     // Draw border color instead of paper - skip if beam rendering
                     if (!skipBorderRendering) {
                         if (lineChanges.length === 0) {
-                            const borderColor = this.palette[startColor];
+                            // Optimized: fill paper area using 32-bit writes
+                            const borderColor32 = this.palette32[startColor];
+                            const rowOffset = visY * this.TOTAL_WIDTH;
+                            const fb32 = this.frameBuffer32;
                             for (let x = this.BORDER_LEFT; x < this.BORDER_LEFT + this.SCREEN_WIDTH; x++) {
-                                this.setPixelRGBA(x, visY, borderColor);
+                                fb32[rowOffset + x] = borderColor32;
                             }
                         } else {
                             this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
@@ -874,35 +942,65 @@
                             console.log(`[MCT-${this.machineType}] y=${y} visY=${visY} lineStart=${lineStartTstate} paperStart=${paperStartTstate} BORDER_LEFT=${this.BORDER_LEFT} BORDER_TOP=${this.BORDER_TOP}`);
                         }
 
+                        // Use palette32 for consistency with other rendering paths
+                        const fb32 = this.frameBuffer32;
+                        const pal32 = this.palette32;
+                        const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
+                        const flashActive = this.flashState;
+                        const attrChanges = this.attrChanges;
+                        const attrInitial = this.attrInitial;
+
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
-
-                            // Get attribute at the T-state when ULA scans this column
-                            // Each column is 8 pixels = 4 T-states
-                            const colTstate = paperStartTstate + (col * 4) + machineOffset;
                             const attrOffset = attrRowOffset + col;
                             const currentAttr = screenRam[attrAddr + col];
-                            const attr = this.getAttrAt(attrOffset, colTstate, currentAttr);
+
+                            // Fast path: if no changes for this column, use initial value directly
+                            let attr;
+                            const changes = attrChanges[attrOffset];
+                            if (changes) {
+                                // Has changes - use full lookup
+                                const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                                attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                                for (const change of changes) {
+                                    if (change.tState <= colTstate) {
+                                        attr = change.value;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            } else {
+                                // No changes - use initial value
+                                attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                            }
 
                             let ink = attr & 0x07;
                             let paper = (attr >> 3) & 0x07;
                             const bright = (attr & 0x40) ? 8 : 0;
-                            const flash = attr & 0x80;
 
-                            if (flash && this.flashState) {
+                            if ((attr & 0x80) && flashActive) {
                                 const tmp = ink; ink = paper; paper = tmp;
                             }
-                            ink += bright;
-                            paper += bright;
+                            const inkColor = pal32[ink + bright];
+                            const paperColor = pal32[paper + bright];
 
-                            for (let bit = 0; bit < 8; bit++) {
-                                const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                                const screenX = this.BORDER_LEFT + col * 8 + bit;
-                                this.setPixel(screenX, visY, pixel);
-                            }
+                            const baseOffset = rowOffset + (col << 3);
+                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                         }
                     } else {
-                        // Fast path: no attribute changes, read current memory values
+                        // Fast path: no attribute changes, use optimized 32-bit writes
+                        const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
+                        const fb32 = this.frameBuffer32;
+                        const pal32 = this.palette32;
+                        const flashActive = this.flashState;
+
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
                             const attr = screenRam[attrAddr + col];
@@ -910,19 +1008,23 @@
                             let ink = attr & 0x07;
                             let paper = (attr >> 3) & 0x07;
                             const bright = (attr & 0x40) ? 8 : 0;
-                            const flash = attr & 0x80;
 
-                            if (flash && this.flashState) {
+                            if ((attr & 0x80) && flashActive) {
                                 const tmp = ink; ink = paper; paper = tmp;
                             }
-                            ink += bright;
-                            paper += bright;
+                            const inkColor = pal32[ink + bright];
+                            const paperColor = pal32[paper + bright];
 
-                            for (let bit = 0; bit < 8; bit++) {
-                                const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                                const screenX = this.BORDER_LEFT + col * 8 + bit;
-                                this.setPixel(screenX, visY, pixel);
-                            }
+                            // Write 8 pixels using 32-bit array
+                            const baseOffset = rowOffset + (col << 3);
+                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                         }
                     }
                 }
@@ -930,9 +1032,12 @@
                 // Right border - skip if beam rendering
                 if (!skipBorderRendering) {
                     if (lineChanges.length === 0) {
-                        const borderColor = this.palette[startColor];
+                        // Optimized: fill right border using 32-bit writes
+                        const borderColor32 = this.palette32[startColor];
+                        const rowOffset = visY * this.TOTAL_WIDTH;
+                        const fb32 = this.frameBuffer32;
                         for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, borderColor);
+                            fb32[rowOffset + x] = borderColor32;
                         }
                     } else {
                         this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
@@ -978,6 +1083,12 @@
             // Calculate attribute row offset (0-767) for this screen line
             const attrRowOffset = Math.floor(y / 8) * 32;
 
+            // Use palette32 for consistency with other rendering paths
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
+            const flashActive = this.flashState;
+
             if (!hasScreenBankChanges) {
                 // Check if multicolor tracking detected any attribute changes this frame
                 if (this.hadAttrChanges) {
@@ -986,33 +1097,52 @@
                     const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
                     // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
                     const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
+                    const attrChanges = this.attrChanges;
+                    const attrInitial = this.attrInitial;
 
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
-
-                        // Get attribute at the T-state when ULA scans this column
-                        // Each column is 8 pixels = 4 T-states
-                        const colTstate = paperStartTstate + (col * 4) + machineOffset;
                         const attrOffset = attrRowOffset + col;
                         const currentAttr = screenRam[attrAddr + col];
-                        const attr = this.getAttrAt(attrOffset, colTstate, currentAttr);
+
+                        // Fast path: if no changes for this column, use initial value directly
+                        let attr;
+                        const changes = attrChanges[attrOffset];
+                        if (changes) {
+                            // Has changes - use full lookup
+                            const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                            attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                            for (const change of changes) {
+                                if (change.tState <= colTstate) {
+                                    attr = change.value;
+                                } else {
+                                    break;
+                                }
+                            }
+                        } else {
+                            // No changes - use initial value
+                            attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                        }
 
                         let ink = attr & 0x07;
                         let paper = (attr >> 3) & 0x07;
                         const bright = (attr & 0x40) ? 8 : 0;
-                        const flash = attr & 0x80;
 
-                        if (flash && this.flashState) {
+                        if ((attr & 0x80) && flashActive) {
                             const tmp = ink; ink = paper; paper = tmp;
                         }
-                        ink += bright;
-                        paper += bright;
+                        const inkColor = pal32[ink + bright];
+                        const paperColor = pal32[paper + bright];
 
-                        for (let bit = 0; bit < 8; bit++) {
-                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                            const screenX = this.BORDER_LEFT + col * 8 + bit;
-                            this.setPixel(screenX, visY, pixel);
-                        }
+                        const baseOffset = rowOffset + (col << 3);
+                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                     }
                 } else {
                     // Fast path: no attribute changes, render from current screen
@@ -1023,19 +1153,22 @@
                         let ink = attr & 0x07;
                         let paper = (attr >> 3) & 0x07;
                         const bright = (attr & 0x40) ? 8 : 0;
-                        const flash = attr & 0x80;
 
-                        if (flash && this.flashState) {
+                        if ((attr & 0x80) && flashActive) {
                             const tmp = ink; ink = paper; paper = tmp;
                         }
-                        ink += bright;
-                        paper += bright;
+                        const inkColor = pal32[ink + bright];
+                        const paperColor = pal32[paper + bright];
 
-                        for (let bit = 0; bit < 8; bit++) {
-                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                            const screenX = this.BORDER_LEFT + col * 8 + bit;
-                            this.setPixel(screenX, visY, pixel);
-                        }
+                        const baseOffset = rowOffset + (col << 3);
+                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                     }
                 }
             } else {
@@ -1057,17 +1190,13 @@
                     let ink = attr & 0x07;
                     let paper = (attr >> 3) & 0x07;
                     const bright = (attr & 0x40) ? 8 : 0;
-                    const flash = attr & 0x80;
 
-                    if (flash && this.flashState) {
+                    if ((attr & 0x80) && flashActive) {
                         const tmp = ink; ink = paper; paper = tmp;
                     }
-                    ink += bright;
-                    paper += bright;
 
-                    const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                    const screenX = this.BORDER_LEFT + px;
-                    this.setPixel(screenX, visY, pixel);
+                    const pixel = (pixelByte & (0x80 >> bit)) ? ink + bright : paper + bright;
+                    fb32[rowOffset + px] = pal32[pixel];
                 }
             }
             return true;
@@ -1108,26 +1237,27 @@
             const screenLine = line - this.FIRST_SCREEN_LINE;
             const borderLineOffset = this.hadScreenBankChanges ? 2 : 0;
 
+            const fb32 = this.frameBuffer32;
+            const borderColor32 = this.palette32[startColor];
+            const rowOffset = visY * this.TOTAL_WIDTH;
+
             if (screenLine < 0 || screenLine >= 192) {
                 // Pure border line (top/bottom border) - render entire width
                 if (lineChanges.length === 0) {
-                    const borderColor = this.palette[startColor];
                     for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                        fb32[rowOffset + x] = borderColor32;
                     }
                 } else {
                     this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.TOTAL_WIDTH);
                 }
             } else {
                 // Screen line - render only left and right borders
-                // Left border
                 if (lineChanges.length === 0) {
-                    const borderColor = this.palette[startColor];
                     for (let x = 0; x < this.BORDER_LEFT; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                        fb32[rowOffset + x] = borderColor32;
                     }
                     for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
-                        this.setPixelRGBA(x, visY, borderColor);
+                        fb32[rowOffset + x] = borderColor32;
                     }
                 } else {
                     this.renderBorderPixels(visY, lineStartTstate - borderLineOffset, lineChanges, startColor, 0, this.BORDER_LEFT, true);
@@ -1138,9 +1268,8 @@
                 // If borderOnly mode, also fill paper area with border
                 if (this.borderOnly) {
                     if (lineChanges.length === 0) {
-                        const borderColor = this.palette[startColor];
                         for (let x = this.BORDER_LEFT; x < this.BORDER_LEFT + this.SCREEN_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, borderColor);
+                            fb32[rowOffset + x] = borderColor32;
                         }
                     } else {
                         this.renderBorderPixels(visY, lineStartTstate, lineChanges, startColor,
@@ -1162,6 +1291,11 @@
             const isPentagon = this.machineType === 'pentagon';
             const timingMask = isPentagon ? ~0 : ~3;  // ~0 = no mask, ~3 = clear lower 2 bits
 
+            // Use palette32 for consistency with paper fast path
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const rowOffset = visY * this.TOTAL_WIDTH;
+
             for (let x = xStart; x < xEnd; x++) {
                 // Calculate T-state for this pixel
                 // Each pixel is 0.5 T-states (2 pixels per T-state)
@@ -1175,7 +1309,7 @@
                     changeIdx++;
                 }
 
-                this.setPixelRGBA(x, visY, this.palette[currentColor]);
+                fb32[rowOffset + x] = pal32[currentColor];
             }
         }
         
@@ -1210,11 +1344,16 @@
         renderDeferredPaper() {
             const screen = this.memory.getScreenBase();
             const screenRam = screen.ram;
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const totalWidth = this.TOTAL_WIDTH;
+            const flashActive = this.flashState;
 
             for (let y = 0; y < 192; y++) {
                 const visY = this.BORDER_TOP + y;
                 const lineStartTstate = this.calculateLineStartTstate(visY);
                 const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+                const rowOffset = visY * totalWidth + this.BORDER_LEFT;
 
                 const third = Math.floor(y / 64);
                 const lineInThird = y & 0x07;
@@ -1237,17 +1376,13 @@
                     let ink = attr & 0x07;
                     let paper = (attr >> 3) & 0x07;
                     const bright = (attr & 0x40) ? 8 : 0;
-                    const flash = attr & 0x80;
 
-                    if (flash && this.flashState) {
+                    if ((attr & 0x80) && flashActive) {
                         const tmp = ink; ink = paper; paper = tmp;
                     }
-                    ink += bright;
-                    paper += bright;
 
-                    const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                    const screenX = this.BORDER_LEFT + px;
-                    this.setPixel(screenX, visY, pixel);
+                    const pixel = (pixelByte & (0x80 >> bit)) ? ink + bright : paper + bright;
+                    fb32[rowOffset + px] = pal32[pixel];
                 }
             }
         }
@@ -1348,7 +1483,13 @@
             }
             
             // Skip paper rendering if borderOnly mode
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const totalWidth = this.TOTAL_WIDTH;
+
             if (!this.borderOnly) {
+                const flashActive = this.flashState;
+
                 for (let y = 0; y < 192; y++) {
                     const screenY = y + this.BORDER_TOP;
                     const third = Math.floor(y / 64);
@@ -1356,6 +1497,7 @@
                     const charRow = Math.floor((y & 0x38) / 8);
                     const pixelAddr = (third << 11) | (lineInThird << 8) | (charRow << 5);
                     const attrAddr = 0x1800 + Math.floor(y / 8) * 32;
+                    const rowOffset = screenY * totalWidth + this.BORDER_LEFT;
 
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
@@ -1364,29 +1506,32 @@
                         let ink = attr & 0x07;
                         let paper = (attr >> 3) & 0x07;
                         const bright = (attr & 0x40) ? 8 : 0;
-                        const flash = attr & 0x80;
 
-                        if (flash && this.flashState) {
+                        if ((attr & 0x80) && flashActive) {
                             const tmp = ink; ink = paper; paper = tmp;
                         }
-                        ink += bright;
-                        paper += bright;
+                        const inkColor = pal32[ink + bright];
+                        const paperColor = pal32[paper + bright];
 
-                        for (let bit = 0; bit < 8; bit++) {
-                            const pixel = (pixelByte & (0x80 >> bit)) ? ink : paper;
-                            const screenX = this.BORDER_LEFT + col * 8 + bit;
-                            this.setPixel(screenX, screenY, pixel);
-                        }
+                        const baseOffset = rowOffset + (col << 3);
+                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                     }
                 }
             } else {
                 // borderOnly mode: fill paper area with black (like Screen mode)
-                const black = this.palette[0];
+                const black32 = pal32[0];
                 for (let y = 0; y < 192; y++) {
                     const screenY = y + this.BORDER_TOP;
+                    const rowOffset = screenY * totalWidth + this.BORDER_LEFT;
                     for (let x = 0; x < this.SCREEN_WIDTH; x++) {
-                        const screenX = this.BORDER_LEFT + x;
-                        this.setPixelRGBA(screenX, screenY, black);
+                        fb32[rowOffset + x] = black32;
                     }
                 }
             }
@@ -1423,21 +1568,23 @@
                 const isScreenLine = visY >= this.BORDER_TOP && visY < this.BORDER_TOP + this.SCREEN_HEIGHT;
 
                 if (lineChanges.length === 0) {
-                    // No changes during this line - solid color
-                    const color = this.palette[startColor];
+                    // No changes during this line - solid color using 32-bit writes
+                    const color32 = this.palette32[startColor];
+                    const fb32 = this.frameBuffer32;
+                    const rowOffset = visY * this.TOTAL_WIDTH;
 
                     if (!isScreenLine) {
                         // Pure border line - fill entire width
                         for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, color);
+                            fb32[rowOffset + x] = color32;
                         }
                     } else {
                         // Left and right border during screen area
                         for (let x = 0; x < this.BORDER_LEFT; x++) {
-                            this.setPixelRGBA(x, visY, color);
+                            fb32[rowOffset + x] = color32;
                         }
                         for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
-                            this.setPixelRGBA(x, visY, color);
+                            fb32[rowOffset + x] = color32;
                         }
                     }
                 } else {
@@ -1450,6 +1597,11 @@
         renderBorderLineWithChanges(visY, lineStartTstate, changes, startColor, isScreenLine) {
             let currentColor = startColor;
             let changeIdx = 0;
+
+            // Use palette32 for consistency
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const rowOffset = visY * this.TOTAL_WIDTH;
 
             for (let x = 0; x < this.TOTAL_WIDTH; x++) {
                 // Skip screen area (paper is rendered separately)
@@ -1466,28 +1618,37 @@
                     changeIdx++;
                 }
 
-                this.setPixelRGBA(x, visY, this.palette[currentColor]);
+                fb32[rowOffset + x] = pal32[currentColor];
             }
         }
         
         renderBorder() {
-            const color = this.palette[this.borderColor];
+            const color32 = this.palette32[this.borderColor];
+            const fb32 = this.frameBuffer32;
+            const totalWidth = this.TOTAL_WIDTH;
+
+            // Top border
             for (let y = 0; y < this.BORDER_TOP; y++) {
-                for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                    this.setPixelRGBA(x, y, color);
+                const rowOffset = y * totalWidth;
+                for (let x = 0; x < totalWidth; x++) {
+                    fb32[rowOffset + x] = color32;
                 }
             }
+            // Bottom border
             for (let y = this.BORDER_TOP + this.SCREEN_HEIGHT; y < this.TOTAL_HEIGHT; y++) {
-                for (let x = 0; x < this.TOTAL_WIDTH; x++) {
-                    this.setPixelRGBA(x, y, color);
+                const rowOffset = y * totalWidth;
+                for (let x = 0; x < totalWidth; x++) {
+                    fb32[rowOffset + x] = color32;
                 }
             }
+            // Left and right borders
             for (let y = this.BORDER_TOP; y < this.BORDER_TOP + this.SCREEN_HEIGHT; y++) {
+                const rowOffset = y * totalWidth;
                 for (let x = 0; x < this.BORDER_LEFT; x++) {
-                    this.setPixelRGBA(x, y, color);
+                    fb32[rowOffset + x] = color32;
                 }
-                for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < this.TOTAL_WIDTH; x++) {
-                    this.setPixelRGBA(x, y, color);
+                for (let x = this.BORDER_LEFT + this.SCREEN_WIDTH; x < totalWidth; x++) {
+                    fb32[rowOffset + x] = color32;
                 }
             }
         }

@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.9.1
+ * @version 0.9.6
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.1';
+    const VERSION = '0.9.6';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -29,14 +29,19 @@
             this.setupContention();
             
             this.tapeLoader = new TapeLoader();
+            this.tapePlayer = new TapePlayer();
             this.snapshotLoader = new SnapshotLoader();
             this.tapeEarBit = false;  // EAR input state from tape (bit 6 of port 0xFE)
+            this.tapeFlashLoad = true;  // Flash load mode (instant) vs real-time (with border/sound)
+            this._turboBlockPending = false;  // Flag for auto-starting turbo block playback
+            this._lastTapeUpdate = 0;  // T-state of last tape update (for accurate EAR timing)
             this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, null);
             this.tapeTrap.setEnabled(this.tapeTrapsEnabled);
             this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
             this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
             this.betaDiskEnabled = this.machineType === 'pentagon';  // Beta Disk enabled by default for Pentagon
+            this._betaDiskPagingEnabled = false;  // Cached flag for fast updateBetaDiskPaging check
 
             // AY-3-8910 sound chip
             this.ay = new AY(this.machineType === 'pentagon' ? 1750000 : 1773400);
@@ -46,6 +51,13 @@
 
             // Audio manager (initialized on user interaction due to browser autoplay policy)
             this.audio = null;
+
+            // Beeper state tracking for audio generation
+            this.beeperChanges = [];      // Array of {tStates, level} for frame
+            this.beeperLevel = 0;         // Current beeper output level (0 or 1)
+
+            // Tape audio setting (enable loading sounds)
+            this.tapeAudioEnabled = true;
             
             this.cpu.portRead = this.portRead.bind(this);
             this.cpu.portWrite = this.portWrite.bind(this);
@@ -174,38 +186,41 @@
             // Custom gamepad mapping (null = use default, otherwise { up: {type, index, threshold}, ... })
             this.gamepadMapping = null;
 
-            // Setup memory watchpoint callbacks (also used for auto-mapping)
-            this.memory.onRead = (addr, val) => {
+            // Memory/CPU callback functions (stored for enable/disable)
+            this._memoryReadCallback = (addr, val) => {
                 // Auto-map: track non-fetch reads (only during CPU execution)
                 if (this.autoMap.enabled && this.autoMap.inExecution && !this.autoMap.currentFetchAddrs.has(addr)) {
                     const key = this.getAutoMapKey(addr);
                     this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
                 }
-                this.checkReadWatchpoint(addr, val);
+                if (this.triggers.length > 0) this.checkReadWatchpoint(addr, val);
             };
-            this.memory.onWrite = (addr, val) => {
+            this._memoryWriteCallback = (addr, val) => {
                 // Auto-map: track writes (only during CPU execution)
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
                     const key = this.getAutoMapKey(addr);
                     this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
                 }
-                // Trace: track memory writes
-                if ((this.runtimeTraceEnabled || this.traceEnabled) &&
+                // Trace: track memory writes (only during runtime tracing, not step tracing)
+                if (this.runtimeTraceEnabled &&
                     this.traceMemOps.length < this.traceMemOpsLimit) {
                     this.traceMemOps.push({ addr, val });
                 }
                 // Multicolor: disabled (known limitation - see README)
-                this.checkWriteWatchpoint(addr, val);
+                if (this.triggers.length > 0) this.checkWriteWatchpoint(addr, val);
             };
-
-            // Setup CPU fetch callback for auto-mapping
-            this.cpu.onFetch = (addr) => {
+            this._cpuFetchCallback = (addr) => {
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
                     const key = this.getAutoMapKey(addr);
                     this.autoMap.executed.set(key, (this.autoMap.executed.get(key) || 0) + 1);
                     this.autoMap.currentFetchAddrs.add(addr);
                 }
             };
+
+            // Start with callbacks disabled (null = no overhead)
+            this.memory.onRead = null;
+            this.memory.onWrite = null;
+            this.cpu.onFetch = null;
 
             this.boundKeyDown = this.handleKeyDown.bind(this);
             this.boundKeyUp = this.handleKeyUp.bind(this);
@@ -748,6 +763,10 @@
             this.memory.reset();
             this.ula.reset();
             this.tapeLoader.rewind();
+            this.tapePlayer.rewind();
+            this.tapePlayer.stop();
+            this.tapeEarBit = false;
+            this._turboBlockPending = false;
             this.rzxStop();
             if (this.ay) this.ay.reset();
 
@@ -808,7 +827,7 @@
                 result = (input !== null) ? input : 0xFF;
             } else {
                 // Check port breakpoint using unified trigger system
-                if (this.running) {
+                if (this.running && this.triggers.length > 0) {
                     const trigger = this.checkPortTriggers(port, 0xff, false);
                     if (trigger) {
                         this.portBreakpointHit = true;
@@ -844,6 +863,30 @@
                     // Issue 2/3 ULA: reads LOW when no tape connected
                     // Issue 4+ ULA: reads HIGH when no tape connected
                     // We emulate Issue 2/3 behavior (most compatible with tests)
+
+                    // Auto-start turbo block playback when custom loader reads port 0xFE
+                    if (this._turboBlockPending && !this.tapePlayer.isPlaying()) {
+                        this._lastTapeUpdate = this.cpu.tStates;  // Reset tape timing tracker
+                        this.tapePlayer.play();
+                        this._turboBlockPending = false;
+                        console.log(`[TZX] Auto-started turbo block playback on port 0xFE read`);
+                    }
+
+                    // CRITICAL: Update tape to the T-state when I/O actually occurs
+                    // IN A,(n) is 11 T-states: fetch(4) + operand(3) + I/O(4)
+                    // The actual port read happens at T-state ~7 within the instruction
+                    // cpu.tStates is the count BEFORE this instruction, so add offset
+                    if (this.tapePlayer.isPlaying()) {
+                        const IO_OFFSET = 7;  // T-state within IN instruction when I/O read occurs
+                        const tStatesNow = this.cpu.tStates + IO_OFFSET;
+                        const elapsed = tStatesNow - this._lastTapeUpdate;
+                        if (elapsed > 0) {
+                            this.tapePlayer.update(elapsed, tStatesNow);
+                            this._lastTapeUpdate = tStatesNow;
+                        }
+                        this.tapeEarBit = this.tapePlayer.getEarBit();
+                    }
+
                     const ear = this.tapeEarBit ? 0x40 : 0x00;
                     result = keyboard | 0xa0 | ear; // Bits 5,7 always high
                 } else if (betaDiskActive && (lowByte === 0x1f || lowByte === 0x3f ||
@@ -905,8 +948,8 @@
                 }
             }
 
-            // Track port read for trace (only if callback exists to consume the data)
-            if ((this.runtimeTraceEnabled || this.traceEnabled) && this.onBeforeStep) {
+            // Track port read for trace (only during runtime tracing, not step tracing)
+            if (this.runtimeTraceEnabled && this.onBeforeStep) {
                 this.tracePortOps.push({ dir: 'in', port, val: result });
             }
 
@@ -914,13 +957,13 @@
         }
         
         portWrite(port, val, instructionTiming = 12) {
-            // Track port write for trace (only if callback exists to consume the data)
-            if ((this.runtimeTraceEnabled || this.traceEnabled) && this.onBeforeStep) {
+            // Track port write for trace (only during runtime tracing, not step tracing)
+            if (this.runtimeTraceEnabled && this.onBeforeStep) {
                 this.tracePortOps.push({ dir: 'out', port, val });
             }
 
             // Check port breakpoint using unified trigger system
-            if (this.running) {
+            if (this.running && this.triggers.length > 0) {
                 const trigger = this.checkPortTriggers(port, val, true);
                 if (trigger) {
                     this.portBreakpointHit = true;
@@ -1009,6 +1052,14 @@
 
                 // Pass to ULA - it will calculate beam position internally
                 this.ula.setBorderAt(val & 0x07, frameT);
+
+                // Track beeper output for audio generation (bit 4 = EAR output)
+                const newBeeperLevel = (val & 0x10) ? 1 : 0;
+                if (newBeeperLevel !== this.beeperLevel) {
+                    this.beeperLevel = newBeeperLevel;
+                    this.beeperChanges.push({ tStates: frameT, level: newBeeperLevel });
+                }
+
                 // Don't return - port $7FFC triggers BOTH ULA AND paging for scroll17 effect
             }
             if (betaDiskActive && (lowByte === 0x1f || lowByte === 0x3f ||
@@ -1059,9 +1110,16 @@
             // If instruction ended past frame boundary, carry over the excess
             if (this.cpu.tStates >= tstatesPerFrame) {
                 this.cpu.tStates -= tstatesPerFrame;
+                // Also adjust tape timing tracker to stay in sync
+                if (this._lastTapeUpdate >= tstatesPerFrame) {
+                    this._lastTapeUpdate -= tstatesPerFrame;
+                } else {
+                    this._lastTapeUpdate = this.cpu.tStates;
+                }
             } else if (this.cpu.tStates < 0 || isNaN(this.cpu.tStates)) {
                 // Safety: reset to 0 if invalid
                 this.cpu.tStates = 0;
+                this._lastTapeUpdate = 0;
             }
 
             // Track frame start offset for border timing adjustment
@@ -1075,6 +1133,12 @@
 
             this.ula.startFrame();
             this.lastContentionLine = -1;  // Reset per-line contention tracking
+            this.beeperChanges = [];       // Reset beeper changes for new frame
+
+            // Start new frame for tape player (reset edge transitions)
+            if (this.tapePlayer.isPlaying()) {
+                this.tapePlayer.startFrame(this.cpu.tStates);
+            }
 
             // Track which line to render next (account for overshoot)
             let nextLineToRender = Math.floor(this.cpu.tStates / tstatesPerLine);
@@ -1219,6 +1283,18 @@
 
                 this.autoMap.inExecution = false;
 
+                // Update tape player for real-time playback
+                // Note: May have been partially updated during port reads for accurate timing
+                if (this.tapePlayer.isPlaying()) {
+                    const tStatesNow = this.cpu.tStates;
+                    const elapsed = tStatesNow - this._lastTapeUpdate;
+                    if (elapsed > 0) {
+                        this.tapePlayer.update(elapsed, tStatesNow);
+                        this._lastTapeUpdate = tStatesNow;
+                    }
+                    this.tapeEarBit = this.tapePlayer.getEarBit();
+                }
+
                 // Clear fetch tracking for auto-map (per instruction)
                 if (this.autoMap.enabled) {
                     this.autoMap.currentFetchAddrs.clear();
@@ -1339,9 +1415,16 @@
             this.frameCount++;
             if (this.onFrame) this.onFrame(this.frameCount);
 
-            // Process AY audio for this frame (skip at high speeds - audio would be meaningless)
+            // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
-                this.audio.processFrame(tstatesPerFrame);
+                // Get tape audio from tape player (if playing and enabled)
+                // Also suppress tape audio briefly after returning from high speed
+                const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
+                const tapeAudioChanges = (this.tapeAudioEnabled && this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
+                    ? this.tapePlayer.getEdgeTransitions() : [];
+
+                // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges);
             }
 
             // Advance AY logging frame counter
@@ -1394,10 +1477,16 @@
             // Preserve T-state overshoot from previous frame (Swan-style)
             if (this.cpu.tStates >= tstatesPerFrame) {
                 this.cpu.tStates -= tstatesPerFrame;
+                // Also adjust tape timing tracker to stay in sync
+                if (this._lastTapeUpdate >= tstatesPerFrame) {
+                    this._lastTapeUpdate -= tstatesPerFrame;
+                } else {
+                    this._lastTapeUpdate = this.cpu.tStates;
+                }
             } else if (this.cpu.tStates < 0 || isNaN(this.cpu.tStates)) {
                 this.cpu.tStates = 0;
+                this._lastTapeUpdate = 0;
             }
-
 
             // Track frame start offset for border timing adjustment
             this.frameStartOffset = this.cpu.tStates;
@@ -1407,6 +1496,12 @@
 
             this.ula.startFrame();
             this.lastContentionLine = -1;
+            this.beeperChanges = [];       // Reset beeper changes for new frame
+
+            // Start new frame for tape player (reset edge transitions)
+            if (this.tapePlayer.isPlaying()) {
+                this.tapePlayer.startFrame(this.cpu.tStates);
+            }
 
             // INT pulse duration (32 T-states for 48K, 36 for 128K/Pentagon)
             const intPulseDuration = (this.machineType === '128k' || this.machineType === 'pentagon') ? 36 : 32;
@@ -1468,6 +1563,7 @@
                 }
 
                 // Execute ONE instruction
+                const tStatesBefore = this.cpu.tStates;
                 if (this.cpu.halted) {
                     // Process eiPending during HALT NOP cycles (same as instruction boundary)
                     if (this.cpu.eiPending) {
@@ -1500,6 +1596,18 @@
                 } else {
                     this.cpu.execute();
                 }
+
+                // Update tape player for real-time playback
+                // Note: May have been partially updated during port reads for accurate timing
+                if (this.tapePlayer.isPlaying()) {
+                    const tStatesNow = this.cpu.tStates;
+                    const elapsed = tStatesNow - this._lastTapeUpdate;
+                    if (elapsed > 0) {
+                        this.tapePlayer.update(elapsed, tStatesNow);
+                        this._lastTapeUpdate = tStatesNow;
+                    }
+                    this.tapeEarBit = this.tapePlayer.getEarBit();
+                }
             }
 
             // Render any remaining scanlines (same as runFrame)
@@ -1512,9 +1620,16 @@
 
             this.frameCount++;
 
-            // Process AY audio for this frame (skip at high speeds - audio would be meaningless)
+            // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
-                this.audio.processFrame(tstatesPerFrame);
+                // Get tape audio from tape player (if playing and enabled)
+                // Also suppress tape audio briefly after returning from high speed
+                const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
+                const tapeAudioChanges = (this.tapeAudioEnabled && this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
+                    ? this.tapePlayer.getEdgeTransitions() : [];
+
+                // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges);
             }
 
             // Advance AY logging frame counter
@@ -2388,6 +2503,7 @@
         }
         
         setSpeed(speed) {
+            const wasHighSpeed = this.speed > 200;
             this.speed = speed;
             this.lastRafTime = null;  // Reset for new timing
 
@@ -2398,6 +2514,12 @@
                 } else if (this.audio.enabled) {
                     this.audio.context.resume();
                 }
+            }
+
+            // Suppress tape audio briefly when returning from high speed
+            // This prevents hearing unexpected loading sounds when game is loaded at max speed
+            if (wasHighSpeed && speed > 0 && speed <= 200) {
+                this._suppressTapeAudioUntil = Date.now() + 1000;  // 1 second grace period
             }
 
             // Restart timing if running
@@ -2417,20 +2539,21 @@
         toggle() { this.running ? this.stop() : this.start(); }
 
         // Beta Disk automatic ROM paging
+        // Update cached flag for Beta Disk paging (call when conditions change)
+        updateBetaDiskPagingFlag() {
+            this._betaDiskPagingEnabled =
+                this.memory.hasTrdosRom() &&
+                (this.machineType === 'pentagon' || this.betaDiskEnabled);
+        }
+
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
         // The Beta Disk interface has its own ROM chip with TR-DOS, which is paged in
         // when executing code in the 3D00-3DFF "magic" address range, and paged out
         // when execution moves to RAM (>=4000h)
         // Works on Pentagon (always) and 48K/128K (when Beta Disk enabled in settings)
         updateBetaDiskPaging() {
-            // Check if Beta Disk interface is available
-            if (!this.memory.hasTrdosRom()) {
-                return;
-            }
-            // Pentagon always has Beta Disk; 48K/128K need it enabled in settings
-            if (this.machineType !== 'pentagon' && !this.betaDiskEnabled) {
-                return;
-            }
+            // Fast path: skip if Beta Disk paging not needed
+            if (!this._betaDiskPagingEnabled) return;
 
             const pc = this.cpu.pc;
             if (pc >= 0x3D00 && pc <= 0x3DFF) {
@@ -3431,7 +3554,7 @@
         }
         
         checkReadWatchpoint(addr, val) {
-            if (!this.running) return;
+            if (!this.running || this.triggers.length === 0) return;
             // Use unified trigger system
             const trigger = this.checkMemTriggers(addr, val, false);
             if (trigger) {
@@ -3443,7 +3566,7 @@
         }
 
         checkWriteWatchpoint(addr, val) {
-            if (!this.running) return;
+            if (!this.running || this.triggers.length === 0) return;
             // Use unified trigger system
             const trigger = this.checkMemTriggers(addr, val, true);
             if (trigger) {
@@ -3452,6 +3575,27 @@
                 this.lastWatchpoint = { addr, type: 'write', val };
                 this.lastTrigger = { trigger, addr, val, type: 'write' };
             }
+        }
+
+        // ========== Memory Callback Optimization ==========
+
+        /**
+         * Update memory/CPU callbacks based on current feature state
+         * Sets callbacks to null when not needed (zero overhead)
+         * Call this when triggers, autoMap, or runtimeTraceEnabled changes
+         */
+        updateMemoryCallbacksFlag() {
+            const needsMemoryCallbacks =
+                this.triggers.length > 0 ||
+                this.autoMap.enabled ||
+                this.runtimeTraceEnabled;
+
+            // Set callbacks to null when not needed (eliminates function call overhead)
+            this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
+            this.memory.onWrite = needsMemoryCallbacks ? this._memoryWriteCallback : null;
+
+            // CPU fetch callback only needed for autoMap
+            this.cpu.onFetch = this.autoMap.enabled ? this._cpuFetchCallback : null;
         }
 
         // ========== Unified Trigger System ==========
@@ -3509,6 +3653,7 @@
 
             this.triggers.push(t);
             this._syncLegacyArrays();
+            this.updateMemoryCallbacksFlag();
             return this.triggers.length - 1;
         }
 
@@ -3519,6 +3664,7 @@
             if (index >= 0 && index < this.triggers.length) {
                 this.triggers.splice(index, 1);
                 this._syncLegacyArrays();
+                this.updateMemoryCallbacksFlag();
                 return true;
             }
             return false;
@@ -3558,6 +3704,7 @@
                 this.triggers = this.triggers.filter(t => !types.includes(t.type));
             }
             this._syncLegacyArrays();
+            this.updateMemoryCallbacksFlag();
         }
 
         /**
@@ -3629,6 +3776,7 @@
          * Check if an execution trigger matches at the given PC
          */
         checkExecTriggers(pc) {
+            if (this.triggers.length === 0) return null;
             for (const t of this.triggers) {
                 if (t.type !== 'exec' || !t.enabled) continue;
                 if (this._matchesTrigger(t, pc)) {
@@ -3662,6 +3810,7 @@
          * Check if a port access trigger matches
          */
         checkPortTriggers(port, val, isOut) {
+            if (this.triggers.length === 0) return null;
             const types = isOut ? ['port_out', 'port_io'] : ['port_in', 'port_io'];
             for (const t of this.triggers) {
                 if (!types.includes(t.type) || !t.enabled) continue;
@@ -4169,8 +4318,6 @@
         // Boot into TR-DOS mode
         // Performs full system initialization like other emulators (UnrealSpeccy, Fuse, etc.)
         bootTrdos() {
-            console.log(`[TR-DOS] bootTrdos called, machineType=${this.machineType}, betaDiskEnabled=${this.betaDiskEnabled}`);
-            console.log(`[TR-DOS] hasTrdosRom=${this.memory.hasTrdosRom()}, hasDisk=${this.betaDisk.hasDisk()}`);
 
             // Check if TR-DOS ROM is loaded
             if (!this.memory.hasTrdosRom()) {
@@ -4440,6 +4587,7 @@
                 case 'z80': return this.loadZ80Snapshot(data);
                 case 'szx': return this.loadSZXSnapshot(data);
                 case 'tap': return this.loadTape(data, fileName);  // Store TAP with name
+                case 'tzx': return this.loadTZX(data, fileName);  // Store TZX with name
                 case 'trd':
                 case 'scl':
                     return this.loadDiskImage(data, type, fileName);
@@ -4570,6 +4718,7 @@
                 this.accumulatedContention = 0;
                 this.pendingInt = false;
                 this.cpu.tStates = 0;
+                this._lastTapeUpdate = 0;
 
                 this.ula.setBorder(result.border);
                 const frameBuffer = this.ula.renderFrame();
@@ -4586,6 +4735,9 @@
         loadTape(data, storeName = null) {
             if (!this.tapeLoader.load(data)) throw new Error('Failed to parse TAP file');
             this.tapeTrap.setTape(this.tapeLoader);
+
+            // Initialize TapePlayer for real-time playback
+            this.tapePlayer.loadFromTapeLoader(this.tapeLoader);
 
             // Reset debug counters for fresh logging after TAP load
             this._floatBusLogCount = 0;
@@ -4604,6 +4756,90 @@
             return { blocks: this.tapeLoader.getBlockCount() };
         }
 
+        loadTZX(data, storeName = null) {
+            // Clear any pending turbo block state from previous load
+            this._turboBlockPending = false;
+
+            if (!this.tzxLoader) {
+                this.tzxLoader = new TZXLoader();
+            }
+
+            if (!this.tzxLoader.load(data)) {
+                throw new Error('Failed to parse TZX file');
+            }
+
+            // TZXLoader provides blocks in unified format
+            // Load directly into TapePlayer for real-time playback
+            this.tapePlayer.loadBlocks(this.tzxLoader.blocks);
+
+            // For flash load mode, only standard-timed data blocks can use ROM trap
+            // Turbo blocks have non-standard timing and must use real-time playback
+            const isStandardTiming = (b) => {
+                // Standard ROM loader timing (with small tolerance)
+                const stdPilot = 2168, stdZero = 855, stdOne = 1710;
+                const tolerance = 50;  // Allow small variations
+                return (!b.pilotPulse || Math.abs(b.pilotPulse - stdPilot) < tolerance) &&
+                       (!b.zeroPulse || Math.abs(b.zeroPulse - stdZero) < tolerance) &&
+                       (!b.onePulse || Math.abs(b.onePulse - stdOne) < tolerance);
+            };
+
+            // Convert compatible blocks to TapeLoader format
+            const tapCompatibleBlocks = this.tzxLoader.blocks
+                .filter(b => b.type === 'data' && !b.noPilot && isStandardTiming(b))
+                .map(b => ({ flag: b.flag, data: b.data, length: b.length }));
+
+            if (tapCompatibleBlocks.length > 0) {
+                this.tapeLoader.blocks = tapCompatibleBlocks;
+                this.tapeLoader.currentBlock = 0;
+                this.tapeTrap.setTape(this.tapeLoader);
+
+                // Track count of standard blocks vs total blocks for turbo block auto-start
+                const standardBlockCount = tapCompatibleBlocks.length;
+                const totalBlocks = this.tzxLoader.blocks.length;
+                const hasTurboBlocks = totalBlocks > standardBlockCount;
+
+                if (hasTurboBlocks) {
+                    // Set up callback to prepare for turbo block real-time playback
+                    this.tapeTrap.onBlockLoaded = (loadedBlockIndex) => {
+                        // Check if all standard blocks have been flash-loaded
+                        if (loadedBlockIndex >= standardBlockCount - 1) {
+                            // All standard blocks loaded - turbo blocks need real-time playback
+                            // Set tapePlayer to first turbo block position (but don't start yet)
+                            this.tapePlayer.setBlock(standardBlockCount);
+                            // Set flag to auto-start when port 0xFE is read
+                            this._turboBlockPending = true;
+                            console.log(`[TZX] Turbo blocks ready at position ${standardBlockCount}, waiting for port read`);
+                        }
+                    };
+                } else {
+                    this.tapeTrap.onBlockLoaded = null;
+                    this._turboBlockPending = false;
+                }
+            } else {
+                this.tapeTrap.onBlockLoaded = null;
+                this._turboBlockPending = false;
+            }
+
+            // Reset debug counters
+            this._floatBusLogCount = 0;
+            this._intDebugCount = 0;
+            this._floatBusLogActive = false;
+
+            // Store original TZX data for project save
+            if (storeName) {
+                this.loadedMedia = {
+                    type: 'tzx',
+                    data: new Uint8Array(data),
+                    name: storeName
+                };
+            }
+
+            return {
+                blocks: this.tzxLoader.getBlockCount(),
+                version: this.tzxLoader.version
+            };
+        }
+
         // ========== Media Management ==========
 
         getLoadedMedia() {
@@ -4617,6 +4853,9 @@
                 if (media.type === 'tap') {
                     this.tapeLoader.load(media.data.buffer);
                     this.tapeTrap.setTape(this.tapeLoader);
+                    this.tapePlayer.loadFromTapeLoader(this.tapeLoader);
+                } else if (media.type === 'tzx') {
+                    this.loadTZX(media.data.buffer, null);  // Don't re-store
                 }
                 // For TRD/SCL, data is stored but not pre-loaded
                 // User can load additional files via ROM trap or manual selection
@@ -4638,6 +4877,65 @@
 
         rewindTape() {
             this.tapeLoader.rewind();
+            this.tapePlayer.rewind();
+        }
+
+        // ========== Real-time Tape Playback ==========
+
+        /**
+         * Set tape load mode
+         * @param {boolean} flash - true for flash load (instant), false for real-time
+         */
+        setTapeFlashLoad(flash) {
+            this.tapeFlashLoad = flash;
+            // Disable tape trap when using real-time loading
+            this.tapeTrap.setEnabled(this.tapeTrapsEnabled && flash);
+        }
+
+        /**
+         * Get current tape load mode
+         */
+        getTapeFlashLoad() {
+            return this.tapeFlashLoad;
+        }
+
+        /**
+         * Start real-time tape playback
+         */
+        playTape() {
+            if (this.tapeFlashLoad) return false;
+            this._lastTapeUpdate = this.cpu.tStates;  // Reset tape timing tracker
+            return this.tapePlayer.play();
+        }
+
+        /**
+         * Stop real-time tape playback
+         */
+        stopTape() {
+            this.tapePlayer.stop();
+            this.tapeEarBit = false;
+            this._turboBlockPending = false;
+        }
+
+        /**
+         * Check if tape is playing
+         */
+        isTapePlaying() {
+            return this.tapePlayer.isPlaying();
+        }
+
+        /**
+         * Get tape playback position info
+         */
+        getTapePosition() {
+            return this.tapePlayer.getPosition();
+        }
+
+        /**
+         * Set tape block for real-time player
+         */
+        setTapePlayerBlock(n) {
+            this.tapePlayer.setBlock(n);
         }
         
         saveSnapshot(format = 'sna') {
@@ -4685,6 +4983,7 @@
 
             this.machineType = type;
             this.ayEnabled = type !== '48k';  // Update AY enabled state for new machine type
+            if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
@@ -4706,7 +5005,7 @@
             }
             this.updateDisplayDimensions();  // Recreate imageData for new ULA dimensions
             this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, this.tapeLoader);
-            this.tapeTrap.setEnabled(this.tapeTrapsEnabled);
+            this.tapeTrap.setEnabled(this.tapeTrapsEnabled && this.tapeFlashLoad);
 
             // Recreate TR-DOS trap with new CPU/memory, preserve disk data
             const oldDiskData = this.trdosTrap ? this.trdosTrap.diskData : null;
@@ -4718,38 +5017,12 @@
                 this.trdosTrap.setDisk(oldDiskData, oldDiskFiles, oldDiskType);
             }
 
-            // Re-setup memory callbacks (auto-map + trace + watchpoints)
-            this.memory.onRead = (addr, val) => {
-                // Auto-map: track non-fetch reads (only during CPU execution)
-                if (this.autoMap.enabled && this.autoMap.inExecution && !this.autoMap.currentFetchAddrs.has(addr)) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
-                }
-                this.checkReadWatchpoint(addr, val);
-            };
-            this.memory.onWrite = (addr, val) => {
-                // Auto-map: track writes (only during CPU execution)
-                if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
-                }
-                // Trace: track memory writes
-                if ((this.runtimeTraceEnabled || this.traceEnabled) &&
-                    this.traceMemOps.length < this.traceMemOpsLimit) {
-                    this.traceMemOps.push({ addr, val });
-                }
-                // Multicolor: disabled (known limitation - see README)
-                this.checkWriteWatchpoint(addr, val);
-            };
-            // Re-setup CPU fetch callback for auto-mapping
-            this.cpu.onFetch = (addr) => {
-                if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.executed.set(key, (this.autoMap.executed.get(key) || 0) + 1);
-                    this.autoMap.currentFetchAddrs.add(addr);
-                }
-            };
-            
+            // Re-setup memory callbacks based on current feature state
+            this.updateMemoryCallbacksFlag();
+
+            // Update Beta Disk paging flag for new machine type
+            this.updateBetaDiskPagingFlag();
+
             // Restore ROM data
             if (oldRom) {
                 // Copy ROM bank 0 (always exists)
@@ -4880,6 +5153,7 @@
         // Enable/disable auto-mapping
         setAutoMapEnabled(enabled) {
             this.autoMap.enabled = enabled;
+            this.updateMemoryCallbacksFlag();
         }
 
         isAutoMapEnabled() {
@@ -5079,9 +5353,13 @@
         /**
          * Process one frame of audio
          * Called at end of each emulated frame
+         * @param {number} frameTstates - T-states in this frame
+         * @param {Array} beeperChanges - Array of {tStates, level} beeper state changes
+         * @param {number} beeperLevel - Final beeper level at end of frame
+         * @param {Array} tapeAudioChanges - Array of {tStates, level} tape signal changes
          */
-        processFrame(frameTstates) {
-            if (!this.enabled || !this.ay || !this.workletNode) return;
+        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = []) {
+            if (!this.enabled || !this.workletNode) return;
 
             // Generate samples for this frame
             const samplesToGenerate = this.samplesPerFrame;
@@ -5090,14 +5368,72 @@
             const cyclesPerSample = frameTstates / samplesToGenerate;
 
             // AY steps per sample
-            const ayStepsPerSample = cyclesPerSample * this.ayPerCpu;
+            const ayStepsPerSample = this.ay ? cyclesPerSample * this.ayPerCpu : 0;
+
+            // Audio levels
+            const BEEPER_VOLUME = 0.5;
+            const TAPE_VOLUME = 0.5;  // Tape loading sound
+
+            // Only process beeper if there are changes (otherwise it's silent)
+            const hasBeeperActivity = beeperChanges.length > 0;
+            const hasTapeAudio = tapeAudioChanges.length > 0;
+
+            // Track beeper state for this frame
+            let beeperIdx = 0;
+            let currentBeeperLevel = beeperLevel;
+            if (hasBeeperActivity && beeperChanges[0].tStates === 0) {
+                currentBeeperLevel = beeperChanges[0].level;
+            }
+
+            // Track tape audio state for this frame
+            let tapeIdx = 0;
+            let currentTapeLevel = 0;
+            if (hasTapeAudio && tapeAudioChanges[0].tStates === 0) {
+                currentTapeLevel = tapeAudioChanges[0].level;
+            }
 
             for (let i = 0; i < samplesToGenerate; i++) {
-                // Step AY chip
-                this.ay.stepMultiple(Math.round(ayStepsPerSample));
+                // Calculate T-state for this sample
+                const sampleTstates = (i + 0.5) * cyclesPerSample;
 
-                // Get sample
-                const [left, right] = this.ay.getAveragedSample();
+                // Update beeper level based on changes
+                while (beeperIdx < beeperChanges.length &&
+                       beeperChanges[beeperIdx].tStates <= sampleTstates) {
+                    currentBeeperLevel = beeperChanges[beeperIdx].level;
+                    beeperIdx++;
+                }
+
+                // Update tape level based on changes
+                while (tapeIdx < tapeAudioChanges.length &&
+                       tapeAudioChanges[tapeIdx].tStates <= sampleTstates) {
+                    currentTapeLevel = tapeAudioChanges[tapeIdx].level;
+                    tapeIdx++;
+                }
+
+                // Get AY sample (if AY is available)
+                let left = 0, right = 0;
+                if (this.ay) {
+                    this.ay.stepMultiple(Math.round(ayStepsPerSample));
+                    [left, right] = this.ay.getAveragedSample();
+                }
+
+                // Add beeper to both channels (mono beeper) - only when active
+                if (hasBeeperActivity) {
+                    const beeperSample = (currentBeeperLevel * 2 - 1) * BEEPER_VOLUME;
+                    left += beeperSample;
+                    right += beeperSample;
+                }
+
+                // Add tape audio - only when tape is playing
+                if (hasTapeAudio) {
+                    const tapeSample = (currentTapeLevel * 2 - 1) * TAPE_VOLUME;
+                    left += tapeSample;
+                    right += tapeSample;
+                }
+
+                // Clamp to [-1, 1] range
+                left = Math.max(-1, Math.min(1, left));
+                right = Math.max(-1, Math.min(1, right));
 
                 // Add to send buffer
                 this.sendBufferL[this.sendBufferPos] = left;

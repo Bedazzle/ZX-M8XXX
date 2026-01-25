@@ -100,27 +100,19 @@
         }
 
         read(addr) {
-            addr &= 0xffff;
+            // Note: addr is pre-masked by caller (z80.js readByte)
             let val;
             if (this.machineType === '48k') {
                 if (addr < 0x4000) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
-                    if (this.trdosActive && this.trdosRom) {
-                        val = this.trdosRom[addr];
-                    } else {
-                        val = this.rom[0][addr];
-                    }
+                    val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
                 } else {
                     val = this.ram[0][addr - 0x4000];
                 }
             } else {
                 if (addr < 0x4000) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
-                    if (this.trdosActive && this.trdosRom) {
-                        val = this.trdosRom[addr];
-                    } else {
-                        val = this.rom[this.currentRomBank][addr];
-                    }
+                    val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[this.currentRomBank][addr];
                 }
                 else if (addr < 0x8000) val = this.ram[5][addr - 0x4000];
                 else if (addr < 0xC000) val = this.ram[2][addr - 0x8000];
@@ -129,14 +121,12 @@
             if (this.onRead) this.onRead(addr, val);
             return val;
         }
-        
+
         write(addr, val) {
-            addr &= 0xffff;
-            val &= 0xff;
-            
+            // Note: addr and val are pre-masked by caller (z80.js writeByte)
             if (this.onWrite) this.onWrite(addr, val);
             if (addr < 0x4000) return;
-            
+
             if (this.machineType === '48k') {
                 this.ram[0][addr - 0x4000] = val;
                 return;

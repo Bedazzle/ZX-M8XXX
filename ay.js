@@ -525,6 +525,121 @@ class AY {
     setClockRate(rate) {
         this.clockRate = rate;
     }
+
+    /**
+     * Export register log to PSG format
+     * @param {boolean} changedOnly - If true, only export registers that changed from previous value
+     * @returns {Uint8Array} PSG file data
+     *
+     * PSG Format:
+     * Header (16 bytes):
+     *   0-2: 'PSG' marker
+     *   3: 0x1A (end of text marker)
+     *   4: Version (0x10 for version 1.0)
+     *   5: Player frequency (0 = 50Hz, 1 = 100Hz, 2 = 200Hz, 3 = 25Hz)
+     *   6-15: Reserved (zeros)
+     * Data:
+     *   0x00-0x0F + byte: Register number followed by value
+     *   0xFF: End of frame (interrupt)
+     *   0xFE + count: Skip (count * 4) frames without output
+     *   0xFD: End of music
+     */
+    exportPSG(changedOnly = false) {
+        if (this.registerLog.length === 0) {
+            return null;
+        }
+
+        const data = [];
+
+        // Header: PSG + 0x1A + version + frequency + reserved
+        data.push(0x50, 0x53, 0x47);  // 'PSG'
+        data.push(0x1A);              // End of text marker
+        data.push(0x10);              // Version 1.0
+        data.push(0x00);              // 50Hz playback
+        // 10 bytes reserved
+        for (let i = 0; i < 10; i++) data.push(0x00);
+
+        // Group register writes by frame
+        const frames = new Map();
+        let maxFrame = 0;
+
+        for (const entry of this.registerLog) {
+            if (!frames.has(entry.frame)) {
+                frames.set(entry.frame, []);
+            }
+            frames.get(entry.frame).push({ reg: entry.register, val: entry.value });
+            maxFrame = Math.max(maxFrame, entry.frame);
+        }
+
+        // Track previous register values for changedOnly mode
+        const prevRegs = new Uint8Array(16);
+        const regWritten = new Array(16).fill(false);
+
+        let emptyFrames = 0;
+
+        for (let frame = 0; frame <= maxFrame; frame++) {
+            const frameData = frames.get(frame);
+
+            if (!frameData || frameData.length === 0) {
+                // Empty frame
+                emptyFrames++;
+                continue;
+            }
+
+            // Flush any accumulated empty frames
+            while (emptyFrames > 0) {
+                if (emptyFrames >= 4) {
+                    // Use 0xFE for multiple empty frames (count * 4)
+                    const count = Math.min(Math.floor(emptyFrames / 4), 255);
+                    data.push(0xFE, count);
+                    emptyFrames -= count * 4;
+                } else {
+                    // Use individual 0xFF for remaining frames
+                    data.push(0xFF);
+                    emptyFrames--;
+                }
+            }
+
+            // Output register writes for this frame
+            for (const { reg, val } of frameData) {
+                if (changedOnly && regWritten[reg] && prevRegs[reg] === val) {
+                    // Skip unchanged register
+                    continue;
+                }
+                data.push(reg, val);
+                prevRegs[reg] = val;
+                regWritten[reg] = true;
+            }
+
+            // End of frame marker
+            data.push(0xFF);
+        }
+
+        // End of music marker
+        data.push(0xFD);
+
+        return new Uint8Array(data);
+    }
+
+    /**
+     * Get statistics about the current log
+     */
+    getLogStats() {
+        if (this.registerLog.length === 0) {
+            return { frames: 0, writes: 0, duration: 0 };
+        }
+
+        let maxFrame = 0;
+        for (const entry of this.registerLog) {
+            maxFrame = Math.max(maxFrame, entry.frame);
+        }
+
+        return {
+            frames: maxFrame + 1,
+            writes: this.registerLog.length,
+            duration: ((maxFrame + 1) / 50).toFixed(1)  // Assuming 50Hz
+        };
+    }
 }
 
 // Export for use in other modules

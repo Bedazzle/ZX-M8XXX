@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.9.1</title>
+    <title>ZX-M8XXX v0.9.6</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -455,7 +455,7 @@
             min-width: 95px;
         }
         .status {
-            text-align: center;
+            text-align: left;
             padding: 6px;
             background: var(--bg-secondary);
             border-radius: 4px;
@@ -466,7 +466,7 @@
             outline: none;
             overflow: hidden;
         }
-        .status-item { display: inline-block; margin: 0 15px; }
+        .status-item { display: inline-block; margin: 0 6px; }
         .status-label { color: var(--text-secondary); }
         .status-value { color: var(--cyan); }
         .small-btn {
@@ -3405,6 +3405,52 @@
             color: var(--cyan);
             font-family: monospace;
         }
+        /* Code folding styles */
+        .disasm-fold-toggle {
+            display: inline-block;
+            width: 14px;
+            cursor: pointer;
+            color: var(--cyan);
+            font-family: monospace;
+            user-select: none;
+            margin-right: 2px;
+        }
+        .disasm-fold-toggle:hover {
+            color: var(--accent);
+        }
+        .disasm-fold-summary {
+            display: block;
+            padding: 2px 20px;
+            background: var(--bg-button);
+            border-left: 3px solid var(--cyan);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-family: monospace;
+        }
+        .disasm-fold-summary:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+        .disasm-fold-summary .fold-name {
+            color: var(--yellow);
+            font-weight: bold;
+        }
+        .disasm-fold-summary .fold-stats {
+            color: var(--text-secondary);
+            margin-left: 8px;
+        }
+        .disasm-user-fold-start {
+            display: block;
+            padding-left: 20px;
+            color: var(--magenta);
+            font-family: monospace;
+        }
+        .disasm-user-fold-end {
+            display: block;
+            padding-left: 20px;
+            color: var(--magenta);
+            font-family: monospace;
+        }
         .disasm-inline-comment {
             color: #7a7;
             font-style: italic;
@@ -4813,7 +4859,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.9.1</span>
+            <span class="app-name">ZX-M8XXX v0.9.6</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -4832,15 +4878,12 @@
 
         <div class="status">
             <span class="status-item">
-                <span class="status-label">Status:</span>
                 <span class="status-value" id="status">Stopped</span>
             </span>
             <span class="status-item">
-                <span class="status-label">FPS:</span>
-                <span class="status-value" id="fps">0</span>
+                <span class="status-value" id="fps" style="min-width: 32px; display: inline-block; text-align: right;">0</span>
             </span>
             <span class="status-item">
-                <span class="status-label">Machine:</span>
                 <span class="status-value" id="machine">48K</span>
             </span>
             <span class="status-item" id="rzxInfo" style="display:none;">
@@ -4851,6 +4894,7 @@
             <span class="status-item" id="tapeInfo" style="display:none;">
                 <span class="status-label">📼</span>
                 <span class="status-value" id="tapeName">-</span>
+                <span class="status-value" id="tapeProgress" style="margin-left: 8px; color: var(--cyan); min-width: 45px; display: inline-block; text-align: right;"></span>
             </span>
             <span class="status-item" id="diskInfo" style="display:none;">
                 <span class="status-label">💾</span>
@@ -4883,7 +4927,7 @@
         <input type="file" id="rom128Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPentagonInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romTrdosInput" class="file-input" accept=".rom,.bin">
-        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.z80,.szx,.zip,.rzx,.trd,.scl">
+        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl">
         </div><!-- emulator-section -->
 
         <!-- Tab Container -->
@@ -5802,8 +5846,22 @@ start:
                 <div class="settings-section">
                     <h4>Media</h4>
                     <div class="settings-row">
-                        <button id="btnTapeRewind" class="control-btn" title="Rewind tape to beginning">⏪ Rewind Tape</button>
-                        <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk" style="margin-left: 10px;">💾 Blank Disk</button>
+                        <label class="checkbox-label" title="Flash load = instant (trap), unchecked = real-time with border stripes and sound">
+                            <input type="checkbox" id="chkFlashLoad" checked> Flash Load
+                        </label>
+                        <span id="tapeLoadMode" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">(instant)</span>
+                        <label class="checkbox-label" title="Enable tape loading sounds (real-time mode)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkTapeAudio" checked> Tape Sound
+                        </label>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnTapePlay" class="control-btn" title="Play tape (real-time mode)">▶ Play</button>
+                        <button id="btnTapeStop" class="control-btn" title="Stop tape playback" style="margin-left: 5px;">⏹ Stop</button>
+                        <button id="btnTapeRewind" class="control-btn" title="Rewind tape to beginning" style="margin-left: 5px;">⏪ Rewind</button>
+                        <span id="tapePosition" style="margin-left: 10px; color: var(--cyan); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk">💾 Blank Disk</button>
                     </div>
                 </div>
 
@@ -5873,6 +5931,28 @@ start:
                         <button id="btnFrameGrabCancel" class="frame-grab-btn" disabled>Cancel</button>
                     </div>
                     <div class="frame-grab-status" id="frameGrabStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">AY Capture (PSG)</span>
+                        <button id="btnPsgPlayer" style="margin-left: auto; font-size: 11px;" title="Download PSG player Z80 source code">Get Player</button>
+                    </div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Only record registers that changed from previous frame (smaller file)">
+                            <input type="checkbox" id="chkPsgChangedOnly" checked> Changed only
+                        </label>
+                    </div>
+                    <div class="settings-row frame-export-controls">
+                        <button id="btnPsgStart" class="frame-grab-btn" title="Start recording AY register writes">Record</button>
+                        <button id="btnPsgStop" class="frame-grab-btn" disabled title="Stop and export PSG file">Export</button>
+                        <button id="btnPsgCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
+                    </div>
+                    <div class="frame-grab-status" id="psgStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks when exporting ASM from Memory Map">
+                            <input type="checkbox" id="chkExportDedupLoops" checked> Dedup ASM loops
+                        </label>
+                    </div>
                 </div>
 
             </div>
@@ -6070,7 +6150,7 @@ start:
             <div class="explorer-container">
                 <!-- Controls Row -->
                 <div class="explorer-controls">
-                    <input type="file" id="explorerFileInput" accept=".tap,.sna,.z80,.szx,.rzx,.trd,.scl,.zip" style="display:none">
+                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.zip" style="display:none">
                     <button id="btnExplorerLoad" class="explorer-btn primary">Load File</button>
                     <span id="explorerFileName" class="explorer-file-info">No file loaded</span>
                     <span id="explorerFileSize" class="explorer-file-size"></span>
@@ -6308,6 +6388,29 @@ start:
         </div>
     </div>
 
+    <!-- Fold Block Dialog -->
+    <div class="label-dialog hidden" id="foldDialog">
+        <div class="label-dialog-content">
+            <h4>Create Fold Block</h4>
+            <div class="label-dialog-row">
+                <label>Start Address</label>
+                <input type="text" id="foldStartInput" readonly>
+            </div>
+            <div class="label-dialog-row">
+                <label>End Address</label>
+                <input type="text" id="foldEndInput" placeholder="FFFF" maxlength="4">
+            </div>
+            <div class="label-dialog-row">
+                <label>Name (optional)</label>
+                <input type="text" id="foldNameInput" placeholder="e.g. Sprite Data" maxlength="50">
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnFoldSave">Create</button>
+                <button id="btnFoldCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Comment Dialog -->
     <div class="label-dialog hidden" id="commentDialog">
         <div class="label-dialog-content" style="width: 400px;">
@@ -6432,7 +6535,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.1</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.6</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -6465,8 +6568,9 @@ start:
                         <li>ULA video generation with border</li>
                         <li>Memory contention emulation</li>
                         <li>AY-3-8910 sound chip (stereo modes)</li>
+                        <li>PSG file export (record AY music)</li>
                         <li>SNA/Z80/SZX snapshot loading/saving</li>
-                        <li>TAP tape loading with ROM traps (instant load)</li>
+                        <li>TAP/TZX tape loading (instant or real-time with border stripes and sound)</li>
                         <li>TRD/SCL disk images (TR-DOS)</li>
                         <li>ZIP archive support</li>
                         <li>RZX playback (partial)</li>
@@ -6478,7 +6582,7 @@ start:
                     <ol>
                         <li>Place ROM files in <code>roms/</code> directory (48.rom, 128.rom, pentagon.rom, trdos.rom)</li>
                         <li>Open index.html in a modern browser</li>
-                        <li>Load SNA/Z80/SZX snapshots, TAP tapes, or TRD/SCL disk images via the Load button</li>
+                        <li>Load SNA/Z80/SZX snapshots, TAP/TZX tapes, or TRD/SCL disk images via the Load button</li>
                     </ol>
                 </div>
                 <div class="fullhelp-section hidden" id="help-keyboard">
@@ -6593,6 +6697,17 @@ start:
                         <li>Auto-detected during Auto-Map Apply (CALL targets)</li>
                         <li>Displays IDA-style separator before subroutine start</li>
                         <li>Uses label name if available, or generates sub_XXXX</li>
+                    </ul>
+                    <h5>Code Folding</h5>
+                    <p>Collapse subroutines and custom blocks to reduce clutter in disassembly:</p>
+                    <ul>
+                        <li>Click <b>&#x25BE;</b> toggle on subroutine header to collapse, <b>&#x25B8;</b> to expand</li>
+                        <li>Collapsed view shows summary: "(N bytes, M instructions)"</li>
+                        <li>Right-click &rarr; "Create fold block..." for custom regions (data tables, init code)</li>
+                        <li>User fold markers displayed in magenta</li>
+                        <li>"Collapse all folds" / "Expand all folds" in context menu</li>
+                        <li>Auto-expands if PC enters a collapsed region</li>
+                        <li>Fold state saved in projects and localStorage</li>
                     </ul>
                     <h5>Operand Formatting</h5>
                     <p>Right-click any disassembly line and select "Operand format..." to change how numeric operands are displayed:</p>
@@ -6793,8 +6908,15 @@ start:
                     </table>
                     <h5>Tapes</h5>
                     <table>
-                        <tr><td><strong>TAP</strong></td><td>Instant load via ROM traps</td></tr>
+                        <tr><td><strong>TAP</strong></td><td>Standard tape format</td></tr>
+                        <tr><td><strong>TZX</strong></td><td>Extended tape format (turbo blocks, pure tone, loops)</td></tr>
                     </table>
+                    <p><strong>Loading modes:</strong></p>
+                    <ul>
+                        <li><strong>Flash Load</strong> (default, checkbox on): Instant loading via ROM traps - most reliable</li>
+                        <li><strong>Real-time</strong> (Flash Load off): Cycle-accurate playback with border stripes and sound</li>
+                    </ul>
+                    <p style="color: var(--yellow); font-size: 11px;"><strong>Note:</strong> Real-time tape loading is work in progress. Standard loaders and many turbo loaders work; some copy protection schemes may fail. Use Flash Load for problematic tapes.</p>
                     <h5>Input Recording</h5>
                     <table>
                         <tr><td><strong>RZX</strong></td><td>Playback with embedded snapshot (may desync)</td></tr>
@@ -6819,6 +6941,16 @@ start:
                         <li>Bookmarks</li>
                         <li>Loaded media (TAP/TRD/SCL) with tape position</li>
                     </ul>
+                    <h5>AY Music Export (PSG)</h5>
+                    <p>Record AY chip output to PSG file format in Settings → AY Capture:</p>
+                    <ul>
+                        <li><strong>Record</strong> - Start capturing AY register writes</li>
+                        <li><strong>Export</strong> - Stop and save as .psg file</li>
+                        <li><strong>Cancel</strong> - Discard recording</li>
+                        <li><strong>Changed only</strong> - Export only modified registers (smaller files)</li>
+                        <li><strong>Get Player</strong> - Download Z80 assembly player source</li>
+                    </ul>
+                    <p>The player source is sjasmplus-compatible. Use <code>INCBIN "music.psg"</code> to include your recorded music, then assemble to create a playable .sna file.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-assembler">
                     <h4>Z80 Assembler</h4>
@@ -7166,7 +7298,6 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     <ul>
                         <li><strong>Chained prefix interrupts:</strong> On real Z80, interrupts can occur between chained DD/FD prefix bytes (each prefix is a separate instruction fetch). This emulator processes prefix chains atomically within a single step, so interrupts cannot occur mid-chain. This rarely affects real software.</li>
                         <li><strong>Floating bus:</strong> Not fully emulated. Some copy protection schemes may not work.</li>
-                        <li><strong>Tape loading:</strong> Uses ROM traps for instant loading. Real tape timing not emulated.</li>
                         <li><strong>Z80 save uncompressed:</strong> Z80 snapshots saved without RLE compression for compatibility (~131KB for 128K, ~49KB for 48K).</li>
                     </ul>
                     <h5>Technical References</h5>
@@ -7231,7 +7362,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.9.1';
+        const APP_VERSION = '0.9.6';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -10443,6 +10574,188 @@ labelManager.importJSON(jsonStr, merge)</pre>
         }
 
         const subroutineManager = new SubroutineManager();
+
+        // ========== Fold Manager (Code Folding) ==========
+        class FoldManager {
+            constructor() {
+                this.userFolds = new Map();    // address -> {endAddress, name}
+                this.collapsed = new Set();    // Set of collapsed start addresses (both sub and user)
+                this.currentFile = null;
+                this.autoSaveEnabled = true;
+            }
+
+            // Add a user-defined fold
+            addUserFold(startAddr, endAddr, name = null) {
+                this.userFolds.set(startAddr, {
+                    endAddress: endAddr,
+                    name: name
+                });
+                this._autoSave();
+            }
+
+            // Remove a user-defined fold
+            removeUserFold(addr) {
+                const existed = this.userFolds.has(addr);
+                this.userFolds.delete(addr);
+                this.collapsed.delete(addr);
+                this._autoSave();
+                return existed;
+            }
+
+            // Get user fold at address
+            getUserFold(addr) {
+                return this.userFolds.get(addr) || null;
+            }
+
+            // Toggle collapse state for any fold (subroutine or user)
+            toggle(addr) {
+                if (this.collapsed.has(addr)) {
+                    this.collapsed.delete(addr);
+                } else {
+                    this.collapsed.add(addr);
+                }
+                this._autoSave();
+            }
+
+            // Collapse a fold
+            collapse(addr) {
+                this.collapsed.add(addr);
+                this._autoSave();
+            }
+
+            // Expand a fold
+            expand(addr) {
+                this.collapsed.delete(addr);
+                this._autoSave();
+            }
+
+            // Check if an address is the start of a collapsed fold
+            isCollapsed(addr) {
+                return this.collapsed.has(addr);
+            }
+
+            // Get the collapsed range containing an address, if any
+            // Returns {start, end} or null
+            getCollapsedRangeContaining(addr) {
+                // Check subroutines
+                for (const collapsedAddr of this.collapsed) {
+                    const sub = subroutineManager.get(collapsedAddr);
+                    if (sub && sub.endAddress !== null) {
+                        if (addr >= collapsedAddr && addr <= sub.endAddress) {
+                            return { start: collapsedAddr, end: sub.endAddress };
+                        }
+                    }
+                    // Check user folds
+                    const userFold = this.userFolds.get(collapsedAddr);
+                    if (userFold) {
+                        if (addr >= collapsedAddr && addr <= userFold.endAddress) {
+                            return { start: collapsedAddr, end: userFold.endAddress };
+                        }
+                    }
+                }
+                return null;
+            }
+
+            // Collapse all foldable items
+            collapseAll() {
+                // Collapse all subroutines
+                for (const [addr, sub] of subroutineManager.subs) {
+                    if (sub.endAddress !== null) {
+                        this.collapsed.add(addr);
+                    }
+                }
+                // Collapse all user folds
+                for (const addr of this.userFolds.keys()) {
+                    this.collapsed.add(addr);
+                }
+                this._autoSave();
+            }
+
+            // Expand all folds
+            expandAll() {
+                this.collapsed.clear();
+                this._autoSave();
+            }
+
+            // Clear all state
+            clear() {
+                this.userFolds.clear();
+                this.collapsed.clear();
+            }
+
+            // Set current file (for localStorage key)
+            setCurrentFile(filename) {
+                this.currentFile = filename;
+                this._autoLoad();
+            }
+
+            _autoSave() {
+                if (!this.autoSaveEnabled || !this.currentFile) return;
+                try {
+                    const key = `folds_${this.currentFile}`;
+                    localStorage.setItem(key, this.exportJSON());
+                } catch (e) {
+                    console.warn('Failed to auto-save folds:', e);
+                }
+            }
+
+            _autoLoad() {
+                if (!this.currentFile) return;
+                try {
+                    const key = `folds_${this.currentFile}`;
+                    const data = localStorage.getItem(key);
+                    if (data) {
+                        this.importJSON(data, false);
+                    }
+                } catch (e) {
+                    console.warn('Failed to auto-load folds:', e);
+                }
+            }
+
+            exportJSON() {
+                const userFoldsArr = [];
+                for (const [addr, data] of this.userFolds) {
+                    userFoldsArr.push({
+                        start: addr,
+                        end: data.endAddress,
+                        name: data.name
+                    });
+                }
+                return JSON.stringify({
+                    userFolds: userFoldsArr,
+                    collapsed: Array.from(this.collapsed)
+                });
+            }
+
+            importJSON(jsonStr, merge = false) {
+                try {
+                    const data = JSON.parse(jsonStr);
+                    if (!merge) {
+                        this.userFolds.clear();
+                        this.collapsed.clear();
+                    }
+                    if (data.userFolds) {
+                        for (const fold of data.userFolds) {
+                            this.userFolds.set(fold.start, {
+                                endAddress: fold.end,
+                                name: fold.name || null
+                            });
+                        }
+                    }
+                    if (data.collapsed) {
+                        for (const addr of data.collapsed) {
+                            this.collapsed.add(addr);
+                        }
+                    }
+                    return true;
+                } catch (e) {
+                    console.error('Failed to import folds:', e);
+                    return false;
+                }
+            }
+        }
+
+        const foldManager = new FoldManager();
 
         // ========== Undo/Redo System ==========
         class UndoManager {
@@ -14101,6 +14414,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
             }
             
             const pc = cpu.pc;
+
+            // Auto-expand fold if PC is inside collapsed range
+            const pcFold = foldManager.getCollapsedRangeContaining(pc);
+            if (pcFold) foldManager.expand(pcFold.start);
+
             let viewAddr;
             const chkFollowPC = document.getElementById('chkFollowPC');
 
@@ -14117,17 +14435,95 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 disasmViewAddress = viewAddr;
             }
             
-            const lines = disassembleWithRegions(viewAddr, DISASM_LINES);
-            
+            // Apply code folding with dynamic line fetching to fill the view
+            // Keeps fetching more lines until we have DISASM_LINES visible after folding
+            function disassembleWithFolding(startAddr, targetLines) {
+                const result = [];
+                let currentAddr = startAddr & 0xffff;
+                const maxIterations = targetLines * 10; // Safety limit
+                let iterations = 0;
+
+                while (result.length < targetLines && currentAddr <= 0xffff && iterations < maxIterations) {
+                    iterations++;
+
+                    // Check if this address starts a collapsed subroutine
+                    const sub = subroutineManager.get(currentAddr);
+                    if (sub && sub.endAddress !== null && foldManager.isCollapsed(currentAddr)) {
+                        // Calculate byte count directly from addresses (fast)
+                        const byteCount = sub.endAddress - currentAddr + 1;
+                        const subName = sub.name || labelManager.get(currentAddr)?.name || `sub_${hex16(currentAddr)}`;
+                        result.push({
+                            addr: currentAddr,
+                            bytes: [],
+                            mnemonic: '',
+                            isData: false,
+                            isFoldSummary: true,
+                            foldType: 'subroutine',
+                            foldName: subName,
+                            foldEnd: sub.endAddress,
+                            byteCount: byteCount,
+                            instrCount: null  // Don't calculate - too expensive
+                        });
+                        currentAddr = (sub.endAddress + 1) & 0xffff;
+                        continue;
+                    }
+
+                    // Check if this address starts a collapsed user fold
+                    const userFold = foldManager.getUserFold(currentAddr);
+                    if (userFold && foldManager.isCollapsed(currentAddr)) {
+                        // Calculate byte count directly from addresses (fast)
+                        const byteCount = userFold.endAddress - currentAddr + 1;
+                        const foldName = userFold.name || `fold_${hex16(currentAddr)}`;
+                        result.push({
+                            addr: currentAddr,
+                            bytes: [],
+                            mnemonic: '',
+                            isData: false,
+                            isFoldSummary: true,
+                            foldType: 'user',
+                            foldName: foldName,
+                            foldEnd: userFold.endAddress,
+                            byteCount: byteCount,
+                            instrCount: null  // Don't calculate - too expensive
+                        });
+                        currentAddr = (userFold.endAddress + 1) & 0xffff;
+                        continue;
+                    }
+
+                    // Normal line - disassemble one instruction
+                    const lineArr = disassembleWithRegions(currentAddr, 1);
+                    if (lineArr.length === 0) break;
+                    const line = lineArr[0];
+                    result.push(line);
+                    currentAddr = (currentAddr + line.bytes.length) & 0xffff;
+                }
+
+                return result;
+            }
+
+            const lines = disassembleWithFolding(viewAddr, DISASM_LINES);
+
             // Store last line address for page down
             if (lines.length > 0) {
-                disasmLastLineAddr = lines[lines.length - 1].addr;
+                const lastLine = lines[lines.length - 1];
+                disasmLastLineAddr = lastLine.isFoldSummary ? lastLine.foldEnd : lastLine.addr;
             }
-            
+
             const showTstates = chkShowTstates.checked;
             const labelMode = labelDisplayMode.value;
 
             disassemblyView.innerHTML = lines.map((line, idx) => {
+                // Handle fold summary lines
+                if (line.isFoldSummary) {
+                    const icon = '▸';
+                    const typeClass = line.foldType === 'user' ? 'user-fold' : '';
+                    return `<div class="disasm-fold-summary ${typeClass}" data-fold-addr="${line.addr}">
+                        <span class="disasm-fold-toggle" data-fold-addr="${line.addr}">${icon}</span>
+                        <span class="fold-name">${escapeHtml(line.foldName)}</span>
+                        <span class="fold-stats">(${line.byteCount} bytes)</span>
+                    </div>`;
+                }
+
                 const bytesStr = line.bytes.map(b => hex8(b)).join(' ');
                 const isCurrent = line.addr === pc;
                 const isTrace = traceViewAddress !== null && line.addr === traceViewAddress;
@@ -14172,16 +14568,26 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 let inlineHtml = '';
                 let afterHtml = '';
 
-                // Subroutine separator (IDA-style)
+                // Subroutine separator (IDA-style) with fold toggle
                 const sub = subroutineManager.get(line.addr);
                 if (sub) {
                     const subName = sub.name || labelManager.get(line.addr)?.name || `sub_${hex16(line.addr)}`;
+                    const canFold = sub.endAddress !== null;
+                    const foldIcon = canFold ? `<span class="disasm-fold-toggle" data-fold-addr="${line.addr}" title="Click to collapse">▾</span>` : '';
                     beforeHtml += `<span class="disasm-sub-separator">; ═══════════════════════════════════════════════════════════════</span>`;
-                    beforeHtml += `<span class="disasm-sub-name">; ${subName}</span>`;
+                    beforeHtml += `<span class="disasm-sub-name">; ${foldIcon}${subName}</span>`;
                     if (sub.comment) {
                         beforeHtml += `<span class="disasm-sub-comment">; ${escapeHtml(sub.comment)}</span>`;
                     }
                     beforeHtml += `<span class="disasm-sub-separator">; ───────────────────────────────────────────────────────────────</span>`;
+                }
+
+                // User fold start marker
+                const userFold = foldManager.getUserFold(line.addr);
+                if (userFold) {
+                    const foldName = userFold.name || `fold_${hex16(line.addr)}`;
+                    const foldIcon = `<span class="disasm-fold-toggle" data-fold-addr="${line.addr}" title="Click to collapse">▾</span>`;
+                    beforeHtml += `<span class="disasm-user-fold-start">; ┌─── ${foldIcon}${escapeHtml(foldName)} ───</span>`;
                 }
 
                 if (comment) {
@@ -14213,6 +14619,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         afterHtml += `<span class="disasm-sub-end">; end of ${subName}</span>`;
                     }
                     afterHtml += `<span class="disasm-sub-separator">; ═══════════════════════════════════════════════════════════════</span>`;
+                }
+
+                // User fold end marker
+                for (const [foldAddr, foldData] of foldManager.userFolds) {
+                    if (foldData.endAddress === line.addr) {
+                        const foldName = foldData.name || `fold_${hex16(foldAddr)}`;
+                        afterHtml += `<span class="disasm-user-fold-end">; └─── end of ${escapeHtml(foldName)} ───</span>`;
+                    }
                 }
 
                 if (addrInfo.isLong) {
@@ -15290,11 +15704,97 @@ labelManager.importJSON(jsonStr, merge)</pre>
             let viewAddr = rightDisasmViewAddress !== null ? rightDisasmViewAddress : 0;
 
             const pc = spectrum.cpu ? spectrum.cpu.pc : 0;
-            const lines = disassembleWithRegions(viewAddr, DISASM_LINES);
             const showTstates = document.getElementById('chkRightShowTstates')?.checked || false;
             const labelMode = labelDisplayMode.value;
 
+            // Apply code folding with dynamic line fetching (same as main panel)
+            function disassembleWithFoldingRight(startAddr, targetLines) {
+                const result = [];
+                let currentAddr = startAddr & 0xffff;
+                const maxIterations = targetLines * 10;
+                let iterations = 0;
+
+                while (result.length < targetLines && currentAddr <= 0xffff && iterations < maxIterations) {
+                    iterations++;
+
+                    const sub = subroutineManager.get(currentAddr);
+                    if (sub && sub.endAddress !== null && foldManager.isCollapsed(currentAddr)) {
+                        const foldLines = disassembleWithRegions(currentAddr, 500);
+                        let byteCount = 0;
+                        let instrCount = 0;
+                        for (const fl of foldLines) {
+                            if (fl.addr > sub.endAddress) break;
+                            byteCount += fl.bytes.length;
+                            instrCount++;
+                        }
+                        const subName = sub.name || labelManager.get(currentAddr)?.name || `sub_${hex16(currentAddr)}`;
+                        result.push({
+                            addr: currentAddr,
+                            bytes: [],
+                            mnemonic: '',
+                            isData: false,
+                            isFoldSummary: true,
+                            foldType: 'subroutine',
+                            foldName: subName,
+                            foldEnd: sub.endAddress,
+                            byteCount: byteCount,
+                            instrCount: instrCount
+                        });
+                        currentAddr = (sub.endAddress + 1) & 0xffff;
+                        continue;
+                    }
+
+                    const userFold = foldManager.getUserFold(currentAddr);
+                    if (userFold && foldManager.isCollapsed(currentAddr)) {
+                        const foldLines = disassembleWithRegions(currentAddr, 500);
+                        let byteCount = 0;
+                        let instrCount = 0;
+                        for (const fl of foldLines) {
+                            if (fl.addr > userFold.endAddress) break;
+                            byteCount += fl.bytes.length;
+                            instrCount++;
+                        }
+                        const foldName = userFold.name || `fold_${hex16(currentAddr)}`;
+                        result.push({
+                            addr: currentAddr,
+                            bytes: [],
+                            mnemonic: '',
+                            isData: false,
+                            isFoldSummary: true,
+                            foldType: 'user',
+                            foldName: foldName,
+                            foldEnd: userFold.endAddress,
+                            byteCount: byteCount,
+                            instrCount: instrCount
+                        });
+                        currentAddr = (userFold.endAddress + 1) & 0xffff;
+                        continue;
+                    }
+
+                    const lineArr = disassembleWithRegions(currentAddr, 1);
+                    if (lineArr.length === 0) break;
+                    const line = lineArr[0];
+                    result.push(line);
+                    currentAddr = (currentAddr + line.bytes.length) & 0xffff;
+                }
+
+                return result;
+            }
+
+            const lines = disassembleWithFoldingRight(viewAddr, DISASM_LINES);
+
             rightDisassemblyView.innerHTML = lines.map((line, idx) => {
+                // Handle fold summary lines
+                if (line.isFoldSummary) {
+                    const icon = '▸';
+                    const typeClass = line.foldType === 'user' ? 'user-fold' : '';
+                    return `<div class="disasm-fold-summary ${typeClass}" data-fold-addr="${line.addr}">
+                        <span class="disasm-fold-toggle" data-fold-addr="${line.addr}">${icon}</span>
+                        <span class="fold-name">${escapeHtml(line.foldName)}</span>
+                        <span class="fold-stats">(${line.byteCount} bytes)</span>
+                    </div>`;
+                }
+
                 const bytesStr = line.bytes.map(b => hex8(b)).join(' ');
                 const isCurrent = line.addr === pc;
                 const hasBp = spectrum.hasBreakpoint(line.addr);
@@ -15411,6 +15911,17 @@ labelManager.importJSON(jsonStr, merge)</pre>
         // Click handler for right disasm view - navigate on operand address click
         rightDisassemblyView.addEventListener('click', (e) => {
             if (rightPanelType !== 'disasm') return;
+
+            // Check if clicking on fold toggle or fold summary
+            const foldToggle = e.target.closest('.disasm-fold-toggle, .disasm-fold-summary');
+            if (foldToggle) {
+                const addr = parseInt(foldToggle.dataset.foldAddr, 10);
+                if (!isNaN(addr)) {
+                    foldManager.toggle(addr);
+                    updateDebugger();
+                }
+                return;
+            }
 
             // Check if clicking on operand address (e.g., JP 4000h)
             // Click = go to disasm in right panel, Ctrl+Click = go to memory
@@ -16587,6 +17098,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 case 'tap':
                     explorerParsed = explorerParseTAP(explorerData);
                     break;
+                case 'tzx':
+                    explorerParsed = explorerParseTZX(explorerData);
+                    break;
                 case 'sna':
                     explorerParsed = explorerParseSNA(explorerData);
                     break;
@@ -16729,6 +17243,266 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
             explorerBlocks = blocks;
             return { type: 'tap', blocks: blocks, size: data.length };
+        }
+
+        // TZX file parser
+        function explorerParseTZX(data) {
+            // Check TZX header: "ZXTape!" + 0x1A
+            const header = String.fromCharCode(...data.slice(0, 7));
+            if (header !== 'ZXTape!' || data[7] !== 0x1A) {
+                return { type: 'unknown', size: data.length, error: 'Invalid TZX header' };
+            }
+
+            const versionMajor = data[8];
+            const versionMinor = data[9];
+            const blocks = [];
+            let offset = 10;
+
+            const blockNames = {
+                0x10: 'Standard Speed Data',
+                0x11: 'Turbo Speed Data',
+                0x12: 'Pure Tone',
+                0x13: 'Pulse Sequence',
+                0x14: 'Pure Data',
+                0x15: 'Direct Recording',
+                0x18: 'CSW Recording',
+                0x19: 'Generalized Data',
+                0x20: 'Pause/Stop',
+                0x21: 'Group Start',
+                0x22: 'Group End',
+                0x23: 'Jump to Block',
+                0x24: 'Loop Start',
+                0x25: 'Loop End',
+                0x26: 'Call Sequence',
+                0x27: 'Return from Sequence',
+                0x28: 'Select Block',
+                0x2A: 'Stop if 48K',
+                0x2B: 'Set Signal Level',
+                0x30: 'Text Description',
+                0x31: 'Message',
+                0x32: 'Archive Info',
+                0x33: 'Hardware Type',
+                0x35: 'Custom Info',
+                0x5A: 'Glue Block'
+            };
+
+            while (offset < data.length) {
+                const blockId = data[offset];
+                const blockName = blockNames[blockId] || `Unknown (0x${blockId.toString(16).toUpperCase().padStart(2, '0')})`;
+                let blockLen = 0;
+                let blockInfo = {
+                    offset: offset,
+                    id: blockId,
+                    name: blockName
+                };
+
+                offset++;
+
+                switch (blockId) {
+                    case 0x10: // Standard speed data block
+                        {
+                            const pause = data[offset] | (data[offset + 1] << 8);
+                            const dataLen = data[offset + 2] | (data[offset + 3] << 8);
+                            blockLen = 4 + dataLen;
+                            blockInfo.pause = pause;
+                            blockInfo.dataLength = dataLen;
+
+                            // Parse header if it's a standard header block
+                            const blockData = data.slice(offset + 4, offset + 4 + dataLen);
+                            if (dataLen === 19 && blockData[0] === 0) {
+                                const type = blockData[1];
+                                const name = String.fromCharCode(...blockData.slice(2, 12)).replace(/\x00/g, ' ').trim();
+                                const len = blockData[12] | (blockData[13] << 8);
+                                const param1 = blockData[14] | (blockData[15] << 8);
+                                const typeNames = ['Program', 'Number array', 'Character array', 'Bytes'];
+                                blockInfo.headerType = typeNames[type] || 'Unknown';
+                                blockInfo.fileName = name;
+                                blockInfo.fileLength = len;
+                                if (type === 0) blockInfo.autostart = param1 < 32768 ? param1 : null;
+                                if (type === 3) blockInfo.startAddress = param1;
+                            } else if (blockData[0] === 0xFF) {
+                                blockInfo.dataBlock = true;
+                            }
+                        }
+                        break;
+
+                    case 0x11: // Turbo speed data block
+                        {
+                            blockLen = 18 + (data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16));
+                            blockInfo.dataLength = blockLen - 18;
+                        }
+                        break;
+
+                    case 0x12: // Pure tone
+                        blockLen = 4;
+                        blockInfo.pulseLength = data[offset] | (data[offset + 1] << 8);
+                        blockInfo.pulseCount = data[offset + 2] | (data[offset + 3] << 8);
+                        break;
+
+                    case 0x13: // Pulse sequence
+                        {
+                            const pulseCount = data[offset];
+                            blockLen = 1 + pulseCount * 2;
+                        }
+                        break;
+
+                    case 0x14: // Pure data block
+                        blockLen = 10 + (data[offset + 7] | (data[offset + 8] << 8) | (data[offset + 9] << 16));
+                        blockInfo.dataLength = blockLen - 10;
+                        break;
+
+                    case 0x15: // Direct recording
+                        blockLen = 8 + (data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16));
+                        break;
+
+                    case 0x18: // CSW recording
+                        blockLen = 4 + (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24));
+                        break;
+
+                    case 0x19: // Generalized data block
+                        blockLen = 4 + (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24));
+                        break;
+
+                    case 0x20: // Pause/stop
+                        blockLen = 2;
+                        blockInfo.pause = data[offset] | (data[offset + 1] << 8);
+                        if (blockInfo.pause === 0) blockInfo.stopTape = true;
+                        break;
+
+                    case 0x21: // Group start
+                        {
+                            const nameLen = data[offset];
+                            blockLen = 1 + nameLen;
+                            blockInfo.groupName = String.fromCharCode(...data.slice(offset + 1, offset + 1 + nameLen));
+                        }
+                        break;
+
+                    case 0x22: // Group end
+                        blockLen = 0;
+                        break;
+
+                    case 0x23: // Jump to block
+                        blockLen = 2;
+                        blockInfo.jump = data[offset] | (data[offset + 1] << 8);
+                        break;
+
+                    case 0x24: // Loop start
+                        blockLen = 2;
+                        blockInfo.repetitions = data[offset] | (data[offset + 1] << 8);
+                        break;
+
+                    case 0x25: // Loop end
+                        blockLen = 0;
+                        break;
+
+                    case 0x26: // Call sequence
+                        {
+                            const callCount = data[offset] | (data[offset + 1] << 8);
+                            blockLen = 2 + callCount * 2;
+                        }
+                        break;
+
+                    case 0x27: // Return from sequence
+                        blockLen = 0;
+                        break;
+
+                    case 0x28: // Select block
+                        blockLen = 2 + (data[offset] | (data[offset + 1] << 8));
+                        break;
+
+                    case 0x2A: // Stop tape if in 48K mode
+                        blockLen = 4;
+                        break;
+
+                    case 0x2B: // Set signal level
+                        blockLen = 5;
+                        break;
+
+                    case 0x30: // Text description
+                        {
+                            const textLen = data[offset];
+                            blockLen = 1 + textLen;
+                            blockInfo.text = String.fromCharCode(...data.slice(offset + 1, offset + 1 + textLen));
+                        }
+                        break;
+
+                    case 0x31: // Message block
+                        {
+                            const msgLen = data[offset + 1];
+                            blockLen = 2 + msgLen;
+                            blockInfo.displayTime = data[offset];
+                            blockInfo.message = String.fromCharCode(...data.slice(offset + 2, offset + 2 + msgLen));
+                        }
+                        break;
+
+                    case 0x32: // Archive info
+                        {
+                            const archiveLen = data[offset] | (data[offset + 1] << 8);
+                            blockLen = 2 + archiveLen;
+                            // Parse archive info strings
+                            const infoTypes = ['Title', 'Publisher', 'Author', 'Year', 'Language', 'Type', 'Price', 'Loader', 'Origin', 'Comment'];
+                            const stringCount = data[offset + 2];
+                            let infoOffset = offset + 3;
+                            blockInfo.archiveInfo = [];
+                            for (let i = 0; i < stringCount && infoOffset < offset + 2 + archiveLen; i++) {
+                                const typeId = data[infoOffset];
+                                const strLen = data[infoOffset + 1];
+                                const str = String.fromCharCode(...data.slice(infoOffset + 2, infoOffset + 2 + strLen));
+                                blockInfo.archiveInfo.push({
+                                    type: infoTypes[typeId] || `Info ${typeId}`,
+                                    value: str
+                                });
+                                infoOffset += 2 + strLen;
+                            }
+                        }
+                        break;
+
+                    case 0x33: // Hardware type
+                        {
+                            const hwCount = data[offset];
+                            blockLen = 1 + hwCount * 3;
+                        }
+                        break;
+
+                    case 0x35: // Custom info block
+                        blockLen = 20 + (data[offset + 16] | (data[offset + 17] << 8) | (data[offset + 18] << 16) | (data[offset + 19] << 24));
+                        blockInfo.customId = String.fromCharCode(...data.slice(offset, offset + 16)).replace(/\x00/g, '').trim();
+                        break;
+
+                    case 0x5A: // Glue block
+                        blockLen = 9;
+                        break;
+
+                    default:
+                        // Unknown block - try to skip based on common patterns
+                        // Many unknown blocks have length at offset 0-3
+                        if (offset + 4 <= data.length) {
+                            blockLen = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+                            if (blockLen > data.length - offset) {
+                                // Invalid length, stop parsing
+                                blockInfo.error = 'Unknown block type, cannot determine length';
+                                blocks.push(blockInfo);
+                                offset = data.length;
+                                continue;
+                            }
+                        } else {
+                            offset = data.length;
+                            continue;
+                        }
+                }
+
+                blockInfo.length = blockLen;
+                blocks.push(blockInfo);
+                offset += blockLen;
+            }
+
+            explorerBlocks = blocks;
+            return {
+                type: 'tzx',
+                version: `${versionMajor}.${versionMinor}`,
+                blocks: blocks,
+                size: data.length
+            };
         }
 
         // SNA file parser
@@ -17035,7 +17809,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 explorerZipFiles = files;
 
                 // Auto-drill into ZIP if it contains exactly one supported file
-                const supportedExts = ['tap', 'sna', 'z80', 'trd', 'scl'];
+                const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl'];
                 const supportedFiles = files.filter(f => {
                     const ext = f.name.split('.').pop().toLowerCase();
                     return supportedExts.includes(ext);
@@ -17056,6 +17830,8 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     switch (ext) {
                         case 'tap':
                             return explorerParseTAP(explorerData);
+                        case 'tzx':
+                            return explorerParseTZX(explorerData);
                         case 'sna':
                             return explorerParseSNA(explorerData);
                         case 'z80':
@@ -17107,6 +17883,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
             switch (explorerParsed.type) {
                 case 'tap':
                     html = explorerRenderTAPInfo();
+                    break;
+                case 'tzx':
+                    html = explorerRenderTZXInfo();
                     break;
                 case 'sna':
                     html = explorerRenderSNAInfo();
@@ -17180,6 +17959,28 @@ labelManager.importJSON(jsonStr, merge)</pre>
                             const content = block.data.slice(1, block.data.length - 1);
                             explorerUpdatePreview(content);
                             return;
+                        }
+                    }
+                }
+            }
+
+            // For TZX files, check data blocks for screen data
+            if (explorerParsed && explorerParsed.type === 'tzx') {
+                for (const block of explorerBlocks) {
+                    // Check standard speed data blocks (0x10)
+                    if (block.id === 0x10 && block.dataLength) {
+                        // Data starts at offset + 1 (block ID) + 4 (pause + length)
+                        const dataStart = block.offset + 1 + 4;
+                        const blockData = explorerData.slice(dataStart, dataStart + block.dataLength);
+                        // Check for data block with screen-sized content
+                        if (blockData.length > 0 && blockData[0] === 0xFF) {
+                            const contentLen = blockData.length - 2; // subtract flag and checksum
+                            if (contentLen === 6912 || contentLen === 6144 || contentLen === 4096 ||
+                                contentLen === 2048 || contentLen === 768) {
+                                const content = blockData.slice(1, blockData.length - 1);
+                                explorerUpdatePreview(content);
+                                return;
+                            }
                         }
                     }
                 }
@@ -17464,6 +18265,122 @@ labelManager.importJSON(jsonStr, merge)</pre>
             return html;
         }
 
+        function explorerRenderTZXInfo() {
+            const p = explorerParsed;
+            let html = `<div class="explorer-info-section"><div class="explorer-info-header">TZX File v${p.version} · ${explorerBlocks.length} blocks · ${explorerData.length.toLocaleString()} bytes</div><div class="explorer-block-list">`;
+
+            for (let i = 0; i < explorerBlocks.length; i++) {
+                const block = explorerBlocks[i];
+                let blockClass = 'explorer-block';
+
+                // Color code different block types
+                if (block.id === 0x10 || block.id === 0x11 || block.id === 0x14) {
+                    if (block.headerType) blockClass += ' code-block';
+                    else if (block.dataBlock) blockClass += ' data-block';
+                    else blockClass += ' data-block';
+                } else if (block.id === 0x30 || block.id === 0x31 || block.id === 0x32) {
+                    blockClass += ' basic-block'; // Text/info blocks
+                } else if (block.id === 0x20 || block.id === 0x21 || block.id === 0x22 || block.id === 0x24 || block.id === 0x25) {
+                    blockClass += ' array-block'; // Control blocks
+                }
+
+                html += `<div class="${blockClass}" data-block-index="${i}">`;
+                html += `<div class="explorer-block-header">${i + 1}: ${block.name}</div>`;
+                html += `<div class="explorer-block-meta">Offset: ${block.offset} | ID: $${hex8(block.id)} | Length: ${block.length} bytes</div>`;
+
+                // Block-specific details
+                let details = '';
+                switch (block.id) {
+                    case 0x10: // Standard speed data
+                        if (block.headerType) {
+                            details = `<span class="label">Type:</span> ${block.headerType}<br>`;
+                            details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
+                            details += `<span class="label">Data length:</span> ${block.fileLength} bytes`;
+                            if (block.autostart !== undefined && block.autostart !== null) {
+                                details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
+                            }
+                            if (block.startAddress !== undefined) {
+                                details += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
+                            }
+                        } else if (block.dataBlock) {
+                            details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                        } else {
+                            details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                        }
+                        if (block.pause) details += `<br><span class="label">Pause:</span> ${block.pause} ms`;
+                        break;
+
+                    case 0x11: // Turbo speed data
+                        details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                        break;
+
+                    case 0x12: // Pure tone
+                        details = `<span class="label">Pulse length:</span> ${block.pulseLength} T-states<br>`;
+                        details += `<span class="label">Pulse count:</span> ${block.pulseCount}`;
+                        break;
+
+                    case 0x14: // Pure data
+                        details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                        break;
+
+                    case 0x20: // Pause/stop
+                        if (block.stopTape) {
+                            details = `<span class="label">Action:</span> Stop the tape`;
+                        } else {
+                            details = `<span class="label">Pause:</span> ${block.pause} ms`;
+                        }
+                        break;
+
+                    case 0x21: // Group start
+                        details = `<span class="label">Group:</span> "${block.groupName}"`;
+                        break;
+
+                    case 0x23: // Jump
+                        details = `<span class="label">Jump:</span> ${block.jump} blocks`;
+                        break;
+
+                    case 0x24: // Loop start
+                        details = `<span class="label">Repetitions:</span> ${block.repetitions}`;
+                        break;
+
+                    case 0x30: // Text description
+                        details = `<span class="label">Text:</span> "${block.text}"`;
+                        break;
+
+                    case 0x31: // Message
+                        details = `<span class="label">Display time:</span> ${block.displayTime}s<br>`;
+                        details += `<span class="label">Message:</span> "${block.message}"`;
+                        break;
+
+                    case 0x32: // Archive info
+                        if (block.archiveInfo && block.archiveInfo.length > 0) {
+                            for (const info of block.archiveInfo) {
+                                details += `<span class="label">${info.type}:</span> "${info.value}"<br>`;
+                            }
+                            details = details.slice(0, -4); // Remove trailing <br>
+                        }
+                        break;
+
+                    case 0x35: // Custom info
+                        details = `<span class="label">Custom ID:</span> "${block.customId}"`;
+                        break;
+                }
+
+                if (details) {
+                    html += `<div class="explorer-block-details">${details}</div>`;
+                }
+
+                if (block.error) {
+                    html += `<div class="explorer-block-details" style="color: var(--error);">${block.error}</div>`;
+                }
+
+                html += '</div>';
+            }
+
+            html += '</div></div>';
+            return html;
+        }
+
         function explorerRenderSNAInfo() {
             const r = explorerParsed.registers;
             let html = `<div class="explorer-info-section">
@@ -17702,7 +18619,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             for (let i = 0; i < explorerParsed.files.length; i++) {
                 const file = explorerParsed.files[i];
                 const ext = file.name.split('.').pop().toLowerCase();
-                const supported = ['tap', 'sna', 'z80', 'trd', 'scl'].includes(ext);
+                const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl'].includes(ext);
                 html += `<div class="explorer-block${supported ? ' explorer-zip-file' : ''}" data-zip-index="${i}" style="${supported ? 'cursor:pointer' : 'opacity:0.5'}">
                     <span class="explorer-block-num">${i + 1}</span>
                     <span class="explorer-block-type">${ext.toUpperCase()}</span>
@@ -17726,7 +18643,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 const zipFile = explorerZipFiles[idx];
                 const ext = zipFile.name.split('.').pop().toLowerCase();
 
-                if (!['tap', 'sna', 'z80', 'trd', 'scl'].includes(ext)) return;
+                if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl'].includes(ext)) return;
 
                 // Store parent ZIP name and load inner file
                 explorerZipParentName = explorerFileName.textContent;
@@ -22279,6 +23196,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
         chkTraceRuntime.addEventListener('change', () => {
             spectrum.runtimeTraceEnabled = chkTraceRuntime.checked;
+            spectrum.updateMemoryCallbacksFlag();
             if (chkTraceRuntime.checked) {
                 showMessage('Runtime trace enabled');
             } else {
@@ -23117,6 +24035,156 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
             // Check if user wants to include addresses and bytes (from checkbox)
             const includeAddrBytes = document.getElementById('chkExportAddrBytes').checked;
+            const dedupLoops = document.getElementById('chkExportDedupLoops').checked;
+
+            // Detect unrolled loops - finds repeating byte patterns in code
+            // Returns {patternBytes: [...], repeatCount, totalBytes} or null if no loop found
+            // Detect repeating pattern in an instruction array (for nested loop detection)
+            function detectPatternInArray(instructions, minRepeats = 3, maxPatternBytes = 512) {
+                if (instructions.length < minRepeats * 2) return null;
+
+                let bestResult = null;
+                let bestSavings = 0;
+
+                for (let patternLen = 1; patternLen <= Math.min(256, Math.floor(instructions.length / minRepeats)); patternLen++) {
+                    // Get pattern bytes
+                    let patternBytes = [];
+                    for (let i = 0; i < patternLen; i++) {
+                        patternBytes = patternBytes.concat(instructions[i].bytes);
+                    }
+                    if (patternBytes.length > maxPatternBytes) break;
+
+                    // Count repetitions
+                    let repeatCount = 1;
+                    let instrIdx = patternLen;
+
+                    while (instrIdx + patternLen <= instructions.length) {
+                        let matches = true;
+                        for (let i = 0; i < patternLen && matches; i++) {
+                            const patternInstr = instructions[i];
+                            const testInstr = instructions[instrIdx + i];
+                            if (patternInstr.bytes.length !== testInstr.bytes.length) {
+                                matches = false;
+                            } else {
+                                for (let b = 0; b < patternInstr.bytes.length; b++) {
+                                    if (patternInstr.bytes[b] !== testInstr.bytes[b]) {
+                                        matches = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (matches) {
+                            repeatCount++;
+                            instrIdx += patternLen;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (repeatCount >= minRepeats) {
+                        const totalBytes = patternBytes.length * repeatCount;
+                        const savings = totalBytes - patternBytes.length;
+                        if (savings > bestSavings) {
+                            bestSavings = savings;
+                            bestResult = {
+                                patternInstructions: instructions.slice(0, patternLen),
+                                patternBytes,
+                                repeatCount,
+                                totalBytes,
+                                instrCount: patternLen * repeatCount
+                            };
+                        }
+                    }
+                }
+
+                return bestResult;
+            }
+
+            function detectUnrolledLoop(startAddr, blockEnd, minRepeats = 3, maxPatternBytes = 512) {
+                // First, disassemble to find instruction boundaries
+                const instructions = [];
+                let addr = startAddr;
+                const maxScanBytes = Math.min(4096, (blockEnd - startAddr + 1));
+                let scannedBytes = 0;
+
+                while (scannedBytes < maxScanBytes && addr <= blockEnd) {
+                    // Stop at labels (they break the loop pattern)
+                    if (addr !== startAddr && labelManager.get(addr)) break;
+                    // Stop at non-code region boundaries (data/text regions break the pattern)
+                    const region = regionManager.get(addr);
+                    if (region && region.start === addr && addr !== startAddr && region.type !== 'code') break;
+
+                    const dis = disasm.disassemble(addr);
+                    const bytes = [];
+                    for (let i = 0; i < dis.length; i++) {
+                        bytes.push(readMem((addr + i) & 0xFFFF));
+                    }
+                    instructions.push({ addr, bytes, length: dis.length, mnemonic: dis.mnemonic });
+                    scannedBytes += dis.length;
+                    addr += dis.length;
+                }
+
+                if (instructions.length < minRepeats * 2) return null;
+
+                // Try pattern lengths from 1 instruction up to maxPatternBytes worth
+                let bestResult = null;
+                let bestSavings = 0;
+
+                for (let patternLen = 1; patternLen <= Math.min(256, Math.floor(instructions.length / minRepeats)); patternLen++) {
+                    // Get pattern bytes
+                    let patternBytes = [];
+                    for (let i = 0; i < patternLen; i++) {
+                        patternBytes = patternBytes.concat(instructions[i].bytes);
+                    }
+                    if (patternBytes.length > maxPatternBytes) break;
+
+                    // Count repetitions
+                    let repeatCount = 1;
+                    let instrIdx = patternLen;
+
+                    while (instrIdx + patternLen <= instructions.length) {
+                        // Compare next patternLen instructions
+                        let matches = true;
+                        for (let i = 0; i < patternLen && matches; i++) {
+                            const patternInstr = instructions[i];
+                            const testInstr = instructions[instrIdx + i];
+                            if (patternInstr.bytes.length !== testInstr.bytes.length) {
+                                matches = false;
+                            } else {
+                                for (let b = 0; b < patternInstr.bytes.length; b++) {
+                                    if (patternInstr.bytes[b] !== testInstr.bytes[b]) {
+                                        matches = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (matches) {
+                            repeatCount++;
+                            instrIdx += patternLen;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (repeatCount >= minRepeats) {
+                        const totalBytes = patternBytes.length * repeatCount;
+                        const savings = totalBytes - patternBytes.length; // Bytes saved by not repeating
+                        if (savings > bestSavings) {
+                            bestSavings = savings;
+                            bestResult = {
+                                patternInstructions: instructions.slice(0, patternLen),
+                                patternBytes,
+                                repeatCount,
+                                totalBytes
+                            };
+                        }
+                    }
+                }
+
+                return bestResult;
+            }
 
             // Filter out screen memory, and optionally ROM
             // Keep: addresses >= 0x5B00 (above screen, in RAM)
@@ -23257,47 +24325,119 @@ labelManager.importJSON(jsonStr, merge)</pre>
                             lines.push(line);
                         }
                     } else if (wasExecuted || (region && region.type === 'code')) {
-                        // Code - disassemble
-                        const dis = disasm.disassemble(addr);
-                        let mnemonic = dis.mnemonic;
+                        // Code - check for unrolled loops first
+                        let loopHandled = false;
+                        if (dedupLoops) {
+                            const loop = detectUnrolledLoop(addr, block.end);
+                            if (loop && loop.repeatCount >= 3) {
+                                // Helper function to format a mnemonic (replace addresses with labels)
+                                const formatMnemonic = (mnemonic) => {
+                                    const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
+                                    if (addrMatch) {
+                                        const refAddr = parseInt(addrMatch[1], 16);
+                                        const refLabelObj = labelManager.get(refAddr);
+                                        if (refLabelObj && refLabelObj.name) {
+                                            mnemonic = mnemonic.replace(addrMatch[0], refLabelObj.name);
+                                            if (!exportedAddrs.has(refAddr)) {
+                                                externalLabels.set(refAddr, refLabelObj.name);
+                                            }
+                                        } else {
+                                            mnemonic = mnemonic.replace(/([0-9A-F]{4})h/gi, '$$$1');
+                                        }
+                                    }
+                                    return mnemonic.replace(/([0-9A-F]{2})h/gi, '$$$1');
+                                };
 
-                        // Replace numeric addresses with labels where possible
-                        const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
-                        if (addrMatch) {
-                            const refAddr = parseInt(addrMatch[1], 16);
-                            const refLabelObj = labelManager.get(refAddr);
-                            if (refLabelObj && refLabelObj.name) {
-                                // Use label - either in exported range or will be EQU
-                                mnemonic = mnemonic.replace(addrMatch[0], refLabelObj.name);
-                                // Track external labels for EQU generation
-                                if (!exportedAddrs.has(refAddr)) {
-                                    externalLabels.set(refAddr, refLabelObj.name);
+                                // Recursive function to output instructions with nested loop detection
+                                const outputWithNesting = (instructions, indent) => {
+                                    let i = 0;
+                                    while (i < instructions.length) {
+                                        // Look for inner loop starting at this instruction
+                                        const remaining = instructions.slice(i);
+                                        const innerLoop = detectPatternInArray(remaining);
+
+                                        if (innerLoop && innerLoop.repeatCount >= 3) {
+                                            // Calculate inner loop byte size for comment
+                                            const innerBytes = innerLoop.patternBytes.length * innerLoop.repeatCount;
+                                            lines.push('');
+                                            lines.push(`${indent}; Unrolled loop detected: ${innerLoop.repeatCount} repetitions, ${innerBytes} bytes`);
+                                            lines.push(`${indent}REPT ${innerLoop.repeatCount}`);
+                                            // Recursively output inner pattern (may have deeper nesting)
+                                            outputWithNesting(innerLoop.patternInstructions, indent + '    ');
+                                            lines.push(`${indent}ENDR`);
+                                            lines.push('');
+                                            i += innerLoop.instrCount;
+                                        } else {
+                                            // Output single instruction
+                                            lines.push(`${indent}${formatMnemonic(instructions[i].mnemonic)}`);
+                                            i++;
+                                        }
+                                    }
+                                };
+
+                                // Output as REPT block
+                                const startAddrHex = addr.toString(16).toUpperCase().padStart(4, '0');
+                                lines.push('');  // Empty line before REPT block
+                                lines.push(`    ; Unrolled loop detected: ${loop.repeatCount} repetitions, ${loop.totalBytes} bytes`);
+                                lines.push(`    REPT ${loop.repeatCount}`);
+
+                                // Output pattern instructions with nested loop detection
+                                outputWithNesting(loop.patternInstructions, '        ');
+
+                                lines.push(`    ENDR`);
+                                if (includeAddrBytes) {
+                                    lines.push(`    ; ${startAddrHex}-${((addr + loop.totalBytes - 1) & 0xFFFF).toString(16).toUpperCase().padStart(4, '0')}`);
                                 }
-                            } else {
-                                mnemonic = mnemonic.replace(/([0-9A-F]{4})h/gi, '$$$1');
+                                lines.push('');  // Empty line after REPT block
+
+                                addr += loop.totalBytes;
+                                loopHandled = true;
                             }
                         }
-                        // Replace 2-digit hex
-                        mnemonic = mnemonic.replace(/([0-9A-F]{2})h/gi, '$$$1');
 
-                        // Build bytes array for address+bytes comment
-                        const codeBytes = [];
-                        for (let bi = 0; bi < dis.length; bi++) {
-                            codeBytes.push(readMem(addr + bi).toString(16).toUpperCase().padStart(2, '0'));
-                        }
-                        const addrBytesComment = includeAddrBytes
-                            ? `  ; ${addr.toString(16).toUpperCase().padStart(4, '0')}: ${codeBytes.join(' ')}`
-                            : '';
+                        if (!loopHandled) {
+                            // Regular code disassembly
+                            const dis = disasm.disassemble(addr);
+                            let mnemonic = dis.mnemonic;
 
-                        // When using snapshot, output bytes from snapshot with mnemonic as comment
-                        // (in case memory changed between snap and export)
-                        if (usingSnapshot) {
-                            const bytes = codeBytes.map(b => '$' + b);
-                            lines.push(`    DEFB ${bytes.join(',')}  ; ${mnemonic}${addrBytesComment ? addrBytesComment.replace('  ; ', ' @ ') : ''}`);
-                        } else {
-                            lines.push(`    ${mnemonic}${addrBytesComment}`);
+                            // Replace numeric addresses with labels where possible
+                            const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
+                            if (addrMatch) {
+                                const refAddr = parseInt(addrMatch[1], 16);
+                                const refLabelObj = labelManager.get(refAddr);
+                                if (refLabelObj && refLabelObj.name) {
+                                    // Use label - either in exported range or will be EQU
+                                    mnemonic = mnemonic.replace(addrMatch[0], refLabelObj.name);
+                                    // Track external labels for EQU generation
+                                    if (!exportedAddrs.has(refAddr)) {
+                                        externalLabels.set(refAddr, refLabelObj.name);
+                                    }
+                                } else {
+                                    mnemonic = mnemonic.replace(/([0-9A-F]{4})h/gi, '$$$1');
+                                }
+                            }
+                            // Replace 2-digit hex
+                            mnemonic = mnemonic.replace(/([0-9A-F]{2})h/gi, '$$$1');
+
+                            // Build bytes array for address+bytes comment
+                            const codeBytes = [];
+                            for (let bi = 0; bi < dis.length; bi++) {
+                                codeBytes.push(readMem(addr + bi).toString(16).toUpperCase().padStart(2, '0'));
+                            }
+                            const addrBytesComment = includeAddrBytes
+                                ? `  ; ${addr.toString(16).toUpperCase().padStart(4, '0')}: ${codeBytes.join(' ')}`
+                                : '';
+
+                            // When using snapshot, output bytes from snapshot with mnemonic as comment
+                            // (in case memory changed between snap and export)
+                            if (usingSnapshot) {
+                                const bytes = codeBytes.map(b => '$' + b);
+                                lines.push(`    DEFB ${bytes.join(',')}  ; ${mnemonic}${addrBytesComment ? addrBytesComment.replace('  ; ', ' @ ') : ''}`);
+                            } else {
+                                lines.push(`    ${mnemonic}${addrBytesComment}`);
+                            }
+                            addr += dis.length;
                         }
-                        addr += dis.length;
                     } else {
                         // Unknown - just data byte (read/write but not executed)
                         const byte = readMem(addr);
@@ -24110,6 +25250,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (romTrdosData && (spectrum.machineType === 'pentagon' || spectrum.betaDiskEnabled)) {
                 spectrum.memory.loadTrdosRom(romTrdosData);
             }
+            spectrum.updateBetaDiskPagingFlag();
             spectrum.romLoaded = true;
         }
         
@@ -24286,6 +25427,17 @@ labelManager.importJSON(jsonStr, merge)</pre>
         
         // Disassembly view click handler
         disassemblyView.addEventListener('click', (e) => {
+            // Check if clicking on fold toggle or fold summary
+            const foldToggle = e.target.closest('.disasm-fold-toggle, .disasm-fold-summary');
+            if (foldToggle) {
+                const addr = parseInt(foldToggle.dataset.foldAddr, 10);
+                if (!isNaN(addr)) {
+                    foldManager.toggle(addr);
+                    updateDebugger();
+                }
+                return;
+            }
+
             // Check if clicking on breakpoint marker
             const bpMarker = e.target.closest('.disasm-bp');
             if (bpMarker) {
@@ -24678,6 +25830,85 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (e.key === 'Escape') closeRegionDialog();
         });
 
+        // Fold dialog elements and state
+        const foldDialog = document.getElementById('foldDialog');
+        const foldStartInput = document.getElementById('foldStartInput');
+        const foldEndInput = document.getElementById('foldEndInput');
+        const foldNameInput = document.getElementById('foldNameInput');
+        const btnFoldSave = document.getElementById('btnFoldSave');
+        const btnFoldCancel = document.getElementById('btnFoldCancel');
+        let foldDialogStartAddr = null;
+
+        function showFoldDialog(startAddr) {
+            foldDialogStartAddr = startAddr;
+            foldStartInput.value = hex16(startAddr);
+            foldEndInput.value = '';
+            foldNameInput.value = '';
+
+            foldDialog.classList.remove('hidden');
+            foldEndInput.focus();
+        }
+
+        function closeFoldDialog() {
+            foldDialog.classList.add('hidden');
+            foldDialogStartAddr = null;
+        }
+
+        function saveFoldFromDialog() {
+            const startAddr = foldDialogStartAddr;
+            const endStr = foldEndInput.value.trim().toUpperCase();
+
+            if (!/^[0-9A-F]{1,4}$/.test(endStr)) {
+                showMessage('Valid hex end address required', 'error');
+                foldEndInput.focus();
+                return;
+            }
+
+            const endAddr = parseInt(endStr, 16);
+
+            if (endAddr < startAddr) {
+                showMessage('End address must be >= start address', 'error');
+                foldEndInput.focus();
+                return;
+            }
+
+            const foldName = foldNameInput.value.trim() || null;
+
+            foldManager.addUserFold(startAddr, endAddr, foldName);
+
+            undoManager.push({
+                type: 'fold',
+                description: `Create fold block ${hex16(startAddr)}-${hex16(endAddr)}`,
+                undo: () => {
+                    foldManager.removeUserFold(startAddr);
+                },
+                redo: () => {
+                    foldManager.addUserFold(startAddr, endAddr, foldName);
+                }
+            });
+
+            showMessage(`Fold block created: ${hex16(startAddr)}-${hex16(endAddr)}`);
+            closeFoldDialog();
+            updateDebugger();
+        }
+
+        btnFoldSave.addEventListener('click', saveFoldFromDialog);
+        btnFoldCancel.addEventListener('click', closeFoldDialog);
+
+        foldDialog.addEventListener('click', (e) => {
+            if (e.target === foldDialog) closeFoldDialog();
+        });
+
+        foldEndInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveFoldFromDialog();
+            if (e.key === 'Escape') closeFoldDialog();
+        });
+
+        foldNameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveFoldFromDialog();
+            if (e.key === 'Escape') closeFoldDialog();
+        });
+
         // Comment dialog elements and state
         const commentDialog = document.getElementById('commentDialog');
         const commentDialogTitle = document.getElementById('commentDialogTitle');
@@ -24882,6 +26113,16 @@ labelManager.importJSON(jsonStr, merge)</pre>
             } else {
                 menuHtml += `<div data-action="add-sub">Mark as subroutine</div>`;
             }
+            // Fold options
+            menuHtml += `<div class="menu-separator"></div>`;
+            const existingUserFold = foldManager.getUserFold(addr);
+            if (existingUserFold) {
+                menuHtml += `<div data-action="remove-fold" class="danger">Remove fold block</div>`;
+            } else {
+                menuHtml += `<div data-action="add-fold">Create fold block...</div>`;
+            }
+            menuHtml += `<div data-action="collapse-all">Collapse all folds</div>`;
+            menuHtml += `<div data-action="expand-all">Expand all folds</div>`;
             labelContextMenu.innerHTML = menuHtml;
 
             labelContextMenu.style.left = e.clientX + 'px';
@@ -25030,6 +26271,33 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     });
                     showMessage(`Subroutine mark removed at ${hex16(addr)}`);
                     updateDebugger();
+                } else if (action === 'add-fold') {
+                    showFoldDialog(addr);
+                } else if (action === 'remove-fold') {
+                    const oldFold = foldManager.getUserFold(addr);
+                    if (oldFold) {
+                        foldManager.removeUserFold(addr);
+                        undoManager.push({
+                            type: 'fold',
+                            description: `Remove fold block at ${hex16(addr)}`,
+                            undo: () => {
+                                foldManager.addUserFold(addr, oldFold.endAddress, oldFold.name);
+                            },
+                            redo: () => {
+                                foldManager.removeUserFold(addr);
+                            }
+                        });
+                        showMessage(`Fold block removed at ${hex16(addr)}`);
+                        updateDebugger();
+                    }
+                } else if (action === 'collapse-all') {
+                    foldManager.collapseAll();
+                    showMessage('All folds collapsed');
+                    updateDebugger();
+                } else if (action === 'expand-all') {
+                    foldManager.expandAll();
+                    showMessage('All folds expanded');
+                    updateDebugger();
                 }
                 closeLabelContextMenu();
             });
@@ -25105,6 +26373,16 @@ labelManager.importJSON(jsonStr, merge)</pre>
             } else {
                 menuHtml += `<div data-action="add-sub">Mark as subroutine</div>`;
             }
+            // Fold options
+            menuHtml += `<div class="menu-separator"></div>`;
+            const existingUserFold = foldManager.getUserFold(addr);
+            if (existingUserFold) {
+                menuHtml += `<div data-action="remove-fold" class="danger">Remove fold block</div>`;
+            } else {
+                menuHtml += `<div data-action="add-fold">Create fold block...</div>`;
+            }
+            menuHtml += `<div data-action="collapse-all">Collapse all folds</div>`;
+            menuHtml += `<div data-action="expand-all">Expand all folds</div>`;
             labelContextMenu.innerHTML = menuHtml;
 
             labelContextMenu.style.left = e.clientX + 'px';
@@ -25170,6 +26448,20 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 } else if (action === 'remove-sub') {
                     subroutineManager.remove(addr);
                     showMessage(`Subroutine mark removed at ${hex16(addr)}`);
+                    updateDebugger();
+                } else if (action === 'add-fold') {
+                    showFoldDialog(addr);
+                } else if (action === 'remove-fold') {
+                    foldManager.removeUserFold(addr);
+                    showMessage(`Fold block removed at ${hex16(addr)}`);
+                    updateDebugger();
+                } else if (action === 'collapse-all') {
+                    foldManager.collapseAll();
+                    showMessage('All folds collapsed');
+                    updateDebugger();
+                } else if (action === 'expand-all') {
+                    foldManager.expandAll();
+                    showMessage('All folds expanded');
                     updateDebugger();
                 }
                 closeLabelContextMenu();
@@ -25874,6 +27166,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         comments: JSON.parse(commentManager.exportJSON()),
                         xrefs: xrefManager.exportJSON() ? JSON.parse(xrefManager.exportJSON()) : [],
                         subroutines: JSON.parse(subroutineManager.exportJSON()),
+                        folds: foldManager.exportJSON() ? JSON.parse(foldManager.exportJSON()) : { userFolds: [], collapsed: [] },
                         operandFormats: operandFormatManager.getAll(),
                         watches: watches.map(w => ({ addr: w.addr, name: w.name, page: w.page }))
                     },
@@ -25895,7 +27188,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         debuggerOpen: !tabContainer.classList.contains('collapsed'),
                         zoom: document.querySelector('.zoom-btn.active')?.textContent.replace('x', '') || '2',
                         running: spectrum.isRunning(),
-                        overlayMode: overlaySelect.value
+                        overlayMode: overlaySelect.value,
+                        tapeFlashLoad: spectrum.getTapeFlashLoad(),
+                        tapeAudioEnabled: spectrum.tapeAudioEnabled
                     },
                     // CPU timing state (not stored in SNA format)
                     cpuTiming: {
@@ -26138,6 +27433,12 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         subroutineManager.importJSON(JSON.stringify(project.debugger.subroutines), false);
                     }
 
+                    // Clear and restore folds
+                    foldManager.clear();
+                    if (project.debugger.folds) {
+                        foldManager.importJSON(JSON.stringify(project.debugger.folds), false);
+                    }
+
                     // Clear and restore operand formats
                     operandFormatManager.clear();
                     if (project.debugger.operandFormats && project.debugger.operandFormats.length > 0) {
@@ -26275,6 +27576,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     if (project.settings.lateTimings !== undefined) {
                         chkLateTimings.checked = project.settings.lateTimings;
                         spectrum.setLateTimings(project.settings.lateTimings);
+                    }
+                    if (project.settings.tapeFlashLoad !== undefined) {
+                        document.getElementById('chkFlashLoad').checked = project.settings.tapeFlashLoad;
+                        spectrum.setTapeFlashLoad(project.settings.tapeFlashLoad);
+                    }
+                    if (project.settings.tapeAudioEnabled !== undefined) {
+                        document.getElementById('chkTapeAudio').checked = project.settings.tapeAudioEnabled;
+                        spectrum.tapeAudioEnabled = project.settings.tapeAudioEnabled;
                     }
                 }
 
@@ -26510,6 +27819,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (type === 'pentagon') {
                 spectrum.betaDiskEnabled = true;
             }
+            spectrum.updateBetaDiskPagingFlag();
             updateBetaDiskStatus();
             setupDiskActivityCallback();
 
@@ -26829,6 +28139,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (chkBetaDisk.checked && romTrdosData && !spectrum.memory.hasTrdosRom()) {
                 spectrum.memory.loadTrdosRom(romTrdosData);
             }
+            spectrum.updateBetaDiskPagingFlag();
             updateBetaDiskStatus();
             showMessage(chkBetaDisk.checked ?
                 'Beta Disk interface enabled' :
@@ -26845,13 +28156,103 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 spectrum.memory.loadTrdosRom(romTrdosData);
             }
         }
+        spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
 
-        // Media controls
+        // Media controls - Tape
+        const chkFlashLoad = document.getElementById('chkFlashLoad');
+        const tapeLoadModeEl = document.getElementById('tapeLoadMode');
+        const tapePositionEl = document.getElementById('tapePosition');
+        const tapeProgressEl = document.getElementById('tapeProgress');
+
+        function updateTapePosition() {
+            const pos = spectrum.getTapePosition();
+            if (pos.totalBlocks > 0) {
+                const status = pos.playing ? (pos.phase === 'pilot' ? 'PILOT' : pos.phase === 'data' ? 'DATA' : pos.phase.toUpperCase()) : 'STOPPED';
+                tapePositionEl.textContent = `Block ${pos.block + 1}/${pos.totalBlocks} ${status}`;
+                // Update progress in status bar - show current block progress
+                if (tapeProgressEl) {
+                    if (pos.playing && pos.phase === 'data') {
+                        tapeProgressEl.textContent = `${pos.blockProgress}%`;
+                    } else if (pos.playing) {
+                        tapeProgressEl.textContent = 'SYNC';
+                    } else {
+                        tapeProgressEl.textContent = '';
+                    }
+                }
+            } else {
+                tapePositionEl.textContent = '';
+                if (tapeProgressEl) {
+                    tapeProgressEl.textContent = '';
+                }
+            }
+        }
+
+        // Set up TapePlayer callbacks
+        spectrum.tapePlayer.onBlockStart = (blockIndex, block) => {
+            const type = block.flag === 0x00 ? 'Header' : 'Data';
+            showMessage(`Loading block ${blockIndex + 1}: ${type}`);
+            updateTapePosition();
+        };
+        spectrum.tapePlayer.onBlockEnd = (blockIndex) => {
+            updateTapePosition();
+        };
+        spectrum.tapePlayer.onTapeEnd = () => {
+            showMessage('Tape finished');
+            updateTapePosition();
+        };
+
+        chkFlashLoad.addEventListener('change', () => {
+            const flash = chkFlashLoad.checked;
+            spectrum.setTapeFlashLoad(flash);
+            tapeLoadModeEl.textContent = flash ? '(instant)' : '(real-time)';
+            if (flash) {
+                spectrum.stopTape();
+            }
+            updateTapePosition();
+        });
+
+        // Initialize flash load state from checkbox on page load
+        spectrum.setTapeFlashLoad(chkFlashLoad.checked);
+        tapeLoadModeEl.textContent = chkFlashLoad.checked ? '(instant)' : '(real-time)';
+
+        // Tape audio toggle
+        const chkTapeAudio = document.getElementById('chkTapeAudio');
+        chkTapeAudio.addEventListener('change', () => {
+            spectrum.tapeAudioEnabled = chkTapeAudio.checked;
+        });
+
+        document.getElementById('btnTapePlay').addEventListener('click', () => {
+            if (spectrum.getTapeFlashLoad()) {
+                showMessage('Switch to real-time mode to use Play', 'warning');
+                return;
+            }
+            if (spectrum.playTape()) {
+                showMessage('Tape playing - type LOAD "" and press Enter');
+                updateTapePosition();
+            } else {
+                showMessage('No tape loaded', 'error');
+            }
+        });
+
+        document.getElementById('btnTapeStop').addEventListener('click', () => {
+            spectrum.stopTape();
+            showMessage('Tape stopped');
+            updateTapePosition();
+        });
+
         document.getElementById('btnTapeRewind').addEventListener('click', () => {
             spectrum.rewindTape();
             showMessage('Tape rewound to beginning');
+            updateTapePosition();
         });
+
+        // Update tape position periodically when playing
+        setInterval(() => {
+            if (spectrum.isTapePlaying()) {
+                updateTapePosition();
+            }
+        }, 200);
 
         document.getElementById('btnBlankDisk').addEventListener('click', () => {
             if (!spectrum.betaDisk) {
@@ -28076,7 +29477,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             scaData[0] = 0x53; // 'S'
             scaData[1] = 0x43; // 'C'
             scaData[2] = 0x41; // 'A'
-            scaData[3] = 0;    // version
+            scaData[3] = 1;    // version
             scaData[4] = 256 & 0xFF;  // width low
             scaData[5] = (256 >> 8) & 0xFF; // width high
             scaData[6] = 192 & 0xFF;  // height low
@@ -28402,6 +29803,197 @@ labelManager.importJSON(jsonStr, merge)</pre>
         btnFrameGrabStop.addEventListener('click', () => stopFrameGrab(false));
         btnFrameGrabCancel.addEventListener('click', () => stopFrameGrab(true));
 
+        // PSG Recording controls
+        const btnPsgStart = document.getElementById('btnPsgStart');
+        const btnPsgStop = document.getElementById('btnPsgStop');
+        const btnPsgCancel = document.getElementById('btnPsgCancel');
+        const chkPsgChangedOnly = document.getElementById('chkPsgChangedOnly');
+        const psgStatus = document.getElementById('psgStatus');
+        let psgRecording = false;
+        let psgFrameCount = 0;
+        let psgWriteCount = 0;
+        let psgUpdateInterval = null;
+
+        function startPsgRecording() {
+            spectrum.ay.startLogging();
+            psgRecording = true;
+            psgFrameCount = 0;
+            psgWriteCount = 0;
+            btnPsgStart.disabled = true;
+            btnPsgStop.disabled = false;
+            btnPsgCancel.disabled = false;
+            psgStatus.textContent = 'Recording: 0 frames';
+            showMessage('PSG recording started');
+
+            // Update status periodically by reading AY properties directly
+            psgUpdateInterval = setInterval(() => {
+                if (psgRecording && spectrum.ay.loggingEnabled) {
+                    psgFrameCount = spectrum.ay.logFrameNumber;
+                    psgWriteCount = spectrum.ay.registerLog.length;
+                    const duration = (psgFrameCount / 50).toFixed(1);
+                    psgStatus.textContent = `Recording: ${psgFrameCount} frames, ${psgWriteCount} writes (${duration}s)`;
+                }
+            }, 200);
+        }
+
+        function stopPsgRecording(cancel) {
+            spectrum.ay.stopLogging();
+            psgRecording = false;
+            btnPsgStart.disabled = false;
+            btnPsgStop.disabled = true;
+            btnPsgCancel.disabled = true;
+
+            if (psgUpdateInterval) {
+                clearInterval(psgUpdateInterval);
+                psgUpdateInterval = null;
+            }
+
+            if (cancel) {
+                spectrum.ay.clearLog();
+                psgStatus.textContent = 'Cancelled';
+                showMessage('PSG recording cancelled');
+                return;
+            }
+
+            // Export PSG file
+            const changedOnly = chkPsgChangedOnly.checked;
+            const psgData = spectrum.ay.exportPSG(changedOnly);
+
+            if (!psgData || psgData.length <= 16) {
+                psgStatus.textContent = 'No AY data recorded';
+                showMessage('No AY data to export');
+                spectrum.ay.clearLog();
+                return;
+            }
+
+            const frames = psgFrameCount;
+            const duration = (frames / 50).toFixed(1);
+            const blob = new Blob([psgData], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `music_${frames}f.psg`;
+            a.click();
+            URL.revokeObjectURL(url);
+
+            psgStatus.textContent = `Exported: ${psgData.length} bytes, ${frames} frames (${duration}s)`;
+            showMessage(`Exported PSG: ${psgData.length} bytes`);
+            spectrum.ay.clearLog();
+        }
+
+        btnPsgStart.addEventListener('click', startPsgRecording);
+        btnPsgStop.addEventListener('click', () => stopPsgRecording(false));
+        btnPsgCancel.addEventListener('click', () => stopPsgRecording(true));
+
+        // PSG Player source code download
+        const btnPsgPlayer = document.getElementById('btnPsgPlayer');
+        btnPsgPlayer.addEventListener('click', () => {
+            const playerSource = `; PSG Player for ZX Spectrum
+; Simple player for PSG files exported from ZX-M8XXX
+; Assemble with sjasmplus
+;
+; Usage:
+;   1. Include your PSG data at PSG_DATA label (INCBIN "music.psg")
+;   2. Assemble: sjasmplus psg_player.asm
+;   3. Load music.sna and run
+;   4. Press Space to stop
+
+        DEVICE ZXSPECTRUM128
+
+        ORG #8000
+
+AY_REG  EQU #FFFD       ; AY register select port
+AY_DATA EQU #BFFD       ; AY data port
+
+START:
+        DI
+        LD HL,PSG_DATA+16   ; Skip 16-byte header
+        EI
+
+PLAY_LOOP:
+        LD A,(HL)
+        INC HL
+
+        CP #FD              ; End of music?
+        JR Z,MUSIC_END
+
+        CP #FF              ; End of frame?
+        JR Z,WAIT_FRAME
+
+        CP #FE              ; Multiple empty frames?
+        JR Z,SKIP_FRAMES
+
+        ; Register write: A = register, next byte = value
+        LD BC,AY_REG
+        OUT (C),A           ; Select register
+        LD A,(HL)
+        INC HL
+        LD BC,AY_DATA
+        OUT (C),A           ; Write value
+        JR PLAY_LOOP
+
+SKIP_FRAMES:
+        ; 0xFE followed by count (frames = count * 4)
+        LD A,(HL)
+        INC HL
+        LD B,A
+        SLA B
+        SLA B               ; B = count * 4
+SKIP_LOOP:
+        CALL WAIT_INT
+        DJNZ SKIP_LOOP
+        JR PLAY_LOOP
+
+WAIT_FRAME:
+        CALL WAIT_INT
+        JR PLAY_LOOP
+
+WAIT_INT:
+        ; Wait for interrupt (50Hz frame sync)
+        LD A,#7F
+        IN A,(#FE)          ; Check keyboard
+        RRA
+        JR NC,KEY_PRESSED   ; Space pressed - exit
+
+        HALT                ; Wait for next interrupt
+        RET
+
+KEY_PRESSED:
+        POP AF              ; Remove return address
+
+MUSIC_END:
+        ; Silence AY
+        XOR A
+        LD BC,AY_REG
+        LD E,13             ; 14 registers (0-13)
+SILENCE:
+        OUT (C),A
+        LD D,A
+        LD BC,AY_DATA
+        OUT (C),D
+        LD BC,AY_REG
+        INC A
+        DEC E
+        JP P,SILENCE
+
+        RET
+
+; Include your PSG data here
+PSG_DATA:
+        INCBIN "music.psg"
+
+        SAVESNA "music.sna", START
+`;
+            const blob = new Blob([playerSource], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'psg_player.asm';
+            a.click();
+            URL.revokeObjectURL(url);
+            showMessage('Downloaded psg_player.asm');
+        });
+
         // Zoom controls (canvas already declared above)
         const zoomButtons = [
             document.getElementById('zoom1'),
@@ -28519,6 +30111,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 updateMediaIndicator(fileName, 'disk');
             } else if (result.blocks !== undefined) {
                 updateMediaIndicator(fileName, 'tape');
+                // Update tape position display
+                if (typeof updateTapePosition === 'function') {
+                    updateTapePosition();
+                }
             }
 
             // Load labels, regions, comments, and xrefs for this file
@@ -29055,7 +30651,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
         console.log('Usage:');
         console.log('1. Place ROMs in roms/ directory (48.rom, 128.rom, pentagon.rom, trdos.rom)');
         console.log('2. Or select ROM files in dialog if not found');
-        console.log('3. Load SNA/Z80/SZX snapshots, TAP tapes, or TRD/SCL disk images');
+        console.log('3. Load SNA/Z80/SZX snapshots, TAP/TZX tapes, or TRD/SCL disk images');
     </script>
 </body>
 </html>

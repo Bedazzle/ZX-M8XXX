@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.9.1** | [Changelog](CHANGELOG.md)
+**Version 0.9.6** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -12,8 +12,9 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory banking and contention emulation
 - Pixel-perfect ULA video timing with border effects
 - AY-3-8910 sound chip emulation (stereo modes: Mono/ABC/ACB)
+- PSG file export (record AY music with player source)
 - SNA/Z80/SZX snapshot loading/saving
-- TAP tape loading with ROM traps (instant load)
+- TAP/TZX tape loading (instant or real-time with border stripes and sound)
 - TRD/SCL disk image support (TR-DOS format)
 - ZIP archive support
 - RZX playback
@@ -29,6 +30,8 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory heatmap visualization
 - Labels with import/export
 - Cross-references (XRefs) tracking
+- Subroutine detection and marking
+- Code folding (collapse/expand subroutines and custom blocks)
 - Bookmarks for quick navigation
 - Undo/Redo support
 - Pattern search with wildcards
@@ -70,13 +73,15 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 | SCL | TR-DOS file archive |
 | SNA | Snapshot (48K/128K) |
 | SZX | Spectaculator snapshot format |
-| TAP | Tape format (instant load via ROM traps) |
+| TAP | Tape format (instant or real-time loading) |
 | TRD | TR-DOS disk image |
+| TZX | Extended tape format (turbo, pure tone, loops) |
 | Z80 | Snapshot (v1, v2, v3 with compression) |
 | ZIP | Archive support |
 
 ## Known Limitations
 
+- **Real-time tape loading** (work in progress): Some copy protection schemes work, others don't yet. Standard loaders and many turbo loaders work; complex protection may fail. Flash load (instant) mode is more reliable.
 - **RZX playback**: Partial support - some recordings may desync due to timing differences
 - **Z80 save uncompressed**: Z80 snapshots are saved without RLE compression for maximum compatibility (~131KB for 128K, ~49KB for 48K)
 

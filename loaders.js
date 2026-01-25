@@ -48,6 +48,1000 @@
         hasMoreBlocks() { return this.currentBlock < this.blocks.length; }
         getCurrentBlock() { return this.currentBlock; }
         setCurrentBlock(n) { this.currentBlock = Math.max(0, Math.min(n, this.blocks.length)); }
+
+        /**
+         * Get blocks in unified format for TapePlayer
+         */
+        getUnifiedBlocks() {
+            return this.blocks.map(block => ({
+                type: 'data',
+                flag: block.flag,
+                data: block.data,
+                length: block.length,
+                pilotPulse: 2168,
+                pilotCount: (block.flag === 0x00) ? 8063 : 3223,
+                sync1Pulse: 667,
+                sync2Pulse: 735,
+                zeroPulse: 855,
+                onePulse: 1710,
+                usedBits: 8,
+                pauseMs: 1000
+            }));
+        }
+    }
+
+    /**
+     * TapePlayer - Real-time tape playback with accurate timing
+     * Generates EAR bit stream from TAP blocks at cycle-accurate timing
+     */
+    class TapePlayer {
+        static get VERSION() { return VERSION; }
+
+        // Standard ZX Spectrum tape timing constants (in T-states at 3.5MHz)
+        static get PILOT_PULSE() { return 2168; }      // Pilot pulse length
+        static get SYNC1_PULSE() { return 667; }       // First sync pulse
+        static get SYNC2_PULSE() { return 735; }       // Second sync pulse
+        static get ZERO_PULSE() { return 855; }        // Zero bit pulse length
+        static get ONE_PULSE() { return 1710; }        // One bit pulse length
+        static get HEADER_PILOT_COUNT() { return 8063; }  // Pilot pulses for header block
+        static get DATA_PILOT_COUNT() { return 3223; }    // Pilot pulses for data block
+        static get PAUSE_MS() { return 1000; }         // Pause between blocks (ms)
+        static get TSTATES_PER_MS() { return 3500; }   // T-states per millisecond at 3.5MHz
+        static get TAIL_PULSE() { return 945; }        // Final tail pulse after data (Swan compatibility)
+
+        constructor() {
+            this.blocks = [];           // Unified format blocks
+            this.currentBlock = 0;      // Current block index
+            this.playing = false;       // Playback state
+            this.earBit = false;        // Current EAR output level
+
+            // Playback position within current block
+            this.blockTstates = 0;      // T-states elapsed in current block
+            this.phase = 'idle';        // Current phase: idle, pilot, sync1, sync2, data, tail, pause, tone, pulses
+            this.pilotCount = 0;        // Remaining pilot pulses
+            this.byteIndex = 0;         // Current byte index in block data
+            this.bitIndex = 0;          // Current bit index (7-0) in byte
+            this.pulseInBit = 0;        // Which pulse of the bit (0 or 1)
+            this.pulseRemaining = 0;    // T-states remaining in current pulse
+
+            // Per-block timing (set in startBlock from block properties)
+            this.pilotPulse = TapePlayer.PILOT_PULSE;
+            this.sync1Pulse = TapePlayer.SYNC1_PULSE;
+            this.sync2Pulse = TapePlayer.SYNC2_PULSE;
+            this.zeroPulse = TapePlayer.ZERO_PULSE;
+            this.onePulse = TapePlayer.ONE_PULSE;
+            this.pauseMs = TapePlayer.PAUSE_MS;
+            this.usedBits = 8;
+
+            // Loop support for TZX
+            this.loopStack = [];        // Stack of {startBlock, remaining}
+
+            // Pulse sequence support
+            this.currentPulseIndex = 0;
+
+            // Accumulated T-states for timing
+            this.totalTstates = 0;
+
+            // Edge transitions for audio generation
+            this.edgeTransitions = [];  // Array of {tStates, level} recorded during update
+            this.frameStartTstates = 0; // T-states at start of current frame
+
+            // Callbacks
+            this.onBlockStart = null;   // Called when block starts: (blockIndex, block)
+            this.onBlockEnd = null;     // Called when block ends: (blockIndex)
+            this.onTapeEnd = null;      // Called when all blocks played
+        }
+
+        /**
+         * Load blocks from TapeLoader (converts to unified format)
+         */
+        loadFromTapeLoader(tapeLoader) {
+            if (tapeLoader.getUnifiedBlocks) {
+                this.blocks = tapeLoader.getUnifiedBlocks();
+            } else {
+                // Fallback: convert inline
+                this.blocks = tapeLoader.blocks.map(block => ({
+                    type: 'data',
+                    flag: block.flag,
+                    data: block.data,
+                    length: block.length,
+                    pilotPulse: TapePlayer.PILOT_PULSE,
+                    pilotCount: (block.flag === 0x00) ? TapePlayer.HEADER_PILOT_COUNT : TapePlayer.DATA_PILOT_COUNT,
+                    sync1Pulse: TapePlayer.SYNC1_PULSE,
+                    sync2Pulse: TapePlayer.SYNC2_PULSE,
+                    zeroPulse: TapePlayer.ZERO_PULSE,
+                    onePulse: TapePlayer.ONE_PULSE,
+                    usedBits: 8,
+                    pauseMs: TapePlayer.PAUSE_MS
+                }));
+            }
+            this.rewind();
+        }
+
+        /**
+         * Load blocks directly (unified format from TZXLoader)
+         */
+        loadBlocks(blocks) {
+            this.blocks = blocks.slice();
+            this.rewind();
+        }
+
+        /**
+         * Start playback
+         */
+        play() {
+            if (this.blocks.length === 0) return false;
+            if (this.currentBlock >= this.blocks.length) this.rewind();
+            this.playing = true;
+            if (this.phase === 'idle' || this.phase === 'pause') {
+                this.startBlock();
+            }
+            return true;
+        }
+
+        /**
+         * Stop playback
+         */
+        stop() {
+            this.playing = false;
+        }
+
+        /**
+         * Rewind to beginning
+         */
+        rewind() {
+            this.currentBlock = 0;
+            this.phase = 'idle';
+            this.blockTstates = 0;
+            this.earBit = false;
+            this.totalTstates = 0;
+            this.loopStack = [];
+            this.currentPulseIndex = 0;
+        }
+
+        /**
+         * Start playing current block
+         */
+        startBlock() {
+            if (this.currentBlock >= this.blocks.length) {
+                this.phase = 'idle';
+                this.playing = false;
+                if (this.onTapeEnd) this.onTapeEnd();
+                return;
+            }
+
+            const block = this.blocks[this.currentBlock];
+            this.blockTstates = 0;
+
+            // Handle control blocks
+            switch (block.type) {
+                case 'loopStart':
+                    this.loopStack.push({
+                        startBlock: this.currentBlock,
+                        remaining: block.repetitions - 1
+                    });
+                    this.currentBlock++;
+                    this.startBlock();
+                    return;
+
+                case 'loopEnd':
+                    this.handleLoopEnd();
+                    return;
+
+                case 'stop':
+                    this.playing = false;
+                    this.phase = 'idle';
+                    if (this.onTapeEnd) this.onTapeEnd();
+                    return;
+
+                case 'pause':
+                    this.phase = 'pause';
+                    this.pulseRemaining = block.pauseMs * TapePlayer.TSTATES_PER_MS;
+                    this.earBit = false;
+                    if (this.onBlockStart) this.onBlockStart(this.currentBlock, block);
+                    return;
+
+                case 'tone':
+                    this.phase = 'tone';
+                    this.pilotPulse = block.pulseLength;
+                    this.pilotCount = block.pulseCount;
+                    this.pulseRemaining = this.pilotPulse;
+                    this.pauseMs = 0;  // No pause after pure tone blocks
+                    // Swan approach: NO inversion at start, first pulse at current level
+                    // Inversion happens in advancePhase before each subsequent pulse
+                    if (this.onBlockStart) this.onBlockStart(this.currentBlock, block);
+                    return;
+
+                case 'pulses':
+                    this.phase = 'pulses';
+                    this.currentPulseIndex = 0;
+                    this.pulseRemaining = block.pulses[0];
+                    this.pauseMs = 0;  // No pause after pulse sequence blocks
+                    // Swan approach: NO inversion at start, first pulse at current level
+                    // Inversion happens in advancePhase before each subsequent pulse
+                    if (this.onBlockStart) this.onBlockStart(this.currentBlock, block);
+                    return;
+
+                case 'data':
+                default:
+                    // Set per-block timing
+                    this.pilotPulse = block.pilotPulse || TapePlayer.PILOT_PULSE;
+                    this.sync1Pulse = block.sync1Pulse || TapePlayer.SYNC1_PULSE;
+                    this.sync2Pulse = block.sync2Pulse || TapePlayer.SYNC2_PULSE;
+                    this.zeroPulse = block.zeroPulse || TapePlayer.ZERO_PULSE;
+                    this.onePulse = block.onePulse || TapePlayer.ONE_PULSE;
+                    this.pauseMs = block.pauseMs !== undefined ? block.pauseMs : TapePlayer.PAUSE_MS;
+                    this.usedBits = block.usedBits || 8;
+
+                    // Log turbo block timing (non-standard timing)
+                    const isNonStandard = this.pilotPulse !== TapePlayer.PILOT_PULSE ||
+                                          this.zeroPulse !== TapePlayer.ZERO_PULSE ||
+                                          this.onePulse !== TapePlayer.ONE_PULSE;
+                    // Note: turbo timing detected when isNonStandard is true
+
+                    this.byteIndex = 0;
+                    this.bitIndex = 7;
+                    this.pulseInBit = 0;
+
+                    // Check for pure data (no pilot/sync)
+                    if (block.noPilot) {
+                        // Handle empty data blocks
+                        if (!block.data || block.data.length === 0) {
+                            this.phase = 'tail';
+                            this.pulseRemaining = TapePlayer.TAIL_PULSE;
+                            // Keep earBit as-is for empty blocks
+                            return;
+                        }
+                        this.phase = 'data';
+                        // Keep earBit as-is - continue from previous block's state
+                        // (important for Speedlock and other protection schemes)
+                        this.setupDataPulse(block);
+                    } else {
+                        // Standard data block with pilot
+                        this.pilotCount = block.pilotCount ||
+                            ((block.flag === 0x00) ? TapePlayer.HEADER_PILOT_COUNT : TapePlayer.DATA_PILOT_COUNT);
+                        this.phase = 'pilot';
+                        this.pulseRemaining = this.pilotPulse;
+                        // Swan approach: NO inversion at start, first pulse at current level
+                        // Inversion happens in advancePhase before each subsequent pulse
+                    }
+
+                    if (this.onBlockStart) {
+                        this.onBlockStart(this.currentBlock, block);
+                    }
+            }
+        }
+
+        /**
+         * Handle loop end block
+         */
+        handleLoopEnd() {
+            if (this.loopStack.length > 0) {
+                const loop = this.loopStack[this.loopStack.length - 1];
+                if (loop.remaining > 0) {
+                    loop.remaining--;
+                    this.currentBlock = loop.startBlock + 1;
+                } else {
+                    this.loopStack.pop();
+                    this.currentBlock++;
+                }
+            } else {
+                this.currentBlock++;
+            }
+            this.startBlock();
+        }
+
+        /**
+         * Start a new frame - reset edge transitions and record frame start T-states
+         */
+        startFrame(frameTstates) {
+            this.edgeTransitions = [];
+            this.frameStartTstates = frameTstates;
+        }
+
+        /**
+         * Get edge transitions recorded during this frame
+         */
+        getEdgeTransitions() {
+            return this.edgeTransitions;
+        }
+
+        /**
+         * Record an edge transition at the current T-state position
+         */
+        recordEdge(absoluteTstates) {
+            const frameTstates = absoluteTstates - this.frameStartTstates;
+            this.edgeTransitions.push({
+                tStates: frameTstates,
+                level: this.earBit ? 1 : 0
+            });
+        }
+
+        /**
+         * Advance playback by given number of T-states
+         * @param {number} tstates - T-states to advance
+         * @param {number} currentAbsoluteTstates - Current absolute T-state (for edge recording)
+         * Returns current EAR bit value
+         */
+        update(tstates, currentAbsoluteTstates = 0) {
+            if (!this.playing || this.phase === 'idle') {
+                return this.earBit;
+            }
+
+            this.totalTstates += tstates;
+
+            while (tstates > 0 && this.playing) {
+                if (this.pulseRemaining <= 0) {
+                    // Current pulse finished, record edge and advance to next
+                    // Edge occurs at: end_time - remaining_tstates
+                    const edgeTstates = currentAbsoluteTstates - tstates;
+                    if (!this.advancePhase(edgeTstates)) {
+                        break;
+                    }
+                }
+
+                const consumed = Math.min(tstates, this.pulseRemaining);
+                this.pulseRemaining -= consumed;
+                this.blockTstates += consumed;
+                tstates -= consumed;
+            }
+
+            return this.earBit;
+        }
+
+        /**
+         * Advance to next phase/pulse
+         * @param {number} edgeTstates - Absolute T-state when this edge occurs
+         * Returns false if playback should stop
+         */
+        advancePhase(edgeTstates = 0) {
+            const block = this.blocks[this.currentBlock];
+
+            switch (this.phase) {
+                case 'pilot':
+                    // Toggle EAR and count down pilot pulses
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.pilotCount--;
+                    if (this.pilotCount <= 0) {
+                        // Pilot done, move to sync (continue toggle pattern)
+                        this.phase = 'sync1';
+                        this.pulseRemaining = this.sync1Pulse;
+                        // Don't change earBit - let the waveform continue naturally
+                    } else {
+                        this.pulseRemaining = this.pilotPulse;
+                    }
+                    break;
+
+                case 'sync1':
+                    // First sync pulse done, toggle and move to second
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.phase = 'sync2';
+                    this.pulseRemaining = this.sync2Pulse;
+                    break;
+
+                case 'sync2':
+                    // Sync done, toggle and start data
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.phase = 'data';
+                    this.byteIndex = 0;
+                    this.bitIndex = 7;
+                    this.pulseInBit = 0;
+                    this.setupDataPulse(block);
+                    break;
+
+                case 'data':
+                    // Toggle EAR for data bits (each bit = 2 pulses)
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.pulseInBit++;
+
+                    if (this.pulseInBit >= 2) {
+                        // Bit complete, advance to next bit
+                        this.pulseInBit = 0;
+                        this.bitIndex--;
+
+                        // Handle last byte with partial bits (usedBits < 8)
+                        const isLastByte = (this.byteIndex === block.data.length - 1);
+                        const minBit = isLastByte ? (8 - this.usedBits) : 0;
+
+                        if (this.bitIndex < minBit) {
+                            this.bitIndex = 7;
+                            this.byteIndex++;
+                            if (this.byteIndex >= block.data.length) {
+                                // Block complete
+
+                                // Only add tail pulse for standard data blocks (with pilot)
+                                // Pure Data (noPilot) blocks: no tail pulse, respect pause from TZX
+                                if (block.noPilot) {
+                                    if (this.onBlockEnd) this.onBlockEnd(this.currentBlock);
+
+                                    // If pause > 0, honor it; if 0, directly advance (no auto-pause)
+                                    if (this.pauseMs > 0) {
+                                        this.phase = 'pause';
+                                        this.pulseRemaining = this.pauseMs * TapePlayer.TSTATES_PER_MS;
+                                        this.earBit = false;
+                                    } else {
+                                        // Directly advance to next block (no pause for protection schemes)
+                                        this.currentBlock++;
+                                        if (this.currentBlock >= this.blocks.length) {
+                                            this.phase = 'idle';
+                                            this.playing = false;
+                                            if (this.onTapeEnd) this.onTapeEnd();
+                                        } else {
+                                            this.startBlock();
+                                        }
+                                    }
+                                } else {
+                                    // Add a tail pulse (like Swan) to ensure clean termination
+                                    this.phase = 'tail';
+                                    this.pulseRemaining = TapePlayer.TAIL_PULSE;
+                                }
+                                return this.playing;
+                            }
+                        }
+                    }
+                    this.setupDataPulse(block);
+                    break;
+
+                case 'tail':
+                    // Tail pulse complete - toggle and end block
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.endBlock();
+                    break;
+
+                case 'tone':
+                    // Pure tone - toggle and count pulses
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.pilotCount--;
+                    if (this.pilotCount <= 0) {
+                        // Immediately advance to next block (no pause for tone blocks)
+                        if (this.onBlockEnd) this.onBlockEnd(this.currentBlock);
+                        this.currentBlock++;
+                        if (this.currentBlock >= this.blocks.length) {
+                            this.phase = 'idle';
+                            this.playing = false;
+                            if (this.onTapeEnd) this.onTapeEnd();
+                        } else {
+                            this.startBlock();
+                        }
+                    } else {
+                        this.pulseRemaining = this.pilotPulse;
+                    }
+                    break;
+
+                case 'pulses':
+                    // Pulse sequence - advance through pulse array
+                    this.earBit = !this.earBit;
+                    this.recordEdge(edgeTstates);
+                    this.currentPulseIndex++;
+                    if (this.currentPulseIndex >= block.pulses.length) {
+                        // Immediately advance to next block (no pause for pulse blocks)
+                        if (this.onBlockEnd) this.onBlockEnd(this.currentBlock);
+                        this.currentBlock++;
+                        if (this.currentBlock >= this.blocks.length) {
+                            this.phase = 'idle';
+                            this.playing = false;
+                            if (this.onTapeEnd) this.onTapeEnd();
+                        } else {
+                            this.startBlock();
+                        }
+                    } else {
+                        this.pulseRemaining = block.pulses[this.currentPulseIndex];
+                    }
+                    break;
+
+                case 'pause':
+                    // Pause complete, start next block
+                    this.currentBlock++;
+                    if (this.currentBlock >= this.blocks.length) {
+                        this.phase = 'idle';
+                        this.playing = false;
+                        this.earBit = false;
+                        if (this.onTapeEnd) this.onTapeEnd();
+                        return false;
+                    }
+                    this.startBlock();
+                    break;
+
+                case 'idle':
+                    return false;
+            }
+
+            return true;
+        }
+
+        /**
+         * Setup pulse length for current data bit
+         */
+        setupDataPulse(block) {
+            const byteVal = block.data[this.byteIndex];
+            const bit = (byteVal >> this.bitIndex) & 1;
+            this.pulseRemaining = bit ? this.onePulse : this.zeroPulse;
+        }
+
+        /**
+         * Handle end of block
+         */
+        endBlock() {
+            if (this.onBlockEnd) {
+                this.onBlockEnd(this.currentBlock);
+            }
+
+            // Move to pause phase (use per-block pause from TZX)
+            // When pauseMs=0, add a small automatic pause (~1 frame) to give the loader time to start
+            // This synchronization is needed because the loader code needs CPU time to begin
+            // looking for pilot after the previous block finishes loading
+            const MIN_PAUSE_TSTATES = 1750000;  // ~500ms at 3.5MHz - gives loader time to start
+            const effectivePause = this.pauseMs > 0 ?
+                this.pauseMs * TapePlayer.TSTATES_PER_MS :
+                MIN_PAUSE_TSTATES;
+
+            this.phase = 'pause';
+            this.pulseRemaining = effectivePause;
+            this.earBit = false;
+        }
+
+        /**
+         * Get current playback position info
+         */
+        getPosition() {
+            // Calculate progress within current block
+            const block = this.blocks[this.currentBlock];
+            const blockBytes = block && block.data ? block.data.length : 0;
+            let blockProgress = 0;
+
+            if (this.phase === 'data' && blockBytes > 0) {
+                // During data phase, show byte progress
+                blockProgress = Math.round((this.byteIndex / blockBytes) * 100);
+            } else if (this.phase === 'pilot' || this.phase === 'sync1' || this.phase === 'sync2') {
+                // During pilot/sync, show 0%
+                blockProgress = 0;
+            } else if (this.phase === 'tail' || this.phase === 'pause' || this.phase === 'idle') {
+                // After block complete (tail, pause, or idle)
+                blockProgress = 100;
+            }
+
+            return {
+                block: this.currentBlock,
+                totalBlocks: this.blocks.length,
+                phase: this.phase,
+                playing: this.playing,
+                totalTstates: this.totalTstates,
+                blockBytes,
+                byteIndex: this.byteIndex,
+                blockProgress
+            };
+        }
+
+        /**
+         * Check if tape is playing
+         */
+        isPlaying() {
+            return this.playing;
+        }
+
+        /**
+         * Get current EAR bit
+         */
+        getEarBit() {
+            return this.earBit;
+        }
+
+        /**
+         * Skip to specific block
+         */
+        setBlock(n) {
+            this.currentBlock = Math.max(0, Math.min(n, this.blocks.length));
+            this.phase = 'idle';
+            this.blockTstates = 0;
+            if (this.playing && this.currentBlock < this.blocks.length) {
+                this.startBlock();
+            }
+        }
+
+        /**
+         * Get block count
+         */
+        getBlockCount() {
+            return this.blocks.length;
+        }
+
+        /**
+         * Check if more blocks available
+         */
+        hasMoreBlocks() {
+            return this.currentBlock < this.blocks.length;
+        }
+    }
+
+    /**
+     * TZXLoader - TZX tape format parser
+     * Converts TZX blocks to unified format for TapePlayer
+     */
+    class TZXLoader {
+        static get VERSION() { return VERSION; }
+
+        constructor() {
+            this.data = null;
+            this.blocks = [];
+            this.metadata = {};
+            this.currentBlock = 0;
+            this.version = { major: 0, minor: 0 };
+        }
+
+        /**
+         * Check if data is a TZX file
+         */
+        static isTZX(data) {
+            const bytes = new Uint8Array(data);
+            if (bytes.length < 10) return false;
+            const header = String.fromCharCode(...bytes.slice(0, 7));
+            return header === 'ZXTape!' && bytes[7] === 0x1A;
+        }
+
+        /**
+         * Load and parse TZX file
+         */
+        load(data) {
+            this.data = new Uint8Array(data);
+            this.blocks = [];
+            this.metadata = {};
+            this.currentBlock = 0;
+
+            if (!TZXLoader.isTZX(data)) return false;
+
+            this.version.major = this.data[8];
+            this.version.minor = this.data[9];
+
+            let offset = 10;
+            while (offset < this.data.length) {
+                const blockId = this.data[offset++];
+                const result = this.parseBlock(blockId, offset);
+                if (!result) break;
+
+                if (result.block) {
+                    this.blocks.push(result.block);
+                    const pauseInfo = result.block.pauseMs !== undefined ? `, pause=${result.block.pauseMs}ms` : '';
+                    const pilotInfo = result.block.pilotCount !== undefined ? `, pilot=${result.block.pilotCount}` : '';
+                    console.log(`[TZX] Block ${this.blocks.length - 1}: type=0x${blockId.toString(16).padStart(2, '0')} (${result.block.type}), ${result.block.data ? result.block.data.length + ' bytes' : 'no data'}${pauseInfo}${pilotInfo}`);
+                } else {
+                    console.log(`[TZX] Skipped block type 0x${blockId.toString(16).padStart(2, '0')} at offset ${offset}`);
+                }
+                offset += result.length;
+            }
+
+            return this.blocks.length > 0;
+        }
+
+        /**
+         * Parse a single TZX block
+         */
+        parseBlock(blockId, offset) {
+            const data = this.data;
+            if (offset >= data.length) return null;
+
+            switch (blockId) {
+                case 0x10: return this.parseStandardData(offset);
+                case 0x11: return this.parseTurboData(offset);
+                case 0x12: return this.parsePureTone(offset);
+                case 0x13: return this.parsePulseSequence(offset);
+                case 0x14: return this.parsePureData(offset);
+                case 0x15: return this.parseDirectRecording(offset);
+                case 0x18: return this.parseCSWRecording(offset);
+                case 0x19: return this.parseGeneralizedData(offset);
+                case 0x20: return this.parsePause(offset);
+                case 0x21: return this.parseGroupStart(offset);
+                case 0x22: return { length: 0 }; // Group End - no data
+                case 0x23: return this.parseJump(offset);
+                case 0x24: return this.parseLoopStart(offset);
+                case 0x25: return { block: { type: 'loopEnd' }, length: 0 };
+                case 0x26: return this.parseCallSequence(offset);
+                case 0x27: return { length: 0 }; // Return
+                case 0x28: return this.parseSelect(offset);
+                case 0x2A: return { length: 4 }; // Stop if 48K
+                case 0x2B: return { length: 5 }; // Set signal level
+                case 0x30: return this.parseTextDescription(offset);
+                case 0x31: return this.parseMessage(offset);
+                case 0x32: return this.parseArchiveInfo(offset);
+                case 0x33: return this.parseHardwareType(offset);
+                case 0x35: return this.parseCustomInfo(offset);
+                case 0x5A: return { length: 9 }; // Glue block
+                default:
+                    // Unknown block - try to skip using length field
+                    if (offset + 4 <= data.length) {
+                        const len = data[offset] | (data[offset + 1] << 8) |
+                                   (data[offset + 2] << 16) | (data[offset + 3] << 24);
+                        return { length: 4 + len };
+                    }
+                    return null;
+            }
+        }
+
+        /**
+         * Block 0x10 - Standard Speed Data (like TAP)
+         */
+        parseStandardData(offset) {
+            const data = this.data;
+            const pause = data[offset] | (data[offset + 1] << 8);
+            const dataLen = data[offset + 2] | (data[offset + 3] << 8);
+
+            if (offset + 4 + dataLen > data.length) return null;
+
+            const blockData = data.slice(offset + 4, offset + 4 + dataLen);
+            const flag = blockData.length > 0 ? blockData[0] : 0;
+
+            return {
+                block: {
+                    type: 'data',
+                    flag: flag,
+                    data: blockData,
+                    length: dataLen,
+                    pilotPulse: 2168,
+                    pilotCount: (flag === 0x00) ? 8063 : 3223,
+                    sync1Pulse: 667,
+                    sync2Pulse: 735,
+                    zeroPulse: 855,
+                    onePulse: 1710,
+                    usedBits: 8,
+                    pauseMs: pause
+                },
+                length: 4 + dataLen
+            };
+        }
+
+        /**
+         * Block 0x11 - Turbo Speed Data
+         */
+        parseTurboData(offset) {
+            const data = this.data;
+            const pilotPulse = data[offset] | (data[offset + 1] << 8);
+            const sync1Pulse = data[offset + 2] | (data[offset + 3] << 8);
+            const sync2Pulse = data[offset + 4] | (data[offset + 5] << 8);
+            const zeroPulse = data[offset + 6] | (data[offset + 7] << 8);
+            const onePulse = data[offset + 8] | (data[offset + 9] << 8);
+            const pilotCount = data[offset + 10] | (data[offset + 11] << 8);
+            const usedBitsRaw = data[offset + 12];
+            const usedBits = usedBitsRaw || 8;
+            const pause = data[offset + 13] | (data[offset + 14] << 8);
+            const dataLen = data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16);
+
+            console.log(`[TZX] Parsing turbo block: pilot=${pilotPulse}, sync1=${sync1Pulse}, sync2=${sync2Pulse}, zero=${zeroPulse}, one=${onePulse}, pilotCount=${pilotCount}, usedBitsRaw=${usedBitsRaw}, usedBits=${usedBits}, pause=${pause}ms, dataLen=${dataLen}`);
+
+            if (offset + 18 + dataLen > data.length) return null;
+
+            const blockData = data.slice(offset + 18, offset + 18 + dataLen);
+
+            return {
+                block: {
+                    type: 'data',
+                    flag: blockData[0],
+                    data: blockData,
+                    length: dataLen,
+                    pilotPulse,
+                    pilotCount,
+                    sync1Pulse,
+                    sync2Pulse,
+                    zeroPulse,
+                    onePulse,
+                    usedBits,
+                    pauseMs: pause
+                },
+                length: 18 + dataLen
+            };
+        }
+
+        /**
+         * Block 0x12 - Pure Tone
+         */
+        parsePureTone(offset) {
+            const data = this.data;
+            return {
+                block: {
+                    type: 'tone',
+                    pulseLength: data[offset] | (data[offset + 1] << 8),
+                    pulseCount: data[offset + 2] | (data[offset + 3] << 8)
+                },
+                length: 4
+            };
+        }
+
+        /**
+         * Block 0x13 - Pulse Sequence
+         */
+        parsePulseSequence(offset) {
+            const data = this.data;
+            const count = data[offset];
+            const pulses = [];
+
+            for (let i = 0; i < count; i++) {
+                pulses.push(data[offset + 1 + i * 2] | (data[offset + 2 + i * 2] << 8));
+            }
+
+            return {
+                block: {
+                    type: 'pulses',
+                    pulses
+                },
+                length: 1 + count * 2
+            };
+        }
+
+        /**
+         * Block 0x14 - Pure Data (no pilot/sync)
+         */
+        parsePureData(offset) {
+            const data = this.data;
+            const zeroPulse = data[offset] | (data[offset + 1] << 8);
+            const onePulse = data[offset + 2] | (data[offset + 3] << 8);
+            const usedBits = data[offset + 4] || 8;
+            const pause = data[offset + 5] | (data[offset + 6] << 8);
+            const dataLen = data[offset + 7] | (data[offset + 8] << 8) | (data[offset + 9] << 16);
+
+            if (offset + 10 + dataLen > data.length) return null;
+
+            const blockData = data.slice(offset + 10, offset + 10 + dataLen);
+
+            return {
+                block: {
+                    type: 'data',
+                    flag: blockData.length > 0 ? blockData[0] : 0,
+                    data: blockData,
+                    length: dataLen,
+                    zeroPulse,
+                    onePulse,
+                    usedBits,
+                    pauseMs: pause,
+                    noPilot: true
+                },
+                length: 10 + dataLen
+            };
+        }
+
+        /**
+         * Block 0x15 - Direct Recording (skip only, no playback)
+         */
+        parseDirectRecording(offset) {
+            const data = this.data;
+            const dataLen = data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16);
+            return { length: 8 + dataLen };
+        }
+
+        /**
+         * Block 0x18 - CSW Recording (skip only, no playback)
+         */
+        parseCSWRecording(offset) {
+            const data = this.data;
+            const blockLen = data[offset] | (data[offset + 1] << 8) |
+                             (data[offset + 2] << 16) | (data[offset + 3] << 24);
+            return { length: 4 + blockLen };
+        }
+
+        /**
+         * Block 0x19 - Generalized Data (skip only, no playback)
+         */
+        parseGeneralizedData(offset) {
+            const data = this.data;
+            const blockLen = data[offset] | (data[offset + 1] << 8) |
+                             (data[offset + 2] << 16) | (data[offset + 3] << 24);
+            return { length: 4 + blockLen };
+        }
+
+        /**
+         * Block 0x20 - Pause/Stop
+         */
+        parsePause(offset) {
+            const pause = this.data[offset] | (this.data[offset + 1] << 8);
+            return {
+                block: {
+                    type: pause === 0 ? 'stop' : 'pause',
+                    pauseMs: pause
+                },
+                length: 2
+            };
+        }
+
+        /**
+         * Block 0x21 - Group Start
+         */
+        parseGroupStart(offset) {
+            const len = this.data[offset];
+            return { length: 1 + len };
+        }
+
+        /**
+         * Block 0x23 - Jump to Block
+         */
+        parseJump(offset) {
+            return { length: 2 };
+        }
+
+        /**
+         * Block 0x24 - Loop Start
+         */
+        parseLoopStart(offset) {
+            const repetitions = this.data[offset] | (this.data[offset + 1] << 8);
+            return {
+                block: {
+                    type: 'loopStart',
+                    repetitions
+                },
+                length: 2
+            };
+        }
+
+        /**
+         * Block 0x26 - Call Sequence
+         */
+        parseCallSequence(offset) {
+            const count = this.data[offset] | (this.data[offset + 1] << 8);
+            return { length: 2 + count * 2 };
+        }
+
+        /**
+         * Block 0x28 - Select Block
+         */
+        parseSelect(offset) {
+            const len = this.data[offset] | (this.data[offset + 1] << 8);
+            return { length: 2 + len };
+        }
+
+        /**
+         * Block 0x30 - Text Description
+         */
+        parseTextDescription(offset) {
+            const len = this.data[offset];
+            return { length: 1 + len };
+        }
+
+        /**
+         * Block 0x31 - Message
+         */
+        parseMessage(offset) {
+            const len = this.data[offset + 1];
+            return { length: 2 + len };
+        }
+
+        /**
+         * Block 0x32 - Archive Info
+         */
+        parseArchiveInfo(offset) {
+            const len = this.data[offset] | (this.data[offset + 1] << 8);
+            return { length: 2 + len };
+        }
+
+        /**
+         * Block 0x33 - Hardware Type
+         */
+        parseHardwareType(offset) {
+            const count = this.data[offset];
+            return { length: 1 + count * 3 };
+        }
+
+        /**
+         * Block 0x35 - Custom Info
+         */
+        parseCustomInfo(offset) {
+            const len = this.data[offset + 16] | (this.data[offset + 17] << 8) |
+                       (this.data[offset + 18] << 16) | (this.data[offset + 19] << 24);
+            return { length: 20 + len };
+        }
+
+        // Navigation methods (same interface as TapeLoader)
+        getNextBlock() {
+            if (this.currentBlock >= this.blocks.length) return null;
+            return this.blocks[this.currentBlock++];
+        }
+
+        rewind() { this.currentBlock = 0; }
+        getBlockCount() { return this.blocks.length; }
+        hasMoreBlocks() { return this.currentBlock < this.blocks.length; }
+        getCurrentBlock() { return this.currentBlock; }
+        setCurrentBlock(n) { this.currentBlock = Math.max(0, Math.min(n, this.blocks.length)); }
     }
 
     class SnapshotLoader {
@@ -61,6 +1055,7 @@
             const ext = filename.toLowerCase().split('.').pop();
             if (ext === 'sna') return 'sna';
             if (ext === 'tap') return 'tap';
+            if (ext === 'tzx') return 'tzx';
             if (ext === 'z80') return 'z80';
             if (ext === 'szx') return 'szx';
             if (ext === 'rzx') return 'rzx';
@@ -74,6 +1069,9 @@
 
             // Check for RZX signature
             if (RZXLoader.isRZX(data)) return 'rzx';
+
+            // Check for TZX signature (must check before TAP)
+            if (TZXLoader.isTZX(data)) return 'tzx';
 
             // Check for SCL signature
             if (SCLLoader.isSCL(data)) return 'scl';
@@ -548,6 +1546,7 @@
             this.memory = memory;
             this.tapeLoader = tapeLoader;
             this.enabled = true;
+            this.onBlockLoaded = null;  // Callback(blockIndex) called after each successful flash load
         }
 
         checkTrap() {
@@ -555,28 +1554,23 @@
             const pc = this.cpu.pc;
             // LD-BYTES entry points in 48K ROM / 128K ROM1
             if (pc === 0x056c || pc === 0x0556) {
-                console.log(`[TapeTrap] PC=${pc.toString(16)}, machineType=${this.memory.machineType}, romBank=${this.memory.currentRomBank}, trdos=${this.memory.trdosActive}`);
                 // In 128K mode, only trap when ROM 1 (48K BASIC) is active
                 // ROM 0 is the 128K editor which has different code at these addresses
                 if (this.memory.machineType === '128k' || this.memory.machineType === 'pentagon') {
                     if (this.memory.currentRomBank !== 1) {
-                        console.log(`[TapeTrap] Skipping - ROM bank ${this.memory.currentRomBank} active (need ROM 1)`);
                         return false;  // Don't trap - wrong ROM bank
                     }
                 }
                 // Also don't trap if TR-DOS ROM is active
                 if (this.memory.trdosActive) {
-                    console.log(`[TapeTrap] Skipping - TR-DOS ROM active`);
                     return false;
                 }
                 // No tape data or no blocks - return error immediately (no EAR emulation)
                 if (!this.tapeLoader || this.tapeLoader.getBlockCount() === 0 || !this.tapeLoader.hasMoreBlocks()) {
-                    console.log(`[TapeTrap] No tape data or no more blocks`);
                     this.cpu.f &= ~0x01;  // Clear carry = error
                     this.returnFromTrap();
                     return true;
                 }
-                console.log(`[TapeTrap] Handling load trap`);
                 return this.handleLoadTrap();
             }
             return false;
@@ -621,10 +1615,16 @@
                 this.cpu.de = (length - dataLength) & 0xffff;
             }
             this.cpu.f |= 0x01;
+
+            // Notify that a block was successfully loaded (for turbo block handling)
+            if (this.onBlockLoaded) {
+                this.onBlockLoaded(this.tapeLoader.getCurrentBlock() - 1);
+            }
+
             this.returnFromTrap();
             return true;
         }
-        
+
         returnFromTrap() {
             const retAddr = this.memory.read(this.cpu.sp) | (this.memory.read(this.cpu.sp + 1) << 8);
             this.cpu.sp = (this.cpu.sp + 2) & 0xffff;
@@ -650,6 +1650,12 @@
             this.diskType = null;
             this.enabled = true;
             this.lastLoadedFile = null;
+            this._hasTrdosRom = false;  // Cached flag to avoid hasTrdosRom() loop per instruction
+        }
+
+        // Update cached TR-DOS ROM flag - call when TR-DOS ROM is loaded/changed
+        updateTrdosRomFlag() {
+            this._hasTrdosRom = this.memory.hasTrdosRom ? this.memory.hasTrdosRom() : false;
         }
 
         setDisk(data, files, type) {
@@ -676,7 +1682,8 @@
 
             // If TR-DOS ROM is loaded, don't trap - let real TR-DOS handle everything
             // The trap is only useful as a fallback when TR-DOS ROM isn't available
-            if (this.memory.hasTrdosRom && this.memory.hasTrdosRom()) {
+            // Use cached flag to avoid expensive hasTrdosRom() check per instruction
+            if (this._hasTrdosRom) {
                 return false;
             }
 
@@ -907,20 +1914,16 @@
 
         // Load disk image
         loadDisk(data, type) {
-            console.log(`[BetaDisk] loadDisk called, type=${type}, dataLen=${data.byteLength || data.length}`);
             if (type === 'scl') {
                 // Convert SCL to TRD format
                 this.diskData = this.sclToTrd(data);
-                console.log(`[BetaDisk] SCL converted to TRD, diskData.length=${this.diskData.length}`);
             } else {
                 this.diskData = new Uint8Array(data);
-                console.log(`[BetaDisk] TRD loaded, diskData.length=${this.diskData.length}`);
             }
             this.diskType = 'trd';
             this.status = 0;           // Disk ready
             this.track = 0;
             this.sector = 1;
-            console.log(`[BetaDisk] Disk loaded successfully, hasDisk=${this.hasDisk()}`);
         }
 
         // Create and insert a blank formatted TRD disk
@@ -955,7 +1958,6 @@
             this.track = 0;
             this.sector = 1;
 
-            console.log(`[BetaDisk] Blank disk created with label "${paddedLabel.trim()}"`);
             return true;
         }
 
@@ -1100,7 +2102,6 @@
                 case 0x1F: // Status register
                     this.intrq = false;
                     if (!this.diskData) {
-                        console.log('[BetaDisk] Status read: NOT_READY (no diskData)');
                         return this.NOT_READY;
                     }
                     let st = this.status;
@@ -1747,10 +2748,12 @@
 
             for (const file of files) {
                 const name = file.name.toLowerCase();
-                if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.z80') ||
-                    name.endsWith('.rzx') || name.endsWith('.trd') || name.endsWith('.scl')) {
+                if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.tzx') ||
+                    name.endsWith('.z80') || name.endsWith('.rzx') || name.endsWith('.trd') ||
+                    name.endsWith('.scl')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
+                    else if (name.endsWith('.tzx')) type = 'tzx';
                     else if (name.endsWith('.z80')) type = 'z80';
                     else if (name.endsWith('.rzx')) type = 'rzx';
                     else if (name.endsWith('.trd')) type = 'trd';
@@ -2663,10 +3666,12 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { TapeLoader, SnapshotLoader, TapeTrapHandler, TRDOSTrapHandler, BetaDisk, ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader };
+        module.exports = { TapeLoader, TapePlayer, SnapshotLoader, TapeTrapHandler, TRDOSTrapHandler, BetaDisk, ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader };
     }
     if (typeof global !== 'undefined') {
         global.TapeLoader = TapeLoader;
+        global.TapePlayer = TapePlayer;
+        global.TZXLoader = TZXLoader;
         global.SnapshotLoader = SnapshotLoader;
         global.TapeTrapHandler = TapeTrapHandler;
         global.TRDOSTrapHandler = TRDOSTrapHandler;

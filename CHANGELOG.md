@@ -2,6 +2,66 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.6
+- **SCA Export Fix**: Fixed SCA animation export version field (was 0, now 1)
+  - Exported .sca files now compatible with other viewers
+
+## v0.9.5
+- **Code Folding**: Collapse/expand subroutines and custom blocks in disassembly
+  - Click fold toggle (▾/▸) on subroutine headers to collapse/expand
+  - Collapsed view shows summary: "(N bytes, M instructions)"
+  - User-defined fold blocks via right-click → "Create fold block..."
+  - Fold markers for user blocks displayed in magenta
+  - "Collapse all folds" / "Expand all folds" in context menu
+  - Auto-expand when PC enters a collapsed region
+  - Fold state saved in projects and localStorage
+  - Works in both main and right panel disassembly views
+
+## v0.9.4
+- **TZX Tape Loading**: Full TZX file format support with variable speed blocks
+  - Standard speed data blocks (0x10) - same as TAP
+  - Turbo speed data blocks (0x11) - custom pilot/sync/data timing
+  - Pure tone blocks (0x12) - single frequency pulses
+  - Pulse sequence blocks (0x13) - arbitrary pulse arrays
+  - Pure data blocks (0x14) - data without pilot/sync
+  - Pause/Stop blocks (0x20) - silence between blocks
+  - Loop blocks (0x24/0x25) - multi-load support
+  - TZX files work in both flash load and real-time modes
+  - Unified block format for TAP/TZX playback
+- **TZXLoader Class**: New parser for TZX format in loaders.js
+  - Magic byte detection ("ZXTape!" + 0x1A)
+  - Converts TZX blocks to unified format for TapePlayer
+  - ZIP archive support for TZX files
+
+## v0.9.3
+- **Real-Time Tape Loading**: Optional cycle-accurate tape playback with border stripes and sound
+  - New "Flash Load" checkbox toggles between instant (ROM trap) and real-time modes
+  - Real-time mode shows authentic border loading stripes during tape playback
+  - Tape audio emulation with "Tape Sound" checkbox to enable/disable loading sounds
+  - Play/Stop/Rewind controls for manual tape control in real-time mode
+  - Tape position indicator shows current block and progress
+  - Standard tape timing: pilot (2168T), sync (667T/735T), zero (855T), one (1710T)
+  - Both settings saved/loaded with projects
+- **TapePlayer Class**: New tape playback engine with accurate timing
+  - State machine: pilot → sync1 → sync2 → data → pause → next block
+  - Edge transition recording for audio generation with T-state precision
+  - Proper header (8063 pulses) and data block (3223 pulses) pilot lengths
+
+## v0.9.2
+- **PSG Export**: Record AY chip output to PSG file format
+  - Start/Stop recording in Settings → AY Capture section
+  - "Changed only" option exports only modified registers (smaller files)
+  - "Get Player" downloads ready-to-assemble Z80 player source
+  - Real-time frame/write counter during recording
+- **Sound Fix for 128K**: Fixed AY sound not working after machine type switch
+  - `ayEnabled` flag now correctly updates in `setMachineType()`
+- **Audio Context Improvements**: Better browser autoplay policy handling
+  - Audio init triggers on both click and keydown events
+  - Persistent resume handlers for stricter browsers
+- **Default Settings Changes**:
+  - Default zoom changed to x1 (was x2)
+  - Late Timings disabled by default (was enabled)
+
 ## v0.9.1
 - **48K Border Timing Fix**: Memory-location-aware I/O timing for OUT (n),A
   - Contended memory ($4000-$7FFF): ioOffset=11 (fixes Aquaplane)
