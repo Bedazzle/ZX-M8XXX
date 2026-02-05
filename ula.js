@@ -180,7 +180,11 @@
             
             this.keyboardState = new Uint8Array(8);
             this.keyboardState.fill(0xff);
-            
+
+            // Extended mode key sequence support
+            // Extended mode requires: Caps+Symbol first, then Symbol+letter
+            this.extendedModeActive = false;
+
             this.palette = [
                 [0x00, 0x00, 0x00, 0xff], [0x00, 0x00, 0xd7, 0xff],
                 [0xd7, 0x00, 0x00, 0xff], [0xd7, 0x00, 0xd7, 0xff],
@@ -198,17 +202,50 @@
             // Create Uint32Array view for faster pixel writes (4 bytes at once)
             this.frameBuffer32 = new Uint32Array(this.frameBuffer.buffer);
             
+            // Keyboard mapping: e.code → [row, bit]
+            // Uses physical key positions - works with any keyboard layout
+            // Ctrl = Caps Shift, Alt = Symbol Shift
+            // PC Shift is free for regular shifted characters (!@#$%^&*etc)
             this.keyMap = {
-                16: [0, 0], 90: [0, 1], 88: [0, 2], 67: [0, 3], 86: [0, 4],
-                65: [1, 0], 83: [1, 1], 68: [1, 2], 70: [1, 3], 71: [1, 4],
-                81: [2, 0], 87: [2, 1], 69: [2, 2], 82: [2, 3], 84: [2, 4],
-                49: [3, 0], 50: [3, 1], 51: [3, 2], 52: [3, 3], 53: [3, 4],
-                48: [4, 0], 57: [4, 1], 56: [4, 2], 55: [4, 3], 54: [4, 4],
-                80: [5, 0], 79: [5, 1], 73: [5, 2], 85: [5, 3], 89: [5, 4],
-                13: [6, 0], 76: [6, 1], 75: [6, 2], 74: [6, 3], 72: [6, 4],
-                32: [7, 0], 17: [7, 1], 77: [7, 2], 78: [7, 3], 66: [7, 4],
-                8: [[0, 0], [4, 0]], 37: [[0, 0], [4, 4]], 38: [[0, 0], [4, 3]],
-                39: [[0, 0], [4, 2]], 40: [[0, 0], [4, 4]]
+                // Row 0: Caps Shift, Z, X, C, V
+                'ControlLeft': [0, 0], 'ControlRight': [0, 0],
+                'KeyZ': [0, 1], 'KeyX': [0, 2], 'KeyC': [0, 3], 'KeyV': [0, 4],
+                // Row 1: A, S, D, F, G
+                'KeyA': [1, 0], 'KeyS': [1, 1], 'KeyD': [1, 2], 'KeyF': [1, 3], 'KeyG': [1, 4],
+                // Row 2: Q, W, E, R, T
+                'KeyQ': [2, 0], 'KeyW': [2, 1], 'KeyE': [2, 2], 'KeyR': [2, 3], 'KeyT': [2, 4],
+                // Row 3: 1, 2, 3, 4, 5
+                'Digit1': [3, 0], 'Digit2': [3, 1], 'Digit3': [3, 2], 'Digit4': [3, 3], 'Digit5': [3, 4],
+                // Row 4: 0, 9, 8, 7, 6
+                'Digit0': [4, 0], 'Digit9': [4, 1], 'Digit8': [4, 2], 'Digit7': [4, 3], 'Digit6': [4, 4],
+                // Row 5: P, O, I, U, Y
+                'KeyP': [5, 0], 'KeyO': [5, 1], 'KeyI': [5, 2], 'KeyU': [5, 3], 'KeyY': [5, 4],
+                // Row 6: Enter, L, K, J, H
+                'Enter': [6, 0], 'KeyL': [6, 1], 'KeyK': [6, 2], 'KeyJ': [6, 3], 'KeyH': [6, 4],
+                // Row 7: Space, Symbol Shift, M, N, B
+                'Space': [7, 0], 'AltLeft': [7, 1], 'AltRight': [7, 1],
+                'KeyM': [7, 2], 'KeyN': [7, 3], 'KeyB': [7, 4],
+                // Compound keys (Caps Shift + key)
+                'Backspace': [[0, 0], [4, 0]],    // Caps + 0 = Delete
+                'ArrowLeft': [[0, 0], [3, 4]],    // Caps + 5
+                'ArrowDown': [[0, 0], [4, 4]],    // Caps + 6
+                'ArrowUp': [[0, 0], [4, 3]],      // Caps + 7
+                'ArrowRight': [[0, 0], [4, 2]],   // Caps + 8
+                // Punctuation keys (Symbol Shift + key)
+                'Period': [[7, 1], [7, 2]],       // Symbol + M = .
+                'Comma': [[7, 1], [7, 3]],        // Symbol + N = ,
+                'Semicolon': [[7, 1], [5, 1]],    // Symbol + O = ;
+                'Quote': [[7, 1], [5, 0]],        // Symbol + P = "
+                'Slash': [[7, 1], [0, 4]],        // Symbol + V = /
+                'Minus': [[7, 1], [6, 3]],        // Symbol + J = -
+                'Equal': [[7, 1], [6, 1]],        // Symbol + L = =
+                'IntlHash': [[7, 1], [3, 2]],     // Symbol + 3 = # (UK keyboards)
+                // Extended mode keys (Caps Shift + Symbol Shift + key)
+                'Backslash': [[0, 0], [7, 1], [1, 2]],    // Caps + Symbol + D = \
+                'IntlBackslash': [[0, 0], [7, 1], [1, 2]], // Caps + Symbol + D = \ (ISO keyboards)
+                'BracketLeft': [[0, 0], [7, 1], [5, 4]],  // Caps + Symbol + Y = [
+                'BracketRight': [[0, 0], [7, 1], [5, 3]], // Caps + Symbol + U = ]
+                'Backquote': [[0, 0], [7, 1], [1, 0]]     // Caps + Symbol + A = ~
             };
         }
 
@@ -1433,13 +1470,57 @@
                 'l': [6, 1], 'k': [6, 2], 'j': [6, 3], 'h': [6, 4],
                 'm': [7, 2], 'n': [7, 3], 'b': [7, 4],
                 'z': [0, 1], 'x': [0, 2], 'c': [0, 3], 'v': [0, 4],
-                ' ': [7, 0], 'Enter': [6, 0], 'Shift': [0, 0], 'Control': [7, 1]
+                ' ': [7, 0], 'Enter': [6, 0], 'Control': [0, 0], 'Alt': [7, 1]
             };
-            return charMap[key] || charMap[key.toLowerCase()];
+            // Punctuation map (Symbol Shift + key, or Extended mode for special chars)
+            const punctMap = {
+                '.': [[7, 1], [7, 2]],       // Symbol + M
+                ',': [[7, 1], [7, 3]],       // Symbol + N
+                ';': [[7, 1], [5, 1]],       // Symbol + O
+                '"': [[7, 1], [5, 0]],       // Symbol + P
+                '/': [[7, 1], [0, 4]],       // Symbol + V
+                '-': [[7, 1], [6, 3]],       // Symbol + J
+                '+': [[7, 1], [6, 2]],       // Symbol + K
+                '=': [[7, 1], [6, 1]],       // Symbol + L
+                '*': [[7, 1], [7, 4]],       // Symbol + B
+                '?': [[7, 1], [0, 3]],       // Symbol + C
+                ':': [[7, 1], [0, 1]],       // Symbol + Z
+                '<': [[7, 1], [2, 3]],       // Symbol + R
+                '>': [[7, 1], [2, 4]],       // Symbol + T
+                '!': [[7, 1], [3, 0]],       // Symbol + 1
+                '@': [[7, 1], [3, 1]],       // Symbol + 2
+                '#': [[7, 1], [3, 2]],       // Symbol + 3
+                '$': [[7, 1], [3, 3]],       // Symbol + 4
+                '%': [[7, 1], [3, 4]],       // Symbol + 5
+                '&': [[7, 1], [4, 4]],       // Symbol + 6
+                "'": [[7, 1], [4, 3]],       // Symbol + 7
+                '(': [[7, 1], [4, 2]],       // Symbol + 8
+                ')': [[7, 1], [4, 1]],       // Symbol + 9
+                '_': [[7, 1], [4, 0]],       // Symbol + 0
+                '^': [[7, 1], [6, 4]],       // Symbol + H
+                // Extended mode characters (Caps Shift + Symbol Shift + key)
+                '`': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
+                '~': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
+                '|': [[0, 0], [7, 1], [1, 1]],  // Caps + Symbol + S = |
+                '\\': [[0, 0], [7, 1], [1, 2]], // Caps + Symbol + D = \
+                '{': [[0, 0], [7, 1], [1, 3]],  // Caps + Symbol + F = {
+                '}': [[0, 0], [7, 1], [1, 4]],  // Caps + Symbol + G = }
+                '[': [[0, 0], [7, 1], [5, 4]],  // Caps + Symbol + Y = [
+                ']': [[0, 0], [7, 1], [5, 3]]   // Caps + Symbol + U = ]
+            };
+            return charMap[key] || charMap[key.toLowerCase()] || punctMap[key];
         }
         
         keyDown(key) {
-            const mapping = typeof key === 'number' ? this.keyMap[key] : this.getKeyMapping(key);
+            // Check if this is an extended mode character (needs Caps+Symbol, then Symbol+letter)
+            if (typeof key === 'string' && key.length === 1 && this.isExtendedModeChar(key)) {
+                this.startExtendedMode(key);
+                return;
+            }
+
+            // Check keyMap first (handles e.code strings like 'Space', 'ArrowUp', etc.)
+            // Then fall back to getKeyMapping for character-based lookups
+            const mapping = this.keyMap[key] || this.getKeyMapping(key);
             if (!mapping) return;
             if (Array.isArray(mapping[0])) {
                 for (const [row, bit] of mapping) {
@@ -1451,7 +1532,14 @@
         }
         
         keyUp(key) {
-            const mapping = typeof key === 'number' ? this.keyMap[key] : this.getKeyMapping(key);
+            // Cancel any active extended mode sequence for this key
+            if (this.extendedModeActive && this.extendedModeKey === key) {
+                this.cancelExtendedMode();
+                return;
+            }
+            // Check keyMap first (handles e.code strings like 'Space', 'ArrowUp', etc.)
+            // Then fall back to getKeyMapping for character-based lookups
+            const mapping = this.keyMap[key] || this.getKeyMapping(key);
             if (!mapping) return;
             if (Array.isArray(mapping[0])) {
                 for (const [row, bit] of mapping) {
@@ -1460,6 +1548,75 @@
             } else {
                 this.keyboardState[mapping[0]] |= (1 << mapping[1]);
             }
+        }
+
+        // Extended mode characters that need Caps+Symbol, then Symbol+letter sequence
+        isExtendedModeChar(key) {
+            return '`~|\\{}[]'.includes(key);
+        }
+
+        // Get the letter key for an extended mode character
+        getExtendedModeLetter(key) {
+            const extendedMap = {
+                '`': [1, 0],  // A
+                '~': [1, 0],  // A
+                '|': [1, 1],  // S
+                '\\': [1, 2], // D
+                '{': [1, 3],  // F
+                '}': [1, 4],  // G
+                '[': [5, 4],  // Y
+                ']': [5, 3]   // U
+            };
+            return extendedMap[key];
+        }
+
+        // Start extended mode sequence: Caps+Symbol first, then Symbol+letter
+        startExtendedMode(key) {
+            const letter = this.getExtendedModeLetter(key);
+            if (!letter) return false;
+
+            this.extendedModeActive = true;
+            this.extendedModeKey = key;
+            this.extendedModeLetter = letter;
+            this.extendedModeStep = 0;
+            this.extendedModeFrames = 0;
+
+            // Step 0: Press Caps Shift + Symbol Shift (enter E-mode)
+            this.keyboardState[0] &= ~(1 << 0);  // Caps Shift
+            this.keyboardState[7] &= ~(1 << 1);  // Symbol Shift
+            return true;
+        }
+
+        // Process extended mode sequence (call each frame)
+        processExtendedMode() {
+            if (!this.extendedModeActive) return;
+
+            this.extendedModeFrames++;
+
+            // After 2 frames, move to step 1: release Caps, press letter
+            if (this.extendedModeStep === 0 && this.extendedModeFrames >= 2) {
+                this.extendedModeStep = 1;
+                // Release Caps Shift
+                this.keyboardState[0] |= (1 << 0);
+                // Press the letter (keep Symbol Shift pressed)
+                this.keyboardState[this.extendedModeLetter[0]] &= ~(1 << this.extendedModeLetter[1]);
+            }
+        }
+
+        // Cancel extended mode and release all keys
+        cancelExtendedMode() {
+            if (!this.extendedModeActive) return;
+
+            // Release all extended mode keys
+            this.keyboardState[0] |= (1 << 0);   // Caps Shift
+            this.keyboardState[7] |= (1 << 1);   // Symbol Shift
+            if (this.extendedModeLetter) {
+                this.keyboardState[this.extendedModeLetter[0]] |= (1 << this.extendedModeLetter[1]);
+            }
+
+            this.extendedModeActive = false;
+            this.extendedModeKey = null;
+            this.extendedModeLetter = null;
         }
         
         renderFrame(borderChanges = null) {

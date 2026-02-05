@@ -2,6 +2,36 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.8
+- **Boot TRD Injection**: Automatically add boot loader to TRD disk images
+  - Settings → Media → Boot TRD: select a TRD file containing a boot loader
+  - Three modes: No change, Add boot (if missing), Replace boot
+  - Boot file is injected when loading TRD images based on selected mode
+  - Smart replace: reuses old boot's disk location when new boot fits
+  - Error popups when disk is full or boot cannot be added
+- **TR-DOS Boot Loaders Fix**: Fixed boot loaders showing empty disk
+  - TR-DOS ROM flag was not being updated after ROM load
+  - Boot loaders now properly read disk catalog via TR-DOS ROM
+- **Extended Mode Characters**: Fixed typing of `[ ] { } ~ | \` characters
+  - These characters require Extended Mode on Spectrum (Caps+Symbol, then Symbol+letter)
+  - Emulator now automatically simulates the two-step key sequence
+  - Works in both 48K and 128K BASIC modes
+
+## v0.9.7
+- **Keyboard Remapping**: Changed modifier key assignments
+  - Ctrl → Caps Shift (was Shift)
+  - Alt → Symbol Shift (was Ctrl)
+  - PC Shift now free for regular shifted characters (!@#$%^&*etc)
+- **Non-English Keyboard Fix**: Keyboard now works with any layout (Russian, German, etc.)
+  - Uses `e.code` (physical key position) instead of deprecated `e.keyCode`
+  - Keys mapped by QWERTY physical layout, independent of active language
+- **SCA Type 1 Export**: Added payload type 1 support for multicolor animations
+  - Type 0: Full 6912-byte SCR frames (unchanged)
+  - Type 1: 8-byte fill pattern + 768-byte attributes per frame (smaller files)
+  - Fill pattern options: 53c (AA 55), 127c (DD 77), Vertical 4x8, Horizontal 8x4, Custom
+  - Automatic pattern detection from captured screen bitmap
+  - User prompt when pattern cannot be auto-detected
+
 ## v0.9.6
 - **SCA Export Fix**: Fixed SCA animation export version field (was 0, now 1)
   - Exported .sca files now compatible with other viewers

@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.9.6** | [Changelog](CHANGELOG.md)
+**Version 0.9.8** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -15,12 +15,13 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - PSG file export (record AY music with player source)
 - SNA/Z80/SZX snapshot loading/saving
 - TAP/TZX tape loading (instant or real-time with border stripes and sound)
-- TRD/SCL disk image support (TR-DOS format)
+- TRD/SCL disk image support (TR-DOS format) with boot injection
 - ZIP archive support
 - RZX playback
 - Kempston Joystick (numpad) with extended buttons support
 - Kempston Mouse with wheel support
 - Hardware gamepad support (USB/Bluetooth via Gamepad API)
+- Keyboard: Ctrl=Caps Shift, Alt=Symbol Shift (works with any layout)
 
 ### Debugger
 - Unified breakpoint system (execution, memory read/write, port I/O)
@@ -81,6 +82,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 
 ## Known Limitations
 
+- **Multicolor performance**: FPS may drop for programs with intensive multicolor usage (Echologia, Mescaline Synesthesia)
 - **Real-time tape loading** (work in progress): Some copy protection schemes work, others don't yet. Standard loaders and many turbo loaders work; complex protection may fail. Flash load (instant) mode is more reliable.
 - **RZX playback**: Partial support - some recordings may desync due to timing differences
 - **Z80 save uncompressed**: Z80 snapshots are saved without RLE compression for maximum compatibility (~131KB for 128K, ~49KB for 48K)

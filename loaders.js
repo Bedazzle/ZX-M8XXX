@@ -1693,8 +1693,6 @@
                 return false;
             }
 
-            const pc = this.cpu.pc;
-
             // TR-DOS entry point #3D13 (RANDOMIZE USR 15619)
             // This is called by BASIC when executing TR-DOS commands
             if (pc === 0x3D13) {

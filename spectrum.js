@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.9.6
+ * @version 0.9.8
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.6';
+    const VERSION = '0.9.8';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -140,6 +140,9 @@
             // Stores original TAP/TRD/SCL data so programs can load additional files
             this.loadedMedia = null; // { type: 'tap'|'trd'|'scl', data: Uint8Array, name: string }
 
+            // Callback for processing TRD data before loading (used for boot injection)
+            this.onBeforeTrdLoad = null; // function(data, filename) => processedData
+
             // Auto memory mapping - tracks executed/read/written addresses
             this.autoMap = {
                 enabled: false,
@@ -223,6 +226,7 @@
             this.cpu.onFetch = null;
 
             this.boundKeyDown = this.handleKeyDown.bind(this);
+            this.pressedKeys = new Map(); // Track e.code → e.key for proper release
             this.boundKeyUp = this.handleKeyUp.bind(this);
             this.keyboardHandlersRegistered = false;
         }
@@ -1007,7 +1011,6 @@
                 //      Non-contended: offset 8 (Venom) - no extra delay
                 //      OUT (C),r: offset 9 (ULA48)
                 // 128K: base 9, +4 for OUT (C),r to match ULA128 test timing
-                // Pentagon: base 11
                 let ioOffset;
                 if (this.machineType === 'pentagon') {
                     ioOffset = 11;
@@ -1132,6 +1135,7 @@
             this.pollGamepad();
 
             this.ula.startFrame();
+            this.ula.processExtendedMode(); // Process extended mode key sequences
             this.lastContentionLine = -1;  // Reset per-line contention tracking
             this.beeperChanges = [];       // Reset beeper changes for new frame
 
@@ -1495,6 +1499,7 @@
             this.accumulatedContention = 0;
 
             this.ula.startFrame();
+            this.ula.processExtendedMode(); // Process extended mode key sequences
             this.lastContentionLine = -1;
             this.beeperChanges = [];       // Reset beeper changes for new frame
 
@@ -3958,16 +3963,27 @@
             }
             
             // Prevent browser shortcuts when emulator should capture them
-            // Ctrl+key combinations that conflict with browser shortcuts
-            if (e.ctrlKey && !e.altKey && !e.metaKey) {
+            // Alt+key combinations for ZX Spectrum Symbol Shift
+            if (e.altKey && !e.ctrlKey && !e.metaKey) {
                 const key = e.key.toLowerCase();
-                // Common browser shortcuts we want to capture for ZX Spectrum Symbol Shift combinations
-                // Include letters and digits (0-9 for symbols like _ = Ctrl+0)
+                // Prevent Alt+key browser shortcuts for Symbol Shift combinations
                 if (['p', 's', 'o', 'n', 'w', 'r', 'f', 'h', 'j', 'k', 'l', 'u', 'i', 'b', 'd', 'g', 'a', 'z', 'x', 'c', 'v', 'e', 't', 'y', 'm', 'q', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(key)) {
                     e.preventDefault();
                 }
             }
             
+            // Check e.key first for punctuation/shifted characters
+            // This must be before joystick checks so typing { } | etc works
+            if (e.key.length === 1 && !e.key.match(/^[a-zA-Z0-9]$/)) {
+                const mapping = this.ula.getKeyMapping(e.key);
+                if (mapping) {
+                    e.preventDefault();
+                    this.pressedKeys.set(e.code, e.key); // Track for proper release
+                    this.ula.keyDown(e.key);
+                    return;
+                }
+            }
+
             // Kempston joystick on numpad (use e.code for cross-platform consistency)
             const kempstonBit = this.getKempstonBit(e.code);
             if (kempstonBit !== null) {
@@ -3976,7 +3992,7 @@
                 return;
             }
 
-            // Extended Kempston buttons: [ = C, ] = A, \ = Start
+            // Extended Kempston buttons: [ = C, ] = A, \ = Start (only when not typing punctuation)
             const extBit = this.getExtendedKempstonBit(e.code);
             if (extBit !== null && this.kempstonExtendedEnabled) {
                 e.preventDefault();
@@ -3984,9 +4000,11 @@
                 return;
             }
 
-            if (this.ula.keyMap[e.keyCode]) {
+            // Use e.code for layout-independent key detection (letters, digits, special keys)
+            if (this.ula.keyMap[e.code]) {
                 e.preventDefault();
-                this.ula.keyDown(e.keyCode);
+                this.pressedKeys.set(e.code, e.code); // Track for proper release
+                this.ula.keyDown(e.code);
             }
         }
 
@@ -4008,6 +4026,15 @@
                 return;
             }
 
+            // Use tracked key for proper release (handles shifted chars where e.key changes on release)
+            const trackedKey = this.pressedKeys.get(e.code);
+            if (trackedKey) {
+                e.preventDefault();
+                this.ula.keyUp(trackedKey);
+                this.pressedKeys.delete(e.code);
+                return;
+            }
+
             // Kempston joystick on numpad (use e.code for cross-platform consistency)
             const kempstonBit = this.getKempstonBit(e.code);
             if (kempstonBit !== null) {
@@ -4022,11 +4049,6 @@
                 e.preventDefault();
                 this.kempstonExtendedState &= ~(1 << extBit);
                 return;
-            }
-
-            if (this.ula.keyMap[e.keyCode]) {
-                e.preventDefault();
-                this.ula.keyUp(e.keyCode);
             }
         }
 
@@ -4274,8 +4296,14 @@
 
         // Load TRD/SCL disk image - inserts disk into Beta Disk interface
         loadDiskImage(data, type, fileName) {
+            // Apply boot injection callback if configured (only for TRD files)
+            let processedData = data;
+            if (type === 'trd' && this.onBeforeTrdLoad) {
+                processedData = this.onBeforeTrdLoad(data, fileName);
+            }
+
             const Loader = type === 'trd' ? TRDLoader : SCLLoader;
-            const files = Loader.listFiles(data);
+            const files = Loader.listFiles(processedData);
 
             if (files.length === 0) {
                 throw new Error(`No files found in ${type.toUpperCase()} disk image`);
@@ -4284,13 +4312,13 @@
             // Store disk image for project save and TR-DOS trap access
             this.loadedMedia = {
                 type: type,
-                data: new Uint8Array(data),
+                data: new Uint8Array(processedData),
                 name: fileName
             };
             this.loadedDiskFiles = files;  // Keep file list for TR-DOS operations
 
             // Load disk into Beta Disk interface (for WD1793 emulation)
-            this.betaDisk.loadDisk(data, type);
+            this.betaDisk.loadDisk(processedData, type);
 
             // Set up TR-DOS trap handler with disk data (fallback)
             this.trdosTrap.setDisk(this.loadedMedia.data, files, type);
@@ -4308,7 +4336,7 @@
                 diskType: type,
                 diskName: fileName,
                 fileCount: files.length,
-                _diskData: data,
+                _diskData: processedData,
                 _diskFiles: files,
                 needsMachineSwitch: needsMachineSwitch,
                 targetMachine: 'pentagon'

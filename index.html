@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.9.6</title>
+    <title>ZX-M8XXX v0.9.8</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -4859,7 +4859,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.9.6</span>
+            <span class="app-name">ZX-M8XXX v0.9.8</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -5863,6 +5863,19 @@ start:
                     <div class="settings-row">
                         <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk">💾 Blank Disk</button>
                     </div>
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <label for="bootTrdMode" style="min-width: 80px;">Boot TRD:</label>
+                        <select id="bootTrdMode" style="width: 120px;" title="How to handle boot file when loading TRD images">
+                            <option value="none">No change</option>
+                            <option value="add">Add boot</option>
+                            <option value="replace">Replace boot</option>
+                        </select>
+                        <button id="btnSelectBootTrd" class="control-btn" style="margin-left: 10px;" title="Select TRD file containing boot file">Select...</button>
+                        <input type="file" id="bootTrdFile" accept=".trd" style="display: none;">
+                    </div>
+                    <div class="settings-row">
+                        <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 80px;">No boot TRD selected</span>
+                    </div>
                 </div>
 
                 <div class="settings-section">
@@ -5908,6 +5921,26 @@ start:
                         <label for="maxFrames" style="min-width: auto; margin-left: 10px; margin-right: -6px;">Max:</label>
                         <input type="number" id="maxFrames" value="0" min="0" style="width: 50px;">
                         <span style="color: var(--text-secondary); font-size: 11px;">(0=∞)</span>
+                    </div>
+                    <div class="settings-row" id="scaOptionsRow" style="display: none;">
+                        <label for="scaPayloadType">Payload:</label>
+                        <select id="scaPayloadType">
+                            <option value="0">Type 0 (full frames)</option>
+                            <option value="1">Type 1 (attrs only)</option>
+                        </select>
+                        <label for="scaFillPattern" style="min-width: auto; margin-left: 10px;">Fill:</label>
+                        <select id="scaFillPattern">
+                            <option value="auto">Automatic</option>
+                            <option value="53c">53c (AA 55)</option>
+                            <option value="127c">127c (DD 77)</option>
+                            <option value="v4x8">Vertical 4x8 (F0)</option>
+                            <option value="h8x4">Horizontal 8x4 (FF/00)</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="settings-row" id="scaCustomPatternRow" style="display: none;">
+                        <label for="scaCustomPattern">Pattern (8 hex bytes):</label>
+                        <input type="text" id="scaCustomPattern" value="AA 55 AA 55 AA 55 AA 55" style="width: 200px; font-family: monospace;">
                     </div>
                     <div class="settings-row" id="sizeRow">
                         <label for="frameExportSize">Size:</label>
@@ -6303,8 +6336,8 @@ start:
             </div>
             <table>
                 <tr><td>A-Z, 0-9</td><td>Standard keys</td></tr>
-                <tr><td>Shift</td><td>Caps Shift</td></tr>
-                <tr><td>Ctrl</td><td>Symbol Shift</td></tr>
+                <tr><td>Ctrl</td><td>Caps Shift</td></tr>
+                <tr><td>Alt</td><td>Symbol Shift</td></tr>
                 <tr><td>Enter</td><td>Enter</td></tr>
                 <tr><td>Space</td><td>Space / Break</td></tr>
                 <tr><td>Backspace</td><td>Delete (Shift+0)</td></tr>
@@ -6535,7 +6568,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.6</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.8</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -6590,28 +6623,30 @@ start:
                     <table>
                         <tr><th>PC Key</th><th>Spectrum Key</th></tr>
                         <tr><td>A-Z, 0-9</td><td>Standard keys</td></tr>
-                        <tr><td>Shift</td><td>Caps Shift</td></tr>
-                        <tr><td>Ctrl</td><td>Symbol Shift</td></tr>
+                        <tr><td>Ctrl</td><td>Caps Shift</td></tr>
+                        <tr><td>Alt</td><td>Symbol Shift</td></tr>
                         <tr><td>Enter</td><td>Enter</td></tr>
                         <tr><td>Space</td><td>Space / Break</td></tr>
-                        <tr><td>Backspace</td><td>Delete (Shift+0)</td></tr>
-                        <tr><td>Arrow Keys</td><td>Cursor (Shift+5/6/7/8)</td></tr>
+                        <tr><td>Backspace</td><td>Delete (Ctrl+0)</td></tr>
+                        <tr><td>Arrow Keys</td><td>Cursor (Ctrl+5/6/7/8)</td></tr>
                     </table>
-                    <h5>Symbol Shift Combinations (Ctrl + Key)</h5>
+                    <p style="font-size: 11px; color: var(--text-dim);">PC Shift is free for regular shifted characters (!@#$%^&amp;*etc)<br>
+                    Keys use physical QWERTY positions - works with any keyboard layout.</p>
+                    <h5>Symbol Shift Combinations (Alt + Key)</h5>
                     <table>
                         <tr><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th></tr>
-                        <tr><td>Ctrl+1</td><td>!</td><td>Ctrl+Q</td><td>&lt;=</td><td>Ctrl+A</td><td>~</td></tr>
-                        <tr><td>Ctrl+2</td><td>@</td><td>Ctrl+W</td><td>&lt;&gt;</td><td>Ctrl+S</td><td>|</td></tr>
-                        <tr><td>Ctrl+3</td><td>#</td><td>Ctrl+E</td><td>&gt;=</td><td>Ctrl+D</td><td>\</td></tr>
-                        <tr><td>Ctrl+4</td><td>$</td><td>Ctrl+R</td><td>&lt;</td><td>Ctrl+F</td><td>{</td></tr>
-                        <tr><td>Ctrl+5</td><td>%</td><td>Ctrl+T</td><td>&gt;</td><td>Ctrl+G</td><td>}</td></tr>
-                        <tr><td>Ctrl+6</td><td>&amp;</td><td>Ctrl+Y</td><td>[</td><td>Ctrl+H</td><td>^</td></tr>
-                        <tr><td>Ctrl+7</td><td>'</td><td>Ctrl+U</td><td>]</td><td>Ctrl+J</td><td>-</td></tr>
-                        <tr><td>Ctrl+8</td><td>(</td><td>Ctrl+I</td><td>©</td><td>Ctrl+K</td><td>+</td></tr>
-                        <tr><td>Ctrl+9</td><td>)</td><td>Ctrl+O</td><td>;</td><td>Ctrl+L</td><td>=</td></tr>
-                        <tr><td>Ctrl+0</td><td>_</td><td>Ctrl+P</td><td>"</td><td>Ctrl+Z</td><td>:</td></tr>
-                        <tr><td>Ctrl+M</td><td>.</td><td>Ctrl+N</td><td>,</td><td>Ctrl+B</td><td>*</td></tr>
-                        <tr><td>Ctrl+C</td><td>?</td><td>Ctrl+V</td><td>/</td><td>Ctrl+X</td><td>£</td></tr>
+                        <tr><td>Alt+1</td><td>!</td><td>Alt+Q</td><td>&lt;=</td><td>Alt+A</td><td>~</td></tr>
+                        <tr><td>Alt+2</td><td>@</td><td>Alt+W</td><td>&lt;&gt;</td><td>Alt+S</td><td>|</td></tr>
+                        <tr><td>Alt+3</td><td>#</td><td>Alt+E</td><td>&gt;=</td><td>Alt+D</td><td>\</td></tr>
+                        <tr><td>Alt+4</td><td>$</td><td>Alt+R</td><td>&lt;</td><td>Alt+F</td><td>{</td></tr>
+                        <tr><td>Alt+5</td><td>%</td><td>Alt+T</td><td>&gt;</td><td>Alt+G</td><td>}</td></tr>
+                        <tr><td>Alt+6</td><td>&amp;</td><td>Alt+Y</td><td>[</td><td>Alt+H</td><td>^</td></tr>
+                        <tr><td>Alt+7</td><td>'</td><td>Alt+U</td><td>]</td><td>Alt+J</td><td>-</td></tr>
+                        <tr><td>Alt+8</td><td>(</td><td>Alt+I</td><td>©</td><td>Alt+K</td><td>+</td></tr>
+                        <tr><td>Alt+9</td><td>)</td><td>Alt+O</td><td>;</td><td>Alt+L</td><td>=</td></tr>
+                        <tr><td>Alt+0</td><td>_</td><td>Alt+P</td><td>"</td><td>Alt+Z</td><td>:</td></tr>
+                        <tr><td>Alt+M</td><td>.</td><td>Alt+N</td><td>,</td><td>Alt+B</td><td>*</td></tr>
+                        <tr><td>Alt+C</td><td>?</td><td>Alt+V</td><td>/</td><td>Alt+X</td><td>£</td></tr>
                     </table>
                     <h5>Kempston Joystick (Numpad)</h5>
                     <table>
@@ -6926,6 +6961,18 @@ start:
                         <tr><td><strong>TRD</strong></td><td>TR-DOS disk image (select file from disk)</td></tr>
                         <tr><td><strong>SCL</strong></td><td>TR-DOS file archive (more compact format)</td></tr>
                     </table>
+                    <h5>Boot TRD Injection</h5>
+                    <p>Automatically add a boot loader to TRD disk images via Settings → Media → Boot TRD:</p>
+                    <ol>
+                        <li>Click <strong>Select...</strong> to choose a TRD file containing a boot loader</li>
+                        <li>Select the injection mode from the dropdown</li>
+                    </ol>
+                    <table>
+                        <tr><td><strong>No change</strong></td><td>Load TRD images as-is (default)</td></tr>
+                        <tr><td><strong>Add boot</strong></td><td>Add boot only if TRD has no boot file</td></tr>
+                        <tr><td><strong>Replace boot</strong></td><td>Replace existing boot, or add if none</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">When replacing, the new boot file reuses the old boot's disk location if it fits. Settings are saved in localStorage.</p>
                     <h5>Archives</h5>
                     <table>
                         <tr><td><strong>ZIP</strong></td><td>Select file from archive dialog</td></tr>
@@ -6951,6 +6998,30 @@ start:
                         <li><strong>Get Player</strong> - Download Z80 assembly player source</li>
                     </ul>
                     <p>The player source is sjasmplus-compatible. Use <code>INCBIN "music.psg"</code> to include your recorded music, then assemble to create a playable .sna file.</p>
+                    <h5>Screen Export</h5>
+                    <p>Capture frames in Settings → Export section:</p>
+                    <table>
+                        <tr><td><strong>ZIP</strong></td><td>PNG sequence in ZIP archive</td></tr>
+                        <tr><td><strong>GIF</strong></td><td>Animated GIF</td></tr>
+                        <tr><td><strong>SCR</strong></td><td>ZX Spectrum screen (6912 bytes)</td></tr>
+                        <tr><td><strong>BSC</strong></td><td>Screen + border (11136 bytes)</td></tr>
+                        <tr><td><strong>SCA</strong></td><td>Animation format (see below)</td></tr>
+                    </table>
+                    <p><strong>SCA Animation Export:</strong></p>
+                    <ul>
+                        <li><strong>Type 0</strong> - Full 6912-byte SCR frames (larger files)</li>
+                        <li><strong>Type 1</strong> - 8-byte fill pattern + 768-byte attributes per frame (multicolor)</li>
+                    </ul>
+                    <p><strong>Type 1 Fill Patterns:</strong></p>
+                    <table>
+                        <tr><td><strong>Automatic</strong></td><td>Detect pattern from screen bitmap</td></tr>
+                        <tr><td><strong>53c (AA 55)</strong></td><td>Checkerboard dithering</td></tr>
+                        <tr><td><strong>127c (DD 77)</strong></td><td>Ink-biased dithering</td></tr>
+                        <tr><td><strong>Vertical 4x8</strong></td><td>4-pixel vertical stripes (F0)</td></tr>
+                        <tr><td><strong>Horizontal 8x4</strong></td><td>4-row horizontal stripes (FF/00)</td></tr>
+                        <tr><td><strong>Custom</strong></td><td>Enter 8 hex bytes manually</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">Type 1 is for multicolor animations where bitmap stays constant and only attributes change. Automatic mode detects if screen uses a consistent 8-byte pattern; prompts for choice if not detected.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-assembler">
                     <h4>Z80 Assembler</h4>
@@ -7105,13 +7176,13 @@ start:
                         <tr><th>Format</th><th>Example</th><th>Description</th></tr>
                         <tr><td>Single key</td><td><code>ENTER</code></td><td>Press Enter key</td></tr>
                         <tr><td>Letter/digit</td><td><code>a</code>, <code>1</code></td><td>Press letter or digit</td></tr>
-                        <tr><td>Simultaneous</td><td><code>SHIFT+a</code></td><td>Press both keys together</td></tr>
-                        <tr><td>Symbol Shift</td><td><code>CTRL+p</code></td><td>Symbol Shift + P (produces ")</td></tr>
+                        <tr><td>Caps Shift</td><td><code>CTRL+a</code></td><td>Caps Shift + A</td></tr>
+                        <tr><td>Symbol Shift</td><td><code>ALT+p</code></td><td>Symbol Shift + P (produces ")</td></tr>
                         <tr><td>Sequence</td><td><code>ENTER,500ms,SPACE</code></td><td>ENTER, wait 500ms, then SPACE</td></tr>
                     </table>
 
                     <h5>Special Keys</h5>
-                    <p><code>ENTER</code>, <code>SPACE</code>, <code>SHIFT</code>, <code>CTRL</code> (Symbol Shift),
+                    <p><code>ENTER</code>, <code>SPACE</code>, <code>CTRL</code> (Caps Shift), <code>ALT</code> (Symbol Shift),
                        <code>UP</code>, <code>DOWN</code>, <code>LEFT</code>, <code>RIGHT</code></p>
 
                     <h5>Preview Mode</h5>
@@ -7362,7 +7433,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.9.6';
+        const APP_VERSION = '0.9.8';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -11450,6 +11521,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         this.spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                         if (romTrdosData) {
                             this.spectrum.memory.loadTrdosRom(romTrdosData);
+                            this.spectrum.trdosTrap.updateTrdosRomFlag();
                         }
                         this.spectrum.romLoaded = true;
                     }
@@ -11596,26 +11668,26 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     }
 
                     // Symbol + P = "
-                    ula.keyDown('Control');
+                    ula.keyDown('Alt');
                     ula.keyDown('p');
                     for (let i = 0; i < 15; i++) {
                         this.spectrum.runFrame();
                     }
                     ula.keyUp('p');
-                    ula.keyUp('Control');
+                    ula.keyUp('Alt');
                     ula.keyboardState.fill(0xFF);
                     for (let i = 0; i < 10; i++) {
                         this.spectrum.runFrame();
                     }
 
                     // Symbol + P = " again
-                    ula.keyDown('Control');
+                    ula.keyDown('Alt');
                     ula.keyDown('p');
                     for (let i = 0; i < 15; i++) {
                         this.spectrum.runFrame();
                     }
                     ula.keyUp('p');
-                    ula.keyUp('Control');
+                    ula.keyUp('Alt');
                     ula.keyboardState.fill(0xFF);
                     for (let i = 0; i < 10; i++) {
                         this.spectrum.runFrame();
@@ -11707,15 +11779,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     }
                 };
 
-                // Helper to press key with Symbol Shift (Control in browser terms)
+                // Helper to press key with Symbol Shift (Alt in browser terms)
                 const pressWithSymbol = async (key, holdFrames = 25, releaseFrames = 15) => {
-                    ula.keyDown('Control'); // Symbol Shift
+                    ula.keyDown('Alt'); // Symbol Shift
                     ula.keyDown(key);
                     for (let i = 0; i < holdFrames; i++) {
                         this.spectrum.runFrame();
                     }
                     ula.keyUp(key);
-                    ula.keyUp('Control');
+                    ula.keyUp('Alt');
                     for (let i = 0; i < releaseFrames; i++) {
                         this.spectrum.runFrame();
                     }
@@ -12623,7 +12695,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const btnZipCancel = document.getElementById('btnZipCancel');
         const btnBootTrdos = document.getElementById('btnBootTrdos');
         let pendingZipResult = null;  // Stores ZIP result while user selects file
-        
+        let bootTrdData = null;       // Stores boot TRD file data for injection
+        let bootTrdName = null;       // Name of the boot TRD file
+
         // Create emulator
         const savedMachineType = localStorage.getItem('zx-machine-type') || '48k';
         let spectrum = new Spectrum(canvas, {
@@ -12632,6 +12706,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
             overlayCanvas: overlayCanvas
         });
         window.spectrum = spectrum;
+
+        // Set up boot TRD callback for injection during disk loading
+        spectrum.onBeforeTrdLoad = (data, filename) => processTrdWithBoot(data, filename);
 
         // Disk activity indicator
         const diskActivityEl = document.getElementById('diskActivity');
@@ -22264,6 +22341,17 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         }
                     }
 
+                    // Reset paging state to match assembler's slot configuration
+                    if (emulatorIs128K) {
+                        const asmBank = AsmMemory.slots[3].page;
+                        spectrum.memory.setPagingState({
+                            ramBank: asmBank & 0x07,
+                            romBank: 0,
+                            screenBank: 5,
+                            pagingDisabled: false
+                        });
+                    }
+
                     if (pagesInjected.length > 0) {
                         showMessage(`Injected ${totalBytes} bytes from pages [${pagesInjected.join(', ')}]`);
                     } else {
@@ -22307,6 +22395,16 @@ labelManager.importJSON(jsonStr, merge)</pre>
                                 totalBytes += pageData.length;
                             }
                         }
+                    }
+
+                    // Reset paging to bank 0 at C000 (48K default)
+                    if (emulatorIs128K) {
+                        spectrum.memory.setPagingState({
+                            ramBank: 0,
+                            romBank: 0,
+                            screenBank: 5,
+                            pagingDisabled: false
+                        });
                     }
 
                     if (totalBytes > 0) {
@@ -22373,13 +22471,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     }
                 }
 
-                // Reset CPU state for clean debug start:
-                // 1. Clear halted flag - otherwise CPU ignores our new PC
-                // 2. Disable interrupts - prevents INT firing before code's own DI executes
-                //    (on second run, iff1=1 and tStates may be in INT pulse window)
+                // Reset CPU and frame timing state for clean debug start
                 spectrum.cpu.halted = false;
                 spectrum.cpu.iff1 = 0;
                 spectrum.cpu.iff2 = 0;
+                spectrum.cpu.tStates = 0;
+                spectrum.frameStartOffset = 0;
+                spectrum.accumulatedContention = 0;
+                spectrum.pendingInt = false;
 
                 spectrum.cpu.pc = entryPoint;
 
@@ -22490,7 +22589,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
         // Generate SNA file from assembler memory state
         function generateSNAFile(cmd) {
-            const snaData = new Uint8Array(49179); // 48K SNA size
+            const deviceName = AsmMemory.getDeviceName();
+            const is128k = AsmMemory.device &&
+                (deviceName === 'ZXSPECTRUM128' || deviceName === 'ZXSPECTRUM512' || deviceName === 'ZXSPECTRUM1024');
+            const size = is128k ? 131103 : 49179;
+            const snaData = new Uint8Array(size);
+
+            const startAddr = cmd.start;
 
             // SNA header (27 bytes)
             // I register
@@ -22511,52 +22616,83 @@ labelManager.importJSON(jsonStr, merge)</pre>
             snaData[19] = 0x04; // IFF2 enabled
             // R register
             snaData[20] = 0;
-            // AF, SP
+            // AF
             snaData[21] = 0; snaData[22] = 0;         // AF
-            // SP - place PC on stack so RET will jump to start address
-            const sp = 0xFFFE;
-            snaData[23] = sp & 0xFF;
-            snaData[24] = (sp >> 8) & 0xFF;
+            // SP
+            if (is128k) {
+                // 128K: PC stored in extended header, SP is actual value
+                snaData[23] = 0; snaData[24] = 0; // SP = 0x0000
+            } else {
+                // 48K: PC stored on stack via RETN trick, SP points below pushed PC
+                snaData[23] = 0xFE; snaData[24] = 0xFF; // SP = 0xFFFE
+            }
             // Interrupt mode
             snaData[25] = 1; // IM 1
             // Border color
             snaData[26] = 7; // White border
 
             // RAM dump (48K starting at 0x4000)
-            // Fill with 0xFF first (like real hardware)
-            for (let i = 27; i < 49179; i++) {
-                snaData[i] = 0;
-            }
-
-            // Copy assembled data
+            // Copy assembled data into 48K section
             if (AsmMemory.device) {
-                // 128K mode - read from page memory
-                // Pages 5, 2, 0 map to 0x4000-0xFFFF
-                const pageMap = [5, 2, 0]; // Page at 4000, 8000, C000
-                for (let page = 0; page < 3; page++) {
-                    const pageData = AsmMemory.getPage(pageMap[page]);
-                    if (pageData) {
-                        for (let i = 0; i < 0x4000; i++) {
-                            snaData[27 + page * 0x4000 + i] = pageData[i];
+                if (is128k) {
+                    // 128K: 48K section = banks 5, 2, and current bank at C000
+                    const currentBank = AsmMemory.slots[3].page;
+                    const pageMap = [5, 2, currentBank];
+                    for (let section = 0; section < 3; section++) {
+                        const pageData = AsmMemory.getPage(pageMap[section]);
+                        if (pageData) {
+                            snaData.set(pageData, 27 + section * 0x4000);
+                        }
+                    }
+                } else {
+                    // ZXSPECTRUM48: pages 5, 2, 0 map to 0x4000-0xFFFF
+                    const pageMap = [5, 2, 0];
+                    for (let page = 0; page < 3; page++) {
+                        const pageData = AsmMemory.getPage(pageMap[page]);
+                        if (pageData) {
+                            snaData.set(pageData, 27 + page * 0x4000);
                         }
                     }
                 }
             } else {
-                // 48K mode - copy from output
-                const startAddr = Assembler.outputStart;
+                // No DEVICE - linear output
+                const outputStart = Assembler.outputStart;
                 const output = Assembler.output;
                 for (let i = 0; i < output.length; i++) {
-                    const addr = startAddr + i;
+                    const addr = outputStart + i;
                     if (addr >= 0x4000 && addr <= 0xFFFF) {
                         snaData[27 + (addr - 0x4000)] = output[i];
                     }
                 }
             }
 
-            // Place start address on stack for RET
-            const startAddr = cmd.start;
-            snaData[27 + (sp - 0x4000)] = startAddr & 0xFF;
-            snaData[27 + (sp - 0x4000) + 1] = (startAddr >> 8) & 0xFF;
+            if (is128k) {
+                // 128K extended header at offset 49179
+                const offset = 49179;
+                // PC
+                snaData[offset] = startAddr & 0xFF;
+                snaData[offset + 1] = (startAddr >> 8) & 0xFF;
+                // Port 0x7FFD value
+                const currentBank = AsmMemory.slots[3].page;
+                snaData[offset + 2] = currentBank & 0x07;
+                // TR-DOS ROM not paged
+                snaData[offset + 3] = 0;
+                // Remaining RAM banks (excluding 5, 2, and current bank at C000)
+                const banksToSave = [0, 1, 3, 4, 6, 7].filter(b => b !== currentBank);
+                const banksToActuallySave = banksToSave.slice(0, 5);
+                let bankOffset = offset + 4;
+                for (const bankNum of banksToActuallySave) {
+                    const pageData = AsmMemory.getPage(bankNum);
+                    if (pageData) {
+                        snaData.set(pageData, bankOffset);
+                    }
+                    bankOffset += 0x4000;
+                }
+            } else {
+                // 48K: Place start address on stack for RETN
+                snaData[27 + (0xFFFE - 0x4000)] = startAddr & 0xFF;
+                snaData[27 + (0xFFFE - 0x4000) + 1] = (startAddr >> 8) & 0xFF;
+            }
 
             return snaData;
         }
@@ -25249,6 +25385,8 @@ labelManager.importJSON(jsonStr, merge)</pre>
             // Load TR-DOS ROM if available (for Beta Disk interface on any machine)
             if (romTrdosData && (spectrum.machineType === 'pentagon' || spectrum.betaDiskEnabled)) {
                 spectrum.memory.loadTrdosRom(romTrdosData);
+                // Update trap handler's cached flag so it knows ROM is available
+                spectrum.trdosTrap.updateTrdosRomFlag();
             }
             spectrum.updateBetaDiskPagingFlag();
             spectrum.romLoaded = true;
@@ -28138,6 +28276,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             // Load TR-DOS ROM into memory when enabling Beta Disk
             if (chkBetaDisk.checked && romTrdosData && !spectrum.memory.hasTrdosRom()) {
                 spectrum.memory.loadTrdosRom(romTrdosData);
+                spectrum.trdosTrap.updateTrdosRomFlag();
             }
             spectrum.updateBetaDiskPagingFlag();
             updateBetaDiskStatus();
@@ -28154,10 +28293,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
             // Load TR-DOS ROM if Beta Disk enabled and ROM available
             if (savedBetaDisk && romTrdosData && !spectrum.memory.hasTrdosRom()) {
                 spectrum.memory.loadTrdosRom(romTrdosData);
+                spectrum.trdosTrap.updateTrdosRomFlag();
             }
         }
         spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
+
+        // Load boot TRD settings from localStorage
+        loadBootTrdSettings();
 
         // Media controls - Tape
         const chkFlashLoad = document.getElementById('chkFlashLoad');
@@ -28268,6 +28411,366 @@ labelManager.importJSON(jsonStr, merge)</pre>
             diskLedEl.style.color = '';
             showMessage('Blank formatted disk inserted');
         });
+
+        // Boot TRD file selection
+        document.getElementById('btnSelectBootTrd').addEventListener('click', () => {
+            document.getElementById('bootTrdFile').click();
+        });
+
+        document.getElementById('bootTrdFile').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            try {
+                const data = new Uint8Array(await file.arrayBuffer());
+                // Validate it's a TRD file
+                if (data.length !== 655360 && data.length !== 655360 - 256) {
+                    showMessage('Invalid TRD file size', 'error');
+                    return;
+                }
+                // Check if it has a boot file
+                if (!trdHasBootFile(data)) {
+                    showMessage('Selected TRD has no boot file', 'error');
+                    return;
+                }
+                bootTrdData = data;
+                bootTrdName = file.name;
+                document.getElementById('bootTrdName').textContent = file.name;
+                // Save to localStorage
+                localStorage.setItem('bootTrdName', file.name);
+                // Store data as base64
+                localStorage.setItem('bootTrdData', arrayBufferToBase64(data));
+                showMessage(`Boot TRD set: ${file.name}`);
+            } catch (err) {
+                showMessage('Failed to load boot TRD: ' + err.message, 'error');
+            }
+            // Clear input so same file can be selected again
+            e.target.value = '';
+        });
+
+        // Boot TRD mode change
+        document.getElementById('bootTrdMode').addEventListener('change', (e) => {
+            localStorage.setItem('bootTrdMode', e.target.value);
+        });
+
+        // Helper: Check if TRD has a boot file (filename "boot" in directory)
+        function trdHasBootFile(data) {
+            // Ensure we have a Uint8Array (data might be ArrayBuffer)
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            // Scan directory entries (first 8 sectors = 2048 bytes, 128 entries max)
+            for (let i = 0; i < 128; i++) {
+                const offset = i * 16;
+                const firstByte = bytes[offset];
+                if (firstByte === 0x00) break; // End of directory
+                if (firstByte === 0x01) continue; // Deleted file
+                // Get filename (8 bytes, space-padded)
+                let filename = '';
+                for (let j = 0; j < 8; j++) {
+                    filename += String.fromCharCode(bytes[offset + j]);
+                }
+                filename = filename.trimEnd().toLowerCase();
+                if (filename === 'boot') return true;
+            }
+            return false;
+        }
+
+        // Helper: Extract boot file from TRD
+        function extractBootFile(data) {
+            // Ensure we have a Uint8Array (data might be ArrayBuffer)
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            // Scan directory entries to find boot file
+            for (let i = 0; i < 128; i++) {
+                const offset = i * 16;
+                const firstByte = bytes[offset];
+                if (firstByte === 0x00) break; // End of directory
+                if (firstByte === 0x01) continue; // Deleted file
+                // Get filename (8 bytes, space-padded)
+                let filename = '';
+                for (let j = 0; j < 8; j++) {
+                    filename += String.fromCharCode(bytes[offset + j]);
+                }
+                filename = filename.trimEnd().toLowerCase();
+                if (filename === 'boot') {
+                    // Found boot file - extract its data
+                    const fileType = bytes[offset + 8];
+                    const startAddr = bytes[offset + 9] | (bytes[offset + 10] << 8);
+                    const length = bytes[offset + 11] | (bytes[offset + 12] << 8);
+                    const sectorCount = bytes[offset + 13];
+                    const firstSector = bytes[offset + 14];
+                    const firstTrack = bytes[offset + 15];
+
+                    // Copy directory entry
+                    const dirEntry = bytes.slice(offset, offset + 16);
+
+                    // Calculate data offset and extract file data
+                    const trackOffset = firstTrack * 16 * 256; // 16 sectors per track, 256 bytes per sector
+                    const sectorOffset = firstSector * 256;
+                    const dataOffset = trackOffset + sectorOffset;
+                    const fileData = bytes.slice(dataOffset, dataOffset + sectorCount * 256);
+
+                    return { dirEntry, fileData, sectorCount, length, startAddr, fileType };
+                }
+            }
+            return null;
+        }
+
+        // Helper: Inject boot file into TRD data
+        function injectBootIntoTrd(trdData, bootInfo, reuseLocation) {
+            const result = new Uint8Array(trdData);
+
+            // Find first free directory slot
+            let dirSlot = -1;
+            let wasEndMarker = false; // true if we're inserting at 0x00 (end), false if at 0x01 (deleted)
+            for (let i = 0; i < 128; i++) {
+                const offset = i * 16;
+                const firstByte = result[offset];
+                if (firstByte === 0x00) {
+                    dirSlot = i;
+                    wasEndMarker = true;
+                    break;
+                }
+                if (firstByte === 0x01) {
+                    dirSlot = i;
+                    wasEndMarker = false;
+                    break;
+                }
+            }
+            if (dirSlot === -1) {
+                alert('Cannot add boot: disk directory is full (128 files max)');
+                return result;
+            }
+
+            // Get disk info from sector 8 (offset 0x800)
+            const sector8Offset = 8 * 256;
+            let firstFreeSector = result[sector8Offset + 0xE1];
+            let firstFreeTrack = result[sector8Offset + 0xE2];
+            const fileCount = result[sector8Offset + 0xE4];
+            let freeSectors = result[sector8Offset + 0xE5] | (result[sector8Offset + 0xE6] << 8);
+
+            // Check if there's enough space
+            if (freeSectors < bootInfo.sectorCount) {
+                alert('Cannot add boot: not enough free space on disk');
+                return result;
+            }
+
+            // Write directory entry at the slot
+            const dirOffset = dirSlot * 16;
+            // Copy filename "boot    " (8 chars padded)
+            const bootName = 'boot    ';
+            for (let i = 0; i < 8; i++) {
+                result[dirOffset + i] = bootName.charCodeAt(i);
+            }
+            result[dirOffset + 8] = bootInfo.fileType;
+            result[dirOffset + 9] = bootInfo.startAddr & 0xFF;
+            result[dirOffset + 10] = (bootInfo.startAddr >> 8) & 0xFF;
+            result[dirOffset + 11] = bootInfo.length & 0xFF;
+            result[dirOffset + 12] = (bootInfo.length >> 8) & 0xFF;
+            result[dirOffset + 13] = bootInfo.sectorCount;
+            result[dirOffset + 14] = firstFreeSector;
+            result[dirOffset + 15] = firstFreeTrack;
+
+            // Write file data at the free location
+            const trackOffset = firstFreeTrack * 16 * 256;
+            const sectorOffset = firstFreeSector * 256;
+            const dataOffset = trackOffset + sectorOffset;
+            result.set(bootInfo.fileData.slice(0, bootInfo.sectorCount * 256), dataOffset);
+
+            // Update disk info
+            // Calculate new free position
+            let newSector = firstFreeSector + bootInfo.sectorCount;
+            let newTrack = firstFreeTrack;
+            while (newSector >= 16) {
+                newSector -= 16;
+                newTrack++;
+            }
+            result[sector8Offset + 0xE1] = newSector;
+            result[sector8Offset + 0xE2] = newTrack;
+            result[sector8Offset + 0xE4] = fileCount + 1;
+            freeSectors -= bootInfo.sectorCount;
+            result[sector8Offset + 0xE5] = freeSectors & 0xFF;
+            result[sector8Offset + 0xE6] = (freeSectors >> 8) & 0xFF;
+
+            // Mark end of directory if we inserted at the end marker
+            if (wasEndMarker && dirSlot + 1 < 128) {
+                // We inserted at the previous end-of-directory position
+                // ALWAYS mark the next slot as end-of-directory
+                const nextOffset = (dirSlot + 1) * 16;
+                result[nextOffset] = 0x00;
+            }
+
+            return result;
+        }
+
+        // Helper: Convert ArrayBuffer to base64 for localStorage
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            const chunkSize = 8192;
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                const chunk = bytes.slice(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, chunk);
+            }
+            return btoa(binary);
+        }
+
+        // Helper: Convert base64 to Uint8Array
+        function base64ToArrayBuffer(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        // Load boot TRD settings from localStorage
+        function loadBootTrdSettings() {
+            const mode = localStorage.getItem('bootTrdMode') || 'none';
+            document.getElementById('bootTrdMode').value = mode;
+
+            const name = localStorage.getItem('bootTrdName');
+            const dataBase64 = localStorage.getItem('bootTrdData');
+            if (name && dataBase64) {
+                try {
+                    bootTrdData = base64ToArrayBuffer(dataBase64);
+                    bootTrdName = name;
+                    document.getElementById('bootTrdName').textContent = name;
+                } catch (e) {
+                    console.warn('Failed to load boot TRD from localStorage:', e);
+                }
+            }
+        }
+
+        // Process TRD with boot injection if configured
+        function processTrdWithBoot(data, filename) {
+            const mode = document.getElementById('bootTrdMode').value;
+            if (mode === 'none' || !bootTrdData) {
+                return data;
+            }
+
+            // Extract boot from boot TRD
+            const bootInfo = extractBootFile(bootTrdData);
+            if (!bootInfo) {
+                alert('Cannot add boot: no boot file found in selected Boot TRD');
+                return data;
+            }
+
+            const existingBoot = getBootFileInfo(data);
+
+            if (mode === 'add') {
+                if (existingBoot) {
+                    // Already has boot, don't add
+                    return data;
+                }
+                // No boot exists, add new one
+                return injectBootIntoTrd(data, bootInfo, null);
+            }
+
+            if (mode === 'replace') {
+                if (existingBoot) {
+                    // Replace existing boot - reuse its location if new boot fits
+                    if (bootInfo.sectorCount <= existingBoot.sectorCount) {
+                        // New boot fits in old boot's space - reuse location
+                        return replaceBootInPlace(data, bootInfo, existingBoot);
+                    } else {
+                        // New boot is larger - remove old and add at first free
+                        data = removeBootFromTrd(data);
+                        return injectBootIntoTrd(data, bootInfo, null);
+                    }
+                } else {
+                    // No boot exists, just add
+                    return injectBootIntoTrd(data, bootInfo, null);
+                }
+            }
+
+            return data;
+        }
+
+        // Helper: Get info about existing boot file on disk
+        function getBootFileInfo(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            for (let i = 0; i < 128; i++) {
+                const offset = i * 16;
+                const firstByte = bytes[offset];
+                if (firstByte === 0x00) break;
+                if (firstByte === 0x01) continue;
+                let filename = '';
+                for (let j = 0; j < 8; j++) {
+                    filename += String.fromCharCode(bytes[offset + j]);
+                }
+                if (filename.trimEnd().toLowerCase() === 'boot') {
+                    return {
+                        dirSlot: i,
+                        sectorCount: bytes[offset + 13],
+                        firstSector: bytes[offset + 14],
+                        firstTrack: bytes[offset + 15]
+                    };
+                }
+            }
+            return null;
+        }
+
+        // Helper: Replace boot file in place (reuse old boot's disk location)
+        function replaceBootInPlace(trdData, bootInfo, existingBoot) {
+            const result = new Uint8Array(trdData);
+            const dirOffset = existingBoot.dirSlot * 16;
+
+            // Update directory entry with new boot info (keep same disk location)
+            const bootName = 'boot    ';
+            for (let i = 0; i < 8; i++) {
+                result[dirOffset + i] = bootName.charCodeAt(i);
+            }
+            result[dirOffset + 8] = bootInfo.fileType;
+            result[dirOffset + 9] = bootInfo.startAddr & 0xFF;
+            result[dirOffset + 10] = (bootInfo.startAddr >> 8) & 0xFF;
+            result[dirOffset + 11] = bootInfo.length & 0xFF;
+            result[dirOffset + 12] = (bootInfo.length >> 8) & 0xFF;
+            result[dirOffset + 13] = bootInfo.sectorCount;
+            // Keep same location as old boot
+            result[dirOffset + 14] = existingBoot.firstSector;
+            result[dirOffset + 15] = existingBoot.firstTrack;
+
+            // Write new boot data at old boot's location
+            const trackOffset = existingBoot.firstTrack * 16 * 256;
+            const sectorOffset = existingBoot.firstSector * 256;
+            const dataOffset = trackOffset + sectorOffset;
+            result.set(bootInfo.fileData.slice(0, bootInfo.sectorCount * 256), dataOffset);
+
+            // If new boot is smaller, we waste some sectors (acceptable)
+            // File count stays the same (replacing, not adding)
+
+            return result;
+        }
+
+        // Helper: Remove boot file from TRD
+        function removeBootFromTrd(data) {
+            const result = new Uint8Array(data);
+            // Find and mark boot file as deleted in directory
+            for (let i = 0; i < 128; i++) {
+                const offset = i * 16;
+                const firstByte = result[offset];
+                if (firstByte === 0x00) break;
+                if (firstByte === 0x01) continue;
+                let filename = '';
+                for (let j = 0; j < 8; j++) {
+                    filename += String.fromCharCode(result[offset + j]);
+                }
+                filename = filename.trimEnd().toLowerCase();
+                if (filename === 'boot') {
+                    // Mark as deleted
+                    result[offset] = 0x01;
+                    // Note: We don't reclaim the disk space, just mark deleted
+                    // Update file count
+                    const sector8Offset = 8 * 256;
+                    const fileCount = result[sector8Offset + 0xE4];
+                    if (fileCount > 0) {
+                        result[sector8Offset + 0xE4] = fileCount - 1;
+                    }
+                    break;
+                }
+            }
+            return result;
+        }
 
         // Mouse button click to capture
         btnMouse.addEventListener('click', () => {
@@ -28608,24 +29111,54 @@ labelManager.importJSON(jsonStr, merge)</pre>
         // Show/hide size row based on format selection (SCR/BSC/SCA have fixed sizes)
         function updateSizeRowVisibility() {
             const format = frameExportFormat.value;
+            const scaOptionsRow = document.getElementById('scaOptionsRow');
+            const scaCustomPatternRow = document.getElementById('scaCustomPatternRow');
+
             if (format === 'scr' || format === 'sca') {
                 // SCR/SCA requires screen only (256x192)
                 sizeRow.style.display = 'none';
                 frameExportSize.value = 'screen';
                 spriteRegionRow.style.display = 'none';
                 clearSpriteRegionPreview();
+                // Show SCA options only for SCA format
+                scaOptionsRow.style.display = format === 'sca' ? 'flex' : 'none';
+                if (format !== 'sca') {
+                    scaCustomPatternRow.style.display = 'none';
+                }
             } else if (format === 'bsc') {
                 // BSC requires full border
                 sizeRow.style.display = 'none';
                 frameExportSize.value = 'full';
                 spriteRegionRow.style.display = 'none';
                 clearSpriteRegionPreview();
+                scaOptionsRow.style.display = 'none';
+                scaCustomPatternRow.style.display = 'none';
             } else {
                 sizeRow.style.display = 'flex';
+                scaOptionsRow.style.display = 'none';
+                scaCustomPatternRow.style.display = 'none';
             }
+            updateScaOptionsVisibility();
+        }
+
+        // Show/hide SCA payload-specific options
+        function updateScaOptionsVisibility() {
+            const scaOptionsRow = document.getElementById('scaOptionsRow');
+            const scaCustomPatternRow = document.getElementById('scaCustomPatternRow');
+            const scaPayloadType = document.getElementById('scaPayloadType');
+            const scaFillPattern = document.getElementById('scaFillPattern');
+
+            if (scaOptionsRow.style.display === 'none') return;
+
+            const isType1 = scaPayloadType.value === '1';
+            // Show fill pattern options only for type 1
+            scaFillPattern.disabled = !isType1;
+            scaCustomPatternRow.style.display = (isType1 && scaFillPattern.value === 'custom') ? 'flex' : 'none';
         }
 
         frameExportFormat.addEventListener('change', updateSizeRowVisibility);
+        document.getElementById('scaPayloadType').addEventListener('change', updateScaOptionsVisibility);
+        document.getElementById('scaFillPattern').addEventListener('change', updateScaOptionsVisibility);
 
         // Show/hide sprite region inputs and update labels based on size selection
         frameExportSize.addEventListener('change', () => {
@@ -28826,11 +29359,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
             const tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
 
-            // Store as data URL (PNG)
+            // Store as data URL (PNG) + memory snapshots for SCA export
+            const attrs = spectrum ? spectrum.memory.getBlock(0x5800, 768) : new Uint8Array(768);
+            const bitmap = spectrum ? spectrum.memory.getBlock(0x4000, 6144) : new Uint8Array(6144);
             frameGrabState.frames.push({
                 dataUrl: tempCanvas.toDataURL('image/png'),
                 width: sw,
-                height: sh
+                height: sh,
+                attrs: new Uint8Array(attrs),
+                bitmap: new Uint8Array(bitmap)
             });
 
             updateFrameGrabStatus();
@@ -29442,12 +29979,144 @@ labelManager.importJSON(jsonStr, merge)</pre>
             showMessage(`Exported ${frameCount} frames to ${baseName}_${ext}.zip`);
         }
 
+        // Detect if bitmap has a consistent 8-byte repeating pattern
+        // Returns the pattern if found, null otherwise
+        function detectBitmapPattern(bitmap) {
+            if (!bitmap || bitmap.length < 6144) return null;
+
+            // ZX Spectrum screen layout: 3 thirds, each 8 char rows
+            // Within each third: interleaved by pixel row
+            // For pattern detection, check if each 8x8 cell uses the same 8-byte pattern
+
+            // Extract the pattern from first cell (top-left)
+            const pattern = new Uint8Array(8);
+            for (let row = 0; row < 8; row++) {
+                // Address for pixel row 'row' of char cell (0,0)
+                const addr = row * 256; // third 0, char row 0, pixel row 'row'
+                pattern[row] = bitmap[addr];
+            }
+
+            // Check if this pattern repeats across all 32x24 cells
+            let matches = 0;
+            let mismatches = 0;
+            for (let charY = 0; charY < 24; charY++) {
+                const third = Math.floor(charY / 8);
+                const charRow = charY % 8;
+                for (let charX = 0; charX < 32; charX++) {
+                    for (let row = 0; row < 8; row++) {
+                        const addr = third * 2048 + row * 256 + charRow * 32 + charX;
+                        if (bitmap[addr] === pattern[row]) {
+                            matches++;
+                        } else {
+                            mismatches++;
+                        }
+                    }
+                }
+            }
+
+            // Allow some tolerance (95% match)
+            const total = matches + mismatches;
+            if (matches / total >= 0.95) {
+                return pattern;
+            }
+            return null;
+        }
+
+        // Show dialog to let user choose between 53c and 127c patterns
+        function showPatternChoiceDialog() {
+            return new Promise((resolve) => {
+                const dialog = document.createElement('div');
+                dialog.className = 'modal-overlay';
+                dialog.innerHTML = `
+                    <div class="modal-dialog" style="max-width: 320px;">
+                        <div class="modal-header">
+                            <span>Select Fill Pattern</span>
+                            <button class="modal-close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <p style="margin-bottom: 12px;">Could not detect a consistent bitmap pattern. Please select the fill pattern to use:</p>
+                            <div style="display: flex; gap: 10px; justify-content: center;">
+                                <button id="patternChoice53c" class="primary" style="padding: 8px 16px;">53c (AA 55)</button>
+                                <button id="patternChoice127c" style="padding: 8px 16px;">127c (DD 77)</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(dialog);
+
+                const close = (result) => {
+                    dialog.remove();
+                    resolve(result);
+                };
+
+                dialog.querySelector('.modal-close').onclick = () => close(null);
+                dialog.querySelector('#patternChoice53c').onclick = () => close('53c');
+                dialog.querySelector('#patternChoice127c').onclick = () => close('127c');
+                dialog.onclick = (e) => { if (e.target === dialog) close(null); };
+            });
+        }
+
         // SCA format: animation file with header + delay table + SCR frames
         // https://github.com/moroz1999/sca
+        // Type 0: full 6912-byte SCR frames
+        // Type 1: 8-byte fill pattern + 768-byte attributes per frame
         async function exportFramesAsSca() {
             const frames = frameGrabState.frames;
             const baseName = getExportBaseName();
             const frameCount = frames.length;
+
+            // Get payload type and fill pattern from UI
+            const payloadType = parseInt(document.getElementById('scaPayloadType').value);
+
+            // Warning for Type 1 - feature under development
+            if (payloadType === 1) {
+                if (!confirm('SCA Type 1 export is experimental and under development.\nFormat may change in future versions.\n\nContinue with export?')) {
+                    frameGrabStatus.textContent = 'Export cancelled';
+                    frameGrabStatus.classList.remove('recording');
+                    return;
+                }
+            }
+
+            let fillPattern = new Uint8Array(8);
+            if (payloadType === 1) {
+                const patternSelect = document.getElementById('scaFillPattern').value;
+                if (patternSelect === 'auto') {
+                    // Try to detect pattern from first frame's bitmap
+                    const detected = detectBitmapPattern(frames[0].bitmap);
+                    if (detected) {
+                        fillPattern = detected;
+                        showMessage(`Detected pattern: ${Array.from(detected).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ')}`);
+                    } else {
+                        // Pattern not consistent - ask user
+                        const choice = await showPatternChoiceDialog();
+                        if (choice === null) {
+                            frameGrabStatus.textContent = 'Export cancelled';
+                            frameGrabStatus.classList.remove('recording');
+                            return;
+                        }
+                        fillPattern = choice === '53c'
+                            ? new Uint8Array([0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55])
+                            : new Uint8Array([0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77]);
+                    }
+                } else if (patternSelect === '53c') {
+                    fillPattern = new Uint8Array([0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+                } else if (patternSelect === '127c') {
+                    fillPattern = new Uint8Array([0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77]);
+                } else if (patternSelect === 'v4x8') {
+                    // Vertical 4x8+4x8: 4 columns ink, 4 columns paper
+                    fillPattern = new Uint8Array([0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0]);
+                } else if (patternSelect === 'h8x4') {
+                    // Horizontal 8x4+8x4: 4 rows ink, 4 rows paper
+                    fillPattern = new Uint8Array([0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+                } else {
+                    // Custom pattern - parse hex string
+                    const customStr = document.getElementById('scaCustomPattern').value.trim();
+                    const hexBytes = customStr.split(/[\s,]+/).map(h => parseInt(h, 16) || 0);
+                    for (let i = 0; i < 8; i++) {
+                        fillPattern[i] = hexBytes[i % hexBytes.length] || 0;
+                    }
+                }
+            }
 
             // Get border dimensions for proper extraction
             let borderLeft = 0, borderTop = 0;
@@ -29459,17 +30128,18 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
             // SCA header: 14 bytes
             // 0-2: "SCA" marker
-            // 3: version (0)
+            // 3: version (1)
             // 4-5: width (256, little-endian)
             // 6-7: height (192, little-endian)
             // 8: border color (0)
             // 9-10: frame count (little-endian)
-            // 11: payload type (0 = uncompressed SCR frames)
+            // 11: payload type (0 = full SCR, 1 = attrs only)
             // 12-13: payload position (14 = after header)
             const headerSize = 14;
             const delayTableSize = frameCount;
-            const frameDataSize = frameCount * 6912;
-            const totalSize = headerSize + delayTableSize + frameDataSize;
+            const fillPatternSize = payloadType === 1 ? 8 : 0;
+            const frameDataSize = payloadType === 1 ? frameCount * 768 : frameCount * 6912;
+            const totalSize = headerSize + delayTableSize + fillPatternSize + frameDataSize;
 
             const scaData = new Uint8Array(totalSize);
 
@@ -29485,7 +30155,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             scaData[8] = 0;    // border color
             scaData[9] = frameCount & 0xFF;  // frame count low
             scaData[10] = (frameCount >> 8) & 0xFF; // frame count high
-            scaData[11] = 0;   // payload type (0 = uncompressed)
+            scaData[11] = payloadType;  // payload type
             scaData[12] = headerSize & 0xFF;  // payload position low
             scaData[13] = (headerSize >> 8) & 0xFF; // payload position high
 
@@ -29494,8 +30164,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 scaData[headerSize + i] = 1;
             }
 
+            // Write fill pattern for type 1
+            let frameDataOffset = headerSize + delayTableSize;
+            if (payloadType === 1) {
+                scaData.set(fillPattern, frameDataOffset);
+                frameDataOffset += 8;
+            }
+
             // Convert and write each frame
-            const frameDataOffset = headerSize + delayTableSize;
             for (let i = 0; i < frames.length; i++) {
                 const frame = frames[i];
 
@@ -29529,11 +30205,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     }
                 }
 
-                // Convert to SCR format
-                const scrData = imageDataToScr(pixels, frame.width, scrLeft, scrTop);
-
-                // Copy SCR data to SCA buffer
-                scaData.set(scrData, frameDataOffset + i * 6912);
+                if (payloadType === 1) {
+                    // Type 1: copy attributes directly from frame's memory snapshot
+                    scaData.set(frame.attrs, frameDataOffset + i * 768);
+                } else {
+                    // Type 0: full SCR (6912 bytes)
+                    const scrData = imageDataToScr(pixels, frame.width, scrLeft, scrTop);
+                    scaData.set(scrData, frameDataOffset + i * 6912);
+                }
 
                 if (i % 10 === 0) {
                     frameGrabStatus.textContent = `Encoding SCA: ${Math.round(i / frames.length * 100)}%`;
@@ -29551,9 +30230,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
             URL.revokeObjectURL(url);
 
             const duration = (frameCount / 50).toFixed(2);
-            frameGrabStatus.textContent = `Exported ${frameCount} frames to SCA (${duration}s)`;
+            const typeStr = payloadType === 1 ? 'Type 1' : 'Type 0';
+            frameGrabStatus.textContent = `Exported ${frameCount} frames to SCA ${typeStr} (${duration}s)`;
             frameGrabStatus.classList.remove('recording');
-            showMessage(`Exported ${frameCount} frames to ${baseName}.sca`);
+            showMessage(`Exported ${frameCount} frames to ${baseName}.sca (${typeStr})`);
             frameGrabState.frames = [];
         }
 
@@ -30068,10 +30748,12 @@ PSG_DATA:
                 spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                 spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                 spectrum.memory.loadTrdosRom(romTrdosData);
+                spectrum.trdosTrap.updateTrdosRomFlag();
                 spectrum.romLoaded = true;
                 spectrum.reset();
 
                 // Re-load disk into Beta Disk (was cleared by reset)
+                // Boot injection already applied during initial load via spectrum.onBeforeTrdLoad
                 spectrum.betaDisk.loadDisk(result._diskData, result.diskType);
                 // Re-setup TR-DOS trap handler
                 spectrum.trdosTrap.setDisk(result._diskData, result._diskFiles, result.diskType);
@@ -30216,10 +30898,12 @@ PSG_DATA:
                     spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                     spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                     spectrum.memory.loadTrdosRom(romTrdosData);
+                    spectrum.trdosTrap.updateTrdosRomFlag();
                     spectrum.romLoaded = true;
                     spectrum.reset();
 
                     // Re-load disk into Beta Disk (was cleared by reset)
+                    // Boot injection already applied during initial load via spectrum.onBeforeTrdLoad
                     spectrum.betaDisk.loadDisk(result._diskData, result.diskType);
 
                     machineSelect.value = 'pentagon';
@@ -30233,6 +30917,7 @@ PSG_DATA:
             } else if (isDisk && romTrdosData && !spectrum.memory.hasTrdosRom()) {
                 // TR-DOS ROM available but not loaded into memory - load it now
                 spectrum.memory.loadTrdosRom(romTrdosData);
+                spectrum.trdosTrap.updateTrdosRomFlag();
             }
 
             if (isDisk) {
