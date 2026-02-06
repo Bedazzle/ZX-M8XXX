@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.9.8
+ * @version 0.9.10
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.8';
+    const VERSION = '0.9.10';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -112,6 +112,8 @@
             this.triggerHit = false;
             this.lastTrigger = null; // {trigger, addr, val, port, direction}
             this.onTrigger = null; // Unified callback for all trigger types
+            // Fast O(1) lookup Set for exec breakpoints (rebuilt when triggers change)
+            this.execBreakpointSet = new Set();
 
             // Legacy arrays - now views into unified triggers for backward compatibility
             this.breakpoints = [];
@@ -280,7 +282,10 @@
                 this.ula.mcWriteAdjust = 5;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
+                        // In fast mode, just set the flag (no per-write tracking)
+                        if (!this.ula.fastMulticolor) {
+                            this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
+                        }
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -412,10 +417,13 @@
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        // Calculate write time: cpu.tStates already has contention delays,
-                        // mcycleOffset tracks position in instruction for accurate timing
-                        const writeT = this.cpu.tStates + mcycleOffset;
-                        this.ula.setAttrAt(addr - 0x5800, val, writeT);
+                        // In fast mode, just set the flag (no per-write tracking)
+                        if (!this.ula.fastMulticolor) {
+                            // Calculate write time: cpu.tStates already has contention delays,
+                            // mcycleOffset tracks position in instruction for accurate timing
+                            const writeT = this.cpu.tStates + mcycleOffset;
+                            this.ula.setAttrAt(addr - 0x5800, val, writeT);
+                        }
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -530,8 +538,10 @@
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        const writeT = this.cpu.tStates + mcycleOffset;
-                        this.ula.setAttrAt(addr - 0x5800, val, writeT);
+                        if (!this.ula.fastMulticolor) {
+                            const writeT = this.cpu.tStates + mcycleOffset;
+                            this.ula.setAttrAt(addr - 0x5800, val, writeT);
+                        }
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -548,7 +558,9 @@
             this.ula.mcWriteAdjust = 5;
             this.cpu.onMemWrite = (addr, val) => {
                 if (addr >= 0x5800 && addr <= 0x5AFF) {
-                    this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
+                    if (!this.ula.fastMulticolor) {
+                        this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
+                    }
                     this.ula.hadAttrChanges = true;
                 }
             };
@@ -1167,6 +1179,17 @@
                 intFired = true;
             }
 
+            // Cache feature flags before the loop (avoid repeated property access)
+            const hasBreakpoints = this.execBreakpointSet.size > 0;
+            const tracing = this.runtimeTraceEnabled && this.onBeforeStep;
+            const autoMapEnabled = this.autoMap.enabled;
+            const xrefEnabled = this.xrefTrackingEnabled && this.onInstructionExecuted;
+            const needsInstrPC = xrefEnabled || tracing;
+            const contentionEnabled = (this.machineType === '48k' || this.machineType === '128k') && this.contentionEnabled;
+            const isPentagon = this.machineType === 'pentagon';
+            const tapeTrapsEnabled = this.tapeTrapsEnabled;
+            const tapeIsPlaying = this.tapePlayer.isPlaying();
+
             // Main frame loop - runs until tstatesPerFrame
             while (this.cpu.tStates < tstatesPerFrame) {
 
@@ -1182,10 +1205,10 @@
                 }
 
                 // Beta Disk automatic ROM paging (Pentagon only)
-                this.updateBetaDiskPaging();
+                if (isPentagon) this.updateBetaDiskPaging();
 
-                // Check breakpoint using unified trigger system
-                const execTrigger = this.checkExecTriggers(this.cpu.pc);
+                // Check breakpoint using unified trigger system (skip if no breakpoints)
+                const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
                     this.breakpointHit = true;
                     this.triggerHit = true;
@@ -1204,11 +1227,11 @@
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
                     return;
                 }
-                if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
-                if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+                if (tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
+                if (tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
-                if ((this.machineType === '48k' || this.machineType === '128k') && this.contentionEnabled) {
+                if (contentionEnabled) {
                     const ulaContention = this.ula.ULA_CONTENTION_TSTATES || 0;
                     if (ulaContention > 0) {
                         const line = Math.floor(this.cpu.tStates / tstatesPerLine);
@@ -1259,7 +1282,7 @@
                     this.cpu.incR();
 
                     // Record trace for first HALT only (avoids flooding trace with repeated HALTs)
-                    if (this.runtimeTraceEnabled && this.onBeforeStep && !this.haltTraced) {
+                    if (tracing && !this.haltTraced) {
                         this.haltTraced = true;
                         this.onBeforeStep(this.cpu, this.memory, this.cpu.pc, null, null);
                     }
@@ -1267,20 +1290,19 @@
                     // Reset HALT traced flag when CPU exits HALT
                     this.haltTraced = false;
                     // Clear trace ops and capture state before execution
-                    const tracing = this.runtimeTraceEnabled && this.onBeforeStep;
                     if (tracing) {
                         this.tracePortOps = [];
                         this.traceMemOps = [];
                     }
                     // Capture PC before execution for xref/trace tracking
-                    const instrPC = (this.xrefTrackingEnabled || tracing) ? this.cpu.pc : 0;
+                    const instrPC = needsInstrPC ? this.cpu.pc : 0;
                     this.cpu.execute();
                     // Record trace after execution (includes port/mem ops)
                     if (tracing) {
                         this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
                     }
                     // Call xref tracking callback if enabled
-                    if (this.xrefTrackingEnabled && this.onInstructionExecuted) {
+                    if (xrefEnabled) {
                         this.onInstructionExecuted(instrPC);
                     }
                 }
@@ -1289,7 +1311,7 @@
 
                 // Update tape player for real-time playback
                 // Note: May have been partially updated during port reads for accurate timing
-                if (this.tapePlayer.isPlaying()) {
+                if (tapeIsPlaying) {
                     const tStatesNow = this.cpu.tStates;
                     const elapsed = tStatesNow - this._lastTapeUpdate;
                     if (elapsed > 0) {
@@ -1300,7 +1322,7 @@
                 }
 
                 // Clear fetch tracking for auto-map (per instruction)
-                if (this.autoMap.enabled) {
+                if (autoMapEnabled) {
                     this.autoMap.currentFetchAddrs.clear();
                 }
 
@@ -3681,6 +3703,10 @@
         toggleTrigger(index) {
             if (index >= 0 && index < this.triggers.length) {
                 this.triggers[index].enabled = !this.triggers[index].enabled;
+                // Rebuild exec breakpoint Set if this is an exec trigger
+                if (this.triggers[index].type === 'exec') {
+                    this._rebuildExecBreakpointSet();
+                }
                 return this.triggers[index].enabled;
             }
             return null;
@@ -3781,7 +3807,9 @@
          * Check if an execution trigger matches at the given PC
          */
         checkExecTriggers(pc) {
-            if (this.triggers.length === 0) return null;
+            // Fast O(1) check using Set - skip iteration if PC not in any breakpoint range
+            if (!this.execBreakpointSet.has(pc)) return null;
+            // PC is in a breakpoint range - do full check for conditions, page, etc.
             for (const t of this.triggers) {
                 if (t.type !== 'exec' || !t.enabled) continue;
                 if (this._matchesTrigger(t, pc)) {
@@ -3887,6 +3915,25 @@
                     is16bit: t.start > 0xff || t.mask > 0xff,
                     direction: t.type === 'port_in' ? 'in' : t.type === 'port_out' ? 'out' : 'both'
                 }));
+
+            // Rebuild fast exec breakpoint Set
+            this._rebuildExecBreakpointSet();
+        }
+
+        /**
+         * Rebuild the exec breakpoint Set for O(1) lookup
+         */
+        _rebuildExecBreakpointSet() {
+            this.execBreakpointSet.clear();
+            for (const t of this.triggers) {
+                if (t.type === 'exec' && t.enabled) {
+                    // Add all addresses in range to the Set
+                    const end = t.end !== undefined ? t.end : t.start;
+                    for (let addr = t.start; addr <= end; addr++) {
+                        this.execBreakpointSet.add(addr);
+                    }
+                }
+            }
         }
 
         /**

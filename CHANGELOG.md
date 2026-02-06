@@ -2,9 +2,21 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.10
+- **Performance Optimization**: Fixed severe slowdown with screen bank switching effects
+  - Demos using 128K screen bank switching (Echologia, etc.) now run at full speed
+  - Optimized `renderDeferredPaper()` from per-pixel to per-column rendering (~100x faster)
+  - Pre-cached RAM bank lookups to avoid repeated function calls
+
+## v0.9.9
+- **Hobeta Boot Support**: Boot file injection now accepts Hobeta files
+  - Supports Hobeta files (typically .$b or .$c)
+  - Boot source can be TRD disk or standalone Hobeta file
+  - UI shows file type label: "(TRD)" or "(Hobeta)"
+
 ## v0.9.8
 - **Boot TRD Injection**: Automatically add boot loader to TRD disk images
-  - Settings → Media → Boot TRD: select a TRD file containing a boot loader
+  - Settings → Media → Boot File: select a TRD or Hobeta file containing a boot loader
   - Three modes: No change, Add boot (if missing), Replace boot
   - Boot file is injected when loading TRD images based on selected mode
   - Smart replace: reuses old boot's disk location when new boot fits

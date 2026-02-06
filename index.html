@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.9.8</title>
+    <title>ZX-M8XXX v0.9.10</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -4859,7 +4859,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.9.8</span>
+            <span class="app-name">ZX-M8XXX v0.9.10</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -5864,17 +5864,17 @@ start:
                         <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk">💾 Blank Disk</button>
                     </div>
                     <div class="settings-row" style="margin-top: 10px;">
-                        <label for="bootTrdMode" style="min-width: 80px;">Boot TRD:</label>
+                        <label for="bootTrdMode" style="min-width: 80px;">Boot File:</label>
                         <select id="bootTrdMode" style="width: 120px;" title="How to handle boot file when loading TRD images">
                             <option value="none">No change</option>
                             <option value="add">Add boot</option>
                             <option value="replace">Replace boot</option>
                         </select>
-                        <button id="btnSelectBootTrd" class="control-btn" style="margin-left: 10px;" title="Select TRD file containing boot file">Select...</button>
-                        <input type="file" id="bootTrdFile" accept=".trd" style="display: none;">
+                        <button id="btnSelectBootTrd" class="control-btn" style="margin-left: 10px;" title="Select TRD or Hobeta file containing boot file">Select...</button>
+                        <input type="file" id="bootTrdFile" accept=".trd,.$c,.$b,.$d,.$#,.hobeta" style="display: none;">
                     </div>
                     <div class="settings-row">
-                        <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 80px;">No boot TRD selected</span>
+                        <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 80px;">No boot file selected</span>
                     </div>
                 </div>
 
@@ -6568,7 +6568,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.8</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.10</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -6961,10 +6961,10 @@ start:
                         <tr><td><strong>TRD</strong></td><td>TR-DOS disk image (select file from disk)</td></tr>
                         <tr><td><strong>SCL</strong></td><td>TR-DOS file archive (more compact format)</td></tr>
                     </table>
-                    <h5>Boot TRD Injection</h5>
-                    <p>Automatically add a boot loader to TRD disk images via Settings → Media → Boot TRD:</p>
+                    <h5>Boot File Injection</h5>
+                    <p>Automatically add a boot loader to TRD disk images via Settings → Media → Boot File:</p>
                     <ol>
-                        <li>Click <strong>Select...</strong> to choose a TRD file containing a boot loader</li>
+                        <li>Click <strong>Select...</strong> to choose a boot file source (TRD or Hobeta)</li>
                         <li>Select the injection mode from the dropdown</li>
                     </ol>
                     <table>
@@ -6972,7 +6972,7 @@ start:
                         <tr><td><strong>Add boot</strong></td><td>Add boot only if TRD has no boot file</td></tr>
                         <tr><td><strong>Replace boot</strong></td><td>Replace existing boot, or add if none</td></tr>
                     </table>
-                    <p style="font-size: 11px; color: var(--text-dim);">When replacing, the new boot file reuses the old boot's disk location if it fits. Settings are saved in localStorage.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">Supports TRD disk images and Hobeta files (typically .$b or .$c). When replacing, the new boot file reuses the old boot's disk location if it fits. Settings are saved in localStorage.</p>
                     <h5>Archives</h5>
                     <table>
                         <tr><td><strong>ZIP</strong></td><td>Select file from archive dialog</td></tr>
@@ -7433,7 +7433,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.9.8';
+        const APP_VERSION = '0.9.10';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -12697,6 +12697,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
         let pendingZipResult = null;  // Stores ZIP result while user selects file
         let bootTrdData = null;       // Stores boot TRD file data for injection
         let bootTrdName = null;       // Name of the boot TRD file
+        let bootFileType = null;      // Type of boot file: 'trd' or 'hobeta'
 
         // Create emulator
         const savedMachineType = localStorage.getItem('zx-machine-type') || '48k';
@@ -28423,26 +28424,48 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
             try {
                 const data = new Uint8Array(await file.arrayBuffer());
-                // Validate it's a TRD file
-                if (data.length !== 655360 && data.length !== 655360 - 256) {
-                    showMessage('Invalid TRD file size', 'error');
+
+                // Detect file type: TRD by size, Hobeta by extension/CRC
+                let detectedType = null;
+                let hasBootFile = false;
+
+                // Check if it's a TRD file (by size)
+                if (data.length === 655360 || data.length === 655360 - 256) {
+                    detectedType = 'trd';
+                    hasBootFile = trdHasBootFile(data);
+                }
+                // Check if it's a Hobeta file
+                else if (isHobetaFile(data, file.name)) {
+                    detectedType = 'hobeta';
+                    hasBootFile = hobetaHasBootFile(data);
+                }
+
+                if (!detectedType) {
+                    showMessage('Invalid file: not a TRD or Hobeta file', 'error');
                     return;
                 }
-                // Check if it has a boot file
-                if (!trdHasBootFile(data)) {
-                    showMessage('Selected TRD has no boot file', 'error');
+
+                if (!hasBootFile) {
+                    showMessage(`Selected ${detectedType.toUpperCase()} has no boot file`, 'error');
                     return;
                 }
+
                 bootTrdData = data;
                 bootTrdName = file.name;
-                document.getElementById('bootTrdName').textContent = file.name;
+                bootFileType = detectedType;
+
+                // Display with type label
+                const typeLabel = detectedType === 'hobeta' ? '(Hobeta)' : '(TRD)';
+                document.getElementById('bootTrdName').textContent = `${file.name} ${typeLabel}`;
+
                 // Save to localStorage
                 localStorage.setItem('bootTrdName', file.name);
-                // Store data as base64
                 localStorage.setItem('bootTrdData', arrayBufferToBase64(data));
-                showMessage(`Boot TRD set: ${file.name}`);
+                localStorage.setItem('bootFileType', detectedType);
+
+                showMessage(`Boot file set: ${file.name} ${typeLabel}`);
             } catch (err) {
-                showMessage('Failed to load boot TRD: ' + err.message, 'error');
+                showMessage('Failed to load boot file: ' + err.message, 'error');
             }
             // Clear input so same file can be selected again
             e.target.value = '';
@@ -28512,6 +28535,83 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 }
             }
             return null;
+        }
+
+        // Helper: Detect if file is Hobeta format
+        function isHobetaFile(data, filename) {
+            // Check by extension first
+            const lowerName = filename.toLowerCase();
+            const hobetaExtensions = ['.$c', '.$b', '.$d', '.$#', '.hobeta'];
+            const hasHobetaExt = hobetaExtensions.some(ext => lowerName.endsWith(ext));
+
+            if (!hasHobetaExt) return false;
+
+            // Validate Hobeta header (17 bytes minimum + at least 1 byte of data)
+            if (data.length <= 17) return false;
+
+            // If extension matches and file has header + data, accept it
+            // Calculate actual sector count from file size (more reliable than header byte)
+            const dataSize = data.length - 17;
+            const actualSectors = Math.ceil(dataSize / 256);
+            if (actualSectors === 0 || actualSectors > 255) return false;
+
+            return true;
+        }
+
+        // Helper: Check if Hobeta file has "boot" filename
+        function hobetaHasBootFile(data) {
+            if (data.length < 17) return false;
+
+            // Get filename (bytes 0-7, space-padded)
+            let filename = '';
+            for (let i = 0; i < 8; i++) {
+                filename += String.fromCharCode(data[i]);
+            }
+            filename = filename.trimEnd().toLowerCase();
+            return filename === 'boot';
+        }
+
+        // Helper: Extract boot file from Hobeta
+        function extractBootFromHobeta(data) {
+            if (data.length <= 17) return null;
+
+            // Parse Hobeta header (17 bytes)
+            // Bytes 0-7: Filename
+            // Byte 8: Type (B/C/D/#)
+            // Bytes 9-10: Start address
+            // Bytes 11-12: Length
+            // Byte 13: Sector count (may be 0 in some files, so calculate from size)
+            // Bytes 14-16: CRC
+            // Bytes 17+: File data
+
+            const fileType = data[8];
+            const startAddr = data[9] | (data[10] << 8);
+            const length = data[11] | (data[12] << 8);
+            // Calculate sector count from actual data size (more reliable)
+            const dataSize = data.length - 17;
+            const sectorCount = Math.ceil(dataSize / 256);
+
+            // Create directory entry (16 bytes) in TRD format
+            const dirEntry = new Uint8Array(16);
+            // Copy filename (8 bytes)
+            for (let i = 0; i < 8; i++) {
+                dirEntry[i] = data[i];
+            }
+            dirEntry[8] = fileType;
+            dirEntry[9] = startAddr & 0xFF;
+            dirEntry[10] = (startAddr >> 8) & 0xFF;
+            dirEntry[11] = length & 0xFF;
+            dirEntry[12] = (length >> 8) & 0xFF;
+            dirEntry[13] = sectorCount;
+            // Bytes 14-15 (first sector/track) will be set by injection
+            dirEntry[14] = 0;
+            dirEntry[15] = 0;
+
+            // Extract file data (after 17-byte header, pad to full sectors)
+            const fileData = new Uint8Array(sectorCount * 256);
+            fileData.set(data.slice(17));
+
+            return { dirEntry, fileData, sectorCount, length, startAddr, fileType };
         }
 
         // Helper: Inject boot file into TRD data
@@ -28630,13 +28730,18 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
             const name = localStorage.getItem('bootTrdName');
             const dataBase64 = localStorage.getItem('bootTrdData');
+            const storedType = localStorage.getItem('bootFileType');
             if (name && dataBase64) {
                 try {
                     bootTrdData = base64ToArrayBuffer(dataBase64);
                     bootTrdName = name;
-                    document.getElementById('bootTrdName').textContent = name;
+                    // Default to 'trd' for backwards compatibility
+                    bootFileType = storedType || 'trd';
+                    // Display with type label
+                    const typeLabel = bootFileType === 'hobeta' ? '(Hobeta)' : '(TRD)';
+                    document.getElementById('bootTrdName').textContent = `${name} ${typeLabel}`;
                 } catch (e) {
-                    console.warn('Failed to load boot TRD from localStorage:', e);
+                    console.warn('Failed to load boot file from localStorage:', e);
                 }
             }
         }
@@ -28648,10 +28753,15 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 return data;
             }
 
-            // Extract boot from boot TRD
-            const bootInfo = extractBootFile(bootTrdData);
+            // Extract boot from boot source (TRD or Hobeta)
+            let bootInfo;
+            if (bootFileType === 'hobeta') {
+                bootInfo = extractBootFromHobeta(bootTrdData);
+            } else {
+                bootInfo = extractBootFile(bootTrdData);
+            }
             if (!bootInfo) {
-                alert('Cannot add boot: no boot file found in selected Boot TRD');
+                alert('Cannot add boot: no boot file found in selected boot source');
                 return data;
             }
 
