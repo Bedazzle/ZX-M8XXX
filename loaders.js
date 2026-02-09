@@ -706,11 +706,6 @@
 
                 if (result.block) {
                     this.blocks.push(result.block);
-                    const pauseInfo = result.block.pauseMs !== undefined ? `, pause=${result.block.pauseMs}ms` : '';
-                    const pilotInfo = result.block.pilotCount !== undefined ? `, pilot=${result.block.pilotCount}` : '';
-                    console.log(`[TZX] Block ${this.blocks.length - 1}: type=0x${blockId.toString(16).padStart(2, '0')} (${result.block.type}), ${result.block.data ? result.block.data.length + ' bytes' : 'no data'}${pauseInfo}${pilotInfo}`);
-                } else {
-                    console.log(`[TZX] Skipped block type 0x${blockId.toString(16).padStart(2, '0')} at offset ${offset}`);
                 }
                 offset += result.length;
             }
@@ -809,8 +804,6 @@
             const usedBits = usedBitsRaw || 8;
             const pause = data[offset + 13] | (data[offset + 14] << 8);
             const dataLen = data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16);
-
-            console.log(`[TZX] Parsing turbo block: pilot=${pilotPulse}, sync1=${sync1Pulse}, sync2=${sync2Pulse}, zero=${zeroPulse}, one=${onePulse}, pilotCount=${pilotCount}, usedBitsRaw=${usedBitsRaw}, usedBits=${usedBits}, pause=${pause}ms, dataLen=${dataLen}`);
 
             if (offset + 18 + dataLen > data.length) return null;
 
@@ -1134,6 +1127,8 @@
             const pagingByte = bytes[offset + 2];
             const currentBank = pagingByte & 0x07;
 
+            // Reset paging lock before setting paging state from snapshot
+            memory.pagingDisabled = false;
             // Apply paging first so 48KB section writes to correct banks
             memory.writePaging(pagingByte);
 
@@ -1430,23 +1425,33 @@
             // Version 2 or 3
             const extHeaderLen = bytes[30] | (bytes[31] << 8);
             cpu.pc = bytes[32] | (bytes[33] << 8);
-            
+
             const hwMode = bytes[34];
             let machineType = '48k';
             
             // Determine machine type from hardware mode
-            if (extHeaderLen === 23) {
-                // Version 2
+            // Pentagon (hwMode=9) can appear in both V2 and V3 formats
+            if (hwMode === 9) {
+                machineType = 'pentagon';
+            } else if (extHeaderLen === 23) {
+                // Version 2: hwMode 3=128K, 4=128K+IF1
                 if (hwMode === 3 || hwMode === 4) machineType = '128k';
             } else {
-                // Version 3: 4-6 = 128k, 9 = Pentagon
-                if (hwMode === 4 || hwMode === 5 || hwMode === 6) machineType = '128k';
-                else if (hwMode === 9) machineType = 'pentagon';
+                // Version 3 hardware modes:
+                // 4=128K, 5=128K+IF1, 6=128K+MGT, 7=+3, 12=+2, 13=+2A (all 128K compatible)
+                if (hwMode === 4 || hwMode === 5 || hwMode === 6 || hwMode === 7 || hwMode === 12 || hwMode === 13) {
+                    machineType = '128k';
+                }
             }
-            
+            console.log('[Z80 Loader] hwMode:', hwMode, 'extHeaderLen:', extHeaderLen, '=> machineType:', machineType);
+
             // Read 128K port 0x7FFD if applicable
             if ((machineType === '128k' || machineType === 'pentagon') && bytes.length > 35) {
-                memory.writePaging(bytes[35]);
+                const port7FFD = bytes[35];
+                console.log('[Z80 Loader] port7FFD:', port7FFD.toString(16), 'ROM bank:', (port7FFD & 0x10) ? 1 : 0, 'RAM bank:', port7FFD & 0x07);
+                // Reset paging lock before setting paging state from snapshot
+                memory.pagingDisabled = false;
+                memory.writePaging(port7FFD);
             }
             
             // Load memory pages
@@ -1505,6 +1510,7 @@
         }
         
         loadZ80Page(pageNum, data, memory, machineType) {
+            console.log('[Z80 Loader] Loading page', pageNum, 'size:', data.length, 'machine:', machineType);
             // Map page numbers to memory addresses/banks
             // Page numbers differ between 48K and 128K modes
             if (machineType === '48k') {
@@ -1514,7 +1520,7 @@
                             memory.write(0x8000 + i, data[i]);
                         }
                         break;
-                    case 5: // 0xC000-0xFFFF  
+                    case 5: // 0xC000-0xFFFF
                         for (let i = 0; i < data.length && i < 16384; i++) {
                             memory.write(0xC000 + i, data[i]);
                         }
@@ -1526,12 +1532,33 @@
                         break;
                 }
             } else {
-                // 128K mode - page numbers 3-10 map to RAM banks 0-7
-                const bankNum = pageNum - 3;
-                if (bankNum >= 0 && bankNum <= 7) {
-                    const ramBank = memory.getRamBank(bankNum);
-                    if (ramBank) {
-                        ramBank.set(data.subarray(0, Math.min(data.length, 16384)));
+                // 128K/Pentagon mode
+                // Page numbers 3-10 map to RAM banks 0-7
+                // Page 0 = 48K ROM (bank 1 for 128K/Pentagon)
+                // Page 2 = 128K ROM (bank 0 for 128K/Pentagon)
+                if (pageNum === 0) {
+                    // 48K ROM modifications - load into ROM bank 1
+                    const romBank = memory.rom[1];
+                    console.log('[Z80 Loader] Loading ROM page 0 (48K ROM) into bank 1, romBank exists:', !!romBank);
+                    if (romBank) {
+                        romBank.set(data.subarray(0, Math.min(data.length, 16384)));
+                        console.log('[Z80 Loader] ROM bank 1 loaded, first bytes:', Array.from(data.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+                    }
+                } else if (pageNum === 2) {
+                    // 128K ROM modifications - load into ROM bank 0
+                    const romBank = memory.rom[0];
+                    console.log('[Z80 Loader] Loading ROM page 2 (128K ROM) into bank 0, romBank exists:', !!romBank);
+                    if (romBank) {
+                        romBank.set(data.subarray(0, Math.min(data.length, 16384)));
+                        console.log('[Z80 Loader] ROM bank 0 loaded, first bytes:', Array.from(data.subarray(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+                    }
+                } else {
+                    const bankNum = pageNum - 3;
+                    if (bankNum >= 0 && bankNum <= 7) {
+                        const ramBank = memory.getRamBank(bankNum);
+                        if (ramBank) {
+                            ramBank.set(data.subarray(0, Math.min(data.length, 16384)));
+                        }
                     }
                 }
             }
@@ -1695,7 +1722,7 @@
 
             // TR-DOS entry point #3D13 (RANDOMIZE USR 15619)
             // This is called by BASIC when executing TR-DOS commands
-            if (pc === 0x3D13) {
+            if (this.cpu.pc === 0x3D13) {
                 return this.handleTRDOSCommand();
             }
 
@@ -2777,26 +2804,39 @@
     class RZXLoader {
         constructor() {
             this.frames = [];           // [{fetchCount, inputs: [value, ...]}]
-            this.snapshot = null;       // Uint8Array of embedded snapshot
-            this.snapshotExt = null;    // 'z80' or 'sna'
+            this.snapshot = null;       // Uint8Array of first embedded snapshot (for playback)
+            this.snapshotExt = null;    // 'z80' or 'sna' or 'szx'
+            this.allSnapshots = [];     // All snapshots: [{data: Uint8Array, ext: string, index: number}]
             this.totalFrames = 0;
             this.creatorInfo = null;
+            this.rawData = null;        // Store raw file for analysis
         }
 
         static isRZX(data) {
             if (data.byteLength < 10) return false;
-            const bytes = new Uint8Array(data);
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             return bytes[0] === 0x52 && bytes[1] === 0x5A &&
                    bytes[2] === 0x58 && bytes[3] === 0x21; // "RZX!"
         }
 
         async parse(data) {
-            const bytes = new Uint8Array(data);
-            if (!RZXLoader.isRZX(data)) {
+            // Normalize input to ArrayBuffer
+            let buffer;
+            if (data instanceof ArrayBuffer) {
+                buffer = data;
+            } else if (data instanceof Uint8Array) {
+                buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            } else {
+                throw new Error('RZX parse: expected ArrayBuffer or Uint8Array');
+            }
+
+            const bytes = new Uint8Array(buffer);
+            this.rawData = bytes;  // Store for analysis
+            if (!RZXLoader.isRZX(buffer)) {
                 throw new Error('Invalid RZX signature');
             }
 
-            const view = new DataView(data);
+            const view = new DataView(buffer);
             const majorVersion = bytes[4];
             const minorVersion = bytes[5];
             // const flags = view.getUint32(6, true);
@@ -2804,6 +2844,7 @@
             let offset = 10;
             this.frames = [];
             this.snapshot = null;
+            this.allSnapshots = [];
 
             while (offset < bytes.length - 5) {
                 const blockId = bytes[offset];
@@ -2820,7 +2861,20 @@
                         this.parseCreatorBlock(blockData);
                         break;
                     case 0x30: // Snapshot block
-                        await this.parseSnapshotBlock(blockData);
+                        // Parse and store ALL snapshots for exploration
+                        const snapInfo = await this.parseSnapshotBlockToObject(blockData);
+                        if (snapInfo) {
+                            this.allSnapshots.push({
+                                data: snapInfo.data,
+                                ext: snapInfo.ext,
+                                index: this.allSnapshots.length
+                            });
+                            // Use FIRST snapshot for playback
+                            if (!this.snapshot) {
+                                this.snapshot = snapInfo.data;
+                                this.snapshotExt = snapInfo.ext;
+                            }
+                        }
                         break;
                     case 0x80: // Input recording block
                         await this.parseInputBlock(blockData);
@@ -2848,6 +2902,39 @@
             };
         }
 
+        // Parse snapshot block and return as object (for tracking multiple snapshots)
+        async parseSnapshotBlockToObject(data) {
+            if (data.length < 12) {
+                console.warn('Snapshot block too short');
+                return null;
+            }
+
+            const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+            const flags = view.getUint32(0, true);
+            // Note: Spectaculator/FUSE use bit 1 for compression (not bit 0 as spec might suggest)
+            const compressed = (flags & 0x02) !== 0;
+
+            // Extension is 4 bytes at offset 4 (e.g., "z80\0" or "sna\0" or "szx\0")
+            let ext = '';
+            for (let i = 0; i < 4 && data[4 + i] !== 0; i++) {
+                ext += String.fromCharCode(data[4 + i]);
+            }
+            ext = ext.toLowerCase().replace('.', '') || 'z80';
+
+            // UncompLen at offset 8, snapshot data at offset 12 (always present in practice)
+            const uncompLen = view.getUint32(8, true);
+            const snapData = data.slice(12);
+
+            let snapBytes;
+            if (compressed && snapData.length > 0) {
+                snapBytes = await this.decompress(snapData, uncompLen);
+            } else {
+                snapBytes = new Uint8Array(snapData);
+            }
+
+            return { data: snapBytes, ext };
+        }
+
         async parseSnapshotBlock(data) {
             if (data.length < 12) {
                 throw new Error('Snapshot block too short');
@@ -2855,6 +2942,7 @@
 
             const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
             const flags = view.getUint32(0, true);
+            // Note: Spectaculator/FUSE use bit 1 for compression (not bit 0 as spec might suggest)
             const compressed = (flags & 0x02) !== 0;
 
             // Extension is 4 bytes at offset 4 (e.g., "z80\0" or "sna\0")
@@ -2864,10 +2952,8 @@
             }
             this.snapshotExt = ext.toLowerCase().replace('.', '') || 'z80';
 
-            // Uncompressed length at offset 8
+            // UncompLen at offset 8, snapshot data at offset 12 (always present in practice)
             const uncompLen = view.getUint32(8, true);
-
-            // Snapshot data starts at offset 12
             const snapData = data.slice(12);
 
             if (compressed && snapData.length > 0) {
@@ -2896,8 +2982,13 @@
                 try {
                     frameData = await this.decompress(data.slice(13));
                 } catch (e) {
-                    // Try without decompression
-                    frameData = data.slice(13);
+                    console.warn('RZX: Decompression failed, trying raw data:', e.message);
+                    // Only use raw data if it looks reasonable (not too small)
+                    if (data.length > 17) {
+                        frameData = data.slice(13);
+                    } else {
+                        throw new Error('RZX decompression failed and raw data too small');
+                    }
                 }
             } else {
                 frameData = data.slice(13);
@@ -3002,10 +3093,137 @@
             return this.frames[frameNum];
         }
 
+        // Get all frames for analysis
+        getFrames() {
+            return this.frames;
+        }
+
+        // Analyze keypresses across all frames
+        // Returns array of keypress events with timing info
+        analyzeKeypresses() {
+            const events = [];
+            const currentKeys = new Map(); // key -> startFrame
+
+            // Keyboard matrix rows
+            const keyRows = {
+                0xFE: ['Shift', 'Z', 'X', 'C', 'V'],
+                0xFD: ['A', 'S', 'D', 'F', 'G'],
+                0xFB: ['Q', 'W', 'E', 'R', 'T'],
+                0xF7: ['1', '2', '3', '4', '5'],
+                0xEF: ['0', '9', '8', '7', '6'],
+                0xDF: ['P', 'O', 'I', 'U', 'Y'],
+                0xBF: ['Enter', 'L', 'K', 'J', 'H'],
+                0x7F: ['Space', 'Sym', 'M', 'N', 'B']
+            };
+
+            // Helper to decode a single port/value pair
+            const decodeInput = (port, value) => {
+                const keys = [];
+                const highByte = (port >> 8) & 0xFF;
+                for (const [rowMask, rowKeys] of Object.entries(keyRows)) {
+                    const mask = parseInt(rowMask);
+                    if ((highByte & mask) !== mask) {
+                        for (let bit = 0; bit < 5; bit++) {
+                            if ((value & (1 << bit)) === 0) {
+                                keys.push(rowKeys[bit]);
+                            }
+                        }
+                    }
+                }
+                return keys;
+            };
+
+            // Track pressed keys per frame (simplified - assumes 0xFExx port reads)
+            for (let frameNum = 0; frameNum < this.frames.length; frameNum++) {
+                const frame = this.frames[frameNum];
+                const frameKeys = new Set();
+
+                // Decode all inputs in this frame
+                for (const input of frame.inputs) {
+                    // Assume keyboard reads (port 0xFEFE typically, but we'll check all rows)
+                    // Since we don't track the port in inputs, assume full keyboard scan
+                    // A value of 0xBF or similar means some keys pressed
+                    for (let bit = 0; bit < 5; bit++) {
+                        if ((input & (1 << bit)) === 0) {
+                            // This bit indicates a key pressed, but we don't know which row
+                            // For analysis, we'll track the raw bit pattern
+                            frameKeys.add(`bit${bit}`);
+                        }
+                    }
+                }
+
+                // Check for key state changes
+                for (const [key, startFrame] of currentKeys) {
+                    if (!frameKeys.has(key)) {
+                        // Key released
+                        events.push({
+                            key,
+                            startFrame,
+                            endFrame: frameNum - 1,
+                            duration: frameNum - startFrame
+                        });
+                        currentKeys.delete(key);
+                    }
+                }
+                for (const key of frameKeys) {
+                    if (!currentKeys.has(key)) {
+                        // Key pressed
+                        currentKeys.set(key, frameNum);
+                    }
+                }
+            }
+
+            // Close any remaining held keys
+            for (const [key, startFrame] of currentKeys) {
+                events.push({
+                    key,
+                    startFrame,
+                    endFrame: this.frames.length - 1,
+                    duration: this.frames.length - startFrame
+                });
+            }
+
+            return events;
+        }
+
+        // Get frame statistics
+        getStats() {
+            if (this.frames.length === 0) return null;
+
+            let totalInputs = 0;
+            let totalFetchCount = 0;
+            let minFetch = Infinity, maxFetch = 0;
+            let minInputs = Infinity, maxInputs = 0;
+
+            for (const frame of this.frames) {
+                totalInputs += frame.inputs.length;
+                totalFetchCount += frame.fetchCount;
+                minFetch = Math.min(minFetch, frame.fetchCount);
+                maxFetch = Math.max(maxFetch, frame.fetchCount);
+                minInputs = Math.min(minInputs, frame.inputs.length);
+                maxInputs = Math.max(maxInputs, frame.inputs.length);
+            }
+
+            return {
+                frameCount: this.frames.length,
+                totalInputs,
+                totalFetchCount,
+                avgFetchCount: Math.round(totalFetchCount / this.frames.length),
+                avgInputsPerFrame: (totalInputs / this.frames.length).toFixed(1),
+                fetchRange: { min: minFetch, max: maxFetch },
+                inputsRange: { min: minInputs, max: maxInputs },
+                durationSeconds: (this.frames.length / 50).toFixed(1) // 50 fps
+            };
+        }
+
         // Get next input for current frame
         getNextInput(frameNum) {
             const frame = this.frames[frameNum];
-            if (!frame || frame.inputIndex >= frame.inputs.length) return null;
+            if (!frame) return null;
+            if (frame.inputIndex >= frame.inputs.length) {
+                // Inputs exhausted - return last valid input to avoid sudden value changes
+                return frame.inputs.length > 0 ? frame.inputs[frame.inputs.length - 1] : 0xBF;
+            }
             return frame.inputs[frame.inputIndex++];
         }
 
@@ -3013,6 +3231,18 @@
         resetFrameInputs(frameNum) {
             const frame = this.frames[frameNum];
             if (frame) frame.inputIndex = 0;
+        }
+
+        // Get frame info for debugging
+        getFrameInfo(frameNum) {
+            const frame = this.frames[frameNum];
+            if (!frame) return null;
+            return {
+                fetchCount: frame.fetchCount,
+                inputCount: frame.inputs.length,
+                inputIndex: frame.inputIndex,
+                inputs: frame.inputs  // Include actual input data for debugging
+            };
         }
 
         // Reset all frames
@@ -3460,6 +3690,8 @@
             for (const chunk of info.chunks) {
                 if (chunk.id === 'Z80R') {
                     const r = bytes.slice(chunk.offset, chunk.offset + chunk.size);
+                    // Debug: log raw Z80R bytes for iff1/iff2/halted/tStates
+                    const tStates = r[29] | (r[30] << 8) | (r[31] << 16) | (r[32] << 24);
                     cpu.f = r[0]; cpu.a = r[1];
                     cpu.c = r[2]; cpu.b = r[3];
                     cpu.e = r[4]; cpu.d = r[5];
@@ -3477,9 +3709,16 @@
                     cpu.iff1 = r[26] & 1;
                     cpu.iff2 = r[27] & 1;
                     cpu.im = r[28];
-                    // r[29-32] are T-states (ignored for now)
-                    // r[33] is halt state
-                    if (r[33]) cpu.halted = true;
+                    // r[29-32] are T-states
+                    cpu.tStates = r[29] | (r[30] << 8) | (r[31] << 16) | (r[32] << 24);
+                    // r[33] is halt state - but don't trust it if PC indicates interrupt execution
+                    // PC=0x38 (IM1) or PC=0x66 (NMI) means CPU is executing handler, not halted
+                    const pc = cpu.pc;
+                    if (r[33] && pc !== 0x0038 && pc !== 0x0066) {
+                        cpu.halted = true;
+                    } else {
+                        cpu.halted = false;
+                    }
                     break;
                 }
             }
@@ -3506,6 +3745,9 @@
                         if (bank) bank.set(pageData.slice(0, 16384));
                     }
                 }
+                // Reset paging lock before setting paging state from snapshot
+                // (otherwise writePaging returns early if previous program locked paging)
+                memory.pagingDisabled = false;
                 // Set paging state
                 memory.writePaging(port7FFD);
             } else {

@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.9.10
+ * @version 0.9.12
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.10';
+    const VERSION = '0.9.12';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -161,8 +161,25 @@
             this.rzxFrame = 0;          // Current frame number
             this.rzxPlaying = false;    // Whether RZX playback is active
             this.rzxData = null;        // Original RZX file data for project save
-            this.rzxTstates = 0;        // T-states into current RZX frame (persists across emu frames)
+            this.rzxInstructions = 0;   // Instruction count into current RZX frame
+            this.rzxFrameStartInstr = 0; // CPU instruction count at start of emu frame
+            this.rzxFirstInterrupt = true; // Skip first frame advance after snapshot
             this.onRZXEnd = null;       // Callback when playback ends
+            this.rzxRecentInputs = [];  // Recent RZX inputs for debug display
+            this.rzxLastPort = 0;       // Last port read for RZX
+            this.rzxDebugAddr = 0;      // Address to log during RZX (0=disabled, e.g. 0x8F8C for RNG)
+            this.portLog = [];          // Port I/O log for debugging
+            this.portLogEnabled = false; // Whether to log port I/O
+
+            // RZX recording state
+            this.rzxRecording = false;      // Whether RZX recording is active
+            this.rzxRecordPending = false;  // Recording starts at next frame boundary
+            this.rzxRecordedFrames = [];    // Array of {fetchCount, inputs: []}
+            this.rzxRecordCurrentFrame = null; // Current frame being recorded
+            this.rzxRecordStartInstr = 0;   // CPU instruction count at start of recording frame
+            this.rzxRecordTstates = 0;      // T-state position when recording started
+            this.rzxRecordSnapshot = null;  // Initial snapshot (Uint8Array)
+            this.rzxRecordSnapshotType = 'szx'; // Snapshot format (SZX preserves halted state)
 
             // Kempston joystick state (active high)
             // Bit 0: Right, Bit 1: Left, Bit 2: Down, Bit 3: Up, Bit 4: Fire
@@ -282,10 +299,7 @@
                 this.ula.mcWriteAdjust = 5;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        // In fast mode, just set the flag (no per-write tracking)
-                        if (!this.ula.fastMulticolor) {
-                            this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
-                        }
+                        this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -417,13 +431,10 @@
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        // In fast mode, just set the flag (no per-write tracking)
-                        if (!this.ula.fastMulticolor) {
-                            // Calculate write time: cpu.tStates already has contention delays,
-                            // mcycleOffset tracks position in instruction for accurate timing
-                            const writeT = this.cpu.tStates + mcycleOffset;
-                            this.ula.setAttrAt(addr - 0x5800, val, writeT);
-                        }
+                        // Calculate write time: cpu.tStates already has contention delays,
+                        // mcycleOffset tracks position in instruction for accurate timing
+                        const writeT = this.cpu.tStates + mcycleOffset;
+                        this.ula.setAttrAt(addr - 0x5800, val, writeT);
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -538,10 +549,8 @@
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= 0x5800 && addr <= 0x5AFF) {
-                        if (!this.ula.fastMulticolor) {
-                            const writeT = this.cpu.tStates + mcycleOffset;
-                            this.ula.setAttrAt(addr - 0x5800, val, writeT);
-                        }
+                        const writeT = this.cpu.tStates + mcycleOffset;
+                        this.ula.setAttrAt(addr - 0x5800, val, writeT);
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -558,9 +567,7 @@
             this.ula.mcWriteAdjust = 5;
             this.cpu.onMemWrite = (addr, val) => {
                 if (addr >= 0x5800 && addr <= 0x5AFF) {
-                    if (!this.ula.fastMulticolor) {
-                        this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
-                    }
+                    this.ula.setAttrAt(addr - 0x5800, val, this.cpu.tStates);
                     this.ula.hadAttrChanges = true;
                 }
             };
@@ -819,29 +826,29 @@
                 console.log(`[PORT-READ] T=${t} port=0x${port.toString(16).padStart(4,'0')}`);
             }
 
-            // RZX playback - return recorded input
-            // NOTE: RZX support is partial. Recordings with non-standard fetchCount
-            // (e.g., ~17750 instead of ~70000) may desync because our emulator fires
-            // one interrupt per video frame while the recording may expect different timing.
-            // TODO: Investigate proper RZX frame synchronization for all recording types.
+            // RZX playback - return recorded input for ALL port reads
+            // RZX records ALL IN instruction results, not just keyboard ports
+            // Frame advancement happens at interrupt time (1:1 sync)
+            let rzxHandled = false;
             if (this.rzxPlaying && this.rzxPlayer) {
-                // Calculate which RZX frame we should be in based on accumulated T-states
-                let accum = this.rzxTstates + this.cpu.tStates;
-                let frameIdx = this.rzxFrame;
-
-                // Find the correct frame based on fetchCount boundaries
-                while (frameIdx < this.rzxPlayer.getFrameCount()) {
-                    const frame = this.rzxPlayer.getFrame(frameIdx);
-                    if (!frame) break;
-                    const fetchCount = frame.fetchCount > 0 ? frame.fetchCount : 17750;
-                    if (accum < fetchCount) break;
-                    accum -= fetchCount;
-                    frameIdx++;
-                }
+                const frameIdx = this.rzxFrame;
+                const frameInfo = this.rzxPlayer.getFrameInfo(frameIdx);
+                const inputIdxBefore = frameInfo ? frameInfo.inputIndex : -1;
 
                 const input = this.rzxPlayer.getNextInput(frameIdx);
                 result = (input !== null) ? input : 0xFF;
-            } else {
+                rzxHandled = true;
+
+                // Store recent input for debug overlay
+                this.rzxLastPort = port;
+                this.rzxRecentInputs.push({ port, value: result, frame: frameIdx });
+                if (this.rzxRecentInputs.length > 10) {
+                    this.rzxRecentInputs.shift();
+                }
+            }
+
+            // Normal port emulation (also used for non-keyboard ports during RZX playback)
+            if (!rzxHandled) {
                 // Check port breakpoint using unified trigger system
                 if (this.running && this.triggers.length > 0) {
                     const trigger = this.checkPortTriggers(port, 0xff, false);
@@ -885,7 +892,6 @@
                         this._lastTapeUpdate = this.cpu.tStates;  // Reset tape timing tracker
                         this.tapePlayer.play();
                         this._turboBlockPending = false;
-                        console.log(`[TZX] Auto-started turbo block playback on port 0xFE read`);
                     }
 
                     // CRITICAL: Update tape to the T-state when I/O actually occurs
@@ -969,13 +975,42 @@
                 this.tracePortOps.push({ dir: 'in', port, val: result });
             }
 
+            // Port I/O logging for debugging
+            if (this.portLogEnabled) {
+                this.portLog.push({
+                    dir: 'IN',
+                    port: port,
+                    value: result,
+                    pc: this.cpu.pc,
+                    frame: this.rzxPlaying ? this.rzxFrame : -1,
+                    t: this.cpu.tStates
+                });
+            }
+
+            // RZX recording - record all port read results
+            if (this.rzxRecording && this.rzxRecordCurrentFrame) {
+                this.rzxRecordCurrentFrame.inputs.push(result);
+            }
+
             return result;
         }
-        
+
         portWrite(port, val, instructionTiming = 12) {
             // Track port write for trace (only during runtime tracing, not step tracing)
             if (this.runtimeTraceEnabled && this.onBeforeStep) {
                 this.tracePortOps.push({ dir: 'out', port, val });
+            }
+
+            // Port I/O logging for debugging
+            if (this.portLogEnabled) {
+                this.portLog.push({
+                    dir: 'OUT',
+                    port: port,
+                    value: val,
+                    pc: this.cpu.pc,
+                    frame: this.rzxPlaying ? this.rzxFrame : -1,
+                    t: this.cpu.tStates
+                });
             }
 
             // Check port breakpoint using unified trigger system
@@ -1143,8 +1178,10 @@
             // Reset accumulated contention for new frame (ULA timing)
             this.accumulatedContention = 0;
 
-            // Poll hardware gamepad at start of frame
-            this.pollGamepad();
+            // Poll hardware gamepad at start of frame (disabled during RZX playback)
+            if (!this.rzxPlaying) {
+                this.pollGamepad();
+            }
 
             this.ula.startFrame();
             this.ula.processExtendedMode(); // Process extended mode key sequences
@@ -1154,6 +1191,13 @@
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
                 this.tapePlayer.startFrame(this.cpu.tStates);
+            }
+
+            // RZX playback: reset T-states at frame start for proper scanline rendering
+            // RZX frames end based on instruction count, not T-states, so T-states can drift
+            // This ensures all scanlines are rendered from the beginning each frame
+            if (this.rzxPlaying) {
+                this.cpu.tStates = 0;
             }
 
             // Track which line to render next (account for overshoot)
@@ -1170,13 +1214,53 @@
             const earlyIntPoint = (this.machineType === '48k' && !this.lateTimings) ?
                                    (tstatesPerFrame - 4) : tstatesPerFrame;
 
+            // RZX recording: track instruction count before first interrupt
+            let rzxRecInstrBeforeInt = this.rzxRecording ? this.cpu.instructionCount : 0;
+
             // Fire interrupt if within INT pulse window from previous frame overshoot
             // INT pulse started at earlyIntPoint and lasts intPulseDuration T-states
-            if (this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
-                this.cpu.iff1 && !this.cpu.eiPending) {
+            // During RZX playback: fire early interrupt unconditionally if CPU is halted
+            // (HALT can only exit via interrupt, and T-states may not be in sync during RZX)
+            const rzxHaltedNeedsInt = this.rzxPlaying && this.cpu.halted && this.cpu.iff1 && !this.cpu.eiPending;
+            const normalIntWindow = !this.rzxPlaying &&
+                this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
+                this.cpu.iff1 && !this.cpu.eiPending;
+            if (rzxHaltedNeedsInt || normalIntWindow) {
+                // RZX recording: capture instruction count BEFORE interrupt
+                if (this.rzxRecording && !intFired) {
+                    rzxRecInstrBeforeInt = this.cpu.instructionCount;
+                }
+                // If CPU is halted, count the final HALT NOP M1 before interrupt fires
+                if (this.cpu.halted) {
+                    this.cpu.incR();
+                    this.cpu.instructionCount++;  // HALT NOP M1 cycle
+                    // Update capture after HALT NOP
+                    if (this.rzxRecording && !intFired) {
+                        rzxRecInstrBeforeInt = this.cpu.instructionCount;
+                    }
+                }
                 const intTstates = this.cpu.interrupt();
                 this.cpu.tStates += intTstates;
                 intFired = true;
+
+                // RZX recording: start recording RIGHT AFTER interrupt fires
+                // This ensures snapshot is at interrupt handler entry (PC=$0038, IFF1=false)
+                // and Frame 0 captures the keyboard scan that follows
+                if (this.rzxRecordPending) {
+                    this.rzxStartRecordingNow();
+                }
+            }
+
+            // RZX playback: cache expected fetch count for this frame
+            let rzxExpectedFetchCount = 0;
+            let rzxSafetyLimit = 0;  // Safety limit to prevent infinite loops
+            if (this.rzxPlaying && this.rzxPlayer) {
+                const frameInfo = this.rzxPlayer.getFrameInfo(this.rzxFrame);
+                if (frameInfo) {
+                    rzxExpectedFetchCount = frameInfo.fetchCount;
+                    // Safety limit: 2x expected count - if exceeded, something is very wrong
+                    rzxSafetyLimit = rzxExpectedFetchCount * 2;
+                }
             }
 
             // Cache feature flags before the loop (avoid repeated property access)
@@ -1190,8 +1274,9 @@
             const tapeTrapsEnabled = this.tapeTrapsEnabled;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
-            // Main frame loop - runs until tstatesPerFrame
-            while (this.cpu.tStates < tstatesPerFrame) {
+            // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
+            // During RZX playback, frame ends based on instruction count, not T-states (FUSE-style)
+            while (this.rzxPlaying ? true : this.cpu.tStates < tstatesPerFrame) {
 
                 // Render complete scanline (paper + border) at line END
                 while (nextLineToRender < totalLines) {
@@ -1258,21 +1343,27 @@
                     }
 
                     // Check if INT will fire during this HALT NOP cycle
-                    // INT acknowledged at end of HALT NOP cycle (instruction boundary)
-                    // Only for 48K early timing: INT at T=69884
-                    // 48K late and 128K/Pentagon use frame-start INT timing
+                    // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
                     const nextT = this.cpu.tStates + 4;
                     const is48kEarly = this.machineType === '48k' && !this.lateTimings;
-                    if (!intFired && is48kEarly &&
-                        this.cpu.tStates <= earlyIntPoint && nextT > earlyIntPoint &&
+                    if (!this.rzxPlaying && !intFired && is48kEarly &&
+                        this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                         this.cpu.iff1 && !this.cpu.eiPending) {
                         // Complete HALT NOP cycle + 4T alignment to match Swan timing
-                        // Swan shows T=60 at $805B, we had T=41, need +19T but only 4T affects quantized border
                         this.cpu.tStates = nextT + 4;
                         this.cpu.incR();
+                        this.cpu.instructionCount++;  // HALT NOP is an M1 cycle
+                        // RZX recording: capture instruction count BEFORE interrupt
+                        if (this.rzxRecording) {
+                            rzxRecInstrBeforeInt = this.cpu.instructionCount;
+                        }
                         const intTstates = this.cpu.interrupt();
                         this.cpu.tStates += intTstates;
                         intFired = true;
+                        // RZX recording: start recording RIGHT AFTER interrupt fires
+                        if (this.rzxRecordPending) {
+                            this.rzxStartRecordingNow();
+                        }
                         this.autoMap.inExecution = false;
                         continue;
                     }
@@ -1280,11 +1371,28 @@
                     // Normal HALT NOP - no INT during this cycle
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
 
                     // Record trace for first HALT only (avoids flooding trace with repeated HALTs)
                     if (tracing && !this.haltTraced) {
                         this.haltTraced = true;
-                        this.onBeforeStep(this.cpu, this.memory, this.cpu.pc, null, null);
+                        // HALT is always 0x76
+                        this.onBeforeStep(this.cpu, this.memory, this.cpu.pc, null, null, [0x76, 0, 0, 0]);
+                    }
+
+                    // RZX playback: check if instruction count reached (FUSE-style frame end)
+                    if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
+                        const m1Count = this.cpu.instructionCount - this.rzxFrameStartInstr;
+                        if (m1Count >= rzxExpectedFetchCount) {
+                            this.autoMap.inExecution = false;
+                            break;  // End frame - instruction count reached
+                        }
+                        // Safety check: if way over expected count, break to prevent infinite loop
+                        if (rzxSafetyLimit > 0 && m1Count > rzxSafetyLimit) {
+                            console.error(`RZX F${this.rzxFrame}: safety limit exceeded (HALT)! M1=${m1Count} expected=${rzxExpectedFetchCount} limit=${rzxSafetyLimit}`);
+                            this.autoMap.inExecution = false;
+                            break;
+                        }
                     }
                 } else {
                     // Reset HALT traced flag when CPU exits HALT
@@ -1294,16 +1402,45 @@
                         this.tracePortOps = [];
                         this.traceMemOps = [];
                     }
-                    // Capture PC before execution for xref/trace tracking
+                    // Capture PC and instruction bytes before execution for xref/trace tracking
+                    // (instruction may modify memory at its own address, e.g. LD (nn),IX)
                     const instrPC = needsInstrPC ? this.cpu.pc : 0;
+                    let instrBytes = null;
+                    if (tracing) {
+                        instrBytes = [
+                            this.memory.read(instrPC),
+                            this.memory.read((instrPC + 1) & 0xffff),
+                            this.memory.read((instrPC + 2) & 0xffff),
+                            this.memory.read((instrPC + 3) & 0xffff)
+                        ];
+                    }
                     this.cpu.execute();
+                    // If HALT instruction was just executed, mark as traced to avoid duplicate
+                    if (this.cpu.halted) {
+                        this.haltTraced = true;
+                    }
                     // Record trace after execution (includes port/mem ops)
                     if (tracing) {
-                        this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                        this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                     }
                     // Call xref tracking callback if enabled
                     if (xrefEnabled) {
                         this.onInstructionExecuted(instrPC);
+                    }
+
+                    // RZX playback: check if instruction count reached (FUSE-style frame end)
+                    if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
+                        const m1Count = this.cpu.instructionCount - this.rzxFrameStartInstr;
+                        if (m1Count >= rzxExpectedFetchCount) {
+                            this.autoMap.inExecution = false;
+                            break;  // End frame - instruction count reached
+                        }
+                        // Safety check: if way over expected count, break to prevent infinite loop
+                        if (rzxSafetyLimit > 0 && m1Count > rzxSafetyLimit) {
+                            console.error(`RZX F${this.rzxFrame}: safety limit exceeded! M1=${m1Count} expected=${rzxExpectedFetchCount} limit=${rzxSafetyLimit}`);
+                            this.autoMap.inExecution = false;
+                            break;
+                        }
                     }
                 }
 
@@ -1365,6 +1502,22 @@
                 }
             }
 
+            // RZX playback: capture M1 count BEFORE interrupt (fetchCount excludes interrupt acknowledge)
+            const rzxM1BeforeInt = this.rzxPlaying ? (this.cpu.instructionCount - this.rzxFrameStartInstr) : 0;
+
+            // RZX recording: calculate fetchCount at end of frame (after all instructions)
+            // This matches RZX playback which uses M1 count at frame boundary, not at early interrupt
+            const rzxRecFetchCount = this.rzxRecording ?
+                (this.cpu.instructionCount - this.rzxRecordStartInstr) : 0;
+
+            // RZX playback: fire interrupt at frame end (FUSE-style)
+            // During RZX playback, the frame ended when instruction count was reached
+            // Now fire the interrupt to start the next frame's execution
+            if (this.rzxPlaying && this.cpu.iff1 && !this.cpu.eiPending) {
+                const intTstates = this.cpu.interrupt();
+                this.cpu.tStates += intTstates;
+            }
+
             // Render remaining lines
             while (nextLineToRender < totalLines) {
                 this.ula.renderScanline(nextLineToRender++);
@@ -1375,9 +1528,6 @@
             // Handle border-only modes: replace paper area with border color
             // Use proper T-state calculation to extend border into paper area
             const borderOnlyMode = this.overlayMode === 'screen' || this.overlayMode === 'beamscreen';
-            if (borderOnlyMode && this.ula.debugScreenRendering) {
-                console.log(`[Spectrum WARNING] borderOnlyMode active: overlayMode='${this.overlayMode}' - paper area will be replaced with border colors`);
-            }
             if (borderOnlyMode) {
                 const dims = this.ula.getDimensions();
                 const changes = this.ula.borderChanges;
@@ -1458,28 +1608,51 @@
                 this.ay.advanceLogFrame();
             }
 
-            // RZX: advance frames based on accumulated T-states
+            // RZX: advance 1 frame per emu frame (1:1 sync)
             if (this.rzxPlaying && this.rzxPlayer) {
-                this.rzxTstates += tstatesPerFrame;
-
-                // Advance through RZX frames
-                while (this.rzxPlaying && this.rzxFrame < this.rzxPlayer.getFrameCount()) {
-                    const frame = this.rzxPlayer.getFrame(this.rzxFrame);
-                    if (!frame) break;
-                    const fetchCount = frame.fetchCount > 0 ? frame.fetchCount : 17750;
-
-                    if (this.rzxTstates >= fetchCount) {
-                        this.rzxTstates -= fetchCount;
-                        this.rzxFrame++;
-                    } else {
-                        break;
+                // Check input consumption before advancing (mismatch indicates desync)
+                const frameInfo = this.rzxPlayer.getFrameInfo(this.rzxFrame);
+                if (frameInfo) {
+                    // Log M1 count mismatches (indicates instruction counting bug)
+                    const diff = rzxM1BeforeInt - frameInfo.fetchCount;
+                    if (diff !== 0) {
+                        console.warn(`RZX F${this.rzxFrame}: M1 mismatch! actual=${rzxM1BeforeInt} expected=${frameInfo.fetchCount} diff=${diff}`);
                     }
+                    // Log input consumption mismatches (indicates code path divergence)
+                    if (frameInfo.inputIndex !== frameInfo.inputCount) {
+                        console.warn(`RZX F${this.rzxFrame}: input mismatch! consumed=${frameInfo.inputIndex}/${frameInfo.inputCount}`);
+                    }
+                }
+
+                this.rzxFrameStartInstr = this.cpu.instructionCount;
+
+                if (this.rzxFrame < this.rzxPlayer.getFrameCount() - 1) {
+                    this.rzxFrame++;
                 }
 
                 if (this.rzxFrame >= this.rzxPlayer.getFrameCount()) {
                     this.rzxStop();
                     if (this.onRZXEnd) this.onRZXEnd();
                 }
+            }
+
+            // RZX recording: finalize current frame and start new one
+            // Note: recording now starts immediately after interrupt fires (earlier in this function)
+            // This is just a fallback in case the interrupt didn't fire this frame
+            if (this.rzxRecordPending) {
+                // Fallback: start recording at frame boundary if interrupt hasn't fired yet
+                this.rzxStartRecordingNow();
+                console.warn('[RZX REC] Started at frame boundary (fallback) - interrupt may not have fired');
+            } else if (this.rzxRecording) {
+                // Use fetchCount captured BEFORE interrupt (rzxRecFetchCount from above)
+                if (this.rzxRecordCurrentFrame) {
+                    this.rzxRecordCurrentFrame.fetchCount = rzxRecFetchCount;
+                    this.rzxRecordedFrames.push(this.rzxRecordCurrentFrame);
+                }
+
+                // Start new frame - capture instruction count AFTER interrupt for next frame's start
+                this.rzxRecordCurrentFrame = { fetchCount: 0, inputs: [] };
+                this.rzxRecordStartInstr = this.cpu.instructionCount;
             }
 
             // Call pending snap callback at frame boundary (safe state for snapshots)
@@ -1530,6 +1703,13 @@
                 this.tapePlayer.startFrame(this.cpu.tStates);
             }
 
+            // RZX playback: reset T-states at frame start for proper scanline rendering
+            // RZX frames end based on instruction count, not T-states, so T-states can drift
+            // This ensures all scanlines are rendered from the beginning each frame
+            if (this.rzxPlaying) {
+                this.cpu.tStates = 0;
+            }
+
             // INT pulse duration (32 T-states for 48K, 36 for 128K/Pentagon)
             const intPulseDuration = (this.machineType === '128k' || this.machineType === 'pentagon') ? 36 : 32;
             let intFired = false;
@@ -1541,19 +1721,39 @@
                                    (tstatesPerFrame - 4) : tstatesPerFrame;
 
             // Fire interrupt if within INT pulse window from previous frame overshoot
-            if (this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
+            // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
+            if (!this.rzxPlaying &&
+                this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
                 this.cpu.iff1 && !this.cpu.eiPending) {
+                // If CPU is halted, count the final HALT NOP M1 before interrupt fires
+                if (this.cpu.halted) {
+                    this.cpu.incR();
+                    this.cpu.instructionCount++;  // HALT NOP M1 cycle
+                }
                 const intTstates = this.cpu.interrupt();
                 this.cpu.tStates += intTstates;
                 intFired = true;
+            }
+
+            // RZX playback: cache expected fetch count for this frame
+            let rzxExpectedFetchCount = 0;
+            let rzxSafetyLimit = 0;  // Safety limit to prevent infinite loops
+            if (this.rzxPlaying && this.rzxPlayer) {
+                const frameInfo = this.rzxPlayer.getFrameInfo(this.rzxFrame);
+                if (frameInfo) {
+                    rzxExpectedFetchCount = frameInfo.fetchCount;
+                    // Safety limit: 2x expected count - if exceeded, something is very wrong
+                    rzxSafetyLimit = rzxExpectedFetchCount * 2;
+                }
             }
 
             // Track which line to render next (same as runFrame for consistent output)
             let nextLineToRender = Math.floor(this.cpu.tStates / tstatesPerLine);
             const totalLines = Math.floor(tstatesPerFrame / tstatesPerLine);
 
-            // Main frame loop - runs until tstatesPerFrame
-            while (this.cpu.tStates < tstatesPerFrame) {
+            // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
+            // During RZX playback, frame ends based on instruction count, not T-states (FUSE-style)
+            while (this.rzxPlaying ? true : this.cpu.tStates < tstatesPerFrame) {
                 // Render complete scanlines as we pass them (same as runFrame)
                 while (nextLineToRender < totalLines) {
                     const lineEndT = (nextLineToRender + 1) * tstatesPerLine;
@@ -1602,10 +1802,11 @@
                     // INT acknowledged at end of HALT NOP cycle (instruction boundary)
                     // Only for 48K early timing: INT at T=69884
                     // 48K late and 128K/Pentagon use frame-start INT timing
+                    // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
                     const nextT = this.cpu.tStates + 4;
-                    const is48kEarly = this.machineType === '48k' && !this.lateTimings;
-                    if (!intFired && is48kEarly &&
-                        this.cpu.tStates <= earlyIntPoint && nextT > earlyIntPoint &&
+                    const is48kEarly = this.machineType === '48k' && !this.lateTimings;  // Cached in runFrame, needed here for runFrameHeadless
+                    if (!this.rzxPlaying && !intFired && is48kEarly &&
+                        this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                         this.cpu.iff1 && !this.cpu.eiPending) {
                         // Complete HALT NOP cycle + 4T alignment to match Swan timing
                         // Swan shows T=60 at $805B, we had T=41, need +19T but only 4T affects quantized border
@@ -1620,8 +1821,35 @@
                     // Normal HALT NOP - no INT during this cycle
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
+
+                    // RZX playback: check if instruction count reached (FUSE-style frame end)
+                    if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
+                        const m1Count = this.cpu.instructionCount - this.rzxFrameStartInstr;
+                        if (m1Count >= rzxExpectedFetchCount) {
+                            break;  // End frame - instruction count reached
+                        }
+                        // Safety check: if way over expected count, break to prevent infinite loop
+                        if (rzxSafetyLimit > 0 && m1Count > rzxSafetyLimit) {
+                            console.error(`RZX F${this.rzxFrame}: safety limit exceeded (HALT)! M1=${m1Count} expected=${rzxExpectedFetchCount}`);
+                            break;
+                        }
+                    }
                 } else {
                     this.cpu.execute();
+
+                    // RZX playback: check if instruction count reached (FUSE-style frame end)
+                    if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
+                        const m1Count = this.cpu.instructionCount - this.rzxFrameStartInstr;
+                        if (m1Count >= rzxExpectedFetchCount) {
+                            break;  // End frame - instruction count reached
+                        }
+                        // Safety check: if way over expected count, break to prevent infinite loop
+                        if (rzxSafetyLimit > 0 && m1Count > rzxSafetyLimit) {
+                            console.error(`RZX F${this.rzxFrame}: safety limit exceeded! M1=${m1Count} expected=${rzxExpectedFetchCount}`);
+                            break;
+                        }
+                    }
                 }
 
                 // Update tape player for real-time playback
@@ -1635,6 +1863,16 @@
                     }
                     this.tapeEarBit = this.tapePlayer.getEarBit();
                 }
+            }
+
+            // RZX playback: capture M1 count BEFORE interrupt (fetchCount excludes interrupt acknowledge)
+            // (Note: runFrameHeadless doesn't log RZX mismatches but captures for consistency)
+            const rzxM1BeforeInt = this.rzxPlaying ? (this.cpu.instructionCount - this.rzxFrameStartInstr) : 0;
+
+            // RZX playback: fire interrupt at frame end (FUSE-style)
+            if (this.rzxPlaying && this.cpu.iff1 && !this.cpu.eiPending) {
+                const intTstates = this.cpu.interrupt();
+                this.cpu.tStates += intTstates;
             }
 
             // Render any remaining scanlines (same as runFrame)
@@ -1726,6 +1964,40 @@
                     }
                     break;
             }
+        }
+
+        // Decode ZX Spectrum keyboard port read to key names
+        decodeKeyboardInput(port, value) {
+            // Keyboard matrix - high byte of port selects row
+            const rows = {
+                0xFE: ['Shift', 'Z', 'X', 'C', 'V'],
+                0xFD: ['A', 'S', 'D', 'F', 'G'],
+                0xFB: ['Q', 'W', 'E', 'R', 'T'],
+                0xF7: ['1', '2', '3', '4', '5'],
+                0xEF: ['0', '9', '8', '7', '6'],
+                0xDF: ['P', 'O', 'I', 'U', 'Y'],
+                0xBF: ['Enter', 'L', 'K', 'J', 'H'],
+                0x7F: ['Space', 'Sym', 'M', 'N', 'B']
+            };
+
+            const highByte = (port >> 8) & 0xFF;
+            const keys = [];
+
+            // Check each row that's selected (active low in high byte)
+            for (const [rowMask, rowKeys] of Object.entries(rows)) {
+                const mask = parseInt(rowMask);
+                // If this row is selected (bit is 0)
+                if ((highByte & mask) !== mask) {
+                    // Check bits 0-4 for pressed keys (0 = pressed)
+                    for (let bit = 0; bit < 5; bit++) {
+                        if ((value & (1 << bit)) === 0) {
+                            keys.push(rowKeys[bit]);
+                        }
+                    }
+                }
+            }
+
+            return keys;
         }
 
         drawBoxOverlay() {
@@ -2612,13 +2884,22 @@
 
             // Beta Disk automatic ROM paging
             this.updateBetaDiskPaging();
-            // Clear trace ops and capture PC before execution
+            // Clear trace ops and capture PC/bytes before execution
             const tracing = this.traceEnabled && this.onBeforeStep;
             if (tracing) {
                 this.tracePortOps = [];
                 this.traceMemOps = [];
             }
             const instrPC = tracing ? this.cpu.pc : 0;
+            let instrBytes = null;
+            if (tracing) {
+                instrBytes = [
+                    this.memory.read(instrPC),
+                    this.memory.read((instrPC + 1) & 0xffff),
+                    this.memory.read((instrPC + 2) & 0xffff),
+                    this.memory.read((instrPC + 3) & 0xffff)
+                ];
+            }
             this.autoMap.inExecution = true;
             this.cpu.step();
             this.autoMap.inExecution = false;
@@ -2628,7 +2909,7 @@
 
             // Record trace after execution (includes port/mem ops)
             if (tracing) {
-                this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
             }
             if (this.autoMap.enabled) this.autoMap.currentFetchAddrs.clear();
             this.renderToScreen();
@@ -2769,12 +3050,21 @@
                     if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
                     return false;
                 }
-                // Clear trace ops and capture PC before execution
+                // Clear trace ops and capture PC/bytes before execution
                 if (tracing) {
                     this.tracePortOps = [];
                     this.traceMemOps = [];
                 }
                 const instrPC = tracing ? this.cpu.pc : 0;
+                let instrBytes = null;
+                if (tracing) {
+                    instrBytes = [
+                        this.memory.read(instrPC),
+                        this.memory.read((instrPC + 1) & 0xffff),
+                        this.memory.read((instrPC + 2) & 0xffff),
+                        this.memory.read((instrPC + 3) & 0xffff)
+                    ];
+                }
                 cycles += this.cpu.step();
 
                 // Handle frame boundary crossing (with late timing support)
@@ -2782,7 +3072,7 @@
 
                 // Record trace after execution
                 if (tracing) {
-                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                 }
             }
             this.autoMap.inExecution = false;
@@ -2957,16 +3247,25 @@
                     return false;
                 }
 
-                // Clear trace ops and capture PC before execution
+                // Clear trace ops and capture PC/bytes before execution
                 if (tracing) {
                     this.tracePortOps = [];
                     this.traceMemOps = [];
                 }
                 const instrPC = tracing ? this.cpu.pc : 0;
+                let instrBytes = null;
+                if (tracing) {
+                    instrBytes = [
+                        this.memory.read(instrPC),
+                        this.memory.read((instrPC + 1) & 0xffff),
+                        this.memory.read((instrPC + 2) & 0xffff),
+                        this.memory.read((instrPC + 3) & 0xffff)
+                    ];
+                }
                 cycles += this.cpu.step();
                 // Record trace after execution
                 if (tracing) {
-                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                 }
             }
 
@@ -3000,17 +3299,26 @@
                                                    this.memory.read((pc + 1) & 0xffff) === 0x4D));
 
                 if (isRet && cycles > 0) {
-                    // Clear trace ops and capture PC before RET
+                    // Clear trace ops and capture PC/bytes before RET
                     if (tracing) {
                         this.tracePortOps = [];
                         this.traceMemOps = [];
                     }
                     const instrPC = tracing ? this.cpu.pc : 0;
+                    let instrBytes = null;
+                    if (tracing) {
+                        instrBytes = [
+                            this.memory.read(instrPC),
+                            this.memory.read((instrPC + 1) & 0xffff),
+                            this.memory.read((instrPC + 2) & 0xffff),
+                            this.memory.read((instrPC + 3) & 0xffff)
+                        ];
+                    }
                     // Execute the RET and stop after
                     cycles += this.cpu.step();
                     // Record trace after execution
                     if (tracing) {
-                        this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                        this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                     }
                     this.autoMap.inExecution = false;
                     this.renderToScreen();
@@ -3026,12 +3334,21 @@
                     return false;
                 }
 
-                // Clear trace ops and capture PC before execution
+                // Clear trace ops and capture PC/bytes before execution
                 if (tracing) {
                     this.tracePortOps = [];
                     this.traceMemOps = [];
                 }
                 const instrPC = tracing ? this.cpu.pc : 0;
+                let instrBytes = null;
+                if (tracing) {
+                    instrBytes = [
+                        this.memory.read(instrPC),
+                        this.memory.read((instrPC + 1) & 0xffff),
+                        this.memory.read((instrPC + 2) & 0xffff),
+                        this.memory.read((instrPC + 3) & 0xffff)
+                    ];
+                }
                 cycles += this.cpu.step();
 
                 // Handle frame boundary crossing (with late timing support)
@@ -3039,7 +3356,7 @@
 
                 // Record trace after execution
                 if (tracing) {
-                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                 }
             }
 
@@ -3047,7 +3364,7 @@
             this.renderToScreen();
             return false;
         }
-        
+
         // Run for specified number of T-states (ignores breakpoints for precise timing)
         runTstates(tstates) {
             if (this.running || !this.romLoaded) return 0;
@@ -3060,18 +3377,27 @@
                 // Beta Disk automatic ROM paging
                 this.updateBetaDiskPaging();
 
-                // Clear trace ops and capture PC before execution
+                // Clear trace ops and capture PC/bytes before execution
                 if (tracing) {
                     this.tracePortOps = [];
                     this.traceMemOps = [];
                 }
                 const instrPC = tracing ? this.cpu.pc : 0;
+                let instrBytes = null;
+                if (tracing) {
+                    instrBytes = [
+                        this.memory.read(instrPC),
+                        this.memory.read((instrPC + 1) & 0xffff),
+                        this.memory.read((instrPC + 2) & 0xffff),
+                        this.memory.read((instrPC + 3) & 0xffff)
+                    ];
+                }
                 const before = this.cpu.tStates;
                 this.cpu.step();
                 executed += this.cpu.tStates - before;
                 // Record trace after execution
                 if (tracing) {
-                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps);
+                    this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                 }
             }
 
@@ -4009,6 +4335,11 @@
                 return;
             }
             
+            // Ignore real keyboard during RZX playback
+            if (this.rzxPlaying) {
+                return;
+            }
+
             // Prevent browser shortcuts when emulator should capture them
             // Alt+key combinations for ZX Spectrum Symbol Shift
             if (e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -4018,7 +4349,7 @@
                     e.preventDefault();
                 }
             }
-            
+
             // Check e.key first for punctuation/shifted characters
             // This must be before joystick checks so typing { } | etc works
             if (e.key.length === 1 && !e.key.match(/^[a-zA-Z0-9]$/)) {
@@ -4524,8 +4855,6 @@
             this.memory.write(this.cpu.sp, 0x13);      // Low byte of 0x3D13
             this.memory.write(this.cpu.sp + 1, 0x3D);  // High byte
 
-            console.log('[TR-DOS] Boot complete, PC=0x3D13, SP=', this.cpu.sp.toString(16));
-
             return true;
         }
 
@@ -4708,8 +5037,21 @@
                 if (targetType !== this.machineType) {
                     this.setMachineType(targetType, true);
                 }
-                
+
                 const result = this.snapshotLoader.loadZ80(data, this.cpu, this.memory);
+
+                // Reset frame timing state to avoid stale state from previous program
+                this.frameStartOffset = 0;
+                this.accumulatedContention = 0;
+                this.pendingInt = false;
+                this.cpu.tStates = 0;
+                this._lastTapeUpdate = 0;
+
+                // Reset ULA screen bank switching state to avoid frozen display
+                this.ula.hadScreenBankChanges = false;
+                this.ula.deferPaperRendering = false;
+                this.ula.screenBankChanges = [{tState: 0, bank: this.memory.screenBank || 5}];
+
                 this.ula.setBorder(result.border);
                 const frameBuffer = this.ula.renderFrame();
                 this.imageData.data.set(frameBuffer);
@@ -4748,6 +5090,25 @@
                 // Load SZX
                 const result = SZXLoader.load(data, this.cpu, this.memory, this.ula);
 
+                // Debug: verify ROM is correct (first byte at 0x38 should be F5 for 48K)
+                const romCheck = this.memory.read(0x38);
+                if (romCheck !== 0xF5) {
+                    console.warn(`RZX: ROM may be wrong at 0x38: got ${romCheck.toString(16)}, expected f5`);
+                }
+
+                // Reset frame timing state to avoid stale state from previous program
+                this.frameStartOffset = 0;
+                this.accumulatedContention = 0;
+                this.pendingInt = false;
+                this.cpu.tStates = 0;
+                this._lastTapeUpdate = 0;
+
+                // Reset ULA screen bank switching state to avoid frozen display
+                // (previous program's deferred rendering state must not persist)
+                this.ula.hadScreenBankChanges = false;
+                this.ula.deferPaperRendering = false;
+                this.ula.screenBankChanges = [{tState: 0, bank: this.memory.screenBank || 5}];
+
                 // Update display
                 const frameBuffer = this.ula.renderFrame();
                 this.imageData.data.set(frameBuffer);
@@ -4779,11 +5140,11 @@
                 targetType = '48k';
             }
 
-            // Switch machine type if needed, preserving ROM
+            // Switch machine type if needed
             if (targetType !== this.machineType) {
                 this.setMachineType(targetType, true);
             }
-            
+
             try {
                 const result = this.snapshotLoader.loadSNA(data, this.cpu, this.memory);
                 result.machineType = targetType; // Ensure correct type is returned
@@ -4883,7 +5244,6 @@
                             this.tapePlayer.setBlock(standardBlockCount);
                             // Set flag to auto-start when port 0xFE is read
                             this._turboBlockPending = true;
-                            console.log(`[TZX] Turbo blocks ready at position ${standardBlockCount}, waiting for port read`);
                         }
                     };
                 } else {
@@ -5100,11 +5460,29 @@
 
             // Restore ROM data
             if (oldRom) {
-                // Copy ROM bank 0 (always exists)
-                if (oldRom[0]) {
+                // When switching from 128K to 48K, use ROM bank 1 (the 48K-compatible ROM)
+                // 128K ROM bank 0 is the 128K-specific BASIC, bank 1 is the 48K ROM
+                const oldMachineWas128k = oldRom[1] !== undefined;
+                const newMachineIs48k = type === '48k';
+
+                if (oldMachineWas128k && newMachineIs48k && oldRom[1]) {
+                    // Use ROM bank 1 from 128K (the 48K-compatible ROM) for 48K machine
+                    this.memory.rom[0].set(oldRom[1]);
+                } else if (!oldMachineWas128k && !newMachineIs48k && oldRom[0]) {
+                    // 48K to 128K/Pentagon: copy 48K ROM to BOTH banks
+                    // ROM bank 0 = 128K BASIC, ROM bank 1 = 48K BASIC
+                    // Since we only have the 48K ROM, use it for both (bank 1 is the important one)
                     this.memory.rom[0].set(oldRom[0]);
+                    if (this.memory.rom[1]) {
+                        this.memory.rom[1].set(oldRom[0]);
+                    }
+                } else {
+                    // Copy ROM bank 0 (same machine type)
+                    if (oldRom[0]) {
+                        this.memory.rom[0].set(oldRom[0]);
+                    }
                 }
-                // Copy ROM bank 1 if both old and new have it
+                // Copy ROM bank 1 if both old and new have it (128K to 128K/Pentagon)
                 if (oldRom[1] && this.memory.rom[1]) {
                     this.memory.rom[1].set(oldRom[1]);
                 }
@@ -5142,9 +5520,19 @@
                     this.loadZ80Snapshot(snapBuffer);
                 } else if (snapType === 'sna') {
                     this.loadSnapshot(snapBuffer);
+                } else if (snapType === 'szx') {
+                    this.loadSZXSnapshot(snapBuffer);
                 } else {
                     throw new Error('Unsupported snapshot type in RZX: ' + snapType);
                 }
+
+                // Debug: check CPU state, video RAM, and BASIC system variables after snapshot load
+                let nonZeroPixels = 0;
+                for (let i = 0x4000; i < 0x5800; i++) {
+                    if (this.memory.read(i) !== 0) nonZeroPixels++;
+                }
+                // Check BASIC system variables related to keyboard
+                const LAST_K = this.memory.read(0x5C08);  // Last key pressed
             }
 
             // Store original data for project save
@@ -5152,13 +5540,28 @@
 
             // Setup RZX playback
             this.rzxPlayer = rzx;
+            this.rzxPlayer.reset();  // Reset all frame inputIndex values
             this.rzxFrame = 0;
-            this.rzxTstates = 0;  // Start at beginning of frame 0
+            this.rzxInstructions = 0;  // Start at beginning of frame 0
+            this.rzxFrameStartInstr = this.cpu.instructionCount;
+            this.rzxFirstInterrupt = true;  // Don't advance on first interrupt
             this.rzxPlaying = true;
+
+            // Reset input state to prevent stale inputs affecting playback
+            this.kempstonState = 0;
+            this.gamepadState = 0;
+            this.gamepadExtState = 0;
+            this.kempstonExtendedState = 0;
+
+            this.rzxRecentInputs = [];
+            this.portLog = [];
+            this._rzxPcLogCount = 0;
 
             return {
                 frames: rzx.getFrameCount(),
-                creator: rzx.creatorInfo
+                creator: rzx.creatorInfo,
+                machineType: this.machineType,
+                needsRomReload: !this.romLoaded
             };
         }
 
@@ -5166,8 +5569,11 @@
             this.rzxPlaying = false;
             this.rzxPlayer = null;
             this.rzxFrame = 0;
-            this.rzxTstates = 0;
+            this.rzxInstructions = 0;
+            this.rzxFrameStartInstr = 0;
+            this.rzxFirstInterrupt = true;
             this.rzxData = null;
+            this.rzxRecentInputs = [];
         }
 
         isRZXPlaying() {
@@ -5190,12 +5596,554 @@
             return this.rzxData;
         }
 
-        getRZXTstates() {
-            return this.rzxTstates;
+        getRZXInstructions() {
+            return this.rzxInstructions;
         }
 
-        setRZXTstates(tstates) {
-            this.rzxTstates = tstates;
+        setRZXInstructions(count) {
+            this.rzxInstructions = count;
+            this.rzxFrameStartInstr = this.cpu.instructionCount;
+        }
+
+        // ========== RZX Recording ==========
+
+        /**
+         * Start RZX recording - recording actually begins at next frame boundary
+         */
+        rzxStartRecording() {
+            // Stop any active RZX playback first
+            if (this.rzxPlaying) {
+                this.rzxStop();
+            }
+
+            // Set pending flag - actual recording starts after next interrupt fires
+            this.rzxRecordPending = true;
+            this.rzxRecordedFrames = [];
+            this.rzxRecordSnapshot = null;
+            this.rzxRecordSnapshotType = 'szx';  // SZX preserves halted state
+
+            return true;
+        }
+
+        /**
+         * Actually start recording (called at frame boundary)
+         */
+        rzxStartRecordingNow() {
+            // Log CPU state for debugging RZX compatibility
+            // Use SZX format for RZX recording - it properly preserves halted state
+            this.rzxRecordSnapshot = this.createSZXSnapshot();
+            this.rzxRecordSnapshotType = 'szx';
+            this.rzxRecordTstates = this.cpu.tStates;
+
+            // Initialize recording state
+            this.rzxRecordCurrentFrame = { fetchCount: 0, inputs: [] };
+            this.rzxRecordStartInstr = this.cpu.instructionCount;
+            this.rzxRecording = true;
+            this.rzxRecordPending = false;
+        }
+
+        /**
+         * Stop RZX recording
+         */
+        rzxStopRecording() {
+            if (!this.rzxRecording && !this.rzxRecordPending) {
+                return null;
+            }
+
+            // If still pending (recording never actually started), just cancel
+            if (this.rzxRecordPending && !this.rzxRecording) {
+                this.rzxRecordPending = false;
+                console.log('[RZX REC] Recording was pending, cancelled');
+                return { frames: 0, snapshot: null, snapshotType: null };
+            }
+
+            // Finalize current frame if it has any content
+            if (this.rzxRecordCurrentFrame && this.rzxRecordCurrentFrame.inputs.length > 0) {
+                const fetchCount = this.cpu.instructionCount - this.rzxRecordStartInstr;
+                this.rzxRecordCurrentFrame.fetchCount = fetchCount;
+                this.rzxRecordedFrames.push(this.rzxRecordCurrentFrame);
+            }
+
+            this.rzxRecording = false;
+            this.rzxRecordPending = false;
+            this.rzxRecordCurrentFrame = null;
+
+            console.log(`[RZX REC] Stopped recording. ${this.rzxRecordedFrames.length} frames captured.`);
+
+            return {
+                frames: this.rzxRecordedFrames.length,
+                snapshot: this.rzxRecordSnapshot,
+                snapshotType: this.rzxRecordSnapshotType
+            };
+        }
+
+        /**
+         * Cancel RZX recording without saving
+         */
+        rzxCancelRecording() {
+            this.rzxRecording = false;
+            this.rzxRecordPending = false;
+            this.rzxRecordedFrames = [];
+            this.rzxRecordCurrentFrame = null;
+            this.rzxRecordSnapshot = null;
+            this.rzxRecordStartInstr = 0;
+            console.log('[RZX REC] Recording cancelled');
+        }
+
+        /**
+         * Check if RZX recording is active or pending
+         */
+        isRZXRecording() {
+            return this.rzxRecording || this.rzxRecordPending;
+        }
+
+        /**
+         * Get recorded RZX frame count
+         */
+        getRZXRecordedFrameCount() {
+            return this.rzxRecordedFrames.length;
+        }
+
+        /**
+         * Save recorded RZX to file
+         * @returns {Uint8Array} RZX file data
+         */
+        rzxSaveRecording() {
+            if (this.rzxRecordedFrames.length === 0) {
+                console.warn('No frames recorded');
+                return null;
+            }
+
+            // Build RZX file
+            const rzxData = this.buildRZXFile(
+                this.rzxRecordSnapshot,
+                this.rzxRecordSnapshotType,
+                this.rzxRecordedFrames
+            );
+
+            console.log(`[RZX REC] Saved RZX: ${rzxData.length} bytes, ${this.rzxRecordedFrames.length} frames`);
+            return rzxData;
+        }
+
+        /**
+         * Build RZX file from recorded data
+         */
+        buildRZXFile(snapshot, snapshotType, frames) {
+            // RZX file structure:
+            // - Header (10 bytes): "RZX!" + version (0.13) + flags
+            // - Creator block (29+ bytes)
+            // - Snapshot block (variable)
+            // - Input recording block (variable)
+
+            const chunks = [];
+
+            // 1. RZX Header
+            const header = new Uint8Array(10);
+            header[0] = 0x52; // 'R'
+            header[1] = 0x5A; // 'Z'
+            header[2] = 0x58; // 'X'
+            header[3] = 0x21; // '!'
+            header[4] = 0x00; // Major version
+            header[5] = 0x0D; // Minor version (13 = 0.13)
+            header[6] = 0x00; // Flags (little-endian DWORD)
+            header[7] = 0x00;
+            header[8] = 0x00;
+            header[9] = 0x00;
+            chunks.push(header);
+
+            // 2. Creator block (ID = 0x10)
+            const creatorName = 'ZX-M8XXX';
+            const creatorBlock = new Uint8Array(29);
+            creatorBlock[0] = 0x10; // Block ID
+            // Block length INCLUDES the 5-byte header (ID + length field)
+            const creatorLen = 29; // 5 (header) + 20 (name) + 2 (version) + 2 (custom data length = 0)
+            creatorBlock[1] = creatorLen & 0xFF;
+            creatorBlock[2] = (creatorLen >> 8) & 0xFF;
+            creatorBlock[3] = (creatorLen >> 16) & 0xFF;
+            creatorBlock[4] = (creatorLen >> 24) & 0xFF;
+            // Creator ID (20 bytes, null-padded)
+            for (let i = 0; i < 20; i++) {
+                creatorBlock[5 + i] = i < creatorName.length ? creatorName.charCodeAt(i) : 0;
+            }
+            // Version (major, minor) - parse from VERSION constant
+            const versionParts = VERSION.split('.');
+            creatorBlock[25] = parseInt(versionParts[0], 10) || 0; // Major
+            creatorBlock[26] = parseInt(versionParts[1], 10) || 0; // Minor
+            // Custom data length (2 bytes, 0 = none)
+            creatorBlock[27] = 0;
+            creatorBlock[28] = 0;
+            chunks.push(creatorBlock);
+
+            // 3. Snapshot block (ID = 0x30)
+            // Structure: ID(1) + Length(4) + Flags(4) + Extension(4) + UncompLen(4) + data
+            const extBytes = new Uint8Array(4);
+            const ext = snapshotType.toLowerCase();
+            for (let i = 0; i < 4; i++) {
+                extBytes[i] = i < ext.length ? ext.charCodeAt(i) : 0;
+            }
+
+            // Snapshot block header: ID(1) + Length(4) + Flags(4) + Extension(4) + UncompLen(4) = 17 bytes
+            // Note: UncompLen included even for uncompressed - most emulators expect it
+            const snapBlockHeader = new Uint8Array(17);
+            snapBlockHeader[0] = 0x30; // Block ID
+            const snapBlockLen = 17 + snapshot.length;
+            snapBlockHeader[1] = snapBlockLen & 0xFF;
+            snapBlockHeader[2] = (snapBlockLen >> 8) & 0xFF;
+            snapBlockHeader[3] = (snapBlockLen >> 16) & 0xFF;
+            snapBlockHeader[4] = (snapBlockLen >> 24) & 0xFF;
+            // Flags (DWORD): bit 0 = compressed, bit 1 = external
+            snapBlockHeader[5] = 0x00;
+            snapBlockHeader[6] = 0x00;
+            snapBlockHeader[7] = 0x00;
+            snapBlockHeader[8] = 0x00;
+            // Extension (4 bytes)
+            snapBlockHeader[9] = extBytes[0];
+            snapBlockHeader[10] = extBytes[1];
+            snapBlockHeader[11] = extBytes[2];
+            snapBlockHeader[12] = extBytes[3];
+            // Uncompressed length (included for compatibility)
+            snapBlockHeader[13] = snapshot.length & 0xFF;
+            snapBlockHeader[14] = (snapshot.length >> 8) & 0xFF;
+            snapBlockHeader[15] = (snapshot.length >> 16) & 0xFF;
+            snapBlockHeader[16] = (snapshot.length >> 24) & 0xFF;
+            chunks.push(snapBlockHeader);
+            chunks.push(snapshot);
+
+            // 4. Input recording block (ID = 0x80)
+            // Build frame data first
+            const frameDataChunks = [];
+            for (const frame of frames) {
+                // Each frame: fetchCount (2 bytes) + inputCount (2 bytes) + inputs
+                const frameSize = 4 + frame.inputs.length;
+                const frameData = new Uint8Array(frameSize);
+                frameData[0] = frame.fetchCount & 0xFF;
+                frameData[1] = (frame.fetchCount >> 8) & 0xFF;
+                frameData[2] = frame.inputs.length & 0xFF;
+                frameData[3] = (frame.inputs.length >> 8) & 0xFF;
+                for (let i = 0; i < frame.inputs.length; i++) {
+                    frameData[4 + i] = frame.inputs[i];
+                }
+                frameDataChunks.push(frameData);
+            }
+
+            // Concatenate frame data
+            let frameDataLen = 0;
+            for (const fd of frameDataChunks) {
+                frameDataLen += fd.length;
+            }
+            const uncompressedFrameData = new Uint8Array(frameDataLen);
+            let offset = 0;
+            for (const fd of frameDataChunks) {
+                uncompressedFrameData.set(fd, offset);
+                offset += fd.length;
+            }
+
+            // Compress frame data using pako (like eric.rzx)
+            let frameData;
+            let isCompressed = false;
+            if (typeof pako !== 'undefined') {
+                try {
+                    frameData = pako.deflate(uncompressedFrameData);
+                    isCompressed = true;
+                } catch (e) {
+                    console.warn('[RZX] Compression failed, using uncompressed:', e);
+                    frameData = uncompressedFrameData;
+                }
+            } else {
+                frameData = uncompressedFrameData;
+            }
+
+            // Input block header (18 bytes)
+            const inputBlockHeader = new Uint8Array(18);
+            inputBlockHeader[0] = 0x80; // Block ID
+            // Block length INCLUDES 5-byte header: 5 + frames(4) + reserved(1) + tstates(4) + flags(4) + frameData
+            const inputBlockLen = 18 + frameData.length;
+            inputBlockHeader[1] = inputBlockLen & 0xFF;
+            inputBlockHeader[2] = (inputBlockLen >> 8) & 0xFF;
+            inputBlockHeader[3] = (inputBlockLen >> 16) & 0xFF;
+            inputBlockHeader[4] = (inputBlockLen >> 24) & 0xFF;
+            // Number of frames (DWORD)
+            inputBlockHeader[5] = frames.length & 0xFF;
+            inputBlockHeader[6] = (frames.length >> 8) & 0xFF;
+            inputBlockHeader[7] = (frames.length >> 16) & 0xFF;
+            inputBlockHeader[8] = (frames.length >> 24) & 0xFF;
+            // Reserved byte
+            inputBlockHeader[9] = 0;
+            // T-states at start (DWORD) - use captured value from recording start
+            const tstatesStart = this.rzxRecordTstates || 0;
+            inputBlockHeader[10] = tstatesStart & 0xFF;
+            inputBlockHeader[11] = (tstatesStart >> 8) & 0xFF;
+            inputBlockHeader[12] = (tstatesStart >> 16) & 0xFF;
+            inputBlockHeader[13] = (tstatesStart >> 24) & 0xFF;
+            // Flags (DWORD): bit 0 = protected, bit 1 = compressed
+            inputBlockHeader[14] = isCompressed ? 0x02 : 0x00; // bit 1 = compressed (like eric.rzx)
+            inputBlockHeader[15] = 0x00;
+            inputBlockHeader[16] = 0x00;
+            inputBlockHeader[17] = 0x00;
+            chunks.push(inputBlockHeader);
+            chunks.push(frameData);
+
+            // Combine all chunks
+            let totalLen = 0;
+            for (const chunk of chunks) {
+                totalLen += chunk.length;
+            }
+            const result = new Uint8Array(totalLen);
+            offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+
+            return result;
+        }
+
+        /**
+         * Create Z80 snapshot of current state
+         * @returns {Uint8Array} Z80 v3 format snapshot
+         */
+        createZ80Snapshot() {
+            return this.snapshotLoader.createZ80(this.cpu, this.memory, this.ula.borderColor);
+        }
+
+        /**
+         * Create SZX snapshot for RZX recording (preserves halted state)
+         * @returns {Uint8Array} SZX format snapshot
+         */
+        createSZXSnapshot() {
+            return SZXLoader.create(this.cpu, this.memory, this.ula.borderColor);
+        }
+
+        /**
+         * Verify RZX structure and try to parse it back
+         * @returns {object} Verification result
+         */
+        rzxVerifyRecording() {
+            const data = this.rzxSaveRecording();
+            if (!data) return { valid: false, error: 'No data' };
+
+            try {
+                const hex = (arr, start, len) => Array.from(arr.slice(start, start + len))
+                    .map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+                // Check header
+                const header = String.fromCharCode(data[0], data[1], data[2], data[3]);
+                if (header !== 'RZX!') {
+                    return { valid: false, error: 'Invalid header: ' + header };
+                }
+
+                console.log('[RZX VERIFY] Header: OK');
+                console.log('[RZX VERIFY] Version:', data[4] + '.' + data[5]);
+                console.log('[RZX VERIFY] Total size:', data.length, 'bytes');
+                console.log('[RZX VERIFY] Header bytes:', hex(data, 0, 10));
+
+                // Parse blocks
+                let offset = 10;
+                const blocks = [];
+                while (offset < data.length - 5) {
+                    const blockId = data[offset];
+                    const blockLen = data[offset + 1] | (data[offset + 2] << 8) |
+                                    (data[offset + 3] << 16) | (data[offset + 4] << 24);
+
+                    const blockName = blockId === 0x10 ? 'Creator' :
+                                     blockId === 0x30 ? 'Snapshot' :
+                                     blockId === 0x80 ? 'Input' : `Unknown(0x${blockId.toString(16)})`;
+
+                    console.log(`[RZX VERIFY] Block at ${offset}: ${blockName}, len=${blockLen}`);
+                    console.log(`[RZX VERIFY]   Header bytes: ${hex(data, offset, Math.min(20, blockLen))}`);
+
+                    if (blockId === 0x30) {
+                        // Snapshot block details
+                        const flags = data[offset + 5] | (data[offset + 6] << 8) |
+                                     (data[offset + 7] << 16) | (data[offset + 8] << 24);
+                        const ext = String.fromCharCode(data[offset + 9], data[offset + 10],
+                                                       data[offset + 11], data[offset + 12]).replace(/\0/g, '');
+                        console.log(`[RZX VERIFY]   Snapshot: flags=${flags}, ext="${ext}"`);
+                        console.log(`[RZX VERIFY]   Snapshot data starts at offset ${offset + 13}, first bytes: ${hex(data, offset + 13, 16)}`);
+                    }
+
+                    if (blockId === 0x80) {
+                        // Input block details
+                        const numFrames = data[offset + 5] | (data[offset + 6] << 8) |
+                                         (data[offset + 7] << 16) | (data[offset + 8] << 24);
+                        const tstates = data[offset + 10] | (data[offset + 11] << 8) |
+                                       (data[offset + 12] << 16) | (data[offset + 13] << 24);
+                        const flags = data[offset + 14] | (data[offset + 15] << 8) |
+                                     (data[offset + 16] << 16) | (data[offset + 17] << 24);
+                        console.log(`[RZX VERIFY]   Input: frames=${numFrames}, tstates=${tstates}, flags=${flags}`);
+                        console.log(`[RZX VERIFY]   Frame data starts at ${offset + 18}, first bytes: ${hex(data, offset + 18, 16)}`);
+                    }
+
+                    blocks.push({ id: blockId, offset, len: blockLen, name: blockName });
+
+                    if (blockLen < 5 || offset + blockLen > data.length) {
+                        return { valid: false, error: `Invalid block length at offset ${offset}` };
+                    }
+                    offset += blockLen;
+                }
+
+                console.log('[RZX VERIFY] Blocks found:', blocks.length);
+                return { valid: true, blocks, size: data.length };
+            } catch (e) {
+                return { valid: false, error: e.message };
+            }
+        }
+
+        /**
+         * Download recorded RZX as a file
+         * @param {string} filename - Optional filename (default: recording.rzx)
+         */
+        rzxDownloadRecording(filename = 'recording.rzx') {
+            const data = this.rzxSaveRecording();
+            if (!data) {
+                console.warn('No RZX data to download');
+                return;
+            }
+
+            const blob = new Blob([data], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            console.log(`[RZX REC] Downloaded ${filename} (${data.length} bytes)`);
+        }
+
+        /**
+         * Analyze RZX file structure (for debugging)
+         * @param {Uint8Array} data - RZX file data, or uses last loaded RZX if not provided
+         */
+        rzxAnalyze(data) {
+            // Use stored raw data from loaded RZX if no data provided
+            if (!data && this.rzxData) {
+                data = this.rzxData;
+                console.log('[RZX ANALYZE] Using loaded RZX file data');
+            } else if (!data && this.rzxPlayer && this.rzxPlayer.rawData) {
+                data = this.rzxPlayer.rawData;
+                console.log('[RZX ANALYZE] Using RZX player data');
+            }
+
+            if (!data) {
+                console.log('[RZX ANALYZE] No data available - load an RZX file first');
+                return;
+            }
+
+            const hex = (arr, start, len) => Array.from(arr.slice(start, start + len))
+                .map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+            console.log('[RZX ANALYZE] File size:', data.length, 'bytes');
+            console.log('[RZX ANALYZE] Header:', hex(data, 0, 10));
+            console.log('[RZX ANALYZE] Signature:', String.fromCharCode(data[0], data[1], data[2], data[3]));
+            console.log('[RZX ANALYZE] Version:', data[4], '.', data[5]);
+
+            let offset = 10;
+            let blockNum = 0;
+            while (offset < data.length - 5) {
+                const blockId = data[offset];
+                const blockLen = data[offset + 1] | (data[offset + 2] << 8) |
+                                (data[offset + 3] << 16) | (data[offset + 4] << 24);
+                blockNum++;
+
+                const blockName = blockId === 0x10 ? 'Creator' :
+                                 blockId === 0x30 ? 'Snapshot' :
+                                 blockId === 0x80 ? 'Input' : `Unknown(0x${blockId.toString(16)})`;
+
+                console.log(`[RZX ANALYZE] Block #${blockNum}: ${blockName} at offset ${offset}, length ${blockLen}`);
+                console.log(`[RZX ANALYZE]   Raw header: ${hex(data, offset, Math.min(24, blockLen))}`);
+
+                if (blockId === 0x30) {
+                    // Snapshot block - show structure
+                    const flags = data[offset + 5] | (data[offset + 6] << 8) |
+                                 (data[offset + 7] << 16) | (data[offset + 8] << 24);
+                    const ext = String.fromCharCode(data[offset + 9], data[offset + 10],
+                                                   data[offset + 11], data[offset + 12]).replace(/\0/g, '');
+                    const compressed = (flags & 0x01) !== 0;
+                    console.log(`[RZX ANALYZE]   Flags: ${flags} (compressed=${compressed})`);
+                    console.log(`[RZX ANALYZE]   Extension: "${ext}"`);
+
+                    // Check what's at offset 13 vs 17 (with/without UncompLen)
+                    console.log(`[RZX ANALYZE]   Bytes at offset 13 (no UncompLen): ${hex(data, offset + 13, 8)}`);
+                    console.log(`[RZX ANALYZE]   Bytes at offset 17 (with UncompLen): ${hex(data, offset + 17, 8)}`);
+
+                    // If it's a Z80, show header
+                    const snapStart = compressed ? offset + 17 : offset + 13;
+                    console.log(`[RZX ANALYZE]   Snapshot data starts at file offset ${snapStart}`);
+                    console.log(`[RZX ANALYZE]   Z80 header bytes: ${hex(data, snapStart, 32)}`);
+                    // Check for v2/v3 (PC=0 at bytes 6-7)
+                    const pc = data[snapStart + 6] | (data[snapStart + 7] << 8);
+                    if (pc === 0) {
+                        const extLen = data[snapStart + 30] | (data[snapStart + 31] << 8);
+                        console.log(`[RZX ANALYZE]   Z80 v2/v3, extended header length: ${extLen}`);
+                    } else {
+                        console.log(`[RZX ANALYZE]   Z80 v1, PC=${pc.toString(16)}`);
+                    }
+                }
+
+                if (blockId === 0x80) {
+                    const numFrames = data[offset + 5] | (data[offset + 6] << 8) |
+                                     (data[offset + 7] << 16) | (data[offset + 8] << 24);
+                    const tstates = data[offset + 10] | (data[offset + 11] << 8) |
+                                   (data[offset + 12] << 16) | (data[offset + 13] << 24);
+                    const flags = data[offset + 14] | (data[offset + 15] << 8) |
+                                 (data[offset + 16] << 16) | (data[offset + 17] << 24);
+                    console.log(`[RZX ANALYZE]   Frames: ${numFrames}, T-states: ${tstates}, Flags: ${flags}`);
+                    console.log(`[RZX ANALYZE]   Frame data starts at offset ${offset + 18}`);
+                    // Show first few frames
+                    let fOffset = offset + 18;
+                    for (let i = 0; i < Math.min(3, numFrames) && fOffset < offset + blockLen; i++) {
+                        const fetchCount = data[fOffset] | (data[fOffset + 1] << 8);
+                        const inputCount = data[fOffset + 2] | (data[fOffset + 3] << 8);
+                        console.log(`[RZX ANALYZE]   Frame ${i}: fetch=${fetchCount}, inputs=${inputCount}`);
+                        fOffset += 4 + inputCount;
+                    }
+                }
+
+                if (blockLen < 5 || offset + blockLen > data.length) {
+                    console.log('[RZX ANALYZE] ERROR: Invalid block length!');
+                    break;
+                }
+                offset += blockLen;
+            }
+        }
+
+        // Port I/O logging for debugging
+        setPortLogEnabled(enabled) {
+            this.portLogEnabled = enabled;
+            if (enabled) {
+                this.portLog = []; // Clear log when enabling
+            }
+        }
+
+        isPortLogEnabled() {
+            return this.portLogEnabled;
+        }
+
+        getPortLogCount() {
+            return this.portLog.length;
+        }
+
+        exportPortLog(filter = 'both') {
+            const hex4 = v => v.toString(16).toUpperCase().padStart(4, '0');
+            const hex2 = v => v.toString(16).toUpperCase().padStart(2, '0');
+            const lines = ['Dir\tPort\tValue\tPC\tFrame\tT-states'];
+            let count = 0;
+            for (const entry of this.portLog) {
+                // Apply filter
+                if (filter === 'in' && entry.dir !== 'IN') continue;
+                if (filter === 'out' && entry.dir !== 'OUT') continue;
+                const frameStr = entry.frame >= 0 ? entry.frame : '-';
+                lines.push(`${entry.dir}\t${hex4(entry.port)}\t${hex2(entry.value)}\t${hex4(entry.pc)}\t${frameStr}\t${entry.t}`);
+                count++;
+            }
+            return { text: lines.join('\n'), count };
+        }
+
+        clearPortLog() {
+            this.portLog = [];
         }
 
         // ========== Auto-Mapping ==========

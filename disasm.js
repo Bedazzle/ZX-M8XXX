@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Z80 Disassembler
- * @version 0.9.10
+ * @version 0.9.12
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.10';
+    const VERSION = '0.9.12';
 
     const r = ['B', 'C', 'D', 'E', 'H', 'L', '(HL)', 'A'];
     const rp = ['BC', 'DE', 'HL', 'SP'];
@@ -39,6 +39,15 @@
             val = val & 0xff;
             if (val >= 128) val -= 256;
             return val;
+        }
+
+        // Format displacement as hex with sign (e.g. +31h or -0Fh)
+        formatDisp(signed) {
+            if (signed >= 0) {
+                return '+' + signed.toString(16).toUpperCase() + 'h';
+            } else {
+                return '-' + ((-signed) & 0xff).toString(16).toUpperCase() + 'h';
+            }
         }
         
         displacement(val, pc) {
@@ -136,7 +145,7 @@
         // Disassemble indexed CB instruction (DD CB d op or FD CB d op)
         disasmIndexedCB(ir, d, op) {
             const signed = this.signedByte(d);
-            const disp = signed >= 0 ? '+' + signed : signed.toString();
+            const disp = this.formatDisp(signed);
 
             const x = (op >> 6) & 3;
             const y = (op >> 3) & 7;
@@ -193,7 +202,7 @@
                     const d = this.read(addr++);
                     bytes.push(d);
                     const signed = this.signedByte(d);
-                    const disp = signed >= 0 ? '+' + signed : signed.toString();
+                    const disp = this.formatDisp(signed);
                     return '(' + ir + disp + ')';
                 }
                 return r[idx];
@@ -241,8 +250,13 @@
                 if (z === 6 && y === 6) {
                     mnemonic = 'HALT';
                 } else if (y === 6 || z === 6) {
-                    mnemonic = 'LD ' + ri(y) + ',' + ri(z);
+                    // When using (IX+d)/(IY+d), don't substitute H/L with IXH/IXL
+                    // e.g. DD 6E d = LD L,(IX+d), not LD IXL,(IX+d)
+                    const destReg = (y === 6) ? ri(y) : r[y];
+                    const srcReg = (z === 6) ? ri(z) : r[z];
+                    mnemonic = 'LD ' + destReg + ',' + srcReg;
                 } else if (y === 4 || y === 5 || z === 4 || z === 5) {
+                    // Substitute H/L with IXH/IXL only when not using (IX+d)
                     mnemonic = 'LD ' + ri(y) + ',' + ri(z);
                 } else {
                     mnemonic = 'LD ' + r[y] + ',' + r[z];
@@ -552,7 +566,7 @@
                 bytes.push(d, op);
 
                 const signed = this.signedByte(d);
-                const disp = signed >= 0 ? '+' + signed : signed.toString();
+                const disp = this.formatDisp(signed);
 
                 const x = (op >> 6) & 3;
                 const y = (op >> 3) & 7;
@@ -601,7 +615,7 @@
                     const d = this.read(addr++);
                     bytes.push(d);
                     const signed = this.signedByte(d);
-                    const disp = signed >= 0 ? '+' + signed : signed.toString();
+                    const disp = this.formatDisp(signed);
                     return '(' + ir + disp + ')';
                 }
                 return r[idx];
@@ -651,8 +665,13 @@
                 if (y === 6 && z === 6) {
                     mnemonic = 'HALT';
                 } else if (y === 6 || z === 6) {
-                    mnemonic = 'LD ' + ri(y) + ',' + ri(z);
+                    // When using (IX+d)/(IY+d), don't substitute H/L with IXH/IXL
+                    // e.g. DD 6E d = LD L,(IX+d), not LD IXL,(IX+d)
+                    const destReg = (y === 6) ? ri(y) : r[y];
+                    const srcReg = (z === 6) ? ri(z) : r[z];
+                    mnemonic = 'LD ' + destReg + ',' + srcReg;
                 } else if (y >= 4 && y <= 5 && z >= 4 && z <= 5) {
+                    // Substitute H/L with IXH/IXL only when not using (IX+d)
                     mnemonic = 'LD ' + ri(y) + ',' + ri(z);
                 } else {
                     const result = this.disasmMain(opcode, addr - 1, refs);

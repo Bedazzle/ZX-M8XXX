@@ -66,7 +66,8 @@
 
             // Cycle counter
             this.tStates = 0;
-            
+            this.instructionCount = 0;  // M1 cycle counter for RZX sync
+
             // Port handlers
             this.portRead = null;
             this.portWrite = null;
@@ -121,6 +122,7 @@
             this.q = 0;
             this.lastQ = 0;
             this.tStates = 0;
+            this.instructionCount = 0;
         }
         
         // Register pair accessors
@@ -238,7 +240,9 @@
         
         // Interrupt handling
         interrupt() {
-            if (!this.iff1) return 0;
+            if (!this.iff1) {
+                return 0;
+            }
 
             const wasHalted = this.halted;
             const oldPC = this.pc;
@@ -251,6 +255,7 @@
 
             this.iff1 = this.iff2 = false;
             this.incR();
+            // Note: interrupt acknowledge increments R but NOT instructionCount
 
             switch (this.im) {
                 case 0:
@@ -514,6 +519,7 @@
         // Execute single instruction
         execute() {
             this.incR();
+            this.instructionCount++;  // M1 cycle counter for RZX sync
             // Save Q from previous instruction for CCF/SCF, then reset
             this.lastQ = this.q;
             this.q = 0;
@@ -1026,6 +1032,7 @@
         executeCB() {
             const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             this.incR();
+            this.instructionCount++;  // CB prefix = extra M1 cycle for RZX
             const opcode = this.fetchByte();
             const reg = opcode & 0x07;
             const op = opcode >> 3;
@@ -1096,6 +1103,7 @@
         // DD prefix - IX operations
         executeDD() {
             this.incR();
+            this.instructionCount++;  // DD prefix = extra M1 cycle for RZX
             let opcode = this.fetchByte();
 
             // Handle chained prefixes: DD DD, DD FD, DD ED
@@ -1104,6 +1112,7 @@
                     // Another DD prefix - current DD acts as 4T NOP
                     this.tStates += 4;
                     this.incR();
+                    this.instructionCount++;  // Chained DD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xfd) {
                     // FD overrides DD - DD acts as 4T NOP, switch to IY
@@ -1128,6 +1137,7 @@
         // FD prefix - IY operations
         executeFD() {
             this.incR();
+            this.instructionCount++;  // FD prefix = extra M1 cycle for RZX
             let opcode = this.fetchByte();
 
             // Handle chained prefixes: FD FD, FD DD, FD ED
@@ -1136,6 +1146,7 @@
                     // Another FD prefix - current FD acts as 4T NOP
                     this.tStates += 4;
                     this.incR();
+                    this.instructionCount++;  // Chained FD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xdd) {
                     // DD overrides FD - FD acts as 4T NOP, switch to IX
@@ -1157,21 +1168,26 @@
         }
         
         // DD CB / FD CB prefix
+        // DDCB/FDCB are 2 M1 cycles (DD prefix + CB prefix) per Z80 spec
+        // R register already incremented twice: in execute() for DD and executeDD() for CB
+        // The displacement and final opcode are memory reads, not M1 cycles
         executeDDCB() {
+            // No incR() or instructionCount++ here - already counted in execute() and executeDD()
             const d = this.fetchDisplacement();
             const opcode = this.fetchByte();
             const addr = (this.ix + d) & 0xffff;
             this.memptr = addr;
-            
+
             this.executeIndexedCB(opcode, addr);
         }
-        
+
         executeFDCB() {
+            // No incR() or instructionCount++ here - already counted in execute() and executeFD()
             const d = this.fetchDisplacement();
             const opcode = this.fetchByte();
             const addr = (this.iy + d) & 0xffff;
             this.memptr = addr;
-            
+
             this.executeIndexedCB(opcode, addr);
         }
         
@@ -1336,6 +1352,7 @@
         executeED() {
             const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
             this.incR();
+            this.instructionCount++;  // ED prefix = extra M1 cycle for RZX
             const opcode = this.fetchByte();
 
             switch (opcode) {
@@ -1925,6 +1942,7 @@
                     this.readByte((this.pc + 1) & 0xffff);
                     this.tStates += 4;
                     this.incR();
+                    this.instructionCount++;  // HALT NOP = M1 cycle for RZX sync
                 } else {
                     this.execute();
                 }

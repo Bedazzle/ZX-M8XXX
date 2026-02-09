@@ -27,8 +27,6 @@
             this.mcTimingOffset = 0;  // Multicolor lookup offset (console: spectrum.ula.mcTimingOffset = X)
             this.mcWriteAdjust = 5;   // Write time adjustment - ADDED to recorded tStates (try 5-8 for PUSH)
             this.mc128kOffset = 0;    // 128K-specific colTstate offset (console: spectrum.ula.mc128kOffset = X)
-            this.fastMulticolor = false;  // Fast mode: skip per-write tracking, read attrs at render time
-
             this.SCREEN_WIDTH = 256;
             this.SCREEN_HEIGHT = 192;
 
@@ -646,51 +644,57 @@
             // This allows getAttrAt to return correct values for columns where writes
             // happen AFTER the ULA scan time (the "initial" value is what the ULA sees)
             this.hadAttrChanges = false;
-            // Reset change counts (typed array - no GC allocation)
-            this.attrChangeCount.fill(0);
+            // Use object-based tracking (old implementation that worked with Shock)
+            this.attrChanges = {};
             // Capture initial attrs NOW, before any writes happen this frame
             const screen = this.memory.getScreenBase();
+            if (!this.attrInitial) {
+                this.attrInitial = new Uint8Array(768);
+            }
             this.attrInitial.set(screen.ram.subarray(0x1800, 0x1B00));
         }
 
         // Called when attribute memory is written (for multicolor tracking)
         // attrOffset is 0-767 (relative to 0x5800)
         setAttrAt(attrOffset, value, tStates) {
+            if (!this.attrChanges[attrOffset]) {
+                this.attrChanges[attrOffset] = [];
+            }
             // Adjust for CPU timing: tStates is at instruction START (before timing added)
             // For PUSH instructions (used by Nirvana+), actual memory write happens ~5-8 T-states later
             // For LD (HL),A type instructions, write happens ~4 T-states after instruction start
             // mcWriteAdjust is ADDED to compensate for this
             const writeAdjust = this.mcWriteAdjust !== undefined ? this.mcWriteAdjust : 5;
-            const count = this.attrChangeCount[attrOffset];
-            if (count < this.ATTR_MAX_CHANGES) {
-                const idx = attrOffset * this.ATTR_MAX_CHANGES + count;
-                this.attrChangeTStates[idx] = tStates + writeAdjust;
-                this.attrChangeValues[idx] = value;
-                this.attrChangeCount[attrOffset] = count + 1;
-            }
-            // If count >= ATTR_MAX_CHANGES, silently drop (rare edge case)
+            this.attrChanges[attrOffset].push({tState: tStates + writeAdjust, value: value});
         }
 
         // Get attribute value at a specific T-state
         // Returns the attribute value as it would be seen by the ULA at the given T-state
         getAttrAt(attrOffset, tState, currentValue) {
             // Start with initial value from frame start
-            let value = this.attrInitial[attrOffset];
+            let value = this.attrInitial ? this.attrInitial[attrOffset] : currentValue;
+            const initialValue = value;
 
             // Compare write times against the display T-state
             // mcLookupTolerance allows fine-tuning if needed (default 0)
             const tolerance = this.mcLookupTolerance !== undefined ? this.mcLookupTolerance : 0;
             const effectiveTstate = tState + tolerance;
 
-            const count = this.attrChangeCount[attrOffset];
-            if (count > 0) {
-                const baseIdx = attrOffset * this.ATTR_MAX_CHANGES;
-                const tStatesArr = this.attrChangeTStates;
-                const valuesArr = this.attrChangeValues;
-                for (let i = 0; i < count; i++) {
-                    const idx = baseIdx + i;
-                    if (tStatesArr[idx] <= effectiveTstate) {
-                        value = valuesArr[idx];
+            const changes = this.attrChanges[attrOffset];
+            if (changes) {
+                // Ensure changes are sorted by T-state (should be, but verify)
+                if (changes.length > 1 && !changes._sorted) {
+                    for (let i = 1; i < changes.length; i++) {
+                        if (changes[i].tState < changes[i-1].tState) {
+                            changes.sort((a, b) => a.tState - b.tState);
+                            break;
+                        }
+                    }
+                    changes._sorted = true;
+                }
+                for (const change of changes) {
+                    if (change.tState <= effectiveTstate) {
+                        value = change.value;
                     } else {
                         break;
                     }
@@ -707,11 +711,10 @@
                 if (showThis) {
                     const machType = this.machineType;
                     let appliedWrite = 'initial';
-                    if (count > 0) {
-                        const baseIdx = attrOffset * this.ATTR_MAX_CHANGES;
-                        for (let i = 0; i < count; i++) {
-                            if (this.attrChangeTStates[baseIdx + i] <= effectiveTstate) {
-                                appliedWrite = `@${this.attrChangeTStates[baseIdx + i]}`;
+                    if (changes) {
+                        for (const change of changes) {
+                            if (change.tState <= effectiveTstate) {
+                                appliedWrite = `@${change.tState}`;
                             }
                         }
                     }
@@ -979,89 +982,56 @@
                         const pal32 = this.palette32;
                         const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
                         const flashActive = this.flashState;
+                        const attrChanges = this.attrChanges;
+                        const attrInitial = this.attrInitial;
 
-                        if (this.fastMulticolor) {
-                            // Fast multicolor: just read current attributes (no per-write tracking)
-                            for (let col = 0; col < 32; col++) {
-                                const pixelByte = screenRam[pixelAddr + col];
-                                const attr = screenRam[attrAddr + col];
+                        // Accurate multicolor: use per-write tracking with T-state timing
+                        const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+                        const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
 
-                                let ink = attr & 0x07;
-                                let paper = (attr >> 3) & 0x07;
-                                const bright = (attr & 0x40) ? 8 : 0;
+                        for (let col = 0; col < 32; col++) {
+                            const pixelByte = screenRam[pixelAddr + col];
+                            const attrOffset = attrRowOffset + col;
+                            const currentAttr = screenRam[attrAddr + col];
 
-                                if ((attr & 0x80) && flashActive) {
-                                    const tmp = ink; ink = paper; paper = tmp;
-                                }
-                                const inkColor = pal32[ink + bright];
-                                const paperColor = pal32[paper + bright];
-
-                                const baseOffset = rowOffset + (col << 3);
-                                fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                                fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                                fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                                fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                                fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                                fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                                fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                                fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                            }
-                        } else {
-                            // Accurate multicolor: use per-write tracking with T-state timing
-                            const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
-                            const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
-                            const attrChangeCount = this.attrChangeCount;
-                            const attrChangeTStates = this.attrChangeTStates;
-                            const attrChangeValues = this.attrChangeValues;
-                            const attrInitial = this.attrInitial;
-                            const maxChanges = this.ATTR_MAX_CHANGES;
-
-                            if (this.debugMcTiming && y < 2) {
-                                console.log(`[MCT-${this.machineType}] y=${y} visY=${visY} lineStart=${lineStartTstate} paperStart=${paperStartTstate}`);
-                            }
-
-                            for (let col = 0; col < 32; col++) {
-                                const pixelByte = screenRam[pixelAddr + col];
-                                const attrOffset = attrRowOffset + col;
-
-                                let attr;
-                                const count = attrChangeCount[attrOffset];
-                                if (count > 0) {
-                                    const colTstate = paperStartTstate + (col * 4) + machineOffset;
-                                    attr = attrInitial[attrOffset];
-                                    const baseIdx = attrOffset * maxChanges;
-                                    for (let i = 0; i < count; i++) {
-                                        const idx = baseIdx + i;
-                                        if (attrChangeTStates[idx] <= colTstate) {
-                                            attr = attrChangeValues[idx];
-                                        } else {
-                                            break;
-                                        }
+                            // Fast path: if no changes for this column, use initial value directly
+                            let attr;
+                            const changes = attrChanges[attrOffset];
+                            if (changes) {
+                                // Has changes - use full lookup
+                                const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                                attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                                for (const change of changes) {
+                                    if (change.tState <= colTstate) {
+                                        attr = change.value;
+                                    } else {
+                                        break;
                                     }
-                                } else {
-                                    attr = attrInitial[attrOffset];
                                 }
-
-                                let ink = attr & 0x07;
-                                let paper = (attr >> 3) & 0x07;
-                                const bright = (attr & 0x40) ? 8 : 0;
-
-                                if ((attr & 0x80) && flashActive) {
-                                    const tmp = ink; ink = paper; paper = tmp;
-                                }
-                                const inkColor = pal32[ink + bright];
-                                const paperColor = pal32[paper + bright];
-
-                                const baseOffset = rowOffset + (col << 3);
-                                fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                                fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                                fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                                fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                                fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                                fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                                fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                                fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                            } else {
+                                // No changes - use initial value
+                                attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                             }
+
+                            let ink = attr & 0x07;
+                            let paper = (attr >> 3) & 0x07;
+                            const bright = (attr & 0x40) ? 8 : 0;
+
+                            if ((attr & 0x80) && flashActive) {
+                                const tmp = ink; ink = paper; paper = tmp;
+                            }
+                            const inkColor = pal32[ink + bright];
+                            const paperColor = pal32[paper + bright];
+
+                            const baseOffset = rowOffset + (col << 3);
+                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                         }
                     } else {
                         // Fast path: no attribute changes, use optimized 32-bit writes
@@ -1161,89 +1131,57 @@
             if (!hasScreenBankChanges) {
                 // Check if multicolor tracking detected any attribute changes this frame
                 if (this.hadAttrChanges) {
-                    if (this.fastMulticolor) {
-                        // Fast multicolor: just read current attributes (no per-write tracking)
-                        for (let col = 0; col < 32; col++) {
-                            const pixelByte = screenRam[pixelAddr + col];
-                            const attr = screenRam[attrAddr + col];
+                    // Multicolor path: read attributes at ULA scan time
+                    const lineStartTstate = this.calculateLineStartTstate(visY);
+                    const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+                    // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
+                    const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
+                    const attrChanges = this.attrChanges;
+                    const attrInitial = this.attrInitial;
 
-                            let ink = attr & 0x07;
-                            let paper = (attr >> 3) & 0x07;
-                            const bright = (attr & 0x40) ? 8 : 0;
+                    for (let col = 0; col < 32; col++) {
+                        const pixelByte = screenRam[pixelAddr + col];
+                        const attrOffset = attrRowOffset + col;
+                        const currentAttr = screenRam[attrAddr + col];
 
-                            if ((attr & 0x80) && flashActive) {
-                                const tmp = ink; ink = paper; paper = tmp;
-                            }
-                            const inkColor = pal32[ink + bright];
-                            const paperColor = pal32[paper + bright];
-
-                            const baseOffset = rowOffset + (col << 3);
-                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                        }
-                    } else {
-                        // Accurate multicolor: read attributes at ULA scan time
-                        const lineStartTstate = this.calculateLineStartTstate(visY);
-                        const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
-                        // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
-                        const machineOffset = (this.machineType === '128k') ? (this.mc128kOffset || 0) : 0;
-                        const attrChangeCount = this.attrChangeCount;
-                        const attrChangeTStates = this.attrChangeTStates;
-                        const attrChangeValues = this.attrChangeValues;
-                        const attrInitial = this.attrInitial;
-                        const maxChanges = this.ATTR_MAX_CHANGES;
-
-                        for (let col = 0; col < 32; col++) {
-                            const pixelByte = screenRam[pixelAddr + col];
-                            const attrOffset = attrRowOffset + col;
-
-                            // Fast path: if no changes for this column, use initial value directly
-                            let attr;
-                            const count = attrChangeCount[attrOffset];
-                            if (count > 0) {
-                                // Has changes - use full lookup
-                                const colTstate = paperStartTstate + (col * 4) + machineOffset;
-                                attr = attrInitial[attrOffset];
-                                const baseIdx = attrOffset * maxChanges;
-                                for (let i = 0; i < count; i++) {
-                                    const idx = baseIdx + i;
-                                    if (attrChangeTStates[idx] <= colTstate) {
-                                        attr = attrChangeValues[idx];
-                                    } else {
-                                        break;
-                                    }
+                        // Fast path: if no changes for this column, use initial value directly
+                        let attr;
+                        const changes = attrChanges[attrOffset];
+                        if (changes) {
+                            // Has changes - use full lookup
+                            const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                            attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
+                            for (const change of changes) {
+                                if (change.tState <= colTstate) {
+                                    attr = change.value;
+                                } else {
+                                    break;
                                 }
-                            } else {
-                                // No changes - use initial value
-                                attr = attrInitial[attrOffset];
                             }
-
-                            let ink = attr & 0x07;
-                            let paper = (attr >> 3) & 0x07;
-                            const bright = (attr & 0x40) ? 8 : 0;
-
-                            if ((attr & 0x80) && flashActive) {
-                                const tmp = ink; ink = paper; paper = tmp;
-                            }
-                            const inkColor = pal32[ink + bright];
-                            const paperColor = pal32[paper + bright];
-
-                            const baseOffset = rowOffset + (col << 3);
-                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                        } else {
+                            // No changes - use initial value
+                            attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                         }
+
+                        let ink = attr & 0x07;
+                        let paper = (attr >> 3) & 0x07;
+                        const bright = (attr & 0x40) ? 8 : 0;
+
+                        if ((attr & 0x80) && flashActive) {
+                            const tmp = ink; ink = paper; paper = tmp;
+                        }
+                        const inkColor = pal32[ink + bright];
+                        const paperColor = pal32[paper + bright];
+
+                        const baseOffset = rowOffset + (col << 3);
+                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
                     }
                 } else {
                     // Fast path: no attribute changes, render from current screen

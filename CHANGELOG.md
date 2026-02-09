@@ -2,6 +2,55 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.12
+- **RZX Playback Improvements**: Improved RZX replay compatibility
+  - Fixed Z80 loader not recognizing +3, +2, +2A machine types (hwMode 7, 12, 13)
+  - Fixed Z80 loader not recognizing Pentagon (hwMode 9) in V2 format snapshots
+  - Fixed ROM not loaded when switching from 48K to 128K/Pentagon (ROM bank 1 was empty)
+  - Some recordings still have issues due to emulator-specific behavior differences
+- **Disassembler Fixes**: Fixed several bugs in disassembler and trace-to-file export
+- **Export Enhancement**: Added option to collapse multiple lines of block operations (LDIR, LDDR, etc.)
+  - Reduces output size for repeated block instruction sequences
+- **Multicolor Fix**: Fixed Shock megademo multicolor rendering bug
+  - Issue was caused by previous screen bank switching optimization
+- **Snapshot Loading Fix**: Fixed frozen display/no sound when loading SZX/Z80/SNA snapshots
+  - Root cause: paging lock from previous program blocked port 7FFD writes
+  - All loaders now reset `pagingDisabled` before restoring paging state
+  - Also reset frame timing and ULA deferred rendering state
+- **UI Improvements**:
+  - Removed redundant "Running/Stopped" status label (button text shows state)
+  - Fixed RZX status layout shifts when frame counter digits change
+  - Removed RZX debug overlay (keypress display in bottom-right corner)
+- **Code Cleanup**: Removed excessive console logging throughout codebase
+  - Debug logs now controlled by flags (debugContention, debugInterrupts, etc.)
+
+## v0.9.11
+- **Fullscreen Mode**: Added fullscreen support for the emulator canvas
+  - Fullscreen button (⛶) in the control bar, or press F11
+  - ESC key exits fullscreen
+  - Three display modes:
+    - Crisp: Integer scaling for perfectly sharp pixels (default)
+    - Fit: Maximum scale with aspect ratio preserved
+    - Stretch: Fill entire screen
+  - Setting saved to localStorage
+- **Disassembler Fix**: Fixed incorrect mnemonic for indexed load instructions
+  - `LD L,(IX+d)` was incorrectly shown as `LD IXL,(IX+d)`
+  - `LD H,(IX+d)` was incorrectly shown as `LD IXH,(IX+d)`
+  - Same fix applied for IY variants
+  - IXH/IXL substitution now only applies when not using indexed memory addressing
+  - Displacement now shown in hex (e.g. `IX+31h` instead of `IX+49` for 0x31)
+- **Trace Recording Fix**: Fixed incorrect disassembly for self-modifying code
+  - Instructions that write to their own address (e.g. `LD (94AEh),IX` at 94AF) were traced incorrectly
+  - Now captures instruction bytes BEFORE execution, not after memory modification
+- **RZX Playback Fix**: Fixed DDCB/FDCB M1 cycle counting
+  - DDCB/FDCB instructions now correctly count as 2 M1 cycles, not 3
+  - R register now increments correctly (2 times per instruction)
+  - Fixes potential RZX playback desync for recordings using indexed bit operations
+- **RZX Playback Fix**: Fixed screen rendering artifacts during RZX playback
+  - T-states now reset at frame start during RZX playback
+  - Fixes "line by line" progressive rendering artifact where parts of screen weren't rendered
+  - RZX frames end by instruction count, not T-states, causing scanline calculation drift
+
 ## v0.9.10
 - **Performance Optimization**: Fixed severe slowdown with screen bank switching effects
   - Demos using 128K screen bank switching (Echologia, etc.) now run at full speed

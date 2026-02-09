@@ -24,7 +24,8 @@ This document describes the technical requirements for cycle-accurate emulation 
 14. [Emulator Architecture](#14-emulator-architecture)
 15. [Performance Optimization](#15-performance-optimization-without-wasm)
 16. [Testing and Validation](#16-testing-and-validation)
-17. [References](#17-references)
+17. [RZX Input Recording Format](#17-rzx-input-recording-format)
+18. [References](#18-references)
 
 ---
 
@@ -1621,7 +1622,7 @@ The **FUSE** (Free Unix Spectrum Emulator) test suite provides comprehensive Z80
 
 **Note:** The FUSE tests are well-established but date from the mid-2000s. Some Z80 behaviors discovered later (such as the Q register affecting SCF/CCF flags, detailed MEMPTR behavior in block instructions, and precise interrupt timing edge cases) may not be fully covered. Use newer test suites in addition to FUSE for complete validation.
 
-### 15.2 Key Test Cases
+### 16.2 Key Test Cases
 
 1. **Flag tests**: All ALU operations with edge-case inputs
 2. **Undocumented flag tests**: Bits 3/5, MEMPTR effects
@@ -1629,7 +1630,7 @@ The **FUSE** (Free Unix Spectrum Emulator) test suite provides comprehensive Z80
 4. **Contention tests**: Memory access patterns
 5. **Block instruction tests**: BC=0 edge cases, interrupts
 
-### 15.3 Visual Tests
+### 16.3 Visual Tests
 
 For video timing validation:
 - Border effects (Aquaplane, Uridium loading)
@@ -1638,15 +1639,185 @@ For video timing validation:
 
 ---
 
-## 17. References
+## 17. RZX Input Recording Format
 
-### 17.1 Official Documentation
+### 17.1 Overview
+
+RZX is the standard input recording format for ZX Spectrum emulators. It records all port IN operations, allowing exact replay of a session by feeding back the same inputs at the same instruction counts.
+
+### 17.2 File Structure
+
+```
+Header Block (always first)
+Creator Block (0x10) - optional but recommended
+Snapshot Block (0x30) - embedded snapshot
+Input Recording Block (0x80) - frame data
+```
+
+**Header Block (10 bytes):**
+```
+Offset  Size  Description
+0       4     Signature "RZX!"
+4       1     Major version (0)
+5       1     Minor version (13)
+6       4     Flags (bit 0 = encrypted)
+```
+
+**Creator Block (0x10):**
+```
+Offset  Size  Description
+0       1     Block ID (0x10)
+1       4     Block length (29)
+5       20    Creator name (ASCII, null-padded)
+25      2     Creator major version
+27      2     Creator minor version
+```
+
+**Snapshot Block (0x30):**
+```
+Offset  Size  Description
+0       1     Block ID (0x30)
+1       4     Block length
+5       4     Flags (bit 0 = external file, bit 1 = compressed)
+9       4     Extension (.sna/.z80/.szx)
+13      4     Uncompressed length
+17      n     Snapshot data (compressed if flag set)
+```
+
+**Input Recording Block (0x80):**
+```
+Offset  Size  Description
+0       1     Block ID (0x80)
+1       4     Block length
+5       4     Number of frames
+9       1     Reserved (0)
+10      4     Initial T-state count
+14      4     Flags (bit 0 = encrypted, bit 1 = compressed)
+18      n     Frame data (compressed if flag set)
+```
+
+### 17.3 Frame Data Structure
+
+Each frame consists of:
+```
+Offset  Size  Description
+0       2     Instruction count (M1 cycles, or 0xFFFF for repeat)
+2       2     Input count (number of port IN values)
+4       n     Input values (one byte per IN operation)
+```
+
+**Repeat frames**: If instruction count is 0xFFFF, this is a repeat frame:
+```
+Offset  Size  Description
+0       2     0xFFFF marker
+2       2     Number of times to repeat previous frame
+```
+
+### 17.4 Recording Implementation
+
+**Critical timing requirement**: Recording must start immediately AFTER the interrupt fires, not at frame boundary.
+
+```javascript
+// Set pending flag when user requests recording
+rzxStartRecording() {
+    this.rzxRecordPending = true;
+    this.rzxRecordedFrames = [];
+}
+
+// Actual recording starts after interrupt fires
+// This happens in the interrupt handler:
+if (this.rzxRecordPending) {
+    this.rzxRecordSnapshot = this.createSZXSnapshot();
+    this.rzxRecordTstates = this.cpu.tStates;  // ~19-20 T-states
+    this.rzxRecordCurrentFrame = { fetchCount: 0, inputs: [] };
+    this.rzxRecording = true;
+    this.rzxRecordPending = false;
+}
+```
+
+**Why this matters**: The keyboard scan routine (8 INs from port $00FE) runs in the interrupt handler. If recording starts at frame boundary (before interrupt), these 8 inputs get captured in frame 1 during playback instead of frame 0, causing desync.
+
+**Snapshot format**: Use SZX format, not Z80, because SZX properly preserves the CPU halted state. Z80 format does not save halted state, causing playback issues.
+
+### 17.5 Playback Implementation
+
+**Early interrupt for HALT**: During RZX playback, fire interrupt early when CPU is halted:
+
+```javascript
+const rzxHaltedNeedsInt = this.rzxPlaying &&
+    this.cpu.halted &&
+    this.cpu.iff1 &&
+    !this.cpu.eiPending;
+
+if (rzxHaltedNeedsInt || normalIntWindow) {
+    this.cpu.interrupt();
+}
+```
+
+**Frame boundary handling**:
+```javascript
+// At frame end, check M1 count matches
+if (actualM1Count !== expectedM1Count) {
+    console.warn(`M1 mismatch: actual=${actualM1Count} expected=${expectedM1Count}`);
+}
+
+// Also verify all inputs were consumed
+if (consumedInputs !== totalInputs) {
+    console.warn(`Input mismatch: consumed=${consumedInputs}/${totalInputs}`);
+}
+```
+
+### 17.6 Port IN Handling
+
+During playback, intercept port reads:
+
+```javascript
+readPort(port) {
+    if (this.rzxPlaying && this.rzxHasInput()) {
+        return this.rzxGetNextInput();
+    }
+    return this.normalPortRead(port);
+}
+```
+
+During recording, capture port reads:
+
+```javascript
+readPort(port) {
+    const value = this.normalPortRead(port);
+    if (this.rzxRecording) {
+        this.rzxRecordCurrentFrame.inputs.push(value);
+    }
+    return value;
+}
+```
+
+### 17.7 Compatibility Notes
+
+Most RZX recordings work correctly. Some games with unusual timing (e.g., Batty) may fail due to edge cases in interrupt or contention timing.
+
+| Emulator | Quirks |
+|----------|--------|
+| Spectaculator | Strict M1/input counting, good for validation |
+| FUSE | Reference implementation, fires INT at frame end |
+| EmuZWin | Requires proper frame structure |
+
+**Common issues:**
+- "Not enough port reads" - Frame boundary timing mismatch
+- "Too many port reads" - Recording started at wrong point
+- M1 mismatch - HALT handling or interrupt timing issue
+
+---
+
+## 18. References
+
+### 18.1 Official Documentation
 
 - Zilog Z80 User Manual
 - ZX Spectrum Service Manual
 - ZX Spectrum 128K Technical Reference
 
-### 17.2 Community Resources
+### 18.2 Community Resources
 
 - [Z80 Documented](http://z80.info/z80doc.htm) - Sean Young's complete guide
 - [Sinclair Wiki](https://sinclair.wiki.zxnet.co.uk/) - Spectrum technical details
@@ -1660,7 +1831,7 @@ For video timing validation:
 - [hoglet67/Z80Decoder](https://github.com/hoglet67/Z80Decoder) - Z80 decode/timing analysis
 - [maziac/z80-instruction-set](https://github.com/maziac/z80-instruction-set) - Z80 instruction reference
 
-### 17.3 Reference Emulators
+### 18.3 Reference Emulators
 
 | Emulator | Notable Features |
 |----------|------------------|
@@ -1675,7 +1846,7 @@ For video timing validation:
 | Spectaculator | Windows, commercial, very accurate |
 | ZX Spin | Windows, good debugging, tape analysis |
 
-### 17.4 Test Suites
+### 18.4 Test Suites
 
 **Classic tests:**
 - FUSE Z80 test suite - comprehensive but older (mid-2000s)

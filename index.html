@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.9.10</title>
+    <title>ZX-M8XXX v0.9.12</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -353,6 +353,23 @@
             background: rgba(255, 0, 0, 0.15);
             box-sizing: border-box;
             display: none;
+        }
+        /* Fullscreen mode styles */
+        .screen-wrapper:fullscreen,
+        .screen-wrapper:-webkit-full-screen {
+            background: #000 !important;
+            overflow: hidden !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            max-width: 100vw !important;
+            max-height: 100vh !important;
+            display: block !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        .screen-wrapper:fullscreen .sprite-region-overlay,
+        .screen-wrapper:-webkit-full-screen .sprite-region-overlay {
+            display: none !important;
         }
         .screen-info-popup {
             position: absolute;
@@ -4859,7 +4876,7 @@
             <button id="btnSaveProject" class="toolbar-btn" title="Save project (state + debugger)">Project▼</button>
             <button id="btnLoadProject" class="toolbar-btn" title="Load project">Project▲</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
-            <span class="app-name">ZX-M8XXX v0.9.10</span>
+            <span class="app-name">ZX-M8XXX v0.9.12</span>
             <button id="btnHelpFull" class="test-link" title="Open help documentation">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
         </div>
@@ -4878,17 +4895,14 @@
 
         <div class="status">
             <span class="status-item">
-                <span class="status-value" id="status">Stopped</span>
-            </span>
-            <span class="status-item">
                 <span class="status-value" id="fps" style="min-width: 32px; display: inline-block; text-align: right;">0</span>
             </span>
             <span class="status-item">
                 <span class="status-value" id="machine">48K</span>
             </span>
-            <span class="status-item" id="rzxInfo" style="display:none;">
+            <span class="status-item" id="rzxInfo" style="visibility: hidden;">
                 <span class="status-label">RZX:</span>
-                <span class="status-value" id="rzxStatus">-</span>
+                <span class="status-value" id="rzxStatus" style="min-width: 130px; display: inline-block; font-variant-numeric: tabular-nums;">-</span>
                 <button id="btnRzxStop" class="small-btn" title="Stop RZX playback">Stop</button>
             </span>
             <span class="status-item" id="tapeInfo" style="display:none;">
@@ -4921,6 +4935,7 @@
                 <option value="0">Max</option>
             </select>
             <button id="btnSound" title="Toggle sound (AY-3-8910)">🔇</button>
+            <button id="btnFullscreen" title="Toggle fullscreen (F11)">⛶</button>
             <button id="btnMouse" title="Capture mouse (Kempston Mouse)" style="display: none;">🖱️</button>
         </div>
         <input type="file" id="rom48Input" class="file-input" accept=".rom,.bin">
@@ -5373,6 +5388,19 @@
                                 <label class="search-option"><input type="checkbox" id="chkTraceSys"> Sys regs</label>
                                 <label class="search-option"><input type="checkbox" id="chkTracePorts"> Ports</label>
                                 <label class="search-option"><input type="checkbox" id="chkTraceSkipROM" checked> Skip ROM</label>
+                                <label class="search-option"><input type="checkbox" id="chkTraceCollapseBlock"> Collapse block</label>
+                            </div>
+                            <div class="trace-row">
+                                <span class="search-label">Port I/O:</span>
+                                <label class="search-option"><input type="checkbox" id="chkPortLog"> Log</label>
+                                <select id="selPortLogFilter" title="Filter by direction">
+                                    <option value="both">Both</option>
+                                    <option value="in">IN only</option>
+                                    <option value="out">OUT only</option>
+                                </select>
+                                <button id="btnPortLogExport" title="Export port I/O log">Export</button>
+                                <button id="btnPortLogClear" title="Clear port log">Clear</button>
+                                <span id="portLogStatus" class="automap-stats"></span>
                             </div>
                         </div>
                         <div class="trace-list" id="traceList"></div>
@@ -5784,6 +5812,14 @@ start:
                         <select id="paletteSelect">
                             <option value="default">Default</option>
                         </select>
+                        <span style="margin-left: 15px;">
+                            <label for="fullscreenMode">Fullscreen:</label>
+                            <select id="fullscreenMode" title="Fullscreen aspect ratio mode">
+                                <option value="crisp" selected>Crisp (integer scale)</option>
+                                <option value="fit">Fit (keep aspect ratio)</option>
+                                <option value="stretch">Stretch (fill screen)</option>
+                            </select>
+                        </span>
                     </div>
                     <div class="palette-preview" id="palettePreview">
                         <div class="palette-row">
@@ -5980,6 +6016,16 @@ start:
                         <button id="btnPsgCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
                     </div>
                     <div class="frame-grab-status" id="psgStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">RZX Recording</span>
+                    </div>
+                    <div class="settings-row frame-export-controls">
+                        <button id="btnRzxRecStart" class="frame-grab-btn" title="Start recording inputs for RZX">Record</button>
+                        <button id="btnRzxRecExport" class="frame-grab-btn" disabled title="Stop and export RZX file">Export</button>
+                        <button id="btnRzxRecCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
+                    </div>
+                    <div class="frame-grab-status" id="rzxRecStatus"></div>
                     <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
                     <div class="settings-row">
                         <label class="checkbox-label" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks when exporting ASM from Memory Map">
@@ -6568,7 +6614,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.10</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.12</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -6607,6 +6653,7 @@ start:
                         <li>TRD/SCL disk images (TR-DOS)</li>
                         <li>ZIP archive support</li>
                         <li>RZX playback (partial)</li>
+                        <li>Fullscreen mode (F11) with crisp/fit/stretch options</li>
                         <li>Automated test suite with screenshot comparison</li>
                         <li>Compare tool for snapshots and binaries</li>
                         <li>Explorer for file analysis (BASIC decoder, disassembly, hex dump)</li>
@@ -6689,6 +6736,7 @@ start:
                         <tr><td>F8</td><td>Step Over (skip CALL/RST)</td></tr>
                         <tr><td>F4</td><td>Run to Cursor</td></tr>
                         <tr><td>F9</td><td>Toggle Breakpoint at PC</td></tr>
+                        <tr><td>F11</td><td>Toggle Fullscreen</td></tr>
                     </table>
                 </div>
                 <div class="fullhelp-section hidden" id="help-debugger">
@@ -7433,7 +7481,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.9.10';
+        const APP_VERSION = '0.9.12';
         console.log('ZX-M8XXX v' + APP_VERSION);
         
         // Help modal
@@ -10897,7 +10945,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 this.skipROM = true;      // Skip recording when PC < 0x4000 (ROM area)
             }
 
-            record(cpu, memory, instrPC = null, portOps = null, memOps = null) {
+            record(cpu, memory, instrPC = null, portOps = null, memOps = null, instrBytes = null) {
                 if (this.stopped) return;
 
                 // Use provided PC (before execution) or fall back to current PC
@@ -10931,8 +10979,8 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     iff2: cpu.iff2,
                     im: cpu.im,
                     tStates: cpu.tStates,
-                    // Store instruction bytes at PC (up to 4 bytes for longest instruction)
-                    bytes: [
+                    // Use pre-captured bytes (before instruction modified memory) or read from memory
+                    bytes: instrBytes || [
                         memory.read(pc & 0xffff),
                         memory.read((pc + 1) & 0xffff),
                         memory.read((pc + 2) & 0xffff),
@@ -11031,9 +11079,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     includeSys = false,      // Include system regs (I, R, IFF, IM, T)
                     includePorts = false,    // Include port I/O
                     includeMem = false,      // Include memory writes
+                    collapseBlock = false,   // Collapse block commands (LDIR, LDDR, etc.) to single line
                     startIdx = 0,            // Start index in history
                     endIdx = -1              // End index (-1 = to end)
                 } = options;
+
+                // Block commands that repeat until BC=0 or condition met
+                const blockCommands = ['LDIR', 'LDDR', 'CPIR', 'CPDR', 'INIR', 'INDR', 'OTIR', 'OTDR'];
 
                 const lines = [];
                 let prev = null;  // Previous entry for change detection
@@ -11054,6 +11106,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 if (includeMem) headers.push('MEM');
                 lines.push(headers.join('\t'));
 
+                let lastBlockPC = -1;      // PC of last block command (for collapse detection)
+                let lastBlockMnemonic = '';  // Mnemonic of last block command
+                let blockRepeatCount = 0;  // How many times block command repeated
+
                 for (let i = start; i < end; i++) {
                     const e = this.history[i];
                     const isFirst = (i === start);
@@ -11064,7 +11120,32 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
                     // Disassemble instruction
                     const result = disasm.disassemble(e.pc);
+                    const mnemonic = result.mnemonic || '???';
                     const bytesHex = e.bytes.slice(0, result.length).map(b => hex2(b)).join(' ');
+
+                    // Block command collapsing
+                    if (collapseBlock) {
+                        const isBlockCmd = blockCommands.includes(mnemonic);
+                        if (isBlockCmd && e.pc === lastBlockPC && mnemonic === lastBlockMnemonic) {
+                            // Same block command at same PC - skip this iteration
+                            blockRepeatCount++;
+                            continue;
+                        }
+                        // If we were tracking a block command and now moved on, add repeat count to last line
+                        if (blockRepeatCount > 0 && lines.length > 1) {
+                            lines[lines.length - 1] += `\t(x${blockRepeatCount + 1})`;
+                        }
+                        // Update tracking
+                        if (isBlockCmd) {
+                            lastBlockPC = e.pc;
+                            lastBlockMnemonic = mnemonic;
+                            blockRepeatCount = 0;
+                        } else {
+                            lastBlockPC = -1;
+                            lastBlockMnemonic = '';
+                            blockRepeatCount = 0;
+                        }
+                    }
 
                     // Build columns array
                     const cols = [];
@@ -11076,7 +11157,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     if (includeBytes) cols.push(bytesHex);
 
                     // Instruction (always shown)
-                    cols.push(result.mnemonic || '???');
+                    cols.push(mnemonic);
 
                     // Registers - show value if first row or changed, empty otherwise
                     cols.push(isFirst || e.af !== prev.af ? hex4(e.af) : '');
@@ -11126,6 +11207,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
                     lines.push(cols.join('\t'));
                     prev = e;
+                }
+
+                // Handle case where trace ends with a block command
+                if (collapseBlock && blockRepeatCount > 0 && lines.length > 1) {
+                    lines[lines.length - 1] += `\t(x${blockRepeatCount + 1})`;
                 }
 
                 return lines.join('\n');
@@ -11517,6 +11603,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         this.spectrum.memory.loadRom(rom128Data.slice(16384, 32768), 1);
                         this.spectrum.romLoaded = true;
                     } else if (targetMachine === 'pentagon' && romPentagonData) {
+                        // Pentagon ROM: first 16KB = 48K ROM (bank 1), second 16KB = 128K ROM (bank 0)
                         this.spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                         this.spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                         if (romTrdosData) {
@@ -12678,8 +12765,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const volumeSlider = document.getElementById('volumeSlider');
         const volumeValue = document.getElementById('volumeValue');
         const stereoMode = document.getElementById('stereoMode');
+        const btnFullscreen = document.getElementById('btnFullscreen');
+        const fullscreenMode = document.getElementById('fullscreenMode');
+        const screenWrapper = document.querySelector('.screen-wrapper');
         const fileInput = document.getElementById('fileInput');
-        const statusEl = document.getElementById('status');
         const fpsEl = document.getElementById('fps');
         const machineEl = document.getElementById('machine');
         const dropZone = document.getElementById('dropZone');
@@ -13707,7 +13796,6 @@ labelManager.importJSON(jsonStr, merge)</pre>
         }
         
         function updateStatus() {
-            statusEl.textContent = spectrum.isRunning() ? 'Running' : 'Stopped';
             fpsEl.textContent = spectrum.getFps();
             machineEl.textContent = spectrum.machineType.toUpperCase();
             machineSelect.value = spectrum.machineType;
@@ -13725,13 +13813,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
         function updateRZXStatus() {
             if (spectrum.isRZXPlaying()) {
-                rzxInfo.style.display = 'inline-block';
+                rzxInfo.style.visibility = 'visible';
                 const frame = spectrum.getRZXFrame();
                 const total = spectrum.getRZXTotalFrames();
                 const percent = Math.round((frame / total) * 100);
                 rzxStatus.textContent = `${frame}/${total} (${percent}%)`;
             } else {
-                rzxInfo.style.display = 'none';
+                rzxInfo.style.visibility = 'hidden';
             }
         }
 
@@ -13740,6 +13828,49 @@ labelManager.importJSON(jsonStr, merge)</pre>
             spectrum.rzxStop();
             updateRZXStatus();
             showMessage('RZX playback stopped');
+        });
+
+        // Port I/O logging controls
+        const chkPortLog = document.getElementById('chkPortLog');
+        const selPortLogFilter = document.getElementById('selPortLogFilter');
+        const btnPortLogExport = document.getElementById('btnPortLogExport');
+        const btnPortLogClear = document.getElementById('btnPortLogClear');
+        const portLogStatus = document.getElementById('portLogStatus');
+
+        function updatePortLogStatus() {
+            const count = spectrum.getPortLogCount();
+            portLogStatus.textContent = count > 0 ? `${count} entries` : '';
+        }
+
+        chkPortLog.addEventListener('change', () => {
+            spectrum.setPortLogEnabled(chkPortLog.checked);
+            updatePortLogStatus();
+            if (chkPortLog.checked) {
+                showMessage('Port I/O logging enabled');
+            }
+        });
+
+        btnPortLogExport.addEventListener('click', () => {
+            const filter = selPortLogFilter.value; // 'both', 'in', or 'out'
+            const result = spectrum.exportPortLog(filter);
+            if (result.count === 0) {
+                showMessage('No port log entries to export');
+                return;
+            }
+            const blob = new Blob([result.text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'port-io-log.txt';
+            a.click();
+            URL.revokeObjectURL(url);
+            showMessage(`Exported ${result.count} port log entries`);
+        });
+
+        btnPortLogClear.addEventListener('click', () => {
+            spectrum.clearPortLog();
+            updatePortLogStatus();
+            showMessage('Port log cleared');
         });
 
         // RZX end callback
@@ -17656,18 +17787,62 @@ labelManager.importJSON(jsonStr, merge)</pre>
             let version = 1;
             let is128 = false;
             let compressed = (data[12] & 0x20) !== 0;
+            let hwMode = 0;
+            let port7FFD = 0;
+            let pages = [];
 
             if (regs.PC === 0) {
                 // V2 or V3
                 const extLen = data[30] | (data[31] << 8);
                 version = extLen === 23 ? 2 : 3;
                 regs.PC = data[32] | (data[33] << 8);
-                const hwMode = data[34];
+                hwMode = data[34];
+                port7FFD = data[35];
 
                 if (version === 2) {
-                    is128 = hwMode === 3 || hwMode === 4;
+                    // V2: hwMode 3=128K, 4=128K+IF1, 9=Pentagon (non-standard but used by some savers)
+                    is128 = hwMode === 3 || hwMode === 4 || hwMode === 9;
                 } else {
-                    is128 = hwMode >= 4 && hwMode <= 6;
+                    // V3: 4-6=128K variants, 7=+3, 9=Pentagon, 12=+2, 13=+2A
+                    is128 = hwMode >= 4 && hwMode <= 6 || hwMode === 7 || hwMode === 9 || hwMode === 12 || hwMode === 13;
+                }
+
+                // Parse pages
+                const headerLen = 30 + 2 + extLen;
+                let offset = headerLen;
+                while (offset < data.length - 3) {
+                    const compLen = data[offset] | (data[offset + 1] << 8);
+                    const pageNum = data[offset + 2];
+                    const isCompressed = compLen !== 0xffff;
+                    const dataLen = isCompressed ? compLen : 16384;
+
+                    // Determine page description
+                    let pageDesc = '';
+                    if (is128 || hwMode === 9) {
+                        // 128K/Pentagon page mapping
+                        if (pageNum === 0) pageDesc = 'ROM 48K (modified)';
+                        else if (pageNum === 1) pageDesc = 'IF1 ROM';
+                        else if (pageNum === 2) pageDesc = 'ROM 128K (modified)';
+                        else if (pageNum >= 3 && pageNum <= 10) pageDesc = `RAM bank ${pageNum - 3}`;
+                        else if (pageNum === 11) pageDesc = 'Multiface ROM';
+                        else pageDesc = `Unknown`;
+                    } else {
+                        // 48K page mapping
+                        if (pageNum === 4) pageDesc = '0x8000-0xBFFF';
+                        else if (pageNum === 5) pageDesc = '0xC000-0xFFFF';
+                        else if (pageNum === 8) pageDesc = '0x4000-0x7FFF';
+                        else pageDesc = `Unknown`;
+                    }
+
+                    pages.push({
+                        num: pageNum,
+                        offset: offset,
+                        compLen: isCompressed ? compLen : 16384,
+                        compressed: isCompressed,
+                        desc: pageDesc
+                    });
+
+                    offset += 3 + dataLen;
                 }
             }
 
@@ -17678,8 +17853,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 type: 'z80',
                 version: version,
                 is128: is128,
+                hwMode: hwMode,
+                port7FFD: port7FFD,
                 compressed: compressed,
                 registers: regs,
+                pages: pages,
                 size: data.length
             };
         }
@@ -17771,15 +17949,21 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     creatorInfo: rzxLoader.creatorInfo,
                     snapshotType: rzxLoader.getSnapshotType(),
                     snapshot: rzxLoader.getSnapshot(),
-                    size: data.length
+                    allSnapshots: rzxLoader.allSnapshots || [],
+                    size: data.length,
+                    stats: rzxLoader.getStats(),
+                    frames: rzxLoader.getFrames()
                 };
 
                 // Parse embedded snapshot for registers
                 if (result.snapshot && result.snapshotType) {
+                    console.log('[RZX Explorer] Snapshot type:', result.snapshotType, 'size:', result.snapshot.length);
                     if (result.snapshotType === 'sna') {
                         result.embeddedParsed = explorerParseSNA(result.snapshot);
                     } else if (result.snapshotType === 'z80') {
                         result.embeddedParsed = explorerParseZ80(result.snapshot);
+                        console.log('[RZX Explorer] Z80 parsed:', 'version:', result.embeddedParsed.version,
+                            'hwMode:', result.embeddedParsed.hwMode, 'pages:', result.embeddedParsed.pages);
                     }
                 }
 
@@ -18479,13 +18663,40 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
         function explorerRenderZ80Info() {
             const r = explorerParsed.registers;
+
+            // Determine machine type name from hwMode
+            let machineType = explorerParsed.is128 ? 'ZX Spectrum 128K' : 'ZX Spectrum 48K';
+            if (explorerParsed.version >= 2) {
+                const hwMode = explorerParsed.hwMode;
+                if (explorerParsed.version === 2) {
+                    if (hwMode === 0) machineType = '48K';
+                    else if (hwMode === 1) machineType = '48K + IF1';
+                    else if (hwMode === 2) machineType = 'SamRam';
+                    else if (hwMode === 3) machineType = '128K';
+                    else if (hwMode === 4) machineType = '128K + IF1';
+                } else {
+                    if (hwMode === 0) machineType = '48K';
+                    else if (hwMode === 1) machineType = '48K + IF1';
+                    else if (hwMode === 2) machineType = 'SamRam';
+                    else if (hwMode === 3) machineType = '48K + MGT';
+                    else if (hwMode === 4) machineType = '128K';
+                    else if (hwMode === 5) machineType = '128K + IF1';
+                    else if (hwMode === 6) machineType = '128K + MGT';
+                    else if (hwMode === 7) machineType = '+3';
+                    else if (hwMode === 9) machineType = 'Pentagon';
+                    else if (hwMode === 12) machineType = '+2';
+                    else if (hwMode === 13) machineType = '+2A';
+                }
+            }
+
             let html = `<div class="explorer-info-section">
-                <div class="explorer-info-header">Z80 Snapshot (v${explorerParsed.version}, ${explorerParsed.is128 ? '128K' : '48K'})</div>
+                <div class="explorer-info-header">Z80 Snapshot (v${explorerParsed.version})</div>
                 <table class="explorer-info-table">
                     <tr><th>Size</th><td>${explorerData.length.toLocaleString()} bytes</td></tr>
                     <tr><th>Version</th><td>${explorerParsed.version}</td></tr>
-                    <tr><th>Machine</th><td>${explorerParsed.is128 ? 'ZX Spectrum 128K' : 'ZX Spectrum 48K'}</td></tr>
+                    <tr><th>Machine</th><td>${machineType} (hwMode=${explorerParsed.hwMode})</td></tr>
                     <tr><th>Compressed</th><td>${explorerParsed.compressed ? 'Yes' : 'No'}</td></tr>
+                    ${explorerParsed.is128 ? `<tr><th>Port 7FFD</th><td>${hex8(explorerParsed.port7FFD)}</td></tr>` : ''}
                 </table>
             </div>`;
 
@@ -18503,6 +18714,23 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     <tr><th>Border</th><td>${r.border}</td><th>IFF2</th><td>${r.IFF2}</td></tr>
                 </table>
             </div>`;
+
+            // Show pages
+            if (explorerParsed.pages && explorerParsed.pages.length > 0) {
+                html += `<div class="explorer-info-section">
+                    <div class="explorer-info-header">Pages (${explorerParsed.pages.length})</div>
+                    <div class="explorer-block-list">`;
+
+                for (const page of explorerParsed.pages) {
+                    const romClass = (page.num === 0 || page.num === 2) ? ' style="color: var(--cyan);"' : '';
+                    html += `<div class="explorer-block"${romClass}>
+                        <span class="explorer-block-type">Page ${page.num}</span>
+                        <span class="explorer-block-size">${page.desc} (${page.compLen} bytes${page.compressed ? ', compressed' : ''})</span>
+                    </div>`;
+                }
+
+                html += '</div></div>';
+            }
 
             return html;
         }
@@ -18561,15 +18789,40 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 return `<div class="explorer-info-section"><div class="explorer-info-header">RZX File</div><table class="explorer-info-table"><tr><th>Error</th><td>${explorerParsed.error}</td></tr></table></div>`;
             }
 
+            const stats = explorerParsed.stats;
+            const creatorStr = explorerParsed.creatorInfo ?
+                `${explorerParsed.creatorInfo.name} v${explorerParsed.creatorInfo.majorVersion}.${explorerParsed.creatorInfo.minorVersion}` :
+                'Unknown';
+
             let html = `<div class="explorer-info-section">
                 <div class="explorer-info-header">RZX Input Recording</div>
                 <table class="explorer-info-table">
                     <tr><th>Size</th><td>${explorerData.length.toLocaleString()} bytes</td></tr>
                     <tr><th>Frames</th><td>${explorerParsed.totalFrames.toLocaleString()}</td></tr>
-                    <tr><th>Snapshot</th><td>${explorerParsed.snapshotType ? explorerParsed.snapshotType.toUpperCase() : 'None'}</td></tr>
-                    ${explorerParsed.creatorInfo ? `<tr><th>Creator</th><td>${explorerParsed.creatorInfo}</td></tr>` : ''}
+                    <tr><th>Duration</th><td>${stats ? stats.durationSeconds + 's' : '?'} (@ 50fps)</td></tr>
+                    <tr><th>Snapshots</th><td>${explorerParsed.allSnapshots && explorerParsed.allSnapshots.length > 0
+                        ? explorerParsed.allSnapshots.map((s, i) =>
+                            `${s.ext.toUpperCase()}${i === 0 ? ' (start)' : i === explorerParsed.allSnapshots.length - 1 ? ' (end)' : ''} <button onclick="explorerExtractRZXSnapshot(${i})" class="small-btn">Extract</button>`
+                          ).join('<br>')
+                        : 'None'}</td></tr>
+                    <tr><th>Creator</th><td>${creatorStr}</td></tr>
                 </table>
             </div>`;
+
+            // Show frame statistics
+            if (stats) {
+                html += `<div class="explorer-info-section">
+                    <div class="explorer-info-header">Frame Statistics</div>
+                    <table class="explorer-info-table">
+                        <tr><th>Total Inputs</th><td>${stats.totalInputs.toLocaleString()}</td></tr>
+                        <tr><th>Total M1 Cycles</th><td>${stats.totalFetchCount.toLocaleString()}</td></tr>
+                        <tr><th>Avg M1/Frame</th><td>${stats.avgFetchCount.toLocaleString()}</td></tr>
+                        <tr><th>Avg Inputs/Frame</th><td>${stats.avgInputsPerFrame}</td></tr>
+                        <tr><th>M1 Range</th><td>${stats.fetchRange.min} - ${stats.fetchRange.max}</td></tr>
+                        <tr><th>Inputs Range</th><td>${stats.inputsRange.min} - ${stats.inputsRange.max}</td></tr>
+                    </table>
+                </div>`;
+            }
 
             // Show embedded snapshot registers if available
             if (explorerParsed.embeddedParsed && explorerParsed.embeddedParsed.registers) {
@@ -18590,8 +18843,385 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         <tr><th>IM</th><td>${r.IM}</td><th>Border</th><td>${r.border}</td></tr>
                     </table>
                 </div>`;
+
+                // Show embedded snapshot pages
+                const embPages = explorerParsed.embeddedParsed.pages;
+                if (embPages && embPages.length > 0) {
+                    html += `<div class="explorer-info-section">
+                        <div class="explorer-info-header">Snapshot Pages (${embPages.length})</div>
+                        <div class="explorer-block-list">`;
+
+                    for (const page of embPages) {
+                        const romClass = (page.num === 0 || page.num === 2) ? ' style="color: var(--cyan);"' : '';
+                        html += `<div class="explorer-block"${romClass}>
+                            <span class="explorer-block-type">Page ${page.num}</span>
+                            <span class="explorer-block-size">${page.desc} (${page.compLen} bytes${page.compressed ? ', compressed' : ''})</span>
+                        </div>`;
+                    }
+
+                    html += '</div></div>';
+                }
             }
 
+            // Show keypress timeline (human-readable)
+            if (explorerParsed.frames && explorerParsed.frames.length > 0) {
+                html += explorerRenderRZXKeyTimeline();
+            }
+
+            return html;
+        }
+
+        // Extract embedded snapshot from RZX and download it
+        // index: which snapshot to extract (0 = first/start, default; higher = later/end)
+        function explorerExtractRZXSnapshot(index = 0) {
+            if (!explorerParsed || explorerParsed.type !== 'rzx') {
+                alert('No RZX file loaded');
+                return;
+            }
+
+            const allSnapshots = explorerParsed.allSnapshots;
+            if (!allSnapshots || allSnapshots.length === 0) {
+                alert('No embedded snapshots to extract');
+                return;
+            }
+
+            if (index < 0 || index >= allSnapshots.length) {
+                alert(`Invalid snapshot index: ${index}`);
+                return;
+            }
+
+            const snapInfo = allSnapshots[index];
+            const snapshot = snapInfo.data;
+            const ext = snapInfo.ext || 'bin';
+            const baseName = (explorerFileName.textContent || 'rzx_snapshot').replace(/\.rzx$/i, '');
+            const suffix = allSnapshots.length > 1 ? `_snap${index + 1}` : '_embedded';
+            const filename = baseName + suffix + '.' + ext;
+
+            // Create download blob
+            const blob = new Blob([snapshot], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            console.log(`Extracted snapshot #${index + 1}: ${ext.toUpperCase()}, ${snapshot.length} bytes`);
+        }
+
+        // Decode RZX input value to human-readable format
+        // NOTE: RZX only stores VALUES, not ports - so for keyboard we show all possible keys per bit
+        function rzxDecodeInput(value) {
+            // Kempston joystick: active HIGH, values 0x01-0x1F
+            // Bits: 0=Right, 1=Left, 2=Down, 3=Up, 4=Fire
+            if (value > 0 && value <= 0x1F) {
+                const dirs = [];
+                if (value & 0x01) dirs.push('Right');
+                if (value & 0x02) dirs.push('Left');
+                if (value & 0x04) dirs.push('Down');
+                if (value & 0x08) dirs.push('Up');
+                if (value & 0x10) dirs.push('Fire');
+                return 'Kemp: ' + dirs.join('+');
+            }
+
+            // Keyboard: active LOW (0=pressed in bits 0-4)
+            // All 8 possible keys for each bit (one per row):
+            const keysPerBit = [
+                'CS/A/Q/1/0/P/Ent/Spc',   // bit 0
+                'Z/S/W/2/9/O/L/SS',        // bit 1
+                'X/D/E/3/8/I/K/M',         // bit 2
+                'C/F/R/4/7/U/J/N',         // bit 3
+                'V/G/T/5/6/Y/H/B'          // bit 4
+            ];
+
+            const pressed = [];
+            for (let bit = 0; bit < 5; bit++) {
+                if ((value & (1 << bit)) === 0) {
+                    pressed.push(keysPerBit[bit]);
+                }
+            }
+
+            if (pressed.length === 0) return '(none)';
+            return pressed.join(' + ');
+        }
+
+        // Current RZX decode mode (for explorer)
+        let rzxDecodeMode = 'all';
+
+        // Decode pressed bits (already normalized: 1=pressed) to key names
+        function rzxDecodeBits(bits, originalValue, mode = null) {
+            mode = mode || rzxDecodeMode;
+
+            // Check if Kempston (original value was low with bits SET)
+            if (originalValue > 0 && originalValue <= 0x1F) {
+                const dirs = [];
+                if (bits & 0x01) dirs.push('Right');
+                if (bits & 0x02) dirs.push('Left');
+                if (bits & 0x04) dirs.push('Down');
+                if (bits & 0x08) dirs.push('Up');
+                if (bits & 0x10) dirs.push('Fire');
+                return dirs.length > 0 ? dirs.join('+') : '(none)';
+            }
+
+            // Keyboard decode based on mode
+            // Interface I / IF2 Port 2: 6=Left, 7=Down, 8=Up, 9=Right, 0=Fire (row 0xEFFE: 0,9,8,7,6)
+            // Interface II Port 1: 1=Left, 2=Right, 3=Down, 4=Up, 5=Fire (row 0xF7FE: 1,2,3,4,5)
+            // Cursor keys: 5=Left, 6=Down, 7=Up, 8=Right, 0=Fire
+
+            const decodeModes = {
+                'all': [
+                    'CS/A/Q/1/0/P/Ent/Spc',   // bit 0
+                    'Z/S/W/2/9/O/L/SS',        // bit 1
+                    'X/D/E/3/8/I/K/M',         // bit 2
+                    'C/F/R/4/7/U/J/N',         // bit 3
+                    'V/G/T/5/6/Y/H/B'          // bit 4
+                ],
+                'if2p1': [  // Interface II Port 1 (1-5): 1=Left, 2=Right, 3=Down, 4=Up, 5=Fire
+                    'Left',   // bit 0 = 1
+                    'Right',  // bit 1 = 2
+                    'Down',   // bit 2 = 3
+                    'Up',     // bit 3 = 4
+                    'Fire'    // bit 4 = 5
+                ],
+                'if2p2': [  // Interface II Port 2 (6-0): 6=Left, 7=Right, 8=Down, 9=Up, 0=Fire
+                    'Fire',   // bit 0 = 0
+                    'Up',     // bit 1 = 9
+                    'Down',   // bit 2 = 8
+                    'Right',  // bit 3 = 7
+                    'Left'    // bit 4 = 6
+                ],
+                'cursors': [  // Cursor keys: 5=Left, 6=Down, 7=Up, 8=Right, 0=Fire
+                    'Fire',   // bit 0 = 0
+                    '?',      // bit 1 = 9
+                    'Right',  // bit 2 = 8
+                    'Up',     // bit 3 = 7
+                    'Left/Down' // bit 4 = 5 or 6
+                ],
+                'qaop': [  // QAOP + Space: Q=Up, A=Down, O=Left, P=Right, Space=Fire
+                    'Up/Fire',   // bit 0 = Q or Space
+                    'Down/Left', // bit 1 = A or O
+                    '?',         // bit 2
+                    '?',         // bit 3
+                    'Right'      // bit 4 = P (row 0xDF)
+                ],
+                'kempston': [
+                    'Right',  // bit 0
+                    'Left',   // bit 1
+                    'Down',   // bit 2
+                    'Up',     // bit 3
+                    'Fire'    // bit 4
+                ]
+            };
+
+            const keysPerBit = decodeModes[mode] || decodeModes['all'];
+
+            const pressed = [];
+            for (let bit = 0; bit < 5; bit++) {
+                if (bits & (1 << bit)) {
+                    pressed.push(keysPerBit[bit]);
+                }
+            }
+
+            return pressed.length > 0 ? pressed.join('+') : '(none)';
+        }
+
+        // Check if a value indicates "no input" (all key bits = 1)
+        function rzxIsNoInput(value) {
+            // Keyboard: bits 0-4 all set = no keys pressed
+            // Also check for Kempston no-press (0x00)
+            return (value & 0x1F) === 0x1F || value === 0;
+        }
+
+        // Extract pressed key bits (0-4) from a value, ignoring upper bits
+        function rzxGetPressedBits(value) {
+            // For Kempston (active high): bits that are 1
+            if (value > 0 && value <= 0x1F) {
+                return value & 0x1F;
+            }
+            // For keyboard (active low): invert so pressed = 1
+            return (~value) & 0x1F;
+        }
+
+        function explorerRenderRZXKeyTimeline() {
+            if (!explorerParsed.frames || explorerParsed.frames.length === 0) return '';
+
+            // Analyze frames to find keypress events
+            // Track by PRESSED BITS, not raw values (upper bits can vary)
+            // Use gap tolerance: if same key reappears within GAP_TOLERANCE frames, treat as held
+            const GAP_TOLERANCE = 5;  // frames
+
+            const events = [];
+            let currentBits = 0;  // 0 = no keys, otherwise bitmask of pressed keys
+            let currentValue = 0xFF;
+            let keyStartFrame = 0;
+            let lastActiveFrame = 0;  // Last frame where key was detected
+
+            for (let i = 0; i < explorerParsed.frames.length; i++) {
+                const frame = explorerParsed.frames[i];
+
+                // Find pressed bits across all inputs in this frame
+                let frameBits = 0;
+                let frameValue = 0xFF;
+
+                for (const input of frame.inputs) {
+                    if (!rzxIsNoInput(input)) {
+                        const bits = rzxGetPressedBits(input);
+                        frameBits |= bits;  // Combine all pressed bits
+                        frameValue = input; // Keep last non-empty value for display
+                    }
+                }
+
+                if (frameBits !== 0 && currentBits === 0) {
+                    // Key press started
+                    currentBits = frameBits;
+                    currentValue = frameValue;
+                    keyStartFrame = i;
+                    lastActiveFrame = i;
+                } else if (frameBits === 0 && currentBits !== 0) {
+                    // No keys in this frame - but check gap tolerance before ending
+                    if (i - lastActiveFrame > GAP_TOLERANCE) {
+                        // Gap too large, key was released
+                        events.push({
+                            type: 'press',
+                            startFrame: keyStartFrame,
+                            endFrame: lastActiveFrame,
+                            duration: lastActiveFrame - keyStartFrame + 1,
+                            value: currentValue,
+                            bits: currentBits
+                        });
+                        currentBits = 0;
+                    }
+                    // else: within tolerance, keep waiting
+                } else if (frameBits !== 0 && currentBits !== 0) {
+                    if (frameBits === currentBits) {
+                        // Same key still held
+                        lastActiveFrame = i;
+                    } else {
+                        // Key combination changed
+                        events.push({
+                            type: 'press',
+                            startFrame: keyStartFrame,
+                            endFrame: lastActiveFrame,
+                            duration: lastActiveFrame - keyStartFrame + 1,
+                            value: currentValue,
+                            bits: currentBits
+                        });
+                        currentBits = frameBits;
+                        currentValue = frameValue;
+                        keyStartFrame = i;
+                        lastActiveFrame = i;
+                    }
+                }
+            }
+
+            // Close any remaining keypress
+            if (currentBits !== 0) {
+                events.push({
+                    type: 'press',
+                    startFrame: keyStartFrame,
+                    endFrame: explorerParsed.frames.length - 1,
+                    duration: explorerParsed.frames.length - keyStartFrame,
+                    value: currentValue,
+                    bits: currentBits
+                });
+            }
+
+            let html = `<div class="explorer-info-section">
+                <div class="explorer-info-header">Keypress Timeline (${events.length} keypresses)
+                    <select id="rzxDecodeMode" style="margin-left: 10px; font-size: 11px;">
+                        <option value="all">All keys</option>
+                        <option value="if2p1">Interface II Port 1 (1-5)</option>
+                        <option value="if2p2">Interface II Port 2 (6-0)</option>
+                        <option value="cursors">Cursor keys (5-8)</option>
+                        <option value="qaop">QAOP + Space</option>
+                        <option value="kempston">Kempston</option>
+                    </select>
+                </div>
+                <div class="explorer-file-list" style="max-height: 350px; font-size: 11px;">`;
+
+            if (events.length === 0) {
+                html += '<div style="color: var(--text-secondary); padding: 8px;">No keypresses detected</div>';
+            } else {
+                // Show header
+                html += `<div class="explorer-file-entry" style="padding: 2px 4px; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">
+                    <span style="width: 55px; display: inline-block;">Start</span>
+                    <span style="width: 70px; display: inline-block;">Duration</span>
+                    <span>Keys (possible)</span>
+                </div>`;
+
+                const maxToShow = 200;
+                for (let i = 0; i < Math.min(maxToShow, events.length); i++) {
+                    const e = events[i];
+                    const startMs = Math.round(e.startFrame * 20);
+                    const durMs = Math.round(e.duration * 20);
+                    const durStr = durMs >= 1000 ? `${(durMs/1000).toFixed(1)}s` : `${durMs}ms`;
+
+                    // Decode pressed bits to human-readable keys
+                    const keysStr = rzxDecodeBits(e.bits, e.value);
+
+                    // Show bit numbers for debugging
+                    const bitNums = [];
+                    for (let b = 0; b < 5; b++) {
+                        if (e.bits & (1 << b)) bitNums.push(b);
+                    }
+                    const bitStr = bitNums.length > 0 ? `[b${bitNums.join(',')}]` : '';
+
+                    html += `<div class="explorer-file-entry" style="padding: 2px 4px;">
+                        <span style="color: var(--cyan); width: 55px; display: inline-block;">F${e.startFrame}</span>
+                        <span style="color: var(--text-secondary); width: 70px; display: inline-block;">${durStr}</span>
+                        <span style="color: var(--text-primary);">${keysStr}</span>
+                        <span style="color: var(--text-secondary); margin-left: 8px;">${bitStr}</span>
+                    </div>`;
+                }
+
+                if (events.length > maxToShow) {
+                    html += `<div style="color: var(--text-secondary); padding: 4px;">... and ${events.length - maxToShow} more keypresses</div>`;
+                }
+            }
+
+            html += '</div></div>';
+
+            // Also show frame-by-frame view for first N frames with input
+            html += explorerRenderRZXFrameDetails();
+
+            return html;
+        }
+
+        function explorerRenderRZXFrameDetails() {
+            // Show first 30 frames that have actual input
+            const framesWithInput = [];
+            for (let i = 0; i < explorerParsed.frames.length && framesWithInput.length < 30; i++) {
+                const frame = explorerParsed.frames[i];
+                const hasInput = frame.inputs.some(v => !rzxIsNoInput(v));
+                if (hasInput) {
+                    framesWithInput.push({ index: i, frame });
+                }
+            }
+
+            if (framesWithInput.length === 0) return '';
+
+            let html = `<div class="explorer-info-section">
+                <div class="explorer-info-header">Frames with Input (first ${framesWithInput.length})</div>
+                <div class="explorer-file-list" style="max-height: 250px; font-size: 11px;">`;
+
+            for (const { index, frame } of framesWithInput) {
+                const timeMs = Math.round(index * 20);
+
+                // Get unique non-empty inputs and decode them
+                const activeInputs = [...new Set(frame.inputs.filter(v => !rzxIsNoInput(v)))];
+                const inputStr = activeInputs.map(v => rzxDecodeInput(v)).join('; ');
+
+                html += `<div class="explorer-file-entry" style="padding: 2px 4px;">
+                    <span style="color: var(--cyan); width: 50px; display: inline-block;">F${index}</span>
+                    <span style="color: var(--text-secondary); width: 60px; display: inline-block;">${timeMs}ms</span>
+                    <span style="color: var(--text-secondary); width: 70px; display: inline-block;">M1:${frame.fetchCount}</span>
+                    <span style="color: #f80;">${inputStr}</span>
+                </div>`;
+            }
+
+            html += '</div></div>';
             return html;
         }
 
@@ -18697,11 +19327,18 @@ labelManager.importJSON(jsonStr, merge)</pre>
             for (let i = 0; i < explorerParsed.files.length; i++) {
                 const file = explorerParsed.files[i];
                 const ext = file.name.split('.').pop().toLowerCase();
-                const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl'].includes(ext);
+                const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'rzx'].includes(ext);
+
+                // For RZX files, try to get quick info
+                let extraInfo = '';
+                if (ext === 'rzx' && file.data && file.data.length > 10) {
+                    extraInfo = ' <span style="color:var(--cyan)">[RZX]</span>';
+                }
+
                 html += `<div class="explorer-block${supported ? ' explorer-zip-file' : ''}" data-zip-index="${i}" style="${supported ? 'cursor:pointer' : 'opacity:0.5'}">
                     <span class="explorer-block-num">${i + 1}</span>
                     <span class="explorer-block-type">${ext.toUpperCase()}</span>
-                    <span class="explorer-block-name">${file.name}</span>
+                    <span class="explorer-block-name">${file.name}${extraInfo}</span>
                     <span class="explorer-block-size">${file.size.toLocaleString()} bytes</span>
                 </div>`;
             }
@@ -18709,6 +19346,20 @@ labelManager.importJSON(jsonStr, merge)</pre>
             html += '</div></div>';
             return html;
         }
+
+        // Handle RZX decode mode change
+        explorerInfoOutput.addEventListener('change', (e) => {
+            if (e.target.id === 'rzxDecodeMode') {
+                rzxDecodeMode = e.target.value;
+                // Re-render RZX info with new decode mode
+                if (explorerParsed && explorerParsed.type === 'rzx') {
+                    explorerInfoOutput.innerHTML = explorerRenderRZXInfo();
+                    // Restore dropdown selection after re-render
+                    const dropdown = document.getElementById('rzxDecodeMode');
+                    if (dropdown) dropdown.value = rzxDecodeMode;
+                }
+            }
+        });
 
         // Handle clicking on ZIP file entries and TAP blocks
         explorerInfoOutput.addEventListener('click', async (e) => {
@@ -18721,7 +19372,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 const zipFile = explorerZipFiles[idx];
                 const ext = zipFile.name.split('.').pop().toLowerCase();
 
-                if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl'].includes(ext)) return;
+                if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'rzx'].includes(ext)) return;
 
                 // Store parent ZIP name and load inner file
                 explorerZipParentName = explorerFileName.textContent;
@@ -23186,13 +23837,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const chkTraceSys = document.getElementById('chkTraceSys');
         const chkTracePorts = document.getElementById('chkTracePorts');
         const chkTraceSkipROM = document.getElementById('chkTraceSkipROM');
+        const chkTraceCollapseBlock = document.getElementById('chkTraceCollapseBlock');
         const traceStatus = document.getElementById('traceStatus');
         const traceList = document.getElementById('traceList');
 
         // Set up trace recording callback
-        spectrum.onBeforeStep = (cpu, memory, instrPC, portOps, memOps) => {
+        spectrum.onBeforeStep = (cpu, memory, instrPC, portOps, memOps, instrBytes) => {
             try {
-                traceManager.record(cpu, memory, instrPC, portOps, memOps);
+                traceManager.record(cpu, memory, instrPC, portOps, memOps, instrBytes);
             } catch (e) {
                 console.error('Trace record error:', e);
             }
@@ -23411,6 +24063,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 includeSys: chkTraceSys.checked,
                 includePorts: chkTracePorts.checked,
                 includeMem: false,
+                collapseBlock: chkTraceCollapseBlock.checked,
                 startIdx: startIdx,
                 endIdx: endIdx
             });
@@ -25380,8 +26033,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 spectrum.memory.loadRom(rom128Data.slice(0, 16384), 0);
                 spectrum.memory.loadRom(rom128Data.slice(16384, 32768), 1);
             } else if (spectrum.machineType === 'pentagon' && romPentagonData) {
+                // Pentagon ROM: first 16KB = 128K ROM (bank 0), second 16KB = 48K ROM (bank 1)
+                console.log('[ROM] Loading Pentagon ROM:', romPentagonData.byteLength, 'bytes');
                 spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                 spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
+                // Verify: Bank 1 (48K ROM) should have CALL 386E at 0x004A (opcode CD)
+                const byte4A_bank1 = spectrum.memory.rom[1][0x4A];
+                console.log('[ROM] Bank 1 (48K ROM) at 0x004A:', byte4A_bank1.toString(16), byte4A_bank1 === 0xCD ? '(CALL - correct)' : '(unexpected)');
             }
             // Load TR-DOS ROM if available (for Beta Disk interface on any machine)
             if (romTrdosData && (spectrum.machineType === 'pentagon' || spectrum.betaDiskEnabled)) {
@@ -27328,6 +27986,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         zoom: document.querySelector('.zoom-btn.active')?.textContent.replace('x', '') || '2',
                         running: spectrum.isRunning(),
                         overlayMode: overlaySelect.value,
+                        fullscreenMode: fullscreenMode.value,
                         tapeFlashLoad: spectrum.getTapeFlashLoad(),
                         tapeAudioEnabled: spectrum.tapeAudioEnabled
                     },
@@ -27358,7 +28017,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     project.rzx = {
                         data: arrayToBase64(rzxData),
                         frame: spectrum.getRZXFrame(),
-                        tstates: spectrum.getRZXTstates(),
+                        instructions: spectrum.getRZXInstructions(),
                         totalFrames: spectrum.getRZXTotalFrames()
                     };
                 }
@@ -27708,6 +28367,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         overlaySelect.value = mode;
                         spectrum.setOverlayMode(mode);
                     }
+                    if (project.settings.fullscreenMode !== undefined) {
+                        fullscreenMode.value = project.settings.fullscreenMode;
+                        localStorage.setItem('zx-fullscreen-mode', project.settings.fullscreenMode);
+                    }
                     if (project.settings.invertDisplay !== undefined) {
                         chkInvertDisplay.checked = project.settings.invertDisplay;
                         applyInvertDisplay(project.settings.invertDisplay);
@@ -27783,9 +28446,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         const rzxBinary = Uint8Array.from(atob(project.rzx.data), c => c.charCodeAt(0));
                         // Load RZX but skip embedded snapshot (we already loaded project snapshot)
                         await spectrum.loadRZX(rzxBinary, true);
-                        // Restore frame position and T-states
+                        // Restore frame position and instruction count
                         spectrum.setRZXFrame(project.rzx.frame || 0);
-                        spectrum.setRZXTstates(project.rzx.tstates || 0);
+                        spectrum.setRZXInstructions(project.rzx.instructions || 0);
                         updateRZXStatus();
                     } catch (e) {
                         console.warn('Failed to restore RZX state:', e);
@@ -29030,6 +29693,156 @@ labelManager.importJSON(jsonStr, merge)</pre>
             localStorage.setItem('zx-stereo-mode', stereoMode.value);
             showMessage(`Stereo mode: ${stereoMode.value.toUpperCase()}`);
         });
+
+        // Fullscreen functionality
+        const screenCanvas = document.getElementById('screen');
+        let originalCanvasStyle = null;
+        let originalOverlayStyle = null;
+
+        function applyFullscreenScale() {
+            // Wait a frame for fullscreen to be fully applied
+            requestAnimationFrame(() => {
+                const mode = fullscreenMode.value;
+                const canvasWidth = screenCanvas.width;
+                const canvasHeight = screenCanvas.height;
+                // Get fullscreen element dimensions (more reliable than window.inner*)
+                const fsElement = document.fullscreenElement || document.webkitFullscreenElement;
+                const fsWidth = fsElement ? fsElement.clientWidth : screen.width;
+                const fsHeight = fsElement ? fsElement.clientHeight : screen.height;
+
+                let newWidth, newHeight, left, top;
+
+                if (mode === 'stretch') {
+                    // Stretch to fill screen (known issue: may not fill full width)
+                    newWidth = fsWidth;
+                    newHeight = fsHeight;
+                    left = 0;
+                    top = 0;
+                } else if (mode === 'crisp') {
+                    // Crisp: use integer scaling for sharp pixels
+                    const maxScaleX = Math.floor(fsWidth / canvasWidth);
+                    const maxScaleY = Math.floor(fsHeight / canvasHeight);
+                    const scale = Math.max(1, Math.min(maxScaleX, maxScaleY));
+                    newWidth = canvasWidth * scale;
+                    newHeight = canvasHeight * scale;
+                    left = Math.round((fsWidth - newWidth) / 2);
+                    top = Math.round((fsHeight - newHeight) / 2);
+                } else {
+                    // Fit: maintain aspect ratio, scale to maximum that fits
+                    const scaleX = fsWidth / canvasWidth;
+                    const scaleY = fsHeight / canvasHeight;
+                    const scale = Math.min(scaleX, scaleY);
+                    newWidth = Math.round(canvasWidth * scale);
+                    newHeight = Math.round(canvasHeight * scale);
+                    left = Math.round((fsWidth - newWidth) / 2);
+                    top = Math.round((fsHeight - newHeight) / 2);
+                }
+
+                // Apply to main canvas with absolute positioning
+                screenCanvas.style.position = 'absolute';
+                screenCanvas.style.left = left + 'px';
+                screenCanvas.style.top = top + 'px';
+                screenCanvas.style.width = newWidth + 'px';
+                screenCanvas.style.height = newHeight + 'px';
+
+                // Apply same to overlay canvas
+                overlayCanvas.style.position = 'absolute';
+                overlayCanvas.style.left = left + 'px';
+                overlayCanvas.style.top = top + 'px';
+                overlayCanvas.style.width = newWidth + 'px';
+                overlayCanvas.style.height = newHeight + 'px';
+            });
+        }
+
+        function restoreCanvasSize() {
+            if (originalCanvasStyle) {
+                screenCanvas.style.position = originalCanvasStyle.position;
+                screenCanvas.style.left = originalCanvasStyle.left;
+                screenCanvas.style.top = originalCanvasStyle.top;
+                screenCanvas.style.width = originalCanvasStyle.width;
+                screenCanvas.style.height = originalCanvasStyle.height;
+            }
+            if (originalOverlayStyle) {
+                overlayCanvas.style.position = originalOverlayStyle.position;
+                overlayCanvas.style.left = originalOverlayStyle.left;
+                overlayCanvas.style.top = originalOverlayStyle.top;
+                overlayCanvas.style.width = originalOverlayStyle.width;
+                overlayCanvas.style.height = originalOverlayStyle.height;
+            }
+        }
+
+        function toggleFullscreen() {
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                // Exit fullscreen
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                }
+            } else {
+                // Save original canvas styles
+                originalCanvasStyle = {
+                    position: screenCanvas.style.position,
+                    left: screenCanvas.style.left,
+                    top: screenCanvas.style.top,
+                    width: screenCanvas.style.width,
+                    height: screenCanvas.style.height
+                };
+                originalOverlayStyle = {
+                    position: overlayCanvas.style.position,
+                    left: overlayCanvas.style.left,
+                    top: overlayCanvas.style.top,
+                    width: overlayCanvas.style.width,
+                    height: overlayCanvas.style.height
+                };
+                // Enter fullscreen
+                if (screenWrapper.requestFullscreen) {
+                    screenWrapper.requestFullscreen();
+                } else if (screenWrapper.webkitRequestFullscreen) {
+                    screenWrapper.webkitRequestFullscreen();
+                }
+            }
+        }
+
+        btnFullscreen.addEventListener('click', toggleFullscreen);
+
+        fullscreenMode.addEventListener('change', () => {
+            localStorage.setItem('zx-fullscreen-mode', fullscreenMode.value);
+            // Update scale if currently in fullscreen
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                applyFullscreenScale();
+            }
+        });
+
+        // Handle fullscreen change events
+        document.addEventListener('fullscreenchange', () => {
+            if (document.fullscreenElement) {
+                applyFullscreenScale();
+            } else {
+                restoreCanvasSize();
+            }
+        });
+        document.addEventListener('webkitfullscreenchange', () => {
+            if (document.webkitFullscreenElement) {
+                applyFullscreenScale();
+            } else {
+                restoreCanvasSize();
+            }
+        });
+
+        // F11 key for fullscreen toggle
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F11') {
+                e.preventDefault();
+                toggleFullscreen();
+            }
+        });
+
+        // Restore fullscreen setting
+        const savedFullscreenMode = localStorage.getItem('zx-fullscreen-mode');
+        if (savedFullscreenMode) {
+            fullscreenMode.value = savedFullscreenMode;
+        }
 
         // Restore audio settings from localStorage
         const savedSoundEnabled = localStorage.getItem('zx-sound-enabled') === 'true';
@@ -30675,6 +31488,72 @@ labelManager.importJSON(jsonStr, merge)</pre>
         btnPsgStop.addEventListener('click', () => stopPsgRecording(false));
         btnPsgCancel.addEventListener('click', () => stopPsgRecording(true));
 
+        // ========== RZX Recording ==========
+        const btnRzxRecStart = document.getElementById('btnRzxRecStart');
+        const btnRzxRecExport = document.getElementById('btnRzxRecExport');
+        const btnRzxRecCancel = document.getElementById('btnRzxRecCancel');
+        const rzxRecStatus = document.getElementById('rzxRecStatus');
+
+        btnRzxRecStart.addEventListener('click', () => {
+            if (spectrum.rzxStartRecording()) {
+                btnRzxRecStart.disabled = true;
+                btnRzxRecExport.disabled = false;
+                btnRzxRecCancel.disabled = false;
+                if (spectrum.running) {
+                    rzxRecStatus.textContent = 'Recording...';
+                } else {
+                    rzxRecStatus.textContent = 'Recording (paused - press Start to run)';
+                }
+            } else {
+                showMessage('Cannot start RZX recording (playback active?)', 'error');
+            }
+        });
+
+        btnRzxRecExport.addEventListener('click', () => {
+            const result = spectrum.rzxStopRecording();
+            btnRzxRecStart.disabled = false;
+            btnRzxRecExport.disabled = true;
+            btnRzxRecCancel.disabled = true;
+            if (result && result.frames > 0) {
+                const baseName = getExportBaseName() || 'recording';
+                spectrum.rzxDownloadRecording(`${baseName}.rzx`);
+                rzxRecStatus.textContent = `Exported: ${result.frames} frames`;
+            } else {
+                rzxRecStatus.textContent = 'No frames recorded';
+            }
+        });
+
+        btnRzxRecCancel.addEventListener('click', () => {
+            spectrum.rzxCancelRecording();
+            btnRzxRecStart.disabled = false;
+            btnRzxRecExport.disabled = true;
+            btnRzxRecCancel.disabled = true;
+            rzxRecStatus.textContent = 'Recording cancelled';
+        });
+
+        // Update RZX recording status during recording
+        setInterval(() => {
+            if (spectrum.isRZXRecording()) {
+                const frames = spectrum.getRZXRecordedFrameCount();
+                if (spectrum.rzxRecordPending) {
+                    // Waiting for frame boundary
+                    if (spectrum.running) {
+                        rzxRecStatus.textContent = 'Starting...';
+                    } else {
+                        rzxRecStatus.textContent = 'Pending (press Start to begin)';
+                    }
+                    btnRzxRecExport.disabled = true;
+                } else if (spectrum.running) {
+                    rzxRecStatus.textContent = `Recording... ${frames} frames`;
+                    btnRzxRecExport.disabled = frames === 0;
+                } else {
+                    rzxRecStatus.textContent = `Recording (paused) ${frames} frames`;
+                    btnRzxRecExport.disabled = frames === 0;
+                }
+                btnRzxRecCancel.disabled = false;
+            }
+        }, 500);
+
         // PSG Player source code download
         const btnPsgPlayer = document.getElementById('btnPsgPlayer');
         btnPsgPlayer.addEventListener('click', () => {
@@ -30794,6 +31673,10 @@ PSG_DATA:
         let currentZoom = 1;  // Default zoom x1
 
         function updateCanvasSize() {
+            // Skip size updates when in fullscreen mode
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                return;
+            }
             // Get current dimensions from ULA
             const dims = spectrum.ula.getDimensions();
             canvas.width = dims.width;
@@ -30855,6 +31738,7 @@ PSG_DATA:
             if (result.needsMachineSwitch && romPentagonData && romTrdosData) {
                 spectrum.stop();
                 spectrum.setMachineType('pentagon');
+                // Pentagon ROM: first 16KB = 48K ROM (bank 1), second 16KB = 128K ROM (bank 0)
                 spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                 spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                 spectrum.memory.loadTrdosRom(romTrdosData);
@@ -30959,6 +31843,13 @@ PSG_DATA:
                 spectrum.stop();
                 disasm = null;
 
+                // Reload Pentagon ROM if machine type is Pentagon (ensures correct ROM after snapshot load)
+                if (result.machineType === 'pentagon' && romPentagonData) {
+                    console.log('[RZX Load] Reloading Pentagon ROM');
+                    spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
+                    spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
+                }
+
                 const creatorInfo = result.creator ? ` (${result.creator.name})` : '';
                 const pc = spectrum.cpu ? spectrum.cpu.pc : 0;
                 const pcHex = pc.toString(16).toUpperCase().padStart(4, '0');
@@ -31005,6 +31896,7 @@ PSG_DATA:
                     // Switch to Pentagon mode with TR-DOS ROM
                     spectrum.stop();
                     spectrum.setMachineType('pentagon');
+                    // Pentagon ROM: first 16KB = 128K ROM (bank 0), second 16KB = 48K ROM (bank 1)
                     spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
                     spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
                     spectrum.memory.loadTrdosRom(romTrdosData);
@@ -31091,6 +31983,13 @@ PSG_DATA:
                             // Handle RZX files specially (async loading)
                             const rzxData = result._zipFiles[index].data;
                             loadResult = await spectrum.loadRZX(rzxData);
+                            // Reload Pentagon ROM if machine type is Pentagon (ensures correct ROM after snapshot load)
+                            if (loadResult.machineType === 'pentagon' && romPentagonData) {
+                                console.log('[RZX Load] Reloading Pentagon ROM');
+                                // Pentagon ROM: first 16KB = 128K ROM (bank 0), second 16KB = 48K ROM (bank 1)
+                                spectrum.memory.loadRom(romPentagonData.slice(0, 16384), 0);
+                                spectrum.memory.loadRom(romPentagonData.slice(16384, 32768), 1);
+                            }
                         } else if (file.type === 'trd' || file.type === 'scl') {
                             // Disk image inside ZIP - handle disk insertion
                             loadResult = spectrum.loadFromZipSelection(result, index);
