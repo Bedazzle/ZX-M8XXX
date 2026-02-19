@@ -47,6 +47,22 @@
                 { "frames": 50, "screen": "tests/pent128.png" }
             ]
         },
+        {
+            "id": "scroll17",
+            "name": "Scroll 17",
+            "category": "video",
+            "file": "tests/scroll17.zip",
+            "zipEntry": "scroll17.tap",
+            "machine": "128k",
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 100, "screen": "tests/scroll17_101.png" }
+            ]
+        },
+
 
         {
             "id": "ula+256",
@@ -218,9 +234,26 @@
             "palette": "default",
             "enabled": true,
             "author": "",
-            "source": "",
+            "source": "https://www.rzxarchive.co.uk/e.php",
             "steps": [
                 { "frames": 2486, "screen": "tests/eric_2486.png" }
+            ]
+        },
+
+        {
+            "id": "cubix",
+            "name": "Cubix",
+            "category": "video",
+            "file": "tests/cubix_pentagon.zip",
+            "zipEntry": "cubix_pentagon.szx",
+            "machine": "pentagon",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Gogin",
+            "source": "https://yrgb.ru/",
+            "steps": [
+                { "frames": 276, "screen": "tests/cubix_276.png" }
             ]
         },
 

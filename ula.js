@@ -861,6 +861,8 @@
             // Track if previous frame had screen bank changes (for scroll17-style effects)
             // If so, we need to defer paper rendering to endFrame when all changes are known
             this.hadScreenBankChanges = this.screenBankChanges && this.screenBankChanges.length > 1;
+            // Count changes for distinguishing scroll17 from simple double-buffering
+            this.previousScreenBankChangeCount = this.screenBankChanges ? this.screenBankChanges.length : 0;
 
             this.lastRenderedLine = -1;
 
@@ -878,8 +880,13 @@
             const initialBank = this.memory.screenBank || 5;
             this.screenBankChanges = [{tState: 0, bank: initialBank}];
 
-            // If previous frame had screen bank changes, we'll render paper at endFrame
-            this.deferPaperRendering = this.hadScreenBankChanges;
+            // Only defer paper rendering for scroll17-style effects (many rapid bank
+            // alternations per frame). Simple double-buffering (1 swap = 2 entries) is
+            // handled correctly by normal scanline rendering which reads the current bank
+            // at each line's render time. Deferred rendering reads at end-of-frame, which
+            // is wrong for double-buffering because the back buffer has been cleared/redrawn
+            // by then, causing flicker on the pre-swap scanlines.
+            this.deferPaperRendering = this.previousScreenBankChangeCount > 2;
 
             // Multicolor tracking: capture initial attribute values at frame start
             // This allows getAttrAt to return correct values for columns where writes

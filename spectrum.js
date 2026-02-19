@@ -1,13 +1,13 @@
 /**
  * ZX-M8XXX - Spectrum Machine Integration
- * @version 0.9.17
+ * @version 0.9.18
  * @license GPL-3.0
  */
 
 (function(global) {
     'use strict';
 
-    const VERSION = '0.9.17';
+    const VERSION = '0.9.18';
 
     class Spectrum {
         static get VERSION() { return VERSION; }
@@ -4744,7 +4744,7 @@
                 const spectrumFiles = await ZipLoader.findAllSpectrum(data);
 
                 if (spectrumFiles.length === 0) {
-                    throw new Error('No SNA, TAP, Z80, TRD, or SCL files found in ZIP');
+                    throw new Error('No SNA, SZX, TAP, Z80, TRD, or SCL files found in ZIP');
                 }
 
                 if (spectrumFiles.length > 1) {

@@ -510,6 +510,24 @@ Pentagon has automatic TR-DOS ROM paging:
 
 The shadow screen (bank 7) allows flicker-free double-buffering. Games can switch instantly between screens via bit 3 of port 0x7FFD.
 
+**Two distinct usage patterns exist — emulators must handle them differently:**
+
+**1. Double-buffering** (e.g., Cubix): One bank swap per frame. The game displays the completed back buffer, then clears and redraws the other bank. Typical flow:
+```
+ISR fires → game logic → swap display bank (OUT $7FFD) → clear back buffer → draw frame → wait
+```
+The displayed bank is always a fully-drawn frame. The key constraint: by end-of-frame, the *previous* display bank has been cleared and redrawn as the new back buffer.
+
+**2. Scroll17 / screen multiplexing**: Rapid bank alternation within a single frame (dozens to hundreds of switches). Combines pixel/attribute data from both banks to achieve effects impossible with a single screen, such as per-column independent scrolling.
+
+**Emulation pitfall — deferred vs scanline rendering:**
+
+Scanline rendering (reading screen RAM at each line's CPU execution time) handles double-buffering correctly: lines rendered before the swap show the old display bank (still intact), lines after show the new bank.
+
+Deferred rendering (reading all screen RAM at end-of-frame) is required for scroll17 (need all bank change timestamps to determine per-column bank selection). However, it **breaks double-buffering**: by end-of-frame the pre-swap bank has been cleared/redrawn, so reading it produces a blank or partially-drawn image — causing severe flicker.
+
+**Solution:** Only defer paper rendering when the previous frame had many bank changes (>2 entries), indicating scroll17. Simple double-buffering (initial state + 1 swap = 2 entries) should use normal scanline rendering.
+
 ---
 
 ## 9. Undocumented Z80 Behavior

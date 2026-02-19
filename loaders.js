@@ -2767,12 +2767,13 @@
             for (const file of files) {
                 const name = file.name.toLowerCase();
                 if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.tzx') ||
-                    name.endsWith('.z80') || name.endsWith('.rzx') || name.endsWith('.trd') ||
-                    name.endsWith('.scl')) {
+                    name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
+                    name.endsWith('.trd') || name.endsWith('.scl')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
                     else if (name.endsWith('.tzx')) type = 'tzx';
                     else if (name.endsWith('.z80')) type = 'z80';
+                    else if (name.endsWith('.szx')) type = 'szx';
                     else if (name.endsWith('.rzx')) type = 'rzx';
                     else if (name.endsWith('.trd')) type = 'trd';
                     else if (name.endsWith('.scl')) type = 'scl';
@@ -3770,7 +3771,7 @@
             header[2] = 0x53; header[3] = 0x54;  // "ST"
             header[4] = 1;    // Major version
             header[5] = 4;    // Minor version
-            header[6] = is128k ? 2 : 1;  // Machine ID: 1=48k, 2=128k
+            header[6] = memory.machineType === 'pentagon' ? 7 : (is128k ? 2 : 1);  // Machine ID: 1=48k, 2=128k, 7=pentagon
             header[7] = 0;    // Flags
             chunks.push(header);
 

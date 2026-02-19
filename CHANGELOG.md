@@ -2,6 +2,18 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.18
+- **Fix**: Screen flicker in double-buffered games (e.g., Cubix) on 128K/Pentagon
+  - Deferred paper rendering was incorrectly triggered by simple double-buffering (1 bank swap per frame)
+  - Deferred mode reads screen RAM at end-of-frame, which shows the cleared back buffer instead of the completed display
+  - Now only defers for scroll17-style effects (many rapid bank alternations per frame)
+  - Normal scanline rendering correctly handles double-buffering by reading the active bank at each line's execution time
+- **Fix**: SZX snapshots inside ZIP archives were not recognized
+  - `findAllSpectrum()` in ZIP loader was missing `.szx` from the supported extension list
+- **Fix**: SZX save wrote wrong machine ID for Pentagon (saved as 128K instead of Pentagon)
+  - Caused machine type mismatch on load, leading to ULA dimension errors (IndexSizeError)
+  - Pentagon machine ID is now correctly written as 7 in SZX header
+
 ## v0.9.17
 - **Fix**: Debugger "Go to address" navigation error (navHistory not defined)
 - **Fix**: Beam mode rendering improvements for multicolor programs after snapshot load
