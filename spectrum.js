@@ -14,8 +14,9 @@
             this.overlayCtx = this.overlayCanvas ? this.overlayCanvas.getContext('2d') : null;
             this.zoom = 1;
             this.machineType = options.machineType || '48k';
+            this.profile = getMachineProfile(this.machineType);
             this.tapeTrapsEnabled = options.tapeTrapsEnabled !== false;
-            
+
             this.memory = new Memory(this.machineType);
             this.cpu = new Z80(this.memory);
             this.ula = new ULA(this.memory, this.machineType);
@@ -36,12 +37,12 @@
             this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
             this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
-            this.betaDiskEnabled = this.machineType === 'pentagon';  // Beta Disk enabled by default for Pentagon
+            this.betaDiskEnabled = this.profile.betaDiskDefault;  // Beta Disk enabled by default for Pentagon machines
             this._betaDiskPagingEnabled = false;  // Cached flag for fast updateBetaDiskPaging check
 
             // AY-3-8910 sound chip
-            this.ay = new AY(this.machineType === 'pentagon' ? 1750000 : 1773400);
-            this.ayEnabled = this.machineType !== '48k';  // AY enabled by default for 128K/Pentagon
+            this.ay = new AY(this.profile.ayClockHz);
+            this.ayEnabled = this.profile.ayDefault;  // AY enabled by default for 128K/Pentagon
             this.ay48kEnabled = false;  // Optional AY for 48K (like Melodik interface)
             this.aySelectedRegister = 0;
 
@@ -278,7 +279,7 @@
         // Get ROM checksum for verification (call from console: spectrum.getRomChecksum())
         getRomChecksum() {
             let sum = 0;
-            const romSize = this.machineType === '48k' ? 0x4000 : 0x8000;
+            const romSize = this.profile.romSize;
             for (let i = 0; i < romSize; i++) {
                 sum = (sum + this.memory.read(i)) & 0xFFFFFFFF;
             }
@@ -303,8 +304,8 @@
         // ========== Memory & Contention ==========
 
         setupContention() {
-            // Pentagon has no contention
-            if (this.machineType === 'pentagon') {
+            // Machines without contention (Pentagon, Pentagon 1024)
+            if (!this.profile.hasContention) {
                 this.contentionFunc = null;
                 this.cpu.contend = null;
                 this.cpu.ioContend = null;
@@ -323,7 +324,7 @@
 
             // For 48K: per-access contention for T-state accurate timing
             // This is essential for pixel-perfect border effects
-            if (this.machineType === '48k') {
+            if (this.profile.ulaProfile === '48k') {
                 this.contentionFunc = null;
                 // Memory contention: addresses 0x4000-0x7FFF during screen fetch
                 // z80.js checks contention at instruction start, but real access is later
@@ -459,11 +460,130 @@
                 return;
             }
 
-            // For 128K: same contention as 48K, but also check contended banks at 0xC000
+            // For +2A: similar contention framework but banks 4,5,6,7 are contended (not 1,3,5,7)
+            // In special paging mode, all slots map to RAM, each slot's bank must be checked
+            if (this.profile.pagingModel === '+2a') {
+                this.contentionFunc = null;
+                let mcycleOffset = 0;
+                this.accumulatedContention = 0;
+                this.memoryContentionDisabled = false;
+                let isFirstAccess = true;
+
+                // +2A contention: banks 4,5,6,7 are contended
+                const isContendedAddr = (addr) => {
+                    const mem = this.memory;
+                    if (mem.specialPagingMode) {
+                        // Special paging: check the bank mapped to this address range
+                        const slot = addr >> 14;
+                        const bank = mem.specialBanks[slot];
+                        return bank >= 4;
+                    }
+                    // Normal mode: bank 5 at 0x4000-0x7FFF (contended), bank 2 at 0x8000-0xBFFF (not)
+                    if (addr >= 0x4000 && addr <= 0x7FFF) return true;  // Bank 5 is always contended
+                    if (addr >= 0xC000 && addr <= 0xFFFF) {
+                        return mem.currentRamBank >= 4;
+                    }
+                    return false;
+                };
+
+                this.cpu.contend = (addr) => {
+                    if (this.memoryContentionDisabled) {
+                        mcycleOffset += isFirstAccess ? 4 : 3;
+                        isFirstAccess = false;
+                        return;
+                    }
+                    if (isContendedAddr(addr)) {
+                        const actualT = this.cpu.tStates + mcycleOffset;
+                        const delay = this.checkContention(actualT);
+                        if (delay > 0) {
+                            this.cpu.tStates += delay;
+                            this.accumulatedContention += delay;
+                        }
+                    }
+                    mcycleOffset += isFirstAccess ? 4 : 3;
+                    isFirstAccess = false;
+                };
+
+                this.cpu.internalCycles = (cycles) => {
+                    mcycleOffset += cycles;
+                };
+
+                const originalExecute = this.cpu.execute.bind(this.cpu);
+                this.cpu.execute = () => {
+                    mcycleOffset = 0;
+                    isFirstAccess = true;
+                    return originalExecute();
+                };
+
+                const originalIncR = this.cpu.incR.bind(this.cpu);
+                this.cpu.incR = () => {
+                    if (mcycleOffset > 0) {
+                        isFirstAccess = true;
+                    }
+                    return originalIncR();
+                };
+
+                const originalInterrupt = this.cpu.interrupt.bind(this.cpu);
+                this.cpu.interrupt = () => {
+                    mcycleOffset = 7;
+                    isFirstAccess = false;
+                    return originalInterrupt();
+                };
+                const originalNmi = this.cpu.nmi.bind(this.cpu);
+                this.cpu.nmi = () => {
+                    mcycleOffset = 5;
+                    isFirstAccess = false;
+                    return originalNmi();
+                };
+
+                this.internalContentionCalls = 0;
+                this.internalContentionDelay = 0;
+                this.internalNonContendedCalls = 0;
+                this.internalContentionDisabled = false;
+                this.cpu.contendInternal = (addr, tstates) => {
+                    if (this.internalContentionDisabled) {
+                        mcycleOffset += tstates;
+                        return;
+                    }
+                    if (isContendedAddr(addr)) {
+                        this.internalContentionCalls++;
+                        let totalDelay = 0;
+                        let currentT = this.cpu.tStates + mcycleOffset;
+                        for (let i = 0; i < tstates; i++) {
+                            const delay = this.checkContention(currentT);
+                            totalDelay += delay;
+                            currentT += delay + 1;
+                        }
+                        if (totalDelay > 0) {
+                            this.cpu.tStates += totalDelay;
+                            this.accumulatedContention += totalDelay;
+                            this.internalContentionDelay += totalDelay;
+                        }
+                    } else {
+                        this.internalNonContendedCalls++;
+                    }
+                    mcycleOffset += tstates;
+                };
+
+                this.ula.mcWriteAdjust = 0;
+                this.cpu.onMemWrite = (addr, val) => {
+                    if (addr >= 0x5800 && addr <= 0x5AFF) {
+                        const writeT = this.cpu.tStates + mcycleOffset;
+                        this.ula.setAttrAt(addr - 0x5800, val, writeT);
+                        this.ula.hadAttrChanges = true;
+                    }
+                };
+
+                this.cpu.ioContend = null;
+                this.contentionEnabled = true;
+                return;
+            }
+
+            // For 128K/+2: same contention as 48K, but also check contended banks at 0xC000
             // Contended banks: 1, 3, 5, 7 (odd-numbered banks)
             // Bank 5 is always at 0x4000-0x7FFF
             // Selected bank can be paged at 0xC000-0xFFFF
-            if (is128kCompat(this.machineType)) {
+            if (this.machineType === '128k' || this.machineType === '+2') {
                 this.contentionFunc = null;
                 let mcycleOffset = 0;
                 this.accumulatedContention = 0;
@@ -828,7 +948,7 @@
 
             // Apply I/O contention for IN operations (same pattern as OUT)
             // IN A,(n) has I/O after 7T, IN r,(C) after 8T - use 7T as average
-            if (this.machineType === '48k' && this.ula.IO_CONTENTION_ENABLED) {
+            if (this.profile.ulaProfile === '48k' && this.ula.IO_CONTENTION_ENABLED) {
                 const ioDelay = this.applyIOTimingsForRead(port);
                 if (ioDelay > 4) {
                     this.cpu.tStates += (ioDelay - 4);
@@ -1089,9 +1209,9 @@
                 //      OUT (C),r: offset 9 (ULA48)
                 // 128K: base 9, +4 for OUT (C),r to match ULA128 test timing
                 let ioOffset;
-                if (this.machineType === 'pentagon') {
+                if (this.profile.ulaProfile === 'pentagon') {
                     ioOffset = 11;
-                } else if (is128kCompat(this.machineType)) {
+                } else if (this.profile.ulaProfile === '128k') {
                     // OUT (C),r (12T) needs +4 more than OUT (n),A for ULA128 test
                     ioOffset = (instructionTiming === 12) ? 13 : 9;
                 } else {
@@ -1120,7 +1240,7 @@
                 const lineT = relT - (visY * TSTATES_PER_LINE);
                 const pixel = Math.floor(lineT * 2);
                 // Pentagon: no quantization; 48K/128K: quantize to 4T boundaries
-                const quantizedT = this.machineType === 'pentagon' ? frameT : (frameT & ~3);
+                const quantizedT = !this.profile.borderQuantization ? frameT : (frameT & ~3);
                 const quantizedPixel = Math.floor(((quantizedT - LINE_TIMES_BASE) % TSTATES_PER_LINE) * 2);
                 const nearPaperBoundary = visY >= 22 && visY <= 26;  // Around line 64 (paper start)
 
@@ -1153,7 +1273,14 @@
                 this.betaDisk.write(port, val);
                 return;
             }
-            if (this.machineType !== '48k' && (port & 0x8002) === 0) {
+            // Port 0x7FFD: memory paging
+            // 128K/+2/Pentagon: (port & 0x8002) === 0 (A15=0, A1=0) — loose decode
+            // +2A: (port & 0xC002) === 0x4000 (A15=0, A14=1, A1=0) — stricter decode
+            // Without this, +2A port 0x1FFD writes also trigger 0x7FFD handler
+            const is7FFD = this.profile.pagingModel === '+2a'
+                ? (port & 0xC002) === 0x4000
+                : (port & 0x8002) === 0;
+            if (this.profile.pagingModel !== 'none' && is7FFD) {
                 const oldScreenBank = this.memory.screenBank;
                 this.memory.writePaging(val);
                 // Track screen bank changes for scroll17-style effects
@@ -1166,6 +1293,17 @@
                     const bankChangeTime = this.cpu.tStates + (instructionTiming - 2);
                     this.ula.setScreenBankAt(newScreenBank, bankChangeTime);
                 }
+            }
+
+            // +2A port 0x1FFD: special paging and ROM bank high bit
+            if (this.profile.pagingModel === '+2a' && (port & 0xF002) === 0x1000) {
+                this.memory.write1FFD(val);
+            }
+
+            // Pentagon 1024 port 0xEFF7: extended memory control
+            // Port decode: A12=0, A13=1, A14=1, A15=1 → (port & 0xF008) === 0xE000
+            if (this.profile.pagingModel === 'pentagon1024' && (port & 0xF008) === 0xE000) {
+                this.memory.writePortEFF7(val);
             }
 
             // AY-3-8910 ports (128K/Pentagon, or 48K with AY enabled)
@@ -1245,14 +1383,14 @@
             let nextLineToRender = Math.floor(this.cpu.tStates / tstatesPerLine);
             const totalLines = Math.floor(tstatesPerFrame / tstatesPerLine);
 
-            // INT pulse duration (32 T-states for 48K, 36 for 128K/Pentagon)
-            const intPulseDuration = (is128kCompat(this.machineType) || this.machineType === 'pentagon') ? 36 : 32;
+            // INT pulse duration from profile (32 T-states for 48K, 36 for 128K/Pentagon)
+            const intPulseDuration = this.profile.intPulseDuration;
             let intFired = false;
 
             // Early/Late INT timing (Swan-style):
             // 48K only: Early at T-4, Late at frame boundary
             // 128K/Pentagon: always at frame boundary
-            const earlyIntPoint = (this.machineType === '48k' && !this.lateTimings) ?
+            const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
                                    (tstatesPerFrame - 4) : tstatesPerFrame;
 
             // RZX recording: track instruction count before first interrupt
@@ -1310,8 +1448,8 @@
             const autoMapEnabled = this.autoMap.enabled;
             const xrefEnabled = this.xrefTrackingEnabled && this.onInstructionExecuted;
             const needsInstrPC = xrefEnabled || tracing;
-            const contentionEnabled = (this.machineType === '48k' || is128kCompat(this.machineType)) && this.contentionEnabled;
-            const isPentagon = this.machineType === 'pentagon';
+            const contentionEnabled = this.profile.hasContention && this.contentionEnabled;
+            const isPentagon = this.profile.ulaProfile === 'pentagon';
             const tapeTrapsEnabled = this.tapeTrapsEnabled;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
@@ -1386,7 +1524,7 @@
                     // Check if INT will fire during this HALT NOP cycle
                     // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
                     const nextT = this.cpu.tStates + 4;
-                    const is48kEarly = this.machineType === '48k' && !this.lateTimings;
+                    const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;
                     if (!this.rzxPlaying && !intFired && is48kEarly &&
                         this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                         this.cpu.iff1 && !this.cpu.eiPending) {
@@ -1775,14 +1913,14 @@
                 this.cpu.tStates = 0;
             }
 
-            // INT pulse duration (32 T-states for 48K, 36 for 128K/Pentagon)
-            const intPulseDuration = (is128kCompat(this.machineType) || this.machineType === 'pentagon') ? 36 : 32;
+            // INT pulse duration from profile (32 T-states for 48K, 36 for 128K/Pentagon)
+            const intPulseDuration = this.profile.intPulseDuration;
             let intFired = false;
 
             // Early/Late INT timing (Swan-style):
             // 48K only: Early at T-4, Late at frame boundary
             // 128K/Pentagon: always at frame boundary
-            const earlyIntPoint = (this.machineType === '48k' && !this.lateTimings) ?
+            const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
                                    (tstatesPerFrame - 4) : tstatesPerFrame;
 
             // Fire interrupt if within INT pulse window from previous frame overshoot
@@ -1838,7 +1976,7 @@
                 if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
-                if ((this.machineType === '48k' || is128kCompat(this.machineType)) && this.contentionEnabled) {
+                if (this.profile.hasContention && this.contentionEnabled) {
                     const ulaContention = this.ula.ULA_CONTENTION_TSTATES || 0;
                     if (ulaContention > 0) {
                         const line = Math.floor(this.cpu.tStates / tstatesPerLine);
@@ -1869,7 +2007,7 @@
                     // 48K late and 128K/Pentagon use frame-start INT timing
                     // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
                     const nextT = this.cpu.tStates + 4;
-                    const is48kEarly = this.machineType === '48k' && !this.lateTimings;  // Cached in runFrame, needed here for runFrameHeadless
+                    const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;  // Cached in runFrame, needed here for runFrameHeadless
                     if (!this.rzxPlaying && !intFired && is48kEarly &&
                         this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                         this.cpu.iff1 && !this.cpu.eiPending) {
@@ -2936,7 +3074,7 @@
         updateBetaDiskPagingFlag() {
             this._betaDiskPagingEnabled =
                 this.memory.hasTrdosRom() &&
-                (this.machineType === 'pentagon' || this.betaDiskEnabled);
+                (this.profile.betaDiskDefault || this.betaDiskEnabled);
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
@@ -2954,7 +3092,7 @@
                 // For 128K: only activate when ROM 1 (48K BASIC) is selected
                 // For 48K: always activate (only one ROM)
                 if (!this.memory.trdosActive) {
-                    if (this.machineType === '48k' || this.memory.currentRomBank === 1) {
+                    if (this.profile.pagingModel === 'none' || this.memory.currentRomBank === 1) {
                         this.memory.trdosActive = true;
                     }
                 }
@@ -3219,8 +3357,8 @@
             // Line 64 starts at T=14336, so first read is at tInLine=3 (14336+3=14339)
             // For late timing: pattern shifts +1 T-state (first read at tInLine=4)
             // Pattern: 4 reads (bitmap,attr,bitmap,attr), 4 idle, repeating for 128 T-states
-            const lateOffset = (this.lateTimings && this.machineType === '48k') ? 1 : 0;
-            const floatStart = ((this.machineType === '48k') ? 3 : 0) + lateOffset;
+            const lateOffset = (this.lateTimings && this.profile.earlyIntTiming) ? 1 : 0;
+            const floatStart = ((this.profile.ulaProfile === '48k') ? 3 : 0) + lateOffset;
             const floatEnd = floatStart + 128;
 
             if (tInLine < floatStart || tInLine >= floatEnd) {
@@ -3267,7 +3405,7 @@
         // Returns true if interrupt was fired
         handleFrameBoundary() {
             const tstatesPerFrame = this.getTstatesPerFrame();
-            const intPulseDuration = (is128kCompat(this.machineType) || this.machineType === 'pentagon') ? 36 : 32;
+            const intPulseDuration = this.profile.intPulseDuration;
             const intOffset = this.getIntOffset();
 
             // Set INT pending when we reach frame end
@@ -3554,7 +3692,7 @@
         
         // Get current page for an address based on memory mapping
         getCurrentPageForAddr(addr) {
-            if (this.machineType === '48k') {
+            if (this.profile.pagingModel === 'none') {
                 return null; // No paging in 48K
             }
             
@@ -4784,36 +4922,43 @@
 
         // Load TRD/SCL disk image - inserts disk into Beta Disk interface
         loadDiskImage(data, type, fileName) {
-            // Apply boot injection callback if configured (only for TRD files)
+            const originalType = type;  // Preserve original format name for display
             let processedData = data;
-            if (type === 'trd' && this.onBeforeTrdLoad) {
-                processedData = this.onBeforeTrdLoad(data, fileName);
+
+            // For SCL files, convert to TRD first so boot injection can work
+            if (type === 'scl') {
+                processedData = this.betaDisk.sclToTrd(processedData);
+                type = 'trd';
             }
 
-            const Loader = type === 'trd' ? TRDLoader : SCLLoader;
-            const files = Loader.listFiles(processedData);
+            // Apply boot injection callback if configured
+            if (this.onBeforeTrdLoad) {
+                processedData = this.onBeforeTrdLoad(processedData, fileName);
+            }
+
+            const files = TRDLoader.listFiles(processedData);
 
             if (files.length === 0) {
-                throw new Error(`No files found in ${type.toUpperCase()} disk image`);
+                throw new Error('No files found in disk image');
             }
 
             // Store disk image for project save and TR-DOS trap access
             this.loadedMedia = {
-                type: type,
+                type: 'trd',
                 data: new Uint8Array(processedData),
                 name: fileName
             };
             this.loadedDiskFiles = files;  // Keep file list for TR-DOS operations
 
-            // Load disk into Beta Disk interface (for WD1793 emulation)
-            this.betaDisk.loadDisk(processedData, type);
+            // Load disk into Beta Disk interface (already TRD format)
+            this.betaDisk.loadDisk(processedData, 'trd');
 
             // Set up TR-DOS trap handler with disk data (fallback)
             this.trdosTrap.setDisk(this.loadedMedia.data, files, type);
 
             // Request switch to Pentagon if Beta Disk not available on current machine
             // No switch needed if: Pentagon mode OR (Beta Disk enabled AND TR-DOS ROM loaded)
-            const betaDiskAvailable = this.machineType === 'pentagon' ||
+            const betaDiskAvailable = this.profile.betaDiskDefault ||
                 (this.betaDiskEnabled && this.memory.hasTrdosRom());
             const needsMachineSwitch = !betaDiskAvailable;
 
@@ -4821,7 +4966,8 @@
             // User can use TR-DOS commands (LIST, LOAD, RUN) to interact with disk
             return {
                 diskInserted: true,
-                diskType: type,
+                diskType: originalType,  // Original format name for display (SCL or TRD)
+                _diskType: 'trd',        // Internal: always TRD (SCL converted)
                 diskName: fileName,
                 fileCount: files.length,
                 _diskData: processedData,
@@ -4892,7 +5038,7 @@
             // In Pentagon mode with TR-DOS ROM + disk, don't auto-boot
             // Just return info so user can select TR-DOS from menu manually
             // The disk is already loaded in betaDisk
-            if (this.machineType === 'pentagon' && this.betaDisk.hasDisk() && this.memory.hasTrdosRom()) {
+            if (this.profile.betaDiskDefault && this.betaDisk.hasDisk() && this.memory.hasTrdosRom()) {
                 // Start emulator if not running
                 if (!this.running) {
                     this.start();
@@ -5006,7 +5152,7 @@
         // Load from disk image selection result
         loadFromDiskSelection(diskResult, index) {
             const fileInfo = diskResult._diskFiles[index];
-            return this.loadDiskFile(diskResult._diskData, fileInfo, diskResult.diskType);
+            return this.loadDiskFile(diskResult._diskData, fileInfo, diskResult._diskType || diskResult.diskType);
         }
 
         // Load from pre-extracted data (used after ZIP selection)
@@ -5056,7 +5202,7 @@
                         // V3: 4=128K, 5=128K+IF1, 6=128K+MGT, 7=+3, 12=+2, 13=+2A
                         if (hwMode === 12) targetType = '+2';
                         else if (hwMode >= 4 && hwMode <= 7) targetType = '128k';
-                        else if (hwMode === 13) targetType = '128k';
+                        else if (hwMode === 13) targetType = '+2a';
                     }
                 }
 
@@ -5106,8 +5252,10 @@
 
                 // Determine target machine type
                 let targetType = info.machineType;
-                if (targetType === '+3' || targetType === '+2A' || targetType === '+3e') {
-                    targetType = '128k';  // Treat +3/+2A as 128K (no dedicated support yet)
+                if (targetType === '+2A') {
+                    targetType = '+2a';  // Map SZX name to internal type
+                } else if (targetType === '+3' || targetType === '+3e') {
+                    targetType = '+2a';  // +3 is hardware-identical to +2A (minus floppy)
                 } else if (targetType === 'scorpion' || targetType === 'didaktik') {
                     targetType = '128k';  // Treat other 128K clones as 128K
                 } else if (targetType === '16k') {
@@ -5474,7 +5622,8 @@
             const oldUlaplusEnabled = this.ula ? this.ula.ulaplus.enabled : false;
 
             this.machineType = type;
-            this.ayEnabled = type !== '48k';  // Update AY enabled state for new machine type
+            this.profile = getMachineProfile(type);
+            this.ayEnabled = this.profile.ayDefault;  // Update AY enabled state for new machine type
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
             this.ula = new ULA(this.memory, type);
@@ -5529,13 +5678,11 @@
                     this.romLoaded = false;
                     // Don't auto-start without ROM
                 } else {
-                    // Same machine type - copy ROM banks
-                    if (oldRom[0]) {
-                        this.memory.rom[0].set(oldRom[0]);
-                    }
-                    // Copy ROM bank 1 if both old and new have it (128K to 128K, Pentagon to Pentagon)
-                    if (oldRom[1] && this.memory.rom[1]) {
-                        this.memory.rom[1].set(oldRom[1]);
+                    // Same machine type - copy all ROM banks
+                    for (let i = 0; i < this.memory.rom.length; i++) {
+                        if (oldRom[i] && this.memory.rom[i]) {
+                            this.memory.rom[i].set(oldRom[i]);
+                        }
                     }
                     this.romLoaded = true;
                     if (wasRunning) this.start();

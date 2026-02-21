@@ -17,6 +17,7 @@
         constructor(memory, machineType = '48k') {
             this.memory = memory;
             this.machineType = machineType;
+            this.profile = getMachineProfile(machineType);
             this.borderPreset = 'full';  // Current border preset
             this.fullBorderMode = true;  // Derived from preset for backwards compatibility
             this.borderOnly = false;  // When true, don't draw paper area (256x192)
@@ -51,7 +52,9 @@
                 '48k':     { top: 64, left: 48, right: 48, bottom: 56 },
                 '128k':    { top: 63, left: 48, right: 48, bottom: 56 },
                 '+2':      { top: 63, left: 48, right: 48, bottom: 56 },
-                'pentagon': { top: 80, left: 48, right: 48, bottom: 48 }
+                '+2a':     { top: 63, left: 48, right: 48, bottom: 56 },
+                'pentagon': { top: 80, left: 48, right: 48, bottom: 48 },
+                'pentagon1024': { top: 80, left: 48, right: 48, bottom: 48 }
             };
 
             // Normal (cropped) border sizes
@@ -60,7 +63,9 @@
                 '48k':     { top: 24, left: 32, right: 32, bottom: 24 },
                 '128k':    { top: 26, left: 32, right: 32, bottom: 24 },
                 '+2':      { top: 26, left: 32, right: 32, bottom: 24 },
-                'pentagon': { top: 24, left: 32, right: 32, bottom: 24 }
+                '+2a':     { top: 26, left: 32, right: 32, bottom: 24 },
+                'pentagon': { top: 24, left: 32, right: 32, bottom: 24 },
+                'pentagon1024': { top: 24, left: 32, right: 32, bottom: 24 }
             };
 
             // Set initial border dimensions
@@ -75,7 +80,7 @@
             // 2 pixels per T-state for visible area
             // Machine-specific timing configuration
             // All timing parameters consolidated in one place
-            if (machineType === 'pentagon') {
+            if (this.profile.ulaProfile === 'pentagon') {
                 // Pentagon: 224 T-states/line × 320 lines = 71680 T-states/frame
                 // Line: 32 (H-blank) + 36 (left border) + 128 (screen) + 28 (right border) = 224
                 // Frame: 16 (V-blank) + 64 (top border) + 192 (screen) + 48 (bottom border) = 320
@@ -93,7 +98,7 @@
                 this.BORDER_TIMING_OFFSET = 0;  // No border offset needed for Pentagon
                 this.BORDER_PHASE = 0;  // Pentagon has no 4T quantization
                 this.ULA_READ_AHEAD = 0;  // Pentagon has no contention, no read-ahead needed
-            } else if (is128kCompat(machineType)) {
+            } else if (this.profile.ulaProfile === '128k') {
                 // 128K: 228 T-states/line × 311 lines = 70908 T-states/frame
                 // Line structure (from libspectrum): 24 left + 128 screen + 24 right + 52 retrace = 228
                 // Frame structure: 63 top + 192 screen + 56 bottom = 311
@@ -581,7 +586,7 @@
             // Late timing (warm ULA) = display starts 1T later = ADD 1 to TOP_LEFT_PIXEL_TSTATE
             // This shifts border LEFT (earlier in relative frame position)
             // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
-            if (this.lateTimings && this.machineType !== 'pentagon') {
+            if (this.lateTimings && this.profile.ulaProfile !== 'pentagon') {
                 this.LINE_TIMES_BASE += 1;
             }
 
@@ -936,23 +941,6 @@
 
             if (this._paletteDebugFrames < 10) {
                 this._paletteDebugFrames++;
-                const changes = this.paletteChanges;
-                console.log(`[ULAplus Raster] Frame ${this._paletteDebugFrames}: ${changes.length} palette changes`);
-                if (this.cpu) {
-                    console.log(`  CPU: IM=${this.cpu.im}, I=$${this.cpu.i.toString(16).toUpperCase()}, IFF1=${this.cpu.iff1}, PC=$${this.cpu.pc.toString(16).toUpperCase()}`);
-                    if (this.cpu.im === 2) {
-                        const vectorAddr = (this.cpu.i << 8) | 0xff;
-                        const vectorLo = this.memory.read(vectorAddr);
-                        const vectorHi = this.memory.read((vectorAddr + 1) & 0xffff);
-                        const handlerAddr = vectorLo | (vectorHi << 8);
-                        console.log(`  IM2 vector: $${vectorAddr.toString(16).toUpperCase()} -> handler at $${handlerAddr.toString(16).toUpperCase()}`);
-                    }
-                }
-                if (changes.length > 0) {
-                    console.log(`  T-state range: ${changes[0].tState} to ${changes[changes.length-1].tState}`);
-                } else {
-                    console.log(`  No palette changes this frame (expected ~768 for HAM256)`);
-                }
             }
         }
 
@@ -1035,7 +1023,7 @@
             // Pentagon uses no quantization, 48K/128K quantize to 4T boundaries (round DOWN)
             // BORDER_PHASE shifts the quantization phase (like ZXMAK2's c_ulaBorder4Tstage)
             const borderPhase = this.BORDER_PHASE || 0;
-            const quantizedTStates = this.machineType === 'pentagon' ? tStates : ((tStates & ~3) + borderPhase);
+            const quantizedTStates = !this.profile.borderQuantization ? tStates : ((tStates & ~3) + borderPhase);
             if (color !== this.borderColor) {
                 // Beam rendering: render all border pixels up to this point with the OLD color
                 // before changing to the new color
@@ -1716,8 +1704,8 @@
             let changeIdx = 0;
 
             // Pentagon uses 0xff mask (no quantization), 48K/128K use 0xfc (4T quantization)
-            const isPentagon = this.machineType === 'pentagon';
-            const timingMask = isPentagon ? ~0 : ~3;  // ~0 = no mask, ~3 = clear lower 2 bits
+            const noQuantization = !this.profile.borderQuantization;
+            const timingMask = noQuantization ? ~0 : ~3;  // ~0 = no mask, ~3 = clear lower 2 bits
 
             // ULAplus: border uses palette entry 8 when enabled
             const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
@@ -2360,7 +2348,7 @@
         // Late timing (warmed ULA) is 1T later than early timing (cold ULA)
         // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
         setLateTimings(late) {
-            if (this.machineType === 'pentagon') return;
+            if (this.profile.ulaProfile === 'pentagon') return;
             this.lateTimings = !!late;
             // Recalculate LINE_TIMES_BASE with new timing mode
             this.calculateLineTimes();

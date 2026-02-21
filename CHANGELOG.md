@@ -2,6 +2,36 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.22
+- **Machine Profile System**: Configurable machine definitions replacing hardcoded type checks
+- **Pentagon 1024 Support**: Extended memory banking (64 RAM pages) via port 0xEFF7
+
+## v0.9.21
+- **ZX Spectrum +2A Support**: First-class machine type (without floppy)
+  - New "+2A" option in machine selector dropdown
+  - +2A ROM section in ROM dialog (`plus2a.rom`, 64KB — 4 ROM banks)
+  - Auto-loads from `roms/plus2a.rom` on startup
+  - Port 0x1FFD handling: special all-RAM paging modes (4 configurations)
+  - ROM bank selection via combined 0x7FFD bit 4 and 0x1FFD bit 2
+  - +2A contention: banks 4,5,6,7 (differs from 128K/+2 which uses 1,3,5,7)
+  - Same ULA timing as 128K (228 T/line, 311 lines, 70908 T/frame)
+  - Z80 snapshot hwMode 13 maps to +2A; SZX machineId 4 maps to +2A
+  - SZX snapshot preserves port 0x1FFD value in SPCR chunk
+  - +3/+3e SZX snapshots treated as +2A (hardware-identical minus floppy)
+  - Tape trap uses ROM bank 3 for 48K BASIC (not bank 1 like 128K)
+  - `is128kCompat()` helper updated to include +2A
+- **Auto Load for Amstrad menu** (+2/+2A): Press Enter to select "Tape Loader" (default menu item) which runs LOAD "" automatically — no key typing needed
+- **SCL boot injection**: Boot file injection (Settings → Media → Boot File) now works for SCL files
+  - SCL converted to TRD format before boot injection via `betaDisk.sclToTrd()`
+  - Ensures "Add boot" / "Replace boot" modes apply to both TRD and SCL disk images
+- **Test runner +2A support**: Test suite correctly loads TAP files on +2A machines
+  - Mirrors main auto-load approach: waits for Amstrad menu, presses Enter for Tape Loader
+  - Machine alias `plus2a` mapped to `+2a` in test runner's `switchMachine()`
+- **Test runner TRD/SCL disk support**: Tests can now boot from disk images
+  - New `diskRun` field in tests.json: program name to run (e.g. `"game"`) or `"boot"` for boot file
+  - Boots TR-DOS via `bootTrdos()`, waits for prompt, types `RUN "filename"` and Enter
+  - Works with TRD and SCL files (SCL converted to TRD automatically)
+
 ## v0.9.20
 - **ZX Spectrum +2 Support**: First-class machine type with dedicated ROM
   - New "+2" option in machine selector dropdown

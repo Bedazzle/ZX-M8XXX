@@ -34,8 +34,8 @@ This document describes the technical requirements for cycle-accurate emulation 
 
 ### 1.1 Timing Constants
 
-| Parameter | 48K | 128K | Pentagon 128 |
-|-----------|-----|------|--------------|
+| Parameter | 48K | 128K/+2/+2A | Pentagon 128 |
+|-----------|-----|-------------|--------------|
 | CPU Clock | 3.5 MHz | 3.5469 MHz | 3.5 MHz |
 | T-states/line | 224 | 228 | 224 |
 | Lines/frame | 312 | 311 | 320 |
@@ -45,8 +45,8 @@ This document describes the technical requirements for cycle-accurate emulation 
 
 ### 1.2 Screen Layout (Lines)
 
-| Region | 48K | 128K | Pentagon |
-|--------|-----|------|----------|
+| Region | 48K | 128K/+2/+2A | Pentagon |
+|--------|-----|-------------|----------|
 | V-blank | 0-7 | 0-7 | 0-15 |
 | Top border | 8-63 (56 lines) | 8-62 (55 lines) | 16-79 (64 lines) |
 | Paper area | 64-255 (192 lines) | 63-254 (192 lines) | 80-271 (192 lines) |
@@ -205,7 +205,8 @@ During each 8 T-state ULA fetch cycle within the paper area:
 | Machine | Contention Start | Notes |
 |---------|------------------|-------|
 | 48K | 14335 | First paper line at 14336, pattern starts 1T earlier |
-| 128K | 14361 | Different line timing |
+| 128K/+2 | 14361 | Different line timing |
+| +2A | 14361 | Same timing as 128K, different contended banks |
 | Pentagon | N/A | No contention |
 
 ### 3.4 Contended Memory Regions
@@ -213,9 +214,14 @@ During each 8 T-state ULA fetch cycle within the paper area:
 **48K:**
 - 0x4000-0x7FFF: Always contended during screen fetch
 
-**128K:**
+**128K/+2:**
 - 0x4000-0x7FFF: Bank 5 (always contended)
-- 0xC000-0xFFFF: Contended if bank 1, 3, 5, or 7 is paged in
+- 0xC000-0xFFFF: Contended if bank 1, 3, 5, or 7 is paged in (odd banks)
+
+**+2A:**
+- 0x4000-0x7FFF: Bank 5 (always contended)
+- 0xC000-0xFFFF: Contended if bank 4, 5, 6, or 7 is paged in (high banks)
+- In special paging mode: contention applies per-slot based on the mapped bank (banks 4-7 are contended)
 
 ### 3.5 Implementation
 
@@ -266,7 +272,7 @@ Some instructions have internal cycles where the CPU puts an address on the bus 
 
 I/O operations have different contention rules based on the port address.
 
-### 4.2 Contention Rules (48K/128K)
+### 4.2 Contention Rules (48K/128K/+2/+2A)
 
 The rule depends on bit 0 of the port address (directly decodes to ULA):
 
@@ -479,12 +485,21 @@ NMI is non-maskable and always responds:
 
 ---
 
-## 8. Memory Banking (128K/Pentagon)
+## 8. Memory Banking (128K/+2/+2A/Pentagon)
 
 ### 8.1 Memory Map
 
+**128K/+2:**
 ```
 0x0000-0x3FFF: ROM (ROM 0 or ROM 1, or TR-DOS ROM)
+0x4000-0x7FFF: RAM Bank 5 (screen 1)
+0x8000-0xBFFF: RAM Bank 2
+0xC000-0xFFFF: Switchable RAM bank (0-7)
+```
+
+**+2A (normal mode):**
+```
+0x0000-0x3FFF: ROM (ROM 0-3, selected via ports 0x7FFD + 0x1FFD)
 0x4000-0x7FFF: RAM Bank 5 (screen 1)
 0x8000-0xBFFF: RAM Bank 2
 0xC000-0xFFFF: Switchable RAM bank (0-7)
@@ -498,8 +513,33 @@ Written to any port where A15=0 and A1=0:
 |------|----------|
 | 0-2 | RAM bank at 0xC000-0xFFFF |
 | 3 | Screen select (0=bank 5, 1=bank 7) |
-| 4 | ROM select (0=ROM 0/128K, 1=ROM 1/48K BASIC) |
-| 5 | Paging disable (locks paging until reset) |
+| 4 | ROM select low bit (0=ROM 0, 1=ROM 1). On +2A: combined with 0x1FFD bit 2 |
+| 5 | Paging disable (locks paging until reset, including 0x1FFD on +2A) |
+
+### 8.2a +2A Extended Paging Port (0x1FFD)
+
+Written to port where A12=1, A1=0, A15-A13=0 (`(port & 0xF002) === 0x1000`):
+
+| Bits | Function |
+|------|----------|
+| 0 | Special paging mode (1=enable all-RAM mode) |
+| 1-2 | Special paging configuration (when bit 0 = 1) |
+| 2 | ROM select high bit (when bit 0 = 0, combined with 0x7FFD bit 4) |
+| 3 | Disk motor on (+3 only) |
+| 4 | Parallel port strobe (+3 only) |
+
+**ROM bank selection (normal mode):** `(0x1FFD bit 2) << 1 | (0x7FFD bit 4)` → banks 0-3
+
+**Special paging modes (bit 0 = 1):**
+
+| Bits 1-2 | Slot 0 | Slot 1 | Slot 2 | Slot 3 |
+|----------|--------|--------|--------|--------|
+| 00 | RAM 0 | RAM 1 | RAM 2 | RAM 3 |
+| 01 | RAM 4 | RAM 5 | RAM 6 | RAM 7 |
+| 10 | RAM 4 | RAM 5 | RAM 6 | RAM 3 |
+| 11 | RAM 4 | RAM 7 | RAM 6 | RAM 3 |
+
+In special paging mode, all 4 slots are RAM — including slot 0 which is normally ROM. Writes to slot 0 go to the mapped RAM bank.
 
 ### 8.3 Beta Disk Auto-Paging (TR-DOS ROM Switching)
 
@@ -510,6 +550,7 @@ The Beta Disk interface uses automatic ROM paging based on PC address:
 **Machine-specific rules:**
 - **Pentagon**: Auto-paging always active when TR-DOS ROM is loaded
 - **128K/+2**: Auto-paging only activates when `currentRomBank === 1` (48K BASIC ROM selected). This prevents accidental TR-DOS entry from the 128K editor ROM.
+- **+2A**: Auto-paging only activates when `currentRomBank === 3` (48K BASIC ROM is in bank 3 on +2A).
 - **48K with Beta Disk**: Auto-paging always active (only one ROM bank)
 
 **Critical implementation detail:** Auto-paging must run before EVERY instruction fetch in the main execution loop, not just for Pentagon. Any machine with Beta Disk support needs it:
@@ -1061,9 +1102,9 @@ dcLevel = dcLevel * 0.999 + input * 0.001;
 | +2 | 1986 | 128KB | 32KB | 3.5469 MHz | 311 | 228 | Yes | Same as 128K |
 | +2A | 1987 | 128KB | 64KB | 3.5469 MHz | 311 | 228 | Yes | Different paging |
 | +3 | 1987 | 128KB | 64KB | 3.5469 MHz | 311 | 228 | Yes | +3DOS, FDC |
-| Pentagon | 1989 | 128KB | 32KB | 3.5 MHz | 320 | 224 | **No** | TR-DOS |
-| Pentagon 512 | 1991 | 512KB | 32KB | 3.5 MHz | 320 | 224 | No | Extended RAM |
-| Pentagon 1024 | 1994 | 1024KB | 32KB | 3.5/7 MHz | 320 | 224 | No | Turbo mode |
+| Pentagon 128 | 1989 | 128KB | 32KB | 3.5 MHz | 320 | 224 | **No** | TR-DOS |
+| Pentagon 512 | 1991 | 512KB | 32KB | 3.5 MHz | 320 | 224 | No | Extended RAM via 7FFD+EFF7 |
+| Pentagon 1024 | 1994 | 1024KB | 32KB | 3.5 MHz | 320 | 224 | No | 64 banks via 7FFD+EFF7 |
 | Scorpion ZS 256 | 1991 | 256KB | 64KB | 3.5/7 MHz | 320 | 224 | No | PROF-ROM |
 
 ### 13.2 +2A/+3 Differences
@@ -1075,12 +1116,13 @@ The +2A and +3 use a different ULA (the same as each other) with key differences
 - Four special paging modes (all-RAM configurations)
 - Different ROM arrangement (4 × 16KB ROMs)
 
-**Port 0x1FFD (bits when bit 0 = 0):**
+**Port 0x1FFD:**
 ```
-Bit 1: Special paging mode
-Bit 2: High bit of ROM selection (with bit 4 of 0x7FFD)
-Bit 3: Disk motor on
-Bit 4: Parallel port strobe
+Bit 0: Special paging mode enable (1 = all-RAM mode)
+Bit 1-2: Special paging config (when bit 0 = 1)
+Bit 2: High bit of ROM selection (when bit 0 = 0, with bit 4 of 0x7FFD)
+Bit 3: Disk motor on (+3 only)
+Bit 4: Parallel port strobe (+3 only)
 ```
 
 **Special Paging Modes (port 0x1FFD bit 0 = 1):**
@@ -1105,17 +1147,30 @@ Bits 1-2 select configuration:
 - TR-DOS support via Beta Disk interface
 - Different border proportions (taller)
 
-**Pentagon 512:**
-- 512KB RAM (32 banks of 16KB)
-- Extended paging via port 0x7FFD bits 6-7
-- Port EFF7 for extended features
+**Pentagon 512/1024:**
+- 512KB (32 banks) or 1024KB (64 banks) of 16KB pages
+- Same ULA timing, ROM, and contention (none) as Pentagon 128
+- Extended paging via ports 0x7FFD and 0xEFF7
 
-**Pentagon 1024:**
-- 1024KB RAM (64 banks)
-- Turbo mode (7 MHz CPU)
-- Port 0xEFF7 controls:
-  - Bit 2: Turbo enable
-  - Bits 4-5: Additional RAM bank bits
+**Port 0xEFF7** — active when `(port & 0xF008) === 0xE000`:
+```
+Bit 2: 1MB mode (active low: 0 = enabled, 1 = 128K-compatible)
+Bit 3: RAM-in-ROM (1 = RAM page 0 mapped at 0x0000-0x3FFF instead of ROM)
+```
+Other bits are used on real hardware for turbo mode etc. but are not relevant for basic memory emulation.
+
+**Port 0x7FFD bank selection (Pentagon 512/1024):**
+```
+Bits 0-2: RAM bank bits 0-2 (standard, same as 128K)
+Bit 3:    Screen select (same as 128K)
+Bit 4:    ROM select (same as 128K)
+Bit 5:    In 128K mode: paging disable (locks until reset)
+          In 1MB mode: RAM bank bit 5 (value 32)
+Bits 6-7: RAM bank bits 3-4 (always active, Pentagon extension)
+```
+Total bank = bits 0-2 + (bits 6-7 >> 3) + (bit 5 in 1MB mode) = 0-63.
+
+**Key behavior difference:** In 128K-compatible mode (EFF7 bit 2 = 1), port 0x7FFD bit 5 locks paging as on standard 128K. In 1MB mode (EFF7 bit 2 = 0), bit 5 becomes bank bit 5 and does NOT lock paging.
 
 ### 13.4 Scorpion ZS 256
 
@@ -2263,12 +2318,7 @@ Mode 2: RAM 4, RAM 5, RAM 6, RAM 3
 Mode 3: RAM 4, RAM 7, RAM 6, RAM 3
 ```
 
-**Pentagon 512/1024:**
-```
-Extended banking via port 0x7FFD bits 6-7
-Port 0xEFF7 for turbo and more RAM bits
-Total banks: 32 (512KB) or 64 (1024KB)
-```
+**Pentagon 512/1024:** See [section 13.3](#133-pentagon-variants) for port 0x7FFD and 0xEFF7 details.
 
 ### A.6 Port Summary by Machine
 
@@ -2293,13 +2343,19 @@ Total banks: 32 (512KB) or 64 (1024KB)
 + 0x3FFD: FDC data (+3 only)
 ```
 
-**Pentagon:**
+**Pentagon 128:**
 ```
 0xFE:    ULA
-0x7FFD:  Memory paging
+0x7FFD:  Memory paging (bits 0-4 standard, bits 6-7 = bank bits 3-4)
 0xFFFD:  AY register select
 0xBFFD:  AY data write
 0x1F-0xFF: Beta Disk (WD1793)
+```
+
+**Pentagon 1024 (adds):**
+```
+0xEFF7:  Extended mode control (bit 2: 1MB mode, bit 3: RAM-in-ROM)
+0x7FFD:  Bit 5 = bank bit 5 in 1MB mode (instead of paging lock)
 ```
 
 **ULAplus (extension for any machine):**

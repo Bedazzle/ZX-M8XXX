@@ -257,6 +257,62 @@
             ]
         },
 
+        {
+            "id": "ZX-Diagnostics",
+            "name": "ZX-Diagnostics",
+            "category": "cpu",
+            "file": "tests/ZX-Diagnostics.tap.zip",
+            "zipEntry": "ZX-Diagnostics.tap",
+            "machine": "plus2a",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Brendan Alford",
+            "source": "https://spectrumcomputing.co.uk/entry/44397/ZX-Spectrum/ZX_-Diagnostics",
+            "steps": [
+                { "frames": 45, "screen": "tests/ZX-Diagnostics_46.png" },
+                { "frames": 3219, "screen": "tests/ZX-Diagnostics_3219.png", "keys": "N" }
+            ]
+        },
+
+        {
+            "id": "systest_1.01r",
+            "name": "SYSTEM TEST V1.01R",
+            "category": "cpu",
+            "file": "tests/SYST101R.zip",
+            "zipEntry": "SYST101R.SCL",
+            "diskRun": "TEST PC",
+            "machine": "pentagon",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Sovietsoft S.Petersburg 1993",
+            "source": "",
+            "steps": [
+                { "frames": 52, "screen": "tests/systest_52.png" },
+                { "frames": 247, "screen": "tests/systest_247.png", "keys": "ENTER" }
+            ]
+        },
+
+        {
+            "id": "global_test_1.0b",
+            "name": "Global test v1.0 beta",
+            "category": "cpu",
+            "file": "tests/GTEST1_0.ZIP",
+            "zipEntry": "GTEST1_0.SCL",
+            "diskRun": "=GLOBAL=",
+            "machine": "pentagon",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "POLTERGEIST from Samara",
+            "source": "",
+            "steps": [
+                { "frames": 500, "screen": "tests/global_test_1.0b_412.png", "keys": "SPACE,200ms,SPACE,500ms,Q,Q,Q,SPACE" },
+                { "frames": 1035, "screen": "tests/global_test_1.0b_1035.png", "keys": "SPACE" }
+            ]
+        },
+
 
         {
             "id": "cpd-48k",
@@ -297,7 +353,7 @@
             "machine": "48k",
             "earlyTimings": true,
             "palette": "default",
-            "enabled": true,
+            "enabled": false,
             "author": "Woodmass, Mark",
             "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
             "steps": [
@@ -312,7 +368,7 @@
             "machine": "48k",
             "earlyTimings": false,
             "palette": "default",
-            "enabled": true,
+            "enabled": false,
             "author": "Woodmass, Mark",
             "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
             "steps": [

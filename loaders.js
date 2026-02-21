@@ -1187,7 +1187,7 @@
         }
         
         createSNA(cpu, memory, border = 7) {
-            const is128k = memory.machineType !== '48k';
+            const is128k = memory.profile.ramPages > 1;
             const size = is128k ? 131103 : 49179;
             const bytes = new Uint8Array(size);
             
@@ -1246,8 +1246,7 @@
 
         // Z80 v3 format saver
         createZ80(cpu, memory, border = 7) {
-            const is128k = memory.machineType !== '48k';
-            const isPentagon = memory.machineType === 'pentagon';
+            const is128k = memory.profile.ramPages > 1;
             const chunks = [];
 
             // Build v3 header (30 + 54 = 84 bytes header)
@@ -1279,8 +1278,8 @@
 
             // Extended header (bytes 32-85)
             header[32] = cpu.pc & 0xff; header[33] = (cpu.pc >> 8) & 0xff;
-            // Hardware mode: 0=48k, 4=128k, 9=Pentagon, 12=+2 (v3)
-            header[34] = isPentagon ? 9 : (memory.machineType === '+2' ? 12 : (is128k ? 4 : 0));
+            // Hardware mode from profile (0=48k, 4=128k, 9=Pentagon, 12=+2, 13=+2A)
+            header[34] = memory.profile.z80HwMode;
 
             // Port 7FFD for 128K
             if (is128k) {
@@ -1291,7 +1290,7 @@
                 header[35] = 0;
             }
             header[36] = 0;  // Interface I paged (no)
-            header[37] = is128k ? 0x04 : 0x00;  // Bit 2: AY sound in use (128K)
+            header[37] = memory.profile.ayDefault ? 0x04 : 0x00;  // Bit 2: AY sound in use
             header[38] = 0;  // Last OUT to port $FFFD (AY register)
             // Bytes 39-54: AY registers (16 bytes) - leave as 0 for now
             // Bytes 55-56: Low T-state counter, 57: Hi T-state counter
@@ -1427,28 +1426,18 @@
             cpu.pc = bytes[32] | (bytes[33] << 8);
 
             const hwMode = bytes[34];
-            let machineType = '48k';
-            
-            // Determine machine type from hardware mode
-            // Pentagon (hwMode=9) can appear in both V2 and V3 formats
-            if (hwMode === 9) {
-                machineType = 'pentagon';
-            } else if (extHeaderLen === 23) {
-                // Version 2: hwMode 3=128K, 4=128K+IF1
-                if (hwMode === 3 || hwMode === 4) machineType = '128k';
-            } else {
-                // Version 3 hardware modes:
-                // 4=128K, 5=128K+IF1, 6=128K+MGT, 7=+3, 12=+2, 13=+2A (all 128K compatible)
-                if (hwMode === 4 || hwMode === 5 || hwMode === 6 || hwMode === 7 || hwMode === 12 || hwMode === 13) {
-                    machineType = '128k';
-                }
-            }
+            // Determine machine type from hardware mode using profile lookup
+            let machineType = getMachineByZ80HwMode(hwMode, extHeaderLen);
 
             // Read 128K port 0x7FFD if applicable
-            if ((machineType === '128k' || machineType === 'pentagon') && bytes.length > 35) {
+            if (machineType !== '48k' && bytes.length > 35) {
                 const port7FFD = bytes[35];
                 // Reset paging lock before setting paging state from snapshot
                 memory.pagingDisabled = false;
+                // +2A: restore port 0x1FFD before 0x7FFD (Z80 v3 byte 86 if present)
+                if (memory.machineType === '+2a' && bytes.length > 86) {
+                    memory.write1FFD(bytes[86]);
+                }
                 memory.writePaging(port7FFD);
             }
             
@@ -1547,7 +1536,8 @@
                     }
                 } else {
                     const bankNum = pageNum - 3;
-                    if (bankNum >= 0 && bankNum <= 7) {
+                    const maxBanks = memory.profile ? memory.profile.ramPages : 8;
+                    if (bankNum >= 0 && bankNum < maxBanks) {
                         const ramBank = memory.getRamBank(bankNum);
                         if (ramBank) {
                             ramBank.set(data.subarray(0, Math.min(data.length, 16384)));
@@ -1577,7 +1567,9 @@
                 // In 128K mode, only trap when ROM 1 (48K BASIC) is active
                 // ROM 0 is the 128K editor which has different code at these addresses
                 if (is128kCompat(this.memory.machineType) || this.memory.machineType === 'pentagon') {
-                    if (this.memory.currentRomBank !== 1) {
+                    // +2A: 48K BASIC ROM is bank 3 (not bank 1)
+                    const basicRomBank = this.memory.machineType === '+2a' ? 3 : 1;
+                    if (this.memory.currentRomBank !== basicRomBank) {
                         return false;  // Don't trap - wrong ROM bank
                     }
                 }
@@ -3572,9 +3564,12 @@
         }
 
         static getMachineType(machineId) {
+            // Use profile-based lookup when available
+            const profileType = getMachineBySzxId(machineId);
+            if (profileType !== 'unknown') return profileType;
+            // Fallback for IDs not in our profiles
             const types = {
-                0: '16k', 1: '48k', 2: '128k', 3: '+2',
-                4: '+2A', 5: '+3', 6: '+3e', 7: 'pentagon',
+                0: '16k', 5: '+3', 6: '+3e',
                 8: 'scorpion', 9: 'didaktik', 10: '+2c', 11: '+2cs'
             };
             return types[machineId] || 'unknown';
@@ -3719,11 +3714,13 @@
 
             // Load Spectrum state (SPCR chunk)
             let port7FFD = 0;
+            let port1FFD = 0;
             for (const chunk of info.chunks) {
                 if (chunk.id === 'SPCR') {
                     const border = bytes[chunk.offset];
                     port7FFD = bytes[chunk.offset + 1];
                     // bytes[chunk.offset + 2] is port $FE (not needed)
+                    port1FFD = bytes[chunk.offset + 3] || 0;  // Port 0x1FFD (+2A/+3)
                     if (ula) ula.setBorder(border);
                     break;
                 }
@@ -3742,7 +3739,10 @@
                 // Reset paging lock before setting paging state from snapshot
                 // (otherwise writePaging returns early if previous program locked paging)
                 memory.pagingDisabled = false;
-                // Set paging state
+                // Set paging state (+2A: apply 0x1FFD before 0x7FFD so ROM bank combines correctly)
+                if (memory.machineType === '+2a') {
+                    memory.write1FFD(port1FFD);
+                }
                 memory.writePaging(port7FFD);
             } else {
                 // 48K: pages 0, 2, 5 map to $C000, $8000, $4000
@@ -3771,7 +3771,7 @@
             header[2] = 0x53; header[3] = 0x54;  // "ST"
             header[4] = 1;    // Major version
             header[5] = 4;    // Minor version
-            header[6] = memory.machineType === 'pentagon' ? 7 : (memory.machineType === '+2' ? 3 : (is128k ? 2 : 1));  // Machine ID: 1=48k, 2=128k, 3=+2, 7=pentagon
+            header[6] = memory.profile.szxMachineId;  // Machine ID from profile
             header[7] = 0;    // Flags
             chunks.push(header);
 
@@ -3805,18 +3805,23 @@
             if (is128k) {
                 const ps = memory.getPagingState();
                 spcrData[1] = (ps.ramBank & 0x07) | (ps.screenBank === 7 ? 0x08 : 0x00) |
-                              (ps.romBank ? 0x10 : 0x00) | (ps.pagingDisabled ? 0x20 : 0x00);
+                              ((ps.romBank & 1) ? 0x10 : 0x00) | (ps.pagingDisabled ? 0x20 : 0x00);
             }
             spcrData[2] = border & 0x07;  // Port $FE
-            // Bytes 3-7: reserved
+            // Byte 3: port 0x1FFD (+2A/+3)
+            if (memory.profile.pagingModel === '+2a') {
+                spcrData[3] = memory.port1FFD || 0;
+            }
+            // Bytes 4-7: reserved
             chunks.push(this.makeChunk('SPCR', spcrData));
 
             // RAMP chunks - RAM pages
             if (is128k) {
-                // 128K: save all 8 pages (0-7)
-                for (let page = 0; page < 8; page++) {
+                // Save all RAM pages (8 for 128K, 64 for Pentagon 1024, etc.)
+                const pageCount = memory.profile.ramPages;
+                for (let page = 0; page < pageCount; page++) {
                     const pageData = memory.getRamBank(page);
-                    chunks.push(this.makeRAMPChunk(page, pageData));
+                    if (pageData) chunks.push(this.makeRAMPChunk(page, pageData));
                 }
             } else {
                 // 48K: save pages 5, 2, 0 (for $4000, $8000, $C000)
