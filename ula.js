@@ -53,6 +53,7 @@
                 '128k':    { top: 63, left: 48, right: 48, bottom: 56 },
                 '+2':      { top: 63, left: 48, right: 48, bottom: 56 },
                 '+2a':     { top: 63, left: 48, right: 48, bottom: 56 },
+                '+3':      { top: 63, left: 48, right: 48, bottom: 56 },
                 'pentagon': { top: 80, left: 48, right: 48, bottom: 48 },
                 'pentagon1024': { top: 80, left: 48, right: 48, bottom: 48 }
             };
@@ -64,6 +65,7 @@
                 '128k':    { top: 26, left: 32, right: 32, bottom: 24 },
                 '+2':      { top: 26, left: 32, right: 32, bottom: 24 },
                 '+2a':     { top: 26, left: 32, right: 32, bottom: 24 },
+                '+3':      { top: 26, left: 32, right: 32, bottom: 24 },
                 'pentagon': { top: 24, left: 32, right: 32, bottom: 24 },
                 'pentagon1024': { top: 24, left: 32, right: 32, bottom: 24 }
             };

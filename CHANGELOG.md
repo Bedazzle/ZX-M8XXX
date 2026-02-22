@@ -2,6 +2,101 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.24
+- **FDC Read Track command (0x02)**: Implement Read Track for copy-protected games (e.g. Batman)
+  - Reads all sectors on current track in physical order, ignoring sector IDs
+  - Previously unrecognized command caused FDC desync — game sent 9-byte command but FDC returned invalid result after byte 1, leaving subsequent bytes misinterpreted
+- **FDC Scan commands (0x11/0x19/0x1D)**: Accept all 9 command bytes (stub returning scan-not-satisfied)
+  - Prevents same desync issue as Read Track for any game using Scan Equal/Low/High
+- **Fix FDC drive select masking**: Only bit 0 decoded on +3 hardware (drives 0/2 map to same physical drive)
+  - Batman's bootstrap uses drive=2 in FDC commands; previously treated as non-existent drive
+- **Fix FDC Read/Write Data physical track lookup**: Use drive head position, not logical cylinder from command
+  - Copy-protected disks have non-matching physical/logical track numbers (e.g. physical track 38, C=0x12 in sector headers)
+  - Previously read data from wrong physical tracks, causing garbage on screen
+- **Fix FDC Read Data R > EOT handling**: Always read at least sector R regardless of EOT value
+  - On real µPD765, sector R is always read; EOT only controls when to stop reading additional sectors
+  - Games with non-standard sector layouts (R=0x0B, EOT=0x09) hung waiting for data that was never provided
+- **Fix FDC CRC-error noise destroying game data**: Only randomize CRC-error sectors where stored data fully covers the declared size
+  - Oversized sectors (e.g. N=6, 8192 declared, 6144 actual) have CRC errors because declared size exceeds stored data — their content is valid game data, not noise
+  - Previously ALL CRC-error sectors had bytes 256+ randomized, destroying valid data (e.g. Robocop 2)
+  - Now: `sec.data.length >= sectorDataSize` → randomize (genuine CRC corruption, e.g. Target Renegade protection); `sec.data.length < sectorDataSize` → pass through as-is
+- **Fix +3 DSK auto-load**: Use Amstrad menu Enter key injection (like +2/+2A tape) instead of raw PC=0 boot — ROM's "Loader" option now properly detects disk and boots the game
+
+## v0.9.23
+- **ZX Spectrum +3 Support**: First-class machine type with built-in floppy disk controller
+  - New "+3" option in machine selector dropdown
+  - +3 ROM section in ROM dialog (`plus3.rom`, 64KB — 4 ROM banks)
+  - Auto-loads from `roms/plus3.rom` on startup
+  - Same memory banking as +2A (`pagingModel: '+2a'`, port 0x1FFD special paging)
+  - Z80 snapshot hwMode 7 maps to +3; SZX machineId 5 maps to +3
+  - `is128kCompat()` helper updated to include +3
+- **µPD765 FDC Emulation** (`fdc.js`): Floppy disk controller for ZX Spectrum +3
+  - Full state machine: idle → command → execution → result phases
+  - 11 commands: Specify, Sense Drive Status, Read/Write Data, Recalibrate, Sense Interrupt Status, Read ID, Write/Read Deleted Data, Format Track, Seek
+  - MSR (Main Status Register) with RQM, DIO, NDMA, CB bits
+  - Port 0x2FFD (MSR read), 0x3FFD (data read/write), motor via 0x1FFD bit 3
+  - 4 drives supported, instant-completion model (same approach as BetaDisk WD1793)
+  - Disk activity indicator shows FDC operations
+- **DSK Disk Format Support**: Standard and extended CPC DSK format
+  - `DSKLoader.parse()` handles both "MV - CPC" standard and "EXTENDED CPC DSK" formats
+  - `DSKImage` class for in-memory disk with read/write sector operations
+  - CP/M-style directory listing in Settings → Media → Disk tab
+  - `.dsk` files recognized in file picker, ZIP browser, and drag-and-drop
+- **Auto Load for +3 DSK**: Boots +3 from disk automatically when Auto Load is enabled
+  - `bootPlus3Disk()` resets machine, preserves disk, sets motor on, boots from ROM
+  - Amstrad menu handling: +3 added to Amstrad menu detection
+- **Fix**: Beta Disk auto-paging on +2A used hardcoded ROM bank 1
+  - `updateBetaDiskPaging()` and `bootTrdos()` now use `profile.basicRomBank` (bank 3 for +2A)
+- **Fix**: FDC port reads (0x2FFD, 0x3FFD) were overwritten by floating bus handler
+  - FDC reads were outside the port dispatch if/else chain; floating bus `else` clause overwrote results with garbage
+  - Moved FDC reads into the if/else chain to prevent fallthrough
+- **Fix**: FDC Read/Write Data correctly buffers sectors from R to EOT
+  - +3 ROM sets EOT=R for single-sector reads (buffers 1 sector), custom game loaders set EOT > R for multi-sector reads
+  - Previously single-sector-only buffering broke custom loaders that expect multi-sector transfers (e.g. Venom Strikes Back, Target Renegade)
+- **Fix**: FDC data commands returned normal termination (ST0=0x00) instead of abnormal
+  - +3 ROM expects ST0 bits 7:6 = 01 (abnormal) and ST1 bit 7 = EN (end of track) because TC is never asserted
+  - Without these flags, +3DOS treated successful reads as errors
+- **Fix**: FDC MSR missing drive busy bits and EXM flag
+  - Added drive busy bits (MSR bits 0-3), set by Seek/Recalibrate, cleared by Sense Interrupt Status
+  - EXM bit (bit 5) correctly set during execution phase for non-DMA mode
+- **Fix**: FDC Sense Drive Status returned wrong flags for missing drives
+  - No disk now returns WP=1 (write protected) + RDY=0 (not ready), matching +3 ROM's drive detection logic
+- **Fix**: FDC CM (Control Mark) flag in ST2 was inverted for Read Deleted Data
+  - CM should be set when actual data mark type doesn't match command expectation
+  - Read Data + deleted mark → CM=1; Read Deleted Data + normal mark → CM=1
+- **Fix**: Extended DSK parser returned empty sector data when `actualLen=0`
+  - In extended CPC DSK format, `actualLen=0` means use default size from N (size code), not 0 bytes
+  - Affected games using non-standard formats (e.g. Target Renegade: 1024-byte sectors, deleted data marks)
+- **Fix**: FDC Read Data/Read Deleted Data discarded DSK sector error flags (ST1/ST2)
+  - DSK files store per-sector ST1/ST2 for copy protection (CRC errors, missing marks, etc.)
+  - FDC now passes through DSK error flags (DE, DD, MA, MD) merged with computed flags (EN, CM)
+  - Fixes copy-protected games that check for specific error signatures (e.g. Target Renegade reads sector 2 expecting ST1=0x20 DE + ST2=0x20 DD)
+- **Fix**: EDSK weak/random sector support for copy protection (Speedlock +3)
+  - Sectors with `actualSize > nominalSize` (exact multiple) contain multiple data copies
+  - At parse time, copies are compared byte-by-byte to build a weak byte map
+  - On each FDC read, weak byte positions are randomized (FUSE approach)
+  - Fixes Speedlock-protected games that read a sector multiple times and expect different data (e.g. Target Renegade)
+- **Fix**: FDC SK (Skip Deleted) flag parsed but never used in Read Data/Read Deleted Data
+  - SK=1 now skips sectors whose mark type doesn't match the command
+  - SK=0 reads mismatched sectors but sets CM flag and terminates after the sector
+  - Per-sector DDAM check via DSK ST2 bit 6 (Deleted Data Address Mark indicator)
+- **Fix**: FDC EN (End of Track) flag unconditionally set in ST1
+  - EN should only be set when all R→EOT sectors were read without early termination
+  - Not set when terminated by CM (mark mismatch) or CRC error (DE flag)
+- **Fix**: +2A/+3 memory contention used wrong delay pattern
+  - 48K/128K/+2 use pattern (6,5,4,3,2,1,0,0); +2A/+3 use (7,6,5,4,3,2,1,0)
+  - Added profile-driven `contentionPattern` property (`'65432100'` vs `'76543210'`)
+  - Precomputed contention delay lookup table replaces Swan formula
+  - Reference: FUSE `contend_delay_76543210` for +3, sinclair.wiki.zxnet.co.uk contention tables
+- **Fix**: +2A/+3 incorrectly applied IO contention
+  - The Amstrad 40077 gate array only contends on MREQ, not during IO operations
+  - Added `hasIOContention` profile flag; `applyIOTimings` returns 0 when false
+  - Reference: sinclair.wiki.zxnet.co.uk/wiki/Contended_I/O ("no contention occurs" on +3)
+- **Fix**: +2A/+3 incorrectly applied internal cycle contention
+  - Non-MREQ cycles (DJNZ, JR internal waits) should not be contended on +2A/+3
+  - Added `hasInternalContention` profile flag; `contendInternal` skips delays when false
+  - Reference: FUSE `contend_delay_no_mreq = spectrum_contend_delay_none` for +3
+
 ## v0.9.22
 - **Machine Profile System**: Configurable machine definitions replacing hardcoded type checks
 - **Pentagon 1024 Support**: Extended memory banking (64 RAM pages) via port 0xEFF7

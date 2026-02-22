@@ -187,7 +187,9 @@ The ULA and CPU share access to the screen memory (0x4000-0x7FFF). When the ULA 
 
 ### 3.2 Contention Pattern
 
-During each 8 T-state ULA fetch cycle within the paper area:
+During each 8 T-state ULA fetch cycle within the paper area, the delay depends on the machine type:
+
+**48K / 128K / +2** — pattern `(6,5,4,3,2,1,0,0)`:
 
 | T mod 8 | Delay |
 |---------|-------|
@@ -200,14 +202,29 @@ During each 8 T-state ULA fetch cycle within the paper area:
 | 6 | 0 |
 | 7 | 0 |
 
+**+2A / +3** — pattern `(7,6,5,4,3,2,1,0)`:
+
+| T mod 8 | Delay |
+|---------|-------|
+| 0 | 7 |
+| 1 | 6 |
+| 2 | 5 |
+| 3 | 4 |
+| 4 | 3 |
+| 5 | 2 |
+| 6 | 1 |
+| 7 | 0 |
+
+The +2A/+3 use the Amstrad 40077 gate array which has a different contention cycle. Reference: FUSE uses `contend_delay_65432100` for 48K/128K/+2 and `contend_delay_76543210` for +2A/+3.
+
 ### 3.3 Contention Start T-state
 
-| Machine | Contention Start | Notes |
-|---------|------------------|-------|
-| 48K | 14335 | First paper line at 14336, pattern starts 1T earlier |
-| 128K/+2 | 14361 | Different line timing |
-| +2A | 14361 | Same timing as 128K, different contended banks |
-| Pentagon | N/A | No contention |
+| Machine | Contention Start | Pattern | Notes |
+|---------|------------------|---------|-------|
+| 48K | 14335 | 6,5,4,3,2,1,0,0 | First paper line at 14336, pattern starts 1T earlier |
+| 128K/+2 | 14361 | 6,5,4,3,2,1,0,0 | Different line timing |
+| +2A/+3 | 14361 | 7,6,5,4,3,2,1,0 | Different pattern, no IO/internal contention |
+| Pentagon | N/A | none | No contention |
 
 ### 3.4 Contended Memory Regions
 
@@ -218,10 +235,11 @@ During each 8 T-state ULA fetch cycle within the paper area:
 - 0x4000-0x7FFF: Bank 5 (always contended)
 - 0xC000-0xFFFF: Contended if bank 1, 3, 5, or 7 is paged in (odd banks)
 
-**+2A:**
+**+2A/+3:**
 - 0x4000-0x7FFF: Bank 5 (always contended)
 - 0xC000-0xFFFF: Contended if bank 4, 5, 6, or 7 is paged in (high banks)
 - In special paging mode: contention applies per-slot based on the mapped bank (banks 4-7 are contended)
+- Uses different delay pattern: (7,6,5,4,3,2,1,0) — see section 3.2
 
 ### 3.5 Implementation
 
@@ -252,7 +270,7 @@ Apply contention at the **start of each memory access**, not at instruction star
 
 ### 3.7 Internal Cycle Contention
 
-Some instructions have internal cycles where the CPU puts an address on the bus without performing a memory access. These cycles ARE contended:
+Some instructions have internal cycles where the CPU puts an address on the bus without performing a memory access. These cycles ARE contended on 48K/128K/+2, but **NOT on +2A/+3** (the Amstrad 40077 gate array only contends on MREQ, not on internal bus cycles). Reference: FUSE uses `contend_delay_no_mreq = spectrum_contend_delay_none` for +2A/+3.
 
 | Instruction | Internal T-states | Address on bus |
 |-------------|-------------------|----------------|
@@ -272,7 +290,9 @@ Some instructions have internal cycles where the CPU puts an address on the bus 
 
 I/O operations have different contention rules based on the port address.
 
-### 4.2 Contention Rules (48K/128K/+2/+2A)
+### 4.2 Contention Rules (48K/128K/+2 only)
+
+**Important:** The +2A and +3 have **NO I/O contention**. The Amstrad 40077 gate array only contends on MREQ, not during I/O operations. Only 48K, 128K, and +2 apply I/O contention.
 
 The rule depends on bit 0 of the port address (directly decodes to ULA):
 
@@ -1134,10 +1154,40 @@ Bits 1-2 select configuration:
 11: RAM 4, 7, 6, 3
 ```
 
-**+3 Floppy Disk Controller:**
-- uPD765A FDC at ports 0x2FFD (status) and 0x3FFD (data)
-- 3" CF-2 disk format (173KB per side)
-- +3DOS file system
+**+3 Floppy Disk Controller (implemented in `fdc.js`):**
+- µPD765A FDC at ports 0x2FFD (MSR read) and 0x3FFD (data read/write)
+- Motor control via port 0x1FFD bit 3
+- Instant-completion model (no timing simulation)
+- Commands: Read Track, Specify, Sense Drive Status, Read/Write Data, Recalibrate, Sense Interrupt, Read/Write Deleted Data, Read ID, Format Track, Seek, Scan Equal/Low/High (stub)
+- Drive select: only bit 0 decoded (drives 0/2 and 1/3 map to same physical drive)
+- Physical track: Read/Write Data uses drive head position (set by Seek/Recalibrate), not command's C parameter. Essential for copy-protected disks with mismatched logical/physical tracks.
+- DSK disk format: standard ("MV - CPC") and extended ("EXTENDED CPC DSK") variants
+- Standard +3 geometry: 40 tracks, 1 side, 9 sectors/track, 512 bytes/sector
+- +3DOS file system (CP/M-style directory on first 4 sectors)
+
+**FDC Status Registers:**
+- ST0: bits 7-6 = interrupt code (00=normal, 01=abnormal), bit 5 = seek end. On +3, TC is never asserted, so data commands always end with abnormal termination (01).
+- ST1: bit 7 = EN (end of track, set when all R→EOT sectors transferred without early termination), bit 5 = DE (data error / CRC), bit 2 = ND (no data)
+- ST2: bit 6 = CM (control mark — set when sector's data address mark type doesn't match command: Read Data + DDAM, or Read Deleted Data + normal DAM), bit 5 = DD (data error in data field)
+- DSK files store per-sector ST1/ST2 values; these are merged with computed flags (EN, CM) in the result.
+
+**SK (Skip Deleted) Flag:**
+- Bit 5 of Read Data / Read Deleted Data command byte
+- SK=1: skip sectors whose mark type doesn't match command (no data transferred for those sectors)
+- SK=0: read mismatched sector, set CM flag in ST2, terminate after that sector
+- Per-sector DDAM detection via DSK sector ST2 bit 6
+
+**Weak/Random Sectors (EDSK copy protection):**
+
+Some copy-protected +3 games (Speedlock protection: Target Renegade, After Burner, Robocop, etc.) use sectors with intentionally corrupted data that varies between reads on real hardware. The Extended DSK format preserves this by storing multiple copies of the sector data.
+
+Detection: if a sector's stored data length > nominal size (128 << N) and is an exact multiple, the sector contains multiple copies representing different reads from the original disk.
+
+Emulation approach:
+- **EDSK multiple copies**: Compare all copies byte-by-byte at parse time to find positions where data differs. Build a "weak map" marking those positions. On each FDC read, randomize the weak byte positions. This is the FUSE approach.
+- **CRC error noise** (no weak map): Only randomize when `sec.data.length >= sectorDataSize` — the stored data fully covers the declared sector, indicating genuine CRC corruption (protection sector). Skip when `sec.data.length < sectorDataSize` — this is an oversized sector technique (e.g. N=6/8192 declared, 6144 actual) where the CRC error is due to size mismatch and the data is valid game content.
+
+The protection typically reads the weak sector 2-3 times and compares the data. It expects: (a) CRC error status from the FDC, and (b) differences between reads (proving the data is genuinely unstable, not a perfect copy).
 
 ### 13.3 Pentagon Variants
 

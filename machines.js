@@ -29,6 +29,9 @@
             ulaProfile: '48k',     // '48k' | '128k' | 'pentagon'
             // Contention
             hasContention: true,
+            hasIOContention: true,          // IO ports are contended
+            hasInternalContention: true,    // Internal cycles (no MREQ) are contended
+            contentionPattern: '65432100',  // Delay pattern: (6,5,4,3,2,1,0,0)
             borderQuantization: true,
             // Interrupt
             intPulseDuration: 32,
@@ -38,6 +41,7 @@
             ayClockHz: 1773400,
             // Peripherals
             betaDiskDefault: false,
+            hasFDC: false,
             // Snapshot format IDs
             z80HwMode: 0,
             szxMachineId: 1,
@@ -56,12 +60,16 @@
             pagingModel: '128k',
             ulaProfile: '128k',
             hasContention: true,
+            hasIOContention: true,
+            hasInternalContention: true,
+            contentionPattern: '65432100',
             borderQuantization: true,
             intPulseDuration: 36,
             earlyIntTiming: false,
             ayDefault: true,
             ayClockHz: 1773400,
             betaDiskDefault: false,
+            hasFDC: false,
             z80HwMode: 4,
             szxMachineId: 2,
             is128kCompat: true,
@@ -78,12 +86,16 @@
             pagingModel: '128k',
             ulaProfile: '128k',
             hasContention: true,
+            hasIOContention: true,
+            hasInternalContention: true,
+            contentionPattern: '65432100',
             borderQuantization: true,
             intPulseDuration: 36,
             earlyIntTiming: false,
             ayDefault: true,
             ayClockHz: 1773400,
             betaDiskDefault: false,
+            hasFDC: false,
             z80HwMode: 12,
             szxMachineId: 3,
             is128kCompat: true,
@@ -100,12 +112,16 @@
             pagingModel: '+2a',
             ulaProfile: '128k',
             hasContention: true,
+            hasIOContention: false,         // +2A ULA only contends on MREQ, not IO
+            hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
+            contentionPattern: '76543210',  // Delay pattern: (7,6,5,4,3,2,1,0)
             borderQuantization: true,
             intPulseDuration: 36,
             earlyIntTiming: false,
             ayDefault: true,
             ayClockHz: 1773400,
             betaDiskDefault: false,
+            hasFDC: false,
             z80HwMode: 13,
             szxMachineId: 4,
             is128kCompat: true,
@@ -122,6 +138,9 @@
             pagingModel: '128k',
             ulaProfile: 'pentagon',
             hasContention: false,
+            hasIOContention: false,
+            hasInternalContention: false,
+            contentionPattern: 'none',
             borderQuantization: false,
             intPulseDuration: 36,
             earlyIntTiming: false,
@@ -130,7 +149,34 @@
             betaDiskDefault: true,
             z80HwMode: 9,
             szxMachineId: 7,
+            hasFDC: false,
             is128kCompat: false,
+        },
+        '+3': {
+            id: '+3',
+            name: 'ZX Spectrum +3',
+            group: 'Sinclair',
+            ramPages: 8,
+            romBanks: 4,
+            romFile: 'plus3.rom',
+            romSize: 65536,
+            basicRomBank: 3,
+            pagingModel: '+2a',      // Same memory banking as +2A
+            ulaProfile: '128k',
+            hasContention: true,
+            hasIOContention: false,         // +3 ULA only contends on MREQ, not IO
+            hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
+            contentionPattern: '76543210',  // Delay pattern: (7,6,5,4,3,2,1,0)
+            borderQuantization: true,
+            intPulseDuration: 36,
+            earlyIntTiming: false,
+            ayDefault: true,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: true,
+            z80HwMode: 7,
+            szxMachineId: 5,
+            is128kCompat: true,
         },
         'pentagon1024': {
             id: 'pentagon1024',
@@ -144,12 +190,16 @@
             pagingModel: 'pentagon1024',  // Extended: 7FFD bits 5,6,7 + EFF7
             ulaProfile: 'pentagon',
             hasContention: false,
+            hasIOContention: false,
+            hasInternalContention: false,
+            contentionPattern: 'none',
             borderQuantization: false,
             intPulseDuration: 36,
             earlyIntTiming: false,
             ayDefault: true,
             ayClockHz: 1750000,
             betaDiskDefault: true,
+            hasFDC: false,
             z80HwMode: 9,       // Same as Pentagon 128 in Z80 format
             szxMachineId: 7,    // Same as Pentagon 128 in SZX format
             is128kCompat: false,
@@ -176,9 +226,10 @@
             if (hwMode === 3 || hwMode === 4) return '128k';
         } else {
             // Version 3: specific machine types
+            if (hwMode === 7) return '+3';
             if (hwMode === 12) return '+2';
             if (hwMode === 13) return '+2a';
-            if (hwMode === 4 || hwMode === 5 || hwMode === 6 || hwMode === 7) return '128k';
+            if (hwMode === 4 || hwMode === 5 || hwMode === 6) return '128k';
         }
         return '48k';
     }
@@ -190,7 +241,7 @@
             if (p.szxMachineId === szxId) return id;
         }
         // Fallback for known IDs not in our profiles
-        const fallback = { 0: '48k', 5: '128k', 6: '128k' };
+        const fallback = { 0: '48k', 6: '128k' };
         return fallback[szxId] || 'unknown';
     }
 

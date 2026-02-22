@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZX-M8XXX v0.9.22</title>
+    <title>ZX-M8XXX v0.9.24</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -5325,6 +5325,9 @@
                 <button id="btnSelectPlus2aRom">plus2a.rom</button>
                 <div class="rom-status" id="statusPlus2aRom">Not loaded</div>
 
+                <button id="btnSelectPlus3Rom">plus3.rom</button>
+                <div class="rom-status" id="statusPlus3Rom">Not loaded</div>
+
                 <button id="btnSelectPentagonRom">pentagon.rom</button>
                 <div class="rom-status" id="statusPentagonRom">Not loaded</div>
 
@@ -5410,7 +5413,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.22 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.24 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
             <input type="file" id="projectFileInput" class="file-input" accept=".zxproj,.json">
         </div>
@@ -5471,9 +5474,10 @@
         <input type="file" id="rom128Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPlus2Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPlus2aInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPlus3Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPentagonInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romTrdosInput" class="file-input" accept=".rom,.bin">
-        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl">
+        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.dsk">
         </div><!-- emulator-section -->
 
         <!-- Tab Container -->
@@ -6943,7 +6947,7 @@ start:
             <div class="explorer-container">
                 <!-- Controls Row -->
                 <div class="explorer-controls">
-                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.zip" style="display:none">
+                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.dsk,.zip" style="display:none">
                     <button id="btnExplorerLoad" class="explorer-btn primary">Load File</button>
                     <span id="explorerFileName" class="explorer-file-info">No file loaded</span>
                     <span id="explorerFileSize" class="explorer-file-size"></span>
@@ -7468,7 +7472,7 @@ start:
     <div class="fullhelp-dialog hidden" id="fullHelpDialog">
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.22</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.24</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -7496,7 +7500,7 @@ start:
                     <h5>Features</h5>
                     <ul>
                         <li>Full Z80 CPU emulation (all documented + undocumented opcodes)</li>
-                        <li>48K, 128K, +2, +2A, and Pentagon machine support</li>
+                        <li>48K, 128K, +2, +2A, +3, and Pentagon machine support</li>
                         <li>Memory banking (128K/+2/+2A/Pentagon)</li>
                         <li>ULA video generation with border</li>
                         <li>ULAplus extended palette (64 colors, HAM256 raster effects)</li>
@@ -7507,6 +7511,7 @@ start:
                         <li>Quicksave/Quickload (F2/F5) - instant state save to browser storage</li>
                         <li>TAP/TZX tape loading (instant or real-time with border stripes and sound)</li>
                         <li>TRD/SCL disk images (TR-DOS)</li>
+                        <li>DSK disk images (+3 µPD765 FDC)</li>
                         <li>ZIP archive support</li>
                         <li>RZX playback (partial)</li>
                         <li>Game Browser - search and download games from Spectrum Computing</li>
@@ -7517,10 +7522,10 @@ start:
                     </ul>
                     <h5>Quick Start</h5>
                     <ol>
-                        <li>Place ROM files in <code>roms/</code> directory (48.rom, 128.rom, plus2.rom, plus2a.rom, pentagon.rom, trdos.rom)</li>
+                        <li>Place ROM files in <code>roms/</code> directory (48.rom, 128.rom, plus2.rom, plus2a.rom, plus3.rom, pentagon.rom, trdos.rom)</li>
                         <li>Open index.html in a modern browser</li>
                         <li>Use Load → Web to browse and download games online</li>
-                        <li>Or Load → File to load SNA/Z80/SZX snapshots, TAP/TZX tapes, TRD/SCL disks</li>
+                        <li>Or Load → File to load SNA/Z80/SZX snapshots, TAP/TZX tapes, TRD/SCL/DSK disks</li>
                         <li>F2 = Quicksave, F5 = Quickload during gameplay</li>
                     </ol>
                 </div>
@@ -7874,8 +7879,9 @@ start:
                     </table>
                     <h5>Disk Images</h5>
                     <table>
-                        <tr><td><strong>TRD</strong></td><td>TR-DOS disk image (select file from disk)</td></tr>
+                        <tr><td><strong>TRD</strong></td><td>TR-DOS disk image (Pentagon/Beta Disk)</td></tr>
                         <tr><td><strong>SCL</strong></td><td>TR-DOS file archive (more compact format)</td></tr>
+                        <tr><td><strong>DSK</strong></td><td>+3 disk image (standard and extended CPC DSK format)</td></tr>
                     </table>
                     <h5>Boot File Injection</h5>
                     <p>Automatically add a boot loader to TRD disk images via Settings → Media → Boot File:</p>
@@ -8063,7 +8069,7 @@ start:
             "id": "unique-id",
             "name": "Display Name",
             "file": "tests/program.tap",
-            "machine": "48k",           // 48k, 128k, +2, +2a, pentagon
+            "machine": "48k",           // 48k, 128k, +2, +2a, +3, pentagon
             "earlyTimings": true,       // Use early ULA timings
             "ulaplus": false,           // Enable ULAplus (default: false)
             "palette": "default",       // Color palette
@@ -8154,6 +8160,19 @@ start:
     ]
 }</pre>
                     <p><code>diskRun</code> values: program name (e.g. <code>"game"</code>) for <code>RUN "game"</code>, or <code>"boot"</code> for <code>RUN</code> (boot file).</p>
+
+                    <h5>Example: DSK Disk Test (+3)</h5>
+                    <pre>{
+    "id": "plus3-game",
+    "name": "Game (DSK)",
+    "file": "tests/game.dsk",
+    "machine": "+3",
+    "enabled": true,
+    "steps": [
+        { "frames": 800, "screen": "tests/game_menu.png" }
+    ]
+}</pre>
+                    <p>DSK tests auto-boot via the +3 ROM. No <code>diskRun</code> needed — the +3 ROM auto-detects and loads from disk.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-compare">
                     <h4>Compare Tool</h4>
@@ -8352,7 +8371,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <div class="drop-zone" id="dropZone">Drop ROM or Snapshot here</div>
 
     <script>
-        function is128kCompat(type) { return type === '128k' || type === '+2' || type === '+2a'; }
+        function is128kCompat(type) { return type === '128k' || type === '+2' || type === '+2a' || type === '+3'; }
     </script>
 
     <script src="machines.js"></script>
@@ -8363,6 +8382,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="memory.js"></script>
     <script src="ula.js"></script>
     <script src="loaders.js"></script>
+    <script src="fdc.js"></script>
     <script src="spectrum.js"></script>
     <script src="ay.js"></script>
     <script src="disasm.js"></script>
@@ -8383,7 +8403,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
     <script src="sjasmplus/assembler.js"></script>
     
     <script>
-        const APP_VERSION = '0.9.21';
+        const APP_VERSION = '0.9.24';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
         // Auto Load timing constants (ms)
@@ -12653,6 +12673,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     '128k': '128k',
                     '+2': '+2', 'plus2': '+2',
                     '+2a': '+2a', 'plus2a': '+2a',
+                    '+3': '+3', 'plus3': '+3',
                     'pentagon': 'pentagon', 'p128': 'pentagon'
                 };
                 const targetMachine = machineMap[machineType.toLowerCase()] || '48k';
@@ -12745,6 +12766,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     this.spectrum.loadDiskImage(data.buffer, ext, filePath);
                     const diskRun = this.currentTest ? (this.currentTest.diskRun || 'boot') : 'boot';
                     await this.injectDiskRunCommand(diskRun);
+                } else if (ext === 'dsk') {
+                    // DSK disk image - load into FDC, boot +3 from disk
+                    this.spectrum.loadDSKImage(new Uint8Array(data.buffer), filePath);
+                    await this.bootPlus3Disk();
                 } else {
                     throw new Error(`Unsupported file format: ${ext}`);
                 }
@@ -12753,7 +12778,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             async loadExtractedFile(data, fileName, ext) {
                 // Update filename display for extracted file
                 if (typeof updateMediaIndicator === 'function') {
-                    updateMediaIndicator(fileName, ext === 'tap' ? 'tape' : (ext === 'trd' || ext === 'scl') ? 'disk' : null);
+                    updateMediaIndicator(fileName, ext === 'tap' ? 'tape' : (ext === 'trd' || ext === 'scl' || ext === 'dsk') ? 'disk' : null);
                 }
 
                 if (ext === 'tap') {
@@ -12776,6 +12801,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     this.spectrum.loadDiskImage(data, ext, fileName);
                     const diskRun = this.currentTest ? (this.currentTest.diskRun || 'boot') : 'boot';
                     await this.injectDiskRunCommand(diskRun);
+                } else if (ext === 'dsk') {
+                    this.spectrum.loadDSKImage(new Uint8Array(data), fileName);
+                    await this.bootPlus3Disk();
                 } else {
                     throw new Error(`Unsupported extracted file format: ${ext}`);
                 }
@@ -12804,11 +12832,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 const cpu = this.spectrum.cpu;
                 const ula = this.spectrum.ula;
                 const machType = this.spectrum.machineType;
-                const isAmsMenu = machType === '+2' || machType === '+2a';
+                const isAmsMenu = machType === '+2' || machType === '+2a' || machType === '+3';
                 const is128K = is128kCompat(machType);
 
                 if (isAmsMenu) {
-                    // +2/+2A: Amstrad menu — same approach as main auto-load:
+                    // +2/+2A/+3: Amstrad menu — same approach as main auto-load:
                     // wait for menu, press Enter to select "Tape Loader" (default option)
                     // which runs LOAD "" automatically, no typing needed
                     ula.keyboardState.fill(0xFF);
@@ -13120,6 +13148,45 @@ labelManager.importJSON(jsonStr, merge)</pre>
 
                 // Run frames for loading
                 await this.runFramesWithAbortCheck(300, () => ula.keyboardState.fill(0xFF));
+            }
+
+            // Boot +3 from DSK disk image
+            // Reset machine, preserve disk, press Enter at Amstrad menu to select "Loader"
+            // The +3 ROM's Loader routine auto-detects disk and boots from it
+            async bootPlus3Disk() {
+                const ula = this.spectrum.ula;
+
+                if (!this.spectrum.fdc) {
+                    console.warn('[TestRunner] Cannot boot +3 disk: no FDC');
+                    return;
+                }
+
+                // Save disk before reset
+                const disk = this.spectrum.fdc.drives[0].disk;
+
+                // Reset machine
+                this.spectrum.reset();
+
+                // Restore disk after reset
+                if (disk) {
+                    this.spectrum.fdc.drives[0].disk = disk;
+                }
+
+                // Wait for +3 Amstrad menu to appear (150 frames = 3s at 50fps)
+                ula.keyboardState.fill(0xFF);
+                if (!await this.runFramesWithAbortCheck(150, () => ula.keyboardState.fill(0xFF))) return;
+
+                // Press Enter to select "Loader" (default option)
+                // ROM will detect disk and boot from it automatically
+                ula.keyDown('Enter');
+                for (let i = 0; i < 15; i++) {
+                    this.spectrum.runFrame();
+                }
+                ula.keyUp('Enter');
+                ula.keyboardState.fill(0xFF);
+
+                // Run frames for ROM to boot from disk
+                await this.runFramesWithAbortCheck(500, () => ula.keyboardState.fill(0xFF));
             }
 
             // Directly load tape contents into memory, bypassing ROM (kept for reference)
@@ -13890,11 +13957,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
         // Legacy accessors for backward compatibility within ROM dialog handlers
         // These are getters/setters that map to romData entries
         function getRomByType(type) {
-            const fileMap = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'pentagon': 'pentagon.rom', 'trdos': 'trdos.rom' };
+            const fileMap = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'trdos': 'trdos.rom' };
             return romData[fileMap[type]] || null;
         }
         function setRomByType(type, data) {
-            const fileMap = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'pentagon': 'pentagon.rom', 'trdos': 'trdos.rom' };
+            const fileMap = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'trdos': 'trdos.rom' };
             if (fileMap[type]) romData[fileMap[type]] = data;
         }
 
@@ -13973,6 +14040,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const btnSelect128Rom = document.getElementById('btnSelect128Rom');
         const btnSelectPlus2Rom = document.getElementById('btnSelectPlus2Rom');
         const btnSelectPlus2aRom = document.getElementById('btnSelectPlus2aRom');
+        const btnSelectPlus3Rom = document.getElementById('btnSelectPlus3Rom');
         const btnSelectPentagonRom = document.getElementById('btnSelectPentagonRom');
         const btnSelectTrdosRom = document.getElementById('btnSelectTrdosRom');
         const btnStartEmulator = document.getElementById('btnStartEmulator');
@@ -13980,11 +14048,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const status128Rom = document.getElementById('status128Rom');
         const statusPlus2Rom = document.getElementById('statusPlus2Rom');
         const statusPlus2aRom = document.getElementById('statusPlus2aRom');
+        const statusPlus3Rom = document.getElementById('statusPlus3Rom');
         const statusPentagonRom = document.getElementById('statusPentagonRom');
         const rom48Input = document.getElementById('rom48Input');
         const rom128Input = document.getElementById('rom128Input');
         const romPlus2Input = document.getElementById('romPlus2Input');
         const romPlus2aInput = document.getElementById('romPlus2aInput');
+        const romPlus3Input = document.getElementById('romPlus3Input');
         const romPentagonInput = document.getElementById('romPentagonInput');
         const romTrdosInput = document.getElementById('romTrdosInput');
         
@@ -14150,34 +14220,39 @@ labelManager.importJSON(jsonStr, merge)</pre>
         let diskActivityTimeout = null;
 
         function setupDiskActivityCallback() {
+            const activityHandler = (type, track, sector, side) => {
+                // Show disk activity indicator
+                diskActivityEl.style.display = 'inline-block';
+
+                // Update LED color based on operation
+                if (type === 'read') {
+                    diskLedEl.style.color = '#0f0';  // Green for read
+                    diskLedEl.title = 'Reading from disk';
+                } else if (type === 'write') {
+                    diskLedEl.style.color = '#f80';  // Orange for write
+                    diskLedEl.title = 'Writing to disk';
+                }
+
+                // Show track/sector info (padded to fixed width)
+                const sideStr = side ? 'B' : 'A';
+                const trackStr = String(track).padStart(2, '0');
+                const sectorStr = String(sector).padStart(2, '0');
+                diskStatusEl.textContent = `T${trackStr}:S${sectorStr}:${sideStr}`;
+
+                // Clear timeout and set new one to show idle state
+                if (diskActivityTimeout) clearTimeout(diskActivityTimeout);
+                diskActivityTimeout = setTimeout(() => {
+                    diskLedEl.style.color = '';  // Reset color
+                    diskLedEl.title = 'Disk idle';
+                    diskStatusEl.textContent = 'idle';
+                }, 200);
+            };
+
             if (spectrum.betaDisk) {
-                spectrum.betaDisk.onDiskActivity = (type, track, sector, side) => {
-                    // Show disk activity indicator
-                    diskActivityEl.style.display = 'inline-block';
-
-                    // Update LED color based on operation
-                    if (type === 'read') {
-                        diskLedEl.style.color = '#0f0';  // Green for read
-                        diskLedEl.title = 'Reading from disk';
-                    } else if (type === 'write') {
-                        diskLedEl.style.color = '#f80';  // Orange for write
-                        diskLedEl.title = 'Writing to disk';
-                    }
-
-                    // Show track/sector info (padded to fixed width)
-                    const sideStr = side ? 'B' : 'A';
-                    const trackStr = String(track).padStart(2, '0');
-                    const sectorStr = String(sector).padStart(2, '0');
-                    diskStatusEl.textContent = `T${trackStr}:S${sectorStr}:${sideStr}`;
-
-                    // Clear timeout and set new one to show idle state
-                    if (diskActivityTimeout) clearTimeout(diskActivityTimeout);
-                    diskActivityTimeout = setTimeout(() => {
-                        diskLedEl.style.color = '';  // Reset color
-                        diskLedEl.title = 'Disk idle';
-                        diskStatusEl.textContent = 'idle';
-                    }, 200);
-                };
+                spectrum.betaDisk.onDiskActivity = activityHandler;
+            }
+            if (spectrum.fdc) {
+                spectrum.fdc.onDiskActivity = activityHandler;
             }
         }
         setupDiskActivityCallback();
@@ -27312,7 +27387,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
         function updateRomStatus() {
             const statusTrdosRom = document.getElementById('statusTrdosRom');
             // Clear any inline error color from size validation
-            [status48Rom, status128Rom, statusPlus2Rom, statusPlus2aRom, statusPentagonRom, statusTrdosRom].forEach(el => { if (el) el.style.color = ''; });
+            [status48Rom, status128Rom, statusPlus2Rom, statusPlus2aRom, statusPlus3Rom, statusPentagonRom, statusTrdosRom].forEach(el => { if (el) el.style.color = ''; });
 
             if (romData['48.rom']) {
                 status48Rom.textContent = '✓ Loaded (' + (romData['48.rom'].byteLength / 1024) + 'KB)';
@@ -27356,6 +27431,25 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 statusPlus2aRom.classList.remove('loaded');
             }
 
+            if (statusPlus3Rom) {
+                if (romData['plus3.rom']) {
+                    const bank0 = new Uint8Array(romData['plus3.rom'].slice(0, 16384));
+                    const romStr = String.fromCharCode(...bank0.slice(0, 16384));
+                    const hasMenu = romStr.indexOf('Loader') !== -1 || romStr.indexOf('+3') !== -1;
+                    if (hasMenu) {
+                        statusPlus3Rom.textContent = '\u2713 Loaded (' + (romData['plus3.rom'].byteLength / 1024) + 'KB)';
+                        statusPlus3Rom.classList.add('loaded');
+                    } else {
+                        statusPlus3Rom.textContent = '\u26A0 Loaded but may be wrong ROM (no +3 menu in bank 0)';
+                        statusPlus3Rom.classList.add('loaded');
+                        statusPlus3Rom.style.color = '#e67e22';
+                    }
+                } else {
+                    statusPlus3Rom.textContent = 'Not loaded (+3 mode unavailable)';
+                    statusPlus3Rom.classList.remove('loaded');
+                }
+            }
+
             if (romData['pentagon.rom']) {
                 statusPentagonRom.textContent = '✓ Loaded (' + (romData['pentagon.rom'].byteLength / 1024) + 'KB)';
                 statusPentagonRom.classList.add('loaded');
@@ -27380,12 +27474,12 @@ labelManager.importJSON(jsonStr, merge)</pre>
         const ROM_EXPECTED_SIZES = {
             '48k': [16384], 'trdos': [16384],
             '128k': [32768], 'plus2': [32768], 'pentagon': [32768],
-            'plus2a': [65536]
+            'plus2a': [65536], 'plus3': [65536]
         };
 
         const ROM_STATUS_IDS = {
             '48k': 'status48Rom', '128k': 'status128Rom', 'plus2': 'statusPlus2Rom',
-            'plus2a': 'statusPlus2aRom', 'pentagon': 'statusPentagonRom', 'trdos': 'statusTrdosRom'
+            'plus2a': 'statusPlus2aRom', 'plus3': 'statusPlus3Rom', 'pentagon': 'statusPentagonRom', 'trdos': 'statusTrdosRom'
         };
 
         async function loadRomFile(data, type) {
@@ -27459,6 +27553,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
         btnSelect128Rom.addEventListener('click', () => rom128Input.click());
         btnSelectPlus2Rom.addEventListener('click', () => romPlus2Input.click());
         btnSelectPlus2aRom.addEventListener('click', () => romPlus2aInput.click());
+        if (btnSelectPlus3Rom) btnSelectPlus3Rom.addEventListener('click', () => romPlus3Input.click());
         btnSelectPentagonRom.addEventListener('click', () => romPentagonInput.click());
         if (btnSelectTrdosRom) btnSelectTrdosRom.addEventListener('click', () => romTrdosInput.click());
         
@@ -27500,6 +27595,16 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 showMessage('+2A ROM loaded');
             }
             romPlus2aInput.value = '';
+        });
+
+        romPlus3Input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const data = await file.arrayBuffer();
+                await loadRomFile(data, 'plus3');
+                showMessage('+3 ROM loaded');
+            }
+            romPlus3Input.value = '';
         });
 
         romPentagonInput.addEventListener('change', async (e) => {
@@ -27555,6 +27660,9 @@ labelManager.importJSON(jsonStr, merge)</pre>
                 if (typeof updateBetaDiskStatus === 'function') {
                     updateBetaDiskStatus();
                 }
+            } else if (name.includes('plus3') || name.includes('+3')) {
+                await loadRomFile(data, 'plus3');
+                showMessage('+3 ROM loaded');
             } else if (name.includes('plus2a') || name.includes('+2a')) {
                 await loadRomFile(data, 'plus2a');
                 showMessage('+2A ROM loaded');
@@ -30576,7 +30684,10 @@ labelManager.importJSON(jsonStr, merge)</pre>
             header.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); margin-bottom: 2px;';
             const media = spectrum.loadedMedia;
             let headerText = '';
-            if (media && media.type === 'trd' && media.data && media.data.length > TRD_MIN_IMAGE_SIZE) {
+            if (media && media.type === 'dsk') {
+                // DSK format (+3 CP/M-style directory)
+                headerText = '\u{1F4BE} ' + (media.name || 'DSK') + ' \u2014 ' + files.length + ' files';
+            } else if (media && media.type === 'trd' && media.data && media.data.length > TRD_MIN_IMAGE_SIZE) {
                 const d = media.data;
                 const freeSectors = d[TRD_SECTOR9_OFFSET + TRD_FREE_SECS_LO] | (d[TRD_SECTOR9_OFFSET + TRD_FREE_SECS_HI] << 8);
                 const freeKB = Math.floor(freeSectors * TRD_SECTOR_SIZE / 1024);
@@ -30595,21 +30706,30 @@ labelManager.importJSON(jsonStr, merge)</pre>
             header.textContent = headerText;
             diskCatalogEl.appendChild(header);
 
-            // File rows
+            // File rows — DSK files use CP/M format (name.ext + size)
+            const isDSK = media && media.type === 'dsk';
             for (let i = 0; i < files.length; i++) {
                 const f = files[i];
                 const row = document.createElement('div');
                 row.style.cssText = 'padding: 1px 6px; white-space: nowrap;';
                 const num = String(i + 1).padStart(2, ' ');
                 const name = f.name.padEnd(8, ' ');
-                const startHex = f.start.toString(16).toUpperCase().padStart(4, '0');
-                const size = String(f.length).padStart(5, ' ');
-                const secs = String(f.sectors).padStart(3, ' ');
-                row.textContent = num + '  ' + name + '.' + f.ext + '  ' + startHex + 'h ' + size + 'b ' + secs + 's';
-                const isBoot = f.name.trim().toLowerCase() === 'boot';
-                if (isBoot) {
-                    row.style.color = 'var(--cyan)';
-                    row.title = 'Boot file (auto-run on TR-DOS startup)';
+                if (isDSK) {
+                    // CP/M style: name.ext  size
+                    const ext = (f.ext || '').padEnd(3, ' ');
+                    const size = String(f.size).padStart(6, ' ');
+                    row.textContent = num + '  ' + name + '.' + ext + '  ' + size + 'b';
+                } else {
+                    // TRD style: name.ext  start  size  sectors
+                    const startHex = f.start.toString(16).toUpperCase().padStart(4, '0');
+                    const size = String(f.length).padStart(5, ' ');
+                    const secs = String(f.sectors).padStart(3, ' ');
+                    row.textContent = num + '  ' + name + '.' + f.ext + '  ' + startHex + 'h ' + size + 'b ' + secs + 's';
+                    const isBoot = f.name.trim().toLowerCase() === 'boot';
+                    if (isBoot) {
+                        row.style.color = 'var(--cyan)';
+                        row.title = 'Boot file (auto-run on TR-DOS startup)';
+                    }
                 }
                 diskCatalogEl.appendChild(row);
             }
@@ -30700,7 +30820,7 @@ labelManager.importJSON(jsonStr, merge)</pre>
             cancelAutoLoad();
             autoLoadActive = true;
             const machType = spectrum.machineType;
-            const isAmsMenu = machType === '+2' || machType === '+2a';
+            const isAmsMenu = machType === '+2' || machType === '+2a' || machType === '+3';
             const is128K = machType !== '48k';
             const ula = spectrum.ula;
 
@@ -30800,6 +30920,38 @@ labelManager.importJSON(jsonStr, merge)</pre>
             if (spectrum.bootTrdos()) {
                 spectrum.start();
             }
+        }
+
+        function startAutoLoadPlus3Disk() {
+            cancelAutoLoad();
+            autoLoadActive = true;
+            const ula = spectrum.ula;
+
+            // Save disk before reset
+            const disk = spectrum.fdc ? spectrum.fdc.drives[0].disk : null;
+
+            // Reset machine (disk data survives via restore below)
+            spectrum.stop();
+            spectrum.reset();
+
+            // Restore disk after reset
+            if (disk && spectrum.fdc) {
+                spectrum.fdc.drives[0].disk = disk;
+            }
+
+            spectrum.start();
+
+            // +3 Amstrad menu: press Enter to select "Loader" (default option)
+            // The +3 ROM's Loader routine auto-detects disk and boots from it
+            let t = AUTO_LOAD_ROM_WAIT;
+            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            t += AUTO_LOAD_KEY_HOLD;
+            autoLoadTimeout(() => {
+                if (!autoLoadActive) return;
+                ula.keyUp('Enter');
+                ula.keyboardState.fill(0xFF);
+                autoLoadActive = false;
+            }, t);
         }
 
         // Tape audio toggle
@@ -33681,7 +33833,7 @@ PSG_DATA:
             if (type === 'tape' || ext === 'tap') {
                 document.getElementById('tapeLed').title = fileName;
                 document.getElementById('tapeInfo').style.display = 'inline-block';
-            } else if (type === 'disk' || ext === 'trd' || ext === 'scl') {
+            } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk') {
                 document.getElementById('diskInfoLed').title = fileName;
                 document.getElementById('diskInfo').style.display = 'inline-block';
             }
@@ -33729,7 +33881,16 @@ PSG_DATA:
             updateXrefStats();
 
             // Check result type by properties
-            if (result.diskInserted) {
+            if (result.isDSK && result.diskInserted) {
+                // DSK disk inserted into µPD765 FDC (+3)
+                if (chkAutoLoad.checked && spectrum.machineType === '+3') {
+                    showMessage(`DSK disk inserted: ${result.diskName} (${result.fileCount} files). Auto booting +3...`);
+                    startAutoLoadPlus3Disk();
+                } else {
+                    if (!spectrum.isRunning()) spectrum.start();
+                    showMessage(`DSK disk inserted: ${result.diskName} (${result.fileCount} files).`);
+                }
+            } else if (result.diskInserted) {
                 // TRD/SCL disk inserted into Beta Disk interface
                 // Auto-load only if Beta Disk is actually available on this machine
                 const canBootTrdos = spectrum.machineType === 'pentagon' ||

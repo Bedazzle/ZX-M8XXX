@@ -1054,8 +1054,12 @@
             if (ext === 'rzx') return 'rzx';
             if (ext === 'trd') return 'trd';
             if (ext === 'scl') return 'scl';
+            if (ext === 'dsk') return 'dsk';
 
             const bytes = new Uint8Array(data);
+
+            // Check for DSK signature (before other checks)
+            if (typeof DSKLoader !== 'undefined' && DSKLoader.isDSK(data)) return 'dsk';
 
             // Check for SZX signature
             if (SZXLoader.isSZX(data)) return 'szx';
@@ -2760,7 +2764,7 @@
                 const name = file.name.toLowerCase();
                 if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.tzx') ||
                     name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
-                    name.endsWith('.trd') || name.endsWith('.scl')) {
+                    name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
                     else if (name.endsWith('.tzx')) type = 'tzx';
@@ -2769,6 +2773,7 @@
                     else if (name.endsWith('.rzx')) type = 'rzx';
                     else if (name.endsWith('.trd')) type = 'trd';
                     else if (name.endsWith('.scl')) type = 'scl';
+                    else if (name.endsWith('.dsk')) type = 'dsk';
                     else type = 'tap';
 
                     spectrumFiles.push({

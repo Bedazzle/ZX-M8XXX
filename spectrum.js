@@ -40,6 +40,9 @@
             this.betaDiskEnabled = this.profile.betaDiskDefault;  // Beta Disk enabled by default for Pentagon machines
             this._betaDiskPagingEnabled = false;  // Cached flag for fast updateBetaDiskPaging check
 
+            // µPD765 FDC (ZX Spectrum +3)
+            this.fdc = this.profile.hasFDC ? new UPD765() : null;
+
             // AY-3-8910 sound chip
             this.ay = new AY(this.profile.ayClockHz);
             this.ayEnabled = this.profile.ayDefault;  // AY enabled by default for 128K/Pentagon
@@ -324,6 +327,16 @@
 
             // For 48K: per-access contention for T-state accurate timing
             // This is essential for pixel-perfect border effects
+            // Precompute contention delay table from profile
+            if (this.profile.contentionPattern === '76543210') {
+                // +2A/+3: delays at contentionFrom are (1,0,7,6,5,4,3,2)
+                // The Amstrad gate array starts contention 6T into the 8-cycle ULA fetch
+                this.contentionTable = [1, 0, 7, 6, 5, 4, 3, 2];
+            } else {
+                // 48K/128K/+2: delays at contentionFrom are (6,5,4,3,2,1,0,0)
+                this.contentionTable = [6, 5, 4, 3, 2, 1, 0, 0];
+            }
+
             if (this.profile.ulaProfile === '48k') {
                 this.contentionFunc = null;
                 // Memory contention: addresses 0x4000-0x7FFF during screen fetch
@@ -460,7 +473,11 @@
                 return;
             }
 
-            // For +2A: similar contention framework but banks 4,5,6,7 are contended (not 1,3,5,7)
+            // For +2A/+3: similar contention framework but banks 4,5,6,7 are contended (not 1,3,5,7)
+            // Key differences from 128K:
+            //   - Memory contention uses pattern (7,6,5,4,3,2,1,0), not (6,5,4,3,2,1,0,0)
+            //   - Non-MREQ contention (internal cycles) is NONE (FUSE: contend_delay_no_mreq = none)
+            //   - IO contention is not applied (port 0xFE is not contended)
             // In special paging mode, all slots map to RAM, each slot's bank must be checked
             if (this.profile.pagingModel === '+2a') {
                 this.contentionFunc = null;
@@ -536,32 +553,13 @@
                     return originalNmi();
                 };
 
+                // +2A/+3: NO internal cycle contention (FUSE: contend_delay_no_mreq = none)
+                // The Amstrad gate array only contends on MREQ, not on internal cycles
                 this.internalContentionCalls = 0;
                 this.internalContentionDelay = 0;
                 this.internalNonContendedCalls = 0;
                 this.internalContentionDisabled = false;
                 this.cpu.contendInternal = (addr, tstates) => {
-                    if (this.internalContentionDisabled) {
-                        mcycleOffset += tstates;
-                        return;
-                    }
-                    if (isContendedAddr(addr)) {
-                        this.internalContentionCalls++;
-                        let totalDelay = 0;
-                        let currentT = this.cpu.tStates + mcycleOffset;
-                        for (let i = 0; i < tstates; i++) {
-                            const delay = this.checkContention(currentT);
-                            totalDelay += delay;
-                            currentT += delay + 1;
-                        }
-                        if (totalDelay > 0) {
-                            this.cpu.tStates += totalDelay;
-                            this.accumulatedContention += totalDelay;
-                            this.internalContentionDelay += totalDelay;
-                        }
-                    } else {
-                        this.internalNonContendedCalls++;
-                    }
                     mcycleOffset += tstates;
                 };
 
@@ -708,9 +706,10 @@
             };
         }
 
-        // Swan-style contention check
+        // Contention check using precomputed delay table
         // Returns delay to add based on current T-state position
-        // The contention pattern [6,5,4,3,2,1,0,0] repeats every 8 T-states during screen fetch.
+        // The contention pattern repeats every 8 T-states during screen fetch:
+        //   48K/128K/+2: [6,5,4,3,2,1,0,0]   +2A/+3: [1,0,7,6,5,4,3,2]
         // CONTENTION_START_TSTATE is aligned with the FIRST SCREEN FETCH of the frame
         // (not the line start - that would include left border where no contention occurs).
         checkContention(tState) {
@@ -730,15 +729,14 @@
                 return 0;
             }
 
-            // Swan formula: N = ((tStates - ContentionFrom) mod TicksPerLine) and $87
-            // $87 = 0x87 = 135 - this masks to get position within 8-cycle pattern
-            // while also detecting if we're past the screen area (bit 7 set = position >= 128)
-            // If N <= 5, delay = 6 - N
+            // N = position within the 8-cycle contention pattern on the current line
+            // The & 0x87 mask combines: bits 0-2 for 8-cycle position, bit 7 for past-paper detection
+            // Positions 128+ (past paper area on the line) always return 0
             const N = ((tState - contentionFrom) % ticksPerLine) & 0x87;
-            if (N <= 5) {
-                return 6 - N;
-            }
-            return 0;
+            // Use precomputed delay table (set in setupContention based on profile.contentionPattern)
+            // '65432100': [6,5,4,3,2,1,0,0] — 48K/128K/+2
+            // '76543210': [1,0,7,6,5,4,3,2] — +2A/+3 (shifted: ULA contention starts 6T into cycle)
+            return N < 8 ? this.contentionTable[N] : 0;
         }
 
         // Swan-style I/O timing for ULA ports
@@ -746,6 +744,8 @@
         // instructionTiming: 11 for OUT (n),A / IN A,(n), 12 for OUT (C),r / IN r,(C)
         applyIOTimings(port, instructionTiming = 12) {
             if (!this.ula.IO_CONTENTION_ENABLED) return 0;
+            // +2A/+3: no IO contention (ULA only contends on MREQ, not during IO)
+            if (!this.profile.hasIOContention) return 0;
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
@@ -808,6 +808,8 @@
         // IN A,(n) is 11T with I/O starting at ~7T, IN r,(C) is 12T with I/O at ~8T
         applyIOTimingsForRead(port) {
             if (!this.ula.IO_CONTENTION_ENABLED) return 0;
+            // +2A/+3: no IO contention (ULA only contends on MREQ, not during IO)
+            if (!this.profile.hasIOContention) return 0;
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
@@ -927,6 +929,7 @@
             this._turboBlockPending = false;
             this.rzxStop();
             if (this.ay) this.ay.reset();
+            if (this.fdc) this.fdc.reset();
 
             // Reset frame timing
             this.frameStartOffset = 0;
@@ -1058,6 +1061,12 @@
 
                     const ear = this.tapeEarBit ? 0x40 : 0x00;
                     result = keyboard | 0xa0 | ear; // Bits 5,7 always high
+                } else if (this.fdc && (port & 0xF002) === 0x2000) {
+                    // µPD765 FDC Main Status Register (0x2FFD) — ZX Spectrum +3
+                    result = this.fdc.readMSR();
+                } else if (this.fdc && (port & 0xF002) === 0x3000) {
+                    // µPD765 FDC Data Register (0x3FFD) — ZX Spectrum +3
+                    result = this.fdc.readData();
                 } else if (betaDiskActive && (lowByte === 0x1f || lowByte === 0x3f ||
                            lowByte === 0x5f || lowByte === 0x7f)) {
                     // Beta Disk WD1793 registers
@@ -1295,9 +1304,15 @@
                 }
             }
 
-            // +2A port 0x1FFD: special paging and ROM bank high bit
+            // +2A/+3 port 0x1FFD: special paging, ROM bank high bit, and FDC motor control
             if (this.profile.pagingModel === '+2a' && (port & 0xF002) === 0x1000) {
                 this.memory.write1FFD(val);
+                if (this.fdc) this.fdc.setMotor(!!(val & 0x08));
+            }
+
+            // µPD765 FDC data register write (port 0x3FFD)
+            if (this.fdc && (port & 0xF002) === 0x3000) {
+                this.fdc.writeData(val);
             }
 
             // Pentagon 1024 port 0xEFF7: extended memory control
@@ -3092,7 +3107,7 @@
                 // For 128K: only activate when ROM 1 (48K BASIC) is selected
                 // For 48K: always activate (only one ROM)
                 if (!this.memory.trdosActive) {
-                    if (this.profile.pagingModel === 'none' || this.memory.currentRomBank === 1) {
+                    if (this.profile.pagingModel === 'none' || this.memory.currentRomBank === this.profile.basicRomBank) {
                         this.memory.trdosActive = true;
                     }
                 }
@@ -4889,7 +4904,7 @@
                 const spectrumFiles = await ZipLoader.findAllSpectrum(data);
 
                 if (spectrumFiles.length === 0) {
-                    throw new Error('No SNA, SZX, TAP, Z80, TRD, or SCL files found in ZIP');
+                    throw new Error('No SNA, SZX, TAP, Z80, TRD, SCL, or DSK files found in ZIP');
                 }
 
                 if (spectrumFiles.length > 1) {
@@ -4910,6 +4925,11 @@
             const type = this.snapshotLoader.detectType(data, fileName);
             if (type === 'rzx') {
                 return this.loadRZX(data);
+            }
+
+            // Check for DSK disk images (ZX Spectrum +3)
+            if (type === 'dsk') {
+                return this.loadDSKImage(data, fileName);
             }
 
             // Check for TRD/SCL disk images (contain multiple files)
@@ -4977,6 +4997,68 @@
             };
         }
 
+        // Load DSK disk image - inserts disk into µPD765 FDC (+3)
+        loadDSKImage(data, fileName) {
+            if (!this.fdc) {
+                throw new Error('DSK files require ZX Spectrum +3 (no FDC on this machine)');
+            }
+
+            const dskImage = DSKLoader.parse(data);
+            const files = DSKLoader.listFiles(dskImage);
+
+            // Insert disk into drive 0
+            this.fdc.drives[0].disk = dskImage;
+
+            // Store for project save and catalog display
+            this.loadedMedia = {
+                type: 'dsk',
+                data: new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data)),
+                name: fileName
+            };
+            this.loadedDiskFiles = files;
+
+            return {
+                isDSK: true,
+                diskInserted: true,
+                diskType: 'dsk',
+                diskName: fileName,
+                fileCount: files.length,
+                _dskImage: dskImage,
+                _diskFiles: files,
+                needsMachineSwitch: this.machineType !== '+3',
+                targetMachine: '+3'
+            };
+        }
+
+        // Boot +3 from disk
+        // Reset machine, preserve disk in FDC, and let +3 ROM auto-detect disk
+        bootPlus3Disk() {
+            if (!this.fdc) {
+                console.warn('[+3] Cannot boot disk: no FDC');
+                return false;
+            }
+
+            // Save disk state before reset
+            const disk = this.fdc.drives[0].disk;
+
+            // Full machine reset
+            this.stop();
+            this.reset();
+
+            // Restore disk after reset
+            if (disk) {
+                this.fdc.drives[0].disk = disk;
+            }
+
+            // Turn motor on (bit 3 of port 0x1FFD)
+            this.fdc.setMotor(true);
+
+            // +3 ROM at address 0 auto-detects and boots from disk
+            this.cpu.pc = 0;
+
+            return true;
+        }
+
         // Boot into TR-DOS mode
         // Uses the FUSE-style approach: reset machine, select ROM bank 1,
         // page in TR-DOS ROM, and let it run from address 0.
@@ -5014,10 +5096,11 @@
                 this.betaDisk.diskType = diskState.diskType;
             }
 
-            // Select ROM bank 1 (48K BASIC) as background ROM.
-            // TR-DOS auto-paging only re-activates when currentRomBank === 1.
+            // Select BASIC ROM bank as background ROM.
+            // TR-DOS auto-paging only re-activates when currentRomBank === basicRomBank.
             // On real Pentagon, the 128K menu switches to ROM bank 1 before entering TR-DOS.
-            this.memory.currentRomBank = 1;
+            // On +2A, BASIC ROM is bank 3 (not bank 1).
+            this.memory.currentRomBank = this.profile.basicRomBank;
 
             // Page in TR-DOS ROM and start from address 0.
             // The TR-DOS ROM at address 0x0000 contains its own initialization code
@@ -5164,6 +5247,8 @@
                 case 'szx': return this.loadSZXSnapshot(data);
                 case 'tap': return this.loadTape(data, fileName);  // Store TAP with name
                 case 'tzx': return this.loadTZX(data, fileName);  // Store TZX with name
+                case 'dsk':
+                    return this.loadDSKImage(data, fileName);
                 case 'trd':
                 case 'scl':
                     return this.loadDiskImage(data, type, fileName);
@@ -5667,6 +5752,9 @@
 
             // Update Beta Disk paging flag for new machine type
             this.updateBetaDiskPagingFlag();
+
+            // Recreate FDC for new machine type
+            this.fdc = this.profile.hasFDC ? new UPD765() : null;
 
             // Restore ROM data
             if (oldRom) {
