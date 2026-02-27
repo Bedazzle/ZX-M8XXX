@@ -1628,6 +1628,55 @@ if (chkInvertDisplay) {
     });
 }
 
+// Late timings checkbox (default: false - early ULA behavior)
+const chkLateTimings = document.getElementById('chkLateTimings');
+if (chkLateTimings) {
+    const savedLateTimings = localStorage.getItem('zxm8_lateTiming') === 'true';
+    chkLateTimings.checked = savedLateTimings;
+    spectrum.setLateTimings(savedLateTimings);
+
+    chkLateTimings.addEventListener('change', () => {
+        spectrum.setLateTimings(chkLateTimings.checked);
+        localStorage.setItem('zxm8_lateTiming', chkLateTimings.checked);
+        showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
+    });
+}
+
+// ULAplus checkbox
+const chkULAplus = document.getElementById('chkULAplus');
+if (chkULAplus) {
+    const savedULAplus = localStorage.getItem('zxm8_ulaplus') === 'true';
+    chkULAplus.checked = savedULAplus;
+    spectrum.ula.ulaplus.enabled = savedULAplus;
+    updateULAplusStatus(spectrum);
+
+    chkULAplus.addEventListener('change', () => {
+        spectrum.ula.ulaplus.enabled = chkULAplus.checked;
+        localStorage.setItem('zxm8_ulaplus', chkULAplus.checked);
+        updateULAplusStatus(spectrum);
+        spectrum.redraw();
+        showMessage(chkULAplus.checked ? 'ULA+ enabled' : 'ULA+ disabled');
+    });
+}
+
+// Reset ULAplus palette
+const btnResetULAplus = document.getElementById('btnResetULAplus');
+if (btnResetULAplus) {
+    btnResetULAplus.addEventListener('click', () => {
+        spectrum.ula.resetULAplus();
+        updateULAplusStatus(spectrum);
+        spectrum.redraw();
+        showMessage('ULAplus palette reset');
+    });
+}
+
+// Update ULAplus status periodically when palette is active
+setInterval(() => {
+    if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled) {
+        updateULAplusStatus(spectrum);
+    }
+}, 500);
+
 // ═════════════════════════════════════════════════════════════════════
 // 25. Global keyboard shortcuts
 // ═════════════════════════════════════════════════════════════════════
