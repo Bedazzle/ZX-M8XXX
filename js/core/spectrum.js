@@ -56,6 +56,14 @@ export class Spectrum {
         this._lastTapeUpdate = 0;  // T-state of last tape update (for accurate EAR timing)
         this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, null);
         this.tapeTrap.setEnabled(this.tapeTrapsEnabled);
+        this.tapeTrap.onBlockLoaded = (loadedBlockIndex) => {
+            const tapeTrigger = this.checkTapeBlockTrigger(loadedBlockIndex);
+            if (tapeTrigger) {
+                this.tapeBlockHit = true;
+                this.triggerHit = true;
+                this.lastTrigger = { trigger: tapeTrigger, blockIndex: loadedBlockIndex, type: 'tape_block' };
+            }
+        };
         this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
         this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
         this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
@@ -134,7 +142,8 @@ export class Spectrum {
         this.accumulatedContention = 0; // Accumulated contention delays for ULA timing
 
         // Unified trigger system - replaces separate breakpoints/watchpoints/port breakpoints
-        // Trigger types: 'exec', 'read', 'write', 'rw', 'port_in', 'port_out', 'port_io'
+        // Trigger types: 'exec', 'read', 'write', 'rw', 'port_in', 'port_out', 'port_io',
+        //                'tape_block', 'disk_read', 'disk_sector'
         this.triggers = [];
         this.triggerHit = false;
         this.lastTrigger = null; // {trigger, addr, val, port, direction}
@@ -155,6 +164,11 @@ export class Spectrum {
         this.lastWatchpoint = null;
         this.onWatchpoint = null;
         this.onPortBreakpoint = null;
+
+        // Tape/disk trigger hit flags
+        this.tapeBlockHit = false;
+        this.diskTriggerHit = false;
+
         this.onInstructionExecuted = null; // Called after each instruction (for xref tracking)
         this.xrefTrackingEnabled = false; // Enable xref runtime tracking
         this.onBeforeStep = null; // Called before each instruction (for trace recording)
@@ -185,6 +199,22 @@ export class Spectrum {
             written: new Map(),    // Written addresses
             currentFetchAddrs: new Set() // Addresses fetched in current instruction
         };
+
+        // Runtime behavior profiler - tracks per-subroutine behavior for auto-labeling
+        this.profiler = {
+            enabled: false,
+            maxFrames: 200,
+            framesRemaining: 0,
+            startFrame: 0,
+            subroutines: new Map(),   // autoMapKey → SubroutineStats
+            onComplete: null,         // callback(results)
+            im2: null,               // { handlerAddr, vectorTableAddr, iReg } — detected IM 2 info
+            tStatesPerPC: new Map()   // autoMapKey → total T-states spent (hotspot detection)
+        };
+
+        // POKE write trace (blacklist collection for POKE search)
+        this.pokeWriteTraceEnabled = false;
+        this.pokeWriteTraceAddrs = null;  // Set<number> when active
 
         // RZX playback state
         this.rzxPlayer = null;      // RZXLoader instance
@@ -229,6 +259,7 @@ export class Spectrum {
         this.kempstonMouseEnabled = false;
         this.kempstonMouseWheelEnabled = false;
         this.kempstonMouseSwapButtons = false; // Swap left/right buttons (bit0↔bit1)
+        this.kempstonMouseSwapWheel = false; // Invert wheel direction
 
         // Extended Kempston Joystick (bits 5-7: C, A, Start buttons)
         this.kempstonExtendedEnabled = false;
@@ -249,6 +280,18 @@ export class Spectrum {
                 const key = this.getAutoMapKey(addr);
                 this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
             }
+            // Profiler: track screen reads
+            if (this.profiler.enabled && (addr >= 0x4000 && addr <= 0x5AFF)) {
+                const sub = this._profilerCurrentSub();
+                if (sub) {
+                    const skey = this.getAutoMapKey(sub.addr);
+                    const stats = this.profiler.subroutines.get(skey);
+                    if (stats) {
+                        if (addr < 0x5800) stats.readsScreenBitmap = true;
+                        else stats.readsScreenAttr = true;
+                    }
+                }
+            }
             if (this.triggers.length > 0) this.checkReadWatchpoint(addr, val);
         };
         this._memoryWriteCallback = (addr, val) => {
@@ -257,10 +300,26 @@ export class Spectrum {
                 const key = this.getAutoMapKey(addr);
                 this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
             }
+            // Profiler: track screen writes
+            if (this.profiler.enabled && (addr >= 0x4000 && addr <= 0x5AFF)) {
+                const sub = this._profilerCurrentSub();
+                if (sub) {
+                    const skey = this.getAutoMapKey(sub.addr);
+                    const stats = this.profiler.subroutines.get(skey);
+                    if (stats) {
+                        if (addr < 0x5800) stats.writesScreenBitmap = true;
+                        else stats.writesScreenAttr = true;
+                    }
+                }
+            }
             // Trace: track memory writes (only during runtime tracing, not step tracing)
             if (this.runtimeTraceEnabled &&
                 this.traceMemOps.length < this.traceMemOpsLimit) {
                 this.traceMemOps.push({ addr, val });
+            }
+            // POKE write trace: collect written addresses for blacklist
+            if (this.pokeWriteTraceEnabled) {
+                this.pokeWriteTraceAddrs.add(addr);
             }
             // Multicolor: disabled (known limitation - see README)
             if (this.triggers.length > 0) this.checkWriteWatchpoint(addr, val);
@@ -413,7 +472,13 @@ export class Spectrum {
                 mcycleOffset += cycles;
             };
 
-            // Reset at instruction boundaries
+            // Reset contention tracking at instruction boundaries
+            // Exposed as resetContend() for HALT NOP contention in main loop
+            this.cpu.resetContend = () => {
+                mcycleOffset = 0;
+                isFirstAccess = true;
+            };
+
             const originalExecute = this.cpu.execute.bind(this.cpu);
             this.cpu.execute = () => {
                 mcycleOffset = 0;
@@ -557,6 +622,11 @@ export class Spectrum {
                 mcycleOffset += cycles;
             };
 
+            this.cpu.resetContend = () => {
+                mcycleOffset = 0;
+                isFirstAccess = true;
+            };
+
             const originalExecute = this.cpu.execute.bind(this.cpu);
             this.cpu.execute = () => {
                 mcycleOffset = 0;
@@ -651,6 +721,11 @@ export class Spectrum {
 
             this.cpu.internalCycles = (cycles) => {
                 mcycleOffset += cycles;
+            };
+
+            this.cpu.resetContend = () => {
+                mcycleOffset = 0;
+                isFirstAccess = true;
             };
 
             const originalExecute = this.cpu.execute.bind(this.cpu);
@@ -1184,6 +1259,16 @@ export class Spectrum {
             });
         }
 
+        // Profiler: track port reads per subroutine
+        if (this.profiler.enabled) {
+            const sub = this._profilerCurrentSub();
+            if (sub) {
+                const key = this.getAutoMapKey(sub.addr);
+                const stats = this.profiler.subroutines.get(key);
+                if (stats) stats.portsIn.add(port);
+            }
+        }
+
         // RZX recording - record all port read results
         if (this.rzxRecording && this.rzxRecordCurrentFrame) {
             this.rzxRecordCurrentFrame.inputs.push(result);
@@ -1210,6 +1295,19 @@ export class Spectrum {
                 rzxFrame: this.rzxPlaying ? this.rzxFrame : -1,
                 t: this.cpu.tStates
             });
+        }
+
+        // Profiler: track port writes per subroutine
+        if (this.profiler.enabled) {
+            const sub = this._profilerCurrentSub();
+            if (sub) {
+                const key = this.getAutoMapKey(sub.addr);
+                const stats = this.profiler.subroutines.get(key);
+                if (stats) {
+                    stats.portsOut.add(port);
+                    if ((port & 0x01) === 0) stats.beeperOuts++;
+                }
+            }
         }
 
         // Check port breakpoint using unified trigger system
@@ -1450,36 +1548,26 @@ export class Spectrum {
         const intPulseDuration = this.profile.intPulseDuration;
         let intFired = false;
 
-        // Early/Late INT timing (Swan-style):
-        // 48K only: Early at T-4, Late at frame boundary
-        // 128K/Pentagon: always at frame boundary
-        const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
-                               (tstatesPerFrame - 4) : tstatesPerFrame;
+        // INT pulse window: [intStart, intEnd)
+        // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
+        const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
+        const intStart = intOffset;
+        const intEnd = intOffset + intPulseDuration;
 
         // RZX recording: track instruction count before first interrupt
         let rzxRecInstrBeforeInt = this.rzxRecording ? this.cpu.instructionCount : 0;
 
         // Fire interrupt if within INT pulse window from previous frame overshoot
-        // INT pulse started at earlyIntPoint and lasts intPulseDuration T-states
         // During RZX playback: fire early interrupt unconditionally if CPU is halted
         // (HALT can only exit via interrupt, and T-states may not be in sync during RZX)
         const rzxHaltedNeedsInt = this.rzxPlaying && this.cpu.halted && this.cpu.iff1 && !this.cpu.eiPending;
         const normalIntWindow = !this.rzxPlaying &&
-            this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
+            this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
             this.cpu.iff1 && !this.cpu.eiPending;
         if (rzxHaltedNeedsInt || normalIntWindow) {
             // RZX recording: capture instruction count BEFORE interrupt
             if (this.rzxRecording && !intFired) {
                 rzxRecInstrBeforeInt = this.cpu.instructionCount;
-            }
-            // If CPU is halted, count the final HALT NOP M1 before interrupt fires
-            if (this.cpu.halted) {
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP M1 cycle
-                // Update capture after HALT NOP
-                if (this.rzxRecording && !intFired) {
-                    rzxRecInstrBeforeInt = this.cpu.instructionCount;
-                }
             }
             const _intOldPC = this.cpu.pc, _intOldSP = this.cpu.sp;
             const intTstates = this.cpu.interrupt();
@@ -1588,18 +1676,25 @@ export class Spectrum {
                     this.cpu.iff1 = this.cpu.iff2 = true;
                 }
 
-                // Check if INT will fire during this HALT NOP cycle
-                // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
-                const nextT = this.cpu.tStates + 4;
-                const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;
-                if (!this.rzxPlaying && !intFired && is48kEarly &&
-                    this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
+                // Normal HALT NOP — M1 fetch from (PC+1), subject to contention
+                if (contentionEnabled && this.cpu.contend) {
+                    this.cpu.resetContend();
+                    this.cpu.contend((this.cpu.pc + 1) & 0xffff);
+                }
+                const _haltTsBefore = this.cpu.tStates;
+                this.cpu.tStates += 4;
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
+                if (this.profiler.enabled) {
+                    const _pcKey = this.getAutoMapKey(this.cpu.pc);
+                    const _haltTsCost = this.cpu.tStates - _haltTsBefore;
+                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _haltTsCost);
+                }
+
+                // Check if INT should fire after this HALT NOP
+                if (!this.rzxPlaying && !intFired &&
+                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
                     this.cpu.iff1 && !this.cpu.eiPending) {
-                    // Complete HALT NOP cycle + 4T alignment to match Swan timing
-                    this.cpu.tStates = nextT + 4;
-                    this.cpu.incR();
-                    this.cpu.instructionCount++;  // HALT NOP is an M1 cycle
-                    // RZX recording: capture instruction count BEFORE interrupt
                     if (this.rzxRecording) {
                         rzxRecInstrBeforeInt = this.cpu.instructionCount;
                     }
@@ -1608,18 +1703,12 @@ export class Spectrum {
                     this.cpu.tStates += intTstates;
                     this._trackInterruptCall(_hintOldPC, _hintOldSP);
                     intFired = true;
-                    // RZX recording: start recording RIGHT AFTER interrupt fires
                     if (this.rzxRecordPending) {
                         this.rzxStartRecordingNow();
                     }
                     this.autoMap.inExecution = false;
                     continue;
                 }
-
-                // Normal HALT NOP - no INT during this cycle
-                this.cpu.tStates += 4;
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
 
                 // Record trace for first HALT only (avoids flooding trace with repeated HALTs)
                 if (tracing && !this.haltTraced) {
@@ -1663,8 +1752,16 @@ export class Spectrum {
                     ];
                 }
                 const _csOldPC = this.cpu.pc, _csOldSP = this.cpu.sp;
+                const _tsBefore = this.cpu.tStates;
                 this.cpu.execute();
                 this._trackCallStack(_csOldPC, _csOldSP);
+                // Profiler: track CALL/RST entries and per-PC T-states
+                if (this.profiler.enabled) {
+                    this._profilerTrackCallRet(_csOldPC, _csOldSP);
+                    const _tsCost = this.cpu.tStates - _tsBefore;
+                    const _pcKey = this.getAutoMapKey(_csOldPC);
+                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _tsCost);
+                }
                 // If HALT instruction was just executed, mark as traced to avoid duplicate
                 if (this.cpu.halted) {
                     this.haltTraced = true;
@@ -1690,6 +1787,23 @@ export class Spectrum {
                         console.error(`RZX F${this.rzxFrame}: safety limit exceeded! M1=${m1Count} expected=${rzxExpectedFetchCount} limit=${rzxSafetyLimit}`);
                         this.autoMap.inExecution = false;
                         break;
+                    }
+                }
+
+                // Check if INT should fire after this instruction
+                if (!this.rzxPlaying && !intFired &&
+                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+                    this.cpu.iff1 && !this.cpu.eiPending) {
+                    if (this.rzxRecording) {
+                        rzxRecInstrBeforeInt = this.cpu.instructionCount;
+                    }
+                    const _mintOldPC = this.cpu.pc, _mintOldSP = this.cpu.sp;
+                    const intTstates = this.cpu.interrupt();
+                    this.cpu.tStates += intTstates;
+                    this._trackInterruptCall(_mintOldPC, _mintOldSP);
+                    intFired = true;
+                    if (this.rzxRecordPending) {
+                        this.rzxStartRecordingNow();
                     }
                 }
             }
@@ -1750,6 +1864,42 @@ export class Spectrum {
                 this.ctx.putImageData(this.imageData, 0, 0);
                 this.drawOverlay();
                 if (this.onPortBreakpoint) this.onPortBreakpoint(this.lastPortBreakpoint);
+                if (this.onTrigger) this.onTrigger(this.lastTrigger);
+                this._bpTStatesResetPending = true;
+                return;
+            }
+
+            // Check tape block trigger hit
+            if (this.tapeBlockHit) {
+                this.tapeBlockHit = false;
+                this.triggerHit = false;
+                this.breakpointTStates += this.cpu.tStates;
+                this.stop();
+                while (nextLineToRender < totalLines) {
+                    this.ula.renderScanline(nextLineToRender++);
+                }
+                const frameBuffer = this.ula.endFrame();
+                this.imageData.data.set(frameBuffer);
+                this.ctx.putImageData(this.imageData, 0, 0);
+                this.drawOverlay();
+                if (this.onTrigger) this.onTrigger(this.lastTrigger);
+                this._bpTStatesResetPending = true;
+                return;
+            }
+
+            // Check disk trigger hit
+            if (this.diskTriggerHit) {
+                this.diskTriggerHit = false;
+                this.triggerHit = false;
+                this.breakpointTStates += this.cpu.tStates;
+                this.stop();
+                while (nextLineToRender < totalLines) {
+                    this.ula.renderScanline(nextLineToRender++);
+                }
+                const frameBuffer = this.ula.endFrame();
+                this.imageData.data.set(frameBuffer);
+                this.ctx.putImageData(this.imageData, 0, 0);
+                this.drawOverlay();
                 if (this.onTrigger) this.onTrigger(this.lastTrigger);
                 this._bpTStatesResetPending = true;
                 return;
@@ -1847,6 +1997,14 @@ export class Spectrum {
         this.frameCount++;
         this.totalFrames++;
         if (this.onFrame) this.onFrame(this.frameCount);
+
+        // Profiler: countdown and stop when done
+        if (this.profiler.enabled) {
+            this.profiler.framesRemaining--;
+            if (this.profiler.framesRemaining <= 0) {
+                this.stopProfiling();
+            }
+        }
 
         // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
         if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
@@ -1998,22 +2156,17 @@ export class Spectrum {
         const intPulseDuration = this.profile.intPulseDuration;
         let intFired = false;
 
-        // Early/Late INT timing (Swan-style):
-        // 48K only: Early at T-4, Late at frame boundary
-        // 128K/Pentagon: always at frame boundary
-        const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
-                               (tstatesPerFrame - 4) : tstatesPerFrame;
+        // INT pulse window: [intStart, intEnd)
+        // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
+        const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
+        const intStart = intOffset;
+        const intEnd = intOffset + intPulseDuration;
 
         // Fire interrupt if within INT pulse window from previous frame overshoot
         // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
         if (!this.rzxPlaying &&
-            this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
+            this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
             this.cpu.iff1 && !this.cpu.eiPending) {
-            // If CPU is halted, count the final HALT NOP M1 before interrupt fires
-            if (this.cpu.halted) {
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP M1 cycle
-            }
             const _hlIntOldPC = this.cpu.pc, _hlIntOldSP = this.cpu.sp;
             const intTstates = this.cpu.interrupt();
             this.cpu.tStates += intTstates;
@@ -2084,20 +2237,25 @@ export class Spectrum {
                     this.cpu.iff1 = this.cpu.iff2 = true;
                 }
 
-                // Check if INT will fire during this HALT NOP cycle
-                // INT acknowledged at end of HALT NOP cycle (instruction boundary)
-                // Only for 48K early timing: INT at T=69884
-                // 48K late and 128K/Pentagon use frame-start INT timing
-                // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
-                const nextT = this.cpu.tStates + 4;
-                const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;  // Cached in runFrame, needed here for runFrameHeadless
-                if (!this.rzxPlaying && !intFired && is48kEarly &&
-                    this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
+                // Normal HALT NOP — M1 fetch from (PC+1), subject to contention
+                if (this.profile.hasContention && this.contentionEnabled && this.cpu.contend) {
+                    this.cpu.resetContend();
+                    this.cpu.contend((this.cpu.pc + 1) & 0xffff);
+                }
+                const _hlHaltTsBefore = this.cpu.tStates;
+                this.cpu.tStates += 4;
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
+                if (this.profiler.enabled) {
+                    const _pcKey = this.getAutoMapKey(this.cpu.pc);
+                    const _hlHaltTsCost = this.cpu.tStates - _hlHaltTsBefore;
+                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _hlHaltTsCost);
+                }
+
+                // Check if INT should fire after this HALT NOP
+                if (!this.rzxPlaying && !intFired &&
+                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
                     this.cpu.iff1 && !this.cpu.eiPending) {
-                    // Complete HALT NOP cycle + 4T alignment to match Swan timing
-                    // Swan shows T=60 at $805B, we had T=41, need +19T but only 4T affects quantized border
-                    this.cpu.tStates = nextT + 4;
-                    this.cpu.incR();
                     const _hlHintOldPC = this.cpu.pc, _hlHintOldSP = this.cpu.sp;
                     const intTstates = this.cpu.interrupt();
                     this.cpu.tStates += intTstates;
@@ -2105,11 +2263,6 @@ export class Spectrum {
                     intFired = true;
                     continue;
                 }
-
-                // Normal HALT NOP - no INT during this cycle
-                this.cpu.tStates += 4;
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
 
                 // RZX playback: check if instruction count reached (FUSE-style frame end)
                 if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
@@ -2125,8 +2278,16 @@ export class Spectrum {
                 }
             } else {
                 const _hlCsOldPC = this.cpu.pc, _hlCsOldSP = this.cpu.sp;
+                const _hlTsBefore = this.cpu.tStates;
                 this.cpu.execute();
                 this._trackCallStack(_hlCsOldPC, _hlCsOldSP);
+                // Profiler: track CALL/RST entries and per-PC T-states
+                if (this.profiler.enabled) {
+                    this._profilerTrackCallRet(_hlCsOldPC, _hlCsOldSP);
+                    const _hlTsCost = this.cpu.tStates - _hlTsBefore;
+                    const _hlPcKey = this.getAutoMapKey(_hlCsOldPC);
+                    this.profiler.tStatesPerPC.set(_hlPcKey, (this.profiler.tStatesPerPC.get(_hlPcKey) || 0) + _hlTsCost);
+                }
 
                 // RZX playback: check if instruction count reached (FUSE-style frame end)
                 if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
@@ -2139,6 +2300,17 @@ export class Spectrum {
                         console.error(`RZX F${this.rzxFrame}: safety limit exceeded! M1=${m1Count} expected=${rzxExpectedFetchCount}`);
                         break;
                     }
+                }
+
+                // Check if INT should fire after this instruction
+                if (!this.rzxPlaying && !intFired &&
+                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+                    this.cpu.iff1 && !this.cpu.eiPending) {
+                    const _hlMintOldPC = this.cpu.pc, _hlMintOldSP = this.cpu.sp;
+                    const intTstates = this.cpu.interrupt();
+                    this.cpu.tStates += intTstates;
+                    this._trackInterruptCall(_hlMintOldPC, _hlMintOldSP);
+                    intFired = true;
                 }
             }
 
@@ -2177,6 +2349,14 @@ export class Spectrum {
 
         this.frameCount++;
         this.totalFrames++;
+
+        // Profiler: countdown and stop when done
+        if (this.profiler.enabled) {
+            this.profiler.framesRemaining--;
+            if (this.profiler.framesRemaining <= 0) {
+                this.stopProfiling();
+            }
+        }
 
         // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
         if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
@@ -3594,7 +3774,7 @@ export class Spectrum {
 
     // Get interrupt timing offset (0 for early, 4 for late timing)
     getIntOffset() {
-        return this.lateTimings ? this.INT_LATE_OFFSET : 0;
+        return (this.lateTimings && this.profile.earlyIntTiming) ? this.INT_LATE_OFFSET : 0;
     }
 
     // Handle frame boundary crossing and interrupt firing with late timing support
@@ -4406,6 +4586,117 @@ export class Spectrum {
 
     // ========== Memory Callback Optimization ==========
 
+    // ========== Runtime Profiler ==========
+
+    startProfiling(maxFrames = 200) {
+        this.profiler.enabled = true;
+        this.profiler.maxFrames = maxFrames;
+        this.profiler.framesRemaining = maxFrames;
+        this.profiler.startFrame = this.totalFrames;
+        this.profiler.subroutines.clear();
+        this.profiler.im2 = null;
+        this.profiler.tStatesPerPC.clear();
+        this.updateMemoryCallbacksFlag();
+    }
+
+    stopProfiling() {
+        if (!this.profiler.enabled) return;
+        this.profiler.enabled = false;
+        const framesProfiled = this.profiler.maxFrames - this.profiler.framesRemaining;
+        const results = {
+            framesProfiled,
+            subroutines: new Map(this.profiler.subroutines),
+            im2: this.profiler.im2,
+            tStatesPerPC: new Map(this.profiler.tStatesPerPC),
+            totalTStates: framesProfiled * this.getTstatesPerFrame()
+        };
+        this.updateMemoryCallbacksFlag();
+        if (this.profiler.onComplete) this.profiler.onComplete(results);
+    }
+
+    _profilerCurrentSub() {
+        const stack = this._debugCallStack;
+        if (stack.length === 0) return null;
+        return stack[stack.length - 1];
+    }
+
+    _profilerGetOrCreateStats(entryAddr) {
+        const key = this.getAutoMapKey(entryAddr);
+        let stats = this.profiler.subroutines.get(key);
+        if (!stats) {
+            stats = {
+                entryAddr,
+                page: (this.memory.machineType === '48k') ? null :
+                      (entryAddr >= 0xC000 ? String(this.memory.currentRamBank) :
+                       entryAddr < 0x4000 ? 'R' + this.memory.currentRomBank : null),
+                callCount: 0,
+                portsIn: new Set(),
+                portsOut: new Set(),
+                writesScreenBitmap: false,
+                writesScreenAttr: false,
+                readsScreenBitmap: false,
+                readsScreenAttr: false,
+                calledFromISR: false,
+                callees: new Set(),
+                callers: new Set(),
+                framesCalled: new Set(),
+                beeperOuts: 0
+            };
+            this.profiler.subroutines.set(key, stats);
+        }
+        return stats;
+    }
+
+    _profilerTrackCallRet(oldPC, oldSP) {
+        const newSP = this.cpu.sp;
+        const newPC = this.cpu.pc;
+        const spDelta = (oldSP - newSP) & 0xFFFF;
+        const frame = this.totalFrames - this.profiler.startFrame;
+
+        if (spDelta === 2) {
+            // Possible CALL/RST — verify via return address
+            const pushed = this.memory.read(newSP) | (this.memory.read((newSP + 1) & 0xFFFF) << 8);
+            const diff = (pushed - oldPC) & 0xFFFF;
+            if (diff >= 1 && diff <= 4) {
+                // CALL/RST confirmed — record entry
+                const stats = this._profilerGetOrCreateStats(newPC);
+                stats.callCount++;
+                stats.callers.add(oldPC);
+                stats.framesCalled.add(frame);
+
+                // Check ISR context — walk up call stack
+                for (const entry of this._debugCallStack) {
+                    if (entry.isInt) { stats.calledFromISR = true; break; }
+                }
+
+                // Record callee relationship with caller
+                const parentEntry = this._debugCallStack.length >= 2
+                    ? this._debugCallStack[this._debugCallStack.length - 2]
+                    : null;
+                if (parentEntry) {
+                    const parentKey = this.getAutoMapKey(parentEntry.addr);
+                    const parentStats = this.profiler.subroutines.get(parentKey);
+                    if (parentStats) parentStats.callees.add(newPC);
+                }
+            }
+        }
+        // RET handled implicitly — _debugCallStack pop already happened
+    }
+
+    // ========== POKE Write Trace ==========
+
+    startPokeWriteTrace() {
+        this.pokeWriteTraceAddrs = new Set();
+        this.pokeWriteTraceEnabled = true;
+        this.updateMemoryCallbacksFlag();
+    }
+
+    stopPokeWriteTrace() {
+        this.pokeWriteTraceEnabled = false;
+        this.updateMemoryCallbacksFlag();
+        return this.pokeWriteTraceAddrs;
+    }
+
     /**
      * Update memory/CPU callbacks based on current feature state
      * Sets callbacks to null when not needed (zero overhead)
@@ -4415,7 +4706,9 @@ export class Spectrum {
         const needsMemoryCallbacks =
             this.triggers.length > 0 ||
             this.autoMap.enabled ||
-            this.runtimeTraceEnabled;
+            this.runtimeTraceEnabled ||
+            this.profiler.enabled ||
+            this.pokeWriteTraceEnabled;
 
         // Set callbacks to null when not needed (eliminates function call overhead)
         this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
@@ -4443,11 +4736,13 @@ export class Spectrum {
      * @returns {number} Index of added trigger, or -1 if duplicate
      */
     addTrigger(trigger) {
+        const isMedia = trigger.type === 'tape_block' || trigger.type === 'disk_read' || trigger.type === 'disk_sector';
+
         // Normalize trigger
         const t = {
             type: trigger.type || 'exec',
-            start: trigger.start & 0xffff,
-            end: (trigger.end !== undefined ? trigger.end : trigger.start) & 0xffff,
+            start: isMedia ? (trigger.start || 0) : trigger.start & 0xffff,
+            end: isMedia ? (trigger.end !== undefined ? trigger.end : 0) : (trigger.end !== undefined ? trigger.end : trigger.start) & 0xffff,
             page: trigger.page !== undefined ? trigger.page : null,
             mask: trigger.mask !== undefined ? trigger.mask : 0xffff,
             condition: trigger.condition || '',
@@ -4465,8 +4760,27 @@ export class Spectrum {
 
         // Check for duplicate
         for (const existing of this.triggers) {
-            if (existing.type === t.type &&
-                existing.start === t.start &&
+            if (existing.type !== t.type) continue;
+            // tape_block and disk_read: only one of each type
+            if (t.type === 'tape_block' || t.type === 'disk_read') {
+                if (t.skipCount !== existing.skipCount) {
+                    existing.skipCount = t.skipCount;
+                    existing.hitCount = 0;
+                }
+                return this.triggers.indexOf(existing);
+            }
+            // disk_sector: same track + sector = duplicate
+            if (t.type === 'disk_sector') {
+                if (existing.start === t.start && existing.end === t.end) {
+                    if (t.skipCount !== existing.skipCount) {
+                        existing.skipCount = t.skipCount;
+                        existing.hitCount = 0;
+                    }
+                    return this.triggers.indexOf(existing);
+                }
+                continue;
+            }
+            if (existing.start === t.start &&
                 existing.end === t.end &&
                 existing.page === t.page &&
                 existing.mask === t.mask) {
@@ -4545,6 +4859,22 @@ export class Spectrum {
         let str = '';
         const isPort = t.type.startsWith('port');
 
+        if (t.type === 'tape_block') {
+            str = 'TAPE';
+            if (t.condition) str += ' if ' + t.condition;
+            return str;
+        }
+        if (t.type === 'disk_read') {
+            str = 'DISK';
+            if (t.condition) str += ' if ' + t.condition;
+            return str;
+        }
+        if (t.type === 'disk_sector') {
+            str = 'T' + String(t.start).padStart(2, '0') + ':S' + String(t.end).padStart(2, '0');
+            if (t.condition) str += ' if ' + t.condition;
+            return str;
+        }
+
         if (isPort) {
             // Port trigger
             const padLen = t.start > 0xff ? 4 : 2;
@@ -4582,7 +4912,10 @@ export class Spectrum {
             rw: 'RW',
             port_in: '⇐',
             port_out: '⇒',
-            port_io: '⇔'
+            port_io: '⇔',
+            tape_block: 'T',
+            disk_read: 'D',
+            disk_sector: 'S'
         };
         return icons[type] || '?';
     }
@@ -4598,7 +4931,10 @@ export class Spectrum {
             rw: 'R/W',
             port_in: 'Port IN',
             port_out: 'Port OUT',
-            port_io: 'Port I/O'
+            port_io: 'Port I/O',
+            tape_block: 'Tape Block',
+            disk_read: 'Disk Read',
+            disk_sector: 'Disk Sector'
         };
         return labels[type] || type;
     }
@@ -4648,6 +4984,41 @@ export class Spectrum {
         for (const t of this.triggers) {
             if (!types.includes(t.type) || !t.enabled) continue;
             if (this._matchesPortTrigger(t, port, val)) {
+                t.hitCount++;
+                if (t.hitCount > t.skipCount) {
+                    return t;
+                }
+            }
+        }
+        return null;
+    }
+
+    checkTapeBlockTrigger(blockIndex) {
+        for (const t of this.triggers) {
+            if (t.type !== 'tape_block' || !t.enabled) continue;
+            t.hitCount++;
+            if (t.hitCount > t.skipCount) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    checkDiskReadTrigger() {
+        for (const t of this.triggers) {
+            if (t.type !== 'disk_read' || !t.enabled) continue;
+            t.hitCount++;
+            if (t.hitCount > t.skipCount) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    checkDiskSectorTrigger(track, sector) {
+        for (const t of this.triggers) {
+            if (t.type !== 'disk_sector' || !t.enabled) continue;
+            if (t.start === track && t.end === sector) {
                 t.hitCount++;
                 if (t.hitCount > t.skipCount) {
                     return t;
@@ -4961,6 +5332,7 @@ export class Spectrum {
     // Mouse wheel update (0-15, wrapping)
     updateMouseWheel(delta) {
         // delta > 0 = scroll down, delta < 0 = scroll up
+        if (this.kempstonMouseSwapWheel) delta = -delta;
         // Scroll up increases wheel value
         if (delta < 0) {
             this.kempstonMouseWheel = (this.kempstonMouseWheel + 1) & 0x0f;
@@ -6013,11 +6385,14 @@ export class Spectrum {
         const oldFullBorderMode = this.ula ? this.ula.fullBorderMode : false;
         const oldPalette = this.ula ? this.ula.palette : null;
         const oldPaletteId = this.ula ? this.ula.paletteId : null;
-        const oldUlaplusEnabled = this.ula ? this.ula.ulaplus.enabled : false;
+        // Use persistent setting, not runtime state (which may be modified by test runner)
+        const ulaplusSetting = typeof localStorage !== 'undefined'
+            ? localStorage.getItem('zxm8_ulaplus') === 'true' : false;
 
         this.machineType = type;
         this.profile = getMachineProfile(type);
         this.ayEnabled = this.profile.ayDefault;  // Update AY enabled state for new machine type
+        if (this.profile.betaDiskDefault) this.betaDiskEnabled = true;  // Enable Beta Disk for Pentagon/Scorpion
         if (this.ay) this.ay.reset();  // Stop any playing AY sound
         this.memory = new Memory(type);
         this.ula = new ULA(this.memory, type);
@@ -6039,12 +6414,20 @@ export class Spectrum {
             this.ula.palette = oldPalette;
             this.ula.paletteId = oldPaletteId;
         }
-        // Restore ULAplus enabled state (checkbox) but reset palette to defaults
-        this.ula.ulaplus.enabled = oldUlaplusEnabled;
+        // Restore ULAplus enabled state from user setting, not runtime state
+        this.ula.ulaplus.enabled = ulaplusSetting;
         this.ula.resetULAplus();  // Reset palette, paletteEnabled, register to defaults
         this.updateDisplayDimensions();  // Recreate imageData for new ULA dimensions
         this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, this.tapeLoader);
         this.tapeTrap.setEnabled(this.tapeTrapsEnabled && this.tapeFlashLoad);
+        this.tapeTrap.onBlockLoaded = (loadedBlockIndex) => {
+            const tapeTrigger = this.checkTapeBlockTrigger(loadedBlockIndex);
+            if (tapeTrigger) {
+                this.tapeBlockHit = true;
+                this.triggerHit = true;
+                this.lastTrigger = { trigger: tapeTrigger, blockIndex: loadedBlockIndex, type: 'tape_block' };
+            }
+        };
 
         // Recreate TR-DOS trap with new CPU/memory, preserve disk data
         const oldDiskData = this.trdosTrap ? this.trdosTrap.diskData : null;

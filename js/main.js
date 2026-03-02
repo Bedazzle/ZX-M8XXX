@@ -12,7 +12,7 @@
 //   app/        — state, ui-framework, test-runner, rom-manager, emulator-control,
 //                  input-handler, display-sound, media-io, project-io
 
-const APP_VERSION = '0.9.31';
+const APP_VERSION = '0.9.37';
 
 // ── Core ────────────────────────────────────────────────────────────
 import { Spectrum } from './core/spectrum.js';
@@ -104,6 +104,13 @@ import { initFrameExport } from './views/frame-export.js';
 import { initGameBrowser } from './views/game-browser.js';
 import { initRzxRecording } from './views/rzx-recording.js';
 import { initSignaturesUI } from './views/signatures-ui.js';
+import {
+    initGameMapper, handleMapperKeydown, mapperUpdateUI, mapperCaptureScreen
+} from './views/game-mapper.js';
+import {
+    initPokeManager, loadPokeJSON, getPokeState, restorePokeState, stopPokeWriteTracing
+} from './views/poke-manager.js';
+import { initProfilerUI } from './views/profiler-ui.js';
 
 // ── App orchestration ───────────────────────────────────────────────
 import { setState } from './app/state.js';
@@ -613,6 +620,30 @@ initSignaturesUI({
     showMessage,
     updateDebugger,
     ZipLoader
+});
+
+// Game Mapper
+initGameMapper({ spectrum });
+
+// POKE Manager
+initPokeManager({
+    spectrum,
+    showMessage,
+    hex8,
+    hex16,
+    goToMemoryAddress
+});
+
+// Profiler UI
+initProfilerUI({
+    spectrum,
+    labelManager,
+    regionManager,
+    REGION_TYPES,
+    navigateToAddress: goToAddress,
+    showMessage,
+    updateLabelsList,
+    updateDebugger
 });
 
 // Text scanner
@@ -1548,6 +1579,8 @@ machineSelect.addEventListener('change', () => {
         return;
     }
 
+    stopPokeWriteTracing();
+
     const wasRunning = spectrum.isRunning();
     if (wasRunning) spectrum.stop();
 
@@ -1744,6 +1777,9 @@ setInterval(() => {
 document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.target.isContentEditable || getIsEditingRegister()) return;
+
+    // Game Mapper keyboard shortcuts (Ctrl+Space, Ctrl+Arrows, Ctrl+PgUp/PgDn)
+    if (handleMapperKeydown(e)) return;
 
     // Ctrl+Z - Undo
     if (e.ctrlKey && e.key === 'z' && !spectrum.isRunning()) {
