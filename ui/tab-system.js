@@ -1,6 +1,6 @@
 // tab-system.js — Main tabs, panel tabs, info/tools/settings sub-tabs, openDebuggerPanel (extracted from index.html)
 
-export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsureInfoPanel, getUpdateTraceList }) {
+export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsureInfoPanel, getEnsureTextRipper, getUpdateTraceList }) {
     const tabContainer = document.getElementById('tabContainer');
     const tabBtns = document.querySelectorAll('.tab-btn');
     const tabContents = document.querySelectorAll('.tab-content');
@@ -75,6 +75,11 @@ export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsur
             if (tabId === 'info') {
                 const ensureInfo = getEnsureInfoPanel();
                 if (ensureInfo) ensureInfo();
+            }
+            // Lazy-load text ripper on first visit to OCR tab
+            if (tabId === 'ocr') {
+                const ensureOcr = getEnsureTextRipper();
+                if (ensureOcr) ensureOcr();
             }
         });
     });

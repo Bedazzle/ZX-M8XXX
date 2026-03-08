@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.9.45</title>
+    <title>ZX-M8XXX v0.9.48</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -1479,6 +1479,34 @@
         #gfxAddress {
             width: 50px;
         }
+        .gfx-addr-bank-row {
+            display: flex;
+            gap: 8px;
+        }
+        .gfx-addr-bank-row label {
+            display: block;
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        .gfx-addr-bank-row > div:last-child {
+            position: relative;
+        }
+        #gfxBank {
+            padding: 3px 4px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+            min-width: 90px;
+        }
+        #gfxBank[size]:not([size="1"]) {
+            position: absolute;
+            z-index: 100;
+            top: 0;
+        }
         .gfx-spinner {
             display: flex;
             gap: 2px;
@@ -1575,6 +1603,437 @@
         .gfx-actions button:hover {
             background: var(--accent);
             color: var(--bg-primary);
+        }
+
+        /* OCR / Text Ripper */
+        .ocr-container {
+            padding: 0 10px 10px;
+            margin-top: -8px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+        .ocr-toolbar {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .ocr-toolbar label {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .ocr-toolbar select,
+        .ocr-toolbar input[type="number"] {
+            padding: 3px 5px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .ocr-toolbar input[type="number"] {
+            width: 42px;
+            text-align: center;
+        }
+        .ocr-toolbar button {
+            padding: 4px 10px;
+            background: var(--bg-button);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+        .ocr-toolbar button:hover {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+        .ocr-toolbar button.primary {
+            border-color: var(--cyan);
+            color: var(--cyan);
+        }
+        .ocr-toolbar button.primary:hover {
+            background: var(--cyan);
+            color: var(--bg-primary);
+        }
+        .ocr-status {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+        .ocr-body {
+            display: flex;
+            gap: 10px;
+            min-height: 200px;
+        }
+        .ocr-preview-wrap {
+            flex: 0 0 auto;
+            background: #000;
+            border: 1px solid var(--border-secondary);
+            cursor: crosshair;
+            line-height: 0;
+        }
+        .ocr-preview-stack {
+            position: relative;
+        }
+        .ocr-preview-canvas {
+            image-rendering: pixelated;
+            display: block;
+            width: 512px;
+            height: 384px;
+        }
+        .ocr-grid-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 512px;
+            height: 384px;
+            pointer-events: none;
+        }
+        .ocr-preview-zoom {
+            display: flex;
+            gap: 4px;
+            padding: 3px 4px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-secondary);
+            line-height: 1;
+            align-items: center;
+        }
+        .ocr-preview-zoom label {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .ocr-preview-zoom input[type="number"] {
+            width: 38px;
+            padding: 2px 4px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            border-radius: 2px;
+            font-family: monospace;
+            font-size: 11px;
+            text-align: center;
+        }
+        .ocr-zoom-btn {
+            padding: 2px 6px;
+            font-size: 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: 2px;
+            font-family: monospace;
+        }
+        .ocr-zoom-btn:hover {
+            border-color: var(--text-secondary);
+        }
+        .ocr-zoom-btn.active {
+            border-color: var(--cyan);
+            color: var(--cyan);
+        }
+        .ocr-glyph-panel {
+            flex: 1 1 auto;
+            min-width: 200px;
+            max-height: 420px;
+            overflow-y: auto;
+            border: 1px solid var(--border-secondary);
+            background: var(--bg-primary);
+            border-radius: 4px;
+            padding: 6px;
+        }
+        .ocr-glyph-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .ocr-glyph-header {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .ocr-dupes-label, .ocr-grid-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .ocr-dupes-label input, .ocr-grid-label input {
+            vertical-align: middle;
+            margin-right: 2px;
+        }
+        .ocr-glyph-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 3px;
+        }
+        .ocr-glyph-tile {
+            width: auto;
+            min-width: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: pointer;
+            border: 2px solid var(--border-secondary);
+            border-radius: 3px;
+            background: var(--bg-secondary);
+            padding: 2px;
+        }
+        .ocr-glyph-tile:hover {
+            border-color: var(--text-secondary);
+        }
+        .ocr-glyph-tile.mapped {
+            border-color: #4a4;
+        }
+        .ocr-glyph-tile.unmapped {
+            border-color: #c44;
+        }
+        .ocr-glyph-tile.skipped {
+            border-color: #555;
+        }
+        .ocr-glyph-tile.editing {
+            border-color: var(--cyan);
+        }
+        .ocr-glyph-tile.selected {
+            border-color: #f80;
+            background: rgba(255, 136, 0, 0.15);
+        }
+        .ocr-del-selected {
+            padding: 2px 8px;
+            font-size: 10px;
+            background: var(--bg-primary);
+            border: 1px solid #c44;
+            color: #c44;
+            cursor: pointer;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .ocr-del-selected:hover {
+            background: #c44;
+            color: var(--bg-primary);
+        }
+        .ocr-del-selected.hidden {
+            display: none;
+        }
+        .ocr-glyph-tile canvas {
+            image-rendering: pixelated;
+            display: block;
+        }
+        .ocr-glyph-label {
+            font-size: 10px;
+            color: var(--text-primary);
+            text-align: center;
+            height: 14px;
+            line-height: 14px;
+            overflow: hidden;
+            width: 100%;
+        }
+        .ocr-glyph-label.unmapped {
+            color: #c44;
+        }
+        .ocr-glyph-label.skipped {
+            color: #555;
+        }
+        .ocr-glyph-input {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 10px;
+            text-align: center;
+            background: var(--bg-primary);
+            border: 1px solid var(--cyan);
+            color: var(--text-primary);
+            border-radius: 2px;
+            padding: 0 2px;
+            font-family: monospace;
+        }
+        .ocr-pages {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+        .ocr-page-bar {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        .ocr-page-bar button {
+            padding: 3px 8px;
+            background: var(--bg-button);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+        .ocr-page-bar button:hover {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+        .ocr-page-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .ocr-text-wrap {
+            display: flex;
+            gap: 6px;
+        }
+        .ocr-text-output {
+            flex: 1 1 auto;
+            min-height: 250px;
+            max-height: 600px;
+            font-family: monospace;
+            font-size: 16px;
+            line-height: 1.3;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 4px;
+            padding: 6px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        .ocr-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .ocr-actions button {
+            padding: 4px 10px;
+            background: var(--bg-button);
+            border: 1px solid var(--border-secondary);
+            color: var(--text-primary);
+            cursor: pointer;
+            border-radius: 3px;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+        .ocr-actions button:hover {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+        .ocr-font-btns {
+            display: flex;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .ocr-font-btns button {
+            flex: 1;
+        }
+        .ocr-sep {
+            width: 1px;
+            background: var(--border-secondary);
+            align-self: stretch;
+            margin: 0 2px;
+        }
+
+        /* Extract Font dialog */
+        .ocr-extract-dialog {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1001;
+        }
+        .ocr-extract-dialog.hidden {
+            display: none;
+        }
+        .ocr-extract-content {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-button);
+            border-radius: 6px;
+            padding: 15px;
+            min-width: 420px;
+            max-width: 560px;
+        }
+        .ocr-extract-content h4 {
+            margin: 0 0 12px 0;
+            color: var(--cyan);
+        }
+        .ocr-extract-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .ocr-extract-row label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .ocr-extract-row input[type="text"],
+        .ocr-extract-row input[type="number"] {
+            padding: 5px 7px;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 3px;
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 12px;
+            box-sizing: border-box;
+        }
+        .ocr-extract-row input[type="text"]:focus,
+        .ocr-extract-row input[type="number"]:focus {
+            outline: none;
+            border-color: var(--cyan);
+        }
+        .ocr-extract-row input[type="text"] {
+            width: 60px;
+        }
+        .ocr-extract-row input[type="number"] {
+            width: 60px;
+        }
+        .ocr-extract-row select {
+            padding: 4px 6px;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            color: var(--text-primary);
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .ocr-extract-row .ocr-extract-info {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .ocr-extract-map-area {
+            margin-bottom: 10px;
+        }
+        .ocr-extract-map-area textarea {
+            width: 100%;
+            height: 52px;
+            padding: 5px 7px;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 3px;
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 12px;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        .ocr-extract-map-area textarea:focus {
+            outline: none;
+            border-color: var(--cyan);
+        }
+        .ocr-extract-map-info {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+        .ocr-extract-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        .ocr-extract-buttons button {
+            padding: 6px 14px;
+            font-size: 12px;
         }
 
         /* Info Tab (inside Utils) */
@@ -5786,7 +6245,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.45 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.48 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6855,6 +7314,7 @@ start:
                 <button class="tools-subtab-btn" data-toolstab="mapper">Mapper</button>
                 <button class="tools-subtab-btn" data-toolstab="graphics">GFX</button>
                 <button class="tools-subtab-btn" data-toolstab="info">Info</button>
+                <button class="tools-subtab-btn" data-toolstab="ocr">OCR</button>
             </div>
 
             <!-- Tests Sub-tab -->
@@ -7362,8 +7822,18 @@ start:
                         </div>
                         <div class="gfx-col-address">
                             <div class="gfx-control-group">
-                                <label>Address</label>
-                                <input type="text" id="gfxAddress" value="3000" maxlength="4" title="Memory address in hex (Enter to apply)">
+                                <div class="gfx-addr-bank-row">
+                                    <div>
+                                        <label>Address</label>
+                                        <input type="text" id="gfxAddress" value="3000" maxlength="4" title="Memory address in hex (Enter to apply)">
+                                    </div>
+                                    <div>
+                                        <label>Bank</label>
+                                        <select id="gfxBank" title="RAM bank to read from. 'All RAM' shows the full 64K address space as seen by the CPU.">
+                                            <option value="-1" selected>All RAM</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
                             <div class="gfx-control-group">
                                 <label>Navigate</label>
@@ -7440,6 +7910,7 @@ start:
                             <div class="gfx-control-group gfx-actions">
                                 <button id="btnGfxGoDisasm" title="Go to address in Disassembler">→Disasm</button>
                                 <button id="btnGfxGoMem" title="Go to address in Memory view">→Memdump</button>
+                                <button id="btnGfxExtractOcr" title="Extract font at this address for OCR text recognition">→OCR</button>
                             </div>
                         </div>
                     </div>
@@ -7453,6 +7924,7 @@ start:
                         <button class="info-subtab-btn active" data-infotab="io">I/O</button>
                         <button class="info-subtab-btn" data-infotab="timings">Timings</button>
                         <button class="info-subtab-btn" data-infotab="opcodes">Opcodes</button>
+                        <button class="info-subtab-btn" data-infotab="symbols">Symbols</button>
                     </div>
 
                     <!-- I/O Sub-tab -->
@@ -7839,13 +8311,360 @@ start:
                             </div>
                         </div>
                     </div>
+
+                    <!-- Symbols Sub-tab -->
+                    <div class="info-subtab-content" id="info-symbols">
+                        <div class="info-section">
+                            <h4>Control Characters (0x00–0x1F)</h4>
+                            <p>Most codes below 0x20 are not used. The following have special meaning in PRINT and channel output:</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Description</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>6</td><td>$06</td><td>PRINT comma — move to next tab stop (column 0 or 16)</td></tr>
+                                    <tr><td>7</td><td>$07</td><td>EDIT — switch to edit mode (BASIC editor)</td></tr>
+                                    <tr><td>8</td><td>$08</td><td>Cursor Left (backspace)</td></tr>
+                                    <tr><td>9</td><td>$09</td><td>Cursor Right</td></tr>
+                                    <tr><td>10</td><td>$0A</td><td>Cursor Down</td></tr>
+                                    <tr><td>11</td><td>$0B</td><td>Cursor Up</td></tr>
+                                    <tr><td>12</td><td>$0C</td><td>DELETE</td></tr>
+                                    <tr><td>13</td><td>$0D</td><td>ENTER (carriage return)</td></tr>
+                                    <tr><td>14</td><td>$0E</td><td>Number — next 5 bytes are floating-point number</td></tr>
+                                    <tr><td>16</td><td>$10</td><td>INK control — next byte sets ink color (0–9)</td></tr>
+                                    <tr><td>17</td><td>$11</td><td>PAPER control — next byte sets paper color (0–9)</td></tr>
+                                    <tr><td>18</td><td>$12</td><td>FLASH control — next byte: 0=off, 1=on, 8=transparent</td></tr>
+                                    <tr><td>19</td><td>$13</td><td>BRIGHT control — next byte: 0=off, 1=on, 8=transparent</td></tr>
+                                    <tr><td>20</td><td>$14</td><td>INVERSE control — next byte: 0=off, 1=on</td></tr>
+                                    <tr><td>21</td><td>$15</td><td>OVER control — next byte: 0=off, 1=on</td></tr>
+                                    <tr><td>22</td><td>$16</td><td>AT control — next 2 bytes: row, column</td></tr>
+                                    <tr><td>23</td><td>$17</td><td>TAB control — next 2 bytes: column position</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Printable Characters (0x20–0x7F)</h4>
+                            <p>Standard ASCII with three ZX Spectrum exceptions highlighted below:</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Char</th><th>Notes</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>32</td><td>$20</td><td>(space)</td><td></td></tr>
+                                    <tr><td>33</td><td>$21</td><td>!</td><td></td></tr>
+                                    <tr><td>34</td><td>$22</td><td>"</td><td></td></tr>
+                                    <tr><td>35</td><td>$23</td><td>#</td><td></td></tr>
+                                    <tr><td>36</td><td>$24</td><td>$</td><td></td></tr>
+                                    <tr><td>37</td><td>$25</td><td>%</td><td></td></tr>
+                                    <tr><td>38</td><td>$26</td><td>&amp;</td><td></td></tr>
+                                    <tr><td>39</td><td>$27</td><td>'</td><td></td></tr>
+                                    <tr><td>40</td><td>$28</td><td>(</td><td></td></tr>
+                                    <tr><td>41</td><td>$29</td><td>)</td><td></td></tr>
+                                    <tr><td>42</td><td>$2A</td><td>*</td><td></td></tr>
+                                    <tr><td>43</td><td>$2B</td><td>+</td><td></td></tr>
+                                    <tr><td>44</td><td>$2C</td><td>,</td><td></td></tr>
+                                    <tr><td>45</td><td>$2D</td><td>-</td><td></td></tr>
+                                    <tr><td>46</td><td>$2E</td><td>.</td><td></td></tr>
+                                    <tr><td>47</td><td>$2F</td><td>/</td><td></td></tr>
+                                    <tr><td>48</td><td>$30</td><td>0</td><td></td></tr>
+                                    <tr><td>49</td><td>$31</td><td>1</td><td></td></tr>
+                                    <tr><td>50</td><td>$32</td><td>2</td><td></td></tr>
+                                    <tr><td>51</td><td>$33</td><td>3</td><td></td></tr>
+                                    <tr><td>52</td><td>$34</td><td>4</td><td></td></tr>
+                                    <tr><td>53</td><td>$35</td><td>5</td><td></td></tr>
+                                    <tr><td>54</td><td>$36</td><td>6</td><td></td></tr>
+                                    <tr><td>55</td><td>$37</td><td>7</td><td></td></tr>
+                                    <tr><td>56</td><td>$38</td><td>8</td><td></td></tr>
+                                    <tr><td>57</td><td>$39</td><td>9</td><td></td></tr>
+                                    <tr><td>58</td><td>$3A</td><td>:</td><td></td></tr>
+                                    <tr><td>59</td><td>$3B</td><td>;</td><td></td></tr>
+                                    <tr><td>60</td><td>$3C</td><td>&lt;</td><td></td></tr>
+                                    <tr><td>61</td><td>$3D</td><td>=</td><td></td></tr>
+                                    <tr><td>62</td><td>$3E</td><td>&gt;</td><td></td></tr>
+                                    <tr><td>63</td><td>$3F</td><td>?</td><td></td></tr>
+                                    <tr><td>64</td><td>$40</td><td>@</td><td></td></tr>
+                                    <tr><td>65–90</td><td>$41–$5A</td><td>A–Z</td><td></td></tr>
+                                    <tr><td>91</td><td>$5B</td><td>[</td><td></td></tr>
+                                    <tr><td>92</td><td>$5C</td><td>\</td><td></td></tr>
+                                    <tr><td>93</td><td>$5D</td><td>]</td><td></td></tr>
+                                    <tr><td>94</td><td>$5E</td><td>↑</td><td>Arrow up (not caret ^)</td></tr>
+                                    <tr><td>95</td><td>$5F</td><td>_</td><td></td></tr>
+                                    <tr><td>96</td><td>$60</td><td>£</td><td>Pound sign (not grave accent `)</td></tr>
+                                    <tr><td>97–122</td><td>$61–$7A</td><td>a–z</td><td></td></tr>
+                                    <tr><td>123</td><td>$7B</td><td>{</td><td></td></tr>
+                                    <tr><td>124</td><td>$7C</td><td>|</td><td></td></tr>
+                                    <tr><td>125</td><td>$7D</td><td>}</td><td></td></tr>
+                                    <tr><td>126</td><td>$7E</td><td>~</td><td></td></tr>
+                                    <tr><td>127</td><td>$7F</td><td>©</td><td>Copyright (not DEL)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Block Graphics (0x80–0x8F)</h4>
+                            <p>16 mosaic characters formed by 2×2 block quadrants. Toggle quadrants with INK/PAPER inversion. Codes 0x80–0x87 are the inverse of 0x8F–0x88.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Glyph</th><th>Quadrants (TL TR BL BR)</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>128</td><td>$80</td><td style="font-size:1.4em; line-height:1"> </td><td>none (space)</td></tr>
+                                    <tr><td>129</td><td>$81</td><td style="font-size:1.4em; line-height:1">▝</td><td>TR</td></tr>
+                                    <tr><td>130</td><td>$82</td><td style="font-size:1.4em; line-height:1">▘</td><td>TL</td></tr>
+                                    <tr><td>131</td><td>$83</td><td style="font-size:1.4em; line-height:1">▀</td><td>TL TR</td></tr>
+                                    <tr><td>132</td><td>$84</td><td style="font-size:1.4em; line-height:1">▗</td><td>BR</td></tr>
+                                    <tr><td>133</td><td>$85</td><td style="font-size:1.4em; line-height:1">▐</td><td>TR BR</td></tr>
+                                    <tr><td>134</td><td>$86</td><td style="font-size:1.4em; line-height:1">▚</td><td>TL BR</td></tr>
+                                    <tr><td>135</td><td>$87</td><td style="font-size:1.4em; line-height:1">▜</td><td>TL TR BR</td></tr>
+                                    <tr><td>136</td><td>$88</td><td style="font-size:1.4em; line-height:1">▖</td><td>BL</td></tr>
+                                    <tr><td>137</td><td>$89</td><td style="font-size:1.4em; line-height:1">▞</td><td>BL TR</td></tr>
+                                    <tr><td>138</td><td>$8A</td><td style="font-size:1.4em; line-height:1">▌</td><td>TL BL</td></tr>
+                                    <tr><td>139</td><td>$8B</td><td style="font-size:1.4em; line-height:1">▛</td><td>TL TR BL</td></tr>
+                                    <tr><td>140</td><td>$8C</td><td style="font-size:1.4em; line-height:1">▄</td><td>BL BR</td></tr>
+                                    <tr><td>141</td><td>$8D</td><td style="font-size:1.4em; line-height:1">▟</td><td>TR BL BR</td></tr>
+                                    <tr><td>142</td><td>$8E</td><td style="font-size:1.4em; line-height:1">▙</td><td>TL BL BR</td></tr>
+                                    <tr><td>143</td><td>$8F</td><td style="font-size:1.4em; line-height:1">█</td><td>All (solid block)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>UDG Characters (0x90–0xA4)</h4>
+                            <p>21 user-defined graphics characters (letters A–U). Each is an 8×8 bitmap stored at the address returned by <code>USR "A"</code>, <code>USR "B"</code>, etc. Default address: 65368 ($FF58) for UDG "A".</p>
+                            <p><strong>128K mode:</strong> Only 19 UDGs (A–S). Codes 0xA3 and 0xA4 are reassigned to the keywords <code>SPECTRUM</code> and <code>PLAY</code>.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>UDG Letter</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>144</td><td>$90</td><td>A</td></tr>
+                                    <tr><td>145</td><td>$91</td><td>B</td></tr>
+                                    <tr><td>146</td><td>$92</td><td>C</td></tr>
+                                    <tr><td>147</td><td>$93</td><td>D</td></tr>
+                                    <tr><td>148</td><td>$94</td><td>E</td></tr>
+                                    <tr><td>149</td><td>$95</td><td>F</td></tr>
+                                    <tr><td>150</td><td>$96</td><td>G</td></tr>
+                                    <tr><td>151</td><td>$97</td><td>H</td></tr>
+                                    <tr><td>152</td><td>$98</td><td>I</td></tr>
+                                    <tr><td>153</td><td>$99</td><td>J</td></tr>
+                                    <tr><td>154</td><td>$9A</td><td>K</td></tr>
+                                    <tr><td>155</td><td>$9B</td><td>L</td></tr>
+                                    <tr><td>156</td><td>$9C</td><td>M</td></tr>
+                                    <tr><td>157</td><td>$9D</td><td>N</td></tr>
+                                    <tr><td>158</td><td>$9E</td><td>O</td></tr>
+                                    <tr><td>159</td><td>$9F</td><td>P</td></tr>
+                                    <tr><td>160</td><td>$A0</td><td>Q</td></tr>
+                                    <tr><td>161</td><td>$A1</td><td>R</td></tr>
+                                    <tr><td>162</td><td>$A2</td><td>S</td></tr>
+                                    <tr><td>163</td><td>$A3</td><td>T (48K) / SPECTRUM (128K)</td></tr>
+                                    <tr><td>164</td><td>$A4</td><td>U (48K) / PLAY (128K)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>BASIC Keyword Tokens (0xA5–0xFF)</h4>
+                            <p>91 tokens for BASIC keywords. In program text, each keyword is stored as a single byte. During LIST, the token is expanded to its full keyword text.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Token</th><th></th><th>Code</th><th>Hex</th><th>Token</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>165</td><td>$A5</td><td>RND</td><td></td><td>211</td><td>$D3</td><td>OPEN #</td></tr>
+                                    <tr><td>166</td><td>$A6</td><td>INKEY$</td><td></td><td>212</td><td>$D4</td><td>CLOSE #</td></tr>
+                                    <tr><td>167</td><td>$A7</td><td>PI</td><td></td><td>213</td><td>$D5</td><td>MERGE</td></tr>
+                                    <tr><td>168</td><td>$A8</td><td>FN</td><td></td><td>214</td><td>$D6</td><td>VERIFY</td></tr>
+                                    <tr><td>169</td><td>$A9</td><td>POINT</td><td></td><td>215</td><td>$D7</td><td>BEEP</td></tr>
+                                    <tr><td>170</td><td>$AA</td><td>SCREEN$</td><td></td><td>216</td><td>$D8</td><td>CIRCLE</td></tr>
+                                    <tr><td>171</td><td>$AB</td><td>ATTR</td><td></td><td>217</td><td>$D9</td><td>INK</td></tr>
+                                    <tr><td>172</td><td>$AC</td><td>AT</td><td></td><td>218</td><td>$DA</td><td>PAPER</td></tr>
+                                    <tr><td>173</td><td>$AD</td><td>TAB</td><td></td><td>219</td><td>$DB</td><td>FLASH</td></tr>
+                                    <tr><td>174</td><td>$AE</td><td>VAL$</td><td></td><td>220</td><td>$DC</td><td>BRIGHT</td></tr>
+                                    <tr><td>175</td><td>$AF</td><td>CODE</td><td></td><td>221</td><td>$DD</td><td>INVERSE</td></tr>
+                                    <tr><td>176</td><td>$B0</td><td>VAL</td><td></td><td>222</td><td>$DE</td><td>OVER</td></tr>
+                                    <tr><td>177</td><td>$B1</td><td>LEN</td><td></td><td>223</td><td>$DF</td><td>OUT</td></tr>
+                                    <tr><td>178</td><td>$B2</td><td>SIN</td><td></td><td>224</td><td>$E0</td><td>LPRINT</td></tr>
+                                    <tr><td>179</td><td>$B3</td><td>COS</td><td></td><td>225</td><td>$E1</td><td>LLIST</td></tr>
+                                    <tr><td>180</td><td>$B4</td><td>TAN</td><td></td><td>226</td><td>$E2</td><td>STOP</td></tr>
+                                    <tr><td>181</td><td>$B5</td><td>ASN</td><td></td><td>227</td><td>$E3</td><td>READ</td></tr>
+                                    <tr><td>182</td><td>$B6</td><td>ACS</td><td></td><td>228</td><td>$E4</td><td>DATA</td></tr>
+                                    <tr><td>183</td><td>$B7</td><td>ATN</td><td></td><td>229</td><td>$E5</td><td>RESTORE</td></tr>
+                                    <tr><td>184</td><td>$B8</td><td>LN</td><td></td><td>230</td><td>$E6</td><td>NEW</td></tr>
+                                    <tr><td>185</td><td>$B9</td><td>EXP</td><td></td><td>231</td><td>$E7</td><td>BORDER</td></tr>
+                                    <tr><td>186</td><td>$BA</td><td>INT</td><td></td><td>232</td><td>$E8</td><td>CONTINUE</td></tr>
+                                    <tr><td>187</td><td>$BB</td><td>SQR</td><td></td><td>233</td><td>$E9</td><td>DIM</td></tr>
+                                    <tr><td>188</td><td>$BC</td><td>SGN</td><td></td><td>234</td><td>$EA</td><td>REM</td></tr>
+                                    <tr><td>189</td><td>$BD</td><td>ABS</td><td></td><td>235</td><td>$EB</td><td>FOR</td></tr>
+                                    <tr><td>190</td><td>$BE</td><td>PEEK</td><td></td><td>236</td><td>$EC</td><td>GO TO</td></tr>
+                                    <tr><td>191</td><td>$BF</td><td>IN</td><td></td><td>237</td><td>$ED</td><td>GO SUB</td></tr>
+                                    <tr><td>192</td><td>$C0</td><td>USR</td><td></td><td>238</td><td>$EE</td><td>INPUT</td></tr>
+                                    <tr><td>193</td><td>$C1</td><td>STR$</td><td></td><td>239</td><td>$EF</td><td>LOAD</td></tr>
+                                    <tr><td>194</td><td>$C2</td><td>CHR$</td><td></td><td>240</td><td>$F0</td><td>LIST</td></tr>
+                                    <tr><td>195</td><td>$C3</td><td>NOT</td><td></td><td>241</td><td>$F1</td><td>LET</td></tr>
+                                    <tr><td>196</td><td>$C4</td><td>BIN</td><td></td><td>242</td><td>$F2</td><td>PAUSE</td></tr>
+                                    <tr><td>197</td><td>$C5</td><td>OR</td><td></td><td>243</td><td>$F3</td><td>NEXT</td></tr>
+                                    <tr><td>198</td><td>$C6</td><td>AND</td><td></td><td>244</td><td>$F4</td><td>POKE</td></tr>
+                                    <tr><td>199</td><td>$C7</td><td>&lt;=</td><td></td><td>245</td><td>$F5</td><td>PRINT</td></tr>
+                                    <tr><td>200</td><td>$C8</td><td>&gt;=</td><td></td><td>246</td><td>$F6</td><td>PLOT</td></tr>
+                                    <tr><td>201</td><td>$C9</td><td>&lt;&gt;</td><td></td><td>247</td><td>$F7</td><td>RUN</td></tr>
+                                    <tr><td>202</td><td>$CA</td><td>LINE</td><td></td><td>248</td><td>$F8</td><td>SAVE</td></tr>
+                                    <tr><td>203</td><td>$CB</td><td>THEN</td><td></td><td>249</td><td>$F9</td><td>RANDOMIZE</td></tr>
+                                    <tr><td>204</td><td>$CC</td><td>TO</td><td></td><td>250</td><td>$FA</td><td>IF</td></tr>
+                                    <tr><td>205</td><td>$CD</td><td>STEP</td><td></td><td>251</td><td>$FB</td><td>CLS</td></tr>
+                                    <tr><td>206</td><td>$CE</td><td>DEF FN</td><td></td><td>252</td><td>$FC</td><td>DRAW</td></tr>
+                                    <tr><td>207</td><td>$CF</td><td>CAT</td><td></td><td>253</td><td>$FD</td><td>CLEAR</td></tr>
+                                    <tr><td>208</td><td>$D0</td><td>FORMAT</td><td></td><td>254</td><td>$FE</td><td>RETURN</td></tr>
+                                    <tr><td>209</td><td>$D1</td><td>MOVE</td><td></td><td>255</td><td>$FF</td><td>COPY</td></tr>
+                                    <tr><td>210</td><td>$D2</td><td>ERASE</td><td></td><td></td><td></td><td></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                 </div>
             </div><!-- tools-info -->
+
+            <div class="tools-subtab-content" id="tools-ocr">
+            <div class="ocr-container">
+                <!-- Row 1: Source, Charset, Region, Capture -->
+                <div class="ocr-toolbar">
+                    <label>Source:</label>
+                    <select id="ocrSource">
+                        <option value="4000">$4000</option>
+                        <option value="C000">$C000</option>
+                    </select>
+                    <label>Charset:</label>
+                    <select id="ocrCharset"></select>
+                    <button id="btnOcrCharsetNew" title="New charset">New</button>
+                    <button id="btnOcrCharsetRename" title="Rename charset">Ren</button>
+                    <button id="btnOcrCharsetDel" title="Delete charset">Del</button>
+                    <div class="ocr-sep"></div>
+                    <label>X:</label><input type="number" id="ocrRegionX" value="0" min="0" max="31">
+                    <label>Y:</label><input type="number" id="ocrRegionY" value="0" min="0" max="23">
+                    <label>W:</label><input type="number" id="ocrRegionW" value="32" min="1" max="32">
+                    <label>H:</label><input type="number" id="ocrRegionH" value="24" min="1" max="24">
+                    <button id="btnOcrRefresh" title="Refresh preview from screen memory">Refresh</button>
+                    <button id="btnOcrCapture" class="primary" title="Capture screen region">Capture</button>
+                    <label class="ocr-check-label" title="Only capture glyphs already mapped in charset; unknown glyphs become spaces"><input type="checkbox" id="ocrCaptureKnown"> Known</label>
+                    <span id="ocrStatus" class="ocr-status"></span>
+                </div>
+
+                <!-- Row 2: Preview canvas + Glyph grid -->
+                <div class="ocr-body">
+                    <div class="ocr-preview-wrap">
+                        <div class="ocr-preview-stack">
+                            <canvas id="ocrPreviewCanvas" class="ocr-preview-canvas" width="256" height="192"></canvas>
+                            <canvas id="ocrGridCanvas" class="ocr-grid-canvas" width="512" height="384"></canvas>
+                        </div>
+                        <div class="ocr-preview-zoom">
+                            <button class="ocr-zoom-btn" data-zoom="1">x1</button>
+                            <button class="ocr-zoom-btn active" data-zoom="2">x2</button>
+                            <button class="ocr-zoom-btn" data-zoom="3">x3</button>
+                            <div class="ocr-sep"></div>
+                            <label title="Cell width (pixels)">CW:</label>
+                            <input type="number" id="ocrCellWidth" value="8" min="4" max="8">
+                            <label title="Cell height (pixels)">CH:</label>
+                            <input type="number" id="ocrCellHeight" value="8" min="4" max="16">
+                            <label title="Grid origin X (pixels)">OX:</label>
+                            <input type="number" id="ocrOriginX" value="0" min="0" max="7">
+                            <label title="Grid origin Y (pixels)">OY:</label>
+                            <input type="number" id="ocrOriginY" value="0" min="0" max="15">
+                            <label title="Horizontal gap between cells (pixels)">GX:</label>
+                            <input type="number" id="ocrGapX" value="0" min="0" max="8">
+                            <label title="Vertical gap between cells (pixels)">GY:</label>
+                            <input type="number" id="ocrGapY" value="0" min="0" max="8">
+                            <label class="ocr-grid-label" title="Show cell grid overlay on preview"><input type="checkbox" id="ocrShowGrid"> Grid</label>
+                        </div>
+                    </div>
+                    <div class="ocr-glyph-panel">
+                        <div class="ocr-glyph-header-row">
+                            <div id="ocrGlyphHeader" class="ocr-glyph-header"></div>
+                            <button id="btnOcrDeleteSelected" class="ocr-del-selected hidden" title="Delete selected glyphs from charset">Del selected</button>
+                            <label class="ocr-dupes-label"><input type="checkbox" id="ocrShowDupes"> dupes</label>
+                        </div>
+                        <div id="ocrGlyphGrid" class="ocr-glyph-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Row 3: Pages -->
+                <div class="ocr-pages">
+                    <div class="ocr-page-bar">
+                        <button id="btnOcrPagePrev" title="Previous page">&larr;</button>
+                        <span id="ocrPageLabel" class="ocr-page-label">No pages</span>
+                        <button id="btnOcrPageNext" title="Next page">&rarr;</button>
+                        <div class="ocr-sep"></div>
+                        <button id="btnOcrAppend" title="Append capture to current page">Append</button>
+                        <button id="btnOcrNewPage" title="Capture into new page">New Page</button>
+                        <button id="btnOcrDelPage" title="Delete current page">Del Page</button>
+                    </div>
+                    <div class="ocr-text-wrap">
+                        <textarea id="ocrTextOutput" class="ocr-text-output" readonly placeholder="Captured text will appear here..."></textarea>
+                        <div class="ocr-actions">
+                            <button id="btnOcrExportText" title="Export all pages as text file">Export Text</button>
+                            <button id="btnOcrExportCharset" title="Export active charset as JSON">Export Charset</button>
+                            <button id="btnOcrImportCharset" title="Import charset from JSON file">Import Charset</button>
+                            <button id="btnOcrSaveSession" title="Save full session as JSON">Save Session</button>
+                            <button id="btnOcrLoadSession" title="Load session from JSON file">Load Session</button>
+                            <button id="btnOcrClear" title="Clear all data">Clear</button>
+                            <div class="ocr-font-btns">
+                                <button id="btnOcrFontMinus" title="Decrease font size">A−</button>
+                                <button id="btnOcrFontPlus" title="Increase font size">A+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            </div><!-- tools-ocr -->
 
         </div><!-- tab-tools -->
 
         </div><!-- tab-container -->
     </div><!-- main-layout -->
+
+    <!-- Extract Font dialog (OCR) -->
+    <div class="ocr-extract-dialog hidden" id="ocrExtractDialog">
+        <div class="ocr-extract-content">
+            <h4>Extract Font</h4>
+            <div class="ocr-extract-row">
+                <label>Charset:</label>
+                <select id="ocrExtractCharset" title="Destination charset for extracted glyphs"></select>
+                <label>Address:</label>
+                <input type="text" id="ocrExtractAddr" value="3D00" maxlength="4">
+                <label>Bank:</label>
+                <input type="text" id="ocrExtractBank" value="" maxlength="2" size="3" placeholder="—" title="RAM bank number (empty = all RAM / current paging)">
+                <label>Count:</label>
+                <input type="number" id="ocrExtractCount" value="96" min="1" max="256">
+                <label>Cols:</label>
+                <input type="number" id="ocrExtractCols" value="1" min="1" max="64" title="Characters per row. 1 = sequential (8 bytes/char). >1 = bitmap font layout (e.g. 32 for GFX viewer width)">
+                <label>W:</label>
+                <input type="number" id="ocrExtractWidth" value="8" min="4" max="8" title="Glyph width in pixels">
+                <label>H:</label>
+                <input type="number" id="ocrExtractHeight" value="8" min="4" max="16" title="Glyph height in pixels">
+                <span class="ocr-extract-info" id="ocrExtractByteInfo">(= 768 bytes)</span>
+            </div>
+            <div class="ocr-extract-row">
+                <label>Map:</label>
+                <select id="ocrExtractMapSelect">
+                    <option value="spectrum">Spectrum ASCII</option>
+                    <option value="spectrofon">Spectrofon</option>
+                    <option value="custom">Custom</option>
+                </select>
+                <button id="btnOcrExtractSaveMap">Save Map</button>
+                <button id="btnOcrExtractLoadMap">Load Map</button>
+            </div>
+            <div class="ocr-extract-map-area">
+                <textarea id="ocrExtractMapText"> !"#$%&amp;'()*+,-./0123456789:;&lt;=&gt;?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_&#163;abcdefghijklmnopqrstuvwxyz{|}~&#169;</textarea>
+                <div class="ocr-extract-map-info">Characters in map: <span id="ocrExtractMapCount">96</span></div>
+            </div>
+            <div class="ocr-extract-buttons">
+                <button id="btnOcrExtractDo" class="primary">Extract to Charset</button>
+                <button id="btnOcrExtractRom">Load ROM Font</button>
+                <button id="btnOcrExtractClose">Close</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Memory Map Dialog -->
     <div class="memmap-dialog hidden" id="memmapDialog">
@@ -8255,7 +9074,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.9.45';
+        const APP_VERSION = '0.9.48';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -8268,6 +9087,7 @@ start:
             getTestRunner: () => testRunner,
             getEnsureGraphicsViewer: () => ensureGraphicsViewer,
             getEnsureInfoPanel: () => ensureInfoPanel,
+            getEnsureTextRipper: () => ensureTextRipper,
             getUpdateTraceList: () => updateTraceList
         });
 
@@ -8310,9 +9130,34 @@ start:
                 showMessage,
                 goToAddress,
                 goToMemoryAddress,
-                updateDebugger
+                updateDebugger,
+                openOcrExtractDialog
             }));
             updateGraphicsViewer();
+        }
+
+        // Text Ripper / OCR (lazy-loaded from ui/text-ripper.js)
+        let textRipperLoaded = false;
+        let textRipperLoading = false;
+        let textRipperApi = null;
+
+        async function ensureTextRipper() {
+            if (textRipperLoaded) return;
+            if (textRipperLoading) return;
+            textRipperLoading = true;
+            const { initTextRipper } = await import('./ui/text-ripper.js');
+            textRipperApi = initTextRipper({
+                readMemory,
+                getRAMPage: (page) => spectrum.memory.ram[page],
+                showMessage,
+                downloadFile
+            });
+            textRipperLoaded = true;
+        }
+
+        async function openOcrExtractDialog(address, bank) {
+            await ensureTextRipper();
+            if (textRipperApi) textRipperApi.openExtractDialog(address, bank);
         }
 
         const regionManager = new RegionManager();
@@ -8432,7 +9277,8 @@ start:
         const getMemoryInfo = () => ({
             machineType: spectrum.memory.machineType,
             currentRomBank: spectrum.memory.currentRomBank,
-            currentRamBank: spectrum.memory.currentRamBank
+            currentRamBank: spectrum.memory.currentRamBank,
+            ramPages: spectrum.memory.ram ? spectrum.memory.ram.length : 1
         });
         const getRamBank = (bank) => spectrum.memory.getRamBank(bank);
 

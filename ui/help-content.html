@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.45</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.48</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -21,6 +21,7 @@
                     <button class="fullhelp-nav-btn" data-section="compare">Compare</button>
                     <button class="fullhelp-nav-btn" data-section="explorer">Explorer</button>
                     <button class="fullhelp-nav-btn" data-section="mapper">Mapper</button>
+                    <button class="fullhelp-nav-btn" data-section="ocr">OCR</button>
                     <button class="fullhelp-nav-btn" data-section="pokes">Pokes</button>
                     <button class="fullhelp-nav-btn" data-section="api">API</button>
                     <button class="fullhelp-nav-btn" data-section="about">About</button>
@@ -51,6 +52,7 @@
                         <li>Compare tool for snapshots and binaries</li>
                         <li>Explorer for file analysis (BASIC decoder, disassembly, hex dump)</li>
                         <li>Game Mapper for capturing rooms and building navigable map grids</li>
+                        <li>OCR Text Ripper for screen text recognition and font extraction</li>
                     </ul>
                     <h5>Quick Start</h5>
                     <ol>
@@ -436,6 +438,7 @@
                         <li><strong>Invert</strong>: Swap foreground/background colors</li>
                         <li><strong>Grid</strong>: Show grid lines (vertical between bytes, horizontal every 8 rows)</li>
                         <li><strong>Char</strong>: Character mode &mdash; treats data as 8&times;8 tiles stored sequentially (8 bytes per tile) rather than linear rows</li>
+                        <li><strong>Bank</strong>: RAM bank to read from (128K/Pentagon/Scorpion). &ldquo;Current&rdquo; uses the active paging; selecting a bank reads directly from that RAM page</li>
                         <li><strong>x1/x2/x3</strong>: Zoom level for main dump view</li>
                     </ul>
                     <h5>Navigation</h5>
@@ -453,8 +456,9 @@
                         <li><strong>Copy Selection</strong>: Copy current selection as assembler DB statements</li>
                         <li><strong>Save Selection</strong>: Save current selection to .asm file</li>
                         <li><strong>Export All Marked</strong>: Export all marked Graphics regions to single file</li>
-                        <li><strong>в†’ Disasm</strong>: Jump to address in disassembly</li>
-                        <li><strong>в†’ Memory</strong>: Jump to address in memory dump</li>
+                        <li><strong>в†' Disasm</strong>: Jump to address in disassembly</li>
+                        <li><strong>в†' Memory</strong>: Jump to address in memory dump</li>
+                        <li><strong>в†' OCR</strong>: Open Extract Font dialog for OCR text recognition. Pre-fills address and bank from GFX viewer</li>
                     </ul>
                 </div>
                 <div class="fullhelp-section hidden" id="help-regions">
@@ -991,6 +995,81 @@
                     </table>
                     <h5>Save/Load Format</h5>
                     <p>Maps are saved as JSON files containing room screenshots (as data URLs), grid coordinates, floor data, capture region, and metadata. Version 2 format supports floors; version 1 files (without floors) are auto-migrated on load.</p>
+                </div>
+                <div class="fullhelp-section hidden" id="help-ocr">
+                    <h4>OCR Text Ripper</h4>
+                    <p>Screen text recognition tool. Captures ZX Spectrum screen pages, identifies character glyphs by pixel hash, and maps them to text characters. Supports custom cell sizes (4&ndash;8 &times; 4&ndash;16 pixels) for non-standard fixed-width fonts. Access via the <strong>OCR</strong> tab (Utils &rarr; OCR).</p>
+                    <h5>Basic Workflow</h5>
+                    <ol>
+                        <li>Set <strong>CW</strong>/<strong>CH</strong> to match the font&rsquo;s character dimensions (default 8&times;8). Use the <strong>Grid</strong> overlay to visually align the grid to the font on screen</li>
+                        <li>Click <strong>Capture</strong> to grab the current screen as a page of glyph tiles</li>
+                        <li>Unrecognized glyphs appear in the grid &mdash; click a glyph tile to assign a character</li>
+                        <li>Previously mapped glyphs are recognized automatically on subsequent captures</li>
+                        <li>The text output panel shows the recognized text</li>
+                    </ol>
+                    <h5>Cell Size &amp; Grid</h5>
+                    <table>
+                        <tr><th>Control</th><th>Description</th></tr>
+                        <tr><td><strong>CW</strong></td><td>Cell width in pixels (4&ndash;8). Sub-byte widths (e.g. 4, 6) use pixel-level extraction across byte boundaries</td></tr>
+                        <tr><td><strong>CH</strong></td><td>Cell height in pixels (4&ndash;16). Standard is 8; use 16 for double-height fonts</td></tr>
+                        <tr><td><strong>OX</strong></td><td>Grid origin X offset (0 to CW&minus;1). Shifts the cell grid horizontally</td></tr>
+                        <tr><td><strong>OY</strong></td><td>Grid origin Y offset (0 to CH&minus;1). Shifts the cell grid vertically</td></tr>
+                        <tr><td><strong>GX</strong></td><td>Horizontal gap between cells (0&ndash;8 px). For programs that print with empty columns between characters</td></tr>
+                        <tr><td><strong>GY</strong></td><td>Vertical gap between cells (0&ndash;8 px). For programs that print with empty lines between text rows</td></tr>
+                        <tr><td><strong>Grid</strong></td><td>Toggle grid overlay on preview canvas. Shows cell boundaries in orange; red crosshair marks origin when OX/OY &gt; 0</td></tr>
+                    </table>
+                    <p>The region spinners (X/Y/W/H) and maximum values adjust automatically to the cell grid dimensions.</p>
+                    <h5>Preview Zoom</h5>
+                    <p>Three zoom buttons (<strong>x1</strong>/<strong>x2</strong>/<strong>x3</strong>) below the preview canvas. Default is x2. The grid overlay renders at display resolution for crisp lines at any zoom level.</p>
+                    <h5>Capture Known Mode</h5>
+                    <p>The <strong>Known</strong> checkbox next to Capture: when enabled, only glyphs already mapped in any charset are captured. Unknown glyphs are replaced by spaces in the text output. Useful for ripping text from screens with mixed text and graphics.</p>
+                    <h5>Charsets</h5>
+                    <p>Glyph-to-character mappings are stored in <strong>charsets</strong>. Each charset is an independent mapping table with its own CW/CH/OX/OY/GX/GY settings.</p>
+                    <ul>
+                        <li>Create multiple charsets for different fonts used in the same program</li>
+                        <li>Text recognition searches <strong>all charsets</strong> (active charset first, then others)</li>
+                        <li>Glyph editing (click-to-assign) applies to the <strong>active</strong> charset only</li>
+                        <li>Use <strong>Save</strong> / <strong>Load</strong> to export/import charsets as JSON files</li>
+                    </ul>
+                    <h5>Bulk Glyph Delete</h5>
+                    <p><strong>Ctrl+click</strong> glyph tiles to toggle multi-selection (orange highlight). A <strong>Del N selected</strong> button appears in the glyph header &mdash; click it to remove all selected glyphs from the charset at once.</p>
+                    <h5>Extract Font</h5>
+                    <p>In the Graphics Viewer, click <strong>&rarr;OCR</strong> to open the Extract Font dialog. This reads font bitmap data directly from emulator memory and populates the selected charset with glyph mappings &mdash; no manual clicking required. The address and bank are pre-filled from the GFX viewer.</p>
+                    <table>
+                        <tr><th>Control</th><th>Description</th></tr>
+                        <tr><td><strong>Charset</strong></td><td>Destination charset for extracted glyphs. Defaults to the active charset; change to extract into a different one</td></tr>
+                        <tr><td><strong>Address</strong></td><td>Hex address of font data in memory (default: 3D00)</td></tr>
+                        <tr><td><strong>Bank</strong></td><td>RAM bank number (empty = current paging). For 128K extended banks not currently paged in</td></tr>
+                        <tr><td><strong>Count</strong></td><td>Number of characters to extract (syncs with map length)</td></tr>
+                        <tr><td><strong>Cols</strong></td><td>Characters per row. <code>1</code> = sequential. <code>&gt;1</code> = bitmap layout (scanline-interleaved grid)</td></tr>
+                        <tr><td><strong>W</strong></td><td>Glyph width in pixels (4&ndash;8). Auto-syncs from the selected charset&rsquo;s CW</td></tr>
+                        <tr><td><strong>H</strong></td><td>Glyph height in pixels (4&ndash;16). Auto-syncs from the selected charset&rsquo;s CH</td></tr>
+                        <tr><td><strong>Map</strong></td><td>Character map template: each position maps to one glyph in sequence</td></tr>
+                        <tr><td><strong>Map textarea</strong></td><td>Editable character string &mdash; position 0 = first glyph, position 1 = second, etc.</td></tr>
+                    </table>
+                    <h5>Character Map Templates</h5>
+                    <ul>
+                        <li><strong>Spectrum ASCII</strong> &mdash; 96 characters matching the standard ROM font at $3D00 (codes 32&ndash;127): space through &copy;</li>
+                        <li><strong>Spectrofon</strong> &mdash; 224 characters: standard Latin (96) + Cyrillic uppercase (32) + Cyrillic lowercase split (а&ndash;п, р&ndash;я, Ёё)</li>
+                        <li><strong>Custom</strong> &mdash; type or paste any character sequence</li>
+                    </ul>
+                    <p>Maps can be saved as <code>.txt</code> files and reloaded for reuse across sessions.</p>
+                    <h5>Extract Actions</h5>
+                    <ul>
+                        <li><strong>Extract to Charset</strong> &mdash; reads <code>count &times; H</code> bytes from the specified address, hashes each glyph, and adds the hash&rarr;character mapping to the selected charset</li>
+                        <li><strong>Load ROM Font</strong> &mdash; shortcut: sets address to $3D00, count to 96, W/H to 8, selects Spectrum ASCII map, and extracts into the selected charset</li>
+                    </ul>
+                    <h5>Tips</h5>
+                    <ul>
+                        <li>Use the Graphics Viewer (Char mode) to locate custom fonts in memory, then click <strong>&rarr;OCR</strong> to extract directly</li>
+                        <li>The GFX viewer&rsquo;s <strong>Bank</strong> selector lets you browse extended RAM banks (128K) &mdash; the selected bank is passed to the Extract Font dialog</li>
+                        <li>Multiple extractions accumulate in the same charset (new hashes are added, existing ones updated)</li>
+                        <li>After extracting, capture a screen &mdash; ROM font characters are recognized immediately</li>
+                        <li>For programs with two different fonts, extract each into a separate charset &mdash; recognition uses all charsets automatically</li>
+                        <li>The <code>Cols</code> parameter handles bitmap-layout fonts where scanlines are interleaved across columns (e.g. fonts displayed in GFX viewer at width &gt; 1). Most fonts use sequential storage (Cols = 1)</li>
+                        <li>Enable <strong>Grid</strong> overlay and adjust CW/CH/OX/OY/GX/GY to match the font&rsquo;s cell boundaries visually before capturing</li>
+                        <li>Use <strong>Known</strong> mode to capture only text without polluting the charset with graphics glyphs</li>
+                    </ul>
                 </div>
                 <div class="fullhelp-section hidden" id="help-pokes">
                     <h4>POKE Manager</h4>

@@ -2,6 +2,24 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.48
+- **Text Ripper (OCR)** enhancements:
+  - Custom cell size: configurable cell width (4–8 px) and height (4–16 px) per charset, enabling OCR of non-standard fixed-width fonts (4×8, 6×8, 8×16, etc.). Sub-byte pixel extraction handles non-byte-aligned widths across byte boundaries. Grid origin offsets (OX, OY) shift the cell grid for fonts that don't start at pixel (0,0). Cell gap (GX, GY, 0–8 px) adds spacing between cells for programs that print with empty lines or columns between characters
+  - Grid overlay: toggleable orange grid on the preview canvas showing cell boundaries at current CW/CH/OX/OY. Red crosshair marks the origin point when OX/OY > 0
+  - Preview zoom: x1/x2/x3 zoom buttons below the preview canvas (x2 default). Grid overlay renders at display resolution for crisp lines at any zoom level
+  - Bulk glyph delete: Ctrl+click tiles to multi-select (orange highlight), then delete all selected at once via "Del N selected" button
+  - Capture Known mode: "Known" checkbox next to Capture button. When enabled, only glyphs already mapped in any charset are captured; unknown glyphs become spaces
+  - Charset selector in Extract Font dialog: destination charset dropdown so extracted glyphs go into the selected charset instead of always the active one. W/H auto-sync when switching charset
+  - Fix: imported charsets now correctly display their glyphs immediately (was missing bitmap reconstruction from hash data)
+  - Fix: switching charsets via dropdown now rebuilds glyph bitmaps so extracted font glyphs display correctly
+  - Fix: extracted font glyphs no longer disappear when pages are deleted
+
+## v0.9.47
+- **Text Ripper (OCR)**: New OCR tab in Utils for screen-based character recognition. Captures 8×8 glyph bitmaps from screen memory ($4000 or $C000 shadow), maps unique glyphs to characters via an interactive tile grid, and renders extracted text. Features: multiple named charsets (create/rename/delete), multi-page capture with append/new page, mouse drag region selection on preview canvas, hash-grid storage (remapping a glyph updates all pages instantly), session auto-save to localStorage, full session and charset import/export as JSON, text export. Primary use case: diskmag text ripping.
+
+## v0.9.46
+- **Symbols reference**: New "Symbols" subtab in Utils → Info showing the complete ZX Spectrum character set (codes 0–255): control characters, printable ASCII with ZX exceptions (↑, £, ©), block graphics with Unicode glyphs, UDG characters, and all 91 BASIC keyword tokens.
+
 ## v0.9.45
 - **Autofire**: New autofire feature in Settings → Input with named profiles. Configure key (Fire/Space/Enter/Caps Shift/Sym Shift/0-9/A-Z), repeat rate (1–50 Hz), and hold duration (30%–70% or constant Hold). Toggle with Ctrl+F or checkbox. Multiple profiles for different games — click to switch, + to add, rename/delete. Fire option uses Kempston joystick fire bit. Profiles persist in localStorage; autofire always starts off and stops on machine reset.
 

@@ -3,7 +3,7 @@
 import { REGION_TYPES } from '../debug/managers.js';
 import { hex8, hex16 } from '../core/utils.js';
 
-export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRegion, getAllRegions, getRAMPage, isRunning, showMessage, goToAddress, goToMemoryAddress, updateDebugger }) {
+export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRegion, getAllRegions, getRAMPage, isRunning, showMessage, goToAddress, goToMemoryAddress, updateDebugger, openOcrExtractDialog }) {
     // DOM lookups
     const gfxDumpCanvas = document.getElementById('gfxDumpCanvas');
     const gfxDumpCtx = gfxDumpCanvas.getContext('2d');
@@ -29,10 +29,12 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
     const btnGfxHeightDec = document.getElementById('btnGfxHeightDec');
     const btnGfxHeightInc = document.getElementById('btnGfxHeightInc');
     const btnGfxHeightInc8 = document.getElementById('btnGfxHeightInc8');
+    const gfxBank = document.getElementById('gfxBank');
 
     // Graphics viewer state
     let gfxSpriteAddress = 0x3000; // Current sprite/view address
     let gfxViewAddress = 0x3000;
+    let gfxSelectedBank = -1; // -1 = current paging, 0+ = specific RAM page
     const GFX_DUMP_COLS = 32;  // Bytes per row in dump view
     const GFX_DUMP_ROWS = 302;  // Rows visible
 
@@ -46,6 +48,61 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         const bytesPerSprite = widthBytes * heightRows;
         return { widthBytes, heightRows, widthPx, bytesPerSprite, invert, showGrid, charMode };
     }
+
+    // Address mask: 0x3FFF for specific bank (16K), 0xFFFF for all RAM (64K)
+    function gfxAddrMask() {
+        return gfxSelectedBank >= 0 ? 0x3FFF : 0xFFFF;
+    }
+
+    // Read byte: from specific RAM bank or current memory layout
+    function gfxReadByte(addr) {
+        const mask = gfxAddrMask();
+        addr = addr & mask;
+        if (gfxSelectedBank >= 0) {
+            const page = getRAMPage(gfxSelectedBank);
+            if (page) return page[addr];
+            return 0;
+        }
+        return readMemory(addr);
+    }
+
+    // Populate bank dropdown based on machine RAM pages
+    function updateBankDropdown() {
+        const memInfo = getMemoryInfo();
+        const prevValue = gfxBank.value;
+        gfxBank.innerHTML = '<option value="-1">All RAM</option>';
+        if (memInfo.machineType !== '48k') {
+            const ramPages = memInfo.ramPages || 8;
+            for (let i = 0; i < ramPages; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = 'Bank ' + i;
+                gfxBank.appendChild(opt);
+            }
+        }
+        // Restore previous selection if still valid
+        if (gfxBank.querySelector(`option[value="${prevValue}"]`)) {
+            gfxBank.value = prevValue;
+        } else {
+            gfxBank.value = '-1';
+            gfxSelectedBank = -1;
+        }
+    }
+
+    gfxBank.addEventListener('change', () => {
+        gfxSelectedBank = parseInt(gfxBank.value);
+        gfxBank.size = 1;
+        gfxSpriteAddress = gfxSpriteAddress & gfxAddrMask();
+        gfxAddress.value = hex16(gfxSpriteAddress);
+        updateGraphicsViewer();
+    });
+    gfxBank.addEventListener('mousedown', () => {
+        if (gfxBank.options.length > 10) gfxBank.size = 10;
+    });
+    gfxBank.addEventListener('blur', () => { gfxBank.size = 1; });
+    gfxBank.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { gfxBank.size = 1; gfxBank.blur(); }
+    });
 
     // Region colors as RGB triples for ImageData rendering
     const GFX_REGION_RGB = {
@@ -67,7 +124,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
 
         // Calculate view start so selected address appears at row 8, column 0
         // In both modes: 8 rows of context = widthBytes * 8 bytes
-        const viewStartAddr = (gfxSpriteAddress - params.widthBytes * 8) & 0xffff;
+        const viewStartAddr = (gfxSpriteAddress - params.widthBytes * 8) & gfxAddrMask();
 
         gfxDumpCanvas.width = canvasWidth;
         gfxDumpCanvas.height = canvasHeight;
@@ -90,11 +147,11 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
                 if (params.charMode) {
                     const charRow = row >> 3;
                     const lineInChar = row & 7;
-                    addr = (viewStartAddr + (charRow * params.widthBytes + col) * 8 + lineInChar) & 0xffff;
+                    addr = (viewStartAddr + (charRow * params.widthBytes + col) * 8 + lineInChar) & gfxAddrMask();
                 } else {
-                    addr = (viewStartAddr + row * params.widthBytes + col) & 0xffff;
+                    addr = (viewStartAddr + row * params.widthBytes + col) & gfxAddrMask();
                 }
-                const byte = readMemory(addr);
+                const byte = gfxReadByte(addr);
                 const x = col * 8 * zoom;
                 const y = row * zoom;
 
@@ -191,11 +248,11 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
                 if (params.charMode) {
                     const charRow = row >> 3;
                     const lineInChar = row & 7;
-                    addr = (gfxSpriteAddress + (charRow * params.widthBytes + byteX) * 8 + lineInChar) & 0xffff;
+                    addr = (gfxSpriteAddress + (charRow * params.widthBytes + byteX) * 8 + lineInChar) & gfxAddrMask();
                 } else {
-                    addr = (gfxSpriteAddress + row * params.widthBytes + byteX) & 0xffff;
+                    addr = (gfxSpriteAddress + row * params.widthBytes + byteX) & gfxAddrMask();
                 }
-                const byte = readMemory(addr);
+                const byte = gfxReadByte(addr);
 
                 const region = getRegion(addr);
                 const hasRegion = region && GFX_REGION_RGB[region.type];
@@ -262,7 +319,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
 
         // Update info
         const addrHex = hex16(gfxSpriteAddress);
-        gfxInfo.textContent = `${addrHex}h: ${params.widthPx}x${params.heightRows}`;
+        const bankStr = gfxSelectedBank >= 0 ? ` [Bank ${gfxSelectedBank}]` : '';
+        gfxInfo.textContent = `${addrHex}h: ${params.widthPx}x${params.heightRows}${bankStr}`;
     }
 
     function updateGfxSpinnerButtons() {
@@ -291,13 +349,14 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
     }, 500);
 
     function updateGraphicsViewer() {
+        updateBankDropdown();
         renderGfxDump();
         renderGfxPreview();
         updateGfxSpinnerButtons();
     }
 
     function gfxNavigate(delta) {
-        gfxSpriteAddress = (gfxSpriteAddress + delta) & 0xffff;
+        gfxSpriteAddress = (gfxSpriteAddress + delta) & gfxAddrMask();
         gfxAddress.value = hex16(gfxSpriteAddress);
         updateGraphicsViewer();
     }
@@ -394,7 +453,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
     // Address input
     gfxAddress.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            gfxSpriteAddress = parseInt(gfxAddress.value, 16) || 0;
+            gfxSpriteAddress = (parseInt(gfxAddress.value, 16) || 0) & gfxAddrMask();
+            gfxAddress.value = hex16(gfxSpriteAddress);
             gfxViewAddress = gfxSpriteAddress;
             updateGraphicsViewer();
         }
@@ -415,7 +475,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         const params = getGfxParams();
         const step = params.charMode ? 1 : params.widthBytes;
         const delta = e.deltaY > 0 ? step : -step;
-        gfxSpriteAddress = (gfxSpriteAddress + delta) & 0xffff;
+        gfxSpriteAddress = (gfxSpriteAddress + delta) & gfxAddrMask();
         gfxAddress.value = hex16(gfxSpriteAddress);
         updateGraphicsViewer();
     }, { passive: false });
@@ -443,16 +503,16 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
 
         // Calculate view start (same as in renderGfxDump)
         const anchorRow = 8;
-        const viewStartAddr = (gfxSpriteAddress - params.widthBytes * anchorRow) & 0xffff;
+        const viewStartAddr = (gfxSpriteAddress - params.widthBytes * anchorRow) & gfxAddrMask();
 
         // Calculate address for clicked position
         let addr;
         if (params.charMode) {
             const charRow = row >> 3;
             const lineInChar = row & 7;
-            addr = (viewStartAddr + (charRow * params.widthBytes + col) * 8 + lineInChar) & 0xffff;
+            addr = (viewStartAddr + (charRow * params.widthBytes + col) * 8 + lineInChar) & gfxAddrMask();
         } else {
-            addr = (viewStartAddr + row * params.widthBytes + col) & 0xffff;
+            addr = (viewStartAddr + row * params.widthBytes + col) & gfxAddrMask();
         }
 
         // Format address based on machine type
@@ -500,9 +560,13 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         }, 100);
     });
 
+    document.getElementById('btnGfxExtractOcr').addEventListener('click', () => {
+        if (openOcrExtractDialog) openOcrExtractDialog(gfxSpriteAddress, gfxSelectedBank);
+    });
+
     document.getElementById('btnGfxMarkRegion').addEventListener('click', () => {
         const params = getGfxParams();
-        const endAddr = (gfxSpriteAddress + params.bytesPerSprite - 1) & 0xffff;
+        const endAddr = (gfxSpriteAddress + params.bytesPerSprite - 1) & gfxAddrMask();
         const userComment = gfxComment.value.trim();
         const comment = userComment || `Sprite ${params.widthPx}x${params.heightRows}`;
 
@@ -555,8 +619,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
                 for (let col = 0; col < params.widthBytes; col++) {
                     const charRow = row >> 3;
                     const lineInChar = row & 7;
-                    const addr = (gfxSpriteAddress + (charRow * params.widthBytes + col) * 8 + lineInChar) & 0xffff;
-                    const byte = readMemory(addr);
+                    const addr = (gfxSpriteAddress + (charRow * params.widthBytes + col) * 8 + lineInChar) & gfxAddrMask();
+                    const byte = gfxReadByte(addr);
                     for (let bit = 7; bit >= 0; bit--) {
                         visualLine += (byte >> bit) & 1 ? '\u2588' : '\u00B7';
                     }
@@ -578,8 +642,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
 
                     const rowBytes = [];
                     for (let line = 0; line < 8; line++) {
-                        const addr = (charBaseAddr + line) & 0xffff;
-                        const byte = readMemory(addr);
+                        const addr = (charBaseAddr + line) & gfxAddrMask();
+                        const byte = gfxReadByte(addr);
                         rowBytes.push('$' + hex8(byte));
                     }
                     lines.push('        db ' + rowBytes.join(', '));
@@ -594,8 +658,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
                 const visualParts = [];
 
                 for (let col = 0; col < params.widthBytes; col++) {
-                    const addr = (gfxSpriteAddress + row * params.widthBytes + col) & 0xffff;
-                    const byte = readMemory(addr);
+                    const addr = (gfxSpriteAddress + row * params.widthBytes + col) & gfxAddrMask();
+                    const byte = gfxReadByte(addr);
                     rowBytes.push('$' + hex8(byte));
 
                     // Create visual binary: block for 1, dot for 0
