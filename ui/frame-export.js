@@ -1289,11 +1289,9 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             out.push(0);    // Background color index
             out.push(0);    // Pixel aspect ratio
 
-            // Global Color Table (use first frame's palette)
-            if (this.frames.length > 0) {
-                for (let i = 0; i < 256 * 3; i++) {
-                    out.push(this.frames[0].palette[i] || 0);
-                }
+            // Global Color Table (placeholder — each frame uses local color table)
+            for (let i = 0; i < 256 * 3; i++) {
+                out.push(0);
             }
 
             // Netscape Extension for looping
@@ -1315,7 +1313,12 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
                 out.push(0, 0, 0, 0); // Left, Top
                 out.push(this.width & 0xFF, (this.width >> 8) & 0xFF);
                 out.push(this.height & 0xFF, (this.height >> 8) & 0xFF);
-                out.push(0x00); // No local color table
+                out.push(0x87); // Local color table, 256 colors (2^(7+1))
+
+                // Local Color Table
+                for (let i = 0; i < 256 * 3; i++) {
+                    out.push(frame.palette[i] || 0);
+                }
 
                 // LZW Compressed Image Data
                 const lzw = this.lzwEncode(frame.indexed, 8);

@@ -2,6 +2,13 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.50
+- **GIF Export**: Fixed all-black frames when recording starts from a black screen. Each frame now uses a local color table instead of relying on the first frame's palette as the global table.
+- **Disk Auto-Load**: Fixed filenames with special characters (hyphens, punctuation) being silently stripped during TR-DOS RUN command injection. All Symbol Shift characters are now supported.
+
+## v0.9.49
+- **Write Monitor (Collision Finder)**: New "Watch" tool in Search panel monitors writes to a specific memory address (e.g. lives counter). Play the game, trigger a collision/death, then stop — the monitor captures every writing instruction's PC, full call stack, and value transitions. Results are grouped by writing PC with disassembled instructions, deduplicated call chains (clickable addresses navigate to disasm), and NOP suggestions identifying the exact CALL instruction to patch out. Workflow: use POKE Search to find the lives address, enter it in Watch, click Monitor, play until hit, click Stop. Machine change and reset automatically stop monitoring.
+
 ## v0.9.48
 - **Text Ripper (OCR)** enhancements:
   - Custom cell size: configurable cell width (4–8 px) and height (4–16 px) per charset, enabling OCR of non-standard fixed-width fonts (4×8, 6×8, 8×16, etc.). Sub-byte pixel extraction handles non-byte-aligned widths across byte boundaries. Grid origin offsets (OX, OY) shift the cell grid for fonts that don't start at pixel (0,0). Cell gap (GX, GY, 0–8 px) adds spacing between cells for programs that print with empty lines or columns between characters

@@ -259,14 +259,22 @@ export function initAutoLoader({ getSpectrum }) {
         // Opening quote: Symbol + P
         t = pressSymbolKeyTimed(ula, 'p', t, H, G);
 
+        // Symbol Shift character → base key mapping
+        const symbolKeys = {
+            '.': 'm', ',': 'n', ';': 'o', '/': 'v', '-': 'j', '+': 'k',
+            '=': 'l', '*': 'b', '?': 'c', ':': 'z', '<': 'r', '>': 't',
+            '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '&': '6',
+            "'": '7', '(': '8', ')': '9', '_': '0', '^': 'h'
+        };
+
         // Type filename characters
         for (const ch of filename) {
             if (ch >= 'A' && ch <= 'Z') {
                 t = pressShiftKeyTimed(ula, ch.toLowerCase(), t, H, G);
             } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === ' ') {
                 t = pressKeyTimed(ula, ch, t, H, G);
-            } else if (ch === '.') {
-                t = pressSymbolKeyTimed(ula, 'm', t, H, G);
+            } else if (symbolKeys[ch]) {
+                t = pressSymbolKeyTimed(ula, symbolKeys[ch], t, H, G);
             }
         }
 

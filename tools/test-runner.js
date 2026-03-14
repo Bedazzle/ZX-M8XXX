@@ -1037,23 +1037,23 @@ export class TestRunner {
             if (!await pressWithSymbol('p')) return;
 
             // Type filename characters
+            // Symbol Shift character → base key mapping
+            const symbolKeys = {
+                '.': 'm', ',': 'n', ';': 'o', '/': 'v', '-': 'j', '+': 'k',
+                '=': 'l', '*': 'b', '?': 'c', ':': 'z', '<': 'r', '>': 't',
+                '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '&': '6',
+                "'": '7', '(': '8', ')': '9', '_': '0', '^': 'h'
+            };
+
             for (const ch of diskRun) {
                 if (isAborted()) return;
                 if (ch >= 'A' && ch <= 'Z') {
                     // Uppercase: Caps Shift + key
                     if (!await pressWithShift(ch.toLowerCase())) return;
-                } else if (ch >= 'a' && ch <= 'z') {
-                    // Lowercase: key only
+                } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === ' ') {
                     if (!await pressKey(ch)) return;
-                } else if (ch >= '0' && ch <= '9') {
-                    if (!await pressKey(ch)) return;
-                } else if (ch === '.') {
-                    if (!await pressWithSymbol('m')) return;
-                } else if (ch === ' ') {
-                    if (!await pressKey(' ')) return;
-                } else if (ch === '=') {
-                    // Symbol Shift + L gives '='
-                    if (!await pressWithSymbol('l')) return;
+                } else if (symbolKeys[ch]) {
+                    if (!await pressWithSymbol(symbolKeys[ch])) return;
                 }
             }
 

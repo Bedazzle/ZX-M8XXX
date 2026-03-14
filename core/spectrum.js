@@ -211,6 +211,13 @@ import { Disassembler } from './disasm.js';
             this.pokeWriteTraceEnabled = false;
             this.pokeWriteTraceAddrs = null;  // Set<number> when active
 
+            // Write monitor (collision finder)
+            this.writeMonitor = {
+                enabled: false,
+                addr: -1,       // address to watch
+                hits: []        // { pc, callStack, oldVal, newVal, frame }
+            };
+
             // RZX playback state
             this.rzxPlayer = null;      // RZXLoader instance
             this.rzxFrame = 0;          // Current frame number
@@ -315,6 +322,16 @@ import { Disassembler } from './disasm.js';
                 // POKE write trace: collect written addresses for blacklist
                 if (this.pokeWriteTraceEnabled) {
                     this.pokeWriteTraceAddrs.add(addr);
+                }
+                // Write monitor: capture writes to watched address
+                if (this.writeMonitor.enabled && addr === this.writeMonitor.addr) {
+                    this.writeMonitor.hits.push({
+                        pc: this._currentInstrPC,
+                        callStack: this._debugCallStack.map(e => ({addr: e.addr, caller: e.caller, isInt: e.isInt || false})),
+                        oldVal: this.memory.read(addr),
+                        newVal: val,
+                        frame: this.totalFrames
+                    });
                 }
                 // Multicolor: disabled (known limitation - see README)
                 if (this.triggers.length > 0 && !this._suppressWatchpoints) this.checkWriteWatchpoint(addr, val);
@@ -1048,6 +1065,10 @@ import { Disassembler } from './disasm.js';
 
             // Clear runtime call stack
             this._debugCallStack = [];
+
+            // Clear write monitor
+            this.writeMonitor.enabled = false;
+            this.writeMonitor.hits = [];
         }
 
         // ========== Port I/O ==========
@@ -3532,6 +3553,21 @@ import { Disassembler } from './disasm.js';
             return this.pokeWriteTraceAddrs;
         }
 
+        startWriteMonitor(addr) {
+            this.writeMonitor.addr = addr & 0xFFFF;
+            this.writeMonitor.hits = [];
+            this.writeMonitor.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopWriteMonitor() {
+            this.writeMonitor.enabled = false;
+            const results = this.writeMonitor.hits;
+            this.writeMonitor.hits = [];
+            this.updateMemoryCallbacksFlag();
+            return results;
+        }
+
         _profilerCurrentSub() {
             const stack = this._debugCallStack;
             if (stack.length === 0) return null;
@@ -4782,7 +4818,8 @@ import { Disassembler } from './disasm.js';
                 this.autoMap.enabled ||
                 this.runtimeTraceEnabled ||
                 this.profiler.enabled ||
-                this.pokeWriteTraceEnabled;
+                this.pokeWriteTraceEnabled ||
+                this.writeMonitor.enabled;
 
             // Set callbacks to null when not needed (eliminates function call overhead)
             this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;

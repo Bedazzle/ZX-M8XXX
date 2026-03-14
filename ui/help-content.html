@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.48</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.50</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -424,6 +424,22 @@
                     </ol>
                     <p>Requires at least 2 snapshots. Each search always scans all RAM &mdash; more snaps = fewer candidates. No deduplication: every snap-to-snap pair must match the selected mode.</p>
                     <p><strong>Skip screen</strong> (on by default) &mdash; excludes screen memory (4000-5BFF) to reduce false positives.</p>
+                    <h5>Write Monitor</h5>
+                    <p>Monitors writes to a specific address to find collision detection routines. Typical workflow:</p>
+                    <ol>
+                        <li>Use POKE Search to find the lives/health address</li>
+                        <li>Enter the address in the <strong>Watch</strong> field (<code>$hex</code>, <code>0xhex</code>, or decimal)</li>
+                        <li>Click <strong>Monitor</strong> &mdash; the button turns active and monitoring begins</li>
+                        <li>Play the game &mdash; trigger a collision or death</li>
+                        <li>Click <strong>Stop</strong> &mdash; results appear grouped by writing instruction</li>
+                    </ol>
+                    <p>Each result shows:</p>
+                    <ul>
+                        <li>The writing instruction (PC + disassembled mnemonic) with value transitions</li>
+                        <li>Call chain &mdash; the full call stack at the time of the write</li>
+                        <li>NOP suggestion &mdash; identifies the CALL instruction to patch out</li>
+                    </ul>
+                    <p>All addresses are clickable and navigate to the disassembler. Monitoring stops automatically on machine change or reset.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-graphics">
                     <h4>Graphics Viewer</h4>

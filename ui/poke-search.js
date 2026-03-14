@@ -1,8 +1,8 @@
 // poke-search.js — POKE Search / Memory Scanner (extracted from index.html)
-import { hex8, hex16 } from '../core/utils.js';
+import { hex8, hex16, escapeHtml } from '../core/utils.js';
 import { SLOT1_START } from '../core/constants.js';
 
-export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, showMessage, goToMemoryAddress }) {
+export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, showMessage, goToMemoryAddress, startWriteMonitor, stopWriteMonitor, disassembleAt, goToAddress }) {
 
     // DOM lookups
     const btnPokeSnap = document.getElementById('btnPokeSnap');
@@ -27,6 +27,15 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
     let pokePreFilterHistory = null;     // Backup before filter
     let pokeBlacklist = null;        // Set<number> — addresses to exclude from search
     let pokeWriteTracing = false;
+
+    // Write monitor DOM
+    const writeMonAddrInput = document.getElementById('writeMonAddr');
+    const btnWriteMon = document.getElementById('btnWriteMon');
+    const writeMonStatus = document.getElementById('writeMonStatus');
+    const writeMonResults = document.getElementById('writeMonResults');
+
+    // Write monitor state
+    let writeMonitoring = false;
 
     // Functions
 
@@ -247,6 +256,167 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
         }
     });
 
+    // ========== Write Monitor ==========
+
+    function parseMonAddr(str) {
+        str = str.trim();
+        if (!str) return -1;
+        if (str.startsWith('$')) str = str.slice(1);
+        else if (str.startsWith('0x') || str.startsWith('0X')) str = str.slice(2);
+        return parseInt(str, 16);
+    }
+
+    function analyzeWriteMonitorHits(hits) {
+        // Group by writing PC
+        const groups = new Map();
+        for (const hit of hits) {
+            const key = hit.pc;
+            if (!groups.has(key)) {
+                groups.set(key, { pc: hit.pc, hits: [], callChains: [] });
+            }
+            groups.get(key).hits.push(hit);
+        }
+
+        // For each group, deduplicate call chains and collect value transitions
+        for (const [, group] of groups) {
+            // Value transitions
+            group.transitions = group.hits.map(h => ({old: h.oldVal, new: h.newVal}));
+
+            // Deduplicate call chains by stringifying
+            const chainSet = new Set();
+            for (const hit of group.hits) {
+                const chainKey = hit.callStack.map(e => e.addr).join(',');
+                if (!chainSet.has(chainKey)) {
+                    chainSet.add(chainKey);
+                    group.callChains.push(hit.callStack);
+                }
+            }
+        }
+
+        // Sort by frequency (most common first)
+        return [...groups.values()].sort((a, b) => b.hits.length - a.hits.length);
+    }
+
+    function renderWriteMonitorResults(groups) {
+        if (groups.length === 0) {
+            writeMonResults.innerHTML = '<div style="color:var(--text-secondary);padding:4px">No writes detected</div>';
+            return;
+        }
+
+        let html = '';
+        for (const group of groups) {
+            // Disassemble the writing instruction
+            let instrText = '???';
+            let instrLen = 1;
+            try {
+                const info = disassembleAt(group.pc);
+                if (info) {
+                    instrText = info.mnemonic || '???';
+                    instrLen = info.length || 1;
+                }
+            } catch (e) { /* ignore */ }
+
+            // Unique value transitions (deduplicate)
+            const transSet = new Set();
+            for (const t of group.transitions) {
+                transSet.add(hex8(t.old) + '\u2192' + hex8(t.new));
+            }
+            const transStr = [...transSet].join(', ');
+
+            html += '<div class="write-mon-entry">';
+            // Line 1: instruction + values + count
+            html += `<span class="wm-instr" data-addr="${group.pc}">$${hex16(group.pc)}: ${escapeHtml(instrText)}</span>`;
+            html += `<span class="wm-vals">[${transStr}]</span>`;
+            if (group.hits.length > 1) {
+                html += `<span class="wm-count">\u00d7${group.hits.length}</span>`;
+            }
+
+            // Line 2: call chains (show up to 3 unique chains)
+            const chainsToShow = group.callChains.slice(0, 3);
+            for (const chain of chainsToShow) {
+                if (chain.length > 0) {
+                    let chainHtml = '\u2190 ';
+                    const callers = [...chain].reverse(); // innermost first already, reverse for outer-to-inner display
+                    chainHtml += callers.map(e => {
+                        let label = `$${hex16(e.addr)}`;
+                        if (e.isInt) label += '(INT)';
+                        return `<span class="wm-addr" data-addr="${e.addr}">${label}</span>`;
+                    }).join(' \u2190 ');
+                    html += `<div class="wm-chain">${chainHtml}</div>`;
+                }
+            }
+
+            // Line 3: NOP suggestion — find the CALL in the call chain that targets the writing subroutine
+            if (group.callChains.length > 0) {
+                const chain = group.callChains[0];
+                if (chain.length > 0) {
+                    // The last entry in the chain is the innermost caller
+                    // The caller field tells us where the CALL instruction was
+                    const innermost = chain[chain.length - 1];
+                    // Try to disassemble the caller address to find the CALL instruction
+                    let callerInstr = null;
+                    let callerLen = 3;
+                    try {
+                        callerInstr = disassembleAt(innermost.caller);
+                        if (callerInstr) callerLen = callerInstr.length || 3;
+                    } catch (e) { /* ignore */ }
+                    const callerMnemonic = callerInstr ? callerInstr.mnemonic : 'CALL ???';
+                    html += `<div class="wm-nop">\u25b8 NOP ${callerLen} bytes at <span class="wm-addr" data-addr="${innermost.caller}">$${hex16(innermost.caller)}</span> (${escapeHtml(callerMnemonic)})</div>`;
+                }
+            }
+
+            html += '</div>';
+        }
+
+        writeMonResults.innerHTML = html;
+    }
+
+    // Click handlers for addresses in write monitor results
+    writeMonResults.addEventListener('click', (e) => {
+        const addrEl = e.target.closest('[data-addr]');
+        if (addrEl) {
+            const addr = parseInt(addrEl.dataset.addr);
+            goToAddress(addr);
+        }
+    });
+
+    btnWriteMon.addEventListener('click', () => {
+        if (!writeMonitoring) {
+            // Start monitoring
+            const addr = parseMonAddr(writeMonAddrInput.value);
+            if (isNaN(addr) || addr < 0 || addr > 0xFFFF) {
+                showMessage('Enter a valid address ($hex, 0xhex, or decimal)', 'error');
+                return;
+            }
+            startWriteMonitor(addr);
+            writeMonitoring = true;
+            btnWriteMon.textContent = 'Stop';
+            btnWriteMon.classList.add('active');
+            writeMonStatus.textContent = `(watching $${hex16(addr)})`;
+            writeMonResults.innerHTML = '';
+        } else {
+            // Stop monitoring
+            const hits = stopWriteMonitor();
+            writeMonitoring = false;
+            btnWriteMon.textContent = 'Monitor';
+            btnWriteMon.classList.remove('active');
+            const groups = analyzeWriteMonitorHits(hits);
+            writeMonStatus.textContent = `(${hits.length} write${hits.length !== 1 ? 's' : ''}, ${groups.length} source${groups.length !== 1 ? 's' : ''})`;
+            renderWriteMonitorResults(groups);
+        }
+    });
+
+    function stopWriteMonitorCleanup() {
+        if (writeMonitoring) {
+            stopWriteMonitor();
+            writeMonitoring = false;
+            btnWriteMon.textContent = 'Monitor';
+            btnWriteMon.classList.remove('active');
+            writeMonStatus.textContent = '';
+            writeMonResults.innerHTML = '';
+        }
+    }
+
     // Public API
     return {
         stopTracing() {
@@ -257,6 +427,9 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                 btn.textContent = 'Trace';
                 btn.classList.remove('active');
             }
+        },
+        stopWriteMonitor() {
+            stopWriteMonitorCleanup();
         }
     };
 }

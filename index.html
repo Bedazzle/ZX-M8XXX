@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.9.48</title>
+    <title>ZX-M8XXX v0.9.50</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -4963,7 +4963,60 @@
             flex: 0 1 auto;
             margin-bottom: 0;
         }
-        #btnPokeTrace.active { background: var(--accent); color: #fff; }
+        #btnPokeTrace.active, #btnWriteMon.active { background: var(--accent); color: #fff; }
+        .write-mon-results {
+            max-height: 120px;
+            overflow-y: auto;
+            margin-top: 5px;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        .write-mon-entry {
+            padding: 3px 6px;
+            margin: 2px 0;
+            background: var(--bg-primary);
+            border-radius: 2px;
+        }
+        .write-mon-entry .wm-instr {
+            color: var(--cyan);
+            cursor: pointer;
+        }
+        .write-mon-entry .wm-instr:hover {
+            text-decoration: underline;
+        }
+        .write-mon-entry .wm-vals {
+            color: var(--text-secondary);
+            margin-left: 6px;
+        }
+        .write-mon-entry .wm-count {
+            color: var(--text-secondary);
+            margin-left: 6px;
+        }
+        .write-mon-entry .wm-chain {
+            margin-top: 2px;
+            padding-left: 12px;
+            color: var(--text-secondary);
+        }
+        .write-mon-entry .wm-chain .wm-addr {
+            color: var(--accent);
+            cursor: pointer;
+        }
+        .write-mon-entry .wm-chain .wm-addr:hover {
+            text-decoration: underline;
+        }
+        .write-mon-entry .wm-nop {
+            margin-top: 2px;
+            padding-left: 12px;
+            color: var(--green, #6c6);
+            font-size: 10px;
+        }
+        .write-mon-entry .wm-nop .wm-addr {
+            color: var(--accent);
+            cursor: pointer;
+        }
+        .write-mon-entry .wm-nop .wm-addr:hover {
+            text-decoration: underline;
+        }
         .poke-status {
             color: var(--text-secondary);
             font-size: 11px;
@@ -6245,7 +6298,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.48 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.50 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6742,6 +6795,13 @@
                                 <button id="btnPokeTraceClear" title="Clear blacklist" class="hidden" style="padding:2px 4px;font-size:10px">&times;</button>
                                 <span id="pokeStatus" class="poke-status"></span>
                                 <div class="poke-results" id="pokeResults"></div>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">Watch:</span>
+                                <input type="text" id="writeMonAddr" placeholder="addr" maxlength="6" style="width:50px" title="Hex address to monitor for writes">
+                                <button id="btnWriteMon" title="Monitor writes to address — play game, trigger collision, then stop">Monitor</button>
+                                <span id="writeMonStatus" class="poke-status"></span>
+                                <div id="writeMonResults" class="write-mon-results"></div>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Text:</span>
@@ -9074,7 +9134,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.9.48';
+        const APP_VERSION = '0.9.50';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -9706,7 +9766,14 @@ start:
             startWriteTrace: () => spectrum.startPokeWriteTrace(),
             stopWriteTrace: () => spectrum.stopPokeWriteTrace(),
             showMessage,
-            goToMemoryAddress
+            goToMemoryAddress,
+            startWriteMonitor: (addr) => spectrum.startWriteMonitor(addr),
+            stopWriteMonitor: () => spectrum.stopWriteMonitor(),
+            disassembleAt: (addr) => {
+                const d = disasm || new Disassembler(spectrum.memory);
+                return d.disassemble(addr);
+            },
+            goToAddress
         });
 
         // Memory Search (extracted to memory-search.js)
@@ -10040,8 +10107,9 @@ start:
         machineSelect.addEventListener('change', () => {
             autoLoaderAPI.cancelAutoLoad();
             autofireAPI.stopAutofire();
-            // Stop any active poke write trace on machine change
+            // Stop any active poke write trace or write monitor on machine change
             pokeSearchAPI.stopTracing();
+            pokeSearchAPI.stopWriteMonitor();
             const type = machineSelect.value;
 
             // Check if we have the required ROM - open ROM dialog if not
