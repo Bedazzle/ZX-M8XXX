@@ -22,6 +22,11 @@ export function initInputSettings({
     const btnMouse = document.getElementById('btnMouse');
     const chkBetaDisk = document.getElementById('chkBetaDisk');
     const betaDiskStatus = document.getElementById('betaDiskStatus');
+    const chkPlusD = document.getElementById('chkPlusD');
+    const plusDStatus = document.getElementById('plusDStatus');
+    const btnNmiPlusD = document.getElementById('btnNmiPlusD');
+    const chkIF1 = document.getElementById('chkIF1');
+    const if1Status = document.getElementById('if1Status');
 
     let mouseCaptured = false;
 
@@ -222,6 +227,153 @@ export function initInputSettings({
         updateBetaDiskStatus();
     }
 
+    // +D Interface (MGT) toggle
+    function updatePlusDStatus() {
+        const spectrum = getSpectrum();
+        if (!romData['plusd.rom']) {
+            plusDStatus.textContent = '(plusd.rom required)';
+        } else if (chkPlusD.checked) {
+            plusDStatus.textContent = '';
+        } else {
+            plusDStatus.textContent = '';
+        }
+        btnNmiPlusD.disabled = !chkPlusD.checked || !romData['plusd.rom'];
+    }
+
+    chkPlusD.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.plusDEnabled = chkPlusD.checked;
+        storageSet('zxm8_plusD', chkPlusD.checked);
+        // Load +D ROM into memory when enabling
+        if (chkPlusD.checked && romData['plusd.rom'] && !spectrum.memory.hasPlusDRom()) {
+            spectrum.memory.loadPlusDRom(romData['plusd.rom']);
+        }
+        // Mutual exclusion: +D and IF1 use conflicting ports $E7/$EF
+        if (chkPlusD.checked && chkIF1.checked) {
+            chkIF1.checked = false;
+            spectrum.if1Enabled = false;
+            storageSet('zxm8_if1', false);
+            spectrum.updateBetaDiskPagingFlag();
+            updateIF1Status();
+            showMessage('+D enabled — Interface 1 disabled (conflicting ports $E7/$EF)');
+        }
+        updatePlusDStatus();
+        showMessage(chkPlusD.checked ?
+            '+D interface enabled (MGT disks)' :
+            '+D interface disabled');
+    });
+
+    // +D ROM load button
+    document.getElementById('btnLoadPlusDRom').addEventListener('click', () => {
+        document.getElementById('romPlusDInput').click();
+    });
+
+    // +D ROM file input
+    document.getElementById('romPlusDInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['plusd.rom'] = data;
+            const spectrum = getSpectrum();
+            spectrum.memory.loadPlusDRom(data);
+            updatePlusDStatus();
+            showMessage('+D ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';  // Allow re-loading same file
+    });
+
+    // +D NMI (snapshot) button
+    btnNmiPlusD.addEventListener('click', () => {
+        const spectrum = getSpectrum();
+        spectrum.triggerPlusDNmi();
+    });
+
+    // Restore +D setting from localStorage
+    {
+        const spectrum = getSpectrum();
+        const savedPlusD = storageGet('zxm8_plusD') === 'true';
+        chkPlusD.checked = savedPlusD;
+        spectrum.plusDEnabled = savedPlusD;
+        // Load +D ROM if enabled and ROM available
+        if (savedPlusD && romData['plusd.rom'] && !spectrum.memory.hasPlusDRom()) {
+            spectrum.memory.loadPlusDRom(romData['plusd.rom']);
+        }
+        updatePlusDStatus();
+    }
+
+    // Interface 1 (Microdrive) toggle
+    function updateIF1Status() {
+        if (!romData['if1.rom']) {
+            if1Status.textContent = '(if1.rom required)';
+        } else if (chkIF1.checked) {
+            if1Status.textContent = '';
+        } else {
+            if1Status.textContent = '';
+        }
+    }
+
+    chkIF1.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.if1Enabled = chkIF1.checked;
+        storageSet('zxm8_if1', chkIF1.checked);
+        // Load IF1 ROM into memory when enabling
+        if (chkIF1.checked && romData['if1.rom']) {
+            spectrum.memory.loadIF1Rom(romData['if1.rom']);
+        }
+        // Mutual exclusion: IF1 and +D use conflicting ports $E7/$EF
+        if (chkIF1.checked && chkPlusD.checked) {
+            chkPlusD.checked = false;
+            spectrum.plusDEnabled = false;
+            storageSet('zxm8_plusD', false);
+            updatePlusDStatus();
+            showMessage('Interface 1 enabled — +D disabled (conflicting ports $E7/$EF)');
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateIF1Status();
+        showMessage(chkIF1.checked ?
+            'Interface 1 enabled (Microdrive)' :
+            'Interface 1 disabled');
+    });
+
+    // IF1 ROM load button
+    document.getElementById('btnLoadIF1Rom').addEventListener('click', () => {
+        document.getElementById('romIF1Input').click();
+    });
+
+    // IF1 ROM file input
+    document.getElementById('romIF1Input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['if1.rom'] = data;
+            const spectrum = getSpectrum();
+            spectrum.memory.loadIF1Rom(data);
+            updateIF1Status();
+            showMessage('Interface 1 ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';  // Allow re-loading same file
+    });
+
+    // Restore IF1 setting from localStorage
+    {
+        const spectrum = getSpectrum();
+        const savedIF1 = storageGet('zxm8_if1') === 'true';
+        chkIF1.checked = savedIF1;
+        spectrum.if1Enabled = savedIF1;
+        // Load IF1 ROM if enabled and ROM available
+        if (savedIF1 && romData['if1.rom']) {
+            spectrum.memory.loadIF1Rom(romData['if1.rom']);
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateIF1Status();
+    }
+
     // Boot Manager (extracted to ui/boot-manager.js)
     const bootAPI = initBootManager({ showMessage });
 
@@ -293,6 +445,9 @@ export function initInputSettings({
     return {
         saveInputSettings,
         updateBetaDiskStatus,
+        updatePlusDStatus,
+        updateIF1Status,
+        getUpdateIF1Status: () => updateIF1Status,
         updateMouseStatus,
         gamepadAPI,
         bootAPI

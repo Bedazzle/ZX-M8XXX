@@ -91,6 +91,31 @@ export const PORT_WD_DATA   = 0x7F;   // Data register
 export const PORT_WD_SYS    = 0xFF;   // System register (active-high)
 
 // =============================================================================
+// +D (DISCiPLE/+D) WD1772 port addresses (active-low decode on low byte)
+// =============================================================================
+
+export const PORT_PLUSD_CTRL  = 0xE3;  // +D control register (write: drive/side/page; read: INTRQ/DRQ)
+export const PORT_PLUSD_CMD   = 0xE7;  // +D WD1772 command/status register
+export const PORT_PLUSD_TRACK = 0xEF;  // +D WD1772 track register
+export const PORT_PLUSD_SEC   = 0xF7;  // +D WD1772 sector register
+export const PORT_PLUSD_DATA  = 0xFF;  // +D WD1772 data register
+
+// =============================================================================
+// Interface 1 / Microdrive port addresses
+// =============================================================================
+
+// IF1 port decode: low byte bit 0 must be 1, bits 4:3 select register
+export const IF1_PORT_MASK    = 0x18;  // Bits 4:3 for register select
+export const IF1_PORT_DATA    = 0x00;  // Bits 4:3 = 00 → data ($E7)
+export const IF1_PORT_CTL     = 0x08;  // Bits 4:3 = 01 → status/control ($EF)
+export const IF1_PORT_NET     = 0x10;  // Bits 4:3 = 10 → network ($F7)
+
+// IF1 ROM paging trigger addresses
+export const IF1_PAGE_IN_RST8   = 0x0008;  // Opcode fetch at RST 8 → page in IF1 ROM
+export const IF1_PAGE_IN_CLOSE  = 0x1708;  // Opcode fetch at CLOSE# → page in IF1 ROM
+export const IF1_PAGE_OUT_ADDR  = 0x0700;  // RET at $0700 → page out IF1 ROM
+
+// =============================================================================
 // SNA snapshot format
 // =============================================================================
 
@@ -101,3 +126,16 @@ export const SNA_128K_EXT    = 4;                                  // PC (2) + p
 export const SNA_128K_MIN    = SNA_48K_SIZE + 2;                   // 49181 — minimum for 128K detection
 export const SNA_128K_SIZE   = SNA_48K_SIZE + SNA_128K_EXT + 5 * PAGE_SIZE;  // 131103
 export const SNA_P1024_SIZE  = SNA_48K_SIZE + SNA_128K_EXT + 6 * PAGE_SIZE;  // 147487
+
+// =============================================================================
+// Code Path Tool
+// =============================================================================
+
+export const CODE_PATH_CONTEXT_LINES = 5;  // Instructions disassembled before each block for context
+
+// =============================================================================
+// Game Mapper
+// =============================================================================
+
+export const MAPPER_DEFAULT_FONT = 'sans-serif';
+export const MAPPER_DEFAULT_FONT_SIZE = 16;

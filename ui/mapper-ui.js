@@ -1,4 +1,5 @@
 // mapper-ui.js — Game Mapper UI (extracted from index.html)
+import { GameMapper } from '../tools/game-mapper.js';
 
 export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions }) {
 
@@ -30,6 +31,8 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
     const btnMapperBlend = document.getElementById('btnMapperBlend');
     const btnMapperStamp = document.getElementById('btnMapperStamp');
     const btnMapperDeleteShot = document.getElementById('btnMapperDeleteShot');
+    const btnMapperRemoveRoom = document.getElementById('btnMapperRemoveRoom');
+    const btnMapperMoveRoom = document.getElementById('btnMapperMoveRoom');
     const mapperRoomMark = document.getElementById('mapperRoomMark');
     const mapperStats = document.getElementById('mapperStats');
     const selStampSourceA = document.getElementById('mapperStampSourceA');
@@ -39,7 +42,17 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
     const mapperStampInfo = document.getElementById('mapperStampInfo');
     const mapperStampCanvasA = document.getElementById('mapperStampCanvasA');
     const mapperStampCanvasB = document.getElementById('mapperStampCanvasB');
+    const btnMapperCapture = document.getElementById('btnMapperCapture');
+    const btnMapperTextSlide = document.getElementById('btnMapperTextSlide');
+    const mapperTextSlideDialog = document.getElementById('mapperTextSlideDialog');
+    const mapperTsFont = document.getElementById('mapperTsFont');
+    const mapperTsFontSize = document.getElementById('mapperTsFontSize');
+    const mapperTsColor = document.getElementById('mapperTsColor');
+    const mapperTsPaper = document.getElementById('mapperTsPaper');
+    const mapperTsText = document.getElementById('mapperTsText');
+    const mapperTsPreviewCanvas = document.getElementById('mapperTsPreviewCanvas');
     let mapperOverviewLayout = null;
+    let _movingRoom = false;
 
     // Debounce guard for mapper button/key actions to prevent double-fire
     let _mapperActionTime = 0;
@@ -51,6 +64,8 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
     }
 
     function mapperCaptureScreen() {
+        const room = gameMapper.getCurrentRoom();
+        if (room && gameMapper.isTextSlide(room)) return;
         const screenCanvas = getScreenCanvas();
         const dims = getScreenDimensions();
         const reg = gameMapper.captureRegion;
@@ -74,6 +89,11 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
     }
 
     function mapperUpdateUI() {
+        if (_movingRoom) {
+            _movingRoom = false;
+            btnMapperMoveRoom.classList.remove('active');
+            btnMapperMoveRoom.textContent = 'Move';
+        }
         mapperRoomLabel.textContent =
             '(' + gameMapper.currentX + ', ' + gameMapper.currentY + ')';
         mapperFloorLabel.textContent = gameMapper.currentFloor;
@@ -99,10 +119,16 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
         mapperOverviewZoom.value = gameMapper.overviewZoom;
 
         const room = gameMapper.getCurrentRoom();
+        const isTs = gameMapper.isTextSlide(room);
         const hasShots = room && room.screenshots.length > 0;
-        btnMapperBlend.style.display = hasShots && room.screenshots.length > 1 ? '' : 'none';
-        btnMapperStamp.style.display = room && room.blended ? '' : 'none';
+        btnMapperBlend.style.display = !isTs && hasShots && room.screenshots.length > 1 ? '' : 'none';
+        btnMapperStamp.style.display = !isTs && room && room.blended ? '' : 'none';
         btnMapperDeleteShot.style.display = hasShots ? '' : 'none';
+        const hasRoom = !!room;
+        btnMapperRemoveRoom.style.display = hasRoom ? '' : 'none';
+        btnMapperMoveRoom.style.display = hasRoom ? '' : 'none';
+        btnMapperTextSlide.textContent = isTs ? 'Edit text' : 'Text';
+        btnMapperCapture.style.display = isTs ? 'none' : '';
         mapperRoomMark.value = (room && room.mark) || '';
 
         mapperRenderThumbnails(room);
@@ -120,6 +146,19 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
     function mapperRenderThumbnails(room) {
         mapperThumbStrip.innerHTML = '';
         if (!room || room.screenshots.length === 0) return;
+
+        if (gameMapper.isTextSlide(room)) {
+            const span = document.createElement('span');
+            span.className = 'mapper-thumb-label';
+            span.textContent = 'Text slide';
+            span.style.cursor = 'pointer';
+            span.style.color = 'var(--cyan)';
+            span.style.fontSize = '11px';
+            span.style.padding = '2px 6px';
+            span.addEventListener('click', mapperOpenTextSlideDialog);
+            mapperThumbStrip.appendChild(span);
+            return;
+        }
 
         room.screenshots.forEach((dataUrl, i) => {
             const img = document.createElement('img');
@@ -283,6 +322,15 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
         const cellH = (roomH + gapV) * scale;
         const gx = Math.floor(mx / cellW) + bounds.minX;
         const gy = Math.floor(my / cellH) + bounds.minY;
+        if (_movingRoom) {
+            if (gameMapper.moveRoom(gx, gy, floor)) {
+                _movingRoom = false;
+                btnMapperMoveRoom.classList.remove('active');
+                btnMapperMoveRoom.textContent = 'Move';
+                mapperUpdateUI();
+            }
+            return;
+        }
         const key = gx + ',' + gy + ',' + floor;
         if (gameMapper.rooms.has(key)) {
             gameMapper.selectRoom(gx, gy, floor);
@@ -754,9 +802,75 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
         mapperUpdateUI();
     }
 
+    // ========== Text Slide Dialog ==========
+
+    function mapperRenderTextSlidePreview() {
+        const reg = gameMapper.captureRegion;
+        const pw = reg.w * 8;
+        const ph = reg.h * 8;
+        const canvas = mapperTsPreviewCanvas;
+        canvas.width = pw;
+        canvas.height = ph;
+        const scale = Math.min(256 / pw, 256 / ph, 2);
+        canvas.style.width = Math.round(pw * scale) + 'px';
+        canvas.style.height = Math.round(ph * scale) + 'px';
+
+        const opts = mapperReadTextSlideForm();
+        GameMapper.renderTextToCanvas(canvas, mapperTsText.value, opts.font, opts.fontSize, opts.color, opts.paper);
+    }
+
+    function mapperOpenTextSlideDialog() {
+        const room = gameMapper.getCurrentRoom();
+        const ts = room && room.textSlide;
+        const defaults = gameMapper.textSlideDefaults;
+
+        mapperTsFont.value = ts ? ts.font : defaults.font;
+        mapperTsFontSize.value = ts ? ts.fontSize : defaults.fontSize;
+        mapperTsColor.value = ts ? ts.color : defaults.color;
+        mapperTsPaper.value = ts ? ts.paper : defaults.paper;
+        mapperTsText.value = ts ? ts.text : '';
+
+        mapperTextSlideDialog.classList.remove('hidden');
+        mapperRenderTextSlidePreview();
+        mapperTsText.focus();
+    }
+
+    function mapperCloseTextSlideDialog() {
+        mapperTextSlideDialog.classList.add('hidden');
+        mapperUpdateUI();
+    }
+
+    function mapperReadTextSlideForm() {
+        return {
+            font: mapperTsFont.value || gameMapper.textSlideDefaults.font,
+            fontSize: parseInt(mapperTsFontSize.value) || gameMapper.textSlideDefaults.fontSize,
+            color: mapperTsColor.value,
+            paper: mapperTsPaper.value
+        };
+    }
+
+    function mapperApplyTextSlide() {
+        const text = mapperTsText.value;
+        if (!text.trim()) {
+            // Empty text = remove text slide
+            const room = gameMapper.getCurrentRoom();
+            if (room && room.textSlide) {
+                gameMapper.deleteCurrentScreenshot();
+            }
+            mapperCloseTextSlideDialog();
+            return;
+        }
+        gameMapper.setTextSlide(text, mapperReadTextSlideForm());
+        mapperCloseTextSlideDialog();
+    }
+
+    function mapperSetTextSlideDefaults() {
+        Object.assign(gameMapper.textSlideDefaults, mapperReadTextSlideForm());
+    }
+
     // ========== Event wiring ==========
 
-    document.getElementById('btnMapperCapture').addEventListener('click', function() { this.blur(); mapperAction(mapperCaptureScreen); });
+    btnMapperCapture.addEventListener('click', function() { this.blur(); mapperAction(mapperCaptureScreen); });
     document.getElementById('btnMapperLeft').addEventListener('click', function() { this.blur(); mapperAction(() => { gameMapper.move(-1, 0); mapperUpdateUI(); }); });
     document.getElementById('btnMapperRight').addEventListener('click', function() { this.blur(); mapperAction(() => { gameMapper.move(1, 0); mapperUpdateUI(); }); });
     document.getElementById('btnMapperUp').addEventListener('click', function() { this.blur(); mapperAction(() => { gameMapper.move(0, -1); mapperUpdateUI(); }); });
@@ -835,12 +949,33 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
         gameMapper.deleteCurrentScreenshot();
         mapperUpdateUI();
     });
+    btnMapperRemoveRoom.addEventListener('click', function() {
+        this.blur();
+        mapperAction(() => { if (gameMapper.deleteRoom()) mapperUpdateUI(); });
+    });
+    btnMapperMoveRoom.addEventListener('click', function() {
+        this.blur();
+        _movingRoom = !_movingRoom;
+        btnMapperMoveRoom.classList.toggle('active', _movingRoom);
+        btnMapperMoveRoom.textContent = _movingRoom ? 'Click target...' : 'Move';
+    });
     mapperRoomMark.addEventListener('change', (e) => {
         const room = gameMapper.ensureRoom(gameMapper.currentRoom);
         room.mark = e.target.value || null;
         mapperUpdateUI();
     });
     mapperOverviewCanvas.addEventListener('click', mapperOverviewClick);
+
+    // Text slide dialog events
+    btnMapperTextSlide.addEventListener('click', function() { this.blur(); mapperOpenTextSlideDialog(); });
+    document.getElementById('btnMapperTsApply').addEventListener('click', mapperApplyTextSlide);
+    document.getElementById('btnMapperTsClose').addEventListener('click', mapperCloseTextSlideDialog);
+    document.getElementById('btnMapperTsSetDefault').addEventListener('click', function() { this.blur(); mapperSetTextSlideDefaults(); });
+    mapperTsText.addEventListener('input', mapperRenderTextSlidePreview);
+    mapperTsFont.addEventListener('input', mapperRenderTextSlidePreview);
+    mapperTsFontSize.addEventListener('input', mapperRenderTextSlidePreview);
+    mapperTsColor.addEventListener('input', mapperRenderTextSlidePreview);
+    mapperTsPaper.addEventListener('input', mapperRenderTextSlidePreview);
 
     // Stamp canvas mouse handlers
     mapperStampCanvas.addEventListener('mousedown', (e) => {
@@ -993,9 +1128,14 @@ export function initMapperUI({ gameMapper, getScreenCanvas, getScreenDimensions 
         action: mapperAction,
         captureScreen: mapperCaptureScreen,
         updateUI: mapperUpdateUI,
+        deleteRoom() { if (gameMapper.deleteRoom()) mapperUpdateUI(); },
         closeStampDialog: mapperCloseStampDialog,
         isStampDialogOpen() {
             return !mapperStampDialog.classList.contains('hidden');
+        },
+        closeTextSlideDialog: mapperCloseTextSlideDialog,
+        isTextSlideDialogOpen() {
+            return !mapperTextSlideDialog.classList.contains('hidden');
         }
     };
 }

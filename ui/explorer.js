@@ -1,10 +1,11 @@
 // explorer.js — File analysis tool (extracted from index.html)
-import { hex8, hex16 } from '../core/utils.js';
+import { hex8, hex16, escapeHtml } from '../core/utils.js';
 import {
     SLOT1_START,
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
+import { MGTLoader, MDRLoader, OPDLoader } from '../core/loaders.js';
 function isFlowBreak(mnemonic) {
     const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
     return mn.startsWith('JP') || mn.startsWith('JR') ||
@@ -551,7 +552,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             // Check if Edit tab is active with an editor-supported format
             const activeSubtab = document.querySelector('.explorer-subtab.active');
-            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'dsk', 'zip'];
+            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'opd', 'opu', 'zip'];
             const keepEditTab = activeSubtab && activeSubtab.dataset.subtab === 'edit' && editorFormats.includes(ext);
 
             // Render File Info (suppress auto-switch when staying on Edit tab)
@@ -575,12 +576,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerBlocks = [];
         explorerZipFiles = [];
         explorerParsed = null;
-        // Reset left panel state for new file
-        const leftPanel = editorPanels.left;
-        leftPanel.selection.clear();
-        leftPanel.expandedBlock = -1;
-        leftPanel.diskFiles = [];
-        leftPanel.diskLabel = '        ';
+        // Reset active panel state for new file (only the panel that will receive the file)
+        const targetPanel = getActivePanel();
+        targetPanel.selection.clear();
+        targetPanel.expandedBlock = -1;
 
         switch (ext) {
             case 'tap':
@@ -600,6 +599,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 break;
             case 'scl':
                 explorerParsed = explorerParseSCL(explorerData);
+                break;
+            case 'mgt':
+            case 'img':
+                explorerParsed = explorerParseMGT(explorerData);
+                break;
+            case 'mdr':
+                explorerParsed = explorerParseMDR(explorerData);
+                break;
+            case 'opd':
+                explorerParsed = explorerParseOPD(explorerData);
                 break;
             case 'dsk':
                 explorerParsed = explorerParseDSK(explorerData);
@@ -631,8 +640,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'dsk'];
-        const targetPanel = getActivePanel();
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'opd', 'opu'];
         if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
@@ -1342,6 +1350,64 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         };
     }
 
+    // MGT disk image parser
+    function explorerParseMGT(data) {
+        const files = MGTLoader.listFiles(data);
+        const info = MGTLoader.getDiskInfo(data);
+
+        // Convert to explorer format with offset/ext for compatibility
+        const explorerFiles = files.map(f => ({
+            name: f.name,
+            ext: f.typeName.substring(0, 1).toUpperCase(),  // First char as short type
+            typeName: f.typeName,
+            mgtType: f.type,
+            startAddress: f.startAddress,
+            length: f.length,
+            sectors: f.sectors,
+            sectorMap: f.sectorMap,
+            firstTrack: f.firstTrack,
+            firstSector: f.firstSector,
+            autostart: f.autostart,
+            bodyLength: f.bodyLength,
+            tapeType: f.tapeType,
+            slotIndex: f.slotIndex
+        }));
+
+        explorerBlocks = explorerFiles;
+        return {
+            type: 'mgt',
+            files: explorerFiles,
+            info: info,
+            size: data.length
+        };
+    }
+
+    // MDR cartridge image parser
+    function explorerParseMDR(data) {
+        const files = MDRLoader.listFiles(data);
+        const info = MDRLoader.getDiskInfo(data);
+        const explorerFiles = files.map(f => ({
+            name: f.name,
+            ext: f.type === 'PRINT' ? 'P' : 'F',
+            typeName: f.type,
+            length: f.length,
+            sectors: f.sectors,
+            sectorIndices: f.sectorIndices,
+            isPrint: f.isPrint,
+            mdrFile: true
+        }));
+        explorerBlocks = explorerFiles;
+        return { type: 'mdr', files: explorerFiles, info: info, size: data.length };
+    }
+
+    // OPD disk image parser (Opus Discovery)
+    function explorerParseOPD(data) {
+        const info = OPDLoader.getDiskInfo(data);
+        const files = OPDLoader.listFiles(data);
+        explorerBlocks = files;
+        return { type: 'opd', files: files, info: info, size: data.length };
+    }
+
     // Hobeta file parser
     function explorerParseHobeta(data) {
         const file = parseHobeta(data);
@@ -1394,7 +1460,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 return supportedExts.includes(ext);
@@ -1425,6 +1491,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return explorerParseTRD(explorerData);
                     case 'scl':
                         return explorerParseSCL(explorerData);
+                    case 'mdr':
+                        return explorerParseMDR(explorerData);
                     case 'dsk':
                         return explorerParseDSK(explorerData);
                 }
@@ -1491,6 +1559,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 break;
             case 'scl':
                 html = explorerRenderSCLInfo();
+                break;
+            case 'mgt':
+                html = explorerRenderMGTInfo();
+                break;
+            case 'mdr':
+                html = explorerRenderMDRInfo();
+                break;
+            case 'opd':
+                html = explorerRenderOPDInfo();
                 break;
             case 'dsk':
                 html = explorerRenderDSKInfo();
@@ -1689,6 +1766,30 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
             } catch (e) {
                 console.error('RZX screen extraction error:', e);
+            }
+        }
+
+        // For MGT, look for previewable files
+        if (explorerParsed && explorerParsed.type === 'mgt') {
+            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            for (const file of explorerParsed.files) {
+                if (previewSizes.includes(file.length)) {
+                    const fileData = MGTLoader.extractFile(explorerData, file);
+                    explorerUpdatePreview(fileData);
+                    return;
+                }
+            }
+        }
+
+        // For MDR, look for previewable files
+        if (explorerParsed && explorerParsed.type === 'mdr') {
+            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            for (const file of explorerParsed.files) {
+                if (previewSizes.includes(file.length)) {
+                    const fileData = MDRLoader.extractFile(explorerData, file);
+                    explorerUpdatePreview(fileData);
+                    return;
+                }
             }
         }
 
@@ -2632,6 +2733,118 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return html;
     }
 
+    function explorerRenderMGTInfo() {
+        const info = explorerParsed.info;
+        let html = `<div class="explorer-info-section">
+            <div class="explorer-info-header">MGT Disk Image (+D/DISCiPLE)</div>
+            <table class="explorer-info-table">
+                <tr><th>Size</th><td>${explorerData.length.toLocaleString()} bytes</td></tr>
+                <tr><th>Geometry</th><td>${info.tracks}T × ${info.sides}S × ${info.sectorsPerTrack}sec × ${info.bytesPerSector}B</td></tr>
+                <tr><th>Files</th><td>${info.fileCount} / ${info.maxFiles}</td></tr>
+                <tr><th>Free</th><td>${info.freeSectors} sectors (${(info.freeSectors * 512).toLocaleString()} bytes)</td></tr>
+            </table>
+        </div>`;
+
+        html += `<div class="explorer-info-section">
+            <div class="explorer-info-header">File List</div>
+            <div class="explorer-file-list">`;
+
+        for (let i = 0; i < explorerParsed.files.length; i++) {
+            const file = explorerParsed.files[i];
+            const len = file.length;
+            const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                len === 11136 || len === 12288 || len === 18432;
+            const previewIcon = previewable ? '\u2B1A' : '';
+            html += `<div class="explorer-file-entry" data-index="${i}">
+                <span class="explorer-file-num">${i + 1}</span>
+                <span class="explorer-file-type" title="${file.typeName}">${file.typeName}</span>
+                <span class="explorer-file-name">${file.name}</span>
+                <span class="explorer-file-size">${file.length}</span>
+                <span class="explorer-file-addr">$${hex16(file.startAddress)}</span>
+                <span class="explorer-file-preview">${previewIcon}</span>
+            </div>`;
+        }
+
+        html += '</div></div>';
+        return html;
+    }
+
+    function explorerRenderMDRInfo() {
+        const info = explorerParsed.info;
+        let html = `<div class="explorer-info-section">
+            <div class="explorer-info-header">MDR Cartridge Image (Interface 1 Microdrive)</div>
+            <table class="explorer-info-table">
+                <tr><th>Size</th><td>${explorerData.length.toLocaleString()} bytes</td></tr>
+                <tr><th>Cartridge</th><td>${escapeHtml(info.cartridgeName || '(unnamed)')}</td></tr>
+                <tr><th>Sectors</th><td>${info.totalSectors} (${info.usedSectors} used, ${info.freeSectors} free)</td></tr>
+                <tr><th>Files</th><td>${info.fileCount}</td></tr>
+                <tr><th>Write protect</th><td>${info.writeProtect ? 'Yes' : 'No'}</td></tr>
+            </table>
+        </div>`;
+
+        const files = explorerParsed.files;
+        if (files.length > 0) {
+            html += '<div class="explorer-info-section"><div class="explorer-info-header">Files</div>';
+            html += '<div class="explorer-file-list">';
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i];
+                html += `<div class="explorer-file-entry" data-index="${i}">
+                    <span class="explorer-file-num">${i + 1}</span>
+                    <span class="explorer-file-type" title="${f.typeName}">${f.typeName}</span>
+                    <span class="explorer-file-name">${escapeHtml(f.name)}</span>
+                    <span class="explorer-file-size">${f.length.toLocaleString()}</span>
+                    <span class="explorer-file-addr">${f.sectors} sectors</span>
+                </div>`;
+            }
+            html += '</div></div>';
+        }
+
+        return html;
+    }
+
+    function explorerRenderOPDInfo() {
+        const info = explorerParsed.info;
+        let html = `<div class="explorer-info-section">
+            <div class="explorer-info-header">OPD Disk Image (Opus Discovery)</div>
+            <table class="explorer-info-table">
+                <tr><th>Size</th><td>${explorerData.length.toLocaleString()} bytes</td></tr>
+                <tr><th>Geometry</th><td>${info.tracks}T × ${info.sides}S × ${info.sectorsPerTrack}sec × ${info.bytesPerSector}B</td></tr>
+                <tr><th>Capacity</th><td>${(info.totalSectors * info.bytesPerSector / 1024).toFixed(0)}KB (${info.totalSectors} sectors)</td></tr>`;
+        if (info.diskLabel) {
+            html += `<tr><th>Label</th><td>${escapeHtml(info.diskLabel)}</td></tr>`;
+        }
+        html += `<tr><th>Files</th><td>${info.fileCount}</td></tr>
+                <tr><th>Used</th><td>${info.usedSectors} sectors (${(info.usedSectors * info.bytesPerSector).toLocaleString()} bytes)</td></tr>
+                <tr><th>Free</th><td>${info.freeSectors} sectors (${(info.freeSectors * info.bytesPerSector).toLocaleString()} bytes)</td></tr>
+            </table>
+        </div>`;
+
+        if (explorerParsed.files.length > 0) {
+            html += '<div class="explorer-info-section"><div class="explorer-info-header">Files</div>';
+            html += '<div class="explorer-file-list">';
+            for (let i = 0; i < explorerParsed.files.length; i++) {
+                const f = explorerParsed.files[i];
+                const addrStr = f.type === 3 ? `$${hex16(f.startAddr)}` : '';
+                html += `<div class="explorer-file-entry" data-index="${i}">
+                    <span class="explorer-file-num">${i + 1}</span>
+                    <span class="explorer-file-name">${escapeHtml(f.name || '(unnamed)')}</span>
+                    <span class="explorer-file-type">${f.typeName}</span>
+                    <span class="explorer-file-size">${(f.length || 0).toLocaleString()}</span>
+                    <span class="explorer-file-addr">${addrStr}</span>
+                </div>`;
+            }
+            html += '</div></div>';
+        } else {
+            html += `<div class="explorer-info-section">
+                <div class="explorer-info-header">Files</div>
+                <span class="dim">No files on disk.</span>
+            </div>`;
+        }
+
+        return html;
+    }
+
     function explorerRenderHobetaInfo() {
         if (explorerParsed.error) {
             return `<div class="explorer-info-section">
@@ -2766,7 +2979,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         for (let i = 0; i < explorerParsed.files.length; i++) {
             const file = explorerParsed.files[i];
             const ext = file.name.split('.').pop().toLowerCase();
-            const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'dsk', 'rzx'].includes(ext);
+            const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'rzx'].includes(ext);
 
             let extraInfo = '';
             if (ext === 'rzx' && file.data && file.data.length > 10) {
@@ -2807,7 +3020,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const zipFile = explorerZipFiles[idx];
             const ext = zipFile.name.split('.').pop().toLowerCase();
 
-            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'dsk', 'rzx'].includes(ext)) return;
+            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'rzx'].includes(ext)) return;
 
             explorerZipParentName = explorerFileName.textContent;
             explorerData = new Uint8Array(zipFile.data);
@@ -2913,12 +3126,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         const trdEntry = e.target.closest('.explorer-file-entry[data-index]');
-        if (trdEntry && explorerParsed && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')) {
+        if (trdEntry && explorerParsed && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr')) {
             const idx = parseInt(trdEntry.dataset.index);
             if (isNaN(idx) || !explorerParsed.files[idx]) return;
 
             const file = explorerParsed.files[idx];
-            const fileData = explorerData.slice(file.offset, file.offset + file.length);
+            const fileData = explorerParsed.type === 'mgt'
+                ? MGTLoader.extractFile(explorerData, file)
+                : explorerParsed.type === 'mdr'
+                ? MDRLoader.extractFile(explorerData, file)
+                : explorerData.slice(file.offset, file.offset + file.length);
 
             const contentLen = fileData.length;
             if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
@@ -2949,6 +3166,47 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerHexLen.value = Math.min(file.length, 65536);
             explorerHexAddr.value = '0000';
             explorerRenderHexDump();
+        }
+
+        const opdEntry = e.target.closest('.explorer-file-entry[data-index]');
+        if (opdEntry && explorerParsed && explorerParsed.type === 'opd') {
+            const idx = parseInt(opdEntry.dataset.index);
+            if (isNaN(idx) || !explorerParsed.files[idx]) return;
+
+            const file = explorerParsed.files[idx];
+            const fileData = OPDLoader.extractFile(explorerData, file);
+            if (!fileData || fileData.length === 0) return;
+
+            const contentLen = fileData.length;
+            if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
+                contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
+                contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
+                explorerUpdatePreview(fileData);
+                return;
+            }
+
+            if (file.ext === 'B') {
+                document.querySelector('.explorer-subtab[data-subtab="basic"]').click();
+                explorerBasicSource.value = idx.toString();
+                explorerRenderBASIC();
+                return;
+            }
+
+            if (file.ext === 'C') {
+                document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
+                explorerDisasmSource.value = idx.toString();
+                explorerDisasmAddr.value = hex16(file.startAddr);
+                explorerDisasmLen.value = Math.min(file.length, 4096);
+                explorerRenderDisasm();
+                return;
+            }
+
+            document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
+            explorerHexSource.value = idx.toString();
+            explorerHexLen.value = Math.min(file.length, 65536);
+            explorerHexAddr.value = '0000';
+            explorerRenderHexDump();
+            return;
         }
 
         const dskEntry = e.target.closest('.explorer-file-entry[data-index]');
@@ -3075,20 +3333,46 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     hexOpts.push(`<option value="${i}">${name} (${block.dataLength} bytes)</option>`);
                 }
             }
-        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl') {
+        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt') {
+            const files = explorerParsed.files;
+            const isMgt = explorerParsed.type === 'mgt';
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const displayName = isMgt ? `${file.name} [${file.typeName}]` : `${file.name}.${file.ext}`;
+                if (file.ext === 'B') {
+                    basicOpts.push(`<option value="${i}">${displayName}</option>`);
+                    basicSources.push(i.toString());
+                    disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
+                } else if (file.ext === 'C') {
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddress)}</option>`);
+                } else if (file.ext === 'D') {
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddress)}</option>`);
+                }
+                hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+            }
+        } else if (explorerParsed.type === 'mdr') {
             const files = explorerParsed.files;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
+                const displayName = `${file.name} [${file.typeName}]`;
+                disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+                hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+            }
+        } else if (explorerParsed.type === 'opd') {
+            const files = explorerParsed.files;
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const displayName = `${file.name} [${file.typeName}]`;
                 if (file.ext === 'B') {
-                    basicOpts.push(`<option value="${i}">${file.name}.${file.ext}</option>`);
+                    basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
-                    disasmOpts.push(`<option value="basic:${i}">${file.name}.${file.ext} (BASIC @ 5CCB)</option>`);
+                    disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
                 } else if (file.ext === 'C') {
-                    disasmOpts.push(`<option value="${i}">${file.name}.${file.ext} @ ${hex16(file.startAddress)}</option>`);
-                } else if (file.ext === 'D') {
-                    disasmOpts.push(`<option value="${i}">${file.name}.${file.ext} @ ${hex16(file.startAddress)}</option>`);
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddr)} (${file.length} bytes)</option>`);
+                } else {
+                    disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
                 }
-                hexOpts.push(`<option value="${i}">${file.name}.${file.ext} (${file.length} bytes)</option>`);
+                hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
             }
         } else if (explorerParsed.type === 'hobeta') {
             if (!explorerParsed.error) {
@@ -3190,7 +3474,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     explorerDisasmAddr.value = hex16(headerBlock.startAddress);
                 }
             }
-        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl') {
+        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr') {
             if (source.startsWith('basic:')) {
                 explorerDisasmAddr.value = '5CCB';
             } else {
@@ -3198,6 +3482,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const file = explorerParsed.files[fileIdx];
                 if (file && file.startAddress !== undefined) {
                     explorerDisasmAddr.value = hex16(file.startAddress);
+                }
+            }
+        } else if (explorerParsed.type === 'opd') {
+            if (source.startsWith('basic:')) {
+                explorerDisasmAddr.value = '5CCB';
+            } else {
+                const fileIdx = parseInt(source);
+                const file = explorerParsed.files[fileIdx];
+                if (file && file.startAddr !== undefined) {
+                    explorerDisasmAddr.value = hex16(file.startAddr);
                 }
             }
         } else if (explorerParsed.type === 'dsk') {
@@ -3278,22 +3572,51 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     }
                 }
             }
-        } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')) {
+        } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr')) {
             if (source.startsWith('basic:')) {
                 const fileIdx = parseInt(source.slice(6));
                 const file = explorerParsed.files[fileIdx];
                 if (file) {
-                    const fullSize = file.sectors * 256;
-                    data = explorerData.slice(file.offset, file.offset + fullSize);
+                    if (explorerParsed.type === 'mgt') {
+                        data = MGTLoader.extractFile(explorerData, file);
+                    } else if (explorerParsed.type === 'mdr') {
+                        data = MDRLoader.extractFile(explorerData, file);
+                    } else {
+                        const fullSize = file.sectors * 256;
+                        data = explorerData.slice(file.offset, file.offset + fullSize);
+                    }
                     baseAddr = 0x5D3B;
                 }
             } else {
                 const fileIdx = parseInt(source);
                 const file = explorerParsed.files[fileIdx];
                 if (file) {
-                    const fullSize = file.sectors * 256;
-                    data = explorerData.slice(file.offset, file.offset + fullSize);
-                    baseAddr = file.startAddress;
+                    if (explorerParsed.type === 'mgt') {
+                        data = MGTLoader.extractFile(explorerData, file);
+                    } else if (explorerParsed.type === 'mdr') {
+                        data = MDRLoader.extractFile(explorerData, file);
+                    } else {
+                        const fullSize = file.sectors * 256;
+                        data = explorerData.slice(file.offset, file.offset + fullSize);
+                    }
+                    baseAddr = file.startAddress || 0;
+                    explorerDisasmAddr.value = hex16(baseAddr);
+                }
+            }
+        } else if (source && explorerParsed.type === 'opd') {
+            if (source.startsWith('basic:')) {
+                const fileIdx = parseInt(source.slice(6));
+                const file = explorerParsed.files[fileIdx];
+                if (file) {
+                    data = OPDLoader.extractFile(explorerData, file);
+                    baseAddr = 0x5D3B;
+                }
+            } else {
+                const fileIdx = parseInt(source);
+                const file = explorerParsed.files[fileIdx];
+                if (file) {
+                    data = OPDLoader.extractFile(explorerData, file);
+                    baseAddr = file.startAddr || 0;
                     explorerDisasmAddr.value = hex16(baseAddr);
                 }
             }
@@ -3415,11 +3738,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 data = block.data;
                 baseAddr = 0;
             }
-        } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')) {
+        } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr')) {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                data = explorerData.slice(file.offset, file.offset + file.length);
+                data = explorerParsed.type === 'mgt'
+                    ? MGTLoader.extractFile(explorerData, file)
+                    : explorerParsed.type === 'mdr'
+                    ? MDRLoader.extractFile(explorerData, file)
+                    : explorerData.slice(file.offset, file.offset + file.length);
+                baseAddr = 0;
+            }
+        } else if (source && explorerParsed.type === 'opd') {
+            const fileIdx = parseInt(source);
+            const file = explorerParsed.files[fileIdx];
+            if (file) {
+                data = OPDLoader.extractFile(explorerData, file);
                 baseAddr = 0;
             }
         } else if (source && explorerParsed.type === 'hobeta') {
@@ -3814,11 +4148,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     data = dataBlock.data.slice(1, -1);
                 }
             }
-        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl') {
+        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr') {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                data = explorerData.slice(file.offset, file.offset + file.length);
+                data = explorerParsed.type === 'mgt'
+                    ? MGTLoader.extractFile(explorerData, file)
+                    : explorerParsed.type === 'mdr'
+                    ? MDRLoader.extractFile(explorerData, file)
+                    : explorerData.slice(file.offset, file.offset + file.length);
+            }
+        } else if (explorerParsed.type === 'opd') {
+            const fileIdx = parseInt(source);
+            const file = explorerParsed.files[fileIdx];
+            if (file) {
+                data = OPDLoader.extractFile(explorerData, file);
             }
         } else if (explorerParsed.type === 'hobeta') {
             const f = explorerParsed.file;
@@ -3974,12 +4318,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     }
                 }
             }
-        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl') {
+        } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr') {
             for (let i = 0; i < explorerParsed.files.length; i++) {
                 const file = explorerParsed.files[i];
-                if (file.ext === 'C' || file.ext === 'D') {
-                    const endAddr = file.startAddress + file.length;
-                    if (addr >= file.startAddress && addr < endAddr) {
+                if (file.ext === 'C' || file.ext === 'D' || file.ext === 'F') {
+                    const endAddr = (file.startAddress || 0) + file.length;
+                    if (addr >= (file.startAddress || 0) && addr < endAddr) {
                         foundSource = i.toString();
                         break;
                     }
@@ -4297,9 +4641,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const panel = getActivePanel();
         const t = panel.fileType;
         const isTap = isTapOrTzx(t);
-        const isTrd = t === 'trd' || t === 'scl';
+        const isTrd = t === 'trd' || t === 'scl' || t === 'mgt' || t === 'mdr';
         const isDsk = t === 'dsk';
         const isZip = t === 'zip';
+        const isOpd = t === 'opd';
         const hasSel = panel.selection.size > 0;
 
         btnEditorSave.textContent = t ? `Save ${t.toUpperCase()}` : 'Save';
@@ -4357,8 +4702,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function editorRenderBlockList(panel) {
         if (!panel) panel = getActivePanel();
         // Format-aware dispatch
-        if (panel.fileType === 'trd' || panel.fileType === 'scl') {
+        if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr') {
             diskEditorRenderFileList(panel);
+            return;
+        }
+        if (panel.fileType === 'opd') {
+            opdEditorRenderFileList(panel);
             return;
         }
         if (panel.fileType === 'dsk') {
@@ -4476,11 +4825,28 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // --- Selection handling (parameterized) ---
 
-    function editorSelectBlock(panel, idx, ctrlKey) {
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl';
+    function editorGetItemCount(panel) {
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
-        if (ctrlKey) {
+        if (isDisk) return panel.diskFiles.length;
+        if (isDsk) return (panel.parsedFile.files || []).length;
+        if (isZip) return (panel.parsedFile.files || []).length;
+        return panel.blocks.length;
+    }
+
+    function editorSelectBlock(panel, idx, ctrlKey, shiftKey) {
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
+        const isDsk = panel.fileType === 'dsk';
+        const isZip = panel.fileType === 'zip';
+        if (shiftKey && (isDisk || isDsk || isZip)) {
+            // Range selection: from last anchor to current idx
+            const anchor = panel._selAnchor !== undefined ? panel._selAnchor : idx;
+            const lo = Math.min(anchor, idx);
+            const hi = Math.max(anchor, idx);
+            panel.selection = new Set();
+            for (let i = lo; i <= hi; i++) panel.selection.add(i);
+        } else if (ctrlKey) {
             if (isDisk || isDsk || isZip) {
                 if (panel.selection.has(idx)) {
                     panel.selection.delete(idx);
@@ -4503,6 +4869,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 panel.selection = editorExpandPairs(panel, new Set([idx]));
             }
         }
+        if (!shiftKey) panel._selAnchor = idx;
+        panel.expandedBlock = -1;
+        editorRenderBlockList(panel);
+    }
+
+    function editorSelectAll(panel) {
+        const count = editorGetItemCount(panel);
+        if (count === 0) return;
+        panel.selection = new Set();
+        for (let i = 0; i < count; i++) panel.selection.add(i);
         panel.expandedBlock = -1;
         editorRenderBlockList(panel);
     }
@@ -5172,6 +5548,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function diskEditorExtractFiles(panel) {
         if (panel.diskFiles.length > 0) return;
+        if (panel.parsedFile && panel.parsedFile.type === 'mgt') {
+            diskEditorExtractMgtFiles(panel);
+            return;
+        }
+        if (panel.parsedFile && panel.parsedFile.type === 'mdr') {
+            diskEditorExtractMdrFiles(panel);
+            return;
+        }
         if (!panel.parsedFile || (panel.parsedFile.type !== 'trd' && panel.parsedFile.type !== 'scl')) return;
         if (!panel.rawData || panel.rawData.length === 0) return;
 
@@ -5239,6 +5623,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function diskEditorRenderFileList(panel) {
+        if (panel.fileType === 'mgt') {
+            mgtEditorRenderFileList(panel);
+            return;
+        }
+        if (panel.fileType === 'mdr') {
+            mdrEditorRenderFileList(panel);
+            return;
+        }
         diskEditorExtractFiles(panel);
 
         if (panel.diskFiles.length === 0) {
@@ -5333,7 +5725,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         panel.selection = newSel;
         panel.expandedBlock = -1;
-        diskEditorRenderFileList(panel);
+        editorRenderBlockList(panel);
     }
 
     function diskEditorDeleteSelection(panel) {
@@ -5344,8 +5736,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         panel.selection.clear();
         panel.expandedBlock = -1;
-        diskEditorRenderFileList(panel);
-        diskEditorRefreshExplorer(panel);
+        editorRenderBlockList(panel);
+        if (panel.fileType === 'mgt') mgtEditorRefreshExplorer(panel);
+        else if (panel.fileType === 'mdr') mdrEditorRefreshExplorer(panel);
+        else if (panel.fileType === 'opd') opdEditorRefreshExplorer(panel);
+        else diskEditorRefreshExplorer(panel);
     }
 
     function diskEditorMarkDeletedSelection(panel) {
@@ -5356,13 +5751,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.diskFiles[idx].deleted = !allDeleted;
         }
         panel.expandedBlock = -1;
-        diskEditorRenderFileList(panel);
+        editorRenderBlockList(panel);
     }
 
     function diskEditorExtractSelection(panel, format) {
         const sorted = editorSelectedSorted(panel);
         if (sorted.length === 0) return;
-        const baseName = (panel.fileName || 'extract').replace(/\.(trd|scl)$/i, '');
+        const baseName = (panel.fileName || 'extract').replace(/\.(trd|scl|mgt|mdr|img)$/i, '');
         const asHobeta = format === 'hobeta';
 
         if (sorted.length === 1) {
@@ -5660,6 +6055,791 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.rawData = trd;
         panel.parsedFile = explorerParseTRD(trd);
         syncPanelToExplorer(panel);
+    }
+
+    // ========== MGT Disk Editor Functions ==========
+
+    const MGT_TYPE_NAMES = {
+        0: 'Erased', 1: 'BASIC', 2: 'Num Array', 3: 'Str Array', 4: 'CODE',
+        5: '48K Snap', 7: 'SCREEN$', 9: '128K Snap', 10: 'Opentype', 11: 'Execute'
+    };
+
+    function diskEditorExtractMgtFiles(panel) {
+        if (panel.diskFiles.length > 0) return;
+        if (!panel.parsedFile || panel.parsedFile.type !== 'mgt') return;
+        if (!panel.rawData || panel.rawData.length === 0) return;
+
+        const files = MGTLoader.listFiles(panel.rawData);
+        for (const f of files) {
+            const fileData = MGTLoader.extractFile(panel.rawData, f);
+            const sectors = f.sectors;
+            const paddedData = new Uint8Array(sectors * 512);
+            paddedData.set(fileData.subarray(0, Math.min(fileData.length, sectors * 512)));
+            panel.diskFiles.push({
+                name: (f.name + '          ').substring(0, 10),
+                ext: f.typeName.substring(0, 1).toUpperCase(),
+                mgtType: f.type,
+                tapeType: f.tapeType,
+                typeName: f.typeName,
+                startAddress: f.startAddress,
+                length: f.length,
+                sectors: sectors,
+                data: paddedData,
+                autostart: f.autostart,
+                bodyLength: f.bodyLength,
+                deleted: false
+            });
+        }
+    }
+
+    function mgtEditorTotalSectors(panel) {
+        let total = 0;
+        for (const f of panel.diskFiles) total += f.sectors;
+        return total;
+    }
+
+    function mgtEditorRenderFileList(panel) {
+        diskEditorExtractMgtFiles(panel);
+
+        if (panel.diskFiles.length === 0) {
+            panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty MGT disk. Use "Add File" to add files.</span>';
+            panel.dom.statusSpan.textContent = '0 files';
+            editorUpdateToolbar();
+            return;
+        }
+
+        const totalSectors = mgtEditorTotalSectors(panel);
+        // MGT: 80 tracks × 2 sides × 10 sectors = 1600 total; directory uses tracks 0-1 = 40 sectors
+        const freeSectors = 1560 - totalSectors;
+        const activeFiles = panel.diskFiles.filter(f => !f.deleted).length;
+        const deletedFiles = panel.diskFiles.length - activeFiles;
+
+        let html = '';
+        html += '<div class="editor-block-row disk-label-row">';
+        html += '<span class="editor-block-info">';
+        html += `MGT Disk \u2014 ${activeFiles} file${activeFiles !== 1 ? 's' : ''}`;
+        if (deletedFiles > 0) html += ` <span class="dim">(+${deletedFiles} deleted)</span>`;
+        html += ` \u2014 ${totalSectors} used, ${freeSectors} free sectors`;
+        html += '</span></div>';
+
+        for (let i = 0; i < panel.diskFiles.length; i++) {
+            const file = panel.diskFiles[i];
+            const isSel = panel.selection.has(i);
+            const isExpanded = panel.expandedBlock === i;
+            const tName = file.typeName || MGT_TYPE_NAMES[file.mgtType] || 'Unknown';
+
+            let rowClasses = 'editor-block-row disk-row';
+            if (file.deleted) rowClasses += ' disk-deleted';
+            if (isSel) rowClasses += ' selected';
+
+            html += `<div class="${rowClasses}" data-block-idx="${i}">`;
+            html += '<span class="editor-block-info">';
+            html += `<span class="dim">${i + 1}:</span> `;
+            html += `<span class="file-mgttype">${tName}</span>`;
+            html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
+            html += ` <span class="file-addr">@ $${hex16(file.startAddress)}</span>`;
+            html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
+            html += ` <span class="file-sectors">(${file.sectors} sectors)</span>`;
+            if (file.deleted) html += ' <span class="bad">[DEL]</span>';
+            html += '</span></div>';
+
+            if (isExpanded) {
+                html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
+                html += `<label>Name:</label><input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:100px">`;
+                html += `<label>Type:</label><select data-field="mgttype">`;
+                for (const [k, v] of Object.entries(MGT_TYPE_NAMES)) {
+                    if (k === '0') continue; // skip Erased
+                    html += `<option value="${k}"${file.mgtType === parseInt(k) ? ' selected' : ''}>${v}</option>`;
+                }
+                html += '</select>';
+                html += `<label>Addr:</label><input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
+                html += `<label class="dim">${file.length} bytes, ${file.sectors} sectors</label>`;
+                html += `<button class="editor-apply-btn" data-action="mgt-apply" data-idx="${i}">Apply</button>`;
+                html += '</div>';
+            }
+        }
+
+        panel.dom.fileList.innerHTML = html;
+
+        const selCount = panel.selection.size;
+        if (selCount > 0) {
+            panel.dom.statusSpan.textContent = `${activeFiles} files, ${selCount} sel \u2014 ${freeSectors} free`;
+        } else {
+            panel.dom.statusSpan.textContent = `${activeFiles} files \u2014 ${freeSectors} free`;
+        }
+        editorUpdateToolbar();
+    }
+
+    function diskEditorNewMgt(panel) {
+        panel.diskFiles = [];
+        panel.diskLabel = '';
+        panel.blocks = [];
+        panel.parsedFile = { type: 'mgt', files: [], info: null, size: 0 };
+        panel.fileType = 'mgt';
+        panel.rawData = new Uint8Array(0);
+        panel.fileName = 'new.mgt';
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        updatePanelHeader(panel);
+        mgtEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function diskEditorAddMgtFile(panel, data, name, mgtType, addr) {
+        const length = data.length;
+        const sectors = Math.ceil(length / 512);
+        if (sectors > 195) return 'File too large (max 195 sectors / 99,840 bytes)';
+        if (panel.diskFiles.length >= 80) return 'Directory full (max 80 files)';
+        if (mgtEditorTotalSectors(panel) + sectors > 1560) return 'Disk full (not enough free sectors)';
+
+        const paddedData = new Uint8Array(sectors * 512);
+        paddedData.set(data);
+        const paddedName = (name + '          ').substring(0, 10);
+
+        // Map mgtType to tapeType and typeName
+        const tapeTypeMap = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 3, 7: 3, 9: 3, 10: 3, 11: 3 };
+        const tapeType = tapeTypeMap[mgtType] !== undefined ? tapeTypeMap[mgtType] : 3;
+        const typeName = MGT_TYPE_NAMES[mgtType] || 'CODE';
+
+        panel.diskFiles.push({
+            name: paddedName,
+            ext: typeName.substring(0, 1).toUpperCase(),
+            mgtType: mgtType,
+            tapeType: tapeType,
+            typeName: typeName,
+            startAddress: addr,
+            length: length,
+            sectors: sectors,
+            data: paddedData,
+            autostart: null,
+            bodyLength: null,
+            deleted: false
+        });
+        return null;
+    }
+
+    function diskEditorBuildMgt(panel) {
+        const mgt = new Uint8Array(819200);
+        // Directory: slots 0-79 in tracks 0-1 (4 directory tracks: T0S0, T0S1, T1S0, T1S1)
+        // Data starts at track 2, side 0, sector 1
+
+        let nextTrack = 2, nextSide = 0, nextSector = 1;
+
+        function advanceSector() {
+            nextSector++;
+            if (nextSector > 10) {
+                nextSector = 1;
+                nextSide++;
+                if (nextSide > 1) {
+                    nextSide = 0;
+                    nextTrack++;
+                }
+            }
+        }
+
+        for (let i = 0; i < panel.diskFiles.length; i++) {
+            const f = panel.diskFiles[i];
+            const slotIndex = i;
+
+            // Directory entry offset: slot N → sectorIndex = floor(N/2), entry-in-sector = N%2
+            const sectorIndex = Math.floor(slotIndex / 2);
+            const entryInSector = slotIndex % 2;
+            // sectorIndex maps to: track = floor(sectorIndex/10), which side/track in image:
+            // 0-9 = T0 S0, 10-19 = T0 S1, 20-29 = T1 S0, 30-39 = T1 S1
+            const dirLogical = sectorIndex;
+            const dirTrack = Math.floor(dirLogical / 20);
+            const dirRemain = dirLogical % 20;
+            const dirSide = dirRemain >= 10 ? 1 : 0;
+            const dirSec = (dirRemain % 10) + 1;
+            const dirOffset = ((dirTrack * 2 + dirSide) * 10 + (dirSec - 1)) * 512 + entryInSector * 256;
+
+            // File type
+            if (f.deleted) {
+                mgt[dirOffset] = 0;
+                continue;
+            }
+            mgt[dirOffset] = f.mgtType || 4;
+
+            // Filename (10 bytes, space-padded)
+            for (let c = 0; c < 10; c++) {
+                mgt[dirOffset + 1 + c] = c < f.name.length ? f.name.charCodeAt(c) : 0x20;
+            }
+
+            // Sector count (big-endian)
+            mgt[dirOffset + 11] = (f.sectors >> 8) & 0xFF;
+            mgt[dirOffset + 12] = f.sectors & 0xFF;
+
+            // First sector track and sector
+            const firstTrack = nextSide === 0 ? nextTrack : nextTrack + 128;
+            mgt[dirOffset + 13] = firstTrack;
+            mgt[dirOffset + 14] = nextSector;
+
+            // Sector address map (up to 195 pairs at offset 15-209)
+            const sectorMap = [];
+            const savedTrack = nextTrack, savedSide = nextSide, savedSector = nextSector;
+            for (let s = 0; s < f.sectors; s++) {
+                const mapTrack = nextSide === 0 ? nextTrack : nextTrack + 128;
+                sectorMap.push(mapTrack, nextSector);
+
+                // Write file data to this sector
+                const imgOffset = ((nextTrack * 2 + nextSide) * 10 + (nextSector - 1)) * 512;
+                const srcOffset = s * 512;
+                mgt.set(f.data.subarray(srcOffset, srcOffset + 512), imgOffset);
+
+                advanceSector();
+            }
+
+            for (let m = 0; m < sectorMap.length && m < 390; m++) {
+                mgt[dirOffset + 15 + m] = sectorMap[m];
+            }
+
+            // Tape type
+            mgt[dirOffset + 211] = f.tapeType !== undefined ? f.tapeType : 3;
+
+            // File data length (LSB, MSB)
+            mgt[dirOffset + 212] = f.length & 0xFF;
+            mgt[dirOffset + 213] = (f.length >> 8) & 0xFF;
+
+            // Param 1: start address (CODE) / autostart (BASIC)
+            const param1 = f.mgtType === 1 ? (f.autostart || 0x8000) : (f.startAddress || 0);
+            mgt[dirOffset + 214] = param1 & 0xFF;
+            mgt[dirOffset + 215] = (param1 >> 8) & 0xFF;
+
+            // Param 2: body length (BASIC) / 32768 (CODE)
+            const param2 = f.mgtType === 1 ? (f.bodyLength || f.length) : 0x8000;
+            mgt[dirOffset + 216] = param2 & 0xFF;
+            mgt[dirOffset + 217] = (param2 >> 8) & 0xFF;
+        }
+
+        return mgt;
+    }
+
+    function diskEditorSaveMgt(panel) {
+        if (panel.diskFiles.length === 0) return;
+        const data = diskEditorBuildMgt(panel);
+        const baseName = (panel.fileName || 'output').replace(/\.(mgt|img)$/i, '');
+        const blob = new Blob([data], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = baseName + '.mgt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function diskEditorImportMgt(panel, data, filename) {
+        const files = MGTLoader.listFiles(data);
+        let skipped = 0;
+        for (const f of files) {
+            if (panel.diskFiles.length >= 80) { skipped++; continue; }
+            const sectors = f.sectors;
+            if (mgtEditorTotalSectors(panel) + sectors > 1560) { skipped++; continue; }
+            const fileData = MGTLoader.extractFile(data, f);
+            const paddedData = new Uint8Array(sectors * 512);
+            paddedData.set(fileData.subarray(0, Math.min(fileData.length, sectors * 512)));
+            panel.diskFiles.push({
+                name: (f.name + '          ').substring(0, 10),
+                ext: f.typeName.substring(0, 1).toUpperCase(),
+                mgtType: f.type,
+                tapeType: f.tapeType,
+                typeName: f.typeName,
+                startAddress: f.startAddress,
+                length: f.length,
+                sectors: sectors,
+                data: paddedData,
+                autostart: f.autostart,
+                bodyLength: f.bodyLength,
+                deleted: false
+            });
+        }
+        return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped (capacity)` : null;
+    }
+
+    function mgtEditorApplyInlineEdit(panel, idx) {
+        if (idx < 0 || idx >= panel.diskFiles.length) return;
+        const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
+        if (!editRow) return;
+
+        const nameInput = editRow.querySelector('[data-field="name"]');
+        const typeSelect = editRow.querySelector('[data-field="mgttype"]');
+        const addrInput = editRow.querySelector('[data-field="addr"]');
+
+        const file = panel.diskFiles[idx];
+        if (nameInput) {
+            file.name = (nameInput.value + '          ').substring(0, 10);
+        }
+        if (typeSelect) {
+            const newType = parseInt(typeSelect.value);
+            file.mgtType = newType;
+            file.typeName = MGT_TYPE_NAMES[newType] || 'CODE';
+            file.ext = file.typeName.substring(0, 1).toUpperCase();
+            // Update tapeType based on mgtType
+            const tapeTypeMap = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 3, 7: 3, 9: 3, 10: 3, 11: 3 };
+            file.tapeType = tapeTypeMap[newType] !== undefined ? tapeTypeMap[newType] : 3;
+        }
+        if (addrInput) {
+            file.startAddress = parseInt(addrInput.value, 16) || 0;
+        }
+
+        panel.expandedBlock = -1;
+        mgtEditorRenderFileList(panel);
+        mgtEditorRefreshExplorer(panel);
+    }
+
+    function mgtEditorRefreshExplorer(panel) {
+        const mgt = diskEditorBuildMgt(panel);
+        panel.rawData = mgt;
+        panel.parsedFile = explorerParseMGT(mgt);
+        syncPanelToExplorer(panel);
+    }
+
+    // ========== MDR (Microdrive) Editor Functions (parameterized) ==========
+
+    function diskEditorExtractMdrFiles(panel) {
+        if (panel.diskFiles.length > 0) return;
+        if (!panel.parsedFile || panel.parsedFile.type !== 'mdr') return;
+        if (!panel.rawData || panel.rawData.length === 0) return;
+
+        const files = MDRLoader.listFiles(panel.rawData);
+        for (const f of files) {
+            const fileData = MDRLoader.extractFile(panel.rawData, f);
+            panel.diskFiles.push({
+                name: (f.name + '          ').substring(0, 10),
+                ext: f.type === 'PRINT' ? 'P' : 'F',
+                typeName: f.type,
+                length: f.length,
+                sectors: f.sectors,
+                sectorIndices: f.sectorIndices,
+                isPrint: f.isPrint,
+                data: fileData,
+                deleted: false
+            });
+        }
+    }
+
+    function mdrEditorRenderFileList(panel) {
+        diskEditorExtractMdrFiles(panel);
+
+        if (panel.diskFiles.length === 0) {
+            panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty MDR cartridge. Use "Add File" to add files.</span>';
+            panel.dom.statusSpan.textContent = '0 files';
+            editorUpdateToolbar();
+            return;
+        }
+
+        const info = MDRLoader.getDiskInfo(panel.rawData);
+        const activeFiles = panel.diskFiles.filter(f => !f.deleted).length;
+        const deletedFiles = panel.diskFiles.length - activeFiles;
+
+        let html = '';
+        html += '<div class="editor-block-row disk-label-row">';
+        html += '<span class="editor-block-info">';
+        html += `MDR Cartridge \u2014 ${activeFiles} file${activeFiles !== 1 ? 's' : ''}`;
+        if (deletedFiles > 0) html += ` <span class="dim">(+${deletedFiles} deleted)</span>`;
+        html += ` \u2014 ${info.usedSectors} used, ${info.freeSectors} free sectors`;
+        html += '</span></div>';
+
+        for (let i = 0; i < panel.diskFiles.length; i++) {
+            const file = panel.diskFiles[i];
+            const isSel = panel.selection.has(i);
+            const isExpanded = panel.expandedBlock === i;
+
+            let rowClasses = 'editor-block-row disk-row';
+            if (file.deleted) rowClasses += ' disk-deleted';
+            if (isSel) rowClasses += ' selected';
+
+            html += `<div class="${rowClasses}" data-block-idx="${i}">`;
+            html += '<span class="editor-block-info">';
+            html += `<span class="dim">${i + 1}:</span> `;
+            html += `<span class="file-mgttype">${file.typeName}</span>`;
+            html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
+            html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
+            html += ` <span class="file-sectors">(${file.sectors} sectors)</span>`;
+            if (file.deleted) html += ' <span class="bad">[DEL]</span>';
+            html += '</span></div>';
+
+            if (isExpanded) {
+                html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
+                html += `<label>Name:</label><input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:100px">`;
+                html += `<label>Type:</label><select data-field="mdrtype">`;
+                html += `<option value="F"${!file.isPrint ? ' selected' : ''}>File</option>`;
+                html += `<option value="P"${file.isPrint ? ' selected' : ''}>PRINT</option>`;
+                html += '</select>';
+                html += `<label class="dim">${file.length} bytes, ${file.sectors} sectors</label>`;
+                html += `<button class="editor-apply-btn" data-action="mdr-apply" data-idx="${i}">Apply</button>`;
+                html += '</div>';
+            }
+        }
+
+        panel.dom.fileList.innerHTML = html;
+
+        const selCount = panel.selection.size;
+        if (selCount > 0) {
+            panel.dom.statusSpan.textContent = `${activeFiles} files, ${selCount} sel \u2014 ${info.freeSectors} free`;
+        } else {
+            panel.dom.statusSpan.textContent = `${activeFiles} files \u2014 ${info.freeSectors} free`;
+        }
+        editorUpdateToolbar();
+    }
+
+    function diskEditorNewMdr(panel) {
+        panel.diskFiles = [];
+        panel.diskLabel = '';
+        panel.blocks = [];
+        panel.parsedFile = { type: 'mdr', files: [], info: null, size: 0 };
+        panel.fileType = 'mdr';
+        panel.rawData = MDRLoader.createBlankMDR();
+        panel.fileName = 'new.mdr';
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        updatePanelHeader(panel);
+        mdrEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function diskEditorAddMdrFile(panel, data, name, isPrint) {
+        const length = data.length;
+        const sectors = Math.ceil(length / MDRLoader.DATA_SIZE) || 1;
+        if (sectors > MDRLoader.SECTOR_COUNT) return 'File too large';
+
+        panel.diskFiles.push({
+            name: (name + '          ').substring(0, 10),
+            ext: isPrint ? 'P' : 'F',
+            typeName: isPrint ? 'PRINT' : 'File',
+            length: length,
+            sectors: sectors,
+            sectorIndices: [],
+            isPrint: isPrint,
+            data: new Uint8Array(data),
+            deleted: false
+        });
+        return null;
+    }
+
+    function diskEditorBuildMdr(panel) {
+        const files = panel.diskFiles.filter(f => !f.deleted).map(f => ({
+            name: f.name.replace(/\s+$/, ''),
+            data: f.data.slice(0, f.length),
+            isPrint: f.isPrint
+        }));
+        const cartridgeName = panel.diskLabel || 'BLANK';
+        return MDRLoader.buildMDR(files, cartridgeName);
+    }
+
+    function diskEditorSaveMdr(panel) {
+        if (panel.diskFiles.length === 0) return;
+        const data = diskEditorBuildMdr(panel);
+        const baseName = (panel.fileName || 'output').replace(/\.mdr$/i, '');
+        const blob = new Blob([data], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = baseName + '.mdr';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function diskEditorImportMdr(panel, data, filename) {
+        const files = MDRLoader.listFiles(data);
+        let skipped = 0;
+        for (const f of files) {
+            const fileData = MDRLoader.extractFile(data, f);
+            panel.diskFiles.push({
+                name: (f.name + '          ').substring(0, 10),
+                ext: f.type === 'PRINT' ? 'P' : 'F',
+                typeName: f.type,
+                length: f.length,
+                sectors: f.sectors,
+                sectorIndices: f.sectorIndices,
+                isPrint: f.isPrint,
+                data: fileData,
+                deleted: false
+            });
+        }
+        return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped` : null;
+    }
+
+    function mdrEditorApplyInlineEdit(panel, idx) {
+        if (idx < 0 || idx >= panel.diskFiles.length) return;
+        const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
+        if (!editRow) return;
+
+        const nameInput = editRow.querySelector('[data-field="name"]');
+        const typeSelect = editRow.querySelector('[data-field="mdrtype"]');
+
+        const file = panel.diskFiles[idx];
+        if (nameInput) {
+            file.name = (nameInput.value + '          ').substring(0, 10);
+        }
+        if (typeSelect) {
+            file.isPrint = typeSelect.value === 'P';
+            file.ext = file.isPrint ? 'P' : 'F';
+            file.typeName = file.isPrint ? 'PRINT' : 'File';
+        }
+
+        panel.expandedBlock = -1;
+        // Rebuild MDR image and refresh
+        const mdr = diskEditorBuildMdr(panel);
+        panel.rawData = mdr;
+        panel.parsedFile = explorerParseMDR(mdr);
+        mdrEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function mdrEditorRefreshExplorer(panel) {
+        const mdr = diskEditorBuildMdr(panel);
+        panel.rawData = mdr;
+        panel.parsedFile = explorerParseMDR(mdr);
+        syncPanelToExplorer(panel);
+    }
+
+    // ========== OPD (Opus Discovery) Editor Functions ==========
+
+    function diskEditorNewOpd(panel) {
+        panel.diskFiles = [];
+        panel.diskLabel = '';
+        panel.blocks = [];
+        panel.parsedFile = { type: 'opd', files: [], info: OPDLoader.getDiskInfo(OPDLoader.createBlankOPD(1)), size: OPDLoader.SS_SIZE };
+        panel.fileType = 'opd';
+        panel.rawData = OPDLoader.createBlankOPD(1);
+        panel.fileName = 'new.opd';
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        updatePanelHeader(panel);
+        opdEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function diskEditorExtractOpdFiles(panel) {
+        const files = OPDLoader.listFiles(panel.rawData);
+        panel.diskFiles = [];
+        for (const f of files) {
+            const fileData = OPDLoader.extractFile(panel.rawData, f);
+            panel.diskFiles.push({
+                name: (f.name + '          ').substring(0, 10),
+                ext: f.ext,
+                type: f.type,
+                typeName: f.typeName,
+                length: f.length,
+                startAddr: f.startAddr,
+                autostart: f.autostart,
+                data: fileData ? new Uint8Array(fileData) : new Uint8Array(0),
+                deleted: false
+            });
+        }
+        panel.blocks = panel.diskFiles;
+        const info = OPDLoader.getDiskInfo(panel.rawData);
+        panel.diskLabel = info.diskLabel || '';
+    }
+
+    function diskEditorAddOpdFile(panel, data, name, type, startAddr, autostart) {
+        const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
+        const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
+        const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
+        panel.diskFiles.push({
+            name: (name + '          ').substring(0, 10),
+            ext: extMap[type] || 'C',
+            type: type,
+            typeName: typeNames[type] || 'CODE',
+            length: data.length,
+            startAddr: startAddr || 0,
+            autostart: autostart || 0,
+            data: new Uint8Array(data),
+            deleted: false
+        });
+        // Rebuild the OPD image from diskFiles
+        opdEditorRebuildImage(panel);
+        return null;
+    }
+
+    function opdEditorRebuildImage(panel) {
+        const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
+        const files = panel.diskFiles.filter(f => !f.deleted).map(f => ({
+            name: f.name.replace(/\s+$/, ''),
+            type: f.type >= 0 ? f.type : 3,
+            length: f.data.length,
+            startAddr: f.startAddr || 0,
+            autostart: f.autostart || 0,
+            data: f.data
+        }));
+        const newImage = OPDLoader.buildOPD(files, panel.diskLabel || '', sides, panel.rawData);
+        panel.rawData = newImage;
+        panel.parsedFile = explorerParseOPD(newImage);
+        panel.blocks = panel.diskFiles;
+    }
+
+    function opdEditorRenderFileList(panel) {
+        const info = OPDLoader.getDiskInfo(panel.rawData);
+        const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
+
+        let html = '';
+        html += '<div class="editor-block-row disk-label-row" data-label-row="1">';
+        html += '<span class="editor-block-info">';
+        html += `OPD Disk (${sides === 2 ? 'DS' : 'SS'}) \u2014 `;
+        html += `${info.fileCount} files, ${info.usedSectors} used, ${info.freeSectors} free of ${info.totalSectors} sectors`;
+        if (info.diskLabel) html += ` \u2014 "${escapeHtml(info.diskLabel)}"`;
+        html += '</span></div>';
+
+        for (let i = 0; i < panel.diskFiles.length; i++) {
+            const f = panel.diskFiles[i];
+            if (f.deleted) continue;
+            const selected = panel.selection.has(i);
+            const trimName = f.name.replace(/\s+$/, '');
+            const addrStr = f.type === 3 ? `$${hex16(f.startAddr || 0)}` : '';
+
+            html += `<div class="editor-block-row${selected ? ' selected' : ''}" data-block-idx="${i}">`;
+            html += '<span class="editor-block-info">';
+            html += `<span class="file-name">${escapeHtml(trimName)}</span>`;
+            html += ` <span class="file-ext">${f.typeName}</span>`;
+            html += ` <span class="file-size">${f.length.toLocaleString()}</span>`;
+            if (addrStr) html += ` <span class="file-addr">${addrStr}</span>`;
+            html += '</span></div>';
+
+            if (panel.expandedBlock === i) {
+                const typeOptions = [0, 3].map(t => {
+                    const names = { 0: 'BASIC', 3: 'CODE' };
+                    return `<option value="${t}"${t === f.type ? ' selected' : ''}>${names[t]}</option>`;
+                }).join('');
+                html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
+                html += `<label>Name: <input type="text" data-field="name" value="${escapeHtml(trimName)}" maxlength="10" class="editor-input"></label>`;
+                html += ` <label>Type: <select data-field="opdtype" class="editor-input">${typeOptions}</select></label>`;
+                if (f.type === 3) {
+                    html += ` <label>Addr: <input type="text" data-field="addr" value="${hex16(f.startAddr || 0)}" maxlength="4" class="editor-input editor-input-short"></label>`;
+                }
+                html += ` <button class="btn" data-action="opd-apply" data-idx="${i}">Apply</button>`;
+                html += '</div>';
+            }
+        }
+
+        panel.dom.fileList.innerHTML = html;
+        panel.dom.statusSpan.textContent = `${sides === 2 ? 'DS' : 'SS'} ${info.fileCount} files, ${info.usedSectors}/${info.totalSectors} sectors`;
+        editorUpdateToolbar();
+    }
+
+    function opdEditorApplyInlineEdit(panel, idx) {
+        if (idx < 0 || idx >= panel.diskFiles.length) return;
+        const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
+        if (!editRow) return;
+
+        const nameInput = editRow.querySelector('[data-field="name"]');
+        const typeSelect = editRow.querySelector('[data-field="opdtype"]');
+        const addrInput = editRow.querySelector('[data-field="addr"]');
+
+        const file = panel.diskFiles[idx];
+        if (nameInput) {
+            file.name = (nameInput.value + '          ').substring(0, 10);
+        }
+        if (typeSelect) {
+            const newType = parseInt(typeSelect.value);
+            file.type = newType;
+            const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
+            const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
+            file.typeName = typeNames[newType] || 'CODE';
+            file.ext = extMap[newType] || 'C';
+        }
+        if (addrInput) {
+            file.startAddr = parseInt(addrInput.value, 16) || 0;
+        }
+
+        panel.expandedBlock = -1;
+        opdEditorRebuildImage(panel);
+        opdEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function opdEditorRefreshExplorer(panel) {
+        opdEditorRebuildImage(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function diskEditorSaveOpd(panel) {
+        if (!panel.rawData || panel.rawData.length === 0) return;
+        const baseName = (panel.fileName || 'output').replace(/\.opd$/i, '').replace(/\.opu$/i, '');
+        const blob = new Blob([panel.rawData], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = baseName + '.opd';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function opdEditorDeleteSelection(panel) {
+        if (panel.selection.size === 0) return;
+        const sorted = editorSelectedSorted(panel).reverse();
+        for (const idx of sorted) {
+            panel.diskFiles.splice(idx, 1);
+        }
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        opdEditorRebuildImage(panel);
+        opdEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function opdEditorExtractSelection(panel, format) {
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        const baseName = (panel.fileName || 'extract').replace(/\.(opd|opu)$/i, '');
+        const asTap = format === 'tap';
+
+        if (sorted.length === 1) {
+            const file = panel.diskFiles[sorted[0]];
+            const trimName = file.name.replace(/\s+$/, '');
+            let name, data;
+            if (asTap) {
+                name = trimName + '.tap';
+                data = OPDLoader.fileToTAP(file.data.slice(0, file.length), {
+                    name: trimName, type: file.type, startAddr: file.startAddr || 0, autostart: file.autostart || 0
+                });
+            } else {
+                name = trimName + '.' + file.ext;
+                data = file.data.slice(0, file.length);
+            }
+            const blob = new Blob([data], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            return;
+        }
+
+        const files = sorted.map(idx => {
+            const file = panel.diskFiles[idx];
+            const trimName = file.name.replace(/\s+$/, '');
+            if (asTap) {
+                return {
+                    name: trimName + '.tap',
+                    data: OPDLoader.fileToTAP(file.data.slice(0, file.length), {
+                        name: trimName, type: file.type, startAddr: file.startAddr || 0, autostart: file.autostart || 0
+                    })
+                };
+            }
+            return {
+                name: trimName + '.' + file.ext,
+                data: file.data.slice(0, file.length)
+            };
+        });
+        const zipData = editorCreateZip(files);
+        const blob = new Blob([zipData], { type: 'application/zip' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = baseName + '_extract.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     // ========== DSK (CP/M +3DOS) Editor Functions (parameterized) ==========
@@ -6193,6 +7373,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 let dataOff = off;
                 for (const f of parsed.files) { f.offset = dataOff; dataOff += f.sectors * 256; }
             }
+        } else if (innerExt === 'mgt' || innerExt === 'img') {
+            parsed = explorerParseMGT(innerData);
+        } else if (innerExt === 'mdr') {
+            parsed = explorerParseMDR(innerData);
+        } else if (innerExt === 'opd' || innerExt === 'opu') {
+            parsed = explorerParseOPD(innerData);
         } else if (innerExt === 'dsk') {
             try {
                 const dskImage = DSKLoader.parse(innerData);
@@ -6274,7 +7460,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     async function zipEditorImportZip(panel, data, filename) {
         const rawCopy = new Uint8Array(data);
         const files = await ZipLoader.extract(rawCopy.buffer);
-        const supported = ['tap', 'tzx', 'trd', 'scl', 'dsk'];
+        const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk'];
         const zxFiles = files.filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
             return supported.includes(ext);
@@ -6485,6 +7671,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.parsedFile = parsed || { type: ext, files: [], size: data.length };
             updatePanelHeader(panel);
             diskEditorRenderFileList(panel);
+        } else if (ext === 'mgt') {
+            panel.fileType = 'mgt';
+            panel.blocks = [];
+            panel.parsedFile = parsed || { type: 'mgt', files: [], size: data.length };
+            updatePanelHeader(panel);
+            diskEditorRenderFileList(panel);
+        } else if (ext === 'mdr') {
+            panel.fileType = 'mdr';
+            panel.blocks = [];
+            panel.parsedFile = parsed || { type: 'mdr', files: [], size: data.length };
+            updatePanelHeader(panel);
+            mdrEditorRenderFileList(panel);
+        } else if (ext === 'opd' || ext === 'opu') {
+            panel.fileType = 'opd';
+            panel.blocks = [];
+            panel.parsedFile = parsed || explorerParseOPD(data);
+            diskEditorExtractOpdFiles(panel);
+            updatePanelHeader(panel);
+            opdEditorRenderFileList(panel);
         } else if (ext === 'dsk') {
             panel.fileType = 'dsk';
             if (parsed && parsed.dskImage) {
@@ -6510,7 +7715,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
             const zipFiles = await ZipLoader.extract(rawCopy.buffer);
-            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk'];
             const candidates = zipFiles.filter(f => supportedExts.includes(f.name.split('.').pop().toLowerCase()));
             if (candidates.length === 1) {
                 await zipLoadInnerFile(panel, candidates[0]);
@@ -6574,6 +7779,47 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     type: isBASIC ? 0 : 3,
                     addr: isBASIC ? 0 : (f.startAddress || 0),
                     autostart: null, // TR-DOS doesn't store autostart; it's embedded in BASIC data
+                    rawData: f.data.slice(0, f.length)
+                });
+            }
+        } else if (panel.fileType === 'mgt') {
+            for (const idx of sorted) {
+                if (idx < 0 || idx >= panel.diskFiles.length) continue;
+                const f = panel.diskFiles[idx];
+                const isBASIC = f.mgtType === 1;
+                result.push({
+                    name: f.name.replace(/\s+$/, ''),
+                    ext: f.ext,
+                    type: isBASIC ? 0 : 3,
+                    addr: isBASIC ? 0 : (f.startAddress || 0),
+                    autostart: f.autostart,
+                    rawData: f.data.slice(0, f.length)
+                });
+            }
+        } else if (panel.fileType === 'mdr') {
+            for (const idx of sorted) {
+                if (idx < 0 || idx >= panel.diskFiles.length) continue;
+                const f = panel.diskFiles[idx];
+                result.push({
+                    name: f.name.replace(/\s+$/, ''),
+                    ext: f.ext,
+                    type: 3,
+                    addr: 0,
+                    autostart: null,
+                    rawData: f.data.slice(0, f.length)
+                });
+            }
+        } else if (panel.fileType === 'opd') {
+            for (const idx of sorted) {
+                if (idx < 0 || idx >= panel.diskFiles.length) continue;
+                const f = panel.diskFiles[idx];
+                const isBASIC = f.ext === 'B';
+                result.push({
+                    name: f.name.replace(/\s+$/, ''),
+                    ext: f.ext,
+                    type: isBASIC ? 0 : (f.type >= 0 ? f.type : 3),
+                    addr: isBASIC ? 0 : (f.startAddr || 0),
+                    autostart: f.autostart,
                     rawData: f.data.slice(0, f.length)
                 });
             }
@@ -6688,6 +7934,35 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                             offset += f.sectors * 256;
                         }
                     }
+                } else if (entryExt === 'mgt' || entryExt === 'img') {
+                    // Parse MGT and extract files
+                    const mgtFiles = MGTLoader.listFiles(entryData);
+                    for (const f of mgtFiles) {
+                        const fileData = MGTLoader.extractFile(entryData, f);
+                        const isBASIC = f.type === 1;
+                        result.push({
+                            name: f.name.replace(/\s+$/, ''),
+                            ext: f.typeName.substring(0, 1).toUpperCase(),
+                            type: isBASIC ? 0 : 3,
+                            addr: isBASIC ? 0 : (f.startAddress || 0),
+                            autostart: f.autostart,
+                            rawData: fileData.slice(0, f.length)
+                        });
+                    }
+                } else if (entryExt === 'mdr') {
+                    // Parse MDR and extract files
+                    const mdrFiles = MDRLoader.listFiles(entryData);
+                    for (const f of mdrFiles) {
+                        const fileData = MDRLoader.extractFile(entryData, f);
+                        result.push({
+                            name: f.name.replace(/\s+$/, ''),
+                            ext: f.type === 'PRINT' ? 'P' : 'F',
+                            type: 3,
+                            addr: 0,
+                            autostart: null,
+                            rawData: fileData.slice(0, f.length)
+                        });
+                    }
                 } else if (entryExt === 'dsk') {
                     // Parse DSK and extract files
                     try {
@@ -6716,14 +7991,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function convertFileForPanel(srcFile, srcType, dstType) {
         if (srcType === dstType || (srcType === 'scl' && dstType === 'trd') || (srcType === 'trd' && dstType === 'scl')
-            || (srcType === 'tap' && dstType === 'tzx') || (srcType === 'tzx' && dstType === 'tap')) {
+            || (srcType === 'tap' && dstType === 'tzx') || (srcType === 'tzx' && dstType === 'tap')
+            || (srcType === 'opd' && dstType === 'opd')) {
             return { ...srcFile };
         }
         const f = { ...srcFile };
 
         if (dstType === 'trd' || dstType === 'scl') {
             f.name = (f.name + '        ').substring(0, 8).replace(/\s+$/, '') || 'untitled';
-            // Map +3DOS/TAP extensions to TR-DOS single-char conventions
+            // Map +3DOS/TAP/MGT extensions to TR-DOS single-char conventions
             if (f.ext && f.ext.length > 1) {
                 const el = f.ext.toUpperCase();
                 if (el === 'BAS') f.ext = 'B';
@@ -6735,10 +8011,34 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (!f.ext || f.ext.length === 0) {
                 f.ext = f.type === 0 ? 'B' : 'C';
             }
+        } else if (dstType === 'mgt') {
+            f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
+            // Map to MGT type: ext B→1(BASIC), C→4(CODE), D→2(Num Array)
+            if (!f.ext || f.ext.length === 0) {
+                f.ext = f.type === 0 ? 'B' : 'C';
+            }
+        } else if (dstType === 'mdr') {
+            f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
+            // MDR files are either File or PRINT — map ext
+            if (!f.ext || f.ext.length === 0) {
+                f.ext = 'F';
+            } else if (f.ext === 'B' || f.ext === 'C' || f.ext === 'D') {
+                f.ext = 'F';
+            }
+        } else if (dstType === 'opd') {
+            f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
+            // Map to Opus type: B→0(BASIC), C→3(CODE)
+            if (!f.ext || f.ext.length === 0) {
+                f.ext = f.type === 0 ? 'B' : 'C';
+            }
+            // Ensure type is set from ext
+            if (f.type === undefined) {
+                f.type = f.ext === 'B' ? 0 : 3;
+            }
         } else if (isTapOrTzx(dstType)) {
             f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
             // Map ext to TAP type if not already set from source
-            if (srcType === 'trd' || srcType === 'scl') {
+            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd') {
                 f.type = f.ext === 'B' ? 0 : 3;
             } else if (srcType === 'dsk' && f.type === undefined) {
                 const el = (f.ext || '').toUpperCase();
@@ -6746,8 +8046,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
         } else if (dstType === 'dsk') {
             f.name = (f.name + '        ').substring(0, 8).replace(/\s+$/, '') || 'untitled';
-            // Map TR-DOS single-char extensions to +3DOS conventions
-            if (srcType === 'trd' || srcType === 'scl') {
+            // Map TR-DOS/MGT/MDR single-char extensions to +3DOS conventions
+            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd') {
                 if (f.ext === 'B') f.ext = 'BAS';
                 else if (f.ext === 'C') f.ext = 'BIN';
                 else if (f.ext === 'D') f.ext = 'DAT';
@@ -6767,6 +8067,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             return null;
         } else if (panel.fileType === 'trd' || panel.fileType === 'scl') {
             return diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr);
+        } else if (panel.fileType === 'mgt') {
+            // Map ext to MGT type: B→1(BASIC), C→4(CODE), D→2(Num Array)
+            const mgtTypeMap = { 'B': 1, 'C': 4, 'D': 2, '#': 10 };
+            const mgtType = mgtTypeMap[file.ext] || (file.type === 0 ? 1 : 4);
+            return diskEditorAddMgtFile(panel, file.rawData, file.name, mgtType, file.addr || 0);
+        } else if (panel.fileType === 'mdr') {
+            const isPrint = file.ext === 'P';
+            return diskEditorAddMdrFile(panel, file.rawData, file.name, isPrint);
+        } else if (panel.fileType === 'opd') {
+            return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart);
         } else if (panel.fileType === 'dsk') {
             return dskEditorAddFile(panel, file.rawData, file.name, file.ext || '', file.type, file.addr, file.autostart);
         } else if (panel.fileType === 'zip') {
@@ -6791,6 +8101,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 case 'tap': editorNewTap(dst); break;
                 case 'tzx': editorNewTzx(dst); break;
                 case 'trd': case 'scl': diskEditorNewTrd(dst); break;
+                case 'mgt': diskEditorNewMgt(dst); break;
+                case 'mdr': diskEditorNewMdr(dst); break;
+                case 'opd': diskEditorNewOpd(dst); break;
                 case 'dsk': dskEditorNewDsk(dst); break;
                 case 'zip': zipEditorNewZip(dst); break;
             }
@@ -6810,6 +8123,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (dst.fileType === 'trd' || dst.fileType === 'scl') {
             diskEditorRenderFileList(dst);
             diskEditorRefreshExplorer(dst);
+        } else if (dst.fileType === 'mgt') {
+            mgtEditorRenderFileList(dst);
+            mgtEditorRefreshExplorer(dst);
+        } else if (dst.fileType === 'mdr') {
+            mdrEditorRenderFileList(dst);
+            mdrEditorRefreshExplorer(dst);
+        } else if (dst.fileType === 'opd') {
+            opdEditorRenderFileList(dst);
+            opdEditorRefreshExplorer(dst);
         } else if (dst.fileType === 'dsk') {
             dskEditorRefreshState(dst);
             dskEditorRenderFileList(dst);
@@ -6830,15 +8152,39 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // ========== Panel file list click handler (delegated) ==========
 
     function handlePanelFileListClick(panel, e) {
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl';
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
+
+        // Handle OPD Apply button
+        const opdApplyBtn = e.target.closest('[data-action="opd-apply"]');
+        if (opdApplyBtn) {
+            const idx = parseInt(opdApplyBtn.dataset.idx);
+            opdEditorApplyInlineEdit(panel, idx);
+            return;
+        }
+
+        // Handle MDR Apply button
+        const mdrApplyBtn = e.target.closest('[data-action="mdr-apply"]');
+        if (mdrApplyBtn) {
+            const idx = parseInt(mdrApplyBtn.dataset.idx);
+            mdrEditorApplyInlineEdit(panel, idx);
+            return;
+        }
 
         // Handle DSK Apply button
         const dskApplyBtn = e.target.closest('[data-action="dsk-apply"]');
         if (dskApplyBtn) {
             const idx = parseInt(dskApplyBtn.dataset.idx);
             dskEditorApplyInlineEdit(panel, idx);
+            return;
+        }
+
+        // Handle MGT Apply button
+        const mgtApplyBtn = e.target.closest('[data-action="mgt-apply"]');
+        if (mgtApplyBtn) {
+            const idx = parseInt(mgtApplyBtn.dataset.idx);
+            mgtEditorApplyInlineEdit(panel, idx);
             return;
         }
 
@@ -6933,7 +8279,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             panel.lastClickIdx = idx;
             panel.lastClickTime = now;
-            editorSelectBlock(panel, idx, e.ctrlKey || e.metaKey);
+            editorSelectBlock(panel, idx, e.ctrlKey || e.metaKey, e.shiftKey);
         }
     }
 
@@ -6953,6 +8299,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (panelEl) activatePanel(panelEl.dataset.panel);
     });
 
+    // Ctrl+A select all in active editor panel (Edit subtab must be visible)
+    document.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey) || e.key !== 'a') return;
+        // Don't intercept when focus is inside a text input or textarea
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+        // Only when Edit subtab is active
+        const editTab = document.querySelector('.explorer-subtab[data-subtab="edit"]');
+        if (!editTab || !editTab.classList.contains('active')) return;
+        // Only when the explorer panel is visible
+        const explorerPanel = document.getElementById('tools-explorer');
+        if (!explorerPanel || explorerPanel.offsetParent === null) return;
+        e.preventDefault();
+        editorSelectAll(getActivePanel());
+    });
+
     // ========== Shared Toolbar Button Handlers ==========
 
     editorNewFormat.addEventListener('change', () => {
@@ -6964,6 +8325,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'tzx': editorNewTzx(panel); break;
             case 'trd': diskEditorNewTrd(panel); break;
             case 'scl': diskEditorNewTrd(panel); panel.fileType = 'scl'; panel.fileName = 'new.scl'; panel.parsedFile.type = 'scl'; updatePanelHeader(panel); break;
+            case 'mgt': diskEditorNewMgt(panel); break;
+            case 'mdr': diskEditorNewMdr(panel); break;
+            case 'opd': diskEditorNewOpd(panel); break;
             case 'dsk': dskEditorNewDsk(panel); break;
             case 'zip': zipEditorNewZip(panel); break;
         }
@@ -6984,9 +8348,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (panel.fileType === 'zip') {
                 // ZIP panel: add container files directly
                 const ext = file.name.split('.').pop().toLowerCase();
-                const supported = ['tap', 'tzx', 'trd', 'scl', 'dsk'];
+                const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk'];
                 if (!supported.includes(ext)) {
-                    panel.dom.statusSpan.textContent = 'Only .tap/.tzx/.trd/.scl/.dsk files';
+                    panel.dom.statusSpan.textContent = 'Only .tap/.tzx/.trd/.scl/.mgt/.mdr/.dsk files';
                     panel.pendingFileData = null;
                     return;
                 }
@@ -7015,6 +8379,56 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
                     (hobetaFile ? ' [Hobeta]' : '') +
+                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
+                btnDiskAddOk.disabled = tooLarge;
+                diskAddDialog.classList.remove('hidden');
+            } else if (panel.fileType === 'mgt') {
+                // Open disk add dialog (reuse TRD dialog with MGT constraints)
+                const maxSize = 99840; // 195 sectors × 512
+                const fileData = panel.pendingFileData;
+                const tooLarge = fileData.length > maxSize;
+                const sectors = Math.ceil(fileData.length / 512);
+                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
+                diskAddName.value = baseName;
+                diskAddName.maxLength = 10;
+                diskAddAddr.value = '8000';
+                diskAddExt.value = 'C';
+                diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
+                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
+                btnDiskAddOk.disabled = tooLarge;
+                diskAddDialog.classList.remove('hidden');
+            } else if (panel.fileType === 'mdr') {
+                // MDR: add file directly (no address/type needed — all files are "File" or "PRINT")
+                const maxSize = MDRLoader.SECTOR_COUNT * MDRLoader.DATA_SIZE;
+                const fileData = panel.pendingFileData;
+                const tooLarge = fileData.length > maxSize;
+                const sectors = Math.ceil(fileData.length / MDRLoader.DATA_SIZE);
+                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
+                diskAddName.value = baseName;
+                diskAddName.maxLength = 10;
+                diskAddAddr.value = '0000';
+                diskAddExt.value = 'F';
+                diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
+                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
+                btnDiskAddOk.disabled = tooLarge;
+                diskAddDialog.classList.remove('hidden');
+            } else if (panel.fileType === 'opd') {
+                // OPD: reuse disk add dialog
+                const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
+                const totalSectors = (sides === 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE) / OPDLoader.BYTES_PER_SECTOR;
+                const maxSize = (totalSectors - OPDLoader.DATA_START_SECTOR) * OPDLoader.BYTES_PER_SECTOR;
+                const fileData = panel.pendingFileData;
+                const tooLarge = fileData.length > maxSize;
+                const sectors = Math.ceil(fileData.length / OPDLoader.BYTES_PER_SECTOR);
+                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
+                diskAddName.value = baseName;
+                diskAddName.maxLength = 10;
+                diskAddAddr.value = '8000';
+                diskAddExt.value = 'C';
+                diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
                     (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
                 diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
                 btnDiskAddOk.disabled = tooLarge;
@@ -7068,6 +8482,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (panel.fileType === 'tap') editorSaveTap(panel);
         else if (panel.fileType === 'tzx') editorSaveTzx(panel);
         else if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorSaveDisk(panel);
+        else if (panel.fileType === 'mgt') diskEditorSaveMgt(panel);
+        else if (panel.fileType === 'mdr') diskEditorSaveMdr(panel);
+        else if (panel.fileType === 'opd') diskEditorSaveOpd(panel);
         else if (panel.fileType === 'dsk') dskEditorSaveDsk(panel);
         else if (panel.fileType === 'zip') zipEditorSaveZip(panel);
     });
@@ -7077,26 +8494,27 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     btnEditorMoveUp.addEventListener('click', () => {
         const panel = getActivePanel();
         if (isTapOrTzx(panel.fileType)) editorMoveSelection(panel, -1);
-        else if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorMoveSelection(panel, -1);
+        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMoveSelection(panel, -1);
     });
 
     btnEditorMoveDown.addEventListener('click', () => {
         const panel = getActivePanel();
         if (isTapOrTzx(panel.fileType)) editorMoveSelection(panel, 1);
-        else if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorMoveSelection(panel, 1);
+        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMoveSelection(panel, 1);
     });
 
     btnEditorDel.addEventListener('click', () => {
         const panel = getActivePanel();
         if (isTapOrTzx(panel.fileType)) editorDeleteSelection(panel);
-        else if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorDeleteSelection(panel);
+        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr') diskEditorDeleteSelection(panel);
+        else if (panel.fileType === 'opd') opdEditorDeleteSelection(panel);
         else if (panel.fileType === 'dsk') dskEditorDeleteFiles(panel);
         else if (panel.fileType === 'zip') zipEditorDeleteFiles(panel);
     });
 
     btnEditorMarkDel.addEventListener('click', () => {
         const panel = getActivePanel();
-        if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorMarkDeletedSelection(panel);
+        if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMarkDeletedSelection(panel);
     });
 
     editorExtractDisk.addEventListener('change', () => {
@@ -7105,7 +8523,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const panel = getActivePanel();
         const t = panel.fileType;
         if (isTapOrTzx(t)) editorExtractSelection(panel, fmt);
-        else if (t === 'trd' || t === 'scl') diskEditorExtractSelection(panel, fmt);
+        else if (t === 'trd' || t === 'scl' || t === 'mgt' || t === 'mdr') diskEditorExtractSelection(panel, fmt);
+        else if (t === 'opd') opdEditorExtractSelection(panel, fmt);
         else if (t === 'dsk') dskEditorExtractFiles(panel, fmt);
         else if (t === 'zip') zipEditorExtractFiles(panel, fmt);
         editorExtractDisk.value = '';
@@ -7153,23 +8572,74 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     btnDiskAddOk.addEventListener('click', () => {
         const panel = editorPanels[dialogTargetPanel];
         if (!panel.pendingFileData) return;
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl';
-        if (!isDisk) diskEditorNewTrd(panel);
         const name = diskAddName.value || 'untitled';
         const ext = diskAddExt.value || 'C';
         const addr = parseInt(diskAddAddr.value, 16) || 0;
-        const err = diskEditorAddFile(panel, panel.pendingFileData, name, ext, addr);
-        if (err) {
-            diskAddFileInfo.textContent = err;
-            diskAddFileInfo.style.color = 'var(--accent)';
-            return;
+
+        if (panel.fileType === 'mgt') {
+            // Map ext to MGT type: B→1(BASIC), C→4(CODE), D→2(Num Array)
+            const mgtTypeMap = { 'B': 1, 'C': 4, 'D': 2, '#': 10 };
+            const mgtType = mgtTypeMap[ext] || 4;
+            const err = diskEditorAddMgtFile(panel, panel.pendingFileData, name, mgtType, addr);
+            if (err) {
+                diskAddFileInfo.textContent = err;
+                diskAddFileInfo.style.color = 'var(--accent)';
+                return;
+            }
+            panel.pendingFileData = null;
+            diskAddDialog.classList.add('hidden');
+            panel.selection.clear();
+            panel.expandedBlock = -1;
+            mgtEditorRenderFileList(panel);
+            mgtEditorRefreshExplorer(panel);
+        } else if (panel.fileType === 'mdr') {
+            const isPrint = ext === 'P';
+            const err = diskEditorAddMdrFile(panel, panel.pendingFileData, name, isPrint);
+            if (err) {
+                diskAddFileInfo.textContent = err;
+                diskAddFileInfo.style.color = 'var(--accent)';
+                return;
+            }
+            panel.pendingFileData = null;
+            diskAddDialog.classList.add('hidden');
+            panel.selection.clear();
+            panel.expandedBlock = -1;
+            // Rebuild MDR image from files
+            const mdr = diskEditorBuildMdr(panel);
+            panel.rawData = mdr;
+            panel.parsedFile = explorerParseMDR(mdr);
+            mdrEditorRenderFileList(panel);
+            mdrEditorRefreshExplorer(panel);
+        } else if (panel.fileType === 'opd') {
+            const opdType = ext === 'B' ? 0 : 3;
+            const err = diskEditorAddOpdFile(panel, panel.pendingFileData, name, opdType, addr, 0);
+            if (err) {
+                diskAddFileInfo.textContent = err;
+                diskAddFileInfo.style.color = 'var(--accent)';
+                return;
+            }
+            panel.pendingFileData = null;
+            diskAddDialog.classList.add('hidden');
+            panel.selection.clear();
+            panel.expandedBlock = -1;
+            opdEditorRenderFileList(panel);
+            opdEditorRefreshExplorer(panel);
+        } else {
+            const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl';
+            if (!isDisk) diskEditorNewTrd(panel);
+            const err = diskEditorAddFile(panel, panel.pendingFileData, name, ext, addr);
+            if (err) {
+                diskAddFileInfo.textContent = err;
+                diskAddFileInfo.style.color = 'var(--accent)';
+                return;
+            }
+            panel.pendingFileData = null;
+            diskAddDialog.classList.add('hidden');
+            panel.selection.clear();
+            panel.expandedBlock = -1;
+            diskEditorRenderFileList(panel);
+            diskEditorRefreshExplorer(panel);
         }
-        panel.pendingFileData = null;
-        diskAddDialog.classList.add('hidden');
-        panel.selection.clear();
-        panel.expandedBlock = -1;
-        diskEditorRenderFileList(panel);
-        diskEditorRefreshExplorer(panel);
     });
 
     btnDiskAddCancel.addEventListener('click', () => {

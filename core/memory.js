@@ -50,6 +50,15 @@ const VERSION = '0.6.5';
             this.scorpionPort7FFD = 0;          // Last value written to port 0x7FFD (for ROM bank fallback)
             this.scorpionRamInRomMode = false;  // true = RAM page 0 mapped at 0x0000-0x3FFF
 
+            // +D (DISCiPLE/+D) interface state
+            this.plusDActive = false;     // True when +D ROM/RAM paged in at 0x0000-0x3FFF
+            this.plusDRom = null;         // 8KB ROM (Uint8Array)
+            this.plusDRam = new Uint8Array(8192); // 8KB RAM
+
+            // Interface 1 (Microdrive) state
+            this.if1Active = false;      // True when IF1 ROM paged in at 0x0000-0x1FFF
+            this.if1Rom = null;          // 8KB ROM (Uint8Array)
+
             // Watchpoint callbacks
             this.onRead = null;  // function(addr, val) - called on read
             this.onWrite = null; // function(addr, val) - called on write
@@ -101,6 +110,9 @@ const VERSION = '0.6.5';
             this.scorpionPort1FFD = 0;
             this.scorpionPort7FFD = 0;
             this.scorpionRamInRomMode = false;
+            this.plusDActive = false;
+            this.plusDRam.fill(0);
+            this.if1Active = false;
         }
 
         loadRom(data, bank = 0) {
@@ -139,9 +151,56 @@ const VERSION = '0.6.5';
             return false;
         }
 
+        // Load +D ROM (8KB)
+        loadPlusDRom(data) {
+            this.plusDRom = new Uint8Array(8192);
+            const src = new Uint8Array(data);
+            this.plusDRom.set(src.subarray(0, Math.min(src.length, 8192)));
+        }
+
+        // Check if +D ROM is loaded
+        hasPlusDRom() {
+            if (!this.plusDRom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.plusDRom[i] !== 0) return true;
+            }
+            return false;
+        }
+
+        // Load Interface 1 ROM (8KB)
+        loadIF1Rom(data) {
+            this.if1Rom = new Uint8Array(8192);
+            const src = new Uint8Array(data);
+            this.if1Rom.set(src.subarray(0, Math.min(src.length, 8192)));
+        }
+
+        // Check if Interface 1 ROM is loaded
+        hasIF1Rom() {
+            if (!this.if1Rom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.if1Rom[i] !== 0) return true;
+            }
+            return false;
+        }
+
         read(addr) {
             // Note: addr is pre-masked by caller (z80.js readByte)
             let val;
+
+            // Interface 1 ROM overlay: 0x0000-0x1FFF only (8KB shadow ROM)
+            if (this.if1Active && addr < 0x2000) {
+                val = this.if1Rom[addr];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
+            // +D ROM/RAM overlay: 0x0000-0x1FFF = ROM, 0x2000-0x3FFF = RAM
+            if (this.plusDActive && addr < SLOT1_START) {
+                val = (addr < 0x2000) ? this.plusDRom[addr] : this.plusDRam[addr - 0x2000];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
             if (this.machineType === '48k') {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
@@ -178,6 +237,12 @@ const VERSION = '0.6.5';
         write(addr, val) {
             // Note: addr and val are pre-masked by caller (z80.js writeByte)
             if (this.onWrite) this.onWrite(addr, val);
+
+            // +D RAM write: 0x2000-0x3FFF is writable when +D is active
+            if (this.plusDActive && addr >= 0x2000 && addr < SLOT1_START) {
+                this.plusDRam[addr - 0x2000] = val;
+                return;
+            }
 
             if (this.specialPagingMode) {
                 // +2A special paging: all 4 slots are writable RAM

@@ -62,6 +62,13 @@ export function initKeyboardShortcuts({
             return;
         }
 
+        // Mapper text slide dialog: Escape to close
+        if (e.key === 'Escape' && mapperAPI.isTextSlideDialogOpen()) {
+            e.preventDefault();
+            mapperAPI.closeTextSlideDialog();
+            return;
+        }
+
         // Mapper hotkeys (Ctrl+Space = capture, Ctrl+Arrows = navigate, Ctrl+Shift+Up/Down = floor)
         if (e.ctrlKey && !e.altKey && !e.repeat) {
             const mapperTab = document.getElementById('tools-mapper');
@@ -102,6 +109,11 @@ export function initKeyboardShortcuts({
                     if (e.key === 'ArrowDown') {
                         e.preventDefault();
                         mapperAPI.action(() => { gameMapper.move(0, 1); mapperAPI.updateUI(); });
+                        return;
+                    }
+                    if (e.key === 'Delete') {
+                        e.preventDefault();
+                        mapperAPI.action(() => mapperAPI.deleteRoom());
                         return;
                     }
                 }

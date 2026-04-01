@@ -9,11 +9,14 @@ import {
     SLOT1_START, SLOT2_START, SLOT3_START,
     PORT_1FFD, PORT_ULAPLUS_REG, PORT_ULAPLUS_DATA,
     PORT_WD_CMD, PORT_WD_TRACK, PORT_WD_SECTOR, PORT_WD_DATA, PORT_WD_SYS,
+    PORT_PLUSD_CTRL, PORT_PLUSD_CMD, PORT_PLUSD_TRACK, PORT_PLUSD_SEC, PORT_PLUSD_DATA,
     DECODE_128K_MASK, DECODE_PLUS2A_MASK, DECODE_PLUS2A_MASK2,
     DECODE_7FFD_PLUS2A, DECODE_1FFD_PLUS2A,
     DECODE_FDC_MSR, DECODE_FDC_DATA,
     DECODE_AY_MASK, DECODE_AY_REG, DECODE_AY_DATA,
-    DECODE_P1024_MASK, DECODE_P1024_VAL
+    DECODE_P1024_MASK, DECODE_P1024_VAL,
+    IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL, IF1_PORT_NET,
+    IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR
 } from './constants.js';
 import { hex8, hex16, storageGet } from './utils.js';
 import { Z80 } from './z80.js';
@@ -23,7 +26,8 @@ import { AY } from './ay.js';
 import {
     TapeLoader, TapePlayer, TZXLoader, SnapshotLoader,
     TapeTrapHandler, TRDOSTrapHandler, BetaDisk,
-    ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader
+    ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader,
+    MGTLoader, PlusDDisk, MDRLoader, Microdrive
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
 import { Disassembler } from './disasm.js';
@@ -100,6 +104,7 @@ import { Disassembler } from './disasm.js';
             this.onRomLoaded = null;
             this.onError = null;
             this.onBreakpoint = null; // Called when breakpoint hit
+            this.onCodePathHit = null; // Called when code path trace diverges
             this.breakpointTStates = 0; // T-states accumulated since last breakpoint
             this._bpTStatesResetPending = false; // Deferred reset: stays visible until next action
             this._debugCallStack = []; // Runtime call stack: [{addr, caller}] tracked via SP changes
@@ -186,6 +191,24 @@ import { Disassembler } from './disasm.js';
             this.loadedFDCDisks = [null, null];               // Per-drive { data: Uint8Array, name: string }
             this.loadedBetaDiskFiles = [null, null, null, null];  // Per-drive file listings for Beta Disk
             this.loadedFDCDiskFiles = [null, null];               // Per-drive file listings for FDC
+            this.loadedPlusDDisks = [null, null];                 // Per-drive { data: Uint8Array, name: string }
+            this.loadedPlusDDiskFiles = [null, null];             // Per-drive file listings for +D
+
+            // +D (DISCiPLE/+D) interface
+            this.plusD = new PlusDDisk();
+            this.plusDEnabled = false;
+            this._plusDPagingEnabled = false;
+            this.plusD.onPageOut = () => {
+                this.memory.plusDActive = false;  // Page out +D ROM/RAM
+            };
+
+            // Interface 1 (Microdrive)
+            this.microdrive = new Microdrive();
+            this.if1Enabled = false;
+            this._if1PagingEnabled = false;
+            this._if1PageOutPending = false;
+            this.loadedIF1Cartridges = new Array(8).fill(null);   // Per-drive { data: Uint8Array, name: string }
+            this.loadedIF1CartridgeFiles = new Array(8).fill(null); // Per-drive file listings
 
             // Callback for processing TRD data before loading (used for boot injection)
             this.onBeforeTrdLoad = null; // function(data, filename) => processedData
@@ -222,6 +245,37 @@ import { Disassembler } from './disasm.js';
                 enabled: false,
                 addr: -1,       // address to watch
                 hits: []        // { pc, callStack, oldVal, newVal, frame }
+            };
+
+            // Read monitor (collision detection finder)
+            this.readMonitor = {
+                enabled: false,
+                addr: -1,       // address to watch
+                hits: []        // { pc, callStack, val, frame }
+            };
+
+            // Memory freeze: rewrite locked addresses at frame end
+            this.frozenAddresses = [];  // array of { addr, value }
+
+            // Comparison breakpoint: break when (addrA) op (addrB) becomes true
+            this.comparisonBreakpoint = {
+                enabled: false, addrA: -1, addrB: -1,
+                op: '==',  // ==, !=, <, >, <=, >=
+                hit: false
+            };
+
+            // Register tracker: log register value when PC hits a specific address
+            this.registerTracker = {
+                enabled: false, pc: -1, register: 'A',
+                values: [],  // { value, frame }
+                maxSamples: 10000
+            };
+
+            // Struct mapper: monitor reads/writes at offsets from a base address
+            this.structMapper = {
+                enabled: false, baseAddr: 0, baseReg: null,  // 'IX'|'IY'|null
+                maxOffset: 255,
+                fields: new Map()  // offset → { reads: Map<pc,count>, writes: Map<pc,count> }
             };
 
             // RZX playback state
@@ -300,6 +354,26 @@ import { Disassembler } from './disasm.js';
                         }
                     }
                 }
+                // Read monitor: capture reads from watched address
+                if (this.readMonitor.enabled && this._inCpuExecution && !this.cpu.isFetching && addr === this.readMonitor.addr) {
+                    this.readMonitor.hits.push({
+                        pc: this._currentInstrPC,
+                        callStack: this._debugCallStack.map(e => ({addr: e.addr, caller: e.caller, isInt: e.isInt || false})),
+                        val: val,
+                        frame: this.totalFrames
+                    });
+                }
+                // Struct mapper: track reads at offsets from base
+                if (this.structMapper.enabled && this._inCpuExecution && !this.cpu.isFetching) {
+                    const base = this._getStructBase();
+                    const offset = (addr - base) & 0xFFFF;
+                    if (offset < this.structMapper.maxOffset) {
+                        let field = this.structMapper.fields.get(offset);
+                        if (!field) { field = { reads: new Map(), writes: new Map() }; this.structMapper.fields.set(offset, field); }
+                        const pc = this._currentInstrPC;
+                        field.reads.set(pc, (field.reads.get(pc) || 0) + 1);
+                    }
+                }
                 if (this.triggers.length > 0 && this._inCpuExecution && !this.cpu.isFetching && !this._suppressWatchpoints) this.checkReadWatchpoint(addr, val);
             };
             this._memoryWriteCallback = (addr, val) => {
@@ -320,10 +394,10 @@ import { Disassembler } from './disasm.js';
                         }
                     }
                 }
-                // Trace: track memory writes (only during runtime tracing, not step tracing)
-                if (this.runtimeTraceEnabled &&
+                // Trace: track memory writes (runtime or step tracing)
+                if ((this.runtimeTraceEnabled || this.traceEnabled) &&
                     this.traceMemOps.length < this.traceMemOpsLimit) {
-                    this.traceMemOps.push({ addr, val });
+                    this.traceMemOps.push({ addr, old: this.memory.read(addr), val });
                 }
                 // POKE write trace: collect written addresses for blacklist
                 if (this.pokeWriteTraceEnabled) {
@@ -338,6 +412,22 @@ import { Disassembler } from './disasm.js';
                         newVal: val,
                         frame: this.totalFrames
                     });
+                }
+                // Comparison breakpoint: check when either watched address is written
+                if (this.comparisonBreakpoint.enabled &&
+                    (addr === this.comparisonBreakpoint.addrA || addr === this.comparisonBreakpoint.addrB)) {
+                    this._checkComparisonBreakpoint();
+                }
+                // Struct mapper: track writes at offsets from base
+                if (this.structMapper.enabled && this._inCpuExecution) {
+                    const base = this._getStructBase();
+                    const offset = (addr - base) & 0xFFFF;
+                    if (offset < this.structMapper.maxOffset) {
+                        let field = this.structMapper.fields.get(offset);
+                        if (!field) { field = { reads: new Map(), writes: new Map() }; this.structMapper.fields.set(offset, field); }
+                        const pc = this._currentInstrPC;
+                        field.writes.set(pc, (field.writes.get(pc) || 0) + 1);
+                    }
                 }
                 // Screen region write breakpoints
                 if (this._hasScreenTriggers && !this._suppressWatchpoints) {
@@ -357,6 +447,28 @@ import { Disassembler } from './disasm.js';
                     this.autoMap.executed.set(key, (this.autoMap.executed.get(key) || 0) + 1);
                     this.autoMap.currentFetchAddrs.add(addr);
                 }
+                if (this.codePath.enabled) {
+                    this.codePath.executed.add(this.getAutoMapKey(addr));
+                }
+                if (this.codePath.tracing) {
+                    const key = this.getAutoMapKey(addr);
+                    if (!this.codePath.baselineSet.has(key)) {
+                        this.codePath.traceHit = true;
+                        this.codePath.traceAddr = addr;
+                    }
+                }
+                if (this.registerTracker.enabled && addr === this.registerTracker.pc) {
+                    this._captureRegisterValue();
+                }
+            };
+
+            this.codePath = {
+                enabled: false,
+                executed: null,       // Set<string> of autoMapKeys when recording
+                tracing: false,       // true when trace-break mode active
+                baselineSet: null,    // Set<string> — baseline to compare against
+                traceHit: false,      // flag checked in runFrame()
+                traceAddr: 0          // PC that triggered the break
             };
 
             // Start with callbacks disabled (null = no overhead)
@@ -1084,6 +1196,21 @@ import { Disassembler } from './disasm.js';
             // Clear write monitor
             this.writeMonitor.enabled = false;
             this.writeMonitor.hits = [];
+
+            // Clear frozen addresses
+            this.frozenAddresses = [];
+
+            // Clear comparison breakpoint
+            this.comparisonBreakpoint.enabled = false;
+            this.comparisonBreakpoint.hit = false;
+
+            // Clear register tracker
+            this.registerTracker.enabled = false;
+            this.registerTracker.values = [];
+
+            // Clear struct mapper
+            this.structMapper.enabled = false;
+            this.structMapper.fields = new Map();
         }
 
         // ========== Port I/O ==========
@@ -1091,6 +1218,22 @@ import { Disassembler } from './disasm.js';
         _isBetaDiskActive() {
             return this.betaDiskEnabled &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
+        }
+
+        _isPlusDActive() {
+            return this.plusDEnabled && this.plusD && this.plusD.hasAnyDisk() &&
+                this.memory.hasPlusDRom();
+        }
+
+        _isIF1Active() {
+            return this.if1Enabled && this.microdrive && this.microdrive.hasAnyCartridge() &&
+                this.memory.hasIF1Rom();
+        }
+
+        triggerPlusDNmi() {
+            if (!this.plusDEnabled || !this.memory.hasPlusDRom()) return;
+            this.memory.plusDActive = true;  // Page in +D ROM/RAM
+            this.cpu.nmi();                  // CPU jumps to 0x0066
         }
 
         portRead(port) {
@@ -1147,6 +1290,12 @@ import { Disassembler } from './disasm.js';
 
                 const lowByte = port & 0xff;
                 const highByte = (port >> 8) & 0xff;
+
+                // Interface 1 (Microdrive) ports — checked before +D (port conflict on $E7/$EF)
+                const if1Active = this._isIF1Active();
+
+                // +D interface ports (when enabled and disk inserted)
+                const plusDActive = this._isPlusDActive();
 
                 // Beta Disk ports (Pentagon with disk inserted)
                 // Ports are accessible whenever any disk is inserted, not just when ROM is paged in
@@ -1212,6 +1361,22 @@ import { Disassembler } from './disasm.js';
                 } else if (this.fdc && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_DATA) {
                     // µPD765 FDC Data Register (0x3FFD) — ZX Spectrum +3
                     result = this.fdc.readData();
+                } else if (if1Active && (lowByte & 0x01) === 1 && ((lowByte & IF1_PORT_MASK) === IF1_PORT_DATA ||
+                           (lowByte & IF1_PORT_MASK) === IF1_PORT_CTL)) {
+                    // Interface 1 Microdrive ports (data $E7 or status $EF)
+                    const if1Reg = lowByte & IF1_PORT_MASK;
+                    if (if1Reg === IF1_PORT_DATA) {
+                        result = this.microdrive.readData();
+                    } else {
+                        result = this.microdrive.readStatus();
+                    }
+                } else if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
+                           lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_CTRL)) {
+                    // +D WD1772 registers (cmd/status, track, sector, control)
+                    result = this.plusD.read(port);
+                } else if (plusDActive && !betaDiskActive && lowByte === PORT_PLUSD_DATA) {
+                    // +D data register (0xFF) — only when Beta Disk not active (shared port)
+                    result = this.plusD.read(port);
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -1357,6 +1522,12 @@ import { Disassembler } from './disasm.js';
 
             const lowByte = port & 0xff;
 
+            // Interface 1 (Microdrive) ports — checked before +D (port conflict on $E7/$EF)
+            const if1Active = this._isIF1Active();
+
+            // +D interface ports (when enabled and disk inserted)
+            const plusDActive = this._isPlusDActive();
+
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
@@ -1440,6 +1611,28 @@ import { Disassembler } from './disasm.js';
                 }
 
                 // Don't return - port $7FFC triggers BOTH ULA AND paging for scroll17 effect
+            }
+            if (if1Active && (lowByte & 0x01) === 1 && ((lowByte & IF1_PORT_MASK) === IF1_PORT_DATA ||
+                (lowByte & IF1_PORT_MASK) === IF1_PORT_CTL)) {
+                // Interface 1 Microdrive ports (data $E7 or control $EF)
+                const if1Reg = lowByte & IF1_PORT_MASK;
+                if (if1Reg === IF1_PORT_DATA) {
+                    this.microdrive.writeData(val);
+                } else {
+                    this.microdrive.writeControl(val);
+                }
+                return;
+            }
+            if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
+                lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_CTRL)) {
+                // +D WD1772 registers (cmd, track, sector, control)
+                this.plusD.write(port, val);
+                return;
+            }
+            if (plusDActive && !betaDiskActive && lowByte === PORT_PLUSD_DATA) {
+                // +D data register (0xFF) — only when Beta Disk not active (shared port)
+                this.plusD.write(port, val);
+                return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                 lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
@@ -1657,7 +1850,8 @@ import { Disassembler } from './disasm.js';
 
                 // Beta Disk automatic ROM paging (Pentagon, or 48K/128K with Beta Disk enabled)
                 if (this._betaDiskPagingEnabled) this.updateBetaDiskPaging();
-
+                // Interface 1 ROM auto-paging ($0008/$1708 page in, $0700 page out)
+                if (this._if1PagingEnabled) this.updateIF1Paging();
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
                 const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
@@ -1795,6 +1989,11 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // IF1 page-out: deferred to after RET at $0700 executes
+                    if (this._if1PageOutPending) {
+                        this.memory.if1Active = false;
+                        this._if1PageOutPending = false;
+                    }
                     this._trackCallStack(_csOldPC, _csOldSP);
                     // Profiler: track CALL/RST entries and per-PC T-states
                     if (this.profiler.enabled) {
@@ -1908,6 +2107,23 @@ import { Disassembler } from './disasm.js';
                     this.drawOverlay();
                     if (this.onPortBreakpoint) this.onPortBreakpoint(this.lastPortBreakpoint);
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
+                    this._bpTStatesResetPending = true;
+                    return;
+                }
+
+                // Check code path trace hit
+                if (this.codePath.traceHit) {
+                    this.codePath.traceHit = false;
+                    this.breakpointTStates += this.cpu.tStates;
+                    this.stop();
+                    while (nextLineToRender < totalLines) {
+                        this.ula.renderScanline(nextLineToRender++);
+                    }
+                    const frameBuffer = this.ula.endFrame();
+                    this.imageData.data.set(frameBuffer);
+                    this.ctx.putImageData(this.imageData, 0, 0);
+                    this.drawOverlay();
+                    if (this.onCodePathHit) this.onCodePathHit(this.codePath.traceAddr);
                     this._bpTStatesResetPending = true;
                     return;
                 }
@@ -2038,6 +2254,13 @@ import { Disassembler } from './disasm.js';
 
             // Draw overlay if enabled
             this.drawOverlay();
+
+            // Memory freeze: rewrite locked addresses at frame end
+            if (this.frozenAddresses.length > 0) {
+                this._suppressWatchpoints = true;
+                for (const f of this.frozenAddresses) this.memory.write(f.addr, f.value);
+                this._suppressWatchpoints = false;
+            }
 
             this.frameCount++;
             this.totalFrames++;
@@ -2253,7 +2476,8 @@ import { Disassembler } from './disasm.js';
 
                 // Beta Disk automatic ROM paging (Pentagon only)
                 this.updateBetaDiskPaging();
-
+                // Interface 1 ROM auto-paging
+                if (this._if1PagingEnabled) this.updateIF1Paging();
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
@@ -2332,6 +2556,11 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // IF1 page-out: deferred to after RET at $0700 executes
+                    if (this._if1PageOutPending) {
+                        this.memory.if1Active = false;
+                        this._if1PageOutPending = false;
+                    }
                     this._trackCallStack(_hlCsOldPC, _hlCsOldSP);
                     // Profiler: track CALL/RST entries and per-PC T-states
                     if (this.profiler.enabled) {
@@ -2402,6 +2631,13 @@ import { Disassembler } from './disasm.js';
 
             // Complete frame rendering (same as runFrame)
             this.ula.endFrame();
+
+            // Memory freeze: rewrite locked addresses at frame end
+            if (this.frozenAddresses.length > 0) {
+                this._suppressWatchpoints = true;
+                for (const f of this.frozenAddresses) this.memory.write(f.addr, f.value);
+                this._suppressWatchpoints = false;
+            }
 
             this.frameCount++;
             this.totalFrames++;
@@ -3431,6 +3667,12 @@ import { Disassembler } from './disasm.js';
             this._betaDiskPagingEnabled =
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
+            // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
+            // IF1 is NOT compatible with +2A/+3 (they have their own extended paging)
+            this._if1PagingEnabled =
+                this.if1Enabled &&
+                this.memory.hasIF1Rom() &&
+                this.profile.pagingModel !== '+2a';
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
@@ -3456,6 +3698,32 @@ import { Disassembler } from './disasm.js';
                 // Entering RAM - page out TR-DOS ROM
                 if (this.memory.trdosActive) {
                     this.memory.trdosActive = false;
+                }
+            }
+        }
+
+        /**
+         * Interface 1 ROM auto-paging
+         * Page IN: opcode fetch at $0008 (RST 8) or $1708 (CLOSE#)
+         * Page OUT: after executing RET at $0700
+         */
+        updateIF1Paging() {
+            if (!this._if1PagingEnabled) return;
+
+            const pc = this.cpu.pc;
+            if (!this.memory.if1Active) {
+                // Page IN conditions
+                if (pc === IF1_PAGE_IN_RST8 || pc === IF1_PAGE_IN_CLOSE) {
+                    // Only page in when BASIC ROM is selected
+                    if (this.profile.pagingModel === 'none' ||
+                        this.memory.currentRomBank === this.profile.basicRomBank) {
+                        this.memory.if1Active = true;
+                    }
+                }
+            } else {
+                // Page OUT: set pending flag at $0700; actual unpage after RET executes
+                if (pc === IF1_PAGE_OUT_ADDR) {
+                    this._if1PageOutPending = true;
                 }
             }
         }
@@ -3552,8 +3820,181 @@ import { Disassembler } from './disasm.js';
                 tStatesPerPC: new Map(this.profiler.tStatesPerPC),
                 totalTStates: framesProfiled * this.getTstatesPerFrame()
             };
+            // Analyze register signatures for subroutines in RAM
+            this._analyzeRegSignatures(results);
             this.updateMemoryCallbacksFlag();
             if (this.profiler.onComplete) this.profiler.onComplete(results);
+        }
+
+        _analyzeRegSignatures(results) {
+            const disasm = new Disassembler(this.memory);
+            for (const [key, stats] of results.subroutines) {
+                if (stats.entryAddr < 0x4000) continue;
+                const accessed = new Map(); // reg → 'read'|'write' (first access)
+                let pc = stats.entryAddr;
+                for (let i = 0; i < 16; i++) {
+                    if (pc > 0xFFFF) break;
+                    let info;
+                    try { info = disasm.disassemble(pc); } catch (e) { break; }
+                    if (!info) break;
+                    const m = (info.mnemonic || '').toUpperCase();
+                    // Stop at unconditional control flow
+                    if (/^(RET|JP [0-9$]|JP \(|RETI|RETN)\b/.test(m) && !/^(JP [A-Z]{1,2},)/.test(m)) break;
+                    if (/^(CALL [0-9$]|RST )\b/.test(m) && !/^(CALL [A-Z]{1,2},)/.test(m)) break;
+
+                    const regAccess = this._getRegAccess(m);
+                    // Record first access per register: reads first, then writes
+                    for (const r of regAccess.reads) {
+                        if (!accessed.has(r)) accessed.set(r, 'read');
+                    }
+                    for (const w of regAccess.writes) {
+                        if (!accessed.has(w)) accessed.set(w, 'write');
+                    }
+                    pc += info.length || 1;
+                }
+                // Build inputs (first-read) and outputs (first-write)
+                const inputs = new Set();
+                const outputs = new Set();
+                for (const [reg, mode] of accessed) {
+                    if (mode === 'read') inputs.add(reg);
+                    else outputs.add(reg);
+                }
+                stats.regInputs = inputs;
+                stats.regOutputs = outputs;
+            }
+        }
+
+        _getRegAccess(mnemonic) {
+            const reads = [];
+            const writes = [];
+            const m = mnemonic.toUpperCase().trim();
+            const parts = m.split(/[\s,]+/);
+            const op = parts[0];
+
+            // Helper: expand pair to individual regs
+            const expand = (r) => {
+                switch (r) {
+                    case 'BC': return ['B', 'C'];
+                    case 'DE': return ['D', 'E'];
+                    case 'HL': return ['H', 'L'];
+                    case 'AF': return ['A', 'F'];
+                    default: return [r];
+                }
+            };
+            const isReg = (r) => /^[A-Z]{1,2}$/.test(r) && !['LD','ADD','ADC','SUB','SBC','AND','OR','XOR','CP','INC','DEC','PUSH','POP','EX','IN','OUT','BIT','SET','RES','JP','JR','CALL','RET','RST','NOP','HALT','DI','EI','IM','RLC','RRC','RL','RR','SLA','SRA','SRL','DJNZ','NEG','CCF','SCF','CPL','DAA','RLA','RRA','RLCA','RRCA','LDIR','LDDR','CPIR','CPDR','INIR','INDR','OTIR','OTDR','RETI','RETN','NOP'].includes(r);
+
+            switch (op) {
+                case 'LD': {
+                    const dst = parts[1];
+                    const src = parts.length > 2 ? parts.slice(2).join(',') : '';
+                    // Writes to destination
+                    if (isReg(dst)) writes.push(...expand(dst));
+                    else if (dst === '(HL)') reads.push('H', 'L');
+                    else if (dst.match(/^\(IX/)) reads.push('IX');
+                    else if (dst.match(/^\(IY/)) reads.push('IY');
+                    // Reads from source
+                    const srcClean = src.replace(/[()]/g, '');
+                    if (isReg(srcClean)) reads.push(...expand(srcClean));
+                    else if (src.includes('(HL)')) reads.push('H', 'L');
+                    else if (src.includes('(BC)')) reads.push('B', 'C');
+                    else if (src.includes('(DE)')) reads.push('D', 'E');
+                    else if (src.match(/\(IX/)) reads.push('IX');
+                    else if (src.match(/\(IY/)) reads.push('IY');
+                    break;
+                }
+                case 'ADD': case 'ADC': case 'SUB': case 'SBC':
+                case 'AND': case 'OR': case 'XOR': case 'CP': {
+                    reads.push('A');
+                    if (op !== 'CP') writes.push('A', 'F'); else writes.push('F');
+                    const operand = parts.length > 2 ? parts[2] : parts[1];
+                    if (operand && isReg(operand)) reads.push(...expand(operand));
+                    if (operand === '(HL)') reads.push('H', 'L');
+                    // ADD HL,rr
+                    if (parts[1] === 'HL' && parts.length > 2) {
+                        reads.push('H', 'L');
+                        writes.push('H', 'L', 'F');
+                        if (isReg(parts[2])) reads.push(...expand(parts[2]));
+                    }
+                    break;
+                }
+                case 'INC': case 'DEC': {
+                    const r = parts[1];
+                    if (isReg(r)) { reads.push(...expand(r)); writes.push(...expand(r)); writes.push('F'); }
+                    if (r === '(HL)') reads.push('H', 'L');
+                    break;
+                }
+                case 'PUSH': {
+                    const r = parts[1];
+                    if (isReg(r)) reads.push(...expand(r));
+                    break;
+                }
+                case 'POP': {
+                    const r = parts[1];
+                    if (isReg(r)) writes.push(...expand(r));
+                    break;
+                }
+                case 'EX': {
+                    if (m.includes('DE') && m.includes('HL')) {
+                        reads.push('D', 'E', 'H', 'L');
+                        writes.push('D', 'E', 'H', 'L');
+                    }
+                    break;
+                }
+                case 'LDIR': case 'LDDR':
+                    reads.push('B', 'C', 'D', 'E', 'H', 'L');
+                    writes.push('B', 'C', 'D', 'E', 'H', 'L', 'F');
+                    break;
+                case 'CPIR': case 'CPDR':
+                    reads.push('A', 'B', 'C', 'H', 'L');
+                    writes.push('B', 'C', 'H', 'L', 'F');
+                    break;
+                case 'DJNZ':
+                    reads.push('B'); writes.push('B', 'F');
+                    break;
+                case 'NEG':
+                    reads.push('A'); writes.push('A', 'F');
+                    break;
+                case 'CPL': case 'DAA':
+                case 'RLA': case 'RRA': case 'RLCA': case 'RRCA':
+                    reads.push('A'); writes.push('A', 'F');
+                    break;
+                case 'CCF': case 'SCF':
+                    writes.push('F');
+                    break;
+                case 'BIT': {
+                    const r = parts[parts.length - 1];
+                    if (isReg(r)) reads.push(r);
+                    writes.push('F');
+                    break;
+                }
+                case 'SET': case 'RES': {
+                    const r = parts[parts.length - 1];
+                    if (isReg(r)) { reads.push(r); writes.push(r); }
+                    break;
+                }
+                case 'RLC': case 'RRC': case 'RL': case 'RR':
+                case 'SLA': case 'SRA': case 'SRL': {
+                    const r = parts[1];
+                    if (isReg(r)) { reads.push(r); writes.push(r, 'F'); }
+                    break;
+                }
+                case 'IN': {
+                    const dst = parts[1];
+                    if (isReg(dst)) writes.push(dst);
+                    break;
+                }
+                case 'OUT': {
+                    const src = parts.length > 2 ? parts[2] : parts[1];
+                    const srcClean = (src || '').replace(/[()]/g, '');
+                    if (isReg(srcClean)) reads.push(srcClean);
+                    break;
+                }
+            }
+            // Deduplicate
+            return {
+                reads: [...new Set(reads)],
+                writes: [...new Set(writes)]
+            };
         }
 
         startPokeWriteTrace() {
@@ -3581,6 +4022,167 @@ import { Disassembler } from './disasm.js';
             this.writeMonitor.hits = [];
             this.updateMemoryCallbacksFlag();
             return results;
+        }
+
+        startReadMonitor(addr) {
+            this.readMonitor.addr = addr & 0xFFFF;
+            this.readMonitor.hits = [];
+            this.readMonitor.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopReadMonitor() {
+            this.readMonitor.enabled = false;
+            const results = this.readMonitor.hits;
+            this.readMonitor.hits = [];
+            this.updateMemoryCallbacksFlag();
+            return results;
+        }
+
+        startCodePathRecording() {
+            this.codePath.executed = new Set();
+            this.codePath.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopCodePathRecording() {
+            this.codePath.enabled = false;
+            const result = this.codePath.executed;
+            this.codePath.executed = null;
+            this.updateMemoryCallbacksFlag();
+            return result;  // Set<string> of autoMapKeys
+        }
+
+        startCodePathTracing(baselineSet) {
+            this.codePath.baselineSet = baselineSet;
+            this.codePath.traceHit = false;
+            this.codePath.traceAddr = 0;
+            this.codePath.tracing = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopCodePathTracing() {
+            this.codePath.tracing = false;
+            this.codePath.baselineSet = null;
+            this.codePath.traceHit = false;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        // ========== Memory Freeze ==========
+
+        setFrozenAddresses(list) {
+            this.frozenAddresses = list;
+        }
+
+        // ========== Comparison Breakpoint ==========
+
+        startComparisonBreakpoint(addrA, addrB, op) {
+            this.comparisonBreakpoint.addrA = addrA & 0xFFFF;
+            this.comparisonBreakpoint.addrB = addrB & 0xFFFF;
+            this.comparisonBreakpoint.op = op;
+            this.comparisonBreakpoint.hit = false;
+            this.comparisonBreakpoint.enabled = true;
+            this.updateMemoryCallbacksFlag();
+            // Check immediately in case the condition is already true
+            this._checkComparisonBreakpoint();
+        }
+
+        stopComparisonBreakpoint() {
+            this.comparisonBreakpoint.enabled = false;
+            this.comparisonBreakpoint.hit = false;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        _checkComparisonBreakpoint() {
+            const bp = this.comparisonBreakpoint;
+            const a = this.memory.read(bp.addrA);
+            const b = this.memory.read(bp.addrB);
+            let match = false;
+            switch (bp.op) {
+                case '==': match = a === b; break;
+                case '!=': match = a !== b; break;
+                case '<':  match = a < b;   break;
+                case '>':  match = a > b;   break;
+                case '<=': match = a <= b;  break;
+                case '>=': match = a >= b;  break;
+            }
+            if (match) {
+                this.watchpointHit = true;
+                this.lastWatchpoint = {
+                    addr: bp.addrA, type: 'comparison',
+                    message: `Compare: ($${bp.addrA.toString(16).toUpperCase().padStart(4,'0')})=${a} ${bp.op} ($${bp.addrB.toString(16).toUpperCase().padStart(4,'0')})=${b}`
+                };
+            }
+        }
+
+        // ========== Register Tracker ==========
+
+        startRegisterTracker(pc, reg) {
+            this.registerTracker.pc = pc & 0xFFFF;
+            this.registerTracker.register = reg;
+            this.registerTracker.values = [];
+            this.registerTracker.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopRegisterTracker() {
+            this.registerTracker.enabled = false;
+            const results = this.registerTracker.values;
+            this.registerTracker.values = [];
+            this.updateMemoryCallbacksFlag();
+            return results;
+        }
+
+        _captureRegisterValue() {
+            if (this.registerTracker.values.length >= this.registerTracker.maxSamples) return;
+            const value = this._getRegisterValue(this.registerTracker.register);
+            this.registerTracker.values.push({ value, frame: this.totalFrames });
+        }
+
+        _getRegisterValue(name) {
+            const cpu = this.cpu;
+            switch (name) {
+                case 'A': return cpu.a;
+                case 'B': return cpu.b;
+                case 'C': return cpu.c;
+                case 'D': return cpu.d;
+                case 'E': return cpu.e;
+                case 'H': return cpu.h;
+                case 'L': return cpu.l;
+                case 'F': return cpu.f;
+                case 'BC': return (cpu.b << 8) | cpu.c;
+                case 'DE': return (cpu.d << 8) | cpu.e;
+                case 'HL': return (cpu.h << 8) | cpu.l;
+                case 'IX': return cpu.ix;
+                case 'IY': return cpu.iy;
+                case 'SP': return cpu.sp;
+                default: return 0;
+            }
+        }
+
+        // ========== Struct Mapper ==========
+
+        startStructMapper(baseAddr, baseReg, maxOffset) {
+            this.structMapper.baseAddr = baseAddr & 0xFFFF;
+            this.structMapper.baseReg = baseReg;
+            this.structMapper.maxOffset = maxOffset;
+            this.structMapper.fields = new Map();
+            this.structMapper.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopStructMapper() {
+            this.structMapper.enabled = false;
+            const results = new Map(this.structMapper.fields);
+            this.structMapper.fields = new Map();
+            this.updateMemoryCallbacksFlag();
+            return results;
+        }
+
+        _getStructBase() {
+            if (this.structMapper.baseReg === 'IX') return this.cpu.ix;
+            if (this.structMapper.baseReg === 'IY') return this.cpu.iy;
+            return this.structMapper.baseAddr;
         }
 
         _profilerCurrentSub() {
@@ -3632,7 +4234,7 @@ import { Disassembler } from './disasm.js';
                     // CALL/RST confirmed — record entry
                     const stats = this._profilerGetOrCreateStats(newPC);
                     stats.callCount++;
-                    stats.callers.add(oldPC);
+                    stats.callers.add(this.getAutoMapKey(oldPC));
                     stats.framesCalled.add(frame);
 
                     // Check ISR context — walk up call stack
@@ -3647,7 +4249,7 @@ import { Disassembler } from './disasm.js';
                     if (parentEntry) {
                         const parentKey = this.getAutoMapKey(parentEntry.addr);
                         const parentStats = this.profiler.subroutines.get(parentKey);
-                        if (parentStats) parentStats.callees.add(newPC);
+                        if (parentStats) parentStats.callees.add(this.getAutoMapKey(newPC));
                     }
                 }
             }
@@ -4832,16 +5434,20 @@ import { Disassembler } from './disasm.js';
                 this.triggers.length > 0 ||
                 this.autoMap.enabled ||
                 this.runtimeTraceEnabled ||
+                this.traceEnabled ||
                 this.profiler.enabled ||
                 this.pokeWriteTraceEnabled ||
-                this.writeMonitor.enabled;
+                this.writeMonitor.enabled ||
+                this.readMonitor.enabled ||
+                this.comparisonBreakpoint.enabled ||
+                this.structMapper.enabled;
 
             // Set callbacks to null when not needed (eliminates function call overhead)
             this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
             this.memory.onWrite = needsMemoryCallbacks ? this._memoryWriteCallback : null;
 
-            // CPU fetch callback only needed for autoMap
-            this.cpu.onFetch = this.autoMap.enabled ? this._cpuFetchCallback : null;
+            // CPU fetch callback needed for autoMap, codePath recording/tracing, and register tracker
+            this.cpu.onFetch = (this.autoMap.enabled || this.codePath.enabled || this.codePath.tracing || this.registerTracker.enabled) ? this._cpuFetchCallback : null;
         }
 
         // ========== Unified Trigger System ==========
@@ -5869,6 +6475,16 @@ import { Disassembler } from './disasm.js';
                 return this.loadDSKImage(data, fileName, driveIndex);
             }
 
+            // Check for MGT disk images (+D interface)
+            if (type === 'mgt') {
+                return this.loadMGTImage(data, fileName, driveIndex);
+            }
+
+            // Check for MDR cartridge images (Interface 1 Microdrive)
+            if (type === 'mdr') {
+                return this.loadMDRImage(data, fileName, driveIndex);
+            }
+
             // Check for TRD/SCL disk images (contain multiple files)
             if (type === 'trd' || type === 'scl') {
                 return this.loadDiskImage(data, type, fileName, driveIndex);
@@ -5969,6 +6585,72 @@ import { Disassembler } from './disasm.js';
                 _driveIndex: driveIndex,
                 needsMachineSwitch: this.machineType !== '+3',
                 targetMachine: '+3'
+            };
+        }
+
+        // Load MGT disk image - inserts disk into +D interface
+        loadMGTImage(data, fileName, driveIndex = 0) {
+            const files = MGTLoader.listFiles(data);
+
+            // Store disk image for project save (per-drive)
+            const diskData = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+            this.loadedPlusDDisks[driveIndex & 0x01] = {
+                data: diskData,
+                name: fileName
+            };
+            this.loadedPlusDDiskFiles[driveIndex & 0x01] = files;
+
+            // Load disk into +D interface
+            this.plusD.loadDisk(diskData, 'mgt', driveIndex);
+
+            // Check if +D is available
+            const plusDAvailable = this.plusDEnabled && this.memory.hasPlusDRom();
+
+            return {
+                diskInserted: true,
+                diskType: 'mgt',
+                diskName: fileName,
+                fileCount: files.length,
+                _diskData: diskData,
+                _diskFiles: files,
+                _driveIndex: driveIndex,
+                needsMachineSwitch: false,  // +D works with any machine
+                plusDRequired: !plusDAvailable
+            };
+        }
+
+        // Load MDR cartridge image - inserts cartridge into Interface 1 Microdrive
+        loadMDRImage(data, fileName, driveIndex = 0) {
+            const files = MDRLoader.listFiles(data);
+
+            // Store cartridge for project save (per-drive)
+            const cartData = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+            const idx = driveIndex & 0x07;
+            this.loadedIF1Cartridges[idx] = {
+                data: cartData,
+                name: fileName
+            };
+            this.loadedIF1CartridgeFiles[idx] = files;
+
+            // Load into Microdrive hardware
+            this.microdrive.loadCartridge(cartData, driveIndex);
+
+            // Update paging flag (IF1 may now be activatable)
+            this.updateBetaDiskPagingFlag();
+
+            // Check if IF1 is available
+            const if1Available = this.if1Enabled && this.memory.hasIF1Rom();
+
+            return {
+                diskInserted: true,
+                diskType: 'mdr',
+                diskName: fileName,
+                fileCount: files.length,
+                _diskData: cartData,
+                _diskFiles: files,
+                _driveIndex: driveIndex,
+                needsMachineSwitch: false,  // IF1 works with 48K/128K/+2/Pentagon
+                if1Required: !if1Available
             };
         }
 
@@ -6199,6 +6881,10 @@ import { Disassembler } from './disasm.js';
                 case 'trd':
                 case 'scl':
                     return this.loadDiskImage(data, type, fileName, driveIndex);
+                case 'mgt':
+                    return this.loadMGTImage(data, fileName, driveIndex);
+                case 'mdr':
+                    return this.loadMDRImage(data, fileName, driveIndex);
                 case 'rzx': throw new Error('Use loadRZX for RZX files');
                 default: throw new Error('Unknown file format');
             }
@@ -6557,10 +7243,21 @@ import { Disassembler } from './disasm.js';
                     return entry;
                 });
             }
+            // For IF1 cartridges, serialize current in-memory state (may have been modified)
+            const if1Cartridges = this.loadedIF1Cartridges.map((entry, i) => {
+                if (!entry) return null;
+                const cartData = this.microdrive.getCartridgeData(i);
+                if (cartData) {
+                    return { data: cartData, name: entry.name };
+                }
+                return entry;
+            });
             return {
                 tape: this.loadedTape,
                 betaDisks: this.loadedBetaDisks,
                 fdcDisks: fdcDisks,
+                plusDDisks: this.loadedPlusDDisks,
+                if1Cartridges: if1Cartridges,
                 tapeBlock: this.getTapeBlock()
             };
         }
@@ -6610,6 +7307,31 @@ import { Disassembler } from './disasm.js';
                         }
                     }
                 }
+                // Restore +D drives
+                if (media.plusDDisks) {
+                    for (let i = 0; i < 2; i++) {
+                        if (media.plusDDisks[i] && media.plusDDisks[i].data) {
+                            this.plusD.loadDisk(media.plusDDisks[i].data, 'mgt', i);
+                            this.loadedPlusDDisks[i] = media.plusDDisks[i];
+                            try {
+                                this.loadedPlusDDiskFiles[i] = MGTLoader.listFiles(media.plusDDisks[i].data);
+                            } catch (e) { /* ignore */ }
+                        }
+                    }
+                }
+                // Restore IF1 Microdrive cartridges
+                if (media.if1Cartridges) {
+                    for (let i = 0; i < 8; i++) {
+                        if (media.if1Cartridges[i] && media.if1Cartridges[i].data) {
+                            this.microdrive.loadCartridge(media.if1Cartridges[i].data, i);
+                            this.loadedIF1Cartridges[i] = media.if1Cartridges[i];
+                            try {
+                                this.loadedIF1CartridgeFiles[i] = MDRLoader.listFiles(media.if1Cartridges[i].data);
+                            } catch (e) { /* ignore */ }
+                        }
+                    }
+                    this.updateBetaDiskPagingFlag();
+                }
             } else if (media.data) {
                 // Legacy single-media format (backward compat with old projects)
                 if (media.type === 'tap') {
@@ -6642,8 +7364,12 @@ import { Disassembler } from './disasm.js';
             this.loadedTape = null;
             this.loadedBetaDisks = [null, null, null, null];
             this.loadedFDCDisks = [null, null];
+            this.loadedPlusDDisks = [null, null];
+            this.loadedIF1Cartridges = new Array(8).fill(null);
             this.loadedBetaDiskFiles = [null, null, null, null];
             this.loadedFDCDiskFiles = [null, null];
+            this.loadedPlusDDiskFiles = [null, null];
+            this.loadedIF1CartridgeFiles = new Array(8).fill(null);
         }
 
         clearTape() {
@@ -6655,6 +7381,14 @@ import { Disassembler } from './disasm.js';
                 if (this.fdc) this.fdc.ejectDisk(driveIndex & 0x01);
                 this.loadedFDCDisks[driveIndex & 0x01] = null;
                 this.loadedFDCDiskFiles[driveIndex & 0x01] = null;
+            } else if (type === 'plusd') {
+                this.plusD.ejectDisk(driveIndex & 0x01);
+                this.loadedPlusDDisks[driveIndex & 0x01] = null;
+                this.loadedPlusDDiskFiles[driveIndex & 0x01] = null;
+            } else if (type === 'if1') {
+                this.microdrive.ejectCartridge(driveIndex & 0x07);
+                this.loadedIF1Cartridges[driveIndex & 0x07] = null;
+                this.loadedIF1CartridgeFiles[driveIndex & 0x07] = null;
             } else {
                 this.betaDisk.ejectDisk(driveIndex & 0x03);
                 this.loadedBetaDisks[driveIndex & 0x03] = null;
@@ -7565,6 +8299,7 @@ import { Disassembler } from './disasm.js';
             if (pc >= SLOT1_START) return '';
             const mem = this.memory;
             if (mem.specialPagingMode) return 'RAM';
+            if (mem.if1Active) return 'IF1';
             if (mem.trdosActive) return 'TRDOS';
             if (mem.ramInRomMode || mem.scorpionRamInRomMode) return 'RAM';
             return 'ROM:' + mem.currentRomBank;
@@ -7587,8 +8322,17 @@ import { Disassembler } from './disasm.js';
             }
             // 128K/Pentagon: track pages for ROM and paged RAM
             if (addr < SLOT1_START) {
-                // ROM area - track which ROM bank
-                return `${addr}:R${this.memory.currentRomBank}`;
+                const mem = this.memory;
+                // +2A/+3 special paging: all 4 slots are RAM
+                if (mem.specialPagingMode) {
+                    return `${addr}:${mem.specialBanks[0]}`;
+                }
+                // Pentagon 1024 / Scorpion: RAM page 0 mapped over ROM
+                if (mem.ramInRomMode || mem.scorpionRamInRomMode) {
+                    return `${addr}:0`;
+                }
+                // ROM (includes TR-DOS, IF1, +D, Opus overlays — all are ROM code)
+                return `${addr}:R${mem.currentRomBank}`;
             } else if (addr >= SLOT3_START) {
                 // Paged RAM at slot 3
                 return `${addr}:${this.memory.currentRamBank}`;

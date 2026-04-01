@@ -8,6 +8,7 @@ export function initProjectIO({
     xrefManager, subroutineManager, foldManager,
     operandFormatManager, traceManager,
     getDisplayAPI, getAutoLoaderAPI, getPokeManagerAPI,
+    getStopActiveTools,
     getAsmAPI, getAnalysisAPI, getPortLoggingAPI,
     getMediaCatalogAPI, getGamepadAPI,
     VFS,
@@ -148,7 +149,8 @@ export function initProjectIO({
                     autoLoad: autoLoaderAPI.isAutoLoadEnabled(),
                     cfaSkipRom: document.getElementById('chkCfaSkipRom').checked,
                     cfaISR: document.getElementById('chkCfaISR').checked,
-                    cfaEntries: document.getElementById('cfaExtraEntries').value
+                    cfaEntries: document.getElementById('cfaExtraEntries').value,
+                    if1Enabled: spectrum.if1Enabled
                 },
                 // CPU timing state (not stored in SNA format)
                 cpuTiming: {
@@ -218,6 +220,28 @@ export function initProjectIO({
                         });
                     }
                 }
+
+                if (mediaState.plusDDisks) {
+                    project.media.plusDDisks = [];
+                    for (let i = 0; i < 2; i++) {
+                        if (mediaState.plusDDisks[i] && mediaState.plusDDisks[i].data) {
+                            project.media.plusDDisks.push({
+                                drive: i,
+                                name: mediaState.plusDDisks[i].name,
+                                data: arrayToBase64(mediaState.plusDDisks[i].data)
+                            });
+                        }
+                    }
+                }
+
+                if (mediaState.if1Cartridges) {
+                    project.media.if1Cartridges = [];
+                    for (let i = 0; i < 8; i++) {
+                        if (mediaState.if1Cartridges[i] && mediaState.if1Cartridges[i].data) {
+                            project.media.if1Cartridges.push({ drive: i, name: mediaState.if1Cartridges[i].name, data: arrayToBase64(mediaState.if1Cartridges[i].data) });
+                        }
+                    }
+                }
             }
 
             // Add poke manager state
@@ -277,6 +301,10 @@ export function initProjectIO({
             // Stop emulator during load
             const wasRunning = spectrum.isRunning();
             spectrum.stop();
+
+            // Stop all active debug/analysis tools
+            const stopActiveTools = getStopActiveTools();
+            if (stopActiveTools) stopActiveTools();
 
             // Switch machine type if needed
             if (project.machineType && project.machineType !== spectrum.machineType) {
@@ -589,6 +617,14 @@ export function initProjectIO({
                 if (project.settings.cfaSkipRom !== undefined) document.getElementById('chkCfaSkipRom').checked = project.settings.cfaSkipRom;
                 if (project.settings.cfaISR !== undefined) document.getElementById('chkCfaISR').checked = project.settings.cfaISR;
                 if (project.settings.cfaEntries !== undefined) document.getElementById('cfaExtraEntries').value = project.settings.cfaEntries;
+                if (project.settings.if1Enabled !== undefined) {
+                    spectrum.if1Enabled = project.settings.if1Enabled;
+                    // Update UI checkbox if available
+                    const chkIF1 = document.getElementById('chkIF1');
+                    if (chkIF1) chkIF1.checked = spectrum.if1Enabled;
+                    spectrum.updateBetaDiskPagingFlag();
+                }
+
             }
 
             // Restore CPU timing state (tStates, halted, IFF)
@@ -689,6 +725,22 @@ export function initProjectIO({
                             };
                         }
                     }
+                    restoreMedia.plusDDisks = [null, null];
+                    if (project.media.plusDDisks) {
+                        for (const entry of project.media.plusDDisks) {
+                            restoreMedia.plusDDisks[entry.drive] = {
+                                name: entry.name,
+                                data: Uint8Array.from(atob(entry.data), c => c.charCodeAt(0))
+                            };
+                        }
+                    }
+                    restoreMedia.if1Cartridges = new Array(8).fill(null);
+                    if (project.media.if1Cartridges) {
+                        for (const entry of project.media.if1Cartridges) {
+                            restoreMedia.if1Cartridges[entry.drive] = { data: Uint8Array.from(atob(entry.data), c => c.charCodeAt(0)), name: entry.name };
+                        }
+                    }
+
                     spectrum.setLoadedMedia(restoreMedia);
                     // Restore tape position
                     if (project.media.tape && project.media.tape.tapeBlock !== undefined) {
@@ -702,6 +754,16 @@ export function initProjectIO({
                     for (let i = 0; i < 4 && !foundDisk; i++) {
                         if (spectrum.loadedBetaDisks[i]) { mediaCatalogAPI.buildDiskCatalog(i, 'beta'); foundDisk = true; }
                     }
+                    for (let i = 0; i < 2 && !foundDisk; i++) {
+                        if (spectrum.loadedPlusDDisks[i]) { mediaCatalogAPI.buildDiskCatalog(i, 'plusd'); foundDisk = true; }
+                    }
+                    for (let i = 0; i < 8 && !foundDisk; i++) {
+                        if (spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[i]) {
+                            mediaCatalogAPI.buildDiskCatalog(i, 'if1');
+                            foundDisk = true;
+                        }
+                    }
+
                     mediaCatalogAPI.buildTapeCatalog();
                 } catch (e) {
                     console.warn('Failed to restore media (v2):', e);

@@ -49,6 +49,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const hasDisk = diskCatalogEl.children.length > 0 ||
             (spectrum.loadedBetaDiskFiles && spectrum.loadedBetaDiskFiles.some(f => f && f.length > 0)) ||
             (spectrum.loadedFDCDiskFiles && spectrum.loadedFDCDiskFiles.some(f => f && f.length > 0)) ||
+            (spectrum.loadedPlusDDiskFiles && spectrum.loadedPlusDDiskFiles.some(f => f && f.length > 0)) ||
+            (spectrum.loadedIF1CartridgeFiles && spectrum.loadedIF1CartridgeFiles.some(f => f && f.length > 0)) ||
             [0, 1, 2, 3].some(i => hasDiskInDrive(i));
         mediaCatalogTapeBtn.style.display = hasTape ? '' : 'none';
         mediaCatalogDiskBtn.style.display = hasDisk ? '' : 'none';
@@ -156,10 +158,18 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const spectrum = getSpectrum();
         const hasFDC = driveIndex < 2 && spectrum.loadedFDCDisks[driveIndex];
         const hasBeta = driveIndex < 4 && spectrum.loadedBetaDisks[driveIndex];
-        return !!(hasFDC || hasBeta);
+        const hasPlusD = driveIndex < 2 && spectrum.loadedPlusDDisks && spectrum.loadedPlusDDisks[driveIndex];
+        const hasIF1 = driveIndex < 8 && spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[driveIndex];
+        return !!(hasFDC || hasBeta || hasPlusD || hasIF1);
     }
 
-    function buildDiskCatalogSection(driveIndex, isDSK, media, files) {
+    // MGT file type names for catalog display
+    const MGT_TYPE_NAMES = { 0: 'Erased', 1: 'BASIC', 2: 'NumArr', 3: 'StrArr', 4: 'CODE', 5: '48K Snap', 7: 'SCREEN$', 9: '128K Snap', 10: 'Open', 11: 'Execute' };
+
+    // MDR (Interface 1 Microdrive) file type names for catalog display
+    const MDR_TYPE_NAMES = { 'File': 'File', 'PRINT': 'PRINT' };
+
+    function buildDiskCatalogSection(driveIndex, isDSK, media, files, isMGT) {
         const driveLetter = String.fromCharCode(65 + driveIndex);
         const hasFiles = files && files.length > 0;
 
@@ -167,7 +177,10 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const header = document.createElement('div');
         header.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); margin-bottom: 2px;';
         let headerText = '';
-        if (isDSK) {
+        if (isMGT) {
+            headerText = '\u{1F4BE} ' + driveLetter + ': ' + ((media && media.name) || 'MGT');
+            if (hasFiles) headerText += ' \u2014 ' + files.length + ' files';
+        } else if (isDSK) {
             if (hasFiles) {
                 headerText = '\u{1F4BE} ' + driveLetter + ': ' + ((media && media.name) || 'DSK') + ' \u2014 ' + files.length + ' files';
             } else {
@@ -200,8 +213,13 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 const row = document.createElement('div');
                 row.style.cssText = 'padding: 1px 6px; white-space: nowrap;';
                 const num = String(i + 1).padStart(2, ' ');
-                const name = f.name.padEnd(8, ' ');
-                if (isDSK) {
+                const name = isMGT ? f.name.padEnd(10, ' ') : f.name.padEnd(8, ' ');
+                if (isMGT) {
+                    const typeName = (MGT_TYPE_NAMES[f.type] || '?').padEnd(7, ' ');
+                    const size = String(f.length).padStart(5, ' ');
+                    const startHex = f.startAddress !== undefined ? hex16(f.startAddress) : '    ';
+                    row.textContent = num + '  ' + name + '  ' + typeName + ' ' + startHex + 'h ' + size + 'b';
+                } else if (isDSK) {
                     const ext = (f.ext || '').padEnd(3, ' ');
                     const size = String(f.size).padStart(6, ' ');
                     row.textContent = num + '  ' + name + '.' + ext + '  ' + size + 'b';
@@ -219,10 +237,49 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 if (openInExplorer && media && media.data) {
                     row.style.cursor = 'pointer';
                     row.addEventListener('dblclick', () => {
-                        const ext = isDSK ? 'dsk' : 'trd';
+                        const ext = isMGT ? 'mgt' : isDSK ? 'dsk' : 'trd';
                         openInExplorer(media.data, media.name || ('disk.' + ext));
                     });
                     if (!row.title) row.title = 'Double-click: open in Explorer';
+                }
+                diskCatalogEl.appendChild(row);
+            }
+        }
+    }
+
+    function buildIF1CatalogSection(driveIndex, media, files) {
+        const driveNum = driveIndex + 1;  // Microdrives are 1-based
+        const hasFiles = files && files.length > 0;
+
+        // Header row with cartridge info
+        const header = document.createElement('div');
+        header.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); margin-bottom: 2px;';
+        let headerText = '\u{1F4BE} MDR ' + driveNum + ': ' + ((media && media.name) || 'Cartridge');
+        if (hasFiles) headerText += ' \u2014 ' + files.length + ' files';
+        if (media && media.usedSectors !== undefined && media.totalSectors !== undefined) {
+            headerText += ', ' + media.usedSectors + '/' + media.totalSectors + ' sectors';
+        }
+        header.textContent = headerText;
+        diskCatalogEl.appendChild(header);
+
+        // File rows
+        if (hasFiles) {
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i];
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 1px 6px; white-space: nowrap;';
+                const num = String(i + 1).padStart(2, ' ');
+                const name = (f.name || '').padEnd(10, ' ');
+                const typeName = (MDR_TYPE_NAMES[f.type] || f.type || '?').padEnd(5, ' ');
+                const length = String(f.length || 0).padStart(5, ' ');
+                const secs = String(f.sectors || 0).padStart(3, ' ');
+                row.textContent = num + '  ' + name + '  ' + typeName + ' ' + length + 'b ' + secs + 's';
+                if (openInExplorer && media && media.data) {
+                    row.style.cursor = 'pointer';
+                    row.addEventListener('dblclick', () => {
+                        openInExplorer(media.data, media.name || 'cartridge.mdr');
+                    });
+                    row.title = 'Double-click: open in Explorer';
                 }
                 diskCatalogEl.appendChild(row);
             }
@@ -239,14 +296,22 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
 
         const showFdc = (!controller || controller === 'fdc') && driveIndex < 2;
         const showBeta = (!controller || controller === 'beta') && driveIndex < 4;
+        const showPlusD = (!controller || controller === 'plusd') && driveIndex < 2;
+        const showIF1 = (!controller || controller === 'if1') && driveIndex < 8;
         const fdcMedia = showFdc ? spectrum.loadedFDCDisks[driveIndex] : null;
         const betaMedia = showBeta ? spectrum.loadedBetaDisks[driveIndex] : null;
+        const plusDMedia = showPlusD && spectrum.loadedPlusDDisks ? spectrum.loadedPlusDDisks[driveIndex] : null;
+        const if1Media = showIF1 && spectrum.loadedIF1Cartridges ? spectrum.loadedIF1Cartridges[driveIndex] : null;
         const fdcFiles = showFdc ? spectrum.loadedFDCDiskFiles[driveIndex] : null;
         const betaFiles = showBeta ? spectrum.loadedBetaDiskFiles[driveIndex] : null;
+        const plusDFiles = showPlusD && spectrum.loadedPlusDDiskFiles ? spectrum.loadedPlusDDiskFiles[driveIndex] : null;
+        const if1Files = showIF1 && spectrum.loadedIF1CartridgeFiles ? spectrum.loadedIF1CartridgeFiles[driveIndex] : null;
         const hasFdcContent = fdcMedia || (fdcFiles && fdcFiles.length > 0);
         const hasBetaContent = betaMedia || (betaFiles && betaFiles.length > 0);
+        const hasPlusDContent = plusDMedia || (plusDFiles && plusDFiles.length > 0);
+        const hasIF1Content = if1Media || (if1Files && if1Files.length > 0);
 
-        if (!hasFdcContent && !hasBetaContent) {
+        if (!hasFdcContent && !hasBetaContent && !hasPlusDContent && !hasIF1Content) {
             let anyDisk = false;
             for (let i = 0; i < 4; i++) {
                 if (hasDiskInDrive(i)) { anyDisk = true; break; }
@@ -257,10 +322,16 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         }
 
         if (hasFdcContent) {
-            buildDiskCatalogSection(driveIndex, true, fdcMedia, fdcFiles);
+            buildDiskCatalogSection(driveIndex, true, fdcMedia, fdcFiles, false);
         }
         if (hasBetaContent) {
-            buildDiskCatalogSection(driveIndex, false, betaMedia, betaFiles);
+            buildDiskCatalogSection(driveIndex, false, betaMedia, betaFiles, false);
+        }
+        if (hasPlusDContent) {
+            buildDiskCatalogSection(driveIndex, false, plusDMedia, plusDFiles, true);
+        }
+        if (hasIF1Content) {
+            buildIF1CatalogSection(driveIndex, if1Media, if1Files);
         }
 
         updateDiskDriveTabs();
@@ -272,6 +343,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         if (driveIndex !== undefined) {
             if (driveIndex < 4) spectrum.loadedBetaDiskFiles[driveIndex] = null;
             if (driveIndex < 2) spectrum.loadedFDCDiskFiles[driveIndex] = null;
+            if (driveIndex < 2 && spectrum.loadedPlusDDiskFiles) spectrum.loadedPlusDDiskFiles[driveIndex] = null;
+            if (driveIndex < 8 && spectrum.loadedIF1CartridgeFiles) spectrum.loadedIF1CartridgeFiles[driveIndex] = null;
             if (diskCatalogDrive === driveIndex) {
                 diskCatalogEl.innerHTML = '';
             }
@@ -294,6 +367,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const tabsEl = document.getElementById('diskDriveTabs');
         const fdcDrives = [];
         const betaDrives = [];
+        const plusDDrives = [];
         for (let i = 0; i < 2; i++) {
             if (spectrum.loadedFDCDisks[i] || (spectrum.loadedFDCDiskFiles[i] && spectrum.loadedFDCDiskFiles[i].length > 0)) {
                 fdcDrives.push(i);
@@ -304,22 +378,47 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 betaDrives.push(i);
             }
         }
-        const bothActive = fdcDrives.length > 0 && betaDrives.length > 0;
+        for (let i = 0; i < 2; i++) {
+            if ((spectrum.loadedPlusDDisks && spectrum.loadedPlusDDisks[i]) ||
+                (spectrum.loadedPlusDDiskFiles && spectrum.loadedPlusDDiskFiles[i] && spectrum.loadedPlusDDiskFiles[i].length > 0)) {
+                plusDDrives.push(i);
+            }
+        }
+        const if1Drives = [];
+        for (let i = 0; i < 8; i++) {
+            if ((spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[i]) ||
+                (spectrum.loadedIF1CartridgeFiles && spectrum.loadedIF1CartridgeFiles[i] && spectrum.loadedIF1CartridgeFiles[i].length > 0)) {
+                if1Drives.push(i);
+            }
+        }
+        const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0);
+        const multiController = activeControllers > 1;
 
         const tabs = [];
         if (fdcDrives.length > 0) {
             for (const drv of fdcDrives) {
                 const letter = String.fromCharCode(65 + drv);
-                tabs.push({ drive: drv, controller: 'fdc', label: bothActive ? '3DOS:' + letter : letter + ':' });
+                tabs.push({ drive: drv, controller: 'fdc', label: multiController ? '3DOS:' + letter : letter + ':' });
             }
         }
         if (betaDrives.length > 0) {
             for (const drv of betaDrives) {
                 const letter = String.fromCharCode(65 + drv);
-                tabs.push({ drive: drv, controller: 'beta', label: bothActive ? 'TRD:' + letter : letter + ':' });
+                tabs.push({ drive: drv, controller: 'beta', label: multiController ? 'TRD:' + letter : letter + ':' });
             }
         }
-
+        if (plusDDrives.length > 0) {
+            for (const drv of plusDDrives) {
+                const letter = String.fromCharCode(65 + drv);
+                tabs.push({ drive: drv, controller: 'plusd', label: multiController ? 'MGT:' + letter : letter + ':' });
+            }
+        }
+        if (if1Drives.length > 0) {
+            for (const drv of if1Drives) {
+                const num = drv + 1;  // Microdrives are 1-based
+                tabs.push({ drive: drv, controller: 'if1', label: multiController ? 'MDR:' + num : num + ':' });
+            }
+        }
         tabsEl.innerHTML = '';
         for (const tab of tabs) {
             const btn = document.createElement('button');
@@ -336,7 +435,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const drvSelEl = document.getElementById('driveSelector');
         const hasBetaDisk = spectrum.betaDisk && spectrum.betaDisk.hasAnyDisk();
         const hasFDCDisk = spectrum.fdc && spectrum.fdc.hasDisk();
-        drvSelEl.style.display = (hasBetaDisk || hasFDCDisk) ? '' : 'none';
+        const hasPlusDDisk = spectrum.plusD && spectrum.plusD.hasAnyDisk();
+        drvSelEl.style.display = (hasBetaDisk || hasFDCDisk || hasPlusDDisk) ? '' : 'none';
         if (drvSelEl.style.display !== 'none') updateDriveSelector();
     }
 

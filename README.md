@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.9.6** | [Changelog](CHANGELOG.md)
+**Version 0.9.11** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -19,7 +19,10 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Auto Load: automatic LOAD "" for tapes, TR-DOS boot for disks (turbo block handoff)
 - TRD/SCL disk image support (TR-DOS format) with boot injection
 - DSK disk image support (+3 µPD765 FDC, standard and extended CPC DSK format)
-- Multi-drive support: BetaDisk 4 drives (A-D), FDC 2 drives (A-B), simultaneous tape+disk
+- MGT disk image support (DISCiPLE/+D WD1772 FDC, NMI snapshot button)
+- MDR Microdrive cartridge support (Interface 1, 8-drive daisy chain)
+- OPD disk image support (Opus Discovery WD1770 FDC + MC6821 PIA, memory-mapped I/O)
+- Multi-drive support: BetaDisk 4 drives (A-D), FDC 2 drives (A-B), +D 2 drives (A-B), Microdrive 8 drives (1-8), Opus 2 drives (A-B), simultaneous tape+disk
 - ZIP archive support
 - RZX playback
 - Kempston Joystick (numpad) with extended buttons support
@@ -59,7 +62,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Text Scanner for string search
 - Programmer Calculator (hex/dec/oct/bin)
 - Compare Tool (snapshots, binaries, emulator state)
-- Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, DSK, ZIP — BASIC decoder, disassembly, hex dump)
+- Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, MGT, DSK, MDR, OPD, ZIP — BASIC decoder, disassembly, hex dump)
 - Game Mapper (capture rooms, stitch into navigable map grid, blend screenshots, save/load JSON, export PNG)
 - OCR Text Ripper (screen text recognition, custom cell size 4–8×4–16 px, grid origin offsets, font extraction from memory, multi-charset support, character map templates, bulk glyph delete, capture-known mode)
 - Z80 Opcodes reference
@@ -75,6 +78,9 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
    - `pentagon.rom` - Pentagon 128K (32KB, optional)
    - `scorpion.rom` - Scorpion ZS 256 (64KB, optional)
    - `trdos.rom` - TR-DOS 5.03/5.04t (16KB, for disk images)
+   - `plusd.rom` - DISCiPLE/+D (8KB, optional)
+   - `if1.rom` - Interface 1 (8KB, optional)
+   - `opus.rom` - Opus Discovery (8KB, optional)
 2. Open `index.html` in a modern browser
 3. Click **Help** button for comprehensive documentation
 
@@ -83,6 +89,9 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 | Format | Description |
 |--------|-------------|
 | DSK | +3 disk image (standard and extended CPC DSK) |
+| MDR | Interface 1 Microdrive cartridge |
+| MGT | DISCiPLE/+D disk image |
+| OPD | Opus Discovery disk image |
 | RZX | Input recording |
 | SCL | TR-DOS file archive |
 | SNA | Snapshot (48K/128K) |

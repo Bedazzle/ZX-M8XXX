@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.6</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.9.11</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -11,11 +11,12 @@
                     <button class="fullhelp-nav-btn" data-section="assembler">Assembler</button>
                     <button class="fullhelp-nav-btn" data-section="debugger">Debugger</button>
                     <button class="fullhelp-nav-btn" data-section="breakpoints">Breakpoints</button>
+                    <button class="fullhelp-nav-btn" data-section="trace">Trace</button>
                     <button class="fullhelp-nav-btn" data-section="memory">Memory</button>
                     <button class="fullhelp-nav-btn" data-section="labels">Labels</button>
                     <button class="fullhelp-nav-btn" data-section="signatures">Signatures</button>
                     <button class="fullhelp-nav-btn" data-section="regions">Regions</button>
-                    <button class="fullhelp-nav-btn" data-section="xrefs">XRefs</button>
+                    <button class="fullhelp-nav-btn" data-section="tools">Tools</button>
                     <button class="fullhelp-nav-btn" data-section="graphics">Graphics</button>
                     <button class="fullhelp-nav-btn" data-section="tests">Tests</button>
                     <button class="fullhelp-nav-btn" data-section="compare">Compare</button>
@@ -59,7 +60,7 @@
                         <li>Place ROM files in <code>roms/</code> directory (48.rom, 128.rom, plus2.rom, plus2a.rom, plus3.rom, pentagon.rom, scorpion.rom, trdos.rom)</li>
                         <li>Open index.html in a modern browser</li>
                         <li>Use Load в†’ Web to browse and download games online</li>
-                        <li>Or Load в†’ File to load SNA/Z80/SZX snapshots, TAP/TZX tapes, TRD/SCL/DSK disks, or project files (.zxproj/.json)</li>
+                        <li>Or Load в†' File to load SNA/Z80/SZX snapshots, TAP/TZX tapes, TRD/SCL/DSK/MGT/MDR/OPD disks, or project files (.zxproj/.json)</li>
                         <li>F2 = Quicksave, F5 = Quickload during gameplay</li>
                     </ol>
                 </div>
@@ -165,7 +166,8 @@
                     <p>The built-in debugger provides comprehensive tools for development and reverse engineering.</p>
                     <h5>Registers View</h5>
                     <p>Shows all Z80 registers including the alternate set (AF', BC', DE', HL'). Flags are displayed as visual indicators: S, Z, H, P/V, N, C.</p>
-                    <p><strong>О”T (Delta T-states)</strong>: Accumulated T-states since the last breakpoint fired. Useful for measuring cycle-exact timing between breakpoints. The counter accumulates through steps, runs, and all execution modes. Resets to 0 when any breakpoint fires (exec, memory, or port).</p>
+                    <p><strong>О"T (Delta T-states)</strong>: Accumulated T-states since the last breakpoint fired. Useful for measuring cycle-exact timing between breakpoints. The counter accumulates through steps, runs, and all execution modes. Resets to 0 when any breakpoint fires (exec, memory, or port).</p>
+                    <p><strong>Register Watch</strong>: Double-click a 16-bit register pair name (BC, DE, HL, IX, IY, SP, PC) to add its current value as a memory watch address. Useful for quickly inspecting the data structure a register points to.</p>
                     <h5>Configurable Panels</h5>
                     <p>Left and right debug panels can show different views:</p>
                     <ul>
@@ -173,7 +175,7 @@
                         <li>Left panel: Disasm or Memory</li>
                         <li>Right panel: Memory, Disasm, or Calculator</li>
                         <li>Step controls (Step Into, Step Over, etc.) appear in disasm panels</li>
-                        <li>Search controls appear in memory panels</li>
+                        <li>Search controls appear in both panels (see Pattern Search below)</li>
                         <li>Bookmarks show panel type: рџ”Ќ disasm, рџ“¦ memory</li>
                     </ul>
                     <h5>Programmer Calculator</h5>
@@ -191,11 +193,24 @@
                     <ul>
                         <li>Live disassembly from current PC with label support</li>
                         <li>Click address to set "run to cursor" target</li>
-                        <li>Right-click for context menu (labels, regions, operand format, subroutines)</li>
+                        <li>Right-click for context menu (labels, comments, regions, operand format, subroutines, folds, pokes)</li>
                         <li>Hover over addresses to see cross-references</li>
                         <li>Subroutine separators (IDA-style) for marked routines</li>
                         <li>Syntax coloring: <span style="color:#daa520">registers</span>, <span style="color:#00aa00">numbers</span>, <span style="color:#cc66cc">chars</span></li>
                     </ul>
+                    <h5>Pattern Search</h5>
+                    <p>Both disasm and memory panels have an inline search bar:</p>
+                    <ul>
+                        <li><strong>Hex</strong> &mdash; search by hex bytes (e.g. <code>CD 21 00</code> or <code>CD2100</code>). Use <code>??</code> or <code>**</code> as wildcards to match any byte (e.g. <code>CD ?? 00</code>).</li>
+                        <li><strong>Dec</strong> &mdash; search by decimal byte values (space-separated)</li>
+                        <li><strong>Text</strong> &mdash; search by ASCII text string</li>
+                    </ul>
+                    <p>Options:</p>
+                    <ul>
+                        <li><strong>Case</strong> &mdash; case-sensitive text search (default: case-insensitive)</li>
+                        <li><strong>+128</strong> &mdash; also match bit-7-terminated variants (each character OR&rsquo;d with $80)</li>
+                    </ul>
+                    <p><strong>Find</strong> locates the first match and shows total result count. <strong>Next</strong> cycles through matches. Results navigate the panel to the found address.</p>
                     <h5>Subroutines</h5>
                     <ul>
                         <li>Right-click &rarr; "Mark as subroutine" to manually mark</li>
@@ -252,13 +267,22 @@
                     <h5>Bookmarks</h5>
                     <p>Quick navigation: click bookmark to jump, right-click to set bookmark at current address. 5 slots for disassembly, 5 for memory view.</p>
                     <p><strong>Hotkeys (paused mode only):</strong> 1-5 = left panel bookmarks, 6-9,0 = right panel bookmarks. Shift+digit sets bookmark at current address.</p>
-                    <h5>Context Menu Navigation</h5>
-                    <p>Right-click any address in disassembly or memory view for quick navigation:</p>
+                    <h5>Disassembly Context Menu</h5>
+                    <p>Right-click any instruction in the disassembly view for the full context menu:</p>
                     <ul>
                         <li><strong>Disasm left/right</strong>: Open address in left or right panel as disassembly</li>
                         <li><strong>Memory left/right</strong>: Open address in left or right panel as memory dump</li>
-                        <li>In memory view, right-click works on both hex bytes and address column</li>
+                        <li><strong>Add/Edit/Delete label</strong>: Manage labels at the target address</li>
+                        <li><strong>Add/Edit/Delete comment</strong>: Manage inline comments</li>
+                        <li><strong>Operand format...</strong>: Hex, Decimal, Binary, or Char display for operands</li>
+                        <li><strong>Mark as...</strong>: Code, DB, DW, Text, Graphics, or SMC region type</li>
+                        <li><strong>Remove region mark</strong>: Clear existing region at address</li>
+                        <li><strong>Mark/Remove subroutine</strong>: Toggle subroutine boundary marker</li>
+                        <li><strong>Create/Remove fold block</strong>: Custom collapsible regions</li>
+                        <li><strong>Collapse/Expand all folds</strong>: Bulk fold toggle</li>
+                        <li><strong>Add poke</strong>: Create a POKE entry covering all bytes of the instruction (poke values default to $00). For conditional instructions (JP cc, CALL cc, JR cc, RET cc), a submenu offers <strong>NOP</strong> (zero all bytes) or <strong>make unconditional</strong> (patch only the opcode byte &mdash; e.g. JP Z&rarr;JP, CALL NZ&rarr;CALL, JR C&rarr;JR, RET Z&rarr;RET)</li>
                     </ul>
+                    <p>Right-clicking on an operand address (e.g. the target of JP or CALL) uses that address for labels, regions, and navigation. In memory view, right-click works on both hex bytes and the address column.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-labels">
                     <h4>Labels</h4>
@@ -267,7 +291,7 @@
                     <ul>
                         <li>Right-click address in disassembly &rarr; "Add Label"</li>
                         <li>Or use the Labels panel "Add" button</li>
-                        <li><strong>Profile</strong> (Tools &rarr; Analysis) &mdash; auto-generate labels from runtime behavior</li>
+                        <li><strong>Profile</strong> (Tools &rarr; Analysis) &mdash; auto-generate labels from runtime behavior (see Tools section)</li>
                     </ul>
                     <h5>Display Modes</h5>
                     <ul>
@@ -291,26 +315,6 @@
                         <li>Persistent storage per loaded file (localStorage)</li>
                         <li>Import/Export to JSON files</li>
                     </ul>
-                    <h5>Runtime Behavior Profiler</h5>
-                    <p>Tools &rarr; Analysis &rarr; <strong>Profile</strong>. Runs the emulator for N frames and classifies subroutines by their behavior:</p>
-                    <table>
-                        <tr><th>Label</th><th>Detection</th></tr>
-                        <tr><td>isr_handler</td><td>IM 1 interrupt handler at $0038</td></tr>
-                        <tr><td>isr_handler_im2</td><td>IM 2 interrupt handler (address from vector table)</td></tr>
-                        <tr><td>im2_vector_table</td><td>IM 2 vector table at I&times;256 (marked as DW region)</td></tr>
-                        <tr><td>isr_routine</td><td>Called from interrupt context</td></tr>
-                        <tr><td>main_loop</td><td>Called in &gt;90% of frames, most callees</td></tr>
-                        <tr><td>read_keyboard</td><td>Reads port $xxFE, no screen writes</td></tr>
-                        <tr><td>play_beep</td><td>Many OUTs to ULA port ($FE)</td></tr>
-                        <tr><td>play_music / ay_write</td><td>OUTs to AY ports ($FFFD/$BFFD)</td></tr>
-                        <tr><td>draw_sprite</td><td>Writes screen bitmap only</td></tr>
-                        <tr><td>set_attrs</td><td>Writes attributes only</td></tr>
-                        <tr><td>draw_screen</td><td>Writes both bitmap and attributes</td></tr>
-                        <tr><td>page_memory</td><td>OUTs to 128K paging port</td></tr>
-                        <tr><td>init_XXXX</td><td>Called once, in first frame</td></tr>
-                        <tr><td>util_XXXX</td><td>Leaf routine called &gt;10 times</td></tr>
-                    </table>
-                    <p style="font-size: 11px; color: var(--text-dim);">Profiler preserves user-named labels. Re-running replaces previous profiler labels. ROM subroutines are skipped (except ISR handlers). IM 2 detection: when the CPU uses interrupt mode 2, the profiler identifies the handler address and marks the vector table at I&times;256 as a data (DW) region.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-signatures">
                     <h4>Signature Packs</h4>
@@ -388,8 +392,41 @@
                         <li><strong>Disk Read</strong>: Break after any disk sector read (TR-DOS or +3DOS). Use skip count to break after N reads.</li>
                         <li><strong>Disk Sector</strong>: Break when a specific track:sector is read. Enter as <code>TT:SS</code> (e.g. <code>0:1</code> for track 0, sector 1).</li>
                     </ul>
+                </div>
+                <div class="fullhelp-section hidden" id="help-trace">
+                    <h4>Execution Trace</h4>
+                    <p>The Trace tab records executed instructions and allows stepping through execution history.</p>
+                    <h5>Recording</h5>
+                    <ul>
+                        <li><strong>Step</strong> checkbox &mdash; record instructions during single-step (F7/F8) and run-to modes</li>
+                        <li><strong>Runtime</strong> checkbox &mdash; record instructions during full-speed execution (slower)</li>
+                        <li><strong>Skip ROM</strong> &mdash; skip recording when PC &lt; $4000 (ROM area)</li>
+                        <li><strong>Stop</strong> field &mdash; stop recording and pause emulator after N entries (0 = unlimited)</li>
+                    </ul>
+                    <h5>History Navigation</h5>
+                    <ul>
+                        <li><strong>&#9664; / &#9654;</strong> buttons (or Alt+Left / Alt+Right) &mdash; step back/forward through history</li>
+                        <li><strong>Slider</strong> &mdash; drag to quickly scroll through the entire trace history</li>
+                        <li><strong>Live</strong> button &mdash; return to live CPU state</li>
+                        <li>Click any entry in the trace list to jump to that point</li>
+                    </ul>
+                    <p>When viewing history, registers show the historical state, the disassembly highlights the traced instruction, and the <strong>screen reverts</strong> to show what the display looked like at that point &mdash; memory writes are undone/redone as you navigate. Each trace entry stores its instruction bytes, so the traced instruction displays correctly even if memory banking has changed since recording.</p>
+                    <h5>Trace List</h5>
+                    <p>Shows recent instructions with address, mnemonic, and changed registers. Optional columns:</p>
+                    <ul>
+                        <li><strong>Alt regs</strong> &mdash; include alternate register set (AF', BC', DE', HL')</li>
+                        <li><strong>Sys regs</strong> &mdash; include I, R, IM registers</li>
+                        <li><strong>Ports</strong> &mdash; show IN/OUT operations per instruction</li>
+                    </ul>
+                    <h5>Export</h5>
+                    <p>Export trace to a TSV file (Excel-compatible). Options:</p>
+                    <ul>
+                        <li>Export first or last N entries (0 = all)</li>
+                        <li><strong>Bytes</strong> &mdash; include instruction bytes column</li>
+                        <li><strong>Collapse block</strong> &mdash; collapse repeated block commands (LDIR, LDDR, etc.) to a single line</li>
+                    </ul>
                     <h5>Port I/O Log</h5>
-                    <p>In the Trace tab, enable Port I/O logging to record all port reads/writes. Export produces a TSV file with columns: Dir, Port, Value, PC, Src, Frame, T-states.</p>
+                    <p>Enable Port I/O logging to record all port reads/writes. Export produces a TSV file with columns: Dir, Port, Value, PC, Src, Frame, T-states.</p>
                     <p>The <strong>Src</strong> column identifies the ROM source when PC is in 0000-3FFF:</p>
                     <ul>
                         <li><strong>TRDOS</strong> &mdash; TR-DOS ROM is paged in (Beta Disk)</li>
@@ -412,42 +449,7 @@
                         <li>Run the program</li>
                         <li>Changed bytes are highlighted in the dump</li>
                     </ol>
-                    <h5>POKE Search</h5>
-                    <p>Find memory locations storing game values (lives, score, etc.) by comparing snapshots:</p>
-                    <ol>
-                        <li><strong>Snap</strong> &mdash; take a memory snapshot (status shows snap count)</li>
-                        <li>Play game until the target value changes (e.g. lose a life)</li>
-                        <li><strong>Snap</strong> again &mdash; repeat snap/play for more data points</li>
-                        <li><strong>Search</strong> &mdash; scans all RAM, validates every snap-to-snap transition:
-                            <ul>
-                                <li><code>-1</code> / <code>+1</code> &mdash; value changed by exactly 1 between each snap</li>
-                                <li><code>Decreased</code> / <code>Increased</code> &mdash; value went down/up between each snap</li>
-                                <li><code>Changed</code> &mdash; value differs between each snap</li>
-                                <li><code>Unchanged</code> &mdash; value stayed the same across all snaps</li>
-                            </ul>
-                        </li>
-                        <li>Take more snaps and search again to narrow candidates</li>
-                        <li><strong>Filter</strong> &mdash; enter a hex value to keep only candidates where current memory matches. Clear the value and click Filter to undo</li>
-                        <li>Click result to view in memory dump; hover to see value at every snap point</li>
-                    </ol>
-                    <p>Requires at least 2 snapshots. Each search always scans all RAM &mdash; more snaps = fewer candidates. No deduplication: every snap-to-snap pair must match the selected mode.</p>
-                    <p><strong>Skip screen</strong> (on by default) &mdash; excludes screen memory (4000-5BFF) to reduce false positives.</p>
-                    <h5>Write Monitor</h5>
-                    <p>Monitors writes to a specific address to find collision detection routines. Typical workflow:</p>
-                    <ol>
-                        <li>Use POKE Search to find the lives/health address</li>
-                        <li>Enter the address in the <strong>Watch</strong> field (<code>$hex</code>, <code>0xhex</code>, or decimal)</li>
-                        <li>Click <strong>Monitor</strong> &mdash; the button turns active and monitoring begins</li>
-                        <li>Play the game &mdash; trigger a collision or death</li>
-                        <li>Click <strong>Stop</strong> &mdash; results appear grouped by writing instruction</li>
-                    </ol>
-                    <p>Each result shows:</p>
-                    <ul>
-                        <li>The writing instruction (PC + disassembled mnemonic) with value transitions</li>
-                        <li>Call chain &mdash; the full call stack at the time of the write</li>
-                        <li>NOP suggestion &mdash; identifies the CALL instruction to patch out</li>
-                    </ul>
-                    <p>All addresses are clickable and navigate to the disassembler. Monitoring stops automatically on machine change or reset.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">POKE Search, Write Monitor, and Text Scanner are in the Tools tab &mdash; see the Tools section.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-graphics">
                     <h4>Graphics Viewer</h4>
@@ -497,13 +499,7 @@
                         <tr><td><strong>Graphics</strong></td><td>Sprite/tile graphics</td></tr>
                         <tr><td><strong>SMC</strong></td><td>Self-modifying code</td></tr>
                     </table>
-                    <h5>Auto-Map</h5>
-                    <p>Automatically detect regions during execution:</p>
-                    <ul>
-                        <li>Executed addresses marked as Code</li>
-                        <li>Read addresses marked as Data</li>
-                        <li>Code that gets overwritten marked as SMC</li>
-                    </ul>
+                    <p style="font-size: 11px; color: var(--text-dim);">Auto-Map and Code-Flow Analysis are in the Tools tab &mdash; see the Tools section.</p>
                     <h5>Memory Map Dialog</h5>
                     <p>Visual 256x256 map of entire 64KB memory. Click to navigate, colors indicate region types.</p>
                     <h5>Heatmap Export</h5>
@@ -520,24 +516,234 @@
                         <li>Screen memory ($4000-$5AFF) exported as INCBIN directive</li>
                     </ul>
                 </div>
-                <div class="fullhelp-section hidden" id="help-xrefs">
-                    <h4>Cross-References (XRefs)</h4>
+                <div class="fullhelp-section hidden" id="help-tools">
+                    <h4>Tools</h4>
+                    <p>Located in the Debug &rarr; Tools tab. Two groups: Analysis and Search.</p>
+                    <h5 style="color: var(--text-dim); border-bottom: 1px solid var(--text-dim); padding-bottom: 3px;">Analysis</h5>
+                    <h5>Auto-Map</h5>
+                    <p>Tools &rarr; Analysis &rarr; <strong>Auto-Map</strong>. Automatically detect memory regions during execution:</p>
+                    <ul>
+                        <li><strong>Track</strong> &mdash; enable/disable tracking. While enabled, executed addresses are marked as Code, read addresses as Data, and code that gets overwritten as SMC. Live stats show E(xecuted)/R(ead)/W(ritten) counts.</li>
+                        <li><strong>Snap</strong> &mdash; capture current CPU state and full memory for ASM export. If the emulator is running, the snap is taken at the next frame boundary. Green = captured, yellow = pending.</li>
+                        <li><strong>Apply</strong> &mdash; convert tracked data into regions. Merges consecutive addresses into contiguous regions, detects subroutines from CALL targets.</li>
+                        <li><strong>Clear</strong> &mdash; reset all tracking data and snap.</li>
+                        <li><strong>Clr Regions</strong> &mdash; remove all marked regions.</li>
+                        <li><strong>Map</strong> &mdash; open the Memory Map dialog (see below).</li>
+                    </ul>
+                    <h5>Code-Flow Analysis</h5>
+                    <p>Tools &rarr; Analysis &rarr; <strong>Flow</strong>. Static analysis that traces all reachable code paths from entry points without running the emulator:</p>
+                    <ul>
+                        <li>Entry points: current PC, all labeled addresses, all known subroutines, ISR handler at $0038 (optional), plus custom hex addresses (comma-separated)</li>
+                        <li><strong>Skip ROM</strong> &mdash; exclude addresses 0000-3FFF from analysis</li>
+                        <li><strong>ISR</strong> &mdash; include the interrupt handler at $0038 as an entry point</li>
+                        <li>Follows JP, JR, CALL, RST, conditional branches. Stops at RET, data regions, and indirect jumps (JP (HL) etc.)</li>
+                        <li>Results: code regions, subroutine entries (from CALL targets), cross-references &mdash; all applied automatically</li>
+                        <li>Status shows region count, subroutine count, xref count, and any indirect jumps found</li>
+                    </ul>
+                    <h5>Cross-References (XRefs)</h5>
                     <p>Track where addresses are referenced from in the code.</p>
-                    <h5>Generating XRefs</h5>
+                    <p><strong>Generating XRefs:</strong></p>
                     <ul>
                         <li><strong>Scan</strong> - Scan visible disassembly range</li>
                         <li><strong>Scan All</strong> - Scan full 64KB memory</li>
                         <li><strong>Runtime</strong> checkbox - Collect refs during execution</li>
                     </ul>
-                    <h5>Viewing XRefs</h5>
-                    <p>Hover over an address operand in disassembly to see tooltip showing all references to that address.</p>
-                    <h5>Reference Types</h5>
+                    <p><strong>Viewing XRefs:</strong> Hover over an address operand in disassembly to see tooltip showing all references to that address.</p>
+                    <p><strong>Reference Types:</strong></p>
                     <ul>
                         <li><span style="color:#ff8080">CALL</span> - subroutine calls</li>
                         <li><span style="color:#80ff80">JP</span> - absolute jumps</li>
                         <li><span style="color:#80ffff">JR/DJNZ</span> - relative jumps</li>
                         <li><span style="color:#ffff80">LD</span> - data references</li>
                     </ul>
+                    <h5>Profiler</h5>
+                    <p>Tools &rarr; Analysis &rarr; <strong>Profile</strong>. Runs the emulator for N frames and classifies subroutines by their behavior:</p>
+                    <table>
+                        <tr><th>Label</th><th>Detection</th></tr>
+                        <tr><td>isr_handler</td><td>IM 1 interrupt handler at $0038</td></tr>
+                        <tr><td>isr_handler_im2</td><td>IM 2 interrupt handler (address from vector table)</td></tr>
+                        <tr><td>im2_vector_table</td><td>IM 2 vector table at I&times;256 (marked as DW region)</td></tr>
+                        <tr><td>isr_routine</td><td>Called from interrupt context</td></tr>
+                        <tr><td>main_loop</td><td>Called in &gt;90% of frames, most callees</td></tr>
+                        <tr><td>read_keyboard</td><td>Reads port $xxFE, no screen writes</td></tr>
+                        <tr><td>play_beep</td><td>Many OUTs to ULA port ($FE)</td></tr>
+                        <tr><td>play_music / ay_write</td><td>OUTs to AY ports ($FFFD/$BFFD)</td></tr>
+                        <tr><td>draw_sprite</td><td>Writes screen bitmap only</td></tr>
+                        <tr><td>set_attrs</td><td>Writes attributes only</td></tr>
+                        <tr><td>draw_screen</td><td>Writes both bitmap and attributes</td></tr>
+                        <tr><td>page_memory</td><td>OUTs to 128K paging port</td></tr>
+                        <tr><td>init_XXXX</td><td>Called once, in first frame</td></tr>
+                        <tr><td>util_XXXX</td><td>Leaf routine called &gt;10 times</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">Profiler preserves user-named labels. Re-running replaces previous profiler labels. ROM subroutines are skipped (except ISR handlers). IM 2 detection: when the CPU uses interrupt mode 2, the profiler identifies the handler address and marks the vector table at I&times;256 as a data (DW) region.</p>
+                    <h5>Hotspot Detection</h5>
+                    <p>The profiler also tracks T-state consumption per PC to identify tight loops and performance-critical code. After profiling, the top 10 hotspots are displayed with percentage of total T-states, address, classification, and size. Click a hotspot to navigate to it in the disassembly.</p>
+                    <table>
+                        <tr><th>Classification</th><th>Detection</th></tr>
+                        <tr><td>delay_djnz</td><td>DJNZ loop (tight delay)</td></tr>
+                        <tr><td>delay_bc</td><td>DEC BC loop (16-bit delay)</td></tr>
+                        <tr><td>frame_sync</td><td>HALT instruction (wait for interrupt)</td></tr>
+                        <tr><td>block_ldir / block_lddr</td><td>LDIR/LDDR block copy</td></tr>
+                        <tr><td>block_copy</td><td>LDI/LDD loop (manual block copy)</td></tr>
+                        <tr><td>io_block</td><td>INIR/OTIR block I/O</td></tr>
+                        <tr><td>io_poll</td><td>IN loop (port polling)</td></tr>
+                        <tr><td>io_output</td><td>OUT loop (port output)</td></tr>
+                        <tr><td>stack_copy</td><td>POP/PUSH or EX (SP),HL loops</td></tr>
+                        <tr><td>hotspot</td><td>Generic tight loop (&gt;1% T-states, &le;32 bytes)</td></tr>
+                    </table>
+                    <h5>Subroutine Signatures</h5>
+                    <p>After profiling, the profiler performs static analysis of each subroutine&rsquo;s entry code to determine register inputs and outputs. For each subroutine with entry address &ge; $4000, up to 16 instructions are disassembled from the entry point. The first access (read or write) to each register is tracked:</p>
+                    <ul>
+                        <li><strong>Input registers</strong> &mdash; registers read before being written (the subroutine expects a value in them)</li>
+                        <li><strong>Output registers</strong> &mdash; registers written before being read (the subroutine produces a value in them)</li>
+                    </ul>
+                    <p>Results are shown below the hotspot list as <code>in: HL, A &rarr; out: CF</code>. The top 20 subroutines by call count are displayed with their signatures. Click an address to navigate to the subroutine. Analysis stops at unconditional control flow (RET, JP, CALL).</p>
+                    <h5>Call Graph</h5>
+                    <p>Visual tree of profiler caller/callee relationships. Click the <strong>Graph</strong> button (enabled after profiling) to open a canvas-based call graph dialog.</p>
+                    <p><strong>Reading the graph:</strong> The graph flows top-to-bottom. Nodes at the top are root subroutines (not called by anyone else in the profiled set &mdash; typically <code>main_loop</code> or ISR handlers). Each level below represents one layer of call depth.</p>
+                    <p><strong>Nodes</strong> &mdash; dark rectangles representing subroutines. The label shows the subroutine name (from labels or <code>sub_XXXX</code> if unlabeled). Nodes are sorted left-to-right by call count within each level.</p>
+                    <p><strong>Arrows:</strong></p>
+                    <ul>
+                        <li><strong style="color:#88aacc;">Solid blue-grey arrow (&#x2193;)</strong> &mdash; a normal CALL/RST relationship. The arrow points from caller (above) to callee (below). If <code>main_loop</code> calls <code>draw_sprite</code>, a solid arrow goes from <code>main_loop</code> down to <code>draw_sprite</code>.</li>
+                        <li><strong style="color:#ff6666;">Dashed red arrow (&#x2193;)</strong> &mdash; a <em>back edge</em>, meaning the call creates a cycle. This happens with recursion (A calls A) or mutual recursion (A calls B, B calls A). The dashed style makes cycles easy to spot.</li>
+                    </ul>
+                    <p>All arrows have a triangular arrowhead at the callee end (the subroutine being called).</p>
+                    <p><strong>Interaction:</strong></p>
+                    <ul>
+                        <li><strong>Click</strong> a node to navigate to its address in the disassembler</li>
+                        <li><strong>Hover</strong> a node for tooltip showing address, name, and call count</li>
+                        <li><strong>Mouse wheel</strong> to zoom in/out (zooms toward cursor position)</li>
+                        <li><strong>Drag</strong> to pan the view</li>
+                    </ul>
+                    <p>The graph auto-fits to the dialog on open. ROM subroutines (addr &lt; $4000) are excluded. Press Escape or click &times; to close.</p>
+                    <h5>Code Path</h5>
+                    <p>Record and diff executed code paths to isolate event-specific handlers (collision routines, damage code per monster type, etc.). Works by recording the set of executed PC addresses during two gameplay scenarios, then computing the set difference to reveal code that only ran during the event.</p>
+                    <ol>
+                        <li><strong>Select slot</strong> (Baseline, Event A, or Event B) and click <strong>Record</strong> &mdash; button turns blue</li>
+                        <li><strong>Run the emulator</strong> during normal gameplay (for Baseline) or while triggering the event (for Event A/B)</li>
+                        <li>Click <strong>Record</strong> again to stop &mdash; status shows the number of unique PCs recorded</li>
+                        <li>Select a <strong>Diff mode</strong> and click <strong>Diff</strong></li>
+                        <li>Results show grouped blocks of unique code with disassembly &mdash; click any address to navigate</li>
+                    </ol>
+                    <p>Each block is preceded by context instructions (default 5, configurable via <code>CODE_PATH_CONTEXT_LINES</code> in constants.js) showing the code leading up to the unique block &mdash; marked with <strong>*</strong> and dimmed in the UI. This makes it easy to spot conditional branches, comparisons, and other patterns that trigger the event-specific code.</p>
+                    <p><strong>Diff modes:</strong></p>
+                    <ul>
+                        <li><strong>A &minus; Baseline</strong> / <strong>B &minus; Baseline</strong> &mdash; code unique to one event vs normal gameplay</li>
+                        <li><strong>A &minus; B</strong> / <strong>B &minus; A</strong> &mdash; code in one event but not the other (includes baseline noise)</li>
+                        <li><strong>(A &cap; B) &minus; Baseline</strong> &mdash; code shared by both events but absent from normal gameplay. Isolates shared event handlers (e.g. the death routine common to all enemy types)</li>
+                        <li><strong>(A &minus; B) &minus; Baseline</strong> / <strong>(B &minus; A) &minus; Baseline</strong> &mdash; code unique to one event, excluding both the other event <em>and</em> normal gameplay. Isolates per-event code (e.g. spike collision detection but not bee collision detection and not normal gameplay)</li>
+                    </ul>
+                    <p><strong>Merge recording</strong>: Check <strong>Merge</strong> before recording to union new PCs into the existing slot data instead of replacing it. Build comprehensive baselines across multiple gameplay sessions. Status shows the merged total and increment (e.g. &ldquo;Baseline: 3500 PCs (merged +200)&rdquo;).</p>
+                    <p><strong>Post-diff filter</strong>: After diffing, use the Filter row to narrow results:</p>
+                    <ul>
+                        <li><strong>Mnemonic filter</strong> &mdash; pipe-separated terms (e.g. <code>DEC|SUB|CP</code>). Blocks are shown if any non-context instruction matches</li>
+                        <li><strong>Writes</strong> preset &mdash; sets filter to <code>DEC|SUB|SBC|CP</code> (instructions that modify values)</li>
+                        <li><strong>Branch</strong> preset &mdash; sets filter to <code>JP |JR |CALL |RET </code> (conditional branches; trailing spaces avoid matching DJNZ/LDIR etc.)</li>
+                        <li><strong>Address range</strong> &mdash; hex from/to fields to restrict by address (e.g. 8000&ndash;BFFF)</li>
+                        <li>Matching instructions are highlighted in cyan. Export respects the filter &mdash; only visible blocks are exported</li>
+                    </ul>
+                    <p><strong>Per-enemy invulnerability workflow:</strong></p>
+                    <ol>
+                        <li>Record Baseline (normal gameplay &mdash; check Merge, record several sessions for thorough coverage)</li>
+                        <li>Record Event A (death from spikes)</li>
+                        <li>Record Event B (death from bees)</li>
+                        <li>Diff: <strong>(A &minus; B) &minus; Baseline</strong> &rarr; spike-specific code only</li>
+                        <li>Click <strong>Branch</strong> to filter &rarr; find the <code>JP Z</code> or <code>JR NZ</code> gating damage</li>
+                        <li>Right-click in disasm &rarr; Add poke &rarr; make unconditional or NOP</li>
+                        <li>Repeat with <strong>(B &minus; A) &minus; Baseline</strong> for bee-specific code</li>
+                    </ol>
+                    <p><strong>Skip ROM</strong> excludes addresses below $4000 from results. <strong>Export</strong> saves the diff as a tab-aligned text file (marker, address, mnemonic, bytes). <strong>Clear</strong> resets all slots, results, and filter. Active recordings are cancelled on machine change or reset.</p>
+                    <p><strong>Trace mode</strong>: After recording a Baseline, click <strong>Trace</strong> (button turns blue) and run the emulator. The emulator automatically breaks at the first instruction whose PC is not in the baseline set. The message &ldquo;Code path diverged at $XXXX&rdquo; identifies the exact entry point of event-specific code. Click Trace again to cancel. Tracing is also cancelled on machine change or reset.</p>
+                    <h5 style="color: var(--text-dim); border-bottom: 1px solid var(--text-dim); padding-bottom: 3px; margin-top: 20px;">Search</h5>
+                    <h5>POKE Search</h5>
+                    <p>Find memory locations storing game values (lives, score, etc.) by comparing snapshots:</p>
+                    <ol>
+                        <li><strong>Snap</strong> &mdash; take a memory snapshot (status shows snap count)</li>
+                        <li>Play game until the target value changes (e.g. lose a life)</li>
+                        <li><strong>Snap</strong> again &mdash; repeat snap/play for more data points</li>
+                        <li><strong>Search</strong> &mdash; scans all RAM, validates every snap-to-snap transition:
+                            <ul>
+                                <li><code>-1</code> / <code>+1</code> &mdash; value changed by exactly 1 between each snap</li>
+                                <li><code>Decreased</code> / <code>Increased</code> &mdash; value went down/up between each snap</li>
+                                <li><code>Changed</code> &mdash; value differs between each snap</li>
+                                <li><code>Unchanged</code> &mdash; value stayed the same across all snaps</li>
+                            </ul>
+                        </li>
+                        <li>Take more snaps and search again to narrow candidates</li>
+                        <li><strong>Filter</strong> &mdash; enter a hex value to keep only candidates where current memory matches. Clear the value and click Filter to undo</li>
+                        <li>Click result to view in memory dump; hover to see value at every snap point</li>
+                    </ol>
+                    <p>Requires at least 2 snapshots. Each search always scans all RAM &mdash; more snaps = fewer candidates. No deduplication: every snap-to-snap pair must match the selected mode.</p>
+                    <p><strong>Skip screen</strong> (on by default) &mdash; excludes screen memory (4000-5BFF) to reduce false positives.</p>
+                    <p><strong>Trace</strong> &mdash; blacklist addresses that change during normal gameplay (not related to the target value). Click <strong>Trace</strong> to start recording memory writes, play the game normally (without losing lives etc.), then click <strong>Stop Trace</strong>. All written addresses are added to a blacklist and excluded from future search results. The &times; button clears the blacklist. Useful for eliminating animation, score display, and other constantly-changing addresses.</p>
+                    <h5>Write Monitor</h5>
+                    <p>Monitors writes to a specific address to find collision detection routines. Typical workflow:</p>
+                    <ol>
+                        <li>Use POKE Search to find the lives/health address</li>
+                        <li>Enter the address in the <strong>Write mon</strong> field (<code>$hex</code>, <code>0xhex</code>, or decimal)</li>
+                        <li>Click <strong>Monitor</strong> &mdash; the button turns active and monitoring begins</li>
+                        <li>Play the game &mdash; trigger a collision or death</li>
+                        <li>Click <strong>Stop</strong> &mdash; results appear grouped by writing instruction</li>
+                    </ol>
+                    <p>Each result shows:</p>
+                    <ul>
+                        <li>The writing instruction (PC + disassembled mnemonic) with value transitions</li>
+                        <li>Call chain &mdash; the full call stack at the time of the write</li>
+                        <li>NOP suggestion &mdash; identifies the CALL instruction to patch out</li>
+                    </ul>
+                    <p>All addresses are clickable and navigate to the disassembler. Monitoring stops automatically on machine change or reset.</p>
+                    <h5>Read Monitor</h5>
+                    <p>Monitors reads from a specific address to find collision detection code that <em>checks</em> a value. Typical workflow:</p>
+                    <ol>
+                        <li>Use POKE Search to find a coordinate address (e.g. hero_x, hero_y)</li>
+                        <li>Enter the address in the <strong>Read mon</strong> field</li>
+                        <li>Click <strong>Monitor</strong> &mdash; monitoring begins</li>
+                        <li>Play the game &mdash; trigger a collision</li>
+                        <li>Click <strong>Stop</strong> &mdash; results show all instructions that read the address</li>
+                    </ol>
+                    <p>Each result shows:</p>
+                    <ul>
+                        <li>The reading instruction (e.g. <code>LD A,(IX+3)</code>) with unique values read</li>
+                        <li>Post-read context &mdash; 3 instructions after the read, revealing the CP/SUB comparison</li>
+                        <li>Call chain &mdash; identifies the collision-check subroutine</li>
+                    </ul>
+                    <p>Filters out opcode fetches &mdash; only captures data reads. Works with any addressing mode (direct, indexed, indirect).</p>
+                    <h5>Backward Slice</h5>
+                    <p>Read Monitor results automatically trace data flow backward. When the post-read context contains a comparison instruction (CP, SUB, SBC, AND, OR, XOR), the monitor identifies where the comparison register was loaded by scanning backward through the code. Results appear as dimmed lines below the context:</p>
+                    <p><code>&#9666; B from $6A10: LD B,(HL)</code></p>
+                    <p>This reveals the full data flow: the monitored read loads one value, and the backward slice shows where the other operand came from. Click the address to navigate to the loading instruction. Scans up to 32 bytes backward, stopping at control flow boundaries (JP/JR/CALL/RET).</p>
+                    <h5>Comparison Breakpoint</h5>
+                    <p>Break when two memory addresses satisfy a condition. Enter two addresses and select an operator (=, !=, &lt;, &gt;), then click <strong>Break</strong>. The emulator pauses at the exact moment the condition becomes true. Click <strong>Stop</strong> to cancel.</p>
+                    <p>Typical workflow: use POKE Search to find hero_x and enemy_x addresses, set the operator to <code>=</code>, click Break, and play &mdash; the emulator pauses at the exact frame and instruction where they collide. The breakpoint hooks into memory write callbacks and only evaluates when either address is written.</p>
+                    <h5>Register Tracker</h5>
+                    <p>Log a CPU register&rsquo;s value every time the program counter reaches a specific address. Enter a PC address, select a register (A, B, C, D, E, H, L, F, BC, DE, HL, IX, IY), and click <strong>Track</strong>.</p>
+                    <p>After tracking, results show a value distribution histogram &mdash; each unique value with its count and a visual bar. Summary includes unique values, min, max, and mode. Useful for understanding subroutine inputs (track A at a subroutine entry) or game state ranges (track a coordinate register in a movement loop).</p>
+                    <p>Hooks into the CPU fetch callback &mdash; one comparison per instruction fetch (negligible overhead when auto-map is already active). Maximum 10,000 samples.</p>
+                    <h5>Text Scanner</h5>
+                    <p>Tools &rarr; Search &rarr; <strong>Text</strong>. Scans memory for ASCII text strings. Detects both null-terminated and bit-7-terminated strings (last character has bit 7 set).</p>
+                    <ul>
+                        <li><strong>All strings</strong> &mdash; find all text strings of at least <em>min</em> length</li>
+                        <li><strong>Dictionary</strong> &mdash; find only strings containing known ZX Spectrum keywords (SCORE, LIVES, GAME OVER, etc.). Dictionary matches are highlighted.</li>
+                        <li><strong>Custom</strong> &mdash; search for a specific text string</li>
+                    </ul>
+                    <p>Options:</p>
+                    <ul>
+                        <li><strong>min</strong> &mdash; minimum string length (2-20, default 4)</li>
+                        <li><strong>ROM</strong> &mdash; include ROM area (0000-3FFF)</li>
+                        <li><strong>All banks</strong> &mdash; scan all 128K RAM banks (not just the currently paged bank)</li>
+                        <li><strong>Max results</strong> &mdash; 10/25/50/100/All with pagination</li>
+                    </ul>
+                    <p>Results show address, bank (for multi-bank scans), string length, termination type (&sup7; = bit-7, &empty; = null), and the text. Click a result to navigate to that address in the memory view.</p>
+                    <h5>Struct Mapper</h5>
+                    <p>Monitor all memory accesses relative to a base register (IX/IY) or fixed address to map game entity data structures. Set the base mode (IX, IY, or Fixed address), structure size (1&ndash;255 bytes), and click <strong>Map</strong>.</p>
+                    <p>During emulation, every read and write within the offset range is recorded with the instruction PC. Results are displayed as a table:</p>
+                    <ul>
+                        <li><strong>+NN</strong> &mdash; hex offset from base</li>
+                        <li><strong>Value</strong> &mdash; current byte at base+offset</li>
+                        <li><strong>Reads</strong> &mdash; read count and top reader PC (with label if available)</li>
+                        <li><strong>Writes</strong> &mdash; write count and top writer PC (with label if available)</li>
+                    </ul>
+                    <p>Click any PC address to navigate to it in the disassembler. When using IX/IY mode, the base address is read dynamically from the register each time &mdash; this follows the game&rsquo;s entity pointer as it processes different objects. Fixed mode monitors a static address range.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-files">
                     <h4>File Formats</h4>
@@ -575,8 +781,43 @@
                         <tr><td><strong>TRD</strong></td><td>TR-DOS disk image (Pentagon/Beta Disk)</td></tr>
                         <tr><td><strong>SCL</strong></td><td>TR-DOS file archive (more compact format)</td></tr>
                         <tr><td><strong>DSK</strong></td><td>+3 disk image (standard and extended CPC DSK format)</td></tr>
+                        <tr><td><strong>MGT</strong></td><td>DISCiPLE/+D disk image (requires plusd.rom)</td></tr>
+                        <tr><td><strong>MDR</strong></td><td>Interface 1 Microdrive cartridge image (254 sectors, up to ~128KB per cartridge; requires if1.rom)</td></tr>
+                        <tr><td><strong>OPD/OPU</strong></td><td>Opus Discovery disk image (40 tracks, 18 sectors/track, 256 bytes/sector; requires opus.rom)</td></tr>
                     </table>
                     <p><strong>DSK Write Persistence:</strong> Games on the +3 can save to disk. All FDC writes (sector writes, Format Track) are preserved in-memory and included in project saves. Use <strong>Save &rarr; DSK</strong> to download the current disk image with all modifications (EDSK format).</p>
+                    <h5>Disk Systems Usage</h5>
+                    <p><strong>Beta Disk / TR-DOS</strong> (TRD, SCL) &mdash; Pentagon/Scorpion: always on. For 48K/128K/+2: enable in Settings &rarr; Machines (requires trdos.rom).</p>
+                    <ul>
+                        <li>Enter TR-DOS prompt: <code>RANDOMIZE USR 15616</code></li>
+                        <li>Run single command from BASIC: <code>RANDOMIZE USR 15619: REM: LOAD "game"</code></li>
+                        <li>TR-DOS commands: <code>LIST</code>, <code>LOAD "name"</code>, <code>SAVE "name" CODE addr,len</code>, <code>RUN</code></li>
+                    </ul>
+                    <p><strong>+3 DOS</strong> (DSK) &mdash; +3 machine only. The ROM auto-boots from disk at startup.</p>
+                    <ul>
+                        <li>Standard BASIC: <code>CAT</code>, <code>LOAD "name"</code>, <code>SAVE "name" CODE addr,len</code></li>
+                        <li>Auto Load resets +3 and presses Enter at the Amstrad menu</li>
+                    </ul>
+                    <p><strong>DISCiPLE / +D</strong> (MGT) &mdash; enable in Settings &rarr; Machines (requires plusd.rom). Works with any machine.</p>
+                    <ul>
+                        <li>NMI button: pages in +D ROM, opens snapshot/catalog menu</li>
+                        <li>BASIC commands: <code>CAT 1</code>, <code>LOAD d1"name"</code>, <code>SAVE d1"name" CODE addr,len</code></li>
+                        <li><code>d1</code> = drive 1 (A), <code>d2</code> = drive 2 (B)</li>
+                    </ul>
+                    <p><strong>Interface 1 / Microdrive</strong> (MDR) &mdash; enable in Settings &rarr; Machines (requires if1.rom). Compatible with 48K, 128K, +2, Pentagon (not +2A/+3). Mutually exclusive with +D (conflicting I/O ports).</p>
+                    <ul>
+                        <li>Up to 8 Microdrive cartridges via COMMS shift register</li>
+                        <li>BASIC commands: <code>CAT 1</code>, <code>LOAD *"m";1;"name"</code>, <code>SAVE *"m";1;"name"</code></li>
+                        <li>Each cartridge holds 254 sectors of 512 bytes (~128KB)</li>
+                    </ul>
+                    <p><strong>Opus Discovery</strong> (OPD/OPU) &mdash; enable in Settings &rarr; Machines (requires opus.rom). Compatible with 48K, 128K, +2, Pentagon. Mutually exclusive with +D (both overlay $0000-$3FFF).</p>
+                    <ul>
+                        <li>2 drives (A-B), 40 tracks, 18 sectors/track, 256 bytes/sector (180KB SS / 360KB DS)</li>
+                        <li>Memory-mapped I/O: WD1770 FDC at $2800, MC6821 PIA at $3000</li>
+                        <li>NMI button: pages in Opus ROM, CPU vectors to $0066</li>
+                        <li>BASIC commands: <code>CAT 1</code>, <code>LOAD *"d1";"name"</code></li>
+                    </ul>
+                    <p style="font-size: 11px; color: var(--text-dim);">See <code>readme_disk_systems.txt</code> for a full command reference.</p>
                     <h5>Boot File Injection</h5>
                     <p>Automatically add a boot loader to TRD disk images via Settings в†’ Media в†’ Boot File:</p>
                     <ol>
@@ -614,7 +855,7 @@
                         <li>Memory regions</li>
                         <li>Cross-references</li>
                         <li>Bookmarks</li>
-                        <li>Loaded media (TAP/TRD/SCL) with tape position</li>
+                        <li>Loaded media (TAP/TRD/SCL/DSK/MGT/MDR/OPD) with tape position</li>
                     </ul>
                     <h5>AY Music Export (PSG)</h5>
                     <p>Record AY chip output to PSG file format in Settings в†’ AY Capture:</p>
@@ -948,13 +1189,13 @@
                         <li><strong>BASIC</strong> - Decode and display BASIC programs with syntax highlighting</li>
                         <li><strong>Disasm</strong> - Z80 disassembly with ROM labels, click addresses in BASIC to jump</li>
                         <li><strong>Hex Dump</strong> - Raw hex view with ASCII column</li>
-                        <li><strong>Edit</strong> - Dual-panel file editor for TAP, TZX, TRD/SCL, and DSK formats (see below)</li>
+                        <li><strong>Edit</strong> - Dual-panel file editor for TAP, TZX, TRD/SCL, MGT, DSK, and OPD formats (see below)</li>
                     </ul>
                     <h5>Features</h5>
                     <ul>
                         <li>Screen preview for snapshots and screen files</li>
                         <li>Click on TAP/TZX blocks to view: Program headers open BASIC decoder, Bytes headers open disassembly, data blocks open hex dump</li>
-                        <li>Click on TRD/SCL files to view: BASIC files open decoder, CODE files open disassembly</li>
+                        <li>Click on TRD/SCL/MGT files to view: BASIC files open decoder, CODE files open disassembly</li>
                         <li>Click USR addresses in BASIC to jump to disassembly</li>
                         <li>Disassembly shows blank lines after JP, JR, CALL, RET, RST, DJNZ, HALT</li>
                         <li>Copy-friendly output format (text copies correctly to clipboard)</li>
@@ -962,10 +1203,10 @@
                         <li>Double-click tape blocks or disk files in Settings &rarr; Media catalog to open in Explorer</li>
                     </ul>
                     <h5>Dual-Panel Editor (Edit tab)</h5>
-                    <p>The Edit tab uses a two-panel layout inspired by orthodox file managers (Norton Commander, Total Commander). Each panel independently holds a file in any supported format &mdash; TAP, TZX, TRD, SCL, or DSK. The toolbar between the panels adapts to the active panel's format.</p>
+                    <p>The Edit tab uses a two-panel layout inspired by orthodox file managers (Norton Commander, Total Commander). Each panel independently holds a file in any supported format &mdash; TAP, TZX, TRD, SCL, MGT, DSK, or OPD. The toolbar between the panels adapts to the active panel's format.</p>
                     <ul>
                         <li><strong>Active panel</strong> - Click a panel to make it active. The toolbar, Load File button, and New dropdown all operate on the active panel</li>
-                        <li><strong>New</strong> - Dropdown to create an empty file in the active panel: New TAP, New TZX, New TRD, or New DSK</li>
+                        <li><strong>New</strong> - Dropdown to create an empty file in the active panel: New TAP, New TZX, New TRD, New MGT, New DSK, or New OPD</li>
                         <li><strong>Load File</strong> - Loads a file into the active panel (and into the Explorer for analysis). Supports loading from local files and from ZIP archives</li>
                         <li><strong>Copy &raquo; / &laquo; Copy</strong> - Copy selected blocks/files from the active panel to the other panel. Works across different formats &mdash; tape blocks can be copied to disk and vice versa, with automatic format conversion (header fields mapped to disk attributes, filenames truncated to fit). If the destination panel is empty, a matching format is auto-created</li>
                         <li><strong>Link Header</strong> - For tape panels (TAP/TZX): auto-selects header+data block pairs together for all operations</li>
@@ -1023,8 +1264,40 @@
                         <li><strong>Extract</strong> - Download file data (+3DOS header stripped). Choose "Extract bin" for raw binary or "Extract Hobeta" for Hobeta format. Multiple files are zipped</li>
                         <li><strong>Inline edit</strong> - Double-click a file to edit name and extension</li>
                     </ul>
+                    <h5>MGT Editor (Edit tab)</h5>
+                    <p>Edit MGT disk images (DISCiPLE/+D): add, delete, reorder files, rename, change type, and save.</p>
+                    <ul>
+                        <li><strong>New MGT</strong> - Create an empty MGT disk from scratch</li>
+                        <li><strong>Add File</strong> - Import a binary file with MGT type and address</li>
+                        <li><strong>Import MGT</strong> - Append files from another MGT image</li>
+                        <li><strong>Save MGT</strong> - Rebuild and download as an 800K MGT disk image</li>
+                        <li><strong>Selection</strong> - Click to select, Ctrl+click for multi-select, &uarr;&darr; to reorder</li>
+                        <li><strong>Delete</strong> - Remove selected files</li>
+                        <li><strong>Inline edit</strong> - Double-click a file to edit name (10 chars), type, and address</li>
+                    </ul>
+                    <p>Capacity limits: 80 files, 1560 data sectors, 195 sectors (99,840 bytes) per file.</p>
+                    <h5>MDR Editor (Edit tab)</h5>
+                    <p>Edit MDR cartridge images (Interface 1 / Microdrive): add, delete, reorder files, rename, and save.</p>
+                    <ul>
+                        <li><strong>New MDR</strong> - Create an empty formatted cartridge (enter cartridge name)</li>
+                        <li><strong>Add File</strong> - Import a binary file with name and type</li>
+                        <li><strong>Import MDR</strong> - Append files from another MDR image</li>
+                        <li><strong>Save MDR</strong> - Rebuild and download as a 137,923-byte MDR image</li>
+                        <li><strong>Selection</strong> - Click to select, Ctrl+click for multi-select, &uarr;&darr; to reorder</li>
+                        <li><strong>Delete</strong> - Remove selected files</li>
+                        <li><strong>Inline edit</strong> - Double-click a file to edit name (10 chars)</li>
+                    </ul>
+                    <p>Capacity limits: 254 sectors, 512 bytes per sector. Files are reconstructed from linked sector chains.</p>
+                    <h5>OPD Editor (Edit tab)</h5>
+                    <p>Edit OPD disk images (Opus Discovery): create, import, and save.</p>
+                    <ul>
+                        <li><strong>New OPD</strong> - Create a blank disk (single-sided 180 KB or double-sided 360 KB)</li>
+                        <li><strong>Import OPD</strong> - Load an existing OPD image</li>
+                        <li><strong>Save OPD</strong> - Download the disk image</li>
+                    </ul>
+                    <p>OPD disks use 40 tracks &times; 18 sectors &times; 256 bytes with 0-based sector numbering. The Opus ROM handles the directory natively.</p>
                     <h5>ZIP Archives</h5>
-                    <p>ZIP files containing ZX container files (.tap, .tzx, .trd, .scl, .dsk) are transparently unwrapped. A single-file ZIP loads the inner file directly in its native format. Multi-file ZIPs show a picker dialog to choose which file to open.</p>
+                    <p>ZIP files containing ZX container files (.tap, .tzx, .trd, .scl, .mgt, .dsk) are transparently unwrapped. A single-file ZIP loads the inner file directly in its native format. Multi-file ZIPs show a picker dialog to choose which file to open.</p>
                     <h5>Loading Files</h5>
                     <p>When the Edit tab is already active, loading a file keeps the Edit tab visible instead of switching to File Info.</p>
                     <h5>TR-DOS File Types</h5>
@@ -1034,6 +1307,19 @@
                         <tr><td>C</td><td>Code (machine code)</td></tr>
                         <tr><td>D</td><td>Data array</td></tr>
                         <tr><td>#</td><td>Sequential file</td></tr>
+                    </table>
+                    <h5>MGT File Types</h5>
+                    <table>
+                        <tr><th>Type</th><th>Description</th></tr>
+                        <tr><td>1 &mdash; BASIC</td><td>BASIC program</td></tr>
+                        <tr><td>2 &mdash; Num Array</td><td>Numeric array</td></tr>
+                        <tr><td>3 &mdash; Str Array</td><td>String array</td></tr>
+                        <tr><td>4 &mdash; CODE</td><td>Machine code / data block</td></tr>
+                        <tr><td>5 &mdash; 48K Snap</td><td>48K snapshot (NMI save)</td></tr>
+                        <tr><td>7 &mdash; SCREEN$</td><td>Screen dump (6912 bytes)</td></tr>
+                        <tr><td>9 &mdash; 128K Snap</td><td>128K snapshot</td></tr>
+                        <tr><td>10 &mdash; Opentype</td><td>Sequential access file</td></tr>
+                        <tr><td>11 &mdash; Execute</td><td>Auto-run CODE file</td></tr>
                     </table>
                 </div>
                 <div class="fullhelp-section hidden" id="help-mapper">
@@ -1057,6 +1343,9 @@
                         <li><strong>Stamp</strong> &mdash; copy a rectangular region from the selected screenshot onto the blended image to correct blend artifacts (appears when blend exists and a screenshot is selected). Opens a dialog over the overview &mdash; drag to select a rectangle, pixels are stamped immediately. Multiple stamps supported; Escape to close</li>
                         <li><strong>Mark color</strong> &mdash; mark the room with a colored diagonal cross (X) overlay using one of the 8 ZX Spectrum colors. Marks appear in the overview, hover popup, and PNG export. Select &ldquo;No mark&rdquo; to remove</li>
                         <li><strong>Delete</strong> &mdash; delete the currently selected screenshot</li>
+                        <li><strong>Remove room</strong> &mdash; delete the entire room at the current position, including all screenshots, blend, and stamps (also via Ctrl+Delete)</li>
+                        <li><strong>Move</strong> &mdash; relocate the current room to a different grid position. Click Move, then click an empty cell on the overview canvas. The room is moved and the cursor follows. Click an occupied cell to stay in move mode; any other action cancels</li>
+                        <li><strong>Text</strong> &mdash; create or edit a text slide in the current room. Opens a dialog with a text editor and live preview. Configure font name, font size, font color, and paper/background color. Click &ldquo;Apply&rdquo; to save, or &ldquo;Set as default&rdquo; to use current settings for new text slides. Empty text removes the text slide. Text slides are mutually exclusive with screenshots &mdash; a room is either a text slide or a screenshot room</li>
                         <li><strong>Thumbnails</strong> &mdash; clickable strip of all screenshots for the current room; click to select which is displayed</li>
                         <li><strong>&#9881; (gear)</strong> &mdash; toggle the settings panel</li>
                     </ul>
@@ -1089,6 +1378,7 @@
                         <tr><td>Ctrl+Space</td><td>Capture screen</td></tr>
                         <tr><td>Ctrl+Arrow keys</td><td>Navigate rooms</td></tr>
                         <tr><td>Ctrl+Shift+Up / Down</td><td>Change floor</td></tr>
+                        <tr><td>Ctrl+Delete</td><td>Remove entire room</td></tr>
                     </table>
                     <h5>Save/Load Format</h5>
                     <p>Maps are saved as JSON files containing room screenshots (as data URLs), grid coordinates, floor data, capture region, and metadata. Version 2 format supports floors; version 1 files (without floors) are auto-migrated on load.</p>
@@ -1174,16 +1464,25 @@
                     <h5>Layout</h5>
                     <p>Editors column (left) and pokes column (right) are shown side by side. <strong>Load</strong>, <strong>Save</strong>, and <strong>Clear</strong> buttons are at the top right. Click the <strong>game name</strong> label to edit it.</p>
                     <h5>Adding Pokes</h5>
-                    <p>Use the add form at the top of the pokes column: enter a name, address, original value, and poke value, then click <strong>+</strong>. If a poke with the same name already exists, the new patch is added to it (multi-patch building). All addresses and values are hex.</p>
+                    <p>Use the add form at the top of the pokes column: enter a name, address, original value, poke value, and optional hint, then click <strong>+</strong>. If a poke with the same name already exists, the new patch is added to it (multi-patch building). All addresses and values are hex. The hint field is an optional description for each patch (e.g. "lives counter").</p>
+                    <p>You can also right-click any instruction in the disassembly view and choose <strong>Add poke</strong> to create a poke covering all bytes of that instruction. For example, a 3-byte <code>LD (nn),A</code> creates 3 patches with poke values set to $00 (NOP). For conditional branch instructions (JP cc, CALL cc, JR cc, RET cc), the menu expands into a submenu with two choices: <strong>NOP</strong> zeros all instruction bytes, while <strong>unconditional</strong> patches only the opcode byte to its unconditional equivalent (e.g. <code>JP Z,$XXXX</code> &rarr; <code>JP $XXXX</code>, <code>RET Z</code> &rarr; <code>RET</code>).</p>
                     <h5>Poke Entries</h5>
                     <p>Each poke has a checkbox to toggle it on/off. Enabling writes the patched bytes to memory; disabling restores the original values. Changes are instant &mdash; no apply button needed. The master checkbox above the poke list enables or disables all pokes at once (indeterminate state when partially enabled). Click <strong>&times;</strong> to remove an entry (restores original bytes if enabled).</p>
+                    <p><strong>Click</strong> a poke name to expand/collapse the patch details showing each address, original value, poke value, and hint. <strong>Double-click</strong> a poke name to rename it inline (Enter to save, Escape to cancel). Click any <strong>address</strong> in the patch details to navigate the left disassembly panel to that address. <strong>Double-click</strong> a patch line to edit the address, original value, poke value, and hint inline.</p>
+                    <h5>Memory Freeze</h5>
+                    <p>Lock a memory address so the game cannot change it. The frozen value is rewritten at the end of every frame. Two ways to freeze:</p>
+                    <ul>
+                        <li><strong>Editor freeze</strong> &mdash; each memory editor has a <strong>Freeze</strong> checkbox. Enable it to lock the current value at that address. No poke entry needed &mdash; just add an editor for the address and tick freeze. The value is read from memory when freeze is enabled.</li>
+                        <li><strong>Memory dump</strong> &mdash; right-click any byte in the memory dump and choose <strong>Freeze value</strong>. This creates a frozen editor for that address automatically.</li>
+                    </ul>
+                    <p>Freeze state is saved in JSON files and project persistence.</p>
                     <h5>Adding Editors</h5>
                     <p>Use the editor add form at the top of the editors column: enter a name, address, and value type (byte or word), then click <strong>+</strong>. <strong>Read</strong> refreshes all editor values from memory.</p>
                     <h5>Memory Editors</h5>
-                    <p>Editors provide live read/write access to specific memory addresses. All values are hex. Editing a value and pressing Enter or leaving the field writes it to memory immediately. Click <strong>&times;</strong> to remove an editor.</p>
+                    <p>Editors provide live read/write access to specific memory addresses. All values are hex. Editing a value and pressing Enter or leaving the field writes it to memory immediately. Click the <strong>address</strong> to navigate the left disassembly panel to that address. Click <strong>&times;</strong> to remove an editor.</p>
                     <p>Word editors use little-endian byte order (low byte at address, high byte at address+1).</p>
                     <h5>JSON File Format</h5>
-                    <p>Create poke files in a text editor. All addresses and values are hex. Patches use compact <code>[addr, normal, poke]</code> arrays.</p>
+                    <p>Create poke files in a text editor. All addresses and values are hex. Patches use compact <code>[addr, normal, poke]</code> or <code>[addr, normal, poke, hint]</code> arrays.</p>
                     <pre>
 {
     "game": "Game Name",
@@ -1191,7 +1490,7 @@
         {
             "name": "Infinite lives",
             "enabled": true,
-            "patches": [["8C2A", "3D", "00"]]
+            "patches": [["8C2A", "3D", "00", "DEC A (lives counter)"]]
         },
         {
             "name": "Walk through walls",
@@ -1208,7 +1507,7 @@
                         <li><strong>game</strong> &mdash; optional display label shown in the toolbar</li>
                         <li><strong>pokes[].name</strong> &mdash; display name for the poke entry</li>
                         <li><strong>pokes[].enabled</strong> &mdash; initial enabled state (boolean, default false)</li>
-                        <li><strong>pokes[].patches[]</strong> &mdash; arrays of <code>[addr, normal, poke]</code></li>
+                        <li><strong>pokes[].patches[]</strong> &mdash; arrays of <code>[addr, normal, poke]</code> or <code>[addr, normal, poke, hint]</code></li>
                         <li><strong>editors[].name</strong> &mdash; display label for the editor</li>
                         <li><strong>editors[].addr</strong> &mdash; memory address</li>
                         <li><strong>editors[].type</strong> &mdash; <code>"byte"</code> or <code>"word"</code> (little-endian)</li>

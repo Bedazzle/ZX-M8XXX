@@ -25,6 +25,13 @@ export function initHelpModal() {
             if (e.target === fullHelpDialog) fullHelpDialog.classList.add('hidden');
         });
 
+        fullHelpDialog.addEventListener('wheel', (e) => {
+            const content = fullHelpDialog.querySelector('.fullhelp-body');
+            if (!content || !content.contains(e.target)) {
+                e.preventDefault();
+            }
+        });
+
         fullHelpDialog.querySelectorAll('.fullhelp-nav-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 showHelpSection(btn.getAttribute('data-section'));

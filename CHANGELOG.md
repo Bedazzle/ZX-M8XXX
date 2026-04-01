@@ -2,6 +2,65 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.11
+- **Memory Freeze**: Lock memory addresses so the game cannot change them. Enable the freeze checkbox on any memory editor — the current value is rewritten every frame. Right-click any byte in the memory dump and choose "Freeze value" for one-click freezing.
+- **Comparison Breakpoint**: Break when two memory addresses satisfy a condition (=, !=, <, >). Enter hero_x and enemy_x addresses, click Break — emulator pauses at the exact moment they become equal (collision). Condition is also checked immediately on start.
+- **Register Tracker**: Log a register's value at a specific PC across frames. Shows value distribution histogram. Useful for understanding subroutine inputs and game state ranges.
+- **Read Monitor Backward Slice**: Read Monitor results now show where comparison registers were loaded (e.g., "B from $6A10: LD B,(HL)"), tracing the data flow backward.
+- **Struct Mapper**: Monitor all field accesses relative to a base register (IX/IY) or fixed address. Shows which offsets are read/written and by which subroutines — maps game entity structures automatically.
+- **Subroutine Signatures**: Profiler now shows register inputs/outputs for each subroutine (e.g., "in: HL, A → out: CF"). Determined by static analysis of entry code.
+- **Call Graph**: Visual call graph from profiler data. Canvas-based tree with clickable nodes, zoom/pan, and cycle detection. Open via Graph button after profiling.
+- **Read Monitor**: Monitor reads from a specific memory address to find collision detection code. Enter a known coordinate address, click Monitor, trigger a collision, click Stop — shows all instructions that read from that address with call stacks and post-read context (reveals the CP/SUB comparison). Works regardless of access pattern (direct, IX+d, (HL)).
+- **Register Watch**: Double-click a register pair name (BC, DE, HL, IX, IY, SP, PC) in the registers panel to add its current value as a memory watch.
+- **Code Path: Per-Event Diff Modes**: Two new diff modes: `(A − B) − Baseline` and `(B − A) − Baseline`. Isolate code unique to a single event type (e.g., spike collision detection) by subtracting both the other event and normal gameplay. Enables finding per-enemy invulnerability pokes.
+- **Code Path: Merge Recording**: "Merge" checkbox — union new recordings into existing slot data. Build comprehensive baselines across multiple gameplay sessions without losing previously recorded paths.
+- **Code Path: Post-Diff Filter**: Filter row with mnemonic filter (pipe-separated terms), address range (hex from/to), and preset buttons: "Writes" (DEC|SUB|SBC|CP) and "Branch" (conditional JP/JR/CALL/RET). Matching instructions highlighted in cyan. Export respects filter — only visible blocks are exported.
+
+## v0.9.10
+- **Code Path: Intersection Diff**: New `(A ∩ B) − Baseline` diff mode. Finds code that ran in both Event A and Event B but not in the Baseline — isolates shared event handlers (e.g. the death routine common to all enemy types) for invulnerability pokes.
+- **Code Path: Label Support**: Diff results and exports now substitute hex operand addresses with label names when available (e.g. `CALL main_loop` instead of `CALL 6A00h`). Block headers and address column show labels when the address has one.
+- **Mapper: Text Slide**: New room type for adding text annotations to maps. Click "Text" in the toolbar to create or edit a text slide. Supports multi-line text with configurable font name, font size, font color, and paper color (color pickers). Use "Set as default" to save current settings as defaults for new slides. Text slides render in overview, export, and hover popup like regular rooms. Settings saved per-room in the map JSON.
+- **Mapper: Remove Room / Move Room**: New toolbar buttons for room management. **Remove room** deletes the entire room (all screenshots, blend, stamps) at the current position (also via Ctrl+Delete). **Move** relocates a room: click Move, then click an empty cell on the overview canvas to reposition the room there.
+
+## v0.9.9
+- **Intelligent Add Poke**: Right-clicking a conditional instruction (JP cc, CALL cc, JR cc, RET cc) in the disassembly view now shows a submenu with two options: **NOP** (zero all instruction bytes, as before) or **make unconditional** (patch only the opcode byte to its unconditional equivalent — e.g. JP Z→JP, CALL NZ→CALL, JR C→JR, RET Z→RET). Non-conditional instructions still show the flat "Add poke" option.
+- **Code Path Skip ROM fix**: The "Skip ROM" filter now correctly preserves code executing in RAM mapped over ROM (Pentagon 1024 `ramInRomMode`, Scorpion `scorpionRamInRomMode`, +2A/+3 special paging). Previously it discarded all addresses in the 0x0000–0x3FFF range regardless of what was actually mapped there. Also fixed `getAutoMapKey()` to tag RAM-over-ROM with the RAM page number instead of the ROM bank, so auto-map, profiler, and code path tracking correctly distinguish RAM from ROM in that region.
+- **Code Path Tool**: Record and diff executed code paths to isolate event-specific handlers (collision, damage). 3 slots (Baseline, Event A, Event B), 4 diff modes, grouped disassembly output with export. Each block includes context instructions (configurable count via `CODE_PATH_CONTEXT_LINES` in constants.js, default 5) disassembled before the block start, marked with `*` for easy identification of branch patterns. Export is tab-aligned with mnemonic before bytes. **Trace mode**: click Trace after recording a baseline — emulator auto-breaks at the first instruction not in the baseline set, instantly isolating event-specific code entry points.
+- **Help**: Documented Code-Flow Analysis, Text Scanner, Pattern Search, POKE Search Trace/blacklist, expanded Auto-Map controls. Reorganized help: new Tools section groups Auto-Map, Code-Flow, XRefs, Profiler, POKE Search, Write Monitor, and Text Scanner together.
+
+## v0.9.8
+- **POKE Manager Enhancements**:
+  - **View patch details**: Click a poke name to expand/collapse the list of patched addresses with original and poke values.
+  - **Rename pokes**: Double-click a poke name to edit it inline (Enter to save, Escape to cancel).
+  - **Patch hints**: Optional per-patch description field ("Hint") in the add form and JSON format. Hints are shown as italic comments in the expanded patch view and persist in save/load.
+  - **Create poke from disassembly**: Right-click any instruction in the disassembly view → "Add poke" creates a poke covering all bytes of that instruction (e.g. a 3-byte `LD (nn),A` creates 3 patches). Poke values default to $00 (NOP).
+  - **Edit patches**: Double-click a patch line in the expanded view to edit the address, original value, poke value, and hint inline (Enter to save, Escape to cancel).
+  - **Address navigation**: Click any address in the expanded patch details or in memory editors to navigate the left disassembly panel to that address.
+- **Trace History Screen Revert**: Navigating trace history (slider, back/forward, click) now reverses memory writes so the emulator screen shows the historical state. Scroll back to see what the screen looked like at any traced instruction; return to live to restore current state. Works with both step trace and runtime trace. Memory operations record old values for undo/redo. Gracefully skips old trace entries recorded before this feature.
+- **Trace History Slider**: Drag slider below the trace list to quickly scroll through the entire execution history. No more repeated clicking of the back button.
+- **Trace History Disassembly Fix**: Stepping back through trace history now shows the correct instruction at the traced PC, even when memory banking has changed since recording. Previously the disassembly view could show zeroes or wrong bytes if a different ROM/RAM bank was currently paged in.
+- **OPD Disk Format Support (Explorer)**: Parse, display, edit, and save OPD disk images (40 tracks × 18 sectors × 256 bytes, single-sided 180 KB or double-sided 360 KB). 0-based sector numbering.
+  - **Explorer**: OPD analysis — disk geometry, sector usage, file listing. Hex dump for raw sector inspection. ZIP drill-in for OPD files inside archives.
+  - **Dual-Panel Editor**: Create new OPD disks (SS/DS), import existing OPD images, cross-panel copy between OPD ↔ TAP ↔ TZX ↔ TRD/SCL ↔ MGT ↔ DSK ↔ MDR.
+- **Interface 1 / Microdrive (MDR Cartridges)**: Full IF1 hardware emulation with 8KB shadow ROM paging at $0000-$1FFF, Microdrive tape-loop cartridge emulation with COMMS shift register for 8-drive daisy chain. ROM paging at PC=$0008 (RST 8) and PC=$1708 (CLOSE#), page-out at PC=$0700. Works with 48K, 128K, +2, Pentagon (not +2A/+3). Mutually exclusive with +D (conflicting ports $E7/$EF), compatible with Beta Disk.
+  - **MDR Format**: Parse, display, edit, and save MDR cartridge images (254 sectors × 543 bytes = 137,923 bytes). Sector-level header/record parsing with file reconstruction from linked sector chains.
+  - **Explorer**: MDR analysis — cartridge name, file listing with sector count and type, used/free sector counts. BASIC decoding, disassembly, and hex dump for individual files. ZIP drill-in for MDR files inside archives.
+  - **Dual-Panel Editor**: Create new MDR cartridges, add/delete/reorder files, inline edit names, cross-panel copy between MDR ↔ TAP ↔ TZX ↔ TRD/SCL ↔ MGT ↔ DSK ↔ OPD with automatic format conversion.
+  - **IF1 Settings**: Enable/disable Interface 1, load IF1 ROM (if1.rom). Mutual exclusion with +D. Settings persist across sessions.
+  - **Media Catalog**: MDR cartridge file listing in Settings → Media with drive tabs (MDR:1 through MDR:8) and multi-controller prefix labels.
+  - **Project Save/Load**: IF1 cartridge state fully preserved in project files (base64-encoded cartridge images).
+  - **8 drives** (1-8) with drive selector in Settings → Media.
+
+## v0.9.7
+- **DISCiPLE/+D Interface (MGT Disks)**: Full +D hardware emulation with WD1772 FDC controller, 8KB ROM + 8KB RAM paging at $0000-$3FFF, and NMI snapshot button support. Works with any machine type (48K, 128K, +2, Pentagon, etc.).
+  - **MGT Format**: Parse, display, edit, and save MGT disk images (80 tracks × 2 sides × 10 sectors × 512 bytes = 800 KB). Supports all +D file types: BASIC, CODE, arrays, 48K/128K snapshots, SCREEN$, opentype, execute.
+  - **Explorer**: Full MGT analysis — file listing with type, size, start address. BASIC decoding, disassembly, and hex dump for individual files. ZIP drill-in for MGT files inside archives.
+  - **Dual-Panel Editor**: Create new MGT disks, add/delete/reorder files, inline edit names and types, cross-panel copy between MGT ↔ TAP ↔ TZX ↔ TRD/SCL ↔ DSK with automatic format conversion.
+  - **+D Settings**: Enable/disable +D interface, load +D ROM (plusd.rom), NMI button for snapshot trigger. Settings persist across sessions.
+  - **Media Catalog**: MGT disk file listing in Settings → Media with drive tabs and multi-controller prefix labels (MGT:A, MGT:B) when multiple disk interfaces are active.
+  - **Project Save/Load**: +D disk state fully preserved in project files (base64-encoded disk images).
+  - **2 drives** (A-B) with drive selector in Settings → Media.
+
 ## v0.9.6
 - **Dual-Panel File Editor**: Explorer Edit tab — Norton Commander-style dual-panel interface for TAP, TZX, TRD/SCL, and DSK formats. Create, edit, reorder, delete, extract, and save blocks/files. Cross-panel copy with automatic format conversion. Inline editing via double-click. ZIP archives transparently unwrapped.
 - **TZX Editor**: Standard speed blocks use the same workflow as TAP. Non-standard blocks (turbo, pure tone, metadata, etc.) preserved as read-only rows with full round-trip save/load. Editable per-block pause values.

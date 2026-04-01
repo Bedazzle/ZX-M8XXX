@@ -1060,6 +1060,9 @@ const VERSION = '0.6.4';
             if (ext === 'trd') return 'trd';
             if (ext === 'scl') return 'scl';
             if (ext === 'dsk') return 'dsk';
+            if (ext === 'mgt' || ext === 'img') return 'mgt';
+            if (ext === 'mdr') return 'mdr';
+            if (ext === 'opd' || ext === 'opu') return 'opd';
 
             const bytes = new Uint8Array(data);
 
@@ -1080,6 +1083,15 @@ const VERSION = '0.6.4';
 
             // Check for TRD format
             if (TRDLoader.isTRD(data)) return 'trd';
+
+            // Check for MDR format (Interface 1 Microdrive)
+            if (MDRLoader.isMDR(data)) return 'mdr';
+
+            // Check for MGT format
+            if (MGTLoader.isMGT(data)) return 'mgt';
+
+            // Check for OPD format (Opus Discovery)
+            if (OPDLoader.isOPD(data)) return 'opd';
 
             if (bytes.length === SNA_48K_SIZE || bytes.length === SNA_128K_SIZE || bytes.length === SNA_P1024_SIZE) return 'sna';
             if (bytes.length > 30 && (bytes[6] === 0 || bytes[6] === 0xff)) return 'z80';
@@ -2867,7 +2879,7 @@ const VERSION = '0.6.4';
 
             // If no supported files found, list what's in the archive
             const fileNames = files.map(f => f.name).join(', ');
-            throw new Error(`No SNA, TAP, Z80, RZX, TRD, or SCL file found in ZIP. Contents: ${fileNames}`);
+            throw new Error(`No SNA, TAP, Z80, RZX, TRD, SCL, MGT, DSK, or MDR file found in ZIP. Contents: ${fileNames}`);
         }
 
         /**
@@ -2882,7 +2894,9 @@ const VERSION = '0.6.4';
                 const name = file.name.toLowerCase();
                 if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.tzx') ||
                     name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
-                    name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk')) {
+                    name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk') ||
+                    name.endsWith('.mgt') || name.endsWith('.img') || name.endsWith('.mdr') ||
+                    name.endsWith('.opd') || name.endsWith('.opu')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
                     else if (name.endsWith('.tzx')) type = 'tzx';
@@ -2892,6 +2906,9 @@ const VERSION = '0.6.4';
                     else if (name.endsWith('.trd')) type = 'trd';
                     else if (name.endsWith('.scl')) type = 'scl';
                     else if (name.endsWith('.dsk')) type = 'dsk';
+                    else if (name.endsWith('.mdr')) type = 'mdr';
+                    else if (name.endsWith('.mgt') || name.endsWith('.img')) type = 'mgt';
+                    else if (name.endsWith('.opd') || name.endsWith('.opu')) type = 'opd';
                     else type = 'tap';
 
                     spectrumFiles.push({
@@ -3669,6 +3686,1592 @@ const VERSION = '0.6.4';
          */
         static fileToTAP(fileData, fileInfo) {
             return TRDLoader.fileToTAP(fileData, fileInfo);
+        }
+    }
+
+    /**
+     * MGT file loader - DISCiPLE/+D disk image format
+     * 80 tracks × 2 sides × 10 sectors/track × 512 bytes/sector = 819200 bytes
+     * Directory in tracks 0-1 (both sides): 80 entries × 256 bytes
+     */
+    export class MGTLoader {
+        static get VERSION() { return VERSION; }
+
+        /**
+         * Check if data is an MGT file
+         * Standard: 819200 bytes (80 tracks, 2 sides, 10 sectors, 512 bytes)
+         * 40-track: 409600 bytes (40 tracks variant)
+         */
+        static isMGT(data) {
+            const bytes = new Uint8Array(data);
+            if (bytes.length !== 819200 && bytes.length !== 409600) return false;
+
+            // Validate directory: check first few slots have valid file types (0-11)
+            let validCount = 0;
+            let emptyCount = 0;
+            for (let i = 0; i < 20; i++) {
+                const slotOffset = MGTLoader._slotOffset(i);
+                if (slotOffset + 256 > bytes.length) break;
+                const fileType = bytes[slotOffset];
+                if (fileType === 0) {
+                    emptyCount++;
+                } else if (fileType >= 1 && fileType <= 11) {
+                    validCount++;
+                } else {
+                    // Invalid file type — not MGT
+                    return false;
+                }
+            }
+            // Need at least one valid file, or all empty (blank disk)
+            return validCount > 0 || emptyCount >= 5;
+        }
+
+        /**
+         * Calculate byte offset of directory slot N in the disk image.
+         * Directory: tracks 0-1, both sides = 40 sectors × 512 bytes.
+         * 2 entries per sector (256 bytes each).
+         * Sector layout: T0S0 S0, T0S0 S1, T0S1 S0, T0S1 S1, ... interleaved.
+         *
+         * Slot N:
+         *   sectorIndex = floor(N / 2)
+         *   entryInSector = N % 2
+         *   Track-side mapping: sectors 0-9 = T0/S0, 10-19 = T0/S1, 20-29 = T1/S0, 30-39 = T1/S1
+         *   imageOffset = ((track * 2 + side) * 10 + sectorInTrack) * 512 + entryInSector * 256
+         */
+        static _slotOffset(slotIndex) {
+            const sectorIndex = Math.floor(slotIndex / 2);
+            const entryInSector = slotIndex % 2;
+            // sectorIndex 0-9: track 0 side 0
+            // sectorIndex 10-19: track 0 side 1
+            // sectorIndex 20-29: track 1 side 0
+            // sectorIndex 30-39: track 1 side 1
+            return sectorIndex * 512 + entryInSector * 256;
+        }
+
+        /**
+         * Calculate image offset for a given track/side/sector
+         * Track: 0-79 or 128-207 (bit 7 = side 1)
+         * Sector: 1-10 (1-based)
+         */
+        static getSectorOffset(track, side, sector) {
+            const physTrack = track & 0x7F;
+            const physSide = (track & 0x80) ? 1 : side;
+            return ((physTrack * 2 + physSide) * 10 + (sector - 1)) * 512;
+        }
+
+        /**
+         * List files in MGT image
+         * Returns array of {name, type, typeName, length, startAddress, sectors,
+         *                    firstTrack, firstSector, sectorMap, autostart, bodyLength,
+         *                    tapeType, slotIndex}
+         */
+        static listFiles(data) {
+            const bytes = new Uint8Array(data);
+            const files = [];
+            const typeNames = {
+                0: 'Erased', 1: 'BASIC', 2: 'Num array', 3: 'Str array',
+                4: 'CODE', 5: '48K Snap', 6: 'Microdrive', 7: 'SCREEN$',
+                8: 'Special', 9: '128K Snap', 10: 'Opentype', 11: 'Execute'
+            };
+
+            for (let i = 0; i < 80; i++) {
+                const offset = MGTLoader._slotOffset(i);
+                if (offset + 256 > bytes.length) break;
+
+                const fileType = bytes[offset];
+                if (fileType === 0) continue;  // Empty/unused slot
+
+                // Read filename (10 bytes, space-padded)
+                let name = '';
+                for (let j = 1; j <= 10; j++) {
+                    const ch = bytes[offset + j];
+                    if (ch >= 0x20 && ch < 0x80) {
+                        name += String.fromCharCode(ch);
+                    }
+                }
+                name = name.trimEnd();
+
+                // Sector count (big-endian at offsets 11-12)
+                const sectors = (bytes[offset + 11] << 8) | bytes[offset + 12];
+
+                // First sector location
+                const firstTrack = bytes[offset + 13];
+                const firstSector = bytes[offset + 14];
+
+                // Sector address map: pairs of (track, sector) at offsets 15-209
+                const sectorMap = [];
+                for (let j = 0; j < sectors && j < 97; j++) {
+                    const mapOffset = offset + 15 + j * 2;
+                    if (mapOffset + 1 < offset + 210) {
+                        sectorMap.push({
+                            track: bytes[mapOffset],
+                            sector: bytes[mapOffset + 1]
+                        });
+                    }
+                }
+
+                // ZX tape type (offset 211)
+                const tapeType = bytes[offset + 211];
+
+                // File data length (LSB, MSB at offsets 212-213)
+                const length = bytes[offset + 212] | (bytes[offset + 213] << 8);
+
+                // Param 1: start address (CODE) or autostart line (BASIC)
+                const param1 = bytes[offset + 214] | (bytes[offset + 215] << 8);
+
+                // Param 2: body length (BASIC) or 32768 (CODE)
+                const param2 = bytes[offset + 216] | (bytes[offset + 217] << 8);
+
+                const typeName = typeNames[fileType] || `Type ${fileType}`;
+
+                files.push({
+                    name,
+                    type: fileType,
+                    typeName,
+                    tapeType,
+                    length,
+                    startAddress: param1,
+                    bodyLength: param2,
+                    sectors,
+                    firstTrack,
+                    firstSector,
+                    sectorMap,
+                    autostart: (fileType === 1) ? param1 : null,
+                    slotIndex: i
+                });
+            }
+
+            return files;
+        }
+
+        /**
+         * Extract file data from MGT image by following sector address map
+         */
+        static extractFile(data, fileInfo) {
+            const bytes = new Uint8Array(data);
+            const sectorSize = 512;
+            const result = new Uint8Array(fileInfo.sectors * sectorSize);
+            let destPos = 0;
+
+            for (let i = 0; i < fileInfo.sectorMap.length; i++) {
+                const entry = fileInfo.sectorMap[i];
+                const track = entry.track;
+                const sector = entry.sector;
+
+                // Decode track: bit 7 = side
+                const physTrack = track & 0x7F;
+                const side = (track & 0x80) ? 1 : 0;
+                const offset = ((physTrack * 2 + side) * 10 + (sector - 1)) * sectorSize;
+
+                if (offset + sectorSize <= bytes.length) {
+                    result.set(bytes.slice(offset, offset + sectorSize), destPos);
+                }
+                destPos += sectorSize;
+            }
+
+            // Return only the actual file length
+            return result.slice(0, fileInfo.length);
+        }
+
+        /**
+         * Convert MGT file to TAP format for loading
+         */
+        static fileToTAP(fileData, fileInfo) {
+            // Reuse TRDLoader's TAP builder with mapped type info
+            const mappedInfo = {
+                name: fileInfo.name.substring(0, 10),
+                type: fileInfo.type === 1 ? 'basic' :
+                      fileInfo.type === 4 ? 'code' :
+                      fileInfo.type === 7 ? 'code' :
+                      fileInfo.type === 2 ? 'data' :
+                      fileInfo.type === 3 ? 'data' : 'code',
+                start: fileInfo.startAddress,
+                length: fileInfo.length,
+                fullName: fileInfo.name
+            };
+            return TRDLoader.fileToTAP(fileData, mappedInfo);
+        }
+
+        /**
+         * Get disk statistics (total/used/free sectors)
+         */
+        static getDiskInfo(data) {
+            const bytes = new Uint8Array(data);
+            const totalSectors = (bytes.length / 512);
+            // Directory occupies tracks 0-1 (both sides) = 4 track-sides × 10 sectors = 40 sectors
+            const dirSectors = 40;
+            let usedSectors = dirSectors;
+
+            const files = MGTLoader.listFiles(data);
+            for (const f of files) {
+                usedSectors += f.sectors;
+            }
+
+            return {
+                totalSectors,
+                usedSectors,
+                freeSectors: totalSectors - usedSectors,
+                fileCount: files.length,
+                maxFiles: 80,
+                tracks: bytes.length === 819200 ? 80 : 40,
+                sides: 2,
+                sectorsPerTrack: 10,
+                bytesPerSector: 512,
+                totalSize: bytes.length
+            };
+        }
+    }
+
+    /**
+     * +D WD1772 Floppy Disk Controller
+     * DISCiPLE/+D interface: 2 drives, 80 tracks × 2 sides × 10 sectors × 512 bytes
+     * Port addresses: 0xE3 (control), 0xE7 (cmd/status), 0xEF (track),
+     *                 0xF7 (sector), 0xFF (data)
+     */
+    export class PlusDDisk {
+        static get VERSION() { return VERSION; }
+
+        constructor() {
+            // Per-drive state: each drive has its own disk image and head position
+            this.drives = [
+                { diskData: null, diskType: null, headTrack: 0 },
+                { diskData: null, diskType: null, headTrack: 0 }
+            ];
+
+            // WD1772 registers
+            this.command = 0;
+            this.status = 0;
+            this.track = 0;
+            this.sector = 1;       // Sectors are 1-based in MGT
+            this.data = 0;
+
+            // Disk activity callback: function(type, track, sector, side, drive)
+            this.onDiskActivity = null;
+
+            // Page-out callback: called when control register bit 6 set
+            this.onPageOut = null;
+
+            // Control register state
+            this.drive = 0;        // Current drive (0-1)
+            this.side = 0;         // Current side (0-1)
+
+            // Disk geometry (standard MGT)
+            this.sectorsPerTrack = 10;
+            this.bytesPerSector = 512;
+            this.tracks = 80;
+            this.sides = 2;
+
+            // Data transfer state
+            this.dataBuffer = null;
+            this.dataPos = 0;
+            this.dataLen = 0;
+            this.reading = false;
+            this.writing = false;
+
+            // Index pulse simulation
+            this.indexCounter = 0;
+
+            // Track last command type for status bit interpretation
+            this.lastCmdType = 0;  // 1=Type I, 2=Type II/III
+
+            // Status bits (same as WD1793)
+            this.BUSY = 0x01;
+            this.INDEX = 0x02;
+            this.DRQ = 0x02;
+            this.TRACK0 = 0x04;
+            this.LOST_DATA = 0x04;
+            this.CRC_ERROR = 0x08;
+            this.SEEK_ERROR = 0x10;
+            this.RNF = 0x10;
+            this.HEAD_LOADED = 0x20;
+            this.RECORD_TYPE = 0x20;
+            this.WRITE_PROTECT = 0x40;
+            this.NOT_READY = 0x80;
+
+            this.intrq = false;
+            this.multiSector = false;
+            this._sysReadsSinceData = 0;
+        }
+
+        // Load disk image into specified drive
+        loadDisk(data, type, driveIndex = 0) {
+            const drv = this.drives[driveIndex & 0x01];
+            drv.diskData = new Uint8Array(data);
+            drv.diskType = type || 'mgt';
+            drv.headTrack = 0;
+            if ((driveIndex & 0x01) === this.drive) {
+                this.status = 0;
+                this.track = 0;
+                this.sector = 1;
+            }
+        }
+
+        get currentDisk() {
+            return this.drives[this.drive];
+        }
+
+        // Create and insert a blank MGT disk
+        createBlankDisk(label = 'BLANK', driveIndex = 0) {
+            const mgt = new Uint8Array(819200);
+            mgt.fill(0);
+            // Directory is all zeros = all empty slots (file type 0 = unused)
+            // No disk info sector like TRD — directory structure IS the format
+
+            const drv = this.drives[driveIndex & 0x01];
+            drv.diskData = mgt;
+            drv.diskType = 'mgt';
+            drv.headTrack = 0;
+            if ((driveIndex & 0x01) === this.drive) {
+                this.status = 0;
+                this.track = 0;
+                this.sector = 1;
+            }
+            return true;
+        }
+
+        ejectDisk(driveIndex) {
+            if (driveIndex !== undefined) {
+                const drv = this.drives[driveIndex & 0x01];
+                drv.diskData = null;
+                drv.diskType = null;
+                drv.headTrack = 0;
+            } else {
+                const drv = this.currentDisk;
+                drv.diskData = null;
+                drv.diskType = null;
+                drv.headTrack = 0;
+            }
+            this.status = this.NOT_READY;
+        }
+
+        hasDisk(driveIndex) {
+            if (driveIndex !== undefined) {
+                return this.drives[driveIndex & 0x01].diskData !== null;
+            }
+            return this.currentDisk.diskData !== null;
+        }
+
+        hasAnyDisk() {
+            return this.drives.some(d => d.diskData !== null);
+        }
+
+        // Calculate sector offset in disk image
+        getSectorOffset(track, side, sector) {
+            // MGT layout: interleaved (track 0 side 0, track 0 side 1, track 1 side 0, ...)
+            // Each track-side has 10 sectors of 512 bytes = 5120 bytes
+            return ((track * 2 + side) * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
+        }
+
+        // Port read
+        read(port) {
+            const reg = port & 0xFF;
+
+            switch (reg) {
+                case 0xE7: // Status register (WD1772 command/status)
+                    if (!this.currentDisk.diskData) {
+                        return this.NOT_READY;
+                    }
+                    {
+                        let st = this.status;
+                        if (this.reading && this.dataPos < this.dataLen) {
+                            st |= this.DRQ;
+                        }
+                        if (this.lastCmdType === 1 && this.track === 0) {
+                            st |= this.TRACK0;
+                        }
+                        if (this.lastCmdType === 1) {
+                            this.indexCounter = (this.indexCounter + 1) % 16;
+                            if (this.indexCounter === 0) {
+                                st |= this.INDEX;
+                            }
+                        }
+                        return st;
+                    }
+
+                case 0xEF: // Track register
+                    return this.track;
+
+                case 0xF7: // Sector register
+                    return this.sector;
+
+                case 0xFF: // Data register
+                    if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
+                        this._sysReadsSinceData = 0;
+                        this.data = this.dataBuffer[this.dataPos++];
+                        if (this.dataPos >= this.dataLen) {
+                            if (this.multiSector) {
+                                this.sector++;
+                                if (this.sector > this.sectorsPerTrack) {
+                                    this.reading = false;
+                                    this.multiSector = false;
+                                    this.status &= ~(this.BUSY | this.DRQ);
+                                    this.intrq = true;
+                                } else {
+                                    this.readSector();
+                                }
+                            } else {
+                                this.reading = false;
+                                this.status &= ~(this.BUSY | this.DRQ);
+                                this.intrq = true;
+                            }
+                        }
+                    }
+                    return this.data;
+
+                case 0xE3: // Control register read: INTRQ/DRQ status
+                    {
+                        let ctrl = 0;
+                        if (this.intrq) ctrl |= 0x80;
+                        if (this.reading || this.writing) ctrl |= 0x40;
+                        // Lost data simulation (same as BetaDisk system register)
+                        if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
+                            this._sysReadsSinceData = (this._sysReadsSinceData || 0) + 1;
+                            if (this._sysReadsSinceData >= 2) {
+                                this.dataPos = this.dataLen;
+                                this.status |= this.LOST_DATA;
+                                if (this.multiSector) {
+                                    this.sector++;
+                                    if (this.sector > this.sectorsPerTrack) {
+                                        this.reading = false;
+                                        this.multiSector = false;
+                                        this.status &= ~(this.BUSY | this.DRQ);
+                                        this.intrq = true;
+                                    } else {
+                                        this.readSector();
+                                    }
+                                } else {
+                                    this.reading = false;
+                                    this.status &= ~(this.BUSY | this.DRQ);
+                                    this.intrq = true;
+                                }
+                            }
+                        }
+                        return ctrl;
+                    }
+
+                default:
+                    return 0xFF;
+            }
+        }
+
+        // Port write
+        write(port, value) {
+            const reg = port & 0xFF;
+
+            switch (reg) {
+                case 0xE7: // Command register
+                    this.executeCommand(value);
+                    break;
+
+                case 0xEF: // Track register
+                    this.track = value;
+                    break;
+
+                case 0xF7: // Sector register
+                    this.sector = value;
+                    break;
+
+                case 0xFF: // Data register
+                    this.data = value;
+                    if (this.writing && this.dataBuffer && this.dataPos < this.dataLen) {
+                        this.dataBuffer[this.dataPos++] = value;
+                        if (this.dataPos >= this.dataLen) {
+                            this.flushWriteBuffer();
+                            if (this.multiSector) {
+                                this.sector++;
+                                if (this.sector > this.sectorsPerTrack) {
+                                    this.writing = false;
+                                    this.multiSector = false;
+                                    this.status &= ~this.BUSY;
+                                    this.intrq = true;
+                                } else {
+                                    this.writeSector();
+                                }
+                            } else {
+                                this.writing = false;
+                                this.status &= ~this.BUSY;
+                                this.intrq = true;
+                            }
+                        }
+                    }
+                    break;
+
+                case 0xE3: // Control register
+                    this.drive = value & 0x01;  // Bit 0: drive select (0 or 1)
+                    this.side = (value & 0x04) ? 1 : 0;  // Bit 2: side select
+                    // Bit 6: page out +D ROM/RAM
+                    if (value & 0x40) {
+                        if (this.onPageOut) this.onPageOut();
+                    }
+                    break;
+            }
+        }
+
+        reset() {
+            this.command = 0;
+            this.status = 0;
+            this.track = 0;
+            this.sector = 1;
+            this.reading = false;
+            this.writing = false;
+            this.dataBuffer = null;
+            this.intrq = false;
+            this._sysReadsSinceData = 0;
+        }
+
+        executeCommand(cmd) {
+            this.command = cmd;
+            this.status = 0;
+            this.intrq = false;
+            this._sysReadsSinceData = 0;
+
+            if (!this.currentDisk.diskData) {
+                this.status = this.NOT_READY;
+                this.intrq = true;
+                return;
+            }
+
+            // Type I commands (restore, seek, step)
+            if ((cmd & 0x80) === 0) {
+                this.lastCmdType = 1;
+                this.status |= this.BUSY;
+
+                if ((cmd & 0xF0) === 0x00) {
+                    // Restore
+                    this.track = 0;
+                    this.currentDisk.headTrack = 0;
+                    this.status |= this.TRACK0;
+                } else if ((cmd & 0xF0) === 0x10) {
+                    // Seek
+                    this.track = this.data;
+                    this.currentDisk.headTrack = this.data;
+                    if (this.track === 0) this.status |= this.TRACK0;
+                } else if ((cmd & 0xE0) === 0x40) {
+                    // Step in
+                    if (this.track < 79) this.track++;
+                    this.currentDisk.headTrack = this.track;
+                } else if ((cmd & 0xE0) === 0x60) {
+                    // Step out
+                    if (this.track > 0) this.track--;
+                    this.currentDisk.headTrack = this.track;
+                    if (this.track === 0) this.status |= this.TRACK0;
+                }
+
+                this.status &= ~this.BUSY;
+                this.status |= this.HEAD_LOADED;
+                this.intrq = true;
+                return;
+            }
+
+            // Type II commands (read/write sector)
+            if ((cmd & 0xC0) === 0x80) {
+                this.lastCmdType = 2;
+                this.multiSector = !!(cmd & 0x10);
+                this.status = this.BUSY;
+
+                if ((cmd & 0x20) === 0) {
+                    this.readSector();
+                } else {
+                    this.writeSector();
+                }
+                return;
+            }
+
+            // Type IV command (force interrupt)
+            if ((cmd & 0xF0) === 0xD0) {
+                this.reading = false;
+                this.writing = false;
+                this.multiSector = false;
+                this.status &= ~this.BUSY;
+                this.status |= this.HEAD_LOADED;
+                if (this.track === 0) this.status |= this.TRACK0;
+                if (cmd & 0x08) this.intrq = true;
+                return;
+            }
+
+            // Type III commands (read/write track, read address)
+            if ((cmd & 0xC0) === 0xC0) {
+                this.lastCmdType = 2;
+                if ((cmd & 0xF0) === 0xC0) {
+                    // Read address
+                    this.dataBuffer = new Uint8Array([
+                        this.currentDisk.headTrack, this.side, this.sector, 2, 0, 0
+                    ]);  // size=2 for 512-byte sectors
+                    this.dataPos = 0;
+                    this.dataLen = 6;
+                    this.reading = true;
+                    this.status |= this.BUSY | this.DRQ;
+                } else if ((cmd & 0xF0) === 0xE0) {
+                    // Read Track — not implemented
+                    this.status = 0;
+                    this.intrq = true;
+                } else if ((cmd & 0xF0) === 0xF0) {
+                    // Write Track — not implemented
+                    this.status = 0;
+                    this.intrq = true;
+                }
+                return;
+            }
+        }
+
+        readSector() {
+            const drv = this.currentDisk;
+            const offset = this.getSectorOffset(this.track, this.side, this.sector);
+
+            if (this.onDiskActivity) {
+                this.onDiskActivity('read', this.track, this.sector, this.side, this.drive);
+            }
+
+            if (offset + this.bytesPerSector > drv.diskData.length) {
+                this.status |= this.RNF;
+                this.status &= ~this.BUSY;
+                this.intrq = true;
+                return;
+            }
+
+            this.dataBuffer = drv.diskData.slice(offset, offset + this.bytesPerSector);
+            this.dataPos = 0;
+            this.dataLen = this.bytesPerSector;
+            this.reading = true;
+            this.status |= this.DRQ | this.BUSY;
+        }
+
+        writeSector() {
+            const drv = this.currentDisk;
+            const offset = this.getSectorOffset(this.track, this.side, this.sector);
+
+            if (this.onDiskActivity) {
+                this.onDiskActivity('write', this.track, this.sector, this.side, this.drive);
+            }
+
+            if (offset + this.bytesPerSector > drv.diskData.length) {
+                this.status |= this.RNF;
+                this.status &= ~this.BUSY;
+                this.intrq = true;
+                return;
+            }
+
+            this.writeOffset = offset;
+            this.dataBuffer = new Uint8Array(this.bytesPerSector);
+            this.dataPos = 0;
+            this.dataLen = this.bytesPerSector;
+            this.writing = true;
+            this.status |= this.DRQ;
+        }
+
+        flushWriteBuffer() {
+            if (this.writeOffset !== undefined && this.dataBuffer) {
+                this.currentDisk.diskData.set(this.dataBuffer, this.writeOffset);
+            }
+        }
+
+        getIntrq() {
+            return this.intrq;
+        }
+    }
+
+    /**
+     * MDR Loader - Interface 1 Microdrive cartridge format
+     * 254 sectors × 543 bytes + 1 write-protect flag = 137923 bytes
+     */
+    export class MDRLoader {
+        static get VERSION() { return VERSION; }
+
+        static get SECTOR_COUNT() { return 254; }
+        static get SECTOR_SIZE() { return 543; }
+        static get HEADER_SIZE() { return 15; }
+        static get RECORD_SIZE() { return 528; }
+        static get DATA_SIZE() { return 512; }
+        static get IMAGE_SIZE() { return 254 * 543 + 1; }  // 137923
+        static get IMAGE_SIZE_NO_WP() { return 254 * 543; } // 137922
+
+        /**
+         * Check if data is an MDR file
+         * Standard: 137923 bytes (254×543 + 1 write-protect flag)
+         * Some images omit the write-protect byte: 137922 bytes
+         */
+        static isMDR(data) {
+            const bytes = new Uint8Array(data);
+            if (bytes.length !== MDRLoader.IMAGE_SIZE && bytes.length !== MDRLoader.IMAGE_SIZE_NO_WP) return false;
+
+            // Validate: check a few sector headers have reasonable values
+            let validCount = 0;
+            let freeCount = 0;
+            for (let i = 0; i < 10 && i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                const hdflag = bytes[off];
+                const hdnumb = bytes[off + 1];
+                if (hdflag === 0 && bytes[off + 15] === 0) {
+                    freeCount++;  // Free sector
+                } else if ((hdflag & 0x01) === 1 && hdnumb >= 1 && hdnumb <= 254) {
+                    validCount++;  // Valid header block
+                }
+            }
+            return validCount > 0 || freeCount >= 3;
+        }
+
+        /**
+         * Compute mod-256 checksum
+         */
+        static mdrChecksum(data, start, len) {
+            let sum = 0;
+            for (let i = 0; i < len; i++) {
+                sum = (sum + data[start + i]) & 0xFF;
+            }
+            return sum;
+        }
+
+        /**
+         * List files in MDR image
+         * Groups sectors by RECNAM, sorts by RECNUM, calculates file sizes
+         * Returns array of {name, length, sectors, sectorIndices, isPrint, type}
+         */
+        static listFiles(data) {
+            const bytes = new Uint8Array(data);
+            // Collect all used sectors grouped by filename
+            const fileMap = new Map();  // name → [{recnum, reclen, recflg, sectorIdx}]
+
+            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                const hdflag = bytes[off];
+                const recflg = bytes[off + 15];
+
+                // Skip free sectors (both header flag and record flag are 0)
+                if (hdflag === 0 && recflg === 0) continue;
+                // Must be a valid header block
+                if ((hdflag & 0x01) !== 1) continue;
+
+                // Read record filename (10 bytes at offset 19)
+                let recnam = '';
+                for (let j = 0; j < 10; j++) {
+                    const ch = bytes[off + 19 + j];
+                    if (ch >= 0x20 && ch < 0x80) {
+                        recnam += String.fromCharCode(ch);
+                    }
+                }
+                recnam = recnam.trimEnd();
+
+                if (!recnam) continue;
+
+                const recnum = bytes[off + 16];
+                const reclen = bytes[off + 17] | (bytes[off + 18] << 8);
+
+                if (!fileMap.has(recnam)) {
+                    fileMap.set(recnam, []);
+                }
+                fileMap.get(recnam).push({
+                    recnum,
+                    reclen,
+                    recflg,
+                    sectorIdx: i
+                });
+            }
+
+            // Build file list
+            const files = [];
+            for (const [name, sectors] of fileMap) {
+                // Sort by record number
+                sectors.sort((a, b) => a.recnum - b.recnum);
+
+                // Calculate total data length
+                let totalLen = 0;
+                for (let j = 0; j < sectors.length; j++) {
+                    const sec = sectors[j];
+                    if (sec.recflg & 0x02) {
+                        // EOF sector — use actual reclen
+                        totalLen += sec.reclen;
+                    } else {
+                        totalLen += MDRLoader.DATA_SIZE;
+                    }
+                }
+
+                const firstSec = sectors[0];
+                const isPrint = (firstSec.recflg & 0x04) === 0;  // bit 2=0 means PRINT file
+
+                files.push({
+                    name,
+                    length: totalLen,
+                    sectors: sectors.length,
+                    sectorIndices: sectors.map(s => s.sectorIdx),
+                    isPrint,
+                    type: isPrint ? 'PRINT' : 'File'
+                });
+            }
+
+            return files;
+        }
+
+        /**
+         * Extract file data from MDR image
+         * Follows sector sequence, concatenates data, trims last sector to RECLEN
+         */
+        static extractFile(data, fileInfo) {
+            const bytes = new Uint8Array(data);
+            const result = new Uint8Array(fileInfo.length);
+            let destPos = 0;
+
+            for (const sectorIdx of fileInfo.sectorIndices) {
+                const off = sectorIdx * MDRLoader.SECTOR_SIZE;
+                const recflg = bytes[off + 15];
+                const reclen = bytes[off + 17] | (bytes[off + 18] << 8);
+                const dataStart = off + 30;  // Data starts at byte 30
+
+                const copyLen = (recflg & 0x02) ? reclen : MDRLoader.DATA_SIZE;
+                const actualCopy = Math.min(copyLen, result.length - destPos);
+                if (actualCopy > 0) {
+                    result.set(bytes.slice(dataStart, dataStart + actualCopy), destPos);
+                    destPos += actualCopy;
+                }
+            }
+
+            return result.slice(0, destPos);
+        }
+
+        /**
+         * Get cartridge info: name, used/free sectors, file count
+         */
+        static getDiskInfo(data) {
+            const bytes = new Uint8Array(data);
+            let cartridgeName = '';
+            let usedSectors = 0;
+            let freeSectors = 0;
+
+            // Get cartridge name from first valid sector header
+            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                const hdflag = bytes[off];
+                if ((hdflag & 0x01) === 1) {
+                    // Read HDNAME (10 bytes at offset 4)
+                    for (let j = 0; j < 10; j++) {
+                        const ch = bytes[off + 4 + j];
+                        if (ch >= 0x20 && ch < 0x80) {
+                            cartridgeName += String.fromCharCode(ch);
+                        }
+                    }
+                    cartridgeName = cartridgeName.trimEnd();
+                    break;
+                }
+            }
+
+            // Count used/free sectors
+            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                const hdflag = bytes[off];
+                const recflg = bytes[off + 15];
+                if (hdflag === 0 && recflg === 0) {
+                    freeSectors++;
+                } else {
+                    usedSectors++;
+                }
+            }
+
+            const files = MDRLoader.listFiles(data);
+            const writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] : 0;
+
+            return {
+                cartridgeName,
+                totalSectors: MDRLoader.SECTOR_COUNT,
+                usedSectors,
+                freeSectors,
+                fileCount: files.length,
+                writeProtect: writeProtect !== 0,
+                totalSize: bytes.length
+            };
+        }
+
+        /**
+         * Convert MDR file to TAP format (reuses TRDLoader.fileToTAP)
+         */
+        static fileToTAP(fileData, fileInfo) {
+            const mappedInfo = {
+                name: fileInfo.name.substring(0, 10),
+                type: fileInfo.isPrint ? 'data' : 'code',
+                start: 0,
+                length: fileInfo.length,
+                fullName: fileInfo.name
+            };
+            return TRDLoader.fileToTAP(fileData, mappedInfo);
+        }
+
+        /**
+         * Create a blank formatted MDR image (137923 bytes)
+         */
+        static createBlankMDR(cartridgeName = 'BLANK') {
+            const image = new Uint8Array(MDRLoader.IMAGE_SIZE);
+            image.fill(0);
+
+            // Format each sector with proper header structure
+            const paddedName = (cartridgeName + '          ').substring(0, 10);
+            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                // HDFLAG = 1 (valid header block)
+                image[off] = 0x01;
+                // HDNUMB = sector number (254 down to 1)
+                image[off + 1] = MDRLoader.SECTOR_COUNT - i;
+                // HDNAME (10 bytes at offset 4)
+                for (let j = 0; j < 10; j++) {
+                    image[off + 4 + j] = paddedName.charCodeAt(j);
+                }
+                // HDCHK — header checksum (bytes 0-13)
+                image[off + 14] = MDRLoader.mdrChecksum(image, off, 14);
+                // Record area: all zeros = free sector (RECFLG=0, RECNUM=0, etc.)
+                // DESCHK — descriptor checksum (bytes 15-28)
+                image[off + 29] = MDRLoader.mdrChecksum(image, off + 15, 14);
+                // DCHK — data checksum (all zeros)
+                image[off + 542] = MDRLoader.mdrChecksum(image, off + 30, 512);
+            }
+            // Write-protect flag (last byte): 0 = not write-protected
+            image[MDRLoader.IMAGE_SIZE - 1] = 0;
+            return image;
+        }
+
+        /**
+         * Build MDR image from file list
+         * files: [{name, data, isPrint}]
+         * Returns 137923-byte Uint8Array
+         */
+        static buildMDR(files, cartridgeName = 'BLANK') {
+            const image = MDRLoader.createBlankMDR(cartridgeName);
+            let nextSector = 0;  // Next free sector to allocate
+
+            for (const file of files) {
+                const fileData = new Uint8Array(file.data);
+                const numSectors = Math.ceil(fileData.length / MDRLoader.DATA_SIZE) || 1;
+
+                if (nextSector + numSectors > MDRLoader.SECTOR_COUNT) {
+                    break;  // No more room
+                }
+
+                const paddedRecnam = (file.name + '          ').substring(0, 10);
+
+                for (let rec = 0; rec < numSectors; rec++) {
+                    const secIdx = nextSector++;
+                    const off = secIdx * MDRLoader.SECTOR_SIZE;
+                    const dataStart = rec * MDRLoader.DATA_SIZE;
+                    const isLast = (rec === numSectors - 1);
+                    const chunkLen = isLast
+                        ? fileData.length - dataStart
+                        : MDRLoader.DATA_SIZE;
+
+                    // Header is already formatted by createBlankMDR
+
+                    // Record descriptor (bytes 15-28)
+                    image[off + 15] = isLast ? 0x06 : 0x04;  // RECFLG: bit 2=regular file, bit 1=EOF
+                    if (file.isPrint) {
+                        image[off + 15] = isLast ? 0x02 : 0x00;  // PRINT file: bit 2=0
+                    }
+                    image[off + 16] = rec;  // RECNUM
+                    image[off + 17] = chunkLen & 0xFF;  // RECLEN low
+                    image[off + 18] = (chunkLen >> 8) & 0xFF;  // RECLEN high
+                    // RECNAM (10 bytes)
+                    for (let j = 0; j < 10; j++) {
+                        image[off + 19 + j] = paddedRecnam.charCodeAt(j);
+                    }
+                    // DESCHK
+                    image[off + 29] = MDRLoader.mdrChecksum(image, off + 15, 14);
+
+                    // Data (512 bytes at offset 30)
+                    const dataOff = off + 30;
+                    for (let j = 0; j < MDRLoader.DATA_SIZE; j++) {
+                        image[dataOff + j] = (dataStart + j < fileData.length) ? fileData[dataStart + j] : 0;
+                    }
+                    // DCHK
+                    image[off + 542] = MDRLoader.mdrChecksum(image, off + 30, 512);
+                }
+            }
+
+            // Mark remaining sectors as free (HDFLAG=0, RECFLG=0)
+            for (let i = nextSector; i < MDRLoader.SECTOR_COUNT; i++) {
+                const off = i * MDRLoader.SECTOR_SIZE;
+                // Keep sector number but clear HDFLAG to mark as free
+                image[off] = 0x00;
+                image[off + 15] = 0x00;
+                image[off + 14] = MDRLoader.mdrChecksum(image, off, 14);
+                image[off + 29] = MDRLoader.mdrChecksum(image, off + 15, 14);
+                image[off + 542] = MDRLoader.mdrChecksum(image, off + 30, 512);
+            }
+
+            return image;
+        }
+    }
+
+    /**
+     * Microdrive — Interface 1 Microdrive hardware emulation
+     * Instant-completion model (same as BetaDisk/PlusDDisk).
+     * Up to 8 Microdrives, each with its own cartridge image.
+     * Port $E7: data register, Port $EF: status/control register.
+     */
+    export class Microdrive {
+        static get VERSION() { return VERSION; }
+
+        constructor() {
+            // 8 Microdrive slots, each with cartridge data and state
+            this.drives = [];
+            for (let i = 0; i < 8; i++) {
+                this.drives.push({
+                    cartridge: null,      // Uint8Array — raw MDR image (254×543 bytes)
+                    writeProtect: false,
+                    motorOn: false,
+                    headPos: 0            // Byte position within the cartridge tape
+                });
+            }
+
+            // COMMS shift register for drive selection (8-bit)
+            this.commsShiftReg = 0;
+            this.commsData = 0;           // COMMS DATA line (bit 0 of control port write)
+            this.commsClk = 0;            // COMMS CLK line (bit 1 — for rising edge detect)
+
+            // Control state
+            this.writing = false;
+            this.erasing = false;
+
+            // Disk activity callback: function(type, drive, pos)
+            this.onDiskActivity = null;
+
+            // Track gap state for status reads
+            this._gapCounter = 0;
+        }
+
+        /**
+         * Get the currently selected (motor-on) drive index, or -1 if none
+         */
+        get activeDrive() {
+            for (let i = 0; i < 8; i++) {
+                if ((this.commsShiftReg & (1 << i)) && this.drives[i].motorOn) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /**
+         * Get the currently active drive object, or null
+         */
+        get currentDrive() {
+            const idx = this.activeDrive;
+            return idx >= 0 ? this.drives[idx] : null;
+        }
+
+        /**
+         * Read port $E7 — Microdrive data register
+         * Returns next byte from selected drive's tape
+         */
+        readData() {
+            const drv = this.currentDrive;
+            if (!drv || !drv.cartridge) return 0xFF;
+
+            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+            const val = drv.cartridge[drv.headPos % tapeLen];
+            drv.headPos = (drv.headPos + 1) % tapeLen;
+
+            if (this.onDiskActivity) {
+                this.onDiskActivity('read', this.activeDrive, drv.headPos);
+            }
+            return val;
+        }
+
+        /**
+         * Write port $E7 — Microdrive data register
+         * Writes byte to selected drive's tape
+         */
+        writeData(val) {
+            const drv = this.currentDrive;
+            if (!drv || !drv.cartridge || drv.writeProtect) return;
+            if (!this.writing && !this.erasing) return;
+
+            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+            drv.cartridge[drv.headPos % tapeLen] = val;
+            drv.headPos = (drv.headPos + 1) % tapeLen;
+
+            if (this.onDiskActivity) {
+                this.onDiskActivity('write', this.activeDrive, drv.headPos);
+            }
+        }
+
+        /**
+         * Read port $EF — Status register
+         * Bit 0: write protect (1=protected)
+         * Bit 1: sync (1=sync pulse detected)
+         * Bit 2: gap (1=in inter-record gap)
+         * Bit 3: DTR (always 0 for Microdrive)
+         * Bit 4: busy (1=no cartridge or no motor)
+         * Bits 5-7: unused (1)
+         */
+        readStatus() {
+            const drv = this.currentDrive;
+            if (!drv || !drv.cartridge) {
+                return 0xEF | 0x10;  // Not busy is wrong — if no drive, bit 4 = busy = 1... actually bit 4 = 0 means "ready"
+                // Actually, when no drive: return $FF (all bits high, including busy)
+            }
+
+            let status = 0xE0;  // Bits 5-7 high (unused)
+
+            // Bit 0: write protect
+            if (drv.writeProtect) status |= 0x01;
+
+            // Bit 4: not ready (no cartridge inserted or motor off)
+            if (!drv.motorOn) {
+                status |= 0x10;
+                return status;
+            }
+
+            // Derive sync and gap from head position within sector
+            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+            const posInSector = drv.headPos % MDRLoader.SECTOR_SIZE;
+
+            // Gap between header and record (bytes 14-15 area)
+            // Sync at the start of header (byte 0) and start of record (byte 15)
+            if (posInSector === 0 || posInSector === MDRLoader.HEADER_SIZE) {
+                status |= 0x02;  // Sync
+            }
+            if (posInSector >= MDRLoader.HEADER_SIZE - 1 && posInSector <= MDRLoader.HEADER_SIZE) {
+                status |= 0x04;  // Gap
+            }
+
+            // Gap at end of sector (last few bytes before next sector)
+            if (posInSector >= MDRLoader.SECTOR_SIZE - 2) {
+                status |= 0x04;  // Gap
+            }
+
+            return status;
+        }
+
+        /**
+         * Write port $EF — Control register
+         * Bit 0: COMMS DATA
+         * Bit 1: COMMS CLK (rising edge shifts data into shift register)
+         * Bit 2: R/W mode (0=read, 1=write)
+         * Bit 3: Erase (1=erase head active)
+         * Bit 4: CTS (not used for Microdrive)
+         * Bit 5: Wait (not emulated)
+         */
+        writeControl(val) {
+            const newCommsData = val & 0x01;
+            const newCommsClk = (val >> 1) & 0x01;
+
+            // Detect rising edge on COMMS CLK
+            if (newCommsClk && !this.commsClk) {
+                // Shift data bit into shift register (MSB first → LSB)
+                this.commsShiftReg = ((this.commsShiftReg << 1) | newCommsData) & 0xFF;
+
+                // Update motor state for all drives
+                for (let i = 0; i < 8; i++) {
+                    this.drives[i].motorOn = !!(this.commsShiftReg & (1 << i));
+                }
+            }
+
+            this.commsData = newCommsData;
+            this.commsClk = newCommsClk;
+
+            // R/W mode
+            this.writing = !!(val & 0x04);
+
+            // Erase
+            this.erasing = !!(val & 0x08);
+        }
+
+        /**
+         * Load cartridge into specified drive
+         */
+        loadCartridge(data, driveIndex = 0) {
+            const idx = driveIndex & 0x07;
+            const bytes = new Uint8Array(data);
+            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+
+            this.drives[idx].cartridge = new Uint8Array(tapeLen);
+            this.drives[idx].cartridge.set(bytes.subarray(0, Math.min(bytes.length, tapeLen)));
+            this.drives[idx].writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] !== 0 : false;
+            this.drives[idx].headPos = 0;
+        }
+
+        /**
+         * Eject cartridge from specified drive
+         */
+        ejectCartridge(driveIndex = 0) {
+            const idx = driveIndex & 0x07;
+            this.drives[idx].cartridge = null;
+            this.drives[idx].writeProtect = false;
+            this.drives[idx].headPos = 0;
+            this.drives[idx].motorOn = false;
+        }
+
+        /**
+         * Check if specified drive has a cartridge
+         */
+        hasCartridge(driveIndex) {
+            return this.drives[driveIndex & 0x07].cartridge !== null;
+        }
+
+        /**
+         * Check if any drive has a cartridge
+         */
+        hasAnyCartridge() {
+            return this.drives.some(d => d.cartridge !== null);
+        }
+
+        /**
+         * Get cartridge data from specified drive (for project save)
+         */
+        getCartridgeData(driveIndex) {
+            const drv = this.drives[driveIndex & 0x07];
+            if (!drv.cartridge) return null;
+            // Return full MDR image with write-protect flag
+            const image = new Uint8Array(MDRLoader.IMAGE_SIZE);
+            image.set(drv.cartridge);
+            image[MDRLoader.IMAGE_SIZE - 1] = drv.writeProtect ? 1 : 0;
+            return image;
+        }
+
+        /**
+         * Reset all drives
+         */
+        reset() {
+            this.commsShiftReg = 0;
+            this.commsData = 0;
+            this.commsClk = 0;
+            this.writing = false;
+            this.erasing = false;
+            for (const drv of this.drives) {
+                drv.motorOn = false;
+                drv.headPos = 0;
+                // Cartridge data persists across reset
+            }
+        }
+    }
+
+    /**
+     * OPD Loader - Opus Discovery disk format
+     * Raw sector dump: 40 tracks × 18 sectors × 256 bytes/sector
+     * Single-sided: 184,320 bytes / Double-sided: 368,640 bytes
+     */
+    export class OPDLoader {
+        static get VERSION() { return VERSION; }
+
+        static get SECTORS_PER_TRACK() { return 18; }
+        static get BYTES_PER_SECTOR() { return 256; }
+        static get TRACKS() { return 40; }
+        static get SS_SIZE() { return 184320; }   // 40 × 18 × 256
+        static get DS_SIZE() { return 368640; }   // 40 × 2 × 18 × 256
+
+        // Directory layout: sector 0 = disk descriptor, sectors 1-7 = directory (7 sectors)
+        static get DIR_START_SECTOR() { return 1; }
+        static get DIR_SECTORS() { return 7; }
+        static get DIR_ENTRY_SIZE() { return 16; }
+        static get MAX_DIR_ENTRIES() { return 112; }  // 7 * 256 / 16
+        static get DATA_START_SECTOR() { return 8; }  // first data sector
+
+        // File header (6 bytes at start of file data on disk)
+        static get FILE_HEADER_SIZE() { return 6; }
+
+        static isOPD(data) {
+            const len = data instanceof Uint8Array ? data.length : data.byteLength;
+            return len === OPDLoader.SS_SIZE || len === OPDLoader.DS_SIZE;
+        }
+
+        static isDoubleSided(data) {
+            const len = data instanceof Uint8Array ? data.length : data.byteLength;
+            return len >= OPDLoader.DS_SIZE;
+        }
+
+        static getSectorOffset(track, side, sector, sides) {
+            return ((track * sides + side) * OPDLoader.SECTORS_PER_TRACK + sector) * OPDLoader.BYTES_PER_SECTOR;
+        }
+
+        /**
+         * Read a directory entry from the raw directory data.
+         * Entry format (16 bytes): bytes_in_last_block(2), first_block(2), last_block(2), name(10)
+         * All integers are little-endian.
+         */
+        static _readDirEntry(dirData, index) {
+            const off = index * 16;
+            const bytesInLast = dirData[off] | (dirData[off + 1] << 8);
+            const firstBlock = dirData[off + 2] | (dirData[off + 3] << 8);
+            const lastBlock = dirData[off + 4] | (dirData[off + 5] << 8);
+            let name = '';
+            for (let i = 0; i < 10; i++) {
+                const ch = dirData[off + 6 + i];
+                if (ch >= 0x20 && ch < 0x7F) name += String.fromCharCode(ch);
+                else name += ' ';
+            }
+            return { bytesInLast, firstBlock, lastBlock, name };
+        }
+
+        /**
+         * Read the 6-byte file header from the start of a file's data area.
+         * Header: type(1), length(2 LE), startAddr(2 LE), extra(1)
+         */
+        static _readFileHeader(data, sectorOffset) {
+            if (sectorOffset + 6 > data.length) return null;
+            const type = data[sectorOffset];
+            const length = data[sectorOffset + 1] | (data[sectorOffset + 2] << 8);
+            const startAddr = data[sectorOffset + 3] | (data[sectorOffset + 4] << 8);
+            const extra = data[sectorOffset + 5];
+            return { type, length, startAddr, extra };
+        }
+
+        static getDiskInfo(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
+            const totalSectors = OPDLoader.TRACKS * sides * OPDLoader.SECTORS_PER_TRACK;
+
+            // Read directory to count used sectors and files properly
+            const files = OPDLoader.listFiles(bytes);
+            let usedDataSectors = 0;
+            for (const f of files) {
+                usedDataSectors += f.sectors;
+            }
+            // Sectors 0-7 are always "used" (descriptor + directory)
+            const usedSectors = OPDLoader.DATA_START_SECTOR + usedDataSectors;
+
+            // Disk label from directory entry 0
+            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
+            const entry0 = OPDLoader._readDirEntry(bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * OPDLoader.BYTES_PER_SECTOR), 0);
+            const diskLabel = entry0.name.trim();
+
+            return {
+                tracks: OPDLoader.TRACKS,
+                sides,
+                sectorsPerTrack: OPDLoader.SECTORS_PER_TRACK,
+                bytesPerSector: OPDLoader.BYTES_PER_SECTOR,
+                totalSectors,
+                usedSectors,
+                freeSectors: totalSectors - usedSectors,
+                totalSize: bytes.length,
+                fileCount: files.length,
+                diskLabel
+            };
+        }
+
+        /**
+         * Parse directory entries and return file list.
+         * Directory is at sectors 1-7 (offset 256-2047).
+         * Entry 0 = disk label, entries 1+ = files until last_block == 0xFFFF.
+         */
+        static listFiles(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            if (bytes.length < OPDLoader.DATA_START_SECTOR * OPDLoader.BYTES_PER_SECTOR) return [];
+
+            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
+            const dirData = bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * OPDLoader.BYTES_PER_SECTOR);
+            const files = [];
+
+            // Skip entry 0 (disk label), iterate entries 1-111
+            for (let i = 1; i < OPDLoader.MAX_DIR_ENTRIES; i++) {
+                const entry = OPDLoader._readDirEntry(dirData, i);
+
+                // End of directory: last_block == 0xFFFF
+                if (entry.lastBlock === 0xFFFF) break;
+
+                // Skip empty entries (both blocks zero and no name)
+                if (entry.firstBlock === 0 && entry.lastBlock === 0 && entry.bytesInLast === 0) continue;
+
+                const sectors = entry.lastBlock - entry.firstBlock + 1;
+                const rawLength = (entry.lastBlock - entry.firstBlock) * OPDLoader.BYTES_PER_SECTOR + entry.bytesInLast;
+                // Block numbers in directory are 0-based from sector 1 (sector 0 is descriptor)
+                // image_sector = block + 1, per EXTRACT.C: fseek(infile, (first_block + 1) * BPS, SEEK_SET)
+                const dataOffset = (entry.firstBlock + 1) * OPDLoader.BYTES_PER_SECTOR;
+
+                // Read the 6-byte file header from the start of the file data
+                const header = OPDLoader._readFileHeader(bytes, dataOffset);
+
+                const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
+                const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
+
+                files.push({
+                    name: entry.name.replace(/\s+$/, ''),
+                    dirIndex: i,
+                    firstBlock: entry.firstBlock,
+                    lastBlock: entry.lastBlock,
+                    bytesInLast: entry.bytesInLast,
+                    sectors,
+                    rawLength,
+                    length: header ? header.length : rawLength,
+                    type: header ? header.type : -1,
+                    typeName: header ? (typeNames[header.type] || 'Unknown') : 'Unknown',
+                    ext: header ? (extMap[header.type] || 'C') : 'C',
+                    startAddr: header ? header.startAddr : 0,
+                    autostart: header ? header.extra : 0,
+                    dataOffset
+                });
+            }
+
+            return files;
+        }
+
+        /**
+         * Extract file data from OPD image (without the 6-byte Opus header).
+         * Returns Uint8Array of file content, or null on error.
+         */
+        static extractFile(data, fileInfo) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const dataStart = fileInfo.dataOffset + OPDLoader.FILE_HEADER_SIZE;
+            const dataLen = fileInfo.length;
+            if (dataStart + dataLen > bytes.length) return null;
+            return bytes.slice(dataStart, dataStart + dataLen);
+        }
+
+        /**
+         * Convert an extracted Opus file to a TAP block (header + data).
+         */
+        static fileToTAP(fileData, fileInfo) {
+            // Build a standard TAP: header block + data block
+            const name = (fileInfo.name + '          ').substring(0, 10);
+            const header = new Uint8Array(21);
+            header[0] = 0x00; // header flag
+            header[1] = fileInfo.type >= 0 ? fileInfo.type : 3; // file type
+            for (let i = 0; i < 10; i++) header[2 + i] = name.charCodeAt(i);
+            const len = fileData.length;
+            header[12] = len & 0xFF;
+            header[13] = (len >> 8) & 0xFF;
+            if (fileInfo.type === 0) {
+                // BASIC: param1 = autostart, param2 = program length
+                const autostart = fileInfo.autostart || 0x8000;
+                header[14] = autostart & 0xFF;
+                header[15] = (autostart >> 8) & 0xFF;
+                header[16] = len & 0xFF;
+                header[17] = (len >> 8) & 0xFF;
+            } else {
+                // CODE: param1 = start address, param2 = 32768
+                header[14] = fileInfo.startAddr & 0xFF;
+                header[15] = (fileInfo.startAddr >> 8) & 0xFF;
+                header[16] = 0x00;
+                header[17] = 0x80;
+            }
+            // Checksum
+            let chk = 0;
+            for (let i = 0; i < 18; i++) chk ^= header[i];
+            header[18] = chk;
+
+            // Data block
+            const dataBlock = new Uint8Array(len + 2);
+            dataBlock[0] = 0xFF; // data flag
+            dataBlock.set(fileData, 1);
+            chk = 0;
+            for (let i = 0; i < len + 1; i++) chk ^= dataBlock[i];
+            dataBlock[len + 1] = chk;
+
+            // TAP: length word + header, length word + data
+            const tap = new Uint8Array(4 + 19 + 2 + len + 2);
+            tap[0] = 19; tap[1] = 0; // header block length
+            tap.set(header.subarray(0, 19), 2);
+            const dataLen = len + 2;
+            tap[21] = dataLen & 0xFF; tap[22] = (dataLen >> 8) & 0xFF;
+            tap.set(dataBlock, 23);
+            return tap;
+        }
+
+        static createBlankOPD(sides = 1) {
+            const size = sides >= 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE;
+            const disk = new Uint8Array(size);
+            // Fill data area with 0xE5 (standard formatted-empty marker)
+            const dataAreaStart = OPDLoader.DATA_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
+            disk.fill(0xE5, dataAreaStart);
+            // Mark end of directory: entry 1 last_block = 0xFFFF
+            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
+            disk[dirOffset + 16 + 4] = 0xFF;
+            disk[dirOffset + 16 + 5] = 0xFF;
+            return disk;
+        }
+
+        /**
+         * Build an OPD image from a file list.
+         * Each file must have: name, type, length, startAddr, autostart, data (Uint8Array).
+         * @param {Array} files - File list
+         * @param {string} diskName - Disk label (10 chars max)
+         * @param {number} sides - 1 (SS) or 2 (DS)
+         * @param {Uint8Array} [baseImage] - Original disk image to preserve sector 0 descriptor
+         */
+        static buildOPD(files, diskName, sides = 1, baseImage = null) {
+            const size = sides >= 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE;
+            const totalSectors = size / OPDLoader.BYTES_PER_SECTOR;
+            const BPS = OPDLoader.BYTES_PER_SECTOR;
+            const disk = new Uint8Array(size);
+
+            if (baseImage) {
+                // Start from a full copy of the original disk image.
+                // This preserves sector 0 (descriptor/boot), any unknown
+                // directory metadata, and the exact fill pattern.
+                const copyLen = Math.min(size, baseImage.length);
+                disk.set(baseImage.subarray(0, copyLen));
+            }
+
+            const dirOffset = OPDLoader.DIR_START_SECTOR * BPS;
+
+            // Clear directory entries 1..111 (preserve entry 0 = label)
+            for (let i = 1; i < OPDLoader.MAX_DIR_ENTRIES; i++) {
+                const off = dirOffset + i * 16;
+                for (let b = 0; b < 16; b++) disk[off + b] = 0;
+            }
+
+            // Update label name in entry 0 (only the name field, bytes 6-15)
+            if (diskName !== undefined && diskName !== null) {
+                const labelName = ((diskName || '') + '          ').substring(0, 10);
+                for (let i = 0; i < 10; i++) {
+                    disk[dirOffset + 6 + i] = labelName.charCodeAt(i);
+                }
+            }
+
+            // Fill data area (sector 8+) with 0xE5 (formatted-empty marker)
+            const dataAreaStart = OPDLoader.DATA_START_SECTOR * BPS;
+            disk.fill(0xE5, dataAreaStart);
+
+            // Allocate files starting at DATA_START_SECTOR
+            let nextSector = OPDLoader.DATA_START_SECTOR;
+
+            for (let fi = 0; fi < files.length && fi < OPDLoader.MAX_DIR_ENTRIES - 1; fi++) {
+                const f = files[fi];
+                const fileData = f.data;
+                const headerLen = OPDLoader.FILE_HEADER_SIZE;
+                const totalBytes = headerLen + fileData.length;
+                const sectorsNeeded = Math.ceil(totalBytes / BPS);
+
+                if (nextSector + sectorsNeeded > totalSectors) break; // disk full
+
+                // Block numbers: block = image_sector - 1
+                // (per EXTRACT.C: fseek(infile, (first_block + 1) * BPS, SEEK_SET))
+                const firstBlock = nextSector - 1;
+                const lastBlock = nextSector + sectorsNeeded - 2;
+                const bytesInLast = totalBytes - (sectorsNeeded - 1) * BPS;
+
+                // Write directory entry (entry fi+1, since entry 0 is label)
+                const entryOff = dirOffset + (fi + 1) * 16;
+                disk[entryOff + 0] = bytesInLast & 0xFF;
+                disk[entryOff + 1] = (bytesInLast >> 8) & 0xFF;
+                disk[entryOff + 2] = firstBlock & 0xFF;
+                disk[entryOff + 3] = (firstBlock >> 8) & 0xFF;
+                disk[entryOff + 4] = lastBlock & 0xFF;
+                disk[entryOff + 5] = (lastBlock >> 8) & 0xFF;
+                const name = ((f.name || '') + '          ').substring(0, 10);
+                for (let i = 0; i < 10; i++) {
+                    disk[entryOff + 6 + i] = name.charCodeAt(i);
+                }
+
+                // Write file header (6 bytes) at the image sector
+                const dataOff = nextSector * BPS;
+                disk[dataOff + 0] = f.type !== undefined ? f.type : 3; // default CODE
+                const len = fileData.length;
+                disk[dataOff + 1] = len & 0xFF;
+                disk[dataOff + 2] = (len >> 8) & 0xFF;
+                const addr = f.startAddr || 0;
+                disk[dataOff + 3] = addr & 0xFF;
+                disk[dataOff + 4] = (addr >> 8) & 0xFF;
+                disk[dataOff + 5] = f.autostart || 0;
+
+                // Write file data
+                disk.set(fileData, dataOff + headerLen);
+
+                nextSector += sectorsNeeded;
+            }
+
+            // Write end sentinel: next entry's last_block = 0xFFFF
+            const endEntryIdx = Math.min(files.length + 1, OPDLoader.MAX_DIR_ENTRIES);
+            if (endEntryIdx < OPDLoader.MAX_DIR_ENTRIES) {
+                const endOff = dirOffset + endEntryIdx * 16;
+                disk[endOff + 4] = 0xFF;
+                disk[endOff + 5] = 0xFF;
+            }
+
+            return disk;
         }
     }
 

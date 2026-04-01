@@ -1,6 +1,7 @@
 // Register editing functionality — inline edit, flag toggle, EXA/EXX swap
+import { hex16 } from '../core/utils.js';
 
-export function initRegisterEditor({ getSpectrum, updateDebugger }) {
+export function initRegisterEditor({ getSpectrum, updateDebugger, addWatch, showMessage }) {
     const mainRegisters = document.getElementById('mainRegisters');
     const altRegisters = document.getElementById('altRegisters');
     const ixiyRegisters = document.getElementById('ixiyRegisters');
@@ -239,6 +240,51 @@ export function initRegisterEditor({ getSpectrum, updateDebugger }) {
             updateDebugger();
         }
     });
+
+    // Double-click register name to add watch at current register value
+    function getRegisterValue(reg) {
+        const spectrum = getSpectrum();
+        const cpu = spectrum.cpu;
+        if (!cpu) return null;
+        switch (reg) {
+            case 'af': return cpu.af;
+            case 'bc': return cpu.bc;
+            case 'de': return cpu.de;
+            case 'hl': return cpu.hl;
+            case 'af_': return (cpu.a_ << 8) | cpu.f_;
+            case 'bc_': return (cpu.b_ << 8) | cpu.c_;
+            case 'de_': return (cpu.d_ << 8) | cpu.e_;
+            case 'hl_': return (cpu.h_ << 8) | cpu.l_;
+            case 'ix': return cpu.ix;
+            case 'iy': return cpu.iy;
+            case 'sp': return cpu.sp;
+            case 'pc': return cpu.pc;
+            default: return null;
+        }
+    }
+
+    function handleRegisterDblClick(e) {
+        if (!addWatch) return;
+        const nameSpan = e.target.closest('.register-name');
+        if (!nameSpan) return;
+        const item = nameSpan.closest('.register-item');
+        if (!item) return;
+        const valueSpan = item.querySelector('.register-value[data-reg]');
+        if (!valueSpan) return;
+        const reg = valueSpan.dataset.reg;
+        const bits = parseInt(valueSpan.dataset.bits) || 16;
+        if (bits < 16) return; // Only 16-bit registers as watch addresses
+        const value = getRegisterValue(reg);
+        if (value === null) return;
+        const name = nameSpan.textContent.trim();
+        addWatch(value, name);
+        if (showMessage) showMessage(`Watch added: $${hex16(value)} (${name})`);
+    }
+
+    mainRegisters.addEventListener('dblclick', handleRegisterDblClick);
+    altRegisters.addEventListener('dblclick', handleRegisterDblClick);
+    ixiyRegisters.addEventListener('dblclick', handleRegisterDblClick);
+    indexRegisters.addEventListener('dblclick', handleRegisterDblClick);
 
     return { isEditingRegister: () => isEditingRegister };
 }

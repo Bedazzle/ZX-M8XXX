@@ -1,4 +1,6 @@
 // Game map builder — extracted from index.html
+import { MAPPER_DEFAULT_FONT, MAPPER_DEFAULT_FONT_SIZE } from '../core/constants.js';
+
 export class GameMapper {
     constructor() {
         this.version = 2;
@@ -16,6 +18,12 @@ export class GameMapper {
         this.overviewZoom = 'fit'; // 'fit' | 'x1' | 'x2'
         this.overviewFollow = false; // auto-scroll to current room in x1/x2
         this._imageCache = new Map();
+        this.textSlideDefaults = {
+            font: MAPPER_DEFAULT_FONT,
+            fontSize: MAPPER_DEFAULT_FONT_SIZE,
+            color: '#ffffff',
+            paper: '#000080'
+        };
     }
 
     _key(x, y, z) { return x + ',' + y + ',' + z; }
@@ -26,7 +34,7 @@ export class GameMapper {
 
     ensureRoom(key) {
         if (!this.rooms.has(key)) {
-            this.rooms.set(key, { screenshots: [], selectedIndex: 0, blended: null, stamps: [], _baseBlend: null, mark: null });
+            this.rooms.set(key, { screenshots: [], selectedIndex: 0, blended: null, stamps: [], _baseBlend: null, mark: null, textSlide: null });
         }
         return this.rooms.get(key);
     }
@@ -41,6 +49,13 @@ export class GameMapper {
     deleteScreenshot(index) {
         const room = this.getCurrentRoom();
         if (!room || index < 0 || index >= room.screenshots.length) return;
+        if (room.textSlide) {
+            room.textSlide = null;
+            const removed = room.screenshots.splice(index, 1)[0];
+            this._imageCache.delete(removed);
+            this.rooms.delete(this.currentRoom);
+            return;
+        }
         const removed = room.screenshots.splice(index, 1)[0];
         this._imageCache.delete(removed);
         if (room.screenshots.length === 0) {
@@ -69,6 +84,33 @@ export class GameMapper {
         const room = this.getCurrentRoom();
         if (!room) return;
         this.deleteScreenshot(room.selectedIndex);
+    }
+
+    deleteRoom() {
+        const key = this.currentRoom;
+        const room = this.rooms.get(key);
+        if (!room) return false;
+        for (const url of room.screenshots) this._imageCache.delete(url);
+        if (room.blended) this._imageCache.delete(room.blended);
+        if (room._baseBlend) this._imageCache.delete(room._baseBlend);
+        this.rooms.delete(key);
+        return true;
+    }
+
+    moveRoom(newX, newY, newFloor) {
+        if (newFloor === undefined) newFloor = this.currentFloor;
+        const oldKey = this.currentRoom;
+        const newKey = this._key(newX, newY, newFloor);
+        if (oldKey === newKey) return false;
+        const room = this.rooms.get(oldKey);
+        if (!room) return false;
+        if (this.rooms.has(newKey)) return false;
+        this.rooms.delete(oldKey);
+        this.rooms.set(newKey, room);
+        this.currentX = newX;
+        this.currentY = newY;
+        this.currentFloor = newFloor;
+        return true;
     }
 
     move(dx, dy) {
@@ -145,6 +187,72 @@ export class GameMapper {
         return null;
     }
 
+    // Render text slide content onto a canvas and return it.
+    // Used by both renderTextSlide (produces data URL) and live preview.
+    static renderTextToCanvas(canvas, text, font, fontSize, color, paper) {
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = paper;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = color;
+        ctx.font = fontSize + 'px ' + font;
+        ctx.textBaseline = 'top';
+        const lines = text.split('\n');
+        const lineHeight = fontSize * 1.3;
+        const padding = 8;
+        for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], padding, padding + i * lineHeight);
+        }
+    }
+
+    renderTextSlide(room) {
+        if (!room || !room.textSlide) return;
+        const pw = this.captureRegion.w * 8;
+        const ph = this.captureRegion.h * 8;
+        const ts = room.textSlide;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = pw;
+        canvas.height = ph;
+        GameMapper.renderTextToCanvas(canvas, ts.text, ts.font, ts.fontSize, ts.color, ts.paper);
+
+        const dataUrl = canvas.toDataURL('image/png');
+        if (room.screenshots.length > 0) {
+            this._imageCache.delete(room.screenshots[0]);
+        }
+        room.screenshots = [dataUrl];
+        room.selectedIndex = 0;
+        room.blended = null;
+        room._baseBlend = null;
+        room.stamps = [];
+        this._imageCache.delete(dataUrl);
+    }
+
+    setTextSlide(text, options) {
+        const room = this.ensureRoom(this.currentRoom);
+        // Clear existing screenshots if converting from regular room
+        if (!room.textSlide && room.screenshots.length > 0) {
+            for (const url of room.screenshots) this._imageCache.delete(url);
+            if (room.blended) this._imageCache.delete(room.blended);
+            if (room._baseBlend) this._imageCache.delete(room._baseBlend);
+            room.screenshots = [];
+            room.blended = null;
+            room._baseBlend = null;
+            room.stamps = [];
+        }
+        room.textSlide = {
+            text: text,
+            font: options.font || this.textSlideDefaults.font,
+            fontSize: options.fontSize || this.textSlideDefaults.fontSize,
+            color: options.color || this.textSlideDefaults.color,
+            paper: options.paper || this.textSlideDefaults.paper
+        };
+        this.renderTextSlide(room);
+    }
+
+    isTextSlide(room) {
+        return room != null && room.textSlide != null;
+    }
+
     loadCachedImage(dataUrl) {
         if (this._imageCache.has(dataUrl)) return Promise.resolve(this._imageCache.get(dataUrl));
         return new Promise((resolve, reject) => {
@@ -164,7 +272,8 @@ export class GameMapper {
                 blended: room.blended,
                 stamps: room.stamps || [],
                 _baseBlend: room._baseBlend || null,
-                mark: room.mark || null
+                mark: room.mark || null,
+                textSlide: room.textSlide || null
             };
         }
         return JSON.stringify({
@@ -179,7 +288,8 @@ export class GameMapper {
             floorGap: this.floorGap,
             exportLayout: this.exportLayout,
             overviewZoom: this.overviewZoom,
-            overviewFollow: this.overviewFollow
+            overviewFollow: this.overviewFollow,
+            textSlideDefaults: { ...this.textSlideDefaults }
         });
     }
 
@@ -197,6 +307,9 @@ export class GameMapper {
         this.exportLayout = el === 'horizontal' ? 'x1' : el === 'vertical' ? '1x' : el === 'grid' ? 'separate' : el;
         this.overviewZoom = data.overviewZoom || 'fit';
         this.overviewFollow = data.overviewFollow || false;
+        if (data.textSlideDefaults) {
+            this.textSlideDefaults = { ...this.textSlideDefaults, ...data.textSlideDefaults };
+        }
         this.rooms.clear();
         this._imageCache.clear();
         if (data.rooms) {
@@ -209,7 +322,8 @@ export class GameMapper {
                     blended: room.blended || null,
                     stamps: room.stamps || [],
                     _baseBlend: room._baseBlend || null,
-                    mark: room.mark || null
+                    mark: room.mark || null,
+                    textSlide: room.textSlide || null
                 });
             }
         }
@@ -231,5 +345,11 @@ export class GameMapper {
         this.currentX = 0;
         this.currentY = 0;
         this.currentFloor = 0;
+        this.textSlideDefaults = {
+            font: MAPPER_DEFAULT_FONT,
+            fontSize: MAPPER_DEFAULT_FONT_SIZE,
+            color: '#ffffff',
+            paper: '#000080'
+        };
     }
 }

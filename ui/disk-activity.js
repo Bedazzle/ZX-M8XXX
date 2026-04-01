@@ -61,6 +61,9 @@ export function initDiskActivity({ getSpectrum }) {
         if (spectrum.fdc) {
             spectrum.fdc.onDiskActivity = activityHandler;
         }
+        if (spectrum.plusD) {
+            spectrum.plusD.onDiskActivity = activityHandler;
+        }
     }
 
     setup(); // Run immediately

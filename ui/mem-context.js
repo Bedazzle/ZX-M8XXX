@@ -8,7 +8,7 @@ export function initMemContext({
     dialogs,
     showMessage, updateDebugger, updateLabelsList,
     goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
-    addWatch,
+    addWatch, addFreezeEditor,
     getMemSelection, clearMemSelection,
     getMemoryEditingAddr, finishCurrentEdit
 }) {
@@ -171,6 +171,12 @@ export function initMemContext({
             if (addWatch(addr, label)) {
                 showMessage(`Watch added: ${hex16(addr)}${label ? ' (' + label + ')' : ''}`);
             }
+        } else if (action === 'freeze-value') {
+            if (addFreezeEditor) {
+                const label = existingLabel ? existingLabel.name : '';
+                addFreezeEditor(addr, label);
+                showMessage(`Freeze added: ${hex16(addr)}${label ? ' (' + label + ')' : ''}`);
+            }
         }
     }
 
@@ -219,6 +225,7 @@ export function initMemContext({
         menuHtml += `<div data-action="watch-rw">Break on R/W</div>`;
         menuHtml += `<div class="menu-separator"></div>`;
         menuHtml += `<div data-action="add-watch">Add watch</div>`;
+        menuHtml += `<div data-action="freeze-value">Freeze value</div>`;
         memContextMenu.innerHTML = menuHtml;
 
         memContextMenu.style.left = e.clientX + 'px';
@@ -256,6 +263,7 @@ export function initMemContext({
         let menuHtml = buildMenuHtml(addr, existingLabel, existingRegion, '');
         menuHtml += `<div class="menu-separator"></div>`;
         menuHtml += `<div data-action="add-watch">Add watch</div>`;
+        menuHtml += `<div data-action="freeze-value">Freeze value</div>`;
         leftMemContextMenu.innerHTML = menuHtml;
 
         leftMemContextMenu.style.left = e.clientX + 'px';

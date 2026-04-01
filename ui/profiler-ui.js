@@ -7,7 +7,8 @@ export function initProfilerUI({
     readMemory, getMemoryInfo, getProfiler, startProfiling, stopProfiling,
     isRunning, startEmulator, getOnFrame, setOnFrame,
     labelManager, regionManager,
-    navigateToAddress, updateLabelsList, updateDebugger, showMessage
+    navigateToAddress, goToAddress, updateLabelsList, updateDebugger, showMessage,
+    callGraphAPI
 }) {
 
     // DOM lookups
@@ -312,7 +313,7 @@ export function initProfilerUI({
             const addrHex = hex16(hs.startAddr);
             const size = hs.endAddr - hs.startAddr + 1;
             row.textContent = `${hs.percentage.padStart(5)}%  $${addrHex}  ${hs.classification}  (${size}B)`;
-            row.addEventListener('click', () => navigateToAddress(hs.startAddr));
+            row.addEventListener('click', () => goToAddress(hs.startAddr));
             container.appendChild(row);
         }
     }
@@ -356,6 +357,80 @@ export function initProfilerUI({
         return { added, replaced, skipped };
     }
 
+    // ========== Subroutine Signatures ==========
+
+    function formatRegSignature(stats) {
+        if ((!stats.regInputs || stats.regInputs.size === 0) &&
+            (!stats.regOutputs || stats.regOutputs.size === 0)) return '';
+        const inStr = stats.regInputs && stats.regInputs.size > 0
+            ? [...stats.regInputs].filter(r => r !== 'F').join(', ') : '';
+        const outStr = stats.regOutputs && stats.regOutputs.size > 0
+            ? [...stats.regOutputs].filter(r => r !== 'F').join(', ') : '';
+        // Include CF (carry flag) in output if F is in outputs
+        const hasCarryOut = stats.regOutputs && stats.regOutputs.has('F');
+        const outParts = [];
+        if (outStr) outParts.push(outStr);
+        if (hasCarryOut) outParts.push('CF');
+        const parts = [];
+        if (inStr) parts.push('in: ' + inStr);
+        if (outParts.length > 0) parts.push('out: ' + outParts.join(', '));
+        return parts.join(' \u2192 ');
+    }
+
+    function displaySignatureResults(results) {
+        const container = document.getElementById('sigResults');
+        if (!container) return;
+        container.innerHTML = '';
+        container.classList.remove('hidden');
+
+        // Collect subroutines with signatures
+        const subs = [];
+        for (const [key, stats] of results.subroutines) {
+            if (stats.entryAddr < 0x4000) continue;
+            if ((!stats.regInputs || stats.regInputs.size === 0) &&
+                (!stats.regOutputs || stats.regOutputs.size === 0)) continue;
+            const sig = formatRegSignature(stats);
+            if (!sig) continue;
+            // Get label if available
+            const label = labelManager.get(stats.entryAddr, stats.page);
+            const name = label ? label.name : `sub_${hex16(stats.entryAddr)}`;
+            subs.push({ addr: stats.entryAddr, name, sig, callCount: stats.callCount });
+        }
+
+        if (subs.length === 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        // Sort by call count descending
+        subs.sort((a, b) => b.callCount - a.callCount);
+
+        const header = document.createElement('div');
+        header.style.cssText = 'color:var(--cyan);margin-bottom:2px';
+        header.textContent = `Signatures (${subs.length}):`;
+        container.appendChild(header);
+
+        const top = subs.slice(0, 20);
+        for (const sub of top) {
+            const row = document.createElement('div');
+            row.style.cssText = 'cursor:pointer;padding:1px 4px;font-family:monospace;font-size:11px';
+            row.className = 'hover-highlight';
+            const addrSpan = document.createElement('span');
+            addrSpan.textContent = `$${hex16(sub.addr)} `;
+            addrSpan.style.color = 'var(--cyan)';
+            row.appendChild(addrSpan);
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = sub.name + '  ';
+            row.appendChild(nameSpan);
+            const sigSpan = document.createElement('span');
+            sigSpan.textContent = sub.sig;
+            sigSpan.style.color = 'var(--text-secondary)';
+            row.appendChild(sigSpan);
+            row.addEventListener('click', () => goToAddress(sub.addr));
+            container.appendChild(row);
+        }
+    }
+
     // ========== Event bindings ==========
 
     let profileSavedOnFrame = null;
@@ -379,9 +454,11 @@ export function initProfilerUI({
             btnProfileRun.disabled = false;
             btnProfileStop.disabled = true;
 
-            // Clear previous hotspot results
+            // Clear previous hotspot and signature results
             const hotspotContainer = document.getElementById('hotspotResults');
             if (hotspotContainer) { hotspotContainer.innerHTML = ''; hotspotContainer.classList.add('hidden'); }
+            const sigContainer = document.getElementById('sigResults');
+            if (sigContainer) { sigContainer.innerHTML = ''; sigContainer.classList.add('hidden'); }
 
             const labels = generateProfilerLabels(results);
             const hotspots = analyzeHotspots(results);
@@ -392,6 +469,9 @@ export function initProfilerUI({
                 profileStatus.textContent = `${results.framesProfiled} frames, ${results.subroutines.size} subs — no labels generated`;
                 profileStatus.classList.add('active');
                 showMessage('Profiling complete — no subroutines matched labeling rules');
+                displaySignatureResults(results);
+                if (callGraphAPI) callGraphAPI.renderGraph(results);
+                updateDebugger();
                 return;
             }
 
@@ -403,6 +483,8 @@ export function initProfilerUI({
             showMessage(`Profiler: ${stats.added} labels added, ${stats.replaced} replaced, ${stats.skipped} user labels kept`);
 
             if (hotspots.length > 0) displayHotspotResults(hotspots);
+            displaySignatureResults(results);
+            if (callGraphAPI) callGraphAPI.renderGraph(results);
             updateDebugger();
         };
 
@@ -429,4 +511,33 @@ export function initProfilerUI({
     btnProfileStop.addEventListener('click', () => {
         stopProfiling();
     });
+
+    function clearResults() {
+        // Stop profiler if running
+        const profiler = getProfiler();
+        if (profiler && profiler.enabled) {
+            stopProfiling();
+            // Restore onFrame if we saved it
+            if (profileSavedOnFrame !== null) {
+                setOnFrame(profileSavedOnFrame);
+                profileSavedOnFrame = null;
+            }
+            btnProfileRun.disabled = false;
+            btnProfileStop.disabled = true;
+        }
+        // Clear results display
+        const hotspotContainer = document.getElementById('hotspotResults');
+        if (hotspotContainer) { hotspotContainer.innerHTML = ''; hotspotContainer.classList.add('hidden'); }
+        const sigContainer = document.getElementById('sigResults');
+        if (sigContainer) { sigContainer.innerHTML = ''; sigContainer.classList.add('hidden'); }
+        profileStatus.textContent = '';
+        profileStatus.classList.remove('active');
+        // Disable call graph button and hide dialog if open
+        const btnCallGraph = document.getElementById('btnCallGraph');
+        if (btnCallGraph) btnCallGraph.disabled = true;
+        const callGraphDialog = document.getElementById('callGraphDialog');
+        if (callGraphDialog) callGraphDialog.classList.add('hidden');
+    }
+
+    return { clearResults };
 }

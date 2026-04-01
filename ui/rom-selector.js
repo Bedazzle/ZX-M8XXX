@@ -1,10 +1,10 @@
 // rom-selector.js — ROM selector modal, auto-load, validation, drag & drop (extracted from index.html)
 
-export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus }) {
+export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status }) {
     function showMessage(text, type) { getShowMessage()(text, type); }
     const romData = {};    // { 'filename': ArrayBuffer, ... }
 
-    const ROM_TYPE_TO_FILE = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'scorpion': 'scorpion.rom', 'trdos': 'trdos.rom' };
+    const ROM_TYPE_TO_FILE = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'scorpion': 'scorpion.rom', 'trdos': 'trdos.rom', 'plusd': 'plusd.rom', 'if1': 'if1.rom' };
 
     function getRomByType(type) {
         return romData[ROM_TYPE_TO_FILE[type]] || null;
@@ -33,7 +33,8 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
     const btnSelectPentagonRom = document.getElementById('btnSelectPentagonRom');
     const btnSelectScorpionRom = document.getElementById('btnSelectScorpionRom');
     const btnSelectTrdosRom = document.getElementById('btnSelectTrdosRom');
-
+    const btnSelectPlusDRom = document.getElementById('btnSelectPlusDRom');
+    const btnSelectIF1Rom = document.getElementById('btnSelectIF1Rom');
     const rom48Input = document.getElementById('rom48Input');
     const rom128Input = document.getElementById('rom128Input');
     const romPlus2Input = document.getElementById('romPlus2Input');
@@ -42,17 +43,19 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
     const romPentagonInput = document.getElementById('romPentagonInput');
     const romScorpionInput = document.getElementById('romScorpionInput');
     const romTrdosInput = document.getElementById('romTrdosInput');
+    const romPlusDRomInput = document.getElementById('romPlusDRomInput');
+    const romIF1Input = document.getElementById('romIF1Input');
 
     // ROM size validation
     const ROM_EXPECTED_SIZES = {
-        '48k': [16384], 'trdos': [16384],
+        '48k': [16384], 'trdos': [16384], 'plusd': [8192], 'if1': [8192],
         '128k': [32768], 'plus2': [32768], 'pentagon': [32768],
         'plus2a': [65536], 'plus3': [65536], 'scorpion': [65536]
     };
 
     const ROM_STATUS_IDS = {
         '48k': 'status48Rom', '128k': 'status128Rom', 'plus2': 'statusPlus2Rom',
-        'plus2a': 'statusPlus2aRom', 'plus3': 'statusPlus3Rom', 'pentagon': 'statusPentagonRom', 'scorpion': 'statusScorpionRom', 'trdos': 'statusTrdosRom'
+        'plus2a': 'statusPlus2aRom', 'plus3': 'statusPlus3Rom', 'pentagon': 'statusPentagonRom', 'scorpion': 'statusScorpionRom', 'trdos': 'statusTrdosRom', 'plusd': 'statusPlusDRom', 'if1': 'statusIF1Rom'
     };
 
     function updateRomStatus() {
@@ -148,6 +151,28 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
             }
         }
 
+        const statusPlusDRom = document.getElementById('statusPlusDRom');
+        if (statusPlusDRom) {
+            if (romData['plusd.rom']) {
+                statusPlusDRom.textContent = '✓ Loaded (' + (romData['plusd.rom'].byteLength / 1024) + 'KB)';
+                statusPlusDRom.classList.add('loaded');
+            } else {
+                statusPlusDRom.textContent = 'Not loaded (for MGT disk images)';
+                statusPlusDRom.classList.remove('loaded');
+            }
+        }
+
+        const statusIF1Rom = document.getElementById('statusIF1Rom');
+        if (statusIF1Rom) {
+            if (romData['if1.rom']) {
+                statusIF1Rom.textContent = '✓ Loaded (' + (romData['if1.rom'].byteLength / 1024) + 'KB)';
+                statusIF1Rom.classList.add('loaded');
+            } else {
+                statusIF1Rom.textContent = 'Not loaded (for Microdrive cartridges)';
+                statusIF1Rom.classList.remove('loaded');
+            }
+        }
+
         btnStartEmulator.disabled = !romData['48.rom'];
     }
 
@@ -187,6 +212,14 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // including Scorpion where TR-DOS is in main ROM bank)
         if (spec.trdosTrap) spec.trdosTrap.updateTrdosRomFlag();
         spec.updateBetaDiskPagingFlag();
+        // Load +D ROM if available and +D is enabled
+        if (romData['plusd.rom'] && spec.plusDEnabled) {
+            spec.memory.loadPlusDRom(romData['plusd.rom']);
+        }
+        // Load Interface 1 ROM if available and IF1 is enabled
+        if (romData['if1.rom'] && spec.if1Enabled) {
+            spec.memory.loadIF1Rom(romData['if1.rom']);
+        }
         spec.romLoaded = true;
         return true;
     }
@@ -215,10 +248,18 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         spectrum.reset();
         spectrum.start();
 
-        // Update Beta Disk status after machine type is finalized
+        // Update disk interface statuses after machine type is finalized and ROMs loaded
         const updateBetaDiskStatus = getUpdateBetaDiskStatus();
         if (typeof updateBetaDiskStatus === 'function') {
             updateBetaDiskStatus();
+        }
+        const updatePlusDStatus = getUpdatePlusDStatus();
+        if (typeof updatePlusDStatus === 'function') {
+            updatePlusDStatus();
+        }
+        const updateIF1Status = getUpdateIF1Status();
+        if (typeof updateIF1Status === 'function') {
+            updateIF1Status();
         }
 
         showMessage('Emulator started');
@@ -263,7 +304,14 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (!seen.has('trdos.rom')) {
             romPaths.push({ path: 'roms/trdos.rom', file: 'trdos.rom' });
         }
-
+        // +D ROM (for MGT disks)
+        if (!seen.has('plusd.rom')) {
+            romPaths.push({ path: 'roms/plusd.rom', file: 'plusd.rom' });
+        }
+        // Interface 1 ROM (for Microdrive cartridges)
+        if (!seen.has('if1.rom')) {
+            romPaths.push({ path: 'roms/if1.rom', file: 'if1.rom' });
+        }
         for (const rom of romPaths) {
             try {
                 const response = await fetch(rom.path);
@@ -310,6 +358,8 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
     btnSelectPentagonRom.addEventListener('click', () => romPentagonInput.click());
     if (btnSelectScorpionRom) btnSelectScorpionRom.addEventListener('click', () => romScorpionInput.click());
     if (btnSelectTrdosRom) btnSelectTrdosRom.addEventListener('click', () => romTrdosInput.click());
+    if (btnSelectPlusDRom) btnSelectPlusDRom.addEventListener('click', () => romPlusDRomInput.click());
+    if (btnSelectIF1Rom) btnSelectIF1Rom.addEventListener('click', () => romIF1Input.click());
 
     // File input change handlers
     const fileHandlers = [
@@ -320,7 +370,9 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         { input: romPlus3Input, type: 'plus3', label: '+3 ROM' },
         { input: romPentagonInput, type: 'pentagon', label: 'Pentagon ROM' },
         { input: romScorpionInput, type: 'scorpion', label: 'Scorpion ROM' },
-        { input: romTrdosInput, type: 'trdos', label: 'TR-DOS ROM' }
+        { input: romTrdosInput, type: 'trdos', label: 'TR-DOS ROM' },
+        { input: romPlusDRomInput, type: 'plusd', label: '+D ROM' },
+        { input: romIF1Input, type: 'if1', label: 'Interface 1 ROM' }
     ];
 
     for (const { input, type, label } of fileHandlers) {
@@ -334,6 +386,18 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                     const updateBetaDiskStatus = getUpdateBetaDiskStatus();
                     if (typeof updateBetaDiskStatus === 'function') {
                         updateBetaDiskStatus();
+                    }
+                }
+                if (type === 'plusd') {
+                    const updatePlusDStatus = getUpdatePlusDStatus();
+                    if (typeof updatePlusDStatus === 'function') {
+                        updatePlusDStatus();
+                    }
+                }
+                if (type === 'if1') {
+                    const updateIF1Status = getUpdateIF1Status();
+                    if (typeof updateIF1Status === 'function') {
+                        updateIF1Status();
                     }
                 }
             }
@@ -364,7 +428,13 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         const data = await file.arrayBuffer();
         const name = file.name.toLowerCase();
 
-        if (name.includes('trdos') || name === 'trdos.rom') {
+        if (name.includes('plusd') || name === 'plusd.rom') {
+            await loadRomFile(data, 'plusd');
+            showMessage('+D ROM loaded');
+        } else if (name.includes('if1') || name === 'if1.rom' || name.includes('interface1')) {
+            await loadRomFile(data, 'if1');
+            showMessage('Interface 1 ROM loaded');
+        } else if (name.includes('trdos') || name === 'trdos.rom') {
             await loadRomFile(data, 'trdos');
             showMessage('TR-DOS ROM loaded');
             const updateBetaDiskStatus = getUpdateBetaDiskStatus();

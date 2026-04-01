@@ -39,7 +39,8 @@ export function initDebuggerDisplay({
     function createRegisterItem(name, value, editable = null, bits = 16) {
         const editClass = editable ? ' editable' : '';
         const dataAttr = editable ? ` data-reg="${editable}" data-bits="${bits}"` : '';
-        return `<div class="register-item"><span class="register-name">${name}</span><br><span class="register-value${editClass}"${dataAttr}>${value}</span></div>`;
+        const nameTitle = bits === 16 ? ' title="Double-click to add watch"' : '';
+        return `<div class="register-item"><span class="register-name"${nameTitle}>${name}</span><br><span class="register-value${editClass}"${dataAttr}>${value}</span></div>`;
     }
 
     function renderDebugger() {
@@ -201,6 +202,16 @@ export function initDebuggerDisplay({
                     <span class="fold-name">${escapeHtml(line.foldName)}</span>
                     <span class="fold-stats">(${line.byteCount} bytes)</span>
                 </div>`;
+            }
+
+            // When viewing trace history, override the line at trace PC with stored bytes
+            // (current memory may have different paging state than when the instruction ran)
+            if (traceEntry && line.addr === traceEntry.pc) {
+                const fakeMemory = { read: (addr) => traceEntry.bytes[(addr - traceEntry.pc) & 3] || 0 };
+                const traceDisasm = new DisassemblerClass(fakeMemory);
+                const traceInstr = traceDisasm.disassemble(traceEntry.pc);
+                line.bytes = traceInstr.bytes;
+                line.mnemonic = traceInstr.mnemonic;
             }
 
             const bytesStr = line.bytes.map(b => hex8(b)).join(' ');

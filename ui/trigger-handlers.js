@@ -243,6 +243,14 @@ export function initTriggerHandlers({
         updateStatus();
     };
 
+    getSpectrum().onCodePathHit = (addr) => {
+        showMessage(`Code path diverged at $${hex16(addr)}`);
+        setDisasmViewAddress(null);
+        openDebuggerPanel();
+        updateDebugger();
+        updateStatus();
+    };
+
     // Unified trigger callback
     getSpectrum().onTrigger = (info) => {
         if (info && info.type === 'tape_block') {

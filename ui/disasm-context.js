@@ -1,6 +1,18 @@
 // Disassembly context menus (left + right panels), XRef tooltip, and click-outside handler
 import { hex16 } from '../core/utils.js';
 
+function getConditionalInfo(opcode) {
+    // Conditional JP cc,nn (3 bytes) → JP nn
+    if ((opcode & 0xC7) === 0xC2) return { uncondOpcode: 0xC3, label: 'JP' };
+    // Conditional CALL cc,nn (3 bytes) → CALL nn
+    if ((opcode & 0xC7) === 0xC4) return { uncondOpcode: 0xCD, label: 'CALL' };
+    // Conditional JR cc,e (2 bytes) → JR e
+    if ((opcode & 0xE7) === 0x20) return { uncondOpcode: 0x18, label: 'JR' };
+    // Conditional RET cc (1 byte) → RET
+    if ((opcode & 0xC7) === 0xC0) return { uncondOpcode: 0xC9, label: 'RET' };
+    return null;
+}
+
 export function initDisasmContext({
     labelManager, regionManager, commentManager, operandFormatManager,
     subroutineManager, foldManager, undoManager, xrefManager,
@@ -9,7 +21,8 @@ export function initDisasmContext({
     closeMemContextMenu, closeLeftMemContextMenu,
     showMessage, updateDebugger, updateLabelsList,
     goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
-    getRightPanelType
+    getRightPanelType,
+    readMemory, addPoke, getInstrLength
 }) {
     const { showLabelDialog, showRegionDialog, showFoldDialog,
             showCommentDialog, closeLabelContextMenu } = dialogs;
@@ -198,6 +211,20 @@ export function initDisasmContext({
         }
         menuHtml += `<div data-action="collapse-all">Collapse all folds</div>`;
         menuHtml += `<div data-action="expand-all">Expand all folds</div>`;
+        menuHtml += `<div class="menu-separator"></div>`;
+        const opcode = readMemory ? readMemory(lineAddr) : 0;
+        const condInfo = getConditionalInfo(opcode);
+        if (condInfo && readMemory) {
+            const len = getInstrLength ? getInstrLength(lineAddr) : 1;
+            menuHtml += `<div class="menu-submenu">Add poke...
+                <div class="menu-submenu-items">
+                    <div data-action="add-poke-nop">NOP (${len} byte${len > 1 ? 's' : ''})</div>
+                    <div data-action="add-poke-uncond">${condInfo.label} unconditional</div>
+                </div>
+            </div>`;
+        } else {
+            menuHtml += `<div data-action="add-poke">Add poke</div>`;
+        }
         return menuHtml;
     }
 
@@ -372,6 +399,28 @@ export function initDisasmContext({
             foldManager.expandAll();
             showMessage('All folds expanded');
             updateDebugger();
+        } else if (action === 'add-poke' || action === 'add-poke-nop') {
+            if (readMemory && addPoke) {
+                const len = getInstrLength ? getInstrLength(lineAddr) : 1;
+                const patches = [];
+                for (let i = 0; i < len; i++) {
+                    const a = (lineAddr + i) & 0xffff;
+                    const val = readMemory(a);
+                    patches.push({ addr: a, normal: val, poke: 0 });
+                }
+                addPoke(hex16(lineAddr), patches);
+                showMessage(`Poke added at $${hex16(lineAddr)} (${len} byte${len > 1 ? 's' : ''})`);
+            }
+        } else if (action === 'add-poke-uncond') {
+            if (readMemory && addPoke) {
+                const opcode = readMemory(lineAddr);
+                const condInfo = getConditionalInfo(opcode);
+                if (condInfo) {
+                    const patches = [{ addr: lineAddr, normal: opcode, poke: condInfo.uncondOpcode }];
+                    addPoke(hex16(lineAddr) + ' uncond', patches);
+                    showMessage(`Poke added: ${condInfo.label} unconditional at $${hex16(lineAddr)}`);
+                }
+            }
         }
         closeLabelContextMenu();
     }

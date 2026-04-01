@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.9.6</title>
+    <title>ZX-M8XXX v0.9.11</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -2460,6 +2460,17 @@
             text-shadow: 0 0 3px var(--bg-primary);
         }
 
+        .mapper-textslide-dialog { position: absolute; inset: 0; z-index: 30; background: var(--bg-primary); display: flex; flex-direction: column; }
+        .mapper-textslide-dialog.hidden { display: none; }
+        .mapper-textslide-header { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: var(--bg-secondary); border-bottom: 1px solid var(--bg-button); font-size: 12px; color: var(--text-secondary); }
+        .mapper-textslide-header span { flex: 1; }
+        .mapper-textslide-body { flex: 1; display: flex; gap: 12px; padding: 8px; overflow: auto; }
+        .mapper-textslide-editor { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+        .mapper-textslide-editor textarea { flex: 1; min-height: 100px; resize: vertical; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--bg-button); border-radius: 3px; padding: 6px; font-size: 12px; font-family: inherit; }
+        .mapper-textslide-preview { width: 256px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .mapper-textslide-preview canvas { image-rendering: pixelated; border: 1px solid var(--bg-button); }
+        .mapper-textslide-color-input { width: 50px; height: 22px; padding: 0; border: 1px solid var(--bg-button); border-radius: 3px; cursor: pointer; background: transparent; }
+
         /* Settings Tab */
         #tab-settings {
             overflow-y: auto;
@@ -3565,7 +3576,8 @@
             cursor: default;
         }
         .editor-block-row.disk-label-row:hover { background: transparent; }
-        .editor-block-info .file-ext { color: var(--accent); margin-right: 4px; display: inline-block; width: 1.2em; }
+        .editor-block-info .file-ext { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 1.2em; }
+        .editor-block-info .file-mgttype { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5.5em; }
         .editor-block-info .file-name { color: var(--cyan); }
         .editor-block-info .file-addr { color: var(--accent); }
         .editor-block-info .file-size { color: var(--text-secondary); }
@@ -3787,6 +3799,25 @@
         }
         .register-name {
             color: var(--text-secondary);
+        }
+        .register-name[title] {
+            cursor: pointer;
+            position: relative;
+        }
+        .register-name[title]:hover::after {
+            content: "Dbl-click: add watch";
+            position: absolute;
+            left: 50%;
+            top: -22px;
+            transform: translateX(-50%);
+            background: var(--bg-tertiary, #333);
+            color: var(--text-primary, #eee);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            white-space: nowrap;
+            z-index: 100;
+            pointer-events: none;
         }
         .register-value {
             color: var(--accent);
@@ -5084,7 +5115,10 @@
             flex: 0 1 auto;
             margin-bottom: 0;
         }
-        #btnPokeTrace.active, #btnWriteMon.active { background: var(--accent); color: #fff; }
+        #btnPokeTrace.active, #btnWriteMon.active, #btnReadMon.active, #btnCmpBreak.active, #btnRtTrack.active, #btnSmStart.active { background: var(--accent); color: #fff; }
+        .poke-freeze-cb { margin-left: 4px; accent-color: var(--cyan); }
+        #callGraphDialog.hidden { display: none !important; }
+        .sm-offset { color: var(--cyan); font-weight: bold; }
         .write-mon-results {
             max-height: 120px;
             overflow-y: auto;
@@ -5210,6 +5244,21 @@
             font-size: 9px;
             margin-left: 2px;
         }
+        #btnCpRecord.active { background: var(--accent); color: #fff; }
+        #btnCpTrace.active { background: var(--accent); color: #fff; }
+        .cp-results { max-height: 200px; overflow-y: auto; margin-top: 5px; font-family: monospace; font-size: 11px; }
+        .cp-block { margin: 4px 0; }
+        .cp-block-header { color: var(--cyan); cursor: pointer; padding: 2px 4px; background: var(--bg-primary); border-radius: 2px; font-weight: bold; }
+        .cp-block-header:hover { text-decoration: underline; }
+        .cp-instr { padding: 1px 4px 1px 4px; cursor: pointer; }
+        .cp-instr:hover { background: var(--bg-button); }
+        .cp-instr.cp-context { opacity: 0.55; }
+        .cp-marker { color: var(--yellow); width: 10px; display: inline-block; }
+        .cp-addr { color: var(--accent); margin-right: 8px; }
+        .cp-mnemonic { color: var(--text-primary); min-width: 120px; display: inline-block; }
+        .cp-bytes { color: var(--text-secondary); }
+        .cp-block.cp-filtered { display: none; }
+        .cp-instr.cp-highlight { background: rgba(78, 205, 196, 0.15); }
         .automap-stats {
             color: var(--text-secondary);
             font-size: 11px;
@@ -5305,6 +5354,17 @@
         .trace-entry.viewing .memops {
             color: var(--bg-secondary);
         }
+        #traceSlider {
+            width: 100%;
+            margin: 2px 0 0 0;
+            height: 14px;
+            cursor: pointer;
+            accent-color: var(--accent);
+        }
+        #traceSlider:disabled {
+            opacity: 0.3;
+            cursor: default;
+        }
         .trace-viewing-indicator {
             background: var(--warning);
             color: #000;
@@ -5335,6 +5395,14 @@
         .poke-entry input[type="checkbox"] { margin: 0; cursor: pointer; }
         .poke-entry .poke-name { flex: 1; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .poke-entry .poke-detail { color: var(--text-secondary); font-size: 10px; }
+        .poke-patches { padding: 0 4px 2px 22px; font-size: 10px; color: var(--text-secondary); font-family: monospace; }
+        .poke-patches.hidden { display: none; }
+        .poke-patch-addr { color: var(--cyan); cursor: pointer; }
+        .poke-patch-addr:hover { text-decoration: underline; }
+        .poke-patch-hint { color: var(--text-secondary); font-style: italic; }
+        .poke-patch-edit { display: flex; gap: 2px; }
+        .poke-patch-input { font-family: monospace; font-size: 10px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--accent); padding: 0 2px; outline: none; }
+        .poke-rename-input { width: 100%; font-family: monospace; font-size: 11px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--accent); padding: 0 2px; outline: none; }
         .poke-editors { }
         .poke-editor-entry {
             display: flex; align-items: center; gap: 6px;
@@ -5791,6 +5859,7 @@
             background: var(--bg-primary);
             min-width: 130px;
             overflow-y: auto;
+            overscroll-behavior: contain;
         }
         .fullhelp-nav-btn {
             background: transparent;
@@ -5814,6 +5883,7 @@
             flex: 1;
             padding: 20px 25px;
             overflow-y: auto;
+            overscroll-behavior: contain;
             line-height: 1.6;
         }
         .fullhelp-section.hidden {
@@ -6340,6 +6410,12 @@
 
                 <button id="btnSelectTrdosRom">trdos.rom</button>
                 <div class="rom-status" id="statusTrdosRom">Not loaded (for TRD/SCL disks)</div>
+
+                <button id="btnSelectPlusDRom">plusd.rom</button>
+                <div class="rom-status" id="statusPlusDRom">Not loaded (for MGT disks)</div>
+
+                <button id="btnSelectIF1Rom">if1.rom</button>
+                <div class="rom-status" id="statusIF1Rom">Not loaded (for Microdrive cartridges)</div>
             </div>
 
             <div class="modal-actions">
@@ -6420,7 +6496,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.6 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.11 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6485,7 +6561,8 @@
         <input type="file" id="romPentagonInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romScorpionInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romTrdosInput" class="file-input" accept=".rom,.bin">
-        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.dsk,.zxproj,.json">
+        <input type="file" id="romPlusDRomInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.zxproj,.json">
         </div><!-- emulator-section -->
 
         <!-- Tab Container -->
@@ -6898,9 +6975,11 @@
                                 <button id="btnProfileRun" title="Run profiler and auto-label subroutines">Run</button>
                                 <input type="number" id="profileFrameCount" value="200" min="10" max="5000" style="width:50px" title="Number of frames to profile">
                                 <button id="btnProfileStop" title="Stop profiling early" disabled>Stop</button>
+                                <button id="btnCallGraph" title="Show call graph from profiler data" disabled>Graph</button>
                                 <span id="profileStatus" class="automap-stats"></span>
                             </div>
                             <div id="hotspotResults" class="hidden" style="margin-top:4px;max-height:180px;overflow-y:auto;font-size:11px;line-height:1.5"></div>
+                            <div id="sigResults" class="hidden" style="margin-top:4px;max-height:180px;overflow-y:auto;font-size:11px;line-height:1.5"></div>
                         </div>
                         <div class="tools-group">
                             <div class="tools-group-label">search</div>
@@ -6926,11 +7005,46 @@
                                 <div class="poke-results" id="pokeResults"></div>
                             </div>
                             <div class="tools-row">
-                                <span class="search-label">Watch:</span>
+                                <span class="search-label">Write mon:</span>
                                 <input type="text" id="writeMonAddr" placeholder="addr" maxlength="6" style="width:50px" title="Hex address to monitor for writes">
                                 <button id="btnWriteMon" title="Monitor writes to address — play game, trigger collision, then stop">Monitor</button>
                                 <span id="writeMonStatus" class="poke-status"></span>
                                 <div id="writeMonResults" class="write-mon-results"></div>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">Read mon:</span>
+                                <input type="text" id="readMonAddr" placeholder="addr" maxlength="6" style="width:50px"
+                                    title="Hex address to monitor for reads (find collision detection)">
+                                <button id="btnReadMon" title="Monitor reads from address — find code that checks this value. Results include backward slice: traces where comparison registers were loaded.">Monitor</button>
+                                <span id="readMonStatus" class="poke-status"></span>
+                                <div id="readMonResults" class="write-mon-results"></div>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">Compare:</span>
+                                <input type="text" id="cmpAddrA" placeholder="addrA" maxlength="6" style="width:50px"
+                                    title="First address to compare">
+                                <select id="cmpOp" style="width:36px" title="Comparison operator">
+                                    <option value="==">=</option><option value="!=">!=</option>
+                                    <option value="<">&lt;</option><option value=">">&gt;</option>
+                                </select>
+                                <input type="text" id="cmpAddrB" placeholder="addrB" maxlength="6" style="width:50px"
+                                    title="Second address to compare">
+                                <button id="btnCmpBreak" title="Break when condition is met">Break</button>
+                                <span id="cmpBreakStatus" class="poke-status"></span>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">RegTrack:</span>
+                                <input type="text" id="rtAddr" placeholder="PC" maxlength="4" style="width:40px"
+                                    title="PC address to track register at">
+                                <select id="rtReg" style="width:42px" title="Register to track">
+                                    <option>A</option><option>B</option><option>C</option><option>D</option>
+                                    <option>E</option><option>H</option><option>L</option><option>F</option>
+                                    <option>BC</option><option>DE</option><option>HL</option>
+                                    <option>IX</option><option>IY</option>
+                                </select>
+                                <button id="btnRtTrack" title="Track register value at PC">Track</button>
+                                <span id="rtStatus" class="poke-status"></span>
+                                <div id="rtResults" class="write-mon-results" style="max-height:150px"></div>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Text:</span>
@@ -6959,6 +7073,74 @@
                                 <button id="textScanNext" title="Next page">&gt;</button>
                             </div>
                             <div class="text-scan-results" id="textScanResults"></div>
+                        </div>
+                        <div class="tools-group">
+                            <div class="tools-group-label">code path</div>
+                            <div class="tools-row">
+                                <span class="search-label">Slot:</span>
+                                <select id="cpSlotSelect" style="width:130px">
+                                    <option value="0">Baseline</option>
+                                    <option value="1">Event A</option>
+                                    <option value="2">Event B</option>
+                                </select>
+                                <button id="btnCpRecord" title="Start/stop recording executed PCs into selected slot">Record</button>
+                                <label class="search-option" title="Union new recording into existing slot data"><input type="checkbox" id="chkCpMerge"> Merge</label>
+                                <button id="btnCpClear" title="Clear all slots and results">Clear</button>
+                                <button id="btnCpTrace" title="Run and break when execution leaves the baseline code path">Trace</button>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">Diff:</span>
+                                <select id="cpDiffMode" title="Which sets to compare">
+                                    <option value="a-base">A &minus; Baseline</option>
+                                    <option value="b-base">B &minus; Baseline</option>
+                                    <option value="a-b">A &minus; B</option>
+                                    <option value="b-a">B &minus; A</option>
+                                    <option value="ab-base">(A &cap; B) &minus; Baseline</option>
+                                    <option value="a-b-base">(A &minus; B) &minus; Baseline</option>
+                                    <option value="b-a-base">(B &minus; A) &minus; Baseline</option>
+                                </select>
+                                <button id="btnCpDiff" title="Compute set difference and show unique code blocks">Diff</button>
+                                <label class="search-option" title="Exclude ROM (0000-3FFF) from results"><input type="checkbox" id="chkCpSkipRom" checked> Skip ROM</label>
+                                <button id="btnCpExport" title="Export diff as text file">Export</button>
+                                <span id="cpStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="tools-row">
+                                <span class="search-label">Filter:</span>
+                                <input type="text" id="cpFilterText" placeholder="mnemonic (A|B)" maxlength="40"
+                                    style="width:100px;font-size:11px;padding:2px 4px;font-family:monospace"
+                                    title="Filter blocks by mnemonic (pipe-separated, e.g. DEC|SUB|SBC)">
+                                <button id="btnCpFilter" title="Apply filter">Apply</button>
+                                <button id="btnCpFilterWrites" title="Preset: DEC|SUB|SBC|CP" style="font-size:10px;padding:2px 4px">Writes</button>
+                                <button id="btnCpFilterBranch" title="Preset: conditional branches" style="font-size:10px;padding:2px 4px">Branch</button>
+                                <input type="text" id="cpFilterFrom" placeholder="from" maxlength="4"
+                                    style="width:36px;font-size:11px;padding:2px 4px;font-family:monospace;margin-left:6px"
+                                    title="Start address (hex)">
+                                <span style="color:var(--text-secondary);font-size:11px">&ndash;</span>
+                                <input type="text" id="cpFilterTo" placeholder="to" maxlength="4"
+                                    style="width:36px;font-size:11px;padding:2px 4px;font-family:monospace"
+                                    title="End address (hex)">
+                                <span id="cpFilterStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="cp-results" id="cpResults"></div>
+                        </div>
+                        <div class="tools-group">
+                            <div class="tools-group-label">struct mapper</div>
+                            <div class="tools-row">
+                                <span class="search-label">Base:</span>
+                                <select id="smBaseReg" style="width:50px" title="Dynamic base register or fixed address">
+                                    <option value="">Fixed</option>
+                                    <option value="IX" selected>IX</option>
+                                    <option value="IY">IY</option>
+                                </select>
+                                <input type="text" id="smBaseAddr" placeholder="addr" maxlength="4" style="width:40px"
+                                    title="Base address (hex) — used when Base is 'Fixed'">
+                                <span class="search-label">Size:</span>
+                                <input type="number" id="smMaxOffset" value="32" min="1" max="255" style="width:40px"
+                                    title="Maximum offset to monitor (1-255)">
+                                <button id="btnSmStart" title="Start monitoring struct field access">Map</button>
+                                <span id="smStatus" class="poke-status"></span>
+                            </div>
+                            <div id="smResults" class="write-mon-results" style="max-height:180px"></div>
                         </div>
                         </div>
                     </div>
@@ -7026,6 +7208,7 @@
                             </div>
                             </div>
                         </div>
+                        <input type="range" id="traceSlider" min="0" max="0" value="0" title="Scroll through trace history">
                         <div class="trace-list" id="traceList"></div>
                     </div>
                     <div class="panel-tab-content" id="panel-pokes">
@@ -7050,6 +7233,7 @@
                                         <input type="text" id="pokeAddAddr" placeholder="Addr" style="width:50px" maxlength="6">
                                         <input type="text" id="pokeAddNormal" placeholder="Orig" style="width:35px" maxlength="4">
                                         <input type="text" id="pokeAddPoke" placeholder="Poke" style="width:35px" maxlength="4">
+                                        <input type="text" id="pokeAddHint" placeholder="Hint" style="width:60px" maxlength="20" title="Optional description for this patch">
                                         <button id="btnPokeAdd" title="Add poke (or add patch if name exists)">+</button>
                                     </div>
                                     <div class="poke-toggle-all">
@@ -7457,6 +7641,27 @@ start:
                         </label>
                         <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
                     </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable +D interface for MGT disks (requires plusd.rom)" style="display: inline-block;">
+                            <input type="checkbox" id="chkPlusD"> +D Interface (MGT)
+                        </label>
+                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <input type="file" id="romPlusDInput" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
+                        <button id="btnNmiPlusD" title="Trigger +D NMI (snapshot button)" disabled style="font-size: 11px; padding: 2px 10px;">NMI</button>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable Interface 1 for Microdrive cartridges (requires if1.rom). Conflicts with +D." style="display: inline-block;">
+                            <input type="checkbox" id="chkIF1"> Interface 1 (Microdrive)
+                        </label>
+                        <span id="if1Status" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <input type="file" id="romIF1Input" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadIF1Rom" title="Load Interface 1 ROM file (if1.rom)" style="font-size: 11px; padding: 2px 10px;">Load IF1 ROM</button>
+                    </div>
                 </div>
             </div>
             </div><!-- settings-machines -->
@@ -7697,7 +7902,7 @@ start:
             <div class="explorer-container">
                 <!-- Controls Row -->
                 <div class="explorer-controls">
-                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.dsk,.zip,.$b,.$c,.$d,.$#,.hobeta" style="display:none">
+                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.opd,.opu,.zip,.$b,.$c,.$d,.$#,.hobeta" style="display:none">
                     <button id="btnExplorerLoad" class="explorer-btn primary">Load File</button>
                     <span id="explorerFileName" class="explorer-file-info">No file loaded</span>
                     <span id="explorerFileSize" class="explorer-file-size"></span>
@@ -7777,11 +7982,14 @@ start:
                         <div id="editorSharedToolbar" class="explorer-controls" style="margin-bottom:4px">
                             <select id="editorNewFormat" class="explorer-btn" style="font-size:12px;padding:5px 6px;border-radius:4px;border:none;background:var(--bg-button);color:var(--text-primary);cursor:pointer">
                                 <option value="" disabled selected>New</option>
-                                <option value="tap">TAP</option>
-                                <option value="tzx">TZX</option>
-                                <option value="trd">TRD</option>
-                                <option value="scl">SCL</option>
-                                <option value="dsk">DSK</option>
+                                <option value="tap">TAP (Tape file)</option>
+                                <option value="tzx">TZX (Tape extended)</option>
+                                <option value="trd">TRD (TR-DOS disk)</option>
+                                <option value="scl">SCL (TR-DOS archive)</option>
+                                <option value="mgt">MGT (+D disk)</option>
+                                <option value="mdr">MDR (Microdrive)</option>
+                                <option value="opd">OPD (Opus Discovery)</option>
+                                <option value="dsk">DSK (+3 disk)</option>
                             </select>
                             <button id="btnEditorAddFile" class="explorer-btn">Add File</button>
                             <button id="btnEditorSave" class="explorer-btn primary">Save</button>
@@ -8074,6 +8282,9 @@ start:
                         <button class="mapper-btn" id="btnMapperBlend" title="Blend all screenshots into one averaged image" style="display:none">Blend</button>
                         <button class="mapper-btn" id="btnMapperStamp" title="Stamp region from selected screenshot onto blend" style="display:none">Stamp</button>
                         <button class="mapper-btn danger" id="btnMapperDeleteShot" title="Delete current screenshot" style="display:none">Delete</button>
+                        <button class="mapper-btn danger" id="btnMapperRemoveRoom" title="Remove entire room (Ctrl+Delete)" style="display:none">Remove room</button>
+                        <button class="mapper-btn" id="btnMapperMoveRoom" title="Move room to different position" style="display:none">Move</button>
+                        <button class="mapper-btn" id="btnMapperTextSlide" title="Create or edit a text slide">Text</button>
                         <select class="mapper-mark-select" id="mapperRoomMark" title="Mark room for attention">
                             <option value="">No mark</option>
                             <option value="#000000" style="color:#000000">&#x2716; Black</option>
@@ -8176,6 +8387,26 @@ start:
                                 <div class="mapper-stamp-source" id="mapperStampSourceBWrap">
                                     <div class="mapper-stamp-source-label">B</div>
                                     <canvas id="mapperStampCanvasB"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mapper-textslide-dialog hidden" id="mapperTextSlideDialog">
+                            <div class="mapper-textslide-header">
+                                <label class="mapper-field-label">Font:<input type="text" id="mapperTsFont" class="mapper-text-input mapper-text-short"></label>
+                                <label class="mapper-field-label">Size:<input type="number" id="mapperTsFontSize" min="6" max="72" class="mapper-field-input"></label>
+                                <label class="mapper-field-label">Color:<input type="color" id="mapperTsColor" class="mapper-textslide-color-input"></label>
+                                <label class="mapper-field-label">Paper:<input type="color" id="mapperTsPaper" class="mapper-textslide-color-input"></label>
+                                <span></span>
+                                <button class="mapper-btn" id="btnMapperTsSetDefault" title="Set current font/size/colors as defaults for new text slides">Set as default</button>
+                                <button class="mapper-btn primary" id="btnMapperTsApply">Apply</button>
+                                <button class="mapper-btn" id="btnMapperTsClose">&times;</button>
+                            </div>
+                            <div class="mapper-textslide-body">
+                                <div class="mapper-textslide-editor">
+                                    <textarea id="mapperTsText" placeholder="Enter text here..."></textarea>
+                                </div>
+                                <div class="mapper-textslide-preview">
+                                    <canvas id="mapperTsPreviewCanvas"></canvas>
                                 </div>
                             </div>
                         </div>
@@ -9361,6 +9592,16 @@ start:
         </div>
     </div>
 
+    <div id="callGraphDialog" class="hidden" style="position:fixed;top:5%;left:5%;width:90%;height:90%;background:var(--bg-primary);border:1px solid var(--border);z-index:10000;display:flex;flex-direction:column;box-shadow:0 4px 20px rgba(0,0,0,0.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);background:var(--bg-secondary)">
+            <span style="color:var(--cyan);font-weight:bold">Call Graph</span>
+            <button id="btnCallGraphClose" style="background:none;border:none;color:var(--text-primary);font-size:18px;cursor:pointer;padding:0 4px">&times;</button>
+        </div>
+        <div style="flex:1;padding:0;overflow:hidden">
+            <canvas id="callGraphCanvas" style="width:100%;height:100%;cursor:grab"></canvas>
+        </div>
+    </div>
+
     <div class="drop-zone" id="dropZone">Drop ROM or Snapshot here</div>
 
     <script src="lib/pako.min.js"></script>
@@ -9396,6 +9637,9 @@ start:
     import { initPokeSearch } from './ui/poke-search.js';
     import { initMemorySearch } from './ui/memory-search.js';
     import { initProfilerUI } from './ui/profiler-ui.js';
+    import { initStructMapper } from './ui/struct-mapper.js';
+    import { initCallGraph } from './ui/call-graph.js';
+    import { initCodePath } from './ui/codepath.js';
     import { initMapperUI } from './ui/mapper-ui.js';
     import { initGamepad } from './ui/gamepad.js';
     import { initMemoryMap } from './ui/memory-map.js';
@@ -9446,7 +9690,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.9.6';
+        const APP_VERSION = '0.9.11';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -9582,7 +9826,9 @@ start:
             getMachineProfile,
             MACHINE_PROFILES,
             getDisplayAPI: () => displayAPI,
-            getUpdateBetaDiskStatus: () => updateBetaDiskStatus
+            getUpdateBetaDiskStatus: () => updateBetaDiskStatus,
+            getUpdatePlusDStatus: () => updatePlusDStatus,
+            getUpdateIF1Status: () => updateIF1Status
         });
 
         // UI Elements
@@ -9706,7 +9952,9 @@ start:
 
         // Register editor (extracted to ui/register-editor.js)
         const regEditorAPI = initRegisterEditor({
-            getSpectrum: () => spectrum, updateDebugger
+            getSpectrum: () => spectrum, updateDebugger,
+            addWatch: (addr, name) => addWatch?.(addr, name),
+            showMessage
         });
 
         // Memory View UI elements
@@ -10069,7 +10317,9 @@ start:
         const pokeManagerAPI = initPokeManager({
             readMemory,
             writePoke: (addr, val) => spectrum.poke(addr, val),
-            showMessage
+            showMessage,
+            goToAddress,
+            setFrozenAddresses: (list) => spectrum.setFrozenAddresses(list)
         });
 
         // Poke Search (extracted to poke-search.js)
@@ -10081,11 +10331,32 @@ start:
             goToMemoryAddress,
             startWriteMonitor: (addr) => spectrum.startWriteMonitor(addr),
             stopWriteMonitor: () => spectrum.stopWriteMonitor(),
+            startReadMonitor: (addr) => spectrum.startReadMonitor(addr),
+            stopReadMonitor: () => spectrum.stopReadMonitor(),
             disassembleAt: (addr) => {
                 const d = disasm || new Disassembler(spectrum.memory);
                 return d.disassemble(addr);
             },
-            goToAddress
+            goToAddress,
+            startComparisonBreakpoint: (a, b, op) => spectrum.startComparisonBreakpoint(a, b, op),
+            stopComparisonBreakpoint: () => spectrum.stopComparisonBreakpoint(),
+            startRegisterTracker: (pc, reg) => spectrum.startRegisterTracker(pc, reg),
+            stopRegisterTracker: () => spectrum.stopRegisterTracker()
+        });
+
+        // Struct Mapper (extracted to ui/struct-mapper.js)
+        const structMapperAPI = initStructMapper({
+            startStructMapper: (base, reg, max) => spectrum.startStructMapper(base, reg, max),
+            stopStructMapper: () => spectrum.stopStructMapper(),
+            readMemory,
+            getSpectrum: () => spectrum,
+            disassembleAt: (addr) => {
+                const d = disasm || new Disassembler(spectrum.memory);
+                return d.disassemble(addr);
+            },
+            labelManager,
+            goToAddress,
+            showMessage
         });
 
         // Memory Search (extracted to memory-search.js)
@@ -10129,7 +10400,14 @@ start:
             updateDebugger
         });
         // ========== Runtime Behavior Profiler (extracted to ui/profiler-ui.js) ==========
-        initProfilerUI({
+        // Call Graph (extracted to ui/call-graph.js)
+        const callGraphAPI = initCallGraph({
+            labelManager,
+            goToAddress,
+            showMessage
+        });
+
+        const profilerAPI = initProfilerUI({
             readMemory,
             getMemoryInfo,
             getProfiler: () => spectrum.profiler,
@@ -10142,9 +10420,28 @@ start:
             labelManager,
             regionManager,
             navigateToAddress,
+            goToAddress,
             updateLabelsList,
             updateDebugger,
-            showMessage
+            showMessage,
+            callGraphAPI
+        });
+
+        // Code Path Tool (extracted to ui/codepath.js)
+        const codePathAPI = initCodePath({
+            getSpectrum: () => spectrum,
+            readMemory,
+            disassembleAt: (addr) => {
+                const d = disasm || new Disassembler(spectrum.memory);
+                return d.disassemble(addr);
+            },
+            getLabel: (addr) => {
+                const label = labelManager.get(addr);
+                return label ? label.name : null;
+            },
+            goToAddress,
+            showMessage,
+            downloadFile
         });
 
         // Trace Display & Controls (extracted to ui/trace-display.js)
@@ -10260,6 +10557,7 @@ start:
             showMessage, updateDebugger, updateLabelsList,
             goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
             addWatch,
+            addFreezeEditor: (addr, name) => pokeManagerAPI.addFreezeEditor(addr, name),
             getMemSelection: () => memoryViewAPI.getMemSelection(),
             clearMemSelection,
             getMemoryEditingAddr: () => memoryViewAPI.getMemoryEditingAddr(),
@@ -10274,7 +10572,10 @@ start:
             closeMemContextMenu, closeLeftMemContextMenu,
             showMessage, updateDebugger, updateLabelsList,
             goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
-            getRightPanelType: () => rightPanelType
+            getRightPanelType: () => rightPanelType,
+            readMemory,
+            addPoke: pokeManagerAPI.addPoke,
+            getInstrLength: (addr) => disasm ? disasm.disassemble(addr).length : 1
         });
 
         // Trigger handlers (extracted to ui/trigger-handlers.js)
@@ -10289,8 +10590,7 @@ start:
 
         btnReset.addEventListener('click', () => {
             if (!confirm('Reset machine? This will lose current state.')) return;
-            autoLoaderAPI.cancelAutoLoad();
-            autofireAPI.stopAutofire();
+            stopActiveTools();
             spectrum.reset();
             // Hide media indicators (tape/disk cleared on reset)
             document.getElementById('diskActivity').style.display = 'none';
@@ -10446,11 +10746,7 @@ start:
 
         
         machineSelect.addEventListener('change', () => {
-            autoLoaderAPI.cancelAutoLoad();
-            autofireAPI.stopAutofire();
-            // Stop any active poke write trace or write monitor on machine change
-            pokeSearchAPI.stopTracing();
-            pokeSearchAPI.stopWriteMonitor();
+            stopActiveTools();
             const type = machineSelect.value;
 
             // Check if we have the required ROM - open ROM dialog if not
@@ -10510,7 +10806,7 @@ start:
         });
         
         // Input & Mouse Settings (extracted to ui/input-settings.js)
-        const { saveInputSettings, updateBetaDiskStatus, updateMouseStatus, gamepadAPI, bootAPI } =
+        const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateMouseStatus, gamepadAPI, bootAPI } =
             initInputSettings({
                 getSpectrum: () => spectrum,
                 getCanvas: () => canvas,
@@ -10547,6 +10843,20 @@ start:
         // Auto-Loader (extracted to ui/auto-loader.js)
         const autoLoaderAPI = initAutoLoader({ getSpectrum: () => spectrum });
 
+        // Stop all active debug/analysis tools (used on project load, file load, reset, machine change)
+        function stopActiveTools() {
+            autoLoaderAPI.cancelAutoLoad();
+            autofireAPI.stopAutofire();
+            pokeSearchAPI.stopTracing();
+            pokeSearchAPI.stopWriteMonitor();
+            pokeSearchAPI.stopReadMonitor();
+            pokeSearchAPI.stopComparisonBreakpoint();
+            pokeSearchAPI.stopRegisterTracker();
+            structMapperAPI.stopMapping();
+            codePathAPI.stopRecording();
+            profilerAPI.clearResults();
+        }
+
         // Project save/load (extracted to ui/project-io.js)
         ({ saveProject, loadProject } = initProjectIO({
             getSpectrum: () => spectrum,
@@ -10556,6 +10866,7 @@ start:
             getDisplayAPI: () => displayAPI,
             getAutoLoaderAPI: () => autoLoaderAPI,
             getPokeManagerAPI: () => pokeManagerAPI,
+            getStopActiveTools: () => stopActiveTools,
             getAsmAPI: () => asmAPI,
             getAnalysisAPI: () => analysisAPI,
             getPortLoggingAPI: () => portLoggingAPI,
@@ -10608,6 +10919,7 @@ start:
                 getSpectrum: () => spectrum,
                 romData,
                 getAutoLoaderAPI: () => autoLoaderAPI,
+                getStopActiveTools: () => stopActiveTools,
                 getMediaCatalogAPI: () => mediaCatalogAPI,
                 getAnalysisAPI: () => analysisAPI,
                 getDisplayAPI: () => displayAPI,

@@ -23,6 +23,67 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
     const chkTraceCollapseBlock = document.getElementById('chkTraceCollapseBlock');
     const traceStatus = document.getElementById('traceStatus');
     const traceList = document.getElementById('traceList');
+    const traceSlider = document.getElementById('traceSlider');
+
+    // Track last trace position for memory reversal (-1 = live)
+    let lastTracePos = -1;
+
+    /**
+     * Apply memory writes/reverts when navigating trace history.
+     * Going backward: undo writes (restore old values).
+     * Going forward: redo writes (apply new values).
+     * Temporarily disables memory.onWrite to avoid recursive callbacks.
+     */
+    function applyTraceMemoryDelta(fromPos, toPos) {
+        const spectrum = getSpectrum();
+        const memory = spectrum.memory;
+        const history = traceManager.history;
+        const len = history.length;
+
+        // Convert -1 (live) to len for arithmetic
+        const from = fromPos === -1 ? len : fromPos;
+        const to = toPos === -1 ? len : toPos;
+
+        if (from === to) return;
+
+        // Save and disable write callback to avoid triggering trace/watchpoints
+        const savedOnWrite = memory.onWrite;
+        memory.onWrite = null;
+
+        try {
+            if (to < from) {
+                // Going backward: undo entries from (from-1) down to (to), writing old values
+                for (let i = from - 1; i >= to; i--) {
+                    if (i < 0 || i >= len) continue;
+                    const entry = history[i];
+                    if (!entry.mem) continue;
+                    // Undo in reverse order within each instruction
+                    for (let j = entry.mem.length - 1; j >= 0; j--) {
+                        const m = entry.mem[j];
+                        if (m.old !== undefined) {
+                            memory.write(m.addr & 0xFFFF, m.old & 0xFF);
+                        }
+                    }
+                }
+            } else {
+                // Going forward: redo entries from (from) up to (to-1), writing new values
+                for (let i = from; i < to; i++) {
+                    if (i < 0 || i >= len) continue;
+                    const entry = history[i];
+                    if (!entry.mem) continue;
+                    for (let j = 0; j < entry.mem.length; j++) {
+                        const m = entry.mem[j];
+                        memory.write(m.addr & 0xFFFF, m.val & 0xFF);
+                    }
+                }
+            }
+        } finally {
+            memory.onWrite = savedOnWrite;
+        }
+
+        // Re-render screen from updated memory
+        spectrum.renderToScreen();
+    }
 
     // Set up trace recording callback
     getSpectrum().onBeforeStep = (cpu, memory, instrPC, portOps, memOps, instrBytes) => {
@@ -50,6 +111,11 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
         btnTraceBack.disabled = len === 0 || pos === 0;
         btnTraceForward.disabled = pos === -1;
         btnTraceLive.disabled = pos === -1;
+
+        // Sync slider
+        traceSlider.max = Math.max(0, len - 1);
+        traceSlider.value = pos === -1 ? Math.max(0, len - 1) : pos;
+        traceSlider.disabled = len === 0;
     }
 
     function updateTraceList() {
@@ -64,13 +130,13 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
         let entries, startIdx, viewIdxInList;
         if (currentPos >= 0) {
             // Navigating history - show entries around current position
-            const result = traceManager.getEntriesAround(currentPos, 20);
+            const result = traceManager.getEntriesAround(currentPos, 10);
             entries = result.entries;
             startIdx = result.startIdx;
             viewIdxInList = result.viewIdx;
         } else {
             // Live view - show most recent entries
-            entries = traceManager.getRecent(20);
+            entries = traceManager.getRecent(10);
             startIdx = totalLen - entries.length;
             viewIdxInList = -1;
         }
@@ -93,10 +159,12 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
             const isViewing = currentPos === globalIdx;
             const isCurrent = currentPos === -1 && i === entries.length - 1;
 
-            // Disassemble the instruction (use stored bytes as hex if disasm unavailable)
+            // Disassemble from stored bytes (memory may have changed since recording)
             let instrText = '';
-            if (disasm) {
-                const instr = disasm.disassemble(entry.pc);
+            if (Disassembler) {
+                const fakeMemory = { read: (addr) => entry.bytes[(addr - entry.pc) & 3] || 0 };
+                const entryDisasm = new Disassembler(fakeMemory);
+                const instr = entryDisasm.disassemble(entry.pc);
                 instrText = instr.mnemonic;
             } else {
                 instrText = entry.bytes.slice(0, 3).map(b => hex8(b)).join(' ');
@@ -160,7 +228,9 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
             // Navigating history - scroll to viewed entry
             const viewedEl = traceList.querySelector('.trace-entry.viewing');
             if (viewedEl) {
-                viewedEl.scrollIntoView({ block: 'center', behavior: 'auto' });
+                // Manual scroll within container only (scrollIntoView scrolls the whole page)
+                traceList.scrollTop = viewedEl.offsetTop - traceList.offsetTop
+                    - traceList.clientHeight / 2 + viewedEl.offsetHeight / 2;
             }
         } else {
             // Live view - scroll to bottom
@@ -189,6 +259,7 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
         const spectrum = getSpectrum();
         traceManager.enabled = chkTraceEnabled.checked;
         spectrum.traceEnabled = chkTraceEnabled.checked;
+        spectrum.updateMemoryCallbacksFlag();
         if (chkTraceEnabled.checked) {
             showMessage('Step trace enabled');
         } else {
@@ -211,18 +282,28 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
     });
 
     btnTraceBack.addEventListener('click', () => {
+        const oldPos = lastTracePos;
         const entry = traceManager.goBack();
         if (entry) {
+            const newPos = traceManager.getCurrentPosition();
+            applyTraceMemoryDelta(oldPos, newPos);
+            lastTracePos = newPos;
             showTraceEntry(entry);
         }
     });
 
     btnTraceForward.addEventListener('click', () => {
+        const oldPos = lastTracePos;
         const entry = traceManager.goForward();
         if (entry) {
+            const newPos = traceManager.getCurrentPosition();
+            applyTraceMemoryDelta(oldPos, newPos);
+            lastTracePos = newPos;
             showTraceEntry(entry);
         } else {
             // Returned to live
+            applyTraceMemoryDelta(oldPos, -1);
+            lastTracePos = -1;
             traceManager.goToLive();
             setTraceViewAddress(null);  // Clear trace cursor
             updateTraceStatus();
@@ -233,6 +314,9 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
     });
 
     btnTraceLive.addEventListener('click', () => {
+        const oldPos = lastTracePos;
+        applyTraceMemoryDelta(oldPos, -1);
+        lastTracePos = -1;
         traceManager.goToLive();
         setTraceViewAddress(null);  // Clear trace cursor
         updateTraceStatus();
@@ -241,7 +325,35 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
         showMessage('Returned to live view');
     });
 
+    traceSlider.addEventListener('input', () => {
+        const len = traceManager.length;
+        if (len === 0) return;
+        const idx = parseInt(traceSlider.value, 10);
+        const oldPos = lastTracePos;
+        if (idx >= len - 1) {
+            // At the end — return to live
+            applyTraceMemoryDelta(oldPos, -1);
+            lastTracePos = -1;
+            traceManager.goToLive();
+            setTraceViewAddress(null);
+            updateTraceStatus();
+            updateTraceList();
+            updateDebugger();
+        } else {
+            applyTraceMemoryDelta(oldPos, idx);
+            lastTracePos = idx;
+            traceManager.position = idx;
+            const entry = traceManager.getEntry(idx);
+            if (entry) showTraceEntry(entry);
+        }
+    });
+
     btnTraceClear.addEventListener('click', () => {
+        // Restore memory to live state before clearing
+        if (lastTracePos !== -1) {
+            applyTraceMemoryDelta(lastTracePos, -1);
+        }
+        lastTracePos = -1;
         traceManager.clear();
         updateTraceStatus();
         updateTraceList();
@@ -342,6 +454,9 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
             const idx = parseInt(entryEl.dataset.idx, 10);
             const entry = traceManager.getEntry(idx);
             if (entry) {
+                const oldPos = lastTracePos;
+                applyTraceMemoryDelta(oldPos, idx);
+                lastTracePos = idx;
                 traceManager.position = idx;
                 showTraceEntry(entry);
             }

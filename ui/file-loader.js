@@ -5,6 +5,7 @@ export function initFileLoader({
     getSpectrum,
     romData,
     getAutoLoaderAPI,
+    getStopActiveTools,
     getMediaCatalogAPI,
     getAnalysisAPI,
     getDisplayAPI,
@@ -54,11 +55,12 @@ export function initFileLoader({
         if (type === 'tape' || ext === 'tap' || ext === 'tzx') {
             document.getElementById('tapeLed').title = fileName;
             document.getElementById('tapeInfo').style.display = 'inline-block';
-        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk') {
+        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img') {
             // Build tooltip listing all loaded drives
             const driveNames = [];
             const betaDisks = spectrum.loadedBetaDisks;
             const fdcDisks = spectrum.loadedFDCDisks;
+            const plusDDisks = spectrum.loadedPlusDDisks;
             if (spectrum.machineType === '+3') {
                 for (let i = 0; i < 2; i++) {
                     if (fdcDisks[i]) driveNames.push(`${String.fromCharCode(65 + i)}: ${fdcDisks[i].name}`);
@@ -66,6 +68,17 @@ export function initFileLoader({
             } else {
                 for (let i = 0; i < 4; i++) {
                     if (betaDisks[i]) driveNames.push(`${String.fromCharCode(65 + i)}: ${betaDisks[i].name}`);
+                }
+            }
+            if (plusDDisks) {
+                for (let i = 0; i < 2; i++) {
+                    if (plusDDisks[i]) driveNames.push(`+D ${String.fromCharCode(65 + i)}: ${plusDDisks[i].name}`);
+                }
+            }
+            const if1Cartridges = spectrum.loadedIF1Cartridges;
+            if (if1Cartridges) {
+                for (let i = 0; i < if1Cartridges.length; i++) {
+                    if (if1Cartridges[i]) driveNames.push(`MDR ${i + 1}: ${if1Cartridges[i].name}`);
                 }
             }
             document.getElementById('diskInfoLed').title = driveNames.join('\n') || fileName;
@@ -100,8 +113,9 @@ export function initFileLoader({
         const autoLoaderAPI = getAutoLoaderAPI();
         const mediaCatalogAPI = getMediaCatalogAPI();
 
-        // Cancel any in-progress auto load sequence
-        autoLoaderAPI.cancelAutoLoad();
+        // Stop all active debug/analysis tools and cancel auto load
+        const stopActiveTools = getStopActiveTools();
+        if (stopActiveTools) stopActiveTools();
 
         // Stop any running RZX playback when loading new file (unless this IS an RZX)
         if (result.frames === undefined && spectrum.isRZXPlaying()) {
@@ -116,7 +130,7 @@ export function initFileLoader({
         // Update media indicators based on result type
         if (result.diskInserted || result.diskFile) {
             const drv = result._driveIndex || 0;
-            const ctrl = result.isDSK ? 'fdc' : 'beta';
+            const ctrl = result.isDSK ? 'fdc' : result.diskType === 'mdr' ? 'if1' : result.diskType === 'mgt' ? 'plusd' : 'beta';
             updateMediaIndicator(fileName, 'disk', drv);
             mediaCatalogAPI.buildDiskCatalog(drv, ctrl);
         } else if (result.blocks !== undefined) {
@@ -148,6 +162,25 @@ export function initFileLoader({
                 if (!spectrum.isRunning()) spectrum.start();
                 showMessage(`DSK disk inserted in ${dskLetter}: ${result.diskName} (${result.fileCount} files).`);
             }
+        } else if (result.diskInserted && result.diskType === 'mgt') {
+            // MGT disk inserted into +D interface
+            const mgtDrive = result._driveIndex || 0;
+            const mgtLetter = String.fromCharCode(65 + mgtDrive);
+            if (!spectrum.isRunning()) spectrum.start();
+            let msg = `MGT disk inserted in +D ${mgtLetter}: ${result.diskName} (${result.fileCount} files).`;
+            if (result.plusDRequired) {
+                msg += ' Enable +D interface and load plusd.rom in Settings to use.';
+            }
+            showMessage(msg);
+        } else if (result.diskInserted && result.diskType === 'mdr') {
+            // MDR cartridge inserted into Interface 1
+            const mdvDrive = result._driveIndex || 0;
+            if (!spectrum.isRunning()) spectrum.start();
+            let msg = `Cartridge inserted in Microdrive ${mdvDrive + 1}: ${result.diskName} (${result.fileCount} files).`;
+            if (result.if1Required) {
+                msg += ' Enable Interface 1 and load if1.rom in Settings to use.';
+            }
+            showMessage(msg);
         } else if (result.diskInserted) {
             // TRD/SCL disk inserted into Beta Disk interface
             const trdDrive = result._driveIndex || 0;
@@ -524,7 +557,7 @@ export function initFileLoader({
                 }
                 spectrum.romLoaded = true;
                 showMessage('ROM loaded: ' + file.name);
-            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' || ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'rzx') {
+            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' || ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mdr' || ext === 'rzx') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
                     showMessage('Please load ROM files first', 'error');

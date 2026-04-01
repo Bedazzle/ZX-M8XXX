@@ -1,7 +1,7 @@
 // poke-manager.js — POKE Manager (extracted from index.html)
 import { hex8, hex16 } from '../core/utils.js';
 
-export function initPokeManager({ readMemory, writePoke, showMessage }) {
+export function initPokeManager({ readMemory, writePoke, showMessage, goToAddress, setFrozenAddresses }) {
     // DOM lookups
     const pokeList = document.getElementById('pokeList');
     const pokeEditors = document.getElementById('pokeEditors');
@@ -17,6 +17,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
     const pokeAddAddr = document.getElementById('pokeAddAddr');
     const pokeAddNormal = document.getElementById('pokeAddNormal');
     const pokeAddPoke = document.getElementById('pokeAddPoke');
+    const pokeAddHint = document.getElementById('pokeAddHint');
     const editorAddName = document.getElementById('editorAddName');
     const editorAddAddr = document.getElementById('editorAddAddr');
     const editorAddType = document.getElementById('editorAddType');
@@ -55,6 +56,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
         pokeEditorEntries = [];
         pokeGameName = '';
         renderPokeManager();
+        updateFrozenList();
     }
 
     function loadPokeJSON(text) {
@@ -66,10 +68,16 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
 
         if (json.pokes) {
             for (const p of json.pokes) {
-                const patches = (p.patches || []).map(pt => Array.isArray(pt)
-                    ? { addr: parsePokeValue(pt[0]), normal: parsePokeValue(pt[1]) & 0xff, poke: parsePokeValue(pt[2]) & 0xff }
-                    : { addr: parsePokeValue(pt.addr), normal: parsePokeValue(pt.normal) & 0xff, poke: parsePokeValue(pt.poke) & 0xff }
-                );
+                const patches = (p.patches || []).map(pt => {
+                    if (Array.isArray(pt)) {
+                        const patch = { addr: parsePokeValue(pt[0]), normal: parsePokeValue(pt[1]) & 0xff, poke: parsePokeValue(pt[2]) & 0xff };
+                        if (pt[3]) patch.hint = String(pt[3]);
+                        return patch;
+                    }
+                    const patch = { addr: parsePokeValue(pt.addr), normal: parsePokeValue(pt.normal) & 0xff, poke: parsePokeValue(pt.poke) & 0xff };
+                    if (pt.hint) patch.hint = String(pt.hint);
+                    return patch;
+                });
                 pokeEntries.push({ name: p.name || 'Unnamed', enabled: false, patches });
                 if (p.enabled) {
                     pokeToggle(pokeEntries.length - 1, true);
@@ -82,7 +90,8 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 pokeEditorEntries.push({
                     name: e.name || 'Value',
                     addr: parsePokeValue(e.addr),
-                    type: e.type === 'word' ? 'word' : 'byte'
+                    type: e.type === 'word' ? 'word' : 'byte',
+                    freeze: !!e.freeze
                 });
             }
         }
@@ -121,6 +130,22 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
         }
     }
 
+    function updateFrozenList() {
+        if (!setFrozenAddresses) return;
+        const list = [];
+        for (const ed of pokeEditorEntries) {
+            if (ed.freeze && readMemory) {
+                if (ed.type === 'word') {
+                    list.push({ addr: ed.addr, value: readMemory(ed.addr) });
+                    list.push({ addr: (ed.addr + 1) & 0xffff, value: readMemory((ed.addr + 1) & 0xffff) });
+                } else {
+                    list.push({ addr: ed.addr, value: readMemory(ed.addr) });
+                }
+            }
+        }
+        setFrozenAddresses(list);
+    }
+
     function renderPokeManager() {
         pokeGameLabel.textContent = pokeGameName;
 
@@ -144,6 +169,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 const nameSpan = document.createElement('span');
                 nameSpan.className = 'poke-name';
                 nameSpan.textContent = entry.name;
+                nameSpan.style.cursor = 'pointer';
 
                 const removeBtn = document.createElement('button');
                 removeBtn.className = 'poke-remove';
@@ -160,6 +186,120 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 div.appendChild(nameSpan);
                 div.appendChild(removeBtn);
                 pokeList.appendChild(div);
+
+                // Patch details (expand/collapse)
+                const patchesDiv = document.createElement('div');
+                patchesDiv.className = 'poke-patches hidden';
+                for (const p of entry.patches) {
+                    const patchLine = document.createElement('div');
+                    patchLine.className = 'poke-patch';
+                    const addrLink = document.createElement('span');
+                    addrLink.className = 'poke-patch-addr';
+                    addrLink.textContent = `$${hex16(p.addr)}`;
+                    addrLink.title = 'Go to address in disassembly';
+                    addrLink.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (goToAddress) goToAddress(p.addr);
+                    });
+                    patchLine.appendChild(addrLink);
+                    const valText = `: $${hex8(p.normal)} \u2192 $${hex8(p.poke)}`;
+                    patchLine.appendChild(document.createTextNode(valText));
+                    if (p.hint) {
+                        const hintSpan = document.createElement('span');
+                        hintSpan.className = 'poke-patch-hint';
+                        hintSpan.textContent = ` ; ${p.hint}`;
+                        patchLine.appendChild(hintSpan);
+                    }
+                    // Double-click patch line to edit
+                    patchLine.addEventListener('dblclick', (e) => {
+                        e.stopPropagation();
+                        patchLine.innerHTML = '';
+                        patchLine.className = 'poke-patch poke-patch-edit';
+                        const mkInput = (val, w, ph) => {
+                            const inp = document.createElement('input');
+                            inp.type = 'text'; inp.value = val;
+                            inp.style.width = w; inp.placeholder = ph;
+                            inp.className = 'poke-patch-input';
+                            return inp;
+                        };
+                        const inAddr = mkInput(hex16(p.addr), '38px', 'Addr');
+                        const inOrig = mkInput(hex8(p.normal), '22px', 'Orig');
+                        const inPoke = mkInput(hex8(p.poke), '22px', 'Poke');
+                        const inHint = mkInput(p.hint || '', '50px', 'Hint');
+                        patchLine.appendChild(inAddr);
+                        patchLine.appendChild(inOrig);
+                        patchLine.appendChild(inPoke);
+                        patchLine.appendChild(inHint);
+                        inAddr.select();
+
+                        const finish = (save) => {
+                            if (save) {
+                                p.addr = parsePokeValue(inAddr.value);
+                                p.normal = parsePokeValue(inOrig.value) & 0xff;
+                                p.poke = parsePokeValue(inPoke.value) & 0xff;
+                                const h = inHint.value.trim();
+                                if (h) p.hint = h; else delete p.hint;
+                            }
+                            renderPokeManager();
+                        };
+                        const onKey = (ke) => {
+                            if (ke.key === 'Enter') { ke.preventDefault(); finish(true); }
+                            else if (ke.key === 'Escape') { ke.preventDefault(); finish(false); }
+                        };
+                        [inAddr, inOrig, inPoke, inHint].forEach(inp => {
+                            inp.addEventListener('keydown', onKey);
+                        });
+                        // Save on blur, but only if we haven't already re-rendered
+                        let done = false;
+                        const onBlur = () => {
+                            setTimeout(() => {
+                                if (done) return;
+                                if (!patchLine.contains(document.activeElement)) {
+                                    done = true;
+                                    finish(true);
+                                }
+                            }, 0);
+                        };
+                        [inAddr, inOrig, inPoke, inHint].forEach(inp => {
+                            inp.addEventListener('blur', onBlur);
+                        });
+                    });
+                    patchesDiv.appendChild(patchLine);
+                }
+                pokeList.appendChild(patchesDiv);
+
+                // Click name to expand/collapse patches
+                nameSpan.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    patchesDiv.classList.toggle('hidden');
+                });
+
+                // Double-click name to rename
+                nameSpan.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.className = 'poke-rename-input';
+                    input.value = entry.name;
+                    nameSpan.textContent = '';
+                    nameSpan.appendChild(input);
+                    input.select();
+
+                    const finish = (save) => {
+                        if (save) {
+                            const newName = input.value.trim();
+                            if (newName) entry.name = newName;
+                        }
+                        renderPokeManager();
+                    };
+
+                    input.addEventListener('keydown', (ke) => {
+                        if (ke.key === 'Enter') { ke.preventDefault(); finish(true); }
+                        else if (ke.key === 'Escape') { ke.preventDefault(); finish(false); }
+                    });
+                    input.addEventListener('blur', () => finish(true));
+                    input.focus();
+                });
             });
         }
 
@@ -180,6 +320,12 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 const addrSpan = document.createElement('span');
                 addrSpan.className = 'poke-editor-addr';
                 addrSpan.textContent = hex16(ed.addr);
+                addrSpan.title = 'Go to address in disassembly';
+                addrSpan.style.cursor = 'pointer';
+                addrSpan.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (goToAddress) goToAddress(ed.addr);
+                });
 
                 const input = document.createElement('input');
                 input.type = 'text';
@@ -231,6 +377,16 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 spinDiv.appendChild(spinUp);
                 spinDiv.appendChild(spinDown);
 
+                const freezeCb = document.createElement('input');
+                freezeCb.type = 'checkbox';
+                freezeCb.checked = !!ed.freeze;
+                freezeCb.className = 'poke-freeze-cb';
+                freezeCb.title = 'Freeze: lock current value so the game cannot change it';
+                freezeCb.addEventListener('change', () => {
+                    ed.freeze = freezeCb.checked;
+                    updateFrozenList();
+                });
+
                 const removeBtn = document.createElement('button');
                 removeBtn.className = 'poke-remove';
                 removeBtn.textContent = '\u00d7';
@@ -238,9 +394,11 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
                 removeBtn.addEventListener('click', () => {
                     pokeEditorEntries.splice(i, 1);
                     renderPokeManager();
+                    updateFrozenList();
                 });
 
                 div.appendChild(removeBtn);
+                div.appendChild(freezeCb);
                 div.appendChild(nameSpan);
                 div.appendChild(addrSpan);
                 div.appendChild(input);
@@ -295,6 +453,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
         const addr = pokeAddAddr.value.trim();
         const normal = pokeAddNormal.value.trim();
         const poke = pokeAddPoke.value.trim();
+        const hint = pokeAddHint ? pokeAddHint.value.trim() : '';
         if (!name || !addr || !normal || !poke) return;
 
         const patch = {
@@ -302,6 +461,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
             normal: parsePokeValue(normal) & 0xff,
             poke: parsePokeValue(poke) & 0xff
         };
+        if (hint) patch.hint = hint;
 
         const existing = pokeEntries.find(e => e.name === name);
         if (existing) {
@@ -314,6 +474,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
         pokeAddAddr.value = '';
         pokeAddNormal.value = '';
         pokeAddPoke.value = '';
+        if (pokeAddHint) pokeAddHint.value = '';
         renderPokeManager();
     });
 
@@ -342,19 +503,19 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
             data.pokes = pokeEntries.map(e => ({
                 name: e.name,
                 enabled: e.enabled,
-                patches: e.patches.map(p => [
-                    hex16(p.addr),
-                    hex8(p.normal),
-                    hex8(p.poke)
-                ])
+                patches: e.patches.map(p => {
+                    const arr = [hex16(p.addr), hex8(p.normal), hex8(p.poke)];
+                    if (p.hint) arr.push(p.hint);
+                    return arr;
+                })
             }));
         }
         if (pokeEditorEntries.length > 0) {
-            data.editors = pokeEditorEntries.map(e => ({
-                name: e.name,
-                addr: hex16(e.addr),
-                type: e.type
-            }));
+            data.editors = pokeEditorEntries.map(e => {
+                const obj = { name: e.name, addr: hex16(e.addr), type: e.type };
+                if (e.freeze) obj.freeze = true;
+                return obj;
+            });
         }
 
         const json = JSON.stringify(data, null, 4);
@@ -382,24 +543,51 @@ export function initPokeManager({ readMemory, writePoke, showMessage }) {
     return {
         loadPokeJSON,
         pokeClearAll,
+        addPoke(name, addrOrPatches, normal, poke, hint) {
+            let patches;
+            if (Array.isArray(addrOrPatches)) {
+                patches = addrOrPatches.map(p => ({
+                    addr: p.addr, normal: p.normal & 0xff, poke: p.poke & 0xff,
+                    ...(p.hint ? { hint: p.hint } : {})
+                }));
+            } else {
+                const patch = { addr: addrOrPatches, normal: normal & 0xff, poke: poke & 0xff };
+                if (hint) patch.hint = hint;
+                patches = [patch];
+            }
+            pokeEntries.push({ name, enabled: false, patches });
+            renderPokeManager();
+        },
         getPokeData() {
             return {
                 game: pokeGameName,
                 pokes: pokeEntries.map(e => ({
                     name: e.name,
                     enabled: e.enabled,
-                    patches: e.patches.map(p => [
-                        hex16(p.addr),
-                        hex8(p.normal),
-                        hex8(p.poke)
-                    ])
+                    patches: e.patches.map(p => {
+                        const arr = [hex16(p.addr), hex8(p.normal), hex8(p.poke)];
+                        if (p.hint) arr.push(p.hint);
+                        return arr;
+                    })
                 })),
-                editors: pokeEditorEntries.map(e => ({
-                    name: e.name,
-                    addr: hex16(e.addr),
-                    type: e.type
-                }))
+                editors: pokeEditorEntries.map(e => {
+                    const obj = { name: e.name, addr: hex16(e.addr), type: e.type };
+                    if (e.freeze) obj.freeze = true;
+                    return obj;
+                })
             };
+        },
+        addFreezeEditor(addr, name) {
+            const existing = pokeEditorEntries.find(e => e.addr === addr && e.freeze);
+            if (existing) return;
+            pokeEditorEntries.push({
+                name: name || hex16(addr),
+                addr,
+                type: 'byte',
+                freeze: true
+            });
+            renderPokeManager();
+            updateFrozenList();
         },
         hasData() {
             return pokeEntries.length > 0 || pokeEditorEntries.length > 0;
