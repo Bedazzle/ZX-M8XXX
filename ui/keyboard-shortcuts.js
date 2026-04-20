@@ -395,6 +395,32 @@ export function initKeyboardShortcuts({
             }
         }
 
+        // Ctrl+F3 - Stop auto-capture (if running) + save batch screenshots as ZIP
+        if (e.key === 'F3' && e.ctrlKey) {
+            e.preventDefault();
+            if (window._screenshotAutoCapture && window._screenshotAutoCapture.isActive()) {
+                window._screenshotAutoCapture.stop();
+            }
+            if (window._screenshotSaveBatchAsZip) window._screenshotSaveBatchAsZip();
+            return;
+        }
+
+        // F3 - Screenshot / toggle auto-capture (when Batch is checked)
+        if (e.key === 'F3' && !e.repeat) {
+            e.preventDefault();
+            const batchChecked = document.getElementById('chkScreenshotBatch').checked;
+            if (batchChecked && window._screenshotAutoCapture) {
+                if (window._screenshotAutoCapture.isActive()) {
+                    window._screenshotAutoCapture.stop();
+                } else {
+                    window._screenshotAutoCapture.start();
+                }
+            } else {
+                document.getElementById('btnScreenshotMain').click();
+            }
+            return;
+        }
+
         // F1 - Cycle zoom (x1 -> x2 -> x3 -> x1)
         if (e.key === 'F1') {
             e.preventDefault();

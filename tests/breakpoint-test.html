@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Breakpoint & Trigger Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .theme-btn { float: right; background: var(--bg-secondary); border: none; font-size: 16px; padding: 5px 10px; cursor: pointer; border-radius: 3px; margin: 0; color: inherit; }
+        .theme-btn:hover { background: var(--button-bg); }
+    </style>
+</head>
+<body>
+    <h1>Breakpoint &amp; Trigger Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+
+    <button id="runAll">Run All Tests</button>
+    <button id="runExec">Execution BP</button>
+    <button id="runWatch">Watchpoints</button>
+    <button id="runPort">Port BP</button>
+    <button id="runCompare">Comparison BP</button>
+    <button id="runMonitor">Monitors</button>
+    <button id="runFreeze">Freeze</button>
+    <button id="runCallStack">Call Stack</button>
+    <button class="theme-btn" id="themeToggle" title="Toggle light/dark theme">&#9728;&#65039;</button>
+
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+    import { Spectrum } from '../core/spectrum.js';
+
+    const TEST_VERSION = '0.9.12';
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+
+    let totalPassed = 0;
+    let totalFailed = 0;
+
+    function log(msg, type = '') {
+        const div = document.createElement('div');
+        div.className = type;
+        div.textContent = msg;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function clearLog() {
+        logEl.innerHTML = '';
+        totalPassed = 0;
+        totalFailed = 0;
+        updateSummary();
+    }
+
+    function updateSummary() {
+        const total = totalPassed + totalFailed;
+        const rate = total > 0 ? (100 * totalPassed / total).toFixed(1) : '0.0';
+        summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${totalPassed}</span> | <span class="fail">Fail: ${totalFailed}</span> | Total: ${total} | Rate: ${rate}%`;
+    }
+
+    function assert(condition, testName, details = '') {
+        if (condition) {
+            log(`\u2713 ${testName}`, 'pass');
+            totalPassed++;
+        } else {
+            log(`\u2717 ${testName}${details ? ': ' + details : ''}`, 'fail');
+            totalFailed++;
+        }
+        updateSummary();
+        return condition;
+    }
+
+    function section(name) {
+        log(`\n\u2550\u2550\u2550 ${name} \u2550\u2550\u2550`, 'section');
+    }
+
+    // ==================== HELPERS ====================
+
+    function createSpectrum() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 352;
+        canvas.height = 296;
+        const spectrum = new Spectrum(canvas, { machineType: '48k' });
+        spectrum.romLoaded = true;
+        spectrum.cpu.pc = 0x8000;
+        spectrum.cpu.sp = 0xFFF0;
+        spectrum.cpu.iff1 = false;
+        spectrum.cpu.iff2 = false;
+        // Disable auto-save features that might touch localStorage
+        spectrum.autoMap.enabled = false;
+        return spectrum;
+    }
+
+    function writeProgram(spectrum, addr, bytes) {
+        for (let i = 0; i < bytes.length; i++) {
+            spectrum.memory.write(addr + i, bytes[i]);
+        }
+    }
+
+    // Run frames until breakpoint or limit. Returns true if stopped (breakpoint hit).
+    function runUntilBreak(spectrum, maxFrames = 10) {
+        spectrum.running = true;
+        spectrum.breakpointHit = false;
+        spectrum.watchpointHit = false;
+        spectrum.portBreakpointHit = false;
+        for (let i = 0; i < maxFrames && spectrum.running; i++) {
+            spectrum.runFrame();
+        }
+        return !spectrum.running;
+    }
+
+    function hex16(v) {
+        return '$' + (v & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+    }
+
+    // ==================== EXECUTION BREAKPOINT TESTS ====================
+
+    async function runExecTests() {
+        section('Execution Breakpoints - Simple Break');
+
+        {
+            const s = createSpectrum();
+            // NOP; NOP; NOP; JR -2 (infinite loop at addr+2)
+            writeProgram(s, 0x8000, [0x00, 0x00, 0x00, 0x18, 0xFE]);
+
+            s.addBreakpoint(0x8001);
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'breakpoint stops execution');
+            assert(s.cpu.pc === 0x8001, 'PC at breakpoint address',
+                `PC=${hex16(s.cpu.pc)}`);
+        }
+
+        section('Execution Breakpoints - Breakpoint at CALL Target');
+
+        {
+            const s = createSpectrum();
+            // CALL 0x9000; JR -2
+            writeProgram(s, 0x8000, [0xCD, 0x00, 0x90, 0x18, 0xFE]);
+            // Target: RET
+            writeProgram(s, 0x9000, [0xC9]);
+
+            s.addBreakpoint(0x9000);
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'breakpoint at CALL target stops execution');
+            assert(s.cpu.pc === 0x9000, 'PC at CALL target',
+                `PC=${hex16(s.cpu.pc)}`);
+        }
+
+        section('Execution Breakpoints - toggleBreakpoint');
+
+        {
+            const s = createSpectrum();
+            const added = s.toggleBreakpoint(0x8000);
+            assert(added === true, 'toggleBreakpoint returns true when adding');
+            assert(s.hasBreakpoint(0x8000), 'breakpoint exists after toggle on');
+
+            const removed = s.toggleBreakpoint(0x8000);
+            assert(removed === false, 'toggleBreakpoint returns false when removing');
+            assert(!s.hasBreakpoint(0x8000), 'breakpoint gone after toggle off');
+        }
+
+        section('Execution Breakpoints - hasBreakpoint/hasDisabledBreakpoint');
+
+        {
+            const s = createSpectrum();
+            s.addBreakpoint(0x8000);
+            assert(s.hasBreakpoint(0x8000), 'hasBreakpoint true for enabled');
+            assert(!s.hasDisabledBreakpoint(0x8000), 'hasDisabledBreakpoint false for enabled');
+
+            // Disable the trigger
+            const triggers = s.getTriggers('exec');
+            if (triggers.length > 0) {
+                s.toggleTrigger(triggers[0].index);
+            }
+            assert(!s.hasBreakpoint(0x8000), 'hasBreakpoint false after disable');
+            assert(s.hasDisabledBreakpoint(0x8000), 'hasDisabledBreakpoint true after disable');
+        }
+
+        section('Execution Breakpoints - removeBreakpointByAddr');
+
+        {
+            const s = createSpectrum();
+            s.addBreakpoint(0x8000);
+            s.addBreakpoint(0x8010);
+            assert(s.hasBreakpoint(0x8000), 'BP at 8000 exists');
+
+            s.removeBreakpointByAddr(0x8000);
+            assert(!s.hasBreakpoint(0x8000), 'BP at 8000 removed');
+            assert(s.hasBreakpoint(0x8010), 'BP at 8010 still exists');
+        }
+
+        section('Execution Breakpoints - clearBreakpoints');
+
+        {
+            const s = createSpectrum();
+            s.addBreakpoint(0x8000);
+            s.addBreakpoint(0x8010);
+            s.addBreakpoint(0x8020);
+            s.clearBreakpoints();
+            assert(!s.hasBreakpoint(0x8000), 'all breakpoints cleared (8000)');
+            assert(!s.hasBreakpoint(0x8010), 'all breakpoints cleared (8010)');
+            assert(!s.hasBreakpoint(0x8020), 'all breakpoints cleared (8020)');
+        }
+
+        section('Execution Breakpoints - Skip Count');
+
+        {
+            const s = createSpectrum();
+            // LD B,5; [loop:] DEC B; JR NZ,loop; JR $
+            // 0x8000: 06 05       LD B,5
+            // 0x8002: 05          DEC B
+            // 0x8003: 20 FD       JR NZ,-3  (target = 0x8005 + (-3) = 0x8002)
+            // 0x8005: 18 FE       JR -2     (infinite loop)
+            writeProgram(s, 0x8000, [0x06, 0x05, 0x05, 0x20, 0xFD, 0x18, 0xFE]);
+
+            // Set breakpoint at DEC B (0x8002) with skipCount=2
+            s.addTrigger({
+                type: 'exec',
+                start: 0x8002,
+                end: 0x8002,
+                skipCount: 2
+            });
+
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'breakpoint with skipCount stops execution');
+            assert(s.cpu.pc === 0x8002, 'PC at breakpoint after skip',
+                `PC=${hex16(s.cpu.pc)}`);
+            // hitCount should be 3 (skipped 2, fired on 3rd)
+            const trigger = s.getTriggers('exec')[0];
+            assert(trigger.hitCount === 3, 'hitCount is 3 after skipCount=2',
+                `hitCount=${trigger.hitCount}`);
+        }
+
+        section('Execution Breakpoints - Disabled Trigger');
+
+        {
+            const s = createSpectrum();
+            // NOP; NOP; JR -2 (infinite loop at 0x8002)
+            writeProgram(s, 0x8000, [0x00, 0x00, 0x18, 0xFE]);
+
+            s.addBreakpoint(0x8001);
+            // Disable it
+            const triggers = s.getTriggers('exec');
+            s.toggleTrigger(triggers[0].index);
+
+            const stopped = runUntilBreak(s, 3);
+            assert(!stopped, 'disabled breakpoint does not stop execution');
+        }
+
+        section('Execution Breakpoints - Multiple Breakpoints');
+
+        {
+            const s = createSpectrum();
+            // NOP; NOP; NOP; JR -2
+            writeProgram(s, 0x8000, [0x00, 0x00, 0x00, 0x18, 0xFE]);
+
+            s.addBreakpoint(0x8001);
+            s.addBreakpoint(0x8002);
+
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'first breakpoint hit stops execution');
+            assert(s.cpu.pc === 0x8001, 'stops at first breakpoint encountered',
+                `PC=${hex16(s.cpu.pc)}`);
+        }
+    }
+
+    // ==================== WATCHPOINT TESTS ====================
+
+    async function runWatchTests() {
+        section('Write Watchpoints');
+
+        {
+            const s = createSpectrum();
+            // LD A,42h; LD (9000h),A; JR -2
+            writeProgram(s, 0x8000, [0x3E, 0x42, 0x32, 0x00, 0x90, 0x18, 0xFE]);
+
+            s.addWatchpoint({ start: 0x9000, end: 0x9000, page: null }, 'write');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'write watchpoint stops execution');
+            assert(s.lastWatchpoint !== null, 'lastWatchpoint populated');
+            assert(s.lastWatchpoint.type === 'write', 'lastWatchpoint type is write');
+            assert(s.lastWatchpoint.addr === 0x9000, 'lastWatchpoint addr correct',
+                `addr=${hex16(s.lastWatchpoint.addr)}`);
+            assert(s.lastWatchpoint.val === 0x42, 'lastWatchpoint val correct',
+                `val=${s.lastWatchpoint.val}`);
+        }
+
+        section('Read Watchpoints');
+
+        {
+            const s = createSpectrum();
+            // Seed a value at 0x9000
+            s.memory.write(0x9000, 0x55);
+            // LD A,(9000h); JR -2
+            writeProgram(s, 0x8000, [0x3A, 0x00, 0x90, 0x18, 0xFE]);
+
+            s.addWatchpoint({ start: 0x9000, end: 0x9000, page: null }, 'read');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'read watchpoint stops execution');
+            assert(s.lastWatchpoint !== null, 'lastWatchpoint populated for read');
+            assert(s.lastWatchpoint.type === 'read', 'lastWatchpoint type is read');
+            assert(s.lastWatchpoint.addr === 0x9000, 'lastWatchpoint addr correct for read');
+        }
+
+        section('Read+Write Watchpoints');
+
+        {
+            const s = createSpectrum();
+            s.memory.write(0x9000, 0x11);
+            // LD A,(9000h); LD (9001h),A; JR -2
+            writeProgram(s, 0x8000, [0x3A, 0x00, 0x90, 0x32, 0x01, 0x90, 0x18, 0xFE]);
+
+            s.addWatchpoint({ start: 0x9000, end: 0x9001, page: null }, 'both');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'rw watchpoint stops execution');
+            assert(s.lastWatchpoint !== null, 'lastWatchpoint populated for rw');
+        }
+
+        section('Watchpoint - hasWatchpoint/getWatchpoint');
+
+        {
+            const s = createSpectrum();
+            s.addWatchpoint({ start: 0x9000, end: 0x900F, page: null }, 'write');
+            assert(s.hasWatchpoint(0x9000), 'hasWatchpoint true at start');
+            assert(s.hasWatchpoint(0x9008), 'hasWatchpoint true in middle');
+            assert(!s.hasWatchpoint(0x9010), 'hasWatchpoint false outside range');
+
+            const wp = s.getWatchpoint(0x9005);
+            assert(wp !== null, 'getWatchpoint returns watchpoint');
+            assert(wp.start === 0x9000 && wp.end === 0x900F, 'getWatchpoint range correct');
+            assert(wp.write === true, 'getWatchpoint write flag correct');
+        }
+
+        section('Watchpoint - clearWatchpoints');
+
+        {
+            const s = createSpectrum();
+            s.addWatchpoint({ start: 0x9000, end: 0x9000, page: null }, 'write');
+            s.addWatchpoint({ start: 0xA000, end: 0xA000, page: null }, 'read');
+            s.clearWatchpoints();
+            assert(!s.hasWatchpoint(0x9000), 'watchpoints cleared (9000)');
+            assert(!s.hasWatchpoint(0xA000), 'watchpoints cleared (A000)');
+        }
+
+        section('Watchpoint - Screen Area');
+
+        {
+            const s = createSpectrum();
+            // LD A,0xFF; LD (4000h),A; JR -2
+            writeProgram(s, 0x8000, [0x3E, 0xFF, 0x32, 0x00, 0x40, 0x18, 0xFE]);
+
+            s.addWatchpoint({ start: 0x4000, end: 0x4000, page: null }, 'write');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'watchpoint in screen area triggers');
+            assert(s.lastWatchpoint.addr === 0x4000, 'screen area watchpoint addr correct');
+        }
+    }
+
+    // ==================== PORT BREAKPOINT TESTS ====================
+
+    async function runPortTests() {
+        section('Port Breakpoints - IN');
+
+        {
+            const s = createSpectrum();
+            // IN A,(FEh); JR -2
+            writeProgram(s, 0x8000, [0xDB, 0xFE, 0x18, 0xFE]);
+
+            s.addPortBreakpoint({ port: 0xFE, mask: 0xFF }, 'in');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'port IN breakpoint stops execution');
+            assert(s.lastPortBreakpoint !== null, 'lastPortBreakpoint populated');
+            assert(s.lastPortBreakpoint.direction === 'in', 'direction is in');
+        }
+
+        section('Port Breakpoints - OUT');
+
+        {
+            const s = createSpectrum();
+            // LD A,02h; OUT (FEh),A; JR -2
+            writeProgram(s, 0x8000, [0x3E, 0x02, 0xD3, 0xFE, 0x18, 0xFE]);
+
+            s.addPortBreakpoint({ port: 0xFE, mask: 0xFF }, 'out');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'port OUT breakpoint stops execution');
+            assert(s.lastPortBreakpoint !== null, 'lastPortBreakpoint populated');
+            assert(s.lastPortBreakpoint.direction === 'out', 'direction is out');
+        }
+
+        section('Port Breakpoints - Mask Matching');
+
+        {
+            const s = createSpectrum();
+            // IN A,(FEh); JR -2  — port address is A*256+FE where A=0 → port 0x00FE
+            writeProgram(s, 0x8000, [0xDB, 0xFE, 0x18, 0xFE]);
+            s.cpu.a = 0;
+
+            // Mask 0xFF means only low byte must match
+            s.addPortBreakpoint({ port: 0xFE, mask: 0xFF }, 'in');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'port breakpoint with mask matches');
+        }
+
+        section('Port Breakpoints - clearPortBreakpoints');
+
+        {
+            const s = createSpectrum();
+            s.addPortBreakpoint({ port: 0xFE, mask: 0xFF }, 'in');
+            s.addPortBreakpoint({ port: 0x7FFD, mask: 0xFFFF }, 'out');
+            s.clearPortBreakpoints();
+
+            const pbs = s.getPortBreakpoints();
+            assert(pbs.length === 0, 'all port breakpoints cleared');
+        }
+    }
+
+    // ==================== COMPARISON BREAKPOINT TESTS ====================
+
+    async function runCompareTests() {
+        section('Comparison Breakpoint - Equal');
+
+        {
+            const s = createSpectrum();
+            // Set up two memory locations with different values
+            s.memory.write(0x9000, 0x10);
+            s.memory.write(0x9001, 0x20);
+
+            // Program: LD A,(9001h); LD (9000h),A; JR back_to_start
+            // 0x8000: 3A 01 90    LD A,(9001h)
+            // 0x8003: 32 00 90    LD (9000h),A
+            // 0x8006: 18 F8       JR -8  (target = 0x8008 + (-8) = 0x8000)
+            // Loops back so write fires twice; callback fires pre-write so
+            // on 2nd iteration memory.read(0x9000) sees value from 1st write
+            writeProgram(s, 0x8000, [0x3A, 0x01, 0x90, 0x32, 0x00, 0x90, 0x18, 0xF8]);
+
+            s.startComparisonBreakpoint(0x9000, 0x9001, '==');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'comparison breakpoint (==) stops execution');
+            assert(s.lastWatchpoint !== null, 'lastWatchpoint populated');
+            assert(s.lastWatchpoint.type === 'comparison', 'lastWatchpoint type is comparison');
+        }
+
+        section('Comparison Breakpoint - Not Equal');
+
+        {
+            const s = createSpectrum();
+            s.memory.write(0x9000, 0x42);
+            s.memory.write(0x9001, 0x42);
+
+            // Program: LD A,00h; LD (9000h),A; JR back_to_start
+            // 0x8000: 3E 00       LD A,0
+            // 0x8002: 32 00 90    LD (9000h),A
+            // 0x8005: 18 F9       JR -7  (target = 0x8007 + (-7) = 0x8000)
+            // Sets 9000h = 0, making 9000h != 9001h
+            writeProgram(s, 0x8000, [0x3E, 0x00, 0x32, 0x00, 0x90, 0x18, 0xF9]);
+
+            s.startComparisonBreakpoint(0x9000, 0x9001, '!=');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'comparison breakpoint (!=) stops execution');
+        }
+
+        section('Comparison Breakpoint - Less Than');
+
+        {
+            const s = createSpectrum();
+            s.memory.write(0x9000, 0xFF);
+            s.memory.write(0x9001, 0x05);
+
+            // Program: LD A,03h; LD (9000h),A; JR back_to_start
+            // 0x8000: 3E 03       LD A,3
+            // 0x8002: 32 00 90    LD (9000h),A
+            // 0x8005: 18 F9       JR -7  (target = 0x8007 + (-7) = 0x8000)
+            // Sets 9000h = 3 < 5 = 9001h
+            writeProgram(s, 0x8000, [0x3E, 0x03, 0x32, 0x00, 0x90, 0x18, 0xF9]);
+
+            s.startComparisonBreakpoint(0x9000, 0x9001, '<');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'comparison breakpoint (<) stops execution');
+        }
+
+        section('Comparison Breakpoint - Greater Than');
+
+        {
+            const s = createSpectrum();
+            s.memory.write(0x9000, 0x00);
+            s.memory.write(0x9001, 0x05);
+
+            // Program: LD A,0Ah; LD (9000h),A; JR back_to_start
+            // 0x8000: 3E 0A       LD A,10
+            // 0x8002: 32 00 90    LD (9000h),A
+            // 0x8005: 18 F9       JR -7  (target = 0x8007 + (-7) = 0x8000)
+            // Sets 9000h = 10 > 5 = 9001h
+            writeProgram(s, 0x8000, [0x3E, 0x0A, 0x32, 0x00, 0x90, 0x18, 0xF9]);
+
+            s.startComparisonBreakpoint(0x9000, 0x9001, '>');
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'comparison breakpoint (>) stops execution');
+        }
+    }
+
+    // ==================== WRITE MONITOR TESTS ====================
+
+    async function runMonitorTests() {
+        section('Write Monitor');
+
+        {
+            const s = createSpectrum();
+            // Program: LD A,01h; LD (9000h),A; INC A; LD (9000h),A; INC A; LD (9000h),A; JR -2
+            writeProgram(s, 0x8000, [
+                0x3E, 0x01,             // LD A,01h
+                0x32, 0x00, 0x90,       // LD (9000h),A
+                0x3C,                   // INC A
+                0x32, 0x00, 0x90,       // LD (9000h),A
+                0x3C,                   // INC A
+                0x32, 0x00, 0x90,       // LD (9000h),A
+                0x18, 0xFE              // JR -2
+            ]);
+
+            s.startWriteMonitor(0x9000);
+            runUntilBreak(s, 2);
+            const hits = s.stopWriteMonitor();
+
+            assert(hits.length >= 3, 'write monitor records multiple hits',
+                `hits=${hits.length}`);
+            if (hits.length >= 1) {
+                assert(hits[0].newVal === 0x01, 'first write is 01h',
+                    `newVal=${hits[0].newVal}`);
+            }
+            if (hits.length >= 2) {
+                assert(hits[1].newVal === 0x02, 'second write is 02h',
+                    `newVal=${hits[1].newVal}`);
+            }
+            if (hits.length >= 3) {
+                assert(hits[2].newVal === 0x03, 'third write is 03h',
+                    `newVal=${hits[2].newVal}`);
+            }
+            // Check hit structure
+            if (hits.length >= 1) {
+                assert('pc' in hits[0], 'hit has pc field');
+                assert('oldVal' in hits[0], 'hit has oldVal field');
+                assert('newVal' in hits[0], 'hit has newVal field');
+                assert('frame' in hits[0], 'hit has frame field');
+            }
+        }
+
+        section('Read Monitor');
+
+        {
+            const s = createSpectrum();
+            s.memory.write(0x9000, 0x55);
+            // Program: LD A,(9000h); LD A,(9000h); LD A,(9000h); JR -2
+            writeProgram(s, 0x8000, [
+                0x3A, 0x00, 0x90,       // LD A,(9000h)
+                0x3A, 0x00, 0x90,       // LD A,(9000h)
+                0x3A, 0x00, 0x90,       // LD A,(9000h)
+                0x18, 0xFE              // JR -2
+            ]);
+
+            s.startReadMonitor(0x9000);
+            runUntilBreak(s, 2);
+            const hits = s.stopReadMonitor();
+
+            assert(hits.length >= 3, 'read monitor records multiple hits',
+                `hits=${hits.length}`);
+            if (hits.length >= 1) {
+                assert(hits[0].val === 0x55, 'read value is 55h',
+                    `val=${hits[0].val}`);
+                assert('pc' in hits[0], 'hit has pc field');
+                assert('frame' in hits[0], 'hit has frame field');
+            }
+        }
+    }
+
+    // ==================== MEMORY FREEZE TESTS ====================
+
+    async function runFreezeTests() {
+        section('Memory Freeze - Single Address');
+
+        {
+            const s = createSpectrum();
+            // Program: LD A,00h; LD (9000h),A; JR -2
+            // This tries to write 0 to 0x9000 every iteration
+            writeProgram(s, 0x8000, [0x3E, 0x00, 0x32, 0x00, 0x90, 0x18, 0xFE]);
+            s.memory.write(0x9000, 0x42);
+
+            s.setFrozenAddresses([{ addr: 0x9000, value: 0x42 }]);
+
+            runUntilBreak(s, 5);
+            // After frame end, frozen address should be restored
+            assert(s.memory.read(0x9000) === 0x42, 'frozen address retains value after frames',
+                `got ${s.memory.read(0x9000)}`);
+        }
+
+        section('Memory Freeze - Multiple Addresses');
+
+        {
+            const s = createSpectrum();
+            // JR -2 (infinite loop)
+            writeProgram(s, 0x8000, [0x18, 0xFE]);
+
+            s.setFrozenAddresses([
+                { addr: 0x9000, value: 0xAA },
+                { addr: 0x9001, value: 0xBB },
+                { addr: 0x9002, value: 0xCC }
+            ]);
+
+            runUntilBreak(s, 3);
+            assert(s.memory.read(0x9000) === 0xAA, 'frozen addr 9000 = AAh');
+            assert(s.memory.read(0x9001) === 0xBB, 'frozen addr 9001 = BBh');
+            assert(s.memory.read(0x9002) === 0xCC, 'frozen addr 9002 = CCh');
+        }
+
+        section('Memory Freeze - Clear');
+
+        {
+            const s = createSpectrum();
+            writeProgram(s, 0x8000, [0x18, 0xFE]);
+            s.setFrozenAddresses([{ addr: 0x9000, value: 0x42 }]);
+            runUntilBreak(s, 1);
+            assert(s.memory.read(0x9000) === 0x42, 'frozen before clear');
+
+            s.setFrozenAddresses([]);
+            s.memory.write(0x9000, 0x00);
+            s.cpu.pc = 0x8000;
+            runUntilBreak(s, 1);
+            // Without freeze, value should stay at 0 (or whatever program wrote)
+            assert(s.memory.read(0x9000) === 0x00, 'freeze cleared - value can change',
+                `got ${s.memory.read(0x9000)}`);
+        }
+    }
+
+    // ==================== CALL STACK TESTS ====================
+
+    async function runCallStackTests() {
+        section('Call Stack - CALL/RET Tracking');
+
+        {
+            const s = createSpectrum();
+            // Program at 0x8000: CALL 0x9000; JR -2
+            writeProgram(s, 0x8000, [0xCD, 0x00, 0x90, 0x18, 0xFE]);
+            // Subroutine at 0x9000: NOP; RET (we breakpoint on NOP)
+            writeProgram(s, 0x9000, [0x00, 0xC9]);
+
+            s.addBreakpoint(0x9000);
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'stopped at subroutine entry');
+
+            const stack = s._debugCallStack;
+            assert(stack.length >= 1, 'call stack has entry',
+                `depth=${stack.length}`);
+            if (stack.length >= 1) {
+                assert(stack[stack.length - 1].addr === 0x9000, 'top of stack is subroutine addr',
+                    `addr=${hex16(stack[stack.length - 1].addr)}`);
+                assert(stack[stack.length - 1].caller === 0x8000, 'caller is 0x8000',
+                    `caller=${hex16(stack[stack.length - 1].caller)}`);
+            }
+        }
+
+        section('Call Stack - Nested CALLs');
+
+        {
+            const s = createSpectrum();
+            // 0x8000: CALL 0x9000; JR -2
+            writeProgram(s, 0x8000, [0xCD, 0x00, 0x90, 0x18, 0xFE]);
+            // 0x9000: CALL 0xA000; RET
+            writeProgram(s, 0x9000, [0xCD, 0x00, 0xA0, 0xC9]);
+            // 0xA000: NOP; RET
+            writeProgram(s, 0xA000, [0x00, 0xC9]);
+
+            s.addBreakpoint(0xA000);
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'stopped at nested subroutine');
+
+            const stack = s._debugCallStack;
+            assert(stack.length >= 2, 'nested calls produce stack depth >= 2',
+                `depth=${stack.length}`);
+        }
+
+        section('Call Stack - Direct SP Change Resets Stack');
+
+        {
+            const s = createSpectrum();
+            // CALL 0x9000; JR -2
+            writeProgram(s, 0x8000, [0xCD, 0x00, 0x90, 0x18, 0xFE]);
+            // 0x9000: LD SP,0xFF00; NOP; JR -2
+            // SP after CALL is 0xFFEE, so setting SP to 0xFF00 gives a delta
+            // of +0x0112 (neither ±2) which triggers the "direct SP change" reset
+            writeProgram(s, 0x9000, [0x31, 0x00, 0xFF, 0x00, 0x18, 0xFE]);
+
+            // Breakpoint after LD SP
+            s.addBreakpoint(0x9003);
+            const stopped = runUntilBreak(s);
+            assert(stopped, 'stopped after LD SP');
+
+            // Direct SP change (not CALL/RET delta of 2) should reset stack
+            const stack = s._debugCallStack;
+            assert(stack.length === 0, 'direct SP change resets call stack',
+                `depth=${stack.length}`);
+        }
+    }
+
+    // ==================== TRIGGER API TESTS ====================
+
+    async function runTriggerApiTests() {
+        section('Trigger API - addTrigger/getTriggers/removeTrigger');
+
+        {
+            const s = createSpectrum();
+            const idx = s.addTrigger({ type: 'exec', start: 0x8000, end: 0x8000 });
+            assert(idx >= 0, 'addTrigger returns non-negative index');
+
+            const triggers = s.getTriggers('exec');
+            assert(triggers.length === 1, 'getTriggers returns added trigger');
+            assert(triggers[0].start === 0x8000, 'trigger start correct');
+
+            const removed = s.removeTrigger(idx);
+            assert(removed === true, 'removeTrigger returns true');
+            assert(s.getTriggers('exec').length === 0, 'trigger removed');
+        }
+
+        section('Trigger API - toggleTrigger');
+
+        {
+            const s = createSpectrum();
+            const idx = s.addTrigger({ type: 'exec', start: 0x8000, end: 0x8000 });
+            assert(s.getTriggers('exec')[0].enabled === true, 'initially enabled');
+
+            const newState = s.toggleTrigger(idx);
+            assert(newState === false, 'toggleTrigger returns false after disable');
+            assert(s.getTriggers('exec')[0].enabled === false, 'trigger disabled');
+
+            s.toggleTrigger(idx);
+            assert(s.getTriggers('exec')[0].enabled === true, 'trigger re-enabled');
+        }
+
+        section('Trigger API - clearTriggers by Type');
+
+        {
+            const s = createSpectrum();
+            s.addTrigger({ type: 'exec', start: 0x8000, end: 0x8000 });
+            s.addTrigger({ type: 'write', start: 0x9000, end: 0x9000 });
+            s.addTrigger({ type: 'port_in', start: 0xFE, end: 0xFE, mask: 0xFF });
+
+            s.clearTriggers('exec');
+            assert(s.getTriggers('exec').length === 0, 'exec triggers cleared');
+            assert(s.getTriggers('write').length === 1, 'write triggers preserved');
+            assert(s.getTriggers('port_in').length === 1, 'port triggers preserved');
+
+            s.clearTriggers(['write', 'port_in']);
+            assert(s.getTriggers().length === 0, 'all remaining triggers cleared');
+        }
+
+        section('Trigger API - getBreakpoints/getWatchpoints/getPortBreakpoints');
+
+        {
+            const s = createSpectrum();
+            s.addBreakpoint(0x8000);
+            s.addBreakpoint(0x8010);
+            assert(s.getBreakpoints().length === 2, 'getBreakpoints returns 2');
+
+            s.addWatchpoint({ start: 0x9000, end: 0x900F, page: null }, 'write');
+            assert(s.getWatchpoints().length === 1, 'getWatchpoints returns 1');
+
+            s.addPortBreakpoint({ port: 0xFE, mask: 0xFF }, 'in');
+            assert(s.getPortBreakpoints().length === 1, 'getPortBreakpoints returns 1');
+        }
+    }
+
+    // ==================== TEST RUNNERS ====================
+
+    async function runAllTests() {
+        clearLog();
+        log(`Breakpoint & Trigger Test Suite v${TEST_VERSION}`, 'info');
+        log('='.repeat(50), 'info');
+
+        try {
+            await runExecTests();
+            await runWatchTests();
+            await runPortTests();
+            await runCompareTests();
+            await runMonitorTests();
+            await runFreezeTests();
+            await runCallStackTests();
+            await runTriggerApiTests();
+        } catch (e) {
+            log(`ERROR: ${e.message}\n${e.stack}`, 'fail');
+            console.error(e);
+        }
+
+        log('\n' + '='.repeat(50), 'info');
+        log(`Tests complete: ${totalPassed} passed, ${totalFailed} failed`,
+            totalFailed === 0 ? 'pass' : 'fail');
+    }
+
+    // Button handlers
+    document.getElementById('runAll').onclick = runAllTests;
+    document.getElementById('runExec').onclick = async () => { clearLog(); await runExecTests(); };
+    document.getElementById('runWatch').onclick = async () => { clearLog(); await runWatchTests(); };
+    document.getElementById('runPort').onclick = async () => { clearLog(); await runPortTests(); };
+    document.getElementById('runCompare').onclick = async () => { clearLog(); await runCompareTests(); };
+    document.getElementById('runMonitor').onclick = async () => { clearLog(); await runMonitorTests(); };
+    document.getElementById('runFreeze').onclick = async () => { clearLog(); await runFreezeTests(); };
+    document.getElementById('runCallStack').onclick = async () => { clearLog(); await runCallStackTests(); };
+
+    // Theme toggle
+    const themeToggle = document.getElementById('themeToggle');
+    if (localStorage.getItem('zxm8_theme') === 'light') {
+        document.body.classList.add('light-theme');
+        themeToggle.textContent = '\uD83C\uDF19';
+    }
+    themeToggle.onclick = () => {
+        document.body.classList.toggle('light-theme');
+        const isLight = document.body.classList.contains('light-theme');
+        themeToggle.textContent = isLight ? '\uD83C\uDF19' : '\u2600\uFE0F';
+        localStorage.setItem('zxm8_theme', isLight ? 'light' : 'dark');
+    };
+
+    // Auto-run on load
+    runAllTests();
+    </script>
+</body>
+</html>

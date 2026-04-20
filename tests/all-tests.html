@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Unit Tests</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --orange: #f90;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+            --orange: #cc6600;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 15px 0;
+            flex-wrap: wrap;
+        }
+        select {
+            font-size: 13px;
+            padding: 6px 10px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: monospace;
+        }
+        button {
+            padding: 6px 16px;
+            background: var(--button-bg);
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        button:hover { background: var(--button-hover); }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .theme-btn {
+            float: right;
+            background: var(--bg-secondary);
+            border: none;
+            font-size: 16px;
+            padding: 5px 10px;
+            cursor: pointer;
+            border-radius: 3px;
+            margin: 0;
+            color: inherit;
+        }
+        .theme-btn:hover { background: var(--button-bg); }
+        .aggregate {
+            font-size: 1.1em;
+            margin: 10px 0;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 5px;
+        }
+        .aggregate .pass { color: var(--green); }
+        .aggregate .fail { color: var(--red); }
+        .aggregate .count { color: var(--cyan); }
+        .suite-card {
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            margin: 6px 0;
+            background: var(--bg-secondary);
+            overflow: hidden;
+        }
+        .suite-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .suite-header:hover { background: var(--bg-tertiary); }
+        .suite-name { font-weight: bold; }
+        .suite-badge {
+            padding: 2px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge-pending { background: #555; color: #aaa; }
+        .badge-running { background: #665500; color: var(--yellow); }
+        .badge-pass { background: #004400; color: var(--green); }
+        .badge-fail { background: #440000; color: var(--red); }
+        .badge-timeout { background: #663300; color: var(--orange); }
+        body.light-theme .badge-pending { background: #ccc; color: #666; }
+        body.light-theme .badge-running { background: #fff0b0; color: var(--yellow); }
+        body.light-theme .badge-pass { background: #c0f0c0; color: var(--green); }
+        body.light-theme .badge-fail { background: #f0c0c0; color: var(--red); }
+        body.light-theme .badge-timeout { background: #f0d8b0; color: var(--orange); }
+        .suite-body {
+            display: none;
+            border-top: 1px solid var(--border-color);
+        }
+        .suite-body.expanded { display: block; }
+        .suite-body iframe {
+            width: 100%;
+            border: none;
+            background: var(--bg-primary);
+        }
+        .suite-details {
+            padding: 4px 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <h1>Unit Tests</h1>
+    <button class="theme-btn" id="themeToggle" title="Toggle light/dark theme">&#x2600;&#xFE0F;</button>
+
+    <div class="controls">
+        <select id="suiteSelect">
+            <option value="all">Run ALL (14 suites)</option>
+        </select>
+        <button id="btnGo">Go</button>
+    </div>
+
+    <div class="aggregate" id="aggregate">
+        Pass: <span class="pass" id="aggPass">0</span> |
+        Fail: <span class="fail" id="aggFail">0</span> |
+        Suites: <span class="count" id="aggSuites">0/14</span>
+    </div>
+
+    <div id="suiteList"></div>
+
+    <script>
+        // ---- Suite registry ----
+        const SUITES = [
+            { id: 'system',     name: 'System Tests',          src: 'system-test.html' },
+            { id: 'asm',        name: 'Assembler Tests',        src: 'asm-test.html' },
+            { id: 'debug',      name: 'Debug Manager Tests',    src: 'debug-test.html' },
+            { id: 'breakpoint', name: 'Breakpoint Tests',       src: 'breakpoint-test.html' },
+            { id: 'disasm',     name: 'Disasm Tests',           src: 'disasm-test.html' },
+            { id: 'loader',     name: 'Loader Tests',           src: 'loader-test.html' },
+            { id: 'machine',    name: 'Machine Tests',          src: 'machine-test.html' },
+            { id: 'memory',     name: 'Memory Tests',           src: 'memory-test.html' },
+            { id: 'fdc',        name: 'FDC Tests',              src: 'fdc-test.html' },
+            { id: 'tape',       name: 'Tape & AY Tests',        src: 'tape-test.html' },
+            { id: 'disk',       name: 'Disk Tests',             src: 'disk-test.html' },
+            { id: 'mapper',     name: 'Mapper Tests',           src: 'mapper-test.html' },
+            { id: 'sigpack',    name: 'Signature Pack Tests',   src: 'sigpack-test.html' },
+            { id: 'calculator', name: 'Calculator Tests',       src: 'calculator-test.html' },
+        ];
+
+        const SUITE_TIMEOUT = 30000;
+        const POLL_INTERVAL = 500;
+        const STABLE_POLLS = 2;
+
+        // ---- State ----
+        let running = false;
+        let aggPass = 0;
+        let aggFail = 0;
+        let suitesCompleted = 0;
+
+        // ---- DOM refs ----
+        const suiteSelect = document.getElementById('suiteSelect');
+        const btnGo = document.getElementById('btnGo');
+
+        const suiteListEl = document.getElementById('suiteList');
+        const aggPassEl = document.getElementById('aggPass');
+        const aggFailEl = document.getElementById('aggFail');
+        const aggSuitesEl = document.getElementById('aggSuites');
+
+        // ---- Populate dropdown ----
+        SUITES.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = s.name;
+            suiteSelect.appendChild(opt);
+        });
+
+        // ---- Build suite cards ----
+        function buildCards(suites) {
+            suiteListEl.innerHTML = '';
+            suites.forEach(s => {
+                const card = document.createElement('div');
+                card.className = 'suite-card';
+                card.id = 'card-' + s.id;
+
+                const header = document.createElement('div');
+                header.className = 'suite-header';
+                header.innerHTML = `<span class="suite-name">${s.name}</span><span class="suite-badge badge-pending" id="badge-${s.id}">Pending</span>`;
+                header.onclick = () => toggleBody(s.id);
+
+                const details = document.createElement('div');
+                details.className = 'suite-details';
+                details.id = 'details-' + s.id;
+
+                const body = document.createElement('div');
+                body.className = 'suite-body';
+                body.id = 'body-' + s.id;
+
+                card.appendChild(header);
+                card.appendChild(details);
+                card.appendChild(body);
+                suiteListEl.appendChild(card);
+            });
+        }
+
+        function toggleBody(id) {
+            const body = document.getElementById('body-' + id);
+            body.classList.toggle('expanded');
+            // Resize iframe to content if expanding
+            if (body.classList.contains('expanded')) {
+                const iframe = body.querySelector('iframe');
+                if (iframe) resizeIframe(iframe);
+            }
+        }
+
+        function resizeIframe(iframe) {
+            try {
+                const h = iframe.contentDocument.documentElement.scrollHeight;
+                iframe.style.height = Math.min(h + 20, 600) + 'px';
+            } catch (e) {
+                iframe.style.height = '400px';
+            }
+        }
+
+        function setBadge(id, state, text) {
+            const badge = document.getElementById('badge-' + id);
+            badge.className = 'suite-badge badge-' + state;
+            badge.textContent = text;
+        }
+
+        function setDetails(id, text) {
+            const el = document.getElementById('details-' + id);
+            // Strip version prefix like "v0.9.12 | " from summary text
+            el.textContent = text.replace(/^v[\d.]+\s*\|\s*/, '');
+        }
+
+        function updateAggregate(total) {
+            aggPassEl.textContent = aggPass;
+            aggFailEl.textContent = aggFail;
+            aggSuitesEl.textContent = suitesCompleted + '/' + total;
+        }
+
+        // ---- Summary parser ----
+        // Handles all format variants found across test files:
+        //   "Pass: N" / "Fail: M"
+        //   "Passed: N" / "Failed: M"
+        //   "N passed" / "M failed"
+        function parseSummary(text) {
+            if (!text) return null;
+            let pass = 0, fail = 0, found = false;
+
+            // "Pass: 123" or "Passed: 123"
+            let m = text.match(/Pass(?:ed)?:\s*(\d+)/i);
+            if (m) { pass = parseInt(m[1]); found = true; }
+
+            // "Fail: 4" or "Failed: 4"
+            m = text.match(/Fail(?:ed)?:\s*(\d+)/i);
+            if (m) { fail = parseInt(m[1]); found = true; }
+
+            // Alternate format: "123 passed, 4 failed"
+            if (!found) {
+                m = text.match(/(\d+)\s+passed/i);
+                if (m) { pass = parseInt(m[1]); found = true; }
+                m = text.match(/(\d+)\s+failed/i);
+                if (m) { fail = parseInt(m[1]); found = true; }
+            }
+
+            return found ? { pass, fail } : null;
+        }
+
+        // ---- Run one suite ----
+        function runSuite(suite) {
+            return new Promise(resolve => {
+                const body = document.getElementById('body-' + suite.id);
+                body.innerHTML = '';
+
+                const iframe = document.createElement('iframe');
+                iframe.style.height = '0';
+                body.appendChild(iframe);
+
+                setBadge(suite.id, 'running', 'Running...');
+                setDetails(suite.id, '');
+
+                let settled = false;
+                let lastSummary = '';
+                let stableCount = 0;
+                let pollTimer = null;
+
+                function finish(result) {
+                    if (settled) return;
+                    settled = true;
+                    clearInterval(pollTimer);
+                    clearTimeout(timeoutTimer);
+
+                    if (result === 'timeout') {
+                        setBadge(suite.id, 'timeout', 'Timeout');
+                        setDetails(suite.id, 'Timed out after ' + (SUITE_TIMEOUT / 1000) + 's');
+                    } else {
+                        const parsed = parseSummary(result);
+                        if (parsed) {
+                            aggPass += parsed.pass;
+                            aggFail += parsed.fail;
+                            const state = parsed.fail > 0 ? 'fail' : 'pass';
+                            const label = parsed.fail > 0
+                                ? `Fail: ${parsed.fail} / Pass: ${parsed.pass}`
+                                : `All ${parsed.pass} passed`;
+                            setBadge(suite.id, state, label);
+                            setDetails(suite.id, result.trim());
+                        } else {
+                            setBadge(suite.id, 'pass', 'Done');
+                            setDetails(suite.id, result ? result.trim() : 'No summary found');
+                        }
+                    }
+
+                    suitesCompleted++;
+                    resizeIframe(iframe);
+                    resolve();
+                }
+
+                const timeoutTimer = setTimeout(() => finish('timeout'), SUITE_TIMEOUT);
+
+                iframe.onload = () => {
+                    // Hide nav links, buttons, title inside iframe
+                    try {
+                        const style = iframe.contentDocument.createElement('style');
+                        style.textContent = '.test-resources, h1, button { display: none !important; } body { padding: 10px !important; }';
+                        iframe.contentDocument.head.appendChild(style);
+                        if (isLight()) iframe.contentDocument.body.classList.add('light-theme');
+                    } catch (e) { /* cross-origin */ }
+                    // Start polling for summary stability
+                    pollTimer = setInterval(() => {
+                        try {
+                            const summaryEl = iframe.contentDocument.getElementById('summary');
+                            const text = summaryEl ? summaryEl.textContent : '';
+                            if (text && text === lastSummary) {
+                                stableCount++;
+                                if (stableCount >= STABLE_POLLS) {
+                                    finish(text);
+                                }
+                            } else {
+                                lastSummary = text;
+                                stableCount = 0;
+                            }
+                        } catch (e) {
+                            // Cross-origin or other error
+                            finish('timeout');
+                        }
+                    }, POLL_INTERVAL);
+                };
+
+                iframe.src = suite.src;
+            });
+        }
+
+        // ---- Run selected suites ----
+        async function runSuites(suites) {
+            if (running) return;
+            running = true;
+            btnGo.disabled = true;
+
+            aggPass = 0;
+            aggFail = 0;
+            suitesCompleted = 0;
+
+            buildCards(suites);
+            updateAggregate(suites.length);
+
+            for (const suite of suites) {
+                await runSuite(suite);
+                updateAggregate(suites.length);
+            }
+
+            running = false;
+            btnGo.disabled = false;
+
+        }
+
+        function getSelectedSuites() {
+            const val = suiteSelect.value;
+            if (val === 'all') return [...SUITES];
+            return SUITES.filter(s => s.id === val);
+        }
+
+        // ---- Event handlers ----
+        btnGo.onclick = () => runSuites(getSelectedSuites());
+
+
+        // ---- Theme toggle ----
+        const themeToggle = document.getElementById('themeToggle');
+        function isLight() { return document.body.classList.contains('light-theme'); }
+        function syncIframeThemes() {
+            const light = isLight();
+            document.querySelectorAll('.suite-body iframe').forEach(iframe => {
+                try { iframe.contentDocument.body.classList.toggle('light-theme', light); } catch (e) {}
+            });
+        }
+        function applyTheme(light) {
+            document.body.classList.toggle('light-theme', light);
+            localStorage.setItem('zxm8-test-theme', light ? 'light' : 'dark');
+            syncIframeThemes();
+        }
+        themeToggle.onclick = () => applyTheme(!isLight());
+        if (localStorage.getItem('zxm8-test-theme') === 'light') applyTheme(true);
+
+        // ---- Auto-start ----
+        buildCards(SUITES);
+    </script>
+</body>
+</html>

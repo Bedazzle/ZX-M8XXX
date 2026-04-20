@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Debug Manager Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .theme-btn { float: right; background: var(--bg-secondary); border: none; font-size: 16px; padding: 5px 10px; cursor: pointer; border-radius: 3px; margin: 0; color: inherit; }
+        .theme-btn:hover { background: var(--button-bg); }
+    </style>
+</head>
+<body>
+    <h1>Debug Manager Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+
+    <button id="runAll">Run All Tests</button>
+    <button id="runLabels">LabelManager</button>
+    <button id="runRegions">RegionManager</button>
+    <button id="runComments">CommentManager</button>
+    <button id="runFormats">OperandFormatManager</button>
+    <button id="runUndo">UndoManager</button>
+    <button id="runFolds">FoldManager</button>
+    <button id="runTrace">TraceManager</button>
+    <button id="runXref">XRefManager</button>
+    <button id="runSubs">SubroutineManager</button>
+    <button class="theme-btn" id="themeToggle" title="Toggle light/dark theme">&#9728;&#65039;</button>
+
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+    import { LabelManager, RegionManager, CommentManager, OperandFormatManager, REGION_TYPES, OPERAND_FORMATS } from '../debug/managers.js';
+    import { XRefManager } from '../debug/xref-manager.js';
+    import { SubroutineManager } from '../debug/subroutine-manager.js';
+    import { FoldManager } from '../debug/fold-manager.js';
+    import { UndoManager } from '../debug/undo-manager.js';
+    import { TraceManager } from '../debug/trace-manager.js';
+
+    const TEST_VERSION = '0.9.12';
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+
+    let totalPassed = 0;
+    let totalFailed = 0;
+
+    function log(msg, type = '') {
+        const div = document.createElement('div');
+        div.className = type;
+        div.textContent = msg;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function clearLog() {
+        logEl.innerHTML = '';
+        totalPassed = 0;
+        totalFailed = 0;
+        updateSummary();
+    }
+
+    function updateSummary() {
+        const total = totalPassed + totalFailed;
+        const rate = total > 0 ? (100 * totalPassed / total).toFixed(1) : '0.0';
+        summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${totalPassed}</span> | <span class="fail">Fail: ${totalFailed}</span> | Total: ${total} | Rate: ${rate}%`;
+    }
+
+    function assert(condition, testName, details = '') {
+        if (condition) {
+            log(`\u2713 ${testName}`, 'pass');
+            totalPassed++;
+        } else {
+            log(`\u2717 ${testName}${details ? ': ' + details : ''}`, 'fail');
+            totalFailed++;
+        }
+        updateSummary();
+        return condition;
+    }
+
+    function section(name) {
+        log(`\n\u2550\u2550\u2550 ${name} \u2550\u2550\u2550`, 'section');
+    }
+
+    // ==================== LABEL MANAGER TESTS ====================
+
+    async function runLabelTests() {
+        section('LabelManager - Basic Operations');
+
+        const lm = new LabelManager();
+        lm.autoSaveEnabled = false;
+
+        // add/get
+        lm.add({ address: 0x8000, name: 'main_loop', comment: 'entry point' });
+        const label = lm.get(0x8000);
+        assert(label !== null, 'add/get returns label');
+        assert(label.name === 'main_loop', 'label name preserved');
+        assert(label.comment === 'entry point', 'label comment preserved');
+        assert(label.address === 0x8000, 'label address preserved');
+
+        // remove
+        const removed = lm.remove(0x8000);
+        assert(removed === true, 'remove returns true for existing');
+        assert(lm.get(0x8000) === null, 'get returns null after remove');
+        const removedAgain = lm.remove(0x8000);
+        assert(removedAgain === false, 'remove returns false for non-existing');
+
+        section('LabelManager - Page-Aware Lookups');
+
+        lm.clear();
+        lm.add({ address: 0xC000, page: null, name: 'global_label' });
+        lm.add({ address: 0xC000, page: '5', name: 'page5_label' });
+
+        // Exact page match
+        const p5 = lm.get(0xC000, '5');
+        assert(p5 !== null && p5.name === 'page5_label', 'page-specific lookup returns exact match');
+
+        // Fallback to global when page-specific not found
+        const p3 = lm.get(0xC000, '3');
+        assert(p3 !== null && p3.name === 'global_label', 'fallback to global label for unmatched page');
+
+        // Null page returns global
+        const pNull = lm.get(0xC000, null);
+        assert(pNull !== null && pNull.name === 'global_label', 'null page returns global label');
+
+        section('LabelManager - findByName');
+
+        lm.clear();
+        lm.add({ address: 0x6000, name: 'DrawSprite' });
+        lm.add({ address: 0x7000, name: 'EraseSprite' });
+
+        const found = lm.findByName('drawsprite');
+        assert(found !== null && found.address === 0x6000, 'findByName case-insensitive');
+        const notFound = lm.findByName('nonexistent');
+        assert(notFound === null, 'findByName returns null for non-existing');
+
+        section('LabelManager - getAll');
+
+        lm.clear();
+        lm.add({ address: 0x9000, page: null, name: 'a' });
+        lm.add({ address: 0x8000, page: null, name: 'b' });
+        lm.add({ address: 0xA000, page: '5', name: 'c' });
+
+        const all = lm.getAll();
+        assert(all.length === 3, 'getAll returns all labels');
+        assert(all[0].address === 0x8000, 'getAll sorted by address');
+
+        const pageFiltered = lm.getAll('5');
+        assert(pageFiltered.length === 3, 'getAll with page filter includes page and global');
+
+        section('LabelManager - clear');
+
+        lm.add({ address: 0x1000, name: 'test' });
+        lm.clear();
+        assert(lm.getAll().length === 0, 'clear removes all labels');
+
+        section('LabelManager - exportJSON/importJSON');
+
+        lm.clear();
+        lm.add({ address: 0x6000, page: null, name: 'sub_a', comment: 'first' });
+        lm.add({ address: 0x7000, page: '2', name: 'sub_b', comment: 'second' });
+
+        const json = lm.exportJSON();
+        const parsed = JSON.parse(json);
+        assert(parsed.length === 2, 'exportJSON produces array');
+
+        // Import into fresh manager (no merge)
+        const lm2 = new LabelManager();
+        lm2.autoSaveEnabled = false;
+        lm2.add({ address: 0x1000, name: 'old' });
+        const count = lm2.importJSON(json, false);
+        assert(count === 2, 'importJSON returns count');
+        assert(lm2.get(0x1000) === null, 'importJSON without merge clears old');
+        assert(lm2.get(0x6000) !== null, 'importJSON loads new labels');
+
+        // Import with merge
+        lm2.importJSON(JSON.stringify([{ address: 0x1000, page: null, name: 'merged' }]), true);
+        assert(lm2.get(0x1000) !== null, 'importJSON with merge preserves new');
+        assert(lm2.get(0x6000) !== null, 'importJSON with merge preserves old');
+
+        section('LabelManager - ROM Labels');
+
+        lm.clear();
+        lm.loadRomLabels(JSON.stringify([
+            { address: 0x0038, name: 'RST_38', comment: 'interrupt handler' },
+            { address: 0x0000, name: 'START', comment: 'reset' }
+        ]));
+        assert(lm.getRomLabelCount() === 2, 'ROM labels loaded');
+
+        // ROM labels visible when showRomLabels is true
+        lm.showRomLabels = true;
+        const rom = lm.get(0x0038);
+        assert(rom !== null && rom.name === 'RST_38', 'ROM label accessible when enabled');
+
+        // ROM labels hidden when disabled
+        lm.showRomLabels = false;
+        const romHidden = lm.get(0x0038);
+        assert(romHidden === null, 'ROM label hidden when disabled');
+        lm.showRomLabels = true;
+
+        // User label takes priority over ROM label
+        lm.add({ address: 0x0038, name: 'my_isr' });
+        const userPriority = lm.get(0x0038);
+        assert(userPriority.name === 'my_isr', 'user label takes priority over ROM label');
+
+        section('LabelManager - Address Masking');
+
+        lm.clear();
+        lm.add({ address: 0x8000, name: 'masked' });
+        const masked = lm.get(0x8000);
+        assert(masked !== null && masked.address === 0x8000, 'stored address is 16-bit');
+        // Verify the & 0xffff guard on stored entry
+        lm.add({ address: 0x1ABCD, name: 'overflow' });
+        const overflow = lm.get(0x1ABCD);
+        assert(overflow !== null && overflow.address === 0xABCD, 'stored address masked to 16-bit');
+
+        section('LabelManager - Source Field');
+
+        lm.clear();
+        lm.add({ address: 0x5000, name: 'profiled_sub', source: 'profiler' });
+        const sourced = lm.get(0x5000);
+        assert(sourced.source === 'profiler', 'source field preserved');
+    }
+
+    // ==================== REGION MANAGER TESTS ====================
+
+    async function runRegionTests() {
+        section('RegionManager - Basic Operations');
+
+        const rm = new RegionManager();
+        rm.autoSaveEnabled = false;
+
+        // add/get
+        const entry = rm.add({ start: 0x8000, end: 0x80FF, type: 'code' });
+        assert(!entry.error, 'add returns entry on success');
+        const region = rm.get(0x8000);
+        assert(region !== null, 'get returns region at start address');
+        assert(region.type === 'code', 'region type preserved');
+
+        const mid = rm.get(0x8050);
+        assert(mid !== null, 'get returns region for address inside range');
+
+        const outside = rm.get(0x8100);
+        assert(outside === null, 'get returns null for address outside');
+
+        // remove
+        const removed = rm.remove(0x8050);
+        assert(removed === true, 'remove returns true for region containing address');
+        assert(rm.get(0x8000) === null, 'region removed');
+
+        section('RegionManager - Overlap Detection');
+
+        rm.clear();
+        rm.add({ start: 0x6000, end: 0x60FF, type: 'code' });
+
+        const overlapping = rm.getOverlapping(0x6080, 0x6180);
+        assert(overlapping.length === 1, 'getOverlapping detects overlap');
+
+        const noOverlap = rm.getOverlapping(0x6100, 0x6200);
+        assert(noOverlap.length === 0, 'getOverlapping returns empty for no overlap');
+
+        // Add with overlap should fail
+        const result = rm.add({ start: 0x6080, end: 0x6180, type: 'db' });
+        assert(result.error === 'overlap', 'add with overlap returns error');
+
+        // Add with allowOverwrite
+        const overwritten = rm.add({ start: 0x6080, end: 0x6180, type: 'db' }, true);
+        assert(!overwritten.error, 'add with allowOverwrite succeeds');
+        assert(rm.get(0x6000) === null, 'overlapping region removed by overwrite');
+        assert(rm.get(0x6080) !== null, 'new region exists after overwrite');
+
+        section('RegionManager - Type Checks');
+
+        rm.clear();
+        rm.add({ start: 0x7000, end: 0x70FF, type: 'db' });
+        rm.add({ start: 0x7100, end: 0x71FF, type: 'code' });
+        rm.add({ start: 0x7200, end: 0x72FF, type: 'smc' });
+
+        assert(rm.getType(0x7000) === 'db', 'getType returns db');
+        assert(rm.getType(0x7100) === 'code', 'getType returns code');
+        assert(rm.getType(0x5000) === 'code', 'getType returns code for unregioned address');
+
+        assert(rm.isData(0x7000) === true, 'isData true for db region');
+        assert(rm.isData(0x7100) === false, 'isData false for code region');
+        assert(rm.isData(0x7200) === false, 'isData false for smc region');
+        assert(rm.isData(0x5000) === false, 'isData false for unregioned address');
+
+        section('RegionManager - exportJSON/importJSON');
+
+        rm.clear();
+        rm.add({ start: 0x8000, end: 0x80FF, type: 'code', comment: 'main' });
+        rm.add({ start: 0x9000, end: 0x90FF, type: 'text' });
+
+        const json = rm.exportJSON();
+        const parsed = JSON.parse(json);
+        assert(parsed.length === 2, 'exportJSON produces array');
+
+        const rm2 = new RegionManager();
+        rm2.autoSaveEnabled = false;
+        const count = rm2.importJSON(json, false);
+        assert(count === 2, 'importJSON returns count');
+        assert(rm2.get(0x8000) !== null, 'imported region accessible');
+
+        section('RegionManager - Page-Aware');
+
+        rm.clear();
+        rm.add({ start: 0xC000, end: 0xC0FF, type: 'code', page: '5' });
+        rm.add({ start: 0xC100, end: 0xC1FF, type: 'db', page: null });
+
+        const page5 = rm.get(0xC000, '5');
+        assert(page5 !== null && page5.type === 'code', 'page-specific region lookup');
+
+        // Global (page=null) region matches any page query
+        const globalFromPage3 = rm.get(0xC100, '3');
+        assert(globalFromPage3 !== null && globalFromPage3.type === 'db', 'global region visible from any page');
+
+        const globalDirect = rm.get(0xC100, null);
+        assert(globalDirect !== null && globalDirect.type === 'db', 'global region lookup with null page');
+    }
+
+    // ==================== COMMENT MANAGER TESTS ====================
+
+    async function runCommentTests() {
+        section('CommentManager - Basic Operations');
+
+        const cm = new CommentManager();
+        cm.autoSaveEnabled = false;
+
+        // set/get
+        cm.set(0x8000, { before: 'Main loop', inline: 'entry' });
+        const comment = cm.get(0x8000);
+        assert(comment !== null, 'set/get returns comment');
+        assert(comment.before === 'Main loop', 'before field preserved');
+        assert(comment.inline === 'entry', 'inline field preserved');
+        assert(comment.after === '', 'after defaults to empty');
+
+        // Update partial - preserves existing fields
+        cm.set(0x8000, { after: 'end section' });
+        const updated = cm.get(0x8000);
+        assert(updated.before === 'Main loop', 'partial update preserves before');
+        assert(updated.after === 'end section', 'partial update sets after');
+
+        // remove
+        const removed = cm.remove(0x8000);
+        assert(removed === true, 'remove returns true');
+        assert(cm.get(0x8000) === null, 'comment removed');
+
+        section('CommentManager - Auto-delete on Empty');
+
+        cm.set(0x9000, { before: 'test' });
+        assert(cm.get(0x9000) !== null, 'comment exists');
+        cm.set(0x9000, { before: '', inline: '', after: '', separator: false });
+        assert(cm.get(0x9000) === null, 'comment auto-deleted when all fields empty');
+
+        section('CommentManager - Separator');
+
+        cm.set(0xA000, { separator: true });
+        const sep = cm.get(0xA000);
+        assert(sep !== null && sep.separator === true, 'separator field preserved');
+
+        section('CommentManager - getAll Sorted');
+
+        cm.clear();
+        cm.set(0xB000, { before: 'b' });
+        cm.set(0xA000, { before: 'a' });
+        cm.set(0xC000, { before: 'c' });
+
+        const all = cm.getAll();
+        assert(all.length === 3, 'getAll returns all comments');
+        assert(all[0].address === 0xA000, 'getAll sorted by address');
+        assert(all[2].address === 0xC000, 'getAll last entry correct');
+
+        section('CommentManager - exportJSON/importJSON');
+
+        const json = cm.exportJSON();
+        const cm2 = new CommentManager();
+        cm2.autoSaveEnabled = false;
+        const count = cm2.importJSON(json);
+        assert(count === 3, 'importJSON returns count');
+        assert(cm2.get(0xA000) !== null, 'imported comment accessible');
+        assert(cm2.get(0xA000).before === 'a', 'imported comment content correct');
+
+        // Merge mode
+        cm2.importJSON(JSON.stringify([{ address: 0xD000, before: 'merged' }]), true);
+        assert(cm2.get(0xD000) !== null, 'merge imports new');
+        assert(cm2.get(0xA000) !== null, 'merge preserves existing');
+    }
+
+    // ==================== OPERAND FORMAT MANAGER TESTS ====================
+
+    async function runFormatTests() {
+        section('OperandFormatManager - Basic Operations');
+
+        const fm = new OperandFormatManager();
+        fm.autoSaveEnabled = false;
+
+        // set/get
+        fm.set(0x8000, OPERAND_FORMATS.DEC);
+        assert(fm.get(0x8000) === 'dec', 'set/get decimal format');
+
+        fm.set(0x8001, OPERAND_FORMATS.BIN);
+        assert(fm.get(0x8001) === 'bin', 'set/get binary format');
+
+        // Default is hex
+        assert(fm.get(0x9000) === 'hex', 'get returns hex as default');
+
+        // Auto-delete on HEX
+        fm.set(0x8000, OPERAND_FORMATS.HEX);
+        const all = fm.getAll();
+        assert(!all.some(f => f.address === 0x8000), 'setting HEX removes entry');
+
+        // remove
+        fm.set(0x8002, OPERAND_FORMATS.CHAR);
+        const removed = fm.remove(0x8002);
+        assert(removed === true, 'remove returns true');
+        assert(fm.get(0x8002) === 'hex', 'reverts to hex after remove');
+
+        section('OperandFormatManager - formatValue 8-bit');
+
+        assert(fm.formatValue(0x41, 'hex') === '41h', 'hex format 8-bit');
+        assert(fm.formatValue(255, 'dec') === '255', 'dec format 8-bit');
+        assert(fm.formatValue(0x0F, 'bin') === '%00001111', 'bin format 8-bit');
+        assert(fm.formatValue(0x41, 'char') === "'A'", 'char format printable');
+
+        section('OperandFormatManager - formatValue 16-bit');
+
+        assert(fm.formatValue(0x1234, 'hex', true) === '1234h', 'hex format 16-bit');
+        assert(fm.formatValue(1000, 'dec', true) === '1000', 'dec format 16-bit');
+        assert(fm.formatValue(0x00FF, 'bin', true) === '%0000000011111111', 'bin format 16-bit');
+        // 16-bit char falls back to hex
+        assert(fm.formatValue(0x1234, 'char', true) === '1234h', 'char format 16-bit falls back to hex');
+
+        section('OperandFormatManager - Non-printable Char Fallback');
+
+        assert(fm.formatValue(0x01, 'char') === '01h', 'non-printable char falls back to hex');
+        assert(fm.formatValue(0x7F, 'char') === '7Fh', 'DEL char falls back to hex');
+        assert(fm.formatValue(0x20, 'char') === "' '", 'space is printable');
+
+        section('OperandFormatManager - getAll');
+
+        fm.clear();
+        fm.set(0x9000, 'dec');
+        fm.set(0x8000, 'bin');
+        const allFmts = fm.getAll();
+        assert(allFmts.length === 2, 'getAll returns all formats');
+        assert(allFmts[0].address === 0x8000, 'getAll sorted by address');
+    }
+
+    // ==================== UNDO MANAGER TESTS ====================
+
+    async function runUndoTests() {
+        section('UndoManager - Basic Operations');
+
+        const um = new UndoManager(10);
+        let counter = 0;
+
+        assert(!um.canUndo, 'canUndo false initially');
+        assert(!um.canRedo, 'canRedo false initially');
+
+        um.push({
+            description: 'increment',
+            undo: () => counter--,
+            redo: () => counter++
+        });
+
+        assert(um.canUndo, 'canUndo true after push');
+        assert(!um.canRedo, 'canRedo still false');
+
+        section('UndoManager - undo/redo');
+
+        counter = 1; // Simulate the action was already done
+        um.undo();
+        assert(counter === 0, 'undo reverses action');
+        assert(!um.canUndo, 'canUndo false after undo');
+        assert(um.canRedo, 'canRedo true after undo');
+
+        um.redo();
+        assert(counter === 1, 'redo reapplies action');
+        assert(um.canUndo, 'canUndo true after redo');
+        assert(!um.canRedo, 'canRedo false after redo');
+
+        section('UndoManager - push clears redo stack');
+
+        um.undo();
+        assert(um.canRedo, 'canRedo true before new push');
+        um.push({
+            description: 'new action',
+            undo: () => {},
+            redo: () => {}
+        });
+        assert(!um.canRedo, 'canRedo false after new push (redo cleared)');
+
+        section('UndoManager - maxHistory');
+
+        const um2 = new UndoManager(3);
+        for (let i = 0; i < 5; i++) {
+            um2.push({ description: `action ${i}`, undo: () => {}, redo: () => {} });
+        }
+        assert(um2.undoStack.length === 3, 'maxHistory enforced');
+
+        section('UndoManager - onChange Callback');
+
+        let callbackCount = 0;
+        const um3 = new UndoManager();
+        um3.onChange = () => callbackCount++;
+
+        um3.push({ description: 'test', undo: () => {}, redo: () => {} });
+        assert(callbackCount === 1, 'onChange called on push');
+        um3.undo();
+        assert(callbackCount === 2, 'onChange called on undo');
+        um3.redo();
+        assert(callbackCount === 3, 'onChange called on redo');
+        um3.clear();
+        assert(callbackCount === 4, 'onChange called on clear');
+
+        section('UndoManager - lastAction');
+
+        const um4 = new UndoManager();
+        um4.push({ description: 'my action', undo: () => {}, redo: () => {} });
+        um4.undo();
+        assert(um4.lastAction.type === 'undo', 'lastAction type is undo');
+        assert(um4.lastAction.description === 'my action', 'lastAction description preserved');
+        um4.redo();
+        assert(um4.lastAction.type === 'redo', 'lastAction type is redo');
+
+        section('UndoManager - clear');
+
+        const um5 = new UndoManager();
+        um5.push({ description: 'a', undo: () => {}, redo: () => {} });
+        um5.push({ description: 'b', undo: () => {}, redo: () => {} });
+        um5.undo();
+        um5.clear();
+        assert(!um5.canUndo, 'canUndo false after clear');
+        assert(!um5.canRedo, 'canRedo false after clear');
+    }
+
+    // ==================== FOLD MANAGER TESTS ====================
+
+    async function runFoldTests() {
+        section('FoldManager - User Folds');
+
+        const fm = new FoldManager();
+        fm.autoSaveEnabled = false;
+        // Provide a mock subroutine manager
+        fm.setSubroutineManager({ subs: new Map() });
+
+        // addUserFold/getUserFold
+        fm.addUserFold(0x8000, 0x80FF, 'my_block');
+        const fold = fm.getUserFold(0x8000);
+        assert(fold !== null, 'getUserFold returns fold');
+        assert(fold.endAddress === 0x80FF, 'fold endAddress correct');
+        assert(fold.name === 'my_block', 'fold name correct');
+
+        // Non-existent fold
+        assert(fm.getUserFold(0x9000) === null, 'getUserFold returns null for non-existing');
+
+        // removeUserFold
+        fm.collapse(0x8000);
+        assert(fm.isCollapsed(0x8000), 'fold is collapsed');
+        const existed = fm.removeUserFold(0x8000);
+        assert(existed === true, 'removeUserFold returns true');
+        assert(fm.getUserFold(0x8000) === null, 'fold removed');
+        assert(!fm.isCollapsed(0x8000), 'removeUserFold also removes from collapsed set');
+
+        section('FoldManager - Collapse/Expand');
+
+        fm.addUserFold(0xA000, 0xA0FF);
+        fm.addUserFold(0xB000, 0xB0FF);
+
+        assert(!fm.isCollapsed(0xA000), 'not collapsed initially');
+        fm.toggle(0xA000);
+        assert(fm.isCollapsed(0xA000), 'collapsed after toggle');
+        fm.toggle(0xA000);
+        assert(!fm.isCollapsed(0xA000), 'expanded after second toggle');
+
+        fm.collapse(0xA000);
+        assert(fm.isCollapsed(0xA000), 'collapse sets collapsed');
+        fm.expand(0xA000);
+        assert(!fm.isCollapsed(0xA000), 'expand clears collapsed');
+
+        section('FoldManager - collapseAll/expandAll');
+
+        fm.collapseAll();
+        assert(fm.isCollapsed(0xA000), 'collapseAll collapses user fold A');
+        assert(fm.isCollapsed(0xB000), 'collapseAll collapses user fold B');
+
+        fm.expandAll();
+        assert(!fm.isCollapsed(0xA000), 'expandAll expands user fold A');
+        assert(!fm.isCollapsed(0xB000), 'expandAll expands user fold B');
+
+        section('FoldManager - exportJSON/importJSON');
+
+        fm.clear();
+        fm.addUserFold(0x6000, 0x60FF, 'block_a');
+        fm.collapse(0x6000);
+
+        const json = fm.exportJSON();
+        const fm2 = new FoldManager();
+        fm2.autoSaveEnabled = false;
+        fm2.setSubroutineManager({ subs: new Map() });
+        const ok = fm2.importJSON(json);
+        assert(ok === true, 'importJSON returns true');
+        assert(fm2.getUserFold(0x6000) !== null, 'imported fold exists');
+        assert(fm2.isCollapsed(0x6000), 'imported collapsed state preserved');
+    }
+
+    // ==================== TRACE MANAGER TESTS ====================
+
+    async function runTraceTests() {
+        section('TraceManager - Recording');
+
+        const tm = new TraceManager(100);
+
+        // Mock cpu/memory
+        const mockCpu = {
+            pc: 0x8000, sp: 0xFFFF,
+            af: 0x0044, bc: 0x0000, de: 0x0000, hl: 0x0000,
+            ix: 0x0000, iy: 0x0000,
+            a_: 0, f_: 0, b_: 0, c_: 0, d_: 0, e_: 0, h_: 0, l_: 0,
+            i: 0x3F, r7: 0, r: 0, iff1: false, iff2: false, im: 1,
+            tStates: 100
+        };
+        const mockMemory = {
+            read: (addr) => 0x00
+        };
+
+        tm.record(mockCpu, mockMemory, 0x8000);
+        assert(tm.length === 1, 'record adds entry');
+
+        const entry = tm.getEntry(0);
+        assert(entry !== null, 'getEntry returns entry');
+        assert(entry.pc === 0x8000, 'entry PC correct');
+        assert(entry.af === 0x0044, 'entry AF correct');
+
+        section('TraceManager - getRecent');
+
+        for (let i = 1; i < 10; i++) {
+            mockCpu.pc = 0x8000 + i;
+            mockCpu.tStates += 4;
+            tm.record(mockCpu, mockMemory, mockCpu.pc);
+        }
+        assert(tm.length === 10, '10 entries recorded');
+
+        const recent = tm.getRecent(5);
+        assert(recent.length === 5, 'getRecent returns requested count');
+        assert(recent[0].pc === 0x8005, 'getRecent starts from correct offset');
+
+        section('TraceManager - getEntriesAround');
+
+        const around = tm.getEntriesAround(5, 4);
+        assert(around.entries.length === 4, 'getEntriesAround returns correct count');
+        assert(around.viewIdx >= 0 && around.viewIdx < around.entries.length, 'viewIdx within range');
+
+        section('TraceManager - Navigation');
+
+        // Initially at live
+        assert(!tm.isViewingHistory(), 'not viewing history initially');
+
+        const back1 = tm.goBack();
+        assert(back1 !== null, 'goBack returns entry');
+        assert(tm.isViewingHistory(), 'viewing history after goBack');
+
+        const back2 = tm.goBack();
+        assert(back2 !== null, 'goBack returns next entry');
+
+        const fwd = tm.goForward();
+        assert(fwd !== null, 'goForward returns entry');
+
+        tm.goToLive();
+        assert(!tm.isViewingHistory(), 'goToLive returns to live');
+
+        section('TraceManager - maxHistory');
+
+        const tm2 = new TraceManager(5);
+        for (let i = 0; i < 10; i++) {
+            mockCpu.pc = 0x9000 + i;
+            tm2.record(mockCpu, mockMemory, mockCpu.pc);
+        }
+        assert(tm2.length === 5, 'maxHistory enforced (oldest dropped)');
+        assert(tm2.getEntry(0).pc === 0x9005, 'oldest entries dropped');
+
+        section('TraceManager - skipROM Filter');
+
+        const tm3 = new TraceManager(100);
+        tm3.skipROM = true;
+
+        mockCpu.pc = 0x0038;
+        tm3.record(mockCpu, mockMemory, 0x0038);
+        assert(tm3.length === 0, 'ROM address skipped when skipROM=true');
+
+        mockCpu.pc = 0x4000;
+        tm3.record(mockCpu, mockMemory, 0x4000);
+        assert(tm3.length === 1, 'RAM address recorded when skipROM=true');
+
+        tm3.skipROM = false;
+        mockCpu.pc = 0x0038;
+        tm3.record(mockCpu, mockMemory, 0x0038);
+        assert(tm3.length === 2, 'ROM address recorded when skipROM=false');
+
+        section('TraceManager - stopAfter + onStopped');
+
+        const tm4 = new TraceManager(100);
+        tm4.stopAfter = 3;
+        let stoppedCalled = false;
+        tm4.onStopped = () => stoppedCalled = true;
+
+        for (let i = 0; i < 5; i++) {
+            mockCpu.pc = 0x8000 + i;
+            tm4.record(mockCpu, mockMemory, mockCpu.pc);
+        }
+        assert(tm4.length === 3, 'stopAfter limits recording');
+        assert(tm4.stopped === true, 'stopped flag set');
+        assert(stoppedCalled === true, 'onStopped callback fired');
+
+        section('TraceManager - clear/enabled');
+
+        tm.clear();
+        assert(tm.length === 0, 'clear empties history');
+        assert(tm.position === -1, 'clear resets position');
+        assert(tm.stopped === false, 'clear resets stopped');
+
+        // enabled toggle
+        const tm5 = new TraceManager(100);
+        tm5.enabled = false;
+        // Even with enabled=false, record() doesn't check enabled itself -
+        // the caller is responsible for checking. So we test that the field exists.
+        assert(tm5.enabled === false, 'enabled flag can be toggled');
+        tm5.enabled = true;
+        assert(tm5.enabled === true, 'enabled flag restored');
+    }
+
+    // ==================== XREF MANAGER TESTS ====================
+
+    async function runXrefTests() {
+        section('XRefManager - Basic Operations');
+
+        const xm = new XRefManager();
+        xm.autoSaveEnabled = false;
+
+        // add/get
+        xm.add(0x8000, 0x6000, 'call');
+        xm.add(0x8000, 0x6100, 'jp');
+
+        const refs = xm.get(0x8000);
+        assert(refs.length === 2, 'get returns all refs to target');
+        assert(refs[0].fromAddr === 0x6000, 'first ref fromAddr correct');
+        assert(refs[0].type === 'call', 'first ref type correct');
+
+        section('XRefManager - Duplicate Prevention');
+
+        xm.add(0x8000, 0x6000, 'call');
+        const refsAfterDupe = xm.get(0x8000);
+        assert(refsAfterDupe.length === 2, 'duplicate not added');
+
+        section('XRefManager - hasRefs/getCount');
+
+        assert(xm.hasRefs(0x8000), 'hasRefs true for target with refs');
+        assert(!xm.hasRefs(0x9000), 'hasRefs false for target without refs');
+
+        const count = xm.getCount();
+        assert(count === 2, 'getCount returns total ref count');
+
+        section('XRefManager - Page-Specific + Global Merge');
+
+        xm.clear();
+        xm.add(0xC000, 0x6000, 'call', null);  // global ref
+        xm.add(0xC000, 0x7000, 'call', '5');    // page 5 ref
+
+        const pageRefs = xm.get(0xC000, '5');
+        assert(pageRefs.length === 2, 'get with page merges page-specific and global refs');
+
+        const globalOnly = xm.get(0xC000, null);
+        assert(globalOnly.length === 1, 'get with null page returns only global');
+
+        section('XRefManager - clear');
+
+        xm.clear();
+        assert(xm.getCount() === 0, 'clear removes all refs');
+
+        section('XRefManager - exportJSON/importJSON');
+
+        xm.add(0x8000, 0x6000, 'call');
+        xm.add(0x9000, 0x7000, 'jp');
+
+        const json = xm.exportJSON();
+        assert(json !== null, 'exportJSON produces string');
+
+        const xm2 = new XRefManager();
+        xm2.autoSaveEnabled = false;
+        const imported = xm2.importJSON(json);
+        assert(imported === 2, 'importJSON returns count');
+        assert(xm2.hasRefs(0x8000), 'imported refs accessible');
+        assert(xm2.get(0x8000)[0].fromAddr === 0x6000, 'imported ref data correct');
+
+        section('XRefManager - scanRange with Mock Disassembler');
+
+        xm.clear();
+        // Create a mock disassembler that returns a CALL 0x9000 at 0x8000
+        xm.setDisassembler({
+            disassemble: (addr, withRefs) => {
+                if (addr === 0x8000) {
+                    return { length: 3, mnemonic: 'CALL 9000h', refs: [{ target: 0x9000, type: 'call' }] };
+                }
+                if (addr === 0x8003) {
+                    return { length: 3, mnemonic: 'JP 8000h', refs: [{ target: 0x8000, type: 'jp' }] };
+                }
+                return { length: 1, mnemonic: 'NOP', refs: null };
+            }
+        });
+
+        const scanCount = xm.scanRange(0x8000, 0x8005);
+        assert(scanCount === 2, 'scanRange finds refs from mock disassembler');
+        assert(xm.hasRefs(0x9000), 'CALL target has refs');
+        assert(xm.hasRefs(0x8000), 'JP target has refs');
+    }
+
+    // ==================== SUBROUTINE MANAGER TESTS ====================
+
+    async function runSubroutineTests() {
+        section('SubroutineManager - Basic Operations');
+
+        const sm = new SubroutineManager();
+        sm.autoSaveEnabled = false;
+
+        // add/get/has
+        sm.add(0x8000, 'main_loop', 'the main loop');
+        assert(sm.has(0x8000), 'has returns true');
+        const sub = sm.get(0x8000);
+        assert(sub !== null, 'get returns subroutine');
+        assert(sub.name === 'main_loop', 'name preserved');
+        assert(sub.comment === 'the main loop', 'comment preserved');
+
+        // remove
+        assert(sm.remove(0x8000) === true, 'remove returns true');
+        assert(!sm.has(0x8000), 'has returns false after remove');
+        assert(sm.remove(0x8000) === false, 'remove returns false for non-existing');
+
+        section('SubroutineManager - getAll/getCount');
+
+        sm.add(0x9000, 'sub_a');
+        sm.add(0x8000, 'sub_b');
+        sm.add(0xA000, 'sub_c', null, true); // auto-detected
+
+        assert(sm.getCount() === 3, 'getCount returns 3');
+
+        const all = sm.getAll();
+        assert(all.length === 3, 'getAll returns all subs');
+        assert(all[0].address === 0x8000, 'getAll sorted by address');
+
+        section('SubroutineManager - clear(autoOnly)');
+
+        sm.clear(true); // Only clear auto-detected
+        assert(sm.getCount() === 2, 'clear(autoOnly=true) removes only auto subs');
+        assert(sm.has(0x9000), 'manual sub preserved');
+        assert(!sm.has(0xA000), 'auto sub removed');
+
+        sm.clear();
+        assert(sm.getCount() === 0, 'clear() removes all');
+
+        section('SubroutineManager - getAllEndingAt');
+
+        // We need to provide mock disassembler for _findEndAddress
+        sm.setDependencies({
+            disassemble: (addr) => {
+                if (addr === 0x8000) return { mnemonic: 'LD A,0', length: 2 };
+                if (addr === 0x8002) return { mnemonic: 'RET', length: 1 };
+                if (addr === 0x9000) return { mnemonic: 'LD B,1', length: 2 };
+                if (addr === 0x9002) return { mnemonic: 'RET', length: 1 };
+                return { mnemonic: 'NOP', length: 1 };
+            }
+        }, null);
+
+        sm.add(0x8000, 'sub_x');
+        sm.add(0x9000, 'sub_y');
+
+        // Both end with RET
+        const endingAt8002 = sm.getAllEndingAt(0x8002);
+        assert(endingAt8002.length === 1, 'getAllEndingAt finds sub ending at address');
+        assert(endingAt8002[0].address === 0x8000, 'getAllEndingAt returns correct sub');
+
+        section('SubroutineManager - exportJSON/importJSON');
+
+        const json = sm.exportJSON();
+        const parsed = JSON.parse(json);
+        assert(parsed.length === 2, 'exportJSON produces array');
+
+        const sm2 = new SubroutineManager();
+        sm2.autoSaveEnabled = false;
+        const count = sm2.importJSON(json);
+        assert(count === 2, 'importJSON returns count');
+        assert(sm2.has(0x8000), 'imported sub accessible');
+        assert(sm2.get(0x8000).name === 'sub_x', 'imported sub name correct');
+    }
+
+    // ==================== TEST RUNNERS ====================
+
+    async function runAllTests() {
+        clearLog();
+        log(`Debug Manager Test Suite v${TEST_VERSION}`, 'info');
+        log('='.repeat(50), 'info');
+
+        try {
+            await runLabelTests();
+            await runRegionTests();
+            await runCommentTests();
+            await runFormatTests();
+            await runUndoTests();
+            await runFoldTests();
+            await runTraceTests();
+            await runXrefTests();
+            await runSubroutineTests();
+        } catch (e) {
+            log(`ERROR: ${e.message}\n${e.stack}`, 'fail');
+            console.error(e);
+        }
+
+        log('\n' + '='.repeat(50), 'info');
+        log(`Tests complete: ${totalPassed} passed, ${totalFailed} failed`,
+            totalFailed === 0 ? 'pass' : 'fail');
+    }
+
+    // Button handlers
+    document.getElementById('runAll').onclick = runAllTests;
+    document.getElementById('runLabels').onclick = async () => { clearLog(); await runLabelTests(); };
+    document.getElementById('runRegions').onclick = async () => { clearLog(); await runRegionTests(); };
+    document.getElementById('runComments').onclick = async () => { clearLog(); await runCommentTests(); };
+    document.getElementById('runFormats').onclick = async () => { clearLog(); await runFormatTests(); };
+    document.getElementById('runUndo').onclick = async () => { clearLog(); await runUndoTests(); };
+    document.getElementById('runFolds').onclick = async () => { clearLog(); await runFoldTests(); };
+    document.getElementById('runTrace').onclick = async () => { clearLog(); await runTraceTests(); };
+    document.getElementById('runXref').onclick = async () => { clearLog(); await runXrefTests(); };
+    document.getElementById('runSubs').onclick = async () => { clearLog(); await runSubroutineTests(); };
+
+    // Theme toggle
+    const themeToggle = document.getElementById('themeToggle');
+    if (localStorage.getItem('zxm8_theme') === 'light') {
+        document.body.classList.add('light-theme');
+        themeToggle.textContent = '\uD83C\uDF19';
+    }
+    themeToggle.onclick = () => {
+        document.body.classList.toggle('light-theme');
+        const isLight = document.body.classList.contains('light-theme');
+        themeToggle.textContent = isLight ? '\uD83C\uDF19' : '\u2600\uFE0F';
+        localStorage.setItem('zxm8_theme', isLight ? 'light' : 'dark');
+    };
+
+    // Auto-run on load
+    runAllTests();
+    </script>
+</body>
+</html>

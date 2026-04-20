@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Calculator Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button.test-btn { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button.test-btn:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+        /* Hidden calculator DOM (required by initCalculator) */
+        #calcContainer { display: none; }
+    </style>
+</head>
+<body>
+    <h1>Calculator Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button class="test-btn" onclick="runAll()">Run All</button>
+        <button class="test-btn" onclick="runApiTests()">API</button>
+        <button class="test-btn" onclick="runExpressionTests()">Expressions</button>
+        <button class="test-btn" onclick="runBitSizeTests()">Bit Size</button>
+        <button class="test-btn" onclick="runDisplayTests()">Display</button>
+        <button class="test-btn" onclick="runUnaryTests()">Unary Ops</button>
+        <button class="test-btn" onclick="runBaseTests()">Base Convert</button>
+    </div>
+    <div id="log"></div>
+
+    <!-- Hidden calculator DOM stubs required by initCalculator -->
+    <div id="calcContainer">
+        <input id="calcInput" value="0">
+        <select id="calcInputBase"><option value="16" selected>Hex</option><option value="10">Dec</option><option value="8">Oct</option><option value="2">Bin</option></select>
+        <span id="calcDec"></span>
+        <span id="calcHex"></span>
+        <span id="calcOct"></span>
+        <span id="calcBin"></span>
+        <span id="calcSigned"></span>
+        <span id="calcAscii"></span>
+        <button id="calcBitSize">u16</button>
+        <div id="calcBitsPanel">
+            <div id="calcBitsGrid"></div>
+            <div id="calcBitsLabels"></div>
+        </div>
+        <button id="calcClear">C</button>
+        <button id="calcDel">Del</button>
+        <button id="calcEquals">=</button>
+        <button id="calcNegate">±</button>
+        <div id="calcLogContent"></div>
+        <button id="calcLogClear">Clear Log</button>
+        <!-- Digit buttons -->
+        <button class="calc-btn digit" data-char="0">0</button>
+        <button class="calc-btn digit" data-char="1">1</button>
+        <button class="calc-btn digit" data-char="2">2</button>
+        <button class="calc-btn digit" data-char="3">3</button>
+        <button class="calc-btn digit" data-char="4">4</button>
+        <button class="calc-btn digit" data-char="5">5</button>
+        <button class="calc-btn digit" data-char="6">6</button>
+        <button class="calc-btn digit" data-char="7">7</button>
+        <button class="calc-btn digit" data-char="8">8</button>
+        <button class="calc-btn digit" data-char="9">9</button>
+        <button class="calc-btn hex-digit" data-char="A">A</button>
+        <button class="calc-btn hex-digit" data-char="B">B</button>
+        <button class="calc-btn hex-digit" data-char="C">C</button>
+        <button class="calc-btn hex-digit" data-char="D">D</button>
+        <button class="calc-btn hex-digit" data-char="E">E</button>
+        <button class="calc-btn hex-digit" data-char="F">F</button>
+        <button class="calc-btn" data-char="(">(</button>
+        <button class="calc-btn" data-char=")">)</button>
+        <!-- Operator buttons -->
+        <button class="calc-btn" data-op="+">+</button>
+        <button class="calc-btn" data-op="-">-</button>
+        <button class="calc-btn" data-op="*">×</button>
+        <button class="calc-btn" data-op="/">/</button>
+        <button class="calc-btn" data-op="mod">%</button>
+        <button class="calc-btn" data-op="and">&amp;</button>
+        <button class="calc-btn" data-op="or">|</button>
+        <button class="calc-btn" data-op="xor">^</button>
+        <button class="calc-btn" data-op="not">NOT</button>
+        <button class="calc-btn" data-op="inc">++</button>
+        <button class="calc-btn" data-op="dec">--</button>
+        <button class="calc-btn" data-op="lsl">&lt;&lt;</button>
+        <button class="calc-btn" data-op="lsr">&gt;&gt;</button>
+        <button class="calc-btn" data-op="asr">ASR</button>
+        <button class="calc-btn" data-op="rol">ROL</button>
+        <button class="calc-btn" data-op="ror">ROR</button>
+        <button class="calc-btn" data-op="rand">RND</button>
+    </div>
+
+    <script type="module">
+        import { initCalculator } from '../ui/calculator.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            if (cls) div.className = cls;
+            div.textContent = msg;
+            logEl.appendChild(div);
+        }
+        function assert(cond, msg) {
+            if (cond) { passed++; log('  \u2713 ' + msg, 'pass'); }
+            else { failed++; log('  \u2717 ' + msg + ' - FAILED', 'fail'); }
+        }
+        function section(name) { log('\n\u2550\u2550\u2550 ' + name + ' \u2550\u2550\u2550', 'section'); }
+        function updateSummary() {
+            summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`;
+        }
+
+        // Initialize calculator (creates closure, wires up DOM)
+        const calc = initCalculator();
+
+        // Helper: set value, type expression, press equals, return result
+        function evaluate(expr, base = 16) {
+            const input = document.getElementById('calcInput');
+            const baseSelect = document.getElementById('calcInputBase');
+            const equals = document.getElementById('calcEquals');
+
+            // Reset
+            document.getElementById('calcClear').click();
+            baseSelect.value = base.toString();
+            baseSelect.dispatchEvent(new Event('change'));
+
+            // Type expression
+            input.value = expr;
+            input.dispatchEvent(new Event('input'));
+            equals.click();
+
+            return calc.getValue();
+        }
+
+        // Helper: click unary op button, return value
+        function applyUnary(op) {
+            document.querySelector(`.calc-btn[data-op="${op}"]`).click();
+            return calc.getValue();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // API (getValue / setValue)
+        // ═══════════════════════════════════════════════════════
+        function runApiTests() {
+            section('Calculator - API');
+
+            // Initial value
+            document.getElementById('calcClear').click();
+            assert(calc.getValue() === 0, 'initial value = 0');
+
+            // setValue
+            calc.setValue(0x1234);
+            assert(calc.getValue() === 0x1234, 'setValue(0x1234)');
+
+            calc.setValue(255);
+            assert(calc.getValue() === 255, 'setValue(255)');
+
+            calc.setValue(0);
+            assert(calc.getValue() === 0, 'setValue(0)');
+
+            // setValue with masking (16-bit default)
+            calc.setValue(0x12345);
+            assert(calc.getValue() === 0x2345, 'setValue(0x12345) masked to 16-bit');
+
+            calc.setValue(0xFFFF);
+            assert(calc.getValue() === 0xFFFF, 'setValue(0xFFFF)');
+
+            // Display updates
+            calc.setValue(0xFF);
+            const hex = document.getElementById('calcHex').textContent;
+            assert(hex === 'FF', 'display: hex = FF');
+            const dec = document.getElementById('calcDec').textContent.replace(/\s/g, '');
+            assert(dec === '255', 'display: dec = 255');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Expression Parser
+        // ═══════════════════════════════════════════════════════
+        function runExpressionTests() {
+            section('Calculator - Expression Parser');
+
+            // Simple hex arithmetic
+            assert(evaluate('A+5') === 0x0F, 'hex: A+5 = F');
+            assert(evaluate('FF-10') === 0xEF, 'hex: FF-10 = EF');
+            assert(evaluate('10*2') === 0x20, 'hex: 10*2 = 20');
+            assert(evaluate('100/4') === 0x40, 'hex: 100/4 = 40');
+
+            // Decimal mode
+            assert(evaluate('25+75', 10) === 100, 'dec: 25+75 = 100');
+            assert(evaluate('100*3', 10) === 300, 'dec: 100*3 = 300');
+            assert(evaluate('10-20', 10) === (0x10000 - 10), 'dec: 10-20 wraps (16-bit)');
+
+            // Binary mode
+            assert(evaluate('1010+101', 2) === 0x0F, 'bin: 1010+101 = 1111');
+
+            // Octal mode
+            assert(evaluate('10+7', 8) === 0x0F, 'oct: 10+7 = 17 (=0x0F)');
+
+            // Operator precedence
+            assert(evaluate('2+3*4', 10) === 14, 'precedence: 2+3*4 = 14');
+            assert(evaluate('10-2*3', 10) === 4, 'precedence: 10-2*3 = 4');
+
+            // Parentheses
+            assert(evaluate('(2+3)*4', 10) === 20, 'parens: (2+3)*4 = 20');
+            assert(evaluate('(A+6)*2') === 0x20, 'parens: (A+6)*2 = 20');
+
+            // Bitwise
+            assert(evaluate('FF&F0') === 0xF0, 'bitwise: FF&F0 = F0');
+            assert(evaluate('F0|0F') === 0xFF, 'bitwise: F0|0F = FF');
+            assert(evaluate('FF^AA') === 0x55, 'bitwise: FF^AA = 55');
+
+            // Modulo
+            assert(evaluate('10%3', 10) === 1, 'mod: 10%3 = 1');
+
+            // Division by zero
+            assert(evaluate('5/0', 10) === 0, 'div by zero = 0');
+            assert(evaluate('5%0', 10) === 0, 'mod by zero = 0');
+
+            // Complex expression
+            assert(evaluate('(100+200)*2-50', 10) === 550, 'complex: (100+200)*2-50 = 550');
+
+            // Single value (no operators)
+            assert(evaluate('FF') === 0xFF, 'single: FF = FF');
+            assert(evaluate('42', 10) === 42, 'single: 42 = 42');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Bit Size
+        // ═══════════════════════════════════════════════════════
+        function runBitSizeTests() {
+            section('Calculator - Bit Size');
+
+            const bitSizeBtn = document.getElementById('calcBitSize');
+
+            // Default is 16-bit
+            document.getElementById('calcClear').click();
+            assert(bitSizeBtn.textContent === 'u16', 'default: u16');
+
+            // Cycle: 16 → 32
+            bitSizeBtn.click();
+            assert(bitSizeBtn.textContent === 'u32', 'click 1: u32');
+
+            // Cycle: 32 → 8
+            bitSizeBtn.click();
+            assert(bitSizeBtn.textContent === 'u8', 'click 2: u8');
+
+            // 8-bit masking
+            calc.setValue(0x1FF);
+            assert(calc.getValue() === 0xFF, '8-bit: 0x1FF masked to FF');
+
+            calc.setValue(0x100);
+            assert(calc.getValue() === 0x00, '8-bit: 0x100 masked to 00');
+
+            // Cycle: 8 → 16
+            bitSizeBtn.click();
+            assert(bitSizeBtn.textContent === 'u16', 'click 3: back to u16');
+
+            // 16-bit masking
+            calc.setValue(0x1FFFF);
+            assert(calc.getValue() === 0xFFFF, '16-bit: masked to FFFF');
+
+            // Switch to 32-bit
+            bitSizeBtn.click();  // → u32
+            calc.setValue(0xFFFFFFFF);
+            assert(calc.getValue() === 0xFFFFFFFF, '32-bit: full range');
+
+            // Back to 16-bit for remaining tests
+            bitSizeBtn.click();  // → u8
+            bitSizeBtn.click();  // → u16
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Display Formatting
+        // ═══════════════════════════════════════════════════════
+        function runDisplayTests() {
+            section('Calculator - Display Formatting');
+
+            // Hex display
+            calc.setValue(0xABCD);
+            assert(document.getElementById('calcHex').textContent === 'ABCD', 'hex: ABCD');
+
+            // Decimal display
+            const dec = document.getElementById('calcDec').textContent.replace(/\s/g, '');
+            assert(dec === '43981', 'dec: 43981');
+
+            // Binary display (grouped by 4)
+            const bin = document.getElementById('calcBin').textContent;
+            assert(bin.includes('1010'), 'bin: contains 1010');
+            assert(bin.includes(' '), 'bin: space separated');
+
+            // Octal display
+            const oct = document.getElementById('calcOct').textContent;
+            assert(oct.length > 0, 'oct: not empty');
+
+            // Signed display for negative values (high bit set)
+            calc.setValue(0x8000);
+            const signed = document.getElementById('calcSigned').textContent;
+            assert(signed === '-32768', 'signed: 0x8000 = -32768');
+
+            // Signed display empty for positive values
+            calc.setValue(0x7FFF);
+            assert(document.getElementById('calcSigned').textContent === '', 'signed: empty for positive');
+
+            // ASCII display
+            calc.setValue(0x41);  // 'A'
+            assert(document.getElementById('calcAscii').textContent === "'A'", 'ascii: 0x41 = A');
+
+            calc.setValue(0x20);  // space
+            assert(document.getElementById('calcAscii').textContent === "' '", 'ascii: 0x20 = space');
+
+            // Non-printable: no ascii
+            calc.setValue(0x01);
+            assert(document.getElementById('calcAscii').textContent === '', 'ascii: empty for non-printable');
+
+            // High-bit ASCII
+            calc.setValue(0xC1);  // 'A' + $80
+            assert(document.getElementById('calcAscii').textContent === "'A'+$80", 'ascii: 0xC1 = A+$80');
+
+            // Bits panel
+            calc.setValue(0x0001);
+            const bitsGrid = document.getElementById('calcBitsGrid');
+            assert(bitsGrid.children.length > 0, 'bits grid rendered');
+            const lastBit = bitsGrid.querySelector('[data-bit="0"]');
+            assert(lastBit && lastBit.classList.contains('set'), 'bit 0 is set');
+            const bit15 = bitsGrid.querySelector('[data-bit="15"]');
+            assert(bit15 && !bit15.classList.contains('set'), 'bit 15 is not set');
+
+            // Zero display
+            calc.setValue(0);
+            assert(document.getElementById('calcHex').textContent === '0', 'zero: hex = 0');
+            assert(document.getElementById('calcDec').textContent.replace(/\s/g, '') === '0', 'zero: dec = 0');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Unary Operations
+        // ═══════════════════════════════════════════════════════
+        function runUnaryTests() {
+            section('Calculator - Unary Operations');
+
+            // NOT
+            calc.setValue(0x00FF);
+            applyUnary('not');
+            assert(calc.getValue() === 0xFF00, 'NOT 0x00FF = 0xFF00');
+
+            // INC
+            calc.setValue(0x00FF);
+            applyUnary('inc');
+            assert(calc.getValue() === 0x0100, 'INC 0x00FF = 0x0100');
+
+            // INC overflow
+            calc.setValue(0xFFFF);
+            applyUnary('inc');
+            assert(calc.getValue() === 0x0000, 'INC 0xFFFF wraps to 0');
+
+            // DEC
+            calc.setValue(0x0100);
+            applyUnary('dec');
+            assert(calc.getValue() === 0x00FF, 'DEC 0x0100 = 0x00FF');
+
+            // DEC underflow
+            calc.setValue(0x0000);
+            applyUnary('dec');
+            assert(calc.getValue() === 0xFFFF, 'DEC 0x0000 wraps to FFFF');
+
+            // LSL (logical shift left)
+            calc.setValue(0x0001);
+            applyUnary('lsl');
+            assert(calc.getValue() === 0x0002, 'LSL 1 = 2');
+
+            calc.setValue(0x8000);
+            applyUnary('lsl');
+            assert(calc.getValue() === 0x0000, 'LSL 0x8000 = 0 (bit shifted out)');
+
+            // LSR (logical shift right)
+            calc.setValue(0x0002);
+            applyUnary('lsr');
+            assert(calc.getValue() === 0x0001, 'LSR 2 = 1');
+
+            calc.setValue(0x8000);
+            applyUnary('lsr');
+            assert(calc.getValue() === 0x4000, 'LSR 0x8000 = 0x4000');
+
+            // ASR (arithmetic shift right — preserves sign)
+            calc.setValue(0x8000);
+            applyUnary('asr');
+            assert(calc.getValue() === 0xC000, 'ASR 0x8000 = 0xC000 (sign preserved)');
+
+            calc.setValue(0x4000);
+            applyUnary('asr');
+            assert(calc.getValue() === 0x2000, 'ASR 0x4000 = 0x2000 (positive)');
+
+            // ROL (rotate left)
+            calc.setValue(0x8001);
+            applyUnary('rol');
+            assert(calc.getValue() === 0x0003, 'ROL 0x8001 = 0x0003');
+
+            // ROR (rotate right)
+            calc.setValue(0x0001);
+            applyUnary('ror');
+            assert(calc.getValue() === 0x8000, 'ROR 0x0001 = 0x8000');
+
+            // Negate
+            calc.setValue(0x0001);
+            document.getElementById('calcNegate').click();
+            assert(calc.getValue() === 0xFFFF, 'NEG 1 = 0xFFFF (-1)');
+
+            calc.setValue(0x0000);
+            document.getElementById('calcNegate').click();
+            assert(calc.getValue() === 0x0000, 'NEG 0 = 0');
+
+            // RAND (just test it doesn't crash and produces a value)
+            calc.setValue(0);
+            applyUnary('rand');
+            assert(calc.getValue() >= 0, 'RAND: produces value >= 0');
+            assert(calc.getValue() <= 0xFFFF, 'RAND: within 16-bit range');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Base Conversion
+        // ═══════════════════════════════════════════════════════
+        function runBaseTests() {
+            section('Calculator - Base Conversion');
+
+            const input = document.getElementById('calcInput');
+            const baseSelect = document.getElementById('calcInputBase');
+
+            // Set a known value
+            calc.setValue(0xFF);
+
+            // Hex base: input should show FF
+            baseSelect.value = '16';
+            baseSelect.dispatchEvent(new Event('change'));
+            assert(input.value === 'FF', 'hex input: FF');
+
+            // Dec base: input should show 255
+            baseSelect.value = '10';
+            baseSelect.dispatchEvent(new Event('change'));
+            assert(input.value === '255', 'dec input: 255');
+
+            // Oct base: input should show 377
+            baseSelect.value = '8';
+            baseSelect.dispatchEvent(new Event('change'));
+            assert(input.value === '377', 'oct input: 377');
+
+            // Bin base: input should show 11111111
+            baseSelect.value = '2';
+            baseSelect.dispatchEvent(new Event('change'));
+            assert(input.value === '11111111', 'bin input: 11111111');
+
+            // Type in decimal, verify hex
+            baseSelect.value = '10';
+            baseSelect.dispatchEvent(new Event('change'));
+            document.getElementById('calcClear').click();
+            input.value = '100';
+            input.dispatchEvent(new Event('input'));
+            assert(document.getElementById('calcHex').textContent === '64', 'type dec 100 → hex 64');
+
+            // Type in binary
+            baseSelect.value = '2';
+            baseSelect.dispatchEvent(new Event('change'));
+            document.getElementById('calcClear').click();
+            input.value = '10101010';
+            input.dispatchEvent(new Event('input'));
+            assert(document.getElementById('calcHex').textContent === 'AA', 'type bin 10101010 → hex AA');
+
+            // Reset to hex
+            baseSelect.value = '16';
+            baseSelect.dispatchEvent(new Event('change'));
+
+            // Clear button
+            document.getElementById('calcClear').click();
+            assert(calc.getValue() === 0, 'clear: value = 0');
+            assert(input.value === '0', 'clear: input = 0');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Run All
+        // ═══════════════════════════════════════════════════════
+        function runAll() {
+            passed = 0; failed = 0;
+            logEl.innerHTML = '';
+            runApiTests();
+            runExpressionTests();
+            runBitSizeTests();
+            runDisplayTests();
+            runUnaryTests();
+            runBaseTests();
+        }
+
+        window.runAll = runAll;
+        window.runApiTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runApiTests(); };
+        window.runExpressionTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runExpressionTests(); };
+        window.runBitSizeTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runBitSizeTests(); };
+        window.runDisplayTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runDisplayTests(); };
+        window.runUnaryTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runUnaryTests(); };
+        window.runBaseTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runBaseTests(); };
+
+        runAll();
+    </script>
+</body>
+</html>

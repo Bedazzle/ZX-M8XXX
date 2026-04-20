@@ -390,14 +390,14 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         }
     }
 
-    // Get base name for exports from loaded filename (prefer disk, fallback to tape)
+    // Get base name for exports from last loaded filename (any type: SNA, Z80, TAP, TRD, etc.)
     function getExportBaseName() {
-        const diskInfoLed = document.getElementById('diskInfoLed');
-        const tapeLed = document.getElementById('tapeLed');
-        const diskName = diskInfoLed ? diskInfoLed.title.trim() : '';
-        const tapeName = tapeLed ? tapeLed.title.trim() : '';
-        // Use disk name if available, then tape name, otherwise 'frame'
-        return diskName || tapeName || 'frame';
+        const el = document.getElementById('lastLoadedFile');
+        const name = el ? el.textContent.trim() : '';
+        if (!name || name === '\u2014') return 'frame'; // em dash = no file loaded
+        // Strip file extension for clean base name
+        const dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
     }
 
     async function exportFramesAsZip() {
@@ -1303,7 +1303,7 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             for (const frame of this.frames) {
                 // Graphics Control Extension
                 out.push(0x21, 0xF9, 0x04);
-                out.push(0x00); // Disposal method
+                out.push(0x04); // Disposal method: 1 (do not dispose) << 2
                 out.push(frame.delay & 0xFF, (frame.delay >> 8) & 0xFF); // Delay
                 out.push(0x00); // Transparent color index
                 out.push(0x00); // Block terminator
@@ -1349,10 +1349,8 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             let nextCode = eoiCode + 1;
             const maxCode = 4096;
 
+            // Use numeric keys: (prefix_code << 8) | byte — avoids string allocation
             const table = new Map();
-            for (let i = 0; i < clearCode; i++) {
-                table.set(String.fromCharCode(i), i);
-            }
 
             const output = [];
             let bitBuffer = 0;
@@ -1370,18 +1368,25 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
 
             writeBits(clearCode, codeSize);
 
-            let current = '';
-            for (let i = 0; i < data.length; i++) {
-                const char = String.fromCharCode(data[i]);
-                const next = current + char;
+            if (data.length === 0) {
+                writeBits(eoiCode, codeSize);
+                if (bitCount > 0) output.push(bitBuffer & 0xFF);
+                return output;
+            }
 
-                if (table.has(next)) {
-                    current = next;
+            let prefix = data[0]; // Initial code = first byte value
+            for (let i = 1; i < data.length; i++) {
+                const byte = data[i];
+                const key = (prefix << 8) | byte;
+
+                const found = table.get(key);
+                if (found !== undefined) {
+                    prefix = found;
                 } else {
-                    writeBits(table.get(current), codeSize);
+                    writeBits(prefix, codeSize);
 
                     if (nextCode < maxCode) {
-                        table.set(next, nextCode++);
+                        table.set(key, nextCode++);
                         if (nextCode > (1 << codeSize) && codeSize < 12) {
                             codeSize++;
                         }
@@ -1389,21 +1394,15 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
                         // Reset table
                         writeBits(clearCode, codeSize);
                         table.clear();
-                        for (let j = 0; j < clearCode; j++) {
-                            table.set(String.fromCharCode(j), j);
-                        }
                         codeSize = minCodeSize + 1;
                         nextCode = eoiCode + 1;
                     }
 
-                    current = char;
+                    prefix = byte;
                 }
             }
 
-            if (current.length > 0) {
-                writeBits(table.get(current), codeSize);
-            }
-
+            writeBits(prefix, codeSize);
             writeBits(eoiCode, codeSize);
 
             if (bitCount > 0) {
@@ -1500,5 +1499,5 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
     btnPsgStop.addEventListener('click', () => stopPsgRecording(false));
     btnPsgCancel.addEventListener('click', () => stopPsgRecording(true));
 
-    return { getExportBaseName };
+    return { getExportBaseName, GifEncoder, createZip };
 }

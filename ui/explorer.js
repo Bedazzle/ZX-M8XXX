@@ -33,6 +33,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerHexLen = document.getElementById('explorerHexLen');
     const explorerHexSource = document.getElementById('explorerHexSource');
     const btnExplorerHex = document.getElementById('btnExplorerHex');
+    const explorerTextOutput = document.getElementById('explorerTextOutput');
+    const explorerTextSource = document.getElementById('explorerTextSource');
+    const explorerTextCodepage = document.getElementById('explorerTextCodepage');
+    const btnExplorerText = document.getElementById('btnExplorerText');
+
+    // Codepage tables (128 entries for bytes 0x80-0xFF)
+    const CODEPAGE_TABLES = {
+        cp866: '\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041A\u041B\u041C\u041D\u041E\u041F\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042A\u042B\u042C\u042D\u042E\u042F\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043A\u043B\u043C\u043D\u043E\u043F\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255D\u255C\u255B\u2510\u2514\u2534\u252C\u251C\u2500\u253C\u255E\u255F\u255A\u2554\u2569\u2566\u2560\u2550\u256C\u2567\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256B\u256A\u2518\u250C\u2588\u2584\u258C\u2590\u2580\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044A\u044B\u044C\u044D\u044E\u044F\u0401\u0451\u0404\u0454\u0407\u0457\u040E\u045E\u00B0\u2219\u00B7\u221A\u2116\u00A4\u25A0\u00A0',
+        win1251: '\u0402\u0403\u201A\u0453\u201E\u2026\u2020\u2021\u20AC\u2030\u0409\u2039\u040A\u040C\u040B\u040F\u0452\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u0098\u2122\u0459\u203A\u045A\u045C\u045B\u045F\u00A0\u040E\u045E\u0408\u00A4\u0490\u00A6\u00A7\u0401\u00A9\u0404\u00AB\u00AC\u00AD\u00AE\u0407\u00B0\u00B1\u0406\u0456\u0491\u00B5\u00B6\u00B7\u0451\u2116\u0454\u00BB\u0458\u0405\u0455\u0457\u0410\u0411\u0412\u0413\u0414\u0415\u0416\u0417\u0418\u0419\u041A\u041B\u041C\u041D\u041E\u041F\u0420\u0421\u0422\u0423\u0424\u0425\u0426\u0427\u0428\u0429\u042A\u042B\u042C\u042D\u042E\u042F\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439\u043A\u043B\u043C\u043D\u043E\u043F\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044A\u044B\u044C\u044D\u044E\u044F',
+        koi8r: '\u2500\u2502\u250C\u2510\u2514\u2518\u251C\u2524\u252C\u2534\u253C\u2580\u2584\u2588\u258C\u2590\u2591\u2592\u2593\u2320\u25A0\u2219\u221A\u2248\u2264\u2265\u00A0\u2321\u00B0\u00B2\u00B7\u00F7\u2550\u2551\u2552\u0451\u2553\u2554\u2555\u2556\u2557\u2558\u2559\u255A\u255B\u255C\u255D\u255E\u255F\u2560\u2561\u0401\u2562\u2563\u2564\u2565\u2566\u2567\u2568\u2569\u256A\u256B\u256C\u00A9\u044E\u0430\u0431\u0446\u0434\u0435\u0444\u0433\u0445\u0438\u0439\u043A\u043B\u043C\u043D\u043E\u043F\u044F\u0440\u0441\u0442\u0443\u0436\u0432\u044C\u044B\u0437\u0448\u044D\u0449\u0447\u044A\u042E\u0410\u0411\u0426\u0414\u0415\u0424\u0413\u0425\u0418\u0419\u041A\u041B\u041C\u041D\u041E\u041F\u042F\u0420\u0421\u0422\u0423\u0416\u0412\u042C\u042B\u0417\u0428\u042D\u0429\u0427\u042A',
+        iso88591: null // direct mapping: byte value = Unicode codepoint
+    };
 
     // Explorer state
     let explorerData = null;         // Raw file data
@@ -549,6 +561,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerBasicOutput.innerHTML = '<div class="explorer-empty">Select a BASIC program source</div>';
             explorerDisasmOutput.innerHTML = '<div class="explorer-empty">Select a source to disassemble</div>';
             explorerHexOutput.innerHTML = '';
+            explorerTextOutput.innerHTML = '<span class="explorer-empty">Select a source and click View</span>';
 
             // Check if Edit tab is active with an editor-supported format
             const activeSubtab = document.querySelector('.explorer-subtab.active');
@@ -1386,16 +1399,33 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function explorerParseMDR(data) {
         const files = MDRLoader.listFiles(data);
         const info = MDRLoader.getDiskInfo(data);
-        const explorerFiles = files.map(f => ({
-            name: f.name,
-            ext: f.type === 'PRINT' ? 'P' : 'F',
-            typeName: f.type,
-            length: f.length,
-            sectors: f.sectors,
-            sectorIndices: f.sectorIndices,
-            isPrint: f.isPrint,
-            mdrFile: true
-        }));
+        const explorerFiles = files.map(f => {
+            let ext = f.type === 'PRINT' ? 'P' : 'F';
+            let typeName = f.type;
+            // Detect BASIC files by inspecting extracted data header
+            if (!f.isPrint && f.length >= 5) {
+                const fileData = MDRLoader.extractFile(data, f);
+                if (fileData && fileData.length >= 5) {
+                    const lineNum = (fileData[0] << 8) | fileData[1];
+                    const lineLen = fileData[2] | (fileData[3] << 8);
+                    if (lineNum > 0 && lineNum < 10000 && lineLen > 0 && lineLen < 10000 &&
+                        lineLen + 4 <= fileData.length && fileData[4 + lineLen - 1] === 0x0D) {
+                        ext = 'B';
+                        typeName = 'BASIC';
+                    }
+                }
+            }
+            return {
+                name: f.name,
+                ext,
+                typeName,
+                length: f.length,
+                sectors: f.sectors,
+                sectorIndices: f.sectorIndices,
+                isPrint: f.isPrint,
+                mdrFile: true
+            };
+        });
         explorerBlocks = explorerFiles;
         return { type: 'mdr', files: explorerFiles, info: info, size: data.length };
     }
@@ -3033,6 +3063,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerBasicOutput.innerHTML = '<div class="explorer-empty">Select a BASIC program source</div>';
             explorerDisasmOutput.innerHTML = '<div class="explorer-empty">Select a source to disassemble</div>';
             explorerHexOutput.innerHTML = '';
+            explorerTextOutput.innerHTML = '<span class="explorer-empty">Select a source and click View</span>';
 
             explorerRenderFileInfo();
             return;
@@ -3355,7 +3386,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 const displayName = `${file.name} [${file.typeName}]`;
-                disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+                if (file.ext === 'B') {
+                    basicOpts.push(`<option value="${i}">${displayName}</option>`);
+                    basicSources.push(i.toString());
+                    disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
+                } else {
+                    disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+                }
                 hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
             }
         } else if (explorerParsed.type === 'opd') {
@@ -3410,6 +3447,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerBasicSource.innerHTML = '<option value="">Select source...</option>' + basicOpts.join('');
         explorerDisasmSource.innerHTML = '<option value="">Select source...</option>' + disasmOpts.join('');
         explorerHexSource.innerHTML = '<option value="">Whole file</option>' + hexOpts.join('');
+        explorerTextSource.innerHTML = '<option value="">Whole file</option>' + hexOpts.join('');
 
         if (basicSources.length === 1) {
             explorerBasicSource.value = basicSources[0];
@@ -3435,6 +3473,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         if (explorerHexSource.options.length > 1) {
             explorerHexSource.selectedIndex = 1;
+        }
+        if (explorerTextSource.options.length > 1) {
+            explorerTextSource.selectedIndex = 1;
         }
     }
 
@@ -3817,6 +3858,100 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerHexOutput.innerHTML = html || '<div class="explorer-empty">No data</div>';
     }
 
+    // Text viewer
+    btnExplorerText.addEventListener('click', () => {
+        explorerRenderText();
+    });
+
+    function explorerGetSourceData(source) {
+        if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
+            return explorerData.slice(explorerParsed.memoryOffset || 27);
+        } else if (source && explorerParsed.type === 'tap') {
+            const blockIdx = parseInt(source);
+            const block = explorerBlocks[blockIdx];
+            if (block && block.blockType === 'data') return block.data;
+        } else if (source && explorerParsed.type === 'tzx') {
+            const blockIdx = parseInt(source);
+            const block = explorerBlocks[blockIdx];
+            if (block && block.id === 0x10 && block.data) return block.data;
+        } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr')) {
+            const fileIdx = parseInt(source);
+            const file = explorerParsed.files[fileIdx];
+            if (file) {
+                return explorerParsed.type === 'mgt'
+                    ? MGTLoader.extractFile(explorerData, file)
+                    : explorerParsed.type === 'mdr'
+                    ? MDRLoader.extractFile(explorerData, file)
+                    : explorerData.slice(file.offset, file.offset + file.length);
+            }
+        } else if (source && explorerParsed.type === 'opd') {
+            const fileIdx = parseInt(source);
+            const file = explorerParsed.files[fileIdx];
+            if (file) return OPDLoader.extractFile(explorerData, file);
+        } else if (source && explorerParsed.type === 'hobeta') {
+            const f = explorerParsed.file;
+            if (f) return f.data;
+        } else if (source && explorerParsed.type === 'dsk') {
+            if (source === 'boot') {
+                const bootSector = explorerParsed.dskImage.readSector(0, 0,
+                    explorerParsed.diskSpec && explorerParsed.diskSpec.firstSectorId !== undefined
+                        ? explorerParsed.diskSpec.firstSectorId : 1);
+                if (bootSector) return bootSector;
+            } else {
+                const fileIdx = parseInt(source);
+                const file = explorerParsed.files[fileIdx];
+                if (file) {
+                    return DSKLoader.readFileData(
+                        explorerParsed.dskImage, file.name, file.ext, file.user, file.rawSize || file.size
+                    );
+                }
+            }
+        } else if (explorerData) {
+            return explorerData;
+        }
+        return null;
+    }
+
+    function decodeByteToText(b, codepage) {
+        if (b === 0x0A) return '\n';
+        if (b === 0x0D) return '\r';
+        if (b === 0x09) return '\t';
+        if (b < 0x20) return '\u00B7';
+        if (b >= 0x20 && b <= 0x7E) return String.fromCharCode(b);
+        if (b === 0x7F) return '\u00B7';
+        // 0x80-0xFF
+        if (codepage === 'ascii') return '\u00B7';
+        if (codepage === 'iso88591') return String.fromCharCode(b);
+        const table = CODEPAGE_TABLES[codepage];
+        if (table) return table[b - 0x80] || '\u00B7';
+        return '\u00B7';
+    }
+
+    function explorerRenderText() {
+        const source = explorerTextSource.value;
+        const codepage = explorerTextCodepage.value;
+
+        if (!explorerData && !source) {
+            explorerTextOutput.innerHTML = '<div class="explorer-empty">No data</div>';
+            return;
+        }
+
+        const data = explorerGetSourceData(source);
+        if (!data || data.length === 0) {
+            explorerTextOutput.innerHTML = '<div class="explorer-empty">No data</div>';
+            return;
+        }
+
+        let text = '';
+        for (let i = 0; i < data.length; i++) {
+            text += decodeByteToText(data[i], codepage);
+        }
+
+        // Escape HTML entities
+        text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        explorerTextOutput.innerHTML = text || '<div class="explorer-empty">No data</div>';
+    }
+
     // BASIC Decoder for Explorer
     const ExplorerBasicDecoder = (() => {
         // ZX Spectrum BASIC tokens (0xA3-0xFF)
@@ -3921,7 +4056,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     break;
                 }
 
-                const lineData = data.slice(offset + 4, offset + 4 + lineLen);
+                // Scan for 0x0D terminator to find the actual line end.
+                // The stored lineLen can be incorrect (e.g. +D disk saves);
+                // the ZX ROM LIST routine also uses 0x0D scanning.
+                let actualLen = lineLen;
+                const searchEnd = Math.min(offset + 4 + lineLen + 32, data.length);
+                for (let scan = offset + 4; scan < searchEnd; scan++) {
+                    if (data[scan] === 0x0D) {
+                        actualLen = scan - offset - 4 + 1; // include the 0x0D
+                        break;
+                    }
+                }
+
+                const lineData = data.slice(offset + 4, offset + 4 + actualLen);
                 const decoded = decodeLine(lineData);
 
                 lines.push({
@@ -3931,7 +4078,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     obfuscations: decoded.obfuscations
                 });
 
-                offset += 4 + lineLen;
+                offset += 4 + actualLen;
             }
             return lines;
         }
@@ -4152,11 +4299,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                data = explorerParsed.type === 'mgt'
-                    ? MGTLoader.extractFile(explorerData, file)
-                    : explorerParsed.type === 'mdr'
-                    ? MDRLoader.extractFile(explorerData, file)
-                    : explorerData.slice(file.offset, file.offset + file.length);
+                if (explorerParsed.type === 'mgt') {
+                    const raw = MGTLoader.extractFile(explorerData, file);
+                    // MGT file data on disk has a 9-byte +D header: type(1)+len(2)+addr(2)+proglen(2)+autostart(2)
+                    // Strip it for BASIC decoding
+                    data = (raw && raw.length > 9) ? raw.slice(9) : raw;
+                } else if (explorerParsed.type === 'mdr') {
+                    data = MDRLoader.extractFile(explorerData, file);
+                } else {
+                    data = explorerData.slice(file.offset, file.offset + file.length);
+                }
             }
         } else if (explorerParsed.type === 'opd') {
             const fileIdx = parseInt(source);
@@ -8710,6 +8862,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerBasicOutput.innerHTML = '<div class="explorer-empty">Select a BASIC program source</div>';
         explorerDisasmOutput.innerHTML = '<div class="explorer-empty">Select a source to disassemble</div>';
         explorerHexOutput.innerHTML = '';
+        explorerTextOutput.innerHTML = '<span class="explorer-empty">Select a source and click View</span>';
 
         explorerRenderFileInfo();
         document.querySelector('.explorer-subtab[data-subtab="info"]').click();

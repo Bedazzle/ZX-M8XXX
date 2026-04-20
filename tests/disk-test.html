@@ -1,0 +1,1349 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Disk Controller &amp; Format Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Disk Controller &amp; Format Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runTapeLoaderTests()">TapeLoader</button>
+        <button onclick="runBetaDiskBasicTests()">BetaDisk Basic</button>
+        <button onclick="runBetaDiskCommandTests()">BetaDisk Commands</button>
+        <button onclick="runBetaDiskDataTests()">BetaDisk Data</button>
+        <button onclick="runPlusDDiskTests()">PlusDDisk</button>
+        <button onclick="runMicrodriveTests()">Microdrive</button>
+        <button onclick="runMGTLoaderTests()">MGTLoader</button>
+        <button onclick="runMDRLoaderTests()">MDRLoader</button>
+        <button onclick="runOPDLoaderTests()">OPDLoader</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader } from '../core/loaders.js';
+
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+    }
+
+    function assert(condition, msg) {
+        if (condition) {
+            log(`  \u2713 ${msg}`, 'pass');
+            passed++;
+        } else {
+            log(`  \u2717 ${msg} - FAILED`, 'fail');
+            failed++;
+        }
+    }
+
+    function section(title) {
+        log(`\n\u2550\u2550\u2550 ${title} \u2550\u2550\u2550`, 'section');
+    }
+
+    function updateSummary() {
+        summaryEl.innerHTML = `<span class="pass">Passed: ${passed}</span> | <span class="fail">Failed: ${failed}</span> | Total: ${passed + failed}`;
+    }
+
+    // ========== Helper: build minimal TAP data ==========
+    function buildTAP(blocks) {
+        const parts = [];
+        for (const b of blocks) {
+            const len = b.length;
+            parts.push(new Uint8Array([len & 0xFF, (len >> 8) & 0xFF]));
+            parts.push(b);
+        }
+        const total = parts.reduce((s, p) => s + p.length, 0);
+        const result = new Uint8Array(total);
+        let off = 0;
+        for (const p of parts) { result.set(p, off); off += p.length; }
+        return result;
+    }
+
+    function makeTAPBlock(flag, data) {
+        const block = new Uint8Array(data.length + 2);
+        block[0] = flag;
+        block.set(data, 1);
+        let chk = flag;
+        for (let i = 0; i < data.length; i++) chk ^= data[i];
+        block[block.length - 1] = chk;
+        return block;
+    }
+
+    // ========== Helper: build minimal SCL data ==========
+    function buildSCL(files) {
+        // SCL format: 'SINCLAIR' + count(1) + headers(14*n) + data
+        const headerData = [];
+        const fileData = [];
+        for (const f of files) {
+            const hdr = new Uint8Array(14);
+            const name = (f.name + '        ').substring(0, 8);
+            for (let i = 0; i < 8; i++) hdr[i] = name.charCodeAt(i);
+            hdr[8] = f.type || 0x43; // 'C' = CODE
+            hdr[9] = (f.start || 0) & 0xFF;
+            hdr[10] = ((f.start || 0) >> 8) & 0xFF;
+            hdr[11] = (f.length || f.data.length) & 0xFF;
+            hdr[12] = ((f.length || f.data.length) >> 8) & 0xFF;
+            hdr[13] = f.sectors || Math.ceil(f.data.length / 256);
+            headerData.push(hdr);
+            // Pad data to sector boundary
+            const padded = new Uint8Array(hdr[13] * 256);
+            padded.set(f.data.subarray(0, Math.min(f.data.length, padded.length)));
+            fileData.push(padded);
+        }
+        const sig = new Uint8Array(9);
+        const s = 'SINCLAIR';
+        for (let i = 0; i < 8; i++) sig[i] = s.charCodeAt(i);
+        sig[8] = files.length;
+        const total = 9 + headerData.reduce((s, h) => s + h.length, 0) + fileData.reduce((s, d) => s + d.length, 0);
+        const result = new Uint8Array(total);
+        let off = 0;
+        result.set(sig, off); off += 9;
+        for (const h of headerData) { result.set(h, off); off += h.length; }
+        for (const d of fileData) { result.set(d, off); off += d.length; }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TapeLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runTapeLoaderTests() {
+        section('TapeLoader - TAP parsing');
+
+        const tl = new TapeLoader();
+        assert(tl.blocks.length === 0, 'starts with no blocks');
+        assert(tl.currentBlock === 0, 'starts at block 0');
+
+        // Build a 2-block TAP: header + data
+        const hdr = makeTAPBlock(0x00, new Uint8Array(17).fill(0x20));
+        const dat = makeTAPBlock(0xFF, new Uint8Array([0xAA, 0xBB, 0xCC]));
+        const tap = buildTAP([hdr, dat]);
+
+        const ok = tl.load(tap);
+        assert(ok === true, 'load returns true');
+        assert(tl.blocks.length === 2, '2 blocks parsed');
+        assert(tl.blocks[0].flag === 0x00, 'block 0 flag = header');
+        assert(tl.blocks[0].length === hdr.length, 'block 0 length correct');
+        assert(tl.blocks[1].flag === 0xFF, 'block 1 flag = data');
+        assert(tl.blocks[1].data[1] === 0xAA, 'block 1 data[1] = 0xAA');
+
+        section('TapeLoader - Navigation');
+
+        assert(tl.getBlockCount() === 2, 'getBlockCount = 2');
+        assert(tl.hasMoreBlocks() === true, 'hasMoreBlocks initially true');
+        assert(tl.getCurrentBlock() === 0, 'getCurrentBlock = 0');
+
+        const b0 = tl.getNextBlock();
+        assert(b0.flag === 0x00, 'getNextBlock returns block 0');
+        assert(tl.getCurrentBlock() === 1, 'after getNextBlock: currentBlock = 1');
+
+        const b1 = tl.getNextBlock();
+        assert(b1.flag === 0xFF, 'getNextBlock returns block 1');
+        assert(tl.hasMoreBlocks() === false, 'no more blocks');
+
+        const b2 = tl.getNextBlock();
+        assert(b2 === null, 'getNextBlock past end returns null');
+
+        tl.rewind();
+        assert(tl.getCurrentBlock() === 0, 'rewind resets to 0');
+        assert(tl.hasMoreBlocks() === true, 'hasMoreBlocks after rewind');
+
+        tl.setCurrentBlock(1);
+        assert(tl.getCurrentBlock() === 1, 'setCurrentBlock(1) works');
+        tl.setCurrentBlock(100);
+        assert(tl.getCurrentBlock() === 2, 'setCurrentBlock clamps to length');
+        tl.setCurrentBlock(-5);
+        assert(tl.getCurrentBlock() === 0, 'setCurrentBlock clamps to 0');
+
+        section('TapeLoader - getUnifiedBlocks');
+
+        tl.rewind();
+        const unified = tl.getUnifiedBlocks();
+        assert(unified.length === 2, 'unified: 2 blocks');
+        assert(unified[0].type === 'data', 'unified[0].type = data');
+        assert(unified[0].pilotCount === 8063, 'header block: pilotCount = 8063');
+        assert(unified[1].pilotCount === 3223, 'data block: pilotCount = 3223');
+        assert(unified[0].pilotPulse === 2168, 'pilotPulse = 2168');
+        assert(unified[0].zeroPulse === 855, 'zeroPulse = 855');
+        assert(unified[0].onePulse === 1710, 'onePulse = 1710');
+        assert(unified[0].pauseMs === 1000, 'pauseMs = 1000');
+
+        section('TapeLoader - Edge cases');
+
+        const tl2 = new TapeLoader();
+        assert(tl2.load(new Uint8Array(0)) === false, 'empty data returns false');
+        assert(tl2.load(new Uint8Array([0x05, 0x00])) === false, 'truncated block returns false');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // BetaDisk Basic Tests
+    // ═══════════════════════════════════════════════════════
+    function runBetaDiskBasicTests() {
+        section('BetaDisk - Constructor');
+
+        const bd = new BetaDisk();
+        assert(bd.drives.length === 4, '4 drives');
+        assert(bd.drives[0].diskData === null, 'drive 0 empty');
+        assert(bd.track === 0, 'track = 0');
+        assert(bd.sector === 1, 'sector = 1');
+        assert(bd.drive === 0, 'current drive = 0');
+        assert(bd.side === 0, 'side = 0');
+        assert(bd.intrq === false, 'intrq = false');
+        assert(bd.sectorsPerTrack === 16, '16 sectors/track');
+        assert(bd.bytesPerSector === 256, '256 bytes/sector');
+
+        section('BetaDisk - createBlankDisk');
+
+        bd.createBlankDisk('TEST');
+        assert(bd.hasDisk(0) === true, 'drive 0 has disk');
+        assert(bd.hasDisk(1) === false, 'drive 1 empty');
+        assert(bd.hasAnyDisk() === true, 'hasAnyDisk = true');
+        const data = bd.currentDisk.diskData;
+        assert(data.length === 655360, 'TRD image size = 655360');
+        // Sector 9 info at offset 2048
+        const s9 = 8 * 256;
+        assert(data[s9 + 0xE1] === 0, 'free sector = 0');
+        assert(data[s9 + 0xE2] === 1, 'free track = 1');
+        assert(data[s9 + 0xE3] === 0x16, 'disk type = 0x16');
+        assert(data[s9 + 0xE4] === 0, 'file count = 0');
+        assert(data[s9 + 0xE7] === 0x10, 'TR-DOS ID = 0x10');
+        // Label
+        const label = String.fromCharCode(...data.slice(s9 + 0xF5, s9 + 0xF5 + 8));
+        assert(label === 'TEST    ', 'disk label = "TEST    "');
+
+        section('BetaDisk - Multi-drive');
+
+        bd.createBlankDisk('DISK_B', 1);
+        assert(bd.hasDisk(1) === true, 'drive 1 has disk');
+        assert(bd.hasDisk(0) === true, 'drive 0 still has disk');
+
+        // Switch drive via system register
+        bd.write(0xFF, 0x01); // drive 1, motor on
+        assert(bd.drive === 1, 'switched to drive 1');
+        assert(bd.currentDisk === bd.drives[1], 'currentDisk is drive 1');
+
+        // Side select: bit 4 active-low (bit 4=1 → side 0, bit 4=0 → side 1)
+        bd.write(0xFF, 0x01); // bit 4 = 0 → side 1
+        assert(bd.side === 1, 'side = 1 when bit 4 = 0');
+        bd.write(0xFF, 0x10); // bit 4 = 1 → side 0
+        assert(bd.side === 0, 'side = 0 when bit 4 = 1');
+
+        section('BetaDisk - ejectDisk');
+
+        bd.ejectDisk(1);
+        assert(bd.hasDisk(1) === false, 'drive 1 ejected');
+        assert(bd.hasDisk(0) === true, 'drive 0 unaffected');
+        assert((bd.status & bd.NOT_READY) !== 0, 'status NOT_READY after eject');
+
+        section('BetaDisk - loadDisk / SCL conversion');
+
+        const bd2 = new BetaDisk();
+        const testData = new Uint8Array(10);
+        for (let i = 0; i < 10; i++) testData[i] = 0xA0 + i;
+        const scl = buildSCL([{
+            name: 'HELLO', type: 0x43, start: 0x8000,
+            data: testData, sectors: 1
+        }]);
+        bd2.loadDisk(scl, 'scl', 0);
+        assert(bd2.hasDisk(0) === true, 'SCL loaded into drive 0');
+        // Check directory entry
+        const trd = bd2.currentDisk.diskData;
+        const name = String.fromCharCode(...trd.slice(0, 5));
+        assert(name === 'HELLO', 'file name in directory');
+        assert(trd[8] === 0x43, 'file type = 0x43');
+
+        section('BetaDisk - getSectorOffset');
+
+        assert(bd.getSectorOffset(0, 0, 1) === 0, 'T0 S0 Sec1 = offset 0');
+        assert(bd.getSectorOffset(0, 0, 2) === 256, 'T0 S0 Sec2 = offset 256');
+        assert(bd.getSectorOffset(0, 1, 1) === 16 * 256, 'T0 S1 Sec1 = side 1 offset');
+        assert(bd.getSectorOffset(1, 0, 1) === 32 * 256, 'T1 S0 Sec1 = track 1 offset');
+
+        section('BetaDisk - loadDisk raw TRD');
+
+        const bd3 = new BetaDisk();
+        const rawTrd = new Uint8Array(655360);
+        rawTrd[0] = 0x42; // marker byte
+        bd3.loadDisk(rawTrd, 'trd', 2);
+        assert(bd3.hasDisk(2) === true, 'TRD loaded into drive 2');
+        assert(bd3.drives[2].diskData[0] === 0x42, 'data preserved');
+        // Loading into non-current drive shouldn't reset track/sector
+        assert(bd3.track === 0, 'track unchanged for non-current drive');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // BetaDisk Command Tests
+    // ═══════════════════════════════════════════════════════
+    function runBetaDiskCommandTests() {
+        section('BetaDisk - Restore command');
+
+        const bd = new BetaDisk();
+        bd.createBlankDisk('CMD');
+        bd.track = 10;
+        bd.currentDisk.headTrack = 10;
+        bd.write(0x1F, 0x00); // Restore
+        assert(bd.track === 0, 'restore: track = 0');
+        assert(bd.currentDisk.headTrack === 0, 'restore: headTrack = 0');
+        assert(bd.intrq === true, 'restore: intrq set');
+        const st = bd.read(0x1F);
+        assert((st & 0x04) !== 0, 'restore: TRACK0 bit set');
+        assert((st & 0x20) !== 0, 'restore: HEAD_LOADED bit set');
+
+        section('BetaDisk - Seek command');
+
+        bd.data = 25;
+        bd.write(0x1F, 0x10); // Seek
+        assert(bd.track === 25, 'seek: track = 25');
+        assert(bd.currentDisk.headTrack === 25, 'seek: headTrack = 25');
+        assert(bd.intrq === true, 'seek: intrq set');
+
+        // Seek to track 0
+        bd.data = 0;
+        bd.write(0x1F, 0x10);
+        const st2 = bd.read(0x1F);
+        assert((st2 & 0x04) !== 0, 'seek to 0: TRACK0 bit set');
+
+        section('BetaDisk - Step In/Out');
+
+        bd.track = 5;
+        bd.currentDisk.headTrack = 5;
+        bd.write(0x1F, 0x40); // Step in
+        assert(bd.track === 6, 'step in: track = 6');
+
+        bd.write(0x1F, 0x60); // Step out
+        assert(bd.track === 5, 'step out: track = 5');
+
+        // Step out at track 0 stays at 0
+        bd.track = 0;
+        bd.currentDisk.headTrack = 0;
+        bd.write(0x1F, 0x60);
+        assert(bd.track === 0, 'step out at 0: stays at 0');
+
+        // Step in at track 79 stays at 79
+        bd.track = 79;
+        bd.currentDisk.headTrack = 79;
+        bd.write(0x1F, 0x40);
+        assert(bd.track === 79, 'step in at 79: stays at 79');
+
+        section('BetaDisk - Force Interrupt');
+
+        // Start a read, then force interrupt
+        bd.track = 0;
+        bd.currentDisk.headTrack = 0;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0x80); // Read sector
+        assert(bd.reading === true, 'read started');
+        bd.write(0x1F, 0xD8); // Force interrupt (with INTRQ)
+        assert(bd.reading === false, 'force interrupt: reading stopped');
+        assert(bd.intrq === true, 'force interrupt: intrq set');
+        assert((bd.status & bd.BUSY) === 0, 'force interrupt: not busy');
+
+        section('BetaDisk - Read Address');
+
+        bd.track = 5;
+        bd.currentDisk.headTrack = 10; // headTrack differs from track register
+        bd.sector = 3;
+        bd.side = 1;
+        bd.write(0x1F, 0xC0); // Read Address
+        assert(bd.reading === true, 'read address: reading = true');
+        // Read 6 bytes
+        const addr = [];
+        for (let i = 0; i < 6; i++) {
+            addr.push(bd.read(0x7F));
+        }
+        assert(addr[0] === 10, 'read address: headTrack (not track register)');
+        assert(addr[1] === 1, 'read address: side');
+        assert(addr[2] === 3, 'read address: sector');
+        assert(addr[3] === 1, 'read address: size code = 1 (256 bytes)');
+
+        section('BetaDisk - No disk');
+
+        const bd4 = new BetaDisk();
+        // No disk loaded
+        bd4.write(0x1F, 0x00); // Restore with no disk
+        assert(bd4.intrq === true, 'no disk: intrq set on command');
+        assert((bd4.status & bd4.NOT_READY) !== 0, 'no disk: NOT_READY status');
+        const stNoDisk = bd4.read(0x1F);
+        assert(stNoDisk === bd4.NOT_READY, 'no disk: read status = NOT_READY');
+
+        section('BetaDisk - Reset via system register');
+
+        bd.write(0xFF, 0x00); // bit 2 = 0 → reset
+        assert(bd.track === 0, 'reset: track = 0');
+        assert(bd.sector === 1, 'reset: sector = 1');
+        assert(bd.reading === false, 'reset: reading = false');
+        assert(bd.intrq === false, 'reset: intrq = false');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // BetaDisk Data Transfer Tests
+    // ═══════════════════════════════════════════════════════
+    function runBetaDiskDataTests() {
+        section('BetaDisk - Read Sector');
+
+        const bd = new BetaDisk();
+        bd.createBlankDisk('DATA');
+        // Write test data at track 0, side 0, sector 1 (offset 0)
+        const disk = bd.currentDisk.diskData;
+        for (let i = 0; i < 256; i++) disk[i] = i;
+
+        bd.track = 0;
+        bd.currentDisk.headTrack = 0;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0x80); // Read sector command
+
+        assert(bd.reading === true, 'read: reading = true');
+        assert((bd.status & bd.BUSY) !== 0, 'read: BUSY set');
+        assert((bd.status & bd.DRQ) !== 0, 'read: DRQ set');
+
+        // Read all 256 bytes
+        const readData = [];
+        for (let i = 0; i < 256; i++) {
+            readData.push(bd.read(0x7F));
+        }
+        assert(readData[0] === 0, 'read data[0] = 0');
+        assert(readData[255] === 255, 'read data[255] = 255');
+        assert(bd.reading === false, 'read complete: reading = false');
+        assert(bd.intrq === true, 'read complete: intrq set');
+
+        section('BetaDisk - Write Sector');
+
+        bd.track = 1;
+        bd.currentDisk.headTrack = 1;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0xA0); // Write sector command
+
+        assert(bd.writing === true, 'write: writing = true');
+        assert((bd.status & bd.DRQ) !== 0, 'write: DRQ set');
+
+        // Write 256 bytes
+        for (let i = 0; i < 256; i++) {
+            bd.write(0x7F, 0xFF - i);
+        }
+        assert(bd.writing === false, 'write complete: writing = false');
+        assert(bd.intrq === true, 'write complete: intrq set');
+
+        // Verify written data
+        const offset = bd.getSectorOffset(1, 0, 1);
+        assert(disk[offset] === 0xFF, 'written data[0] = 0xFF');
+        assert(disk[offset + 255] === 0x00, 'written data[255] = 0x00');
+
+        section('BetaDisk - Multi-sector read');
+
+        // Write identifiable data to sectors 1 and 2
+        const s1off = bd.getSectorOffset(0, 0, 1);
+        const s2off = bd.getSectorOffset(0, 0, 2);
+        for (let i = 0; i < 256; i++) { disk[s1off + i] = 0x11; disk[s2off + i] = 0x22; }
+
+        bd.track = 0;
+        bd.currentDisk.headTrack = 0;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0x90); // Read sector with m=1 (multi-sector)
+
+        // Read 256 bytes from sector 1
+        const ms1 = [];
+        for (let i = 0; i < 256; i++) ms1.push(bd.read(0x7F));
+        assert(ms1[0] === 0x11, 'multi-read: sector 1 data correct');
+        assert(bd.sector === 2, 'multi-read: auto-advanced to sector 2');
+        assert(bd.reading === true, 'multi-read: still reading');
+
+        // Read 256 bytes from sector 2
+        const ms2 = [];
+        for (let i = 0; i < 256; i++) ms2.push(bd.read(0x7F));
+        assert(ms2[0] === 0x22, 'multi-read: sector 2 data correct');
+
+        section('BetaDisk - Multi-sector write');
+
+        bd.track = 2;
+        bd.currentDisk.headTrack = 2;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0xB0); // Write sector with m=1
+
+        // Write sector 1
+        for (let i = 0; i < 256; i++) bd.write(0x7F, 0xAA);
+        assert(bd.sector === 2, 'multi-write: auto-advanced to sector 2');
+        assert(bd.writing === true, 'multi-write: still writing');
+
+        // Write sector 2
+        for (let i = 0; i < 256; i++) bd.write(0x7F, 0xBB);
+
+        // Verify
+        const mw1 = bd.getSectorOffset(2, 0, 1);
+        const mw2 = bd.getSectorOffset(2, 0, 2);
+        assert(disk[mw1] === 0xAA, 'multi-write: sector 1 data = 0xAA');
+        assert(disk[mw2] === 0xBB, 'multi-write: sector 2 data = 0xBB');
+
+        section('BetaDisk - System register / INTRQ');
+
+        bd.intrq = true;
+        const sys = bd.read(0xFF);
+        assert((sys & 0x80) !== 0, 'system register: INTRQ bit set');
+
+        bd.intrq = false;
+        const sys2 = bd.read(0xFF);
+        assert((sys2 & 0x80) === 0, 'system register: INTRQ bit clear');
+
+        section('BetaDisk - Lost data simulation');
+
+        bd.track = 0;
+        bd.currentDisk.headTrack = 0;
+        bd.sector = 1;
+        bd.side = 0;
+        bd.write(0x1F, 0x80); // Read sector
+        assert(bd.reading === true, 'lost data: reading started');
+
+        // Poll system register without reading data — triggers lost data
+        bd.read(0xFF);
+        bd.read(0xFF);  // 2nd poll → lost data threshold
+        assert(bd.reading === false, 'lost data: reading stopped after 2 polls');
+        assert(bd.intrq === true, 'lost data: intrq set');
+        assert((bd.status & bd.LOST_DATA) !== 0, 'lost data: LOST_DATA flag set');
+
+        section('BetaDisk - Register read/write');
+
+        bd.write(0x3F, 42); // Track register
+        assert(bd.read(0x3F) === 42, 'track register r/w');
+
+        bd.write(0x5F, 7); // Sector register
+        assert(bd.read(0x5F) === 7, 'sector register r/w');
+
+        bd.write(0x7F, 0xDE); // Data register (no active transfer)
+        assert(bd.read(0x7F) === 0xDE, 'data register r/w');
+
+        section('BetaDisk - Activity callback');
+
+        const bd5 = new BetaDisk();
+        bd5.createBlankDisk('CB');
+        let lastActivity = null;
+        bd5.onDiskActivity = (type, track, sector, side, drive) => {
+            lastActivity = { type, track, sector, side, drive };
+        };
+        bd5.track = 3;
+        bd5.currentDisk.headTrack = 3;
+        bd5.sector = 5;
+        bd5.side = 1;
+        bd5.write(0x1F, 0x80); // Read sector
+        assert(lastActivity !== null, 'activity callback fired');
+        assert(lastActivity.type === 'read', 'activity: type = read');
+        assert(lastActivity.track === 3, 'activity: track = 3');
+        assert(lastActivity.sector === 5, 'activity: sector = 5');
+
+        section('BetaDisk - Index pulse simulation');
+
+        const bd6 = new BetaDisk();
+        bd6.createBlankDisk('IDX');
+        bd6.write(0x1F, 0x00); // Restore (Type I command)
+        // Reading status should cycle index pulse
+        let sawIndex = false;
+        for (let i = 0; i < 20; i++) {
+            const st = bd6.read(0x1F);
+            if (st & 0x02) sawIndex = true;
+        }
+        assert(sawIndex === true, 'index pulse seen during status reads');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // PlusDDisk Tests
+    // ═══════════════════════════════════════════════════════
+    function runPlusDDiskTests() {
+        section('PlusDDisk - Constructor');
+
+        const pd = new PlusDDisk();
+        assert(pd.drives.length === 2, '2 drives');
+        assert(pd.sectorsPerTrack === 10, '10 sectors/track');
+        assert(pd.bytesPerSector === 512, '512 bytes/sector');
+        assert(pd.track === 0, 'track = 0');
+        assert(pd.sector === 1, 'sector = 1');
+
+        section('PlusDDisk - createBlankDisk');
+
+        pd.createBlankDisk('MGT_A');
+        assert(pd.hasDisk(0) === true, 'drive 0 has disk');
+        assert(pd.currentDisk.diskData.length === 819200, 'MGT size = 819200');
+
+        section('PlusDDisk - getSectorOffset');
+
+        assert(pd.getSectorOffset(0, 0, 1) === 0, 'T0 S0 Sec1 = 0');
+        assert(pd.getSectorOffset(0, 0, 2) === 512, 'T0 S0 Sec2 = 512');
+        assert(pd.getSectorOffset(0, 1, 1) === 10 * 512, 'T0 S1 Sec1 = side 1');
+        assert(pd.getSectorOffset(1, 0, 1) === 20 * 512, 'T1 S0 Sec1 = track 1');
+
+        section('PlusDDisk - Port addresses differ from BetaDisk');
+
+        pd.write(0xEF, 10); // Track register at 0xEF
+        assert(pd.read(0xEF) === 10, 'track register via 0xEF');
+
+        pd.write(0xF7, 3); // Sector register at 0xF7
+        assert(pd.read(0xF7) === 3, 'sector register via 0xF7');
+
+        section('PlusDDisk - Control register');
+
+        // Drive select (bit 0), side (bit 2)
+        pd.write(0xE3, 0x01); // drive 1, side 0
+        assert(pd.drive === 1, 'drive = 1');
+        assert(pd.side === 0, 'side = 0');
+
+        pd.write(0xE3, 0x04); // drive 0, side 1
+        assert(pd.drive === 0, 'drive = 0');
+        assert(pd.side === 1, 'side = 1');
+
+        // Page-out callback (bit 6)
+        let pageOutCalled = false;
+        pd.onPageOut = () => { pageOutCalled = true; };
+        pd.write(0xE3, 0x40);
+        assert(pageOutCalled === true, 'page-out callback fired');
+
+        section('PlusDDisk - Read/Write sector');
+
+        // Write test data
+        pd.drive = 0;
+        pd.side = 0;
+        const mgDisk = pd.currentDisk.diskData;
+        const secOff = pd.getSectorOffset(0, 0, 1);
+        for (let i = 0; i < 512; i++) mgDisk[secOff + i] = i & 0xFF;
+
+        pd.track = 0;
+        pd.currentDisk.headTrack = 0;
+        pd.sector = 1;
+        pd.side = 0;
+        pd.write(0xE7, 0x80); // Read sector command
+
+        assert(pd.reading === true, 'read: reading = true');
+        const readBuf = [];
+        for (let i = 0; i < 512; i++) readBuf.push(pd.read(0xFF));
+        assert(readBuf[0] === 0, 'read data[0] = 0');
+        assert(readBuf[255] === 255, 'read data[255] = 255');
+        assert(readBuf[256] === 0, 'read data[256] = 0 (wraps)');
+        assert(pd.reading === false, 'read complete');
+        assert(pd.intrq === true, 'read: intrq set');
+
+        // Write sector
+        pd.sector = 2;
+        pd.write(0xE7, 0xA0); // Write sector
+        for (let i = 0; i < 512; i++) pd.write(0xFF, 0xCC);
+        assert(pd.writing === false, 'write complete');
+        const w2off = pd.getSectorOffset(0, 0, 2);
+        assert(mgDisk[w2off] === 0xCC, 'written data verified');
+
+        section('PlusDDisk - Type I commands');
+
+        // Restore
+        pd.track = 40;
+        pd.currentDisk.headTrack = 40;
+        pd.write(0xE7, 0x00); // Restore
+        assert(pd.track === 0, 'restore: track = 0');
+        assert(pd.intrq === true, 'restore: intrq set');
+
+        // Seek
+        pd.data = 20;
+        pd.write(0xE7, 0x10); // Seek
+        assert(pd.track === 20, 'seek: track = 20');
+
+        // Step in/out
+        pd.write(0xE7, 0x40); // Step in
+        assert(pd.track === 21, 'step in: track = 21');
+        pd.write(0xE7, 0x60); // Step out
+        assert(pd.track === 20, 'step out: track = 20');
+
+        section('PlusDDisk - Read Address');
+
+        pd.track = 15;
+        pd.currentDisk.headTrack = 30;
+        pd.sector = 7;
+        pd.side = 0;
+        pd.write(0xE7, 0xC0); // Read Address
+        const ra = [];
+        for (let i = 0; i < 6; i++) ra.push(pd.read(0xFF));
+        assert(ra[0] === 30, 'read address: headTrack = 30');
+        assert(ra[1] === 0, 'read address: side = 0');
+        assert(ra[2] === 7, 'read address: sector = 7');
+        assert(ra[3] === 2, 'read address: size code = 2 (512 bytes)');
+
+        section('PlusDDisk - Control register INTRQ/DRQ');
+
+        pd.intrq = true;
+        pd.reading = true;
+        const ctrl = pd.read(0xE3);
+        assert((ctrl & 0x80) !== 0, 'control: INTRQ bit');
+        assert((ctrl & 0x40) !== 0, 'control: DRQ bit (reading)');
+
+        section('PlusDDisk - Reset');
+
+        pd.track = 50;
+        pd.reading = true;
+        pd.reset();
+        assert(pd.track === 0, 'reset: track = 0');
+        assert(pd.reading === false, 'reset: reading = false');
+        assert(pd.intrq === false, 'reset: intrq = false');
+
+        section('PlusDDisk - Multi-drive');
+
+        const pd2 = new PlusDDisk();
+        pd2.createBlankDisk('A', 0);
+        pd2.createBlankDisk('B', 1);
+        assert(pd2.hasDisk(0) === true, 'drive A has disk');
+        assert(pd2.hasDisk(1) === true, 'drive B has disk');
+        pd2.ejectDisk(0);
+        assert(pd2.hasDisk(0) === false, 'drive A ejected');
+        assert(pd2.hasDisk(1) === true, 'drive B intact');
+        assert(pd2.hasAnyDisk() === true, 'hasAnyDisk = true');
+        pd2.ejectDisk(1);
+        assert(pd2.hasAnyDisk() === false, 'all disks ejected');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Microdrive Tests
+    // ═══════════════════════════════════════════════════════
+    function runMicrodriveTests() {
+        section('Microdrive - Constructor');
+
+        const md = new Microdrive();
+        assert(md.drives.length === 8, '8 drives');
+        assert(md.commsShiftReg === 0, 'COMMS shift reg = 0');
+        assert(md.activeDrive === -1, 'no active drive');
+        assert(md.currentDrive === null, 'currentDrive = null');
+        assert(md.writing === false, 'writing = false');
+        assert(md.erasing === false, 'erasing = false');
+
+        section('Microdrive - Cartridge management');
+
+        const mdr = MDRLoader.createBlankMDR('TEST_CART');
+        md.loadCartridge(mdr, 0);
+        assert(md.hasCartridge(0) === true, 'drive 0 has cartridge');
+        assert(md.hasCartridge(1) === false, 'drive 1 empty');
+        assert(md.hasAnyCartridge() === true, 'hasAnyCartridge = true');
+
+        md.loadCartridge(mdr, 3);
+        assert(md.hasCartridge(3) === true, 'drive 3 has cartridge');
+
+        md.ejectCartridge(0);
+        assert(md.hasCartridge(0) === false, 'drive 0 ejected');
+        assert(md.hasCartridge(3) === true, 'drive 3 intact');
+
+        section('Microdrive - COMMS shift register');
+
+        md.loadCartridge(mdr, 0);
+        // To select drive 0: shift in bit 0 = 1 → commsShiftReg bit 0 = 1
+        // Clock rising edge: data=1, clk 0→1
+        md.writeControl(0x00); // clk=0, data=0
+        md.writeControl(0x01); // data=1, clk still 0
+        md.writeControl(0x03); // clk=1 (rising edge), data=1 → shift in 1
+        assert(md.commsShiftReg === 1, 'shift reg = 1 after first shift');
+        assert(md.drives[0].motorOn === true, 'drive 0 motor on');
+        assert(md.activeDrive === 0, 'active drive = 0');
+        assert(md.currentDrive !== null, 'currentDrive not null');
+
+        // Shift in another 0 — drive 1 stays off, drive 0 bit shifted left
+        md.writeControl(0x00); // clk=0, data=0
+        md.writeControl(0x02); // clk=1, data=0 → shift in 0
+        assert(md.commsShiftReg === 2, 'shift reg = 2 after second shift');
+        assert(md.drives[0].motorOn === false, 'drive 0 motor off');
+        assert(md.drives[1].motorOn === true, 'drive 1 motor on');
+
+        section('Microdrive - Read data');
+
+        // Reset and select drive 0
+        md.reset();
+        md.loadCartridge(mdr, 0);
+        // Select drive 0
+        md.writeControl(0x01); // data=1, clk=0
+        md.writeControl(0x03); // rising edge, shift in 1
+        md.drives[0].motorOn = true;
+        md.drives[0].headPos = 0;
+
+        // Read first byte from cartridge
+        const firstByte = md.readData();
+        assert(firstByte === mdr[0], 'read data: first byte matches cartridge');
+        assert(md.drives[0].headPos === 1, 'headPos advanced to 1');
+
+        // Read a few more
+        const secondByte = md.readData();
+        assert(secondByte === mdr[1], 'read data: second byte matches');
+
+        section('Microdrive - Write data');
+
+        md.writing = true;
+        md.drives[0].headPos = 100;
+        md.writeData(0x42);
+        assert(md.drives[0].cartridge[100] === 0x42, 'write data: byte written');
+        assert(md.drives[0].headPos === 101, 'write: headPos advanced');
+
+        // Write-protected cartridge
+        md.drives[0].writeProtect = true;
+        md.drives[0].headPos = 200;
+        md.writeData(0x99);
+        assert(md.drives[0].cartridge[200] !== 0x99, 'write-protected: byte NOT written');
+        md.drives[0].writeProtect = false;
+
+        // Writing without write mode enabled
+        md.writing = false;
+        md.drives[0].headPos = 300;
+        md.writeData(0x77);
+        assert(md.drives[0].cartridge[300] !== 0x77, 'no write mode: byte NOT written');
+
+        section('Microdrive - Status register');
+
+        md.writing = false;
+        md.drives[0].motorOn = true;
+        md.drives[0].headPos = 0; // Start of sector → sync
+        let status = md.readStatus();
+        assert((status & 0x02) !== 0, 'status: sync at sector start');
+        assert((status & 0x10) === 0, 'status: not busy (motor on)');
+
+        // Motor off → busy
+        md.drives[0].motorOn = false;
+        status = md.readStatus();
+        assert((status & 0x10) !== 0, 'status: busy when motor off');
+
+        // Write protect flag
+        md.drives[0].motorOn = true;
+        md.drives[0].writeProtect = true;
+        status = md.readStatus();
+        assert((status & 0x01) !== 0, 'status: write-protect bit');
+        md.drives[0].writeProtect = false;
+
+        section('Microdrive - Head position wraps');
+
+        const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+        md.drives[0].headPos = tapeLen - 1;
+        md.readData(); // should wrap
+        assert(md.drives[0].headPos === 0, 'headPos wraps around');
+
+        section('Microdrive - getCartridgeData');
+
+        md.drives[0].writeProtect = true;
+        const exported = md.getCartridgeData(0);
+        assert(exported !== null, 'getCartridgeData returns data');
+        assert(exported.length === MDRLoader.IMAGE_SIZE, 'exported size = IMAGE_SIZE');
+        assert(exported[MDRLoader.IMAGE_SIZE - 1] === 1, 'write-protect flag exported');
+
+        section('Microdrive - Reset');
+
+        md.drives[0].motorOn = true;
+        md.commsShiftReg = 0xFF;
+        md.writing = true;
+        md.reset();
+        assert(md.commsShiftReg === 0, 'reset: shift reg = 0');
+        assert(md.drives[0].motorOn === false, 'reset: motor off');
+        assert(md.writing === false, 'reset: writing = false');
+        assert(md.hasCartridge(0) === true, 'reset: cartridge preserved');
+
+        section('Microdrive - No drive selected');
+
+        const md2 = new Microdrive();
+        assert(md2.readData() === 0xFF, 'no drive: readData = 0xFF');
+        const noStatus = md2.readStatus();
+        assert((noStatus & 0x10) !== 0 || noStatus === 0xFF, 'no drive: busy/not-ready');
+
+        section('Microdrive - Control register modes');
+
+        const md3 = new Microdrive();
+        md3.writeControl(0x04); // bit 2 = write mode
+        assert(md3.writing === true, 'control: write mode set');
+        md3.writeControl(0x08); // bit 3 = erase
+        assert(md3.erasing === true, 'control: erase mode set');
+        assert(md3.writing === false, 'control: write mode cleared');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MGTLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runMGTLoaderTests() {
+        section('MGTLoader - isMGT');
+
+        // Valid blank MGT (819200 bytes, all zeros = all empty slots)
+        const blankMgt = new Uint8Array(819200);
+        assert(MGTLoader.isMGT(blankMgt) === true, 'blank 819200 bytes = valid MGT');
+
+        // Wrong size
+        assert(MGTLoader.isMGT(new Uint8Array(100000)) === false, 'wrong size rejected');
+        assert(MGTLoader.isMGT(new Uint8Array(409600)) === true, '40-track variant accepted');
+
+        // Invalid file types in directory
+        const badMgt = new Uint8Array(819200);
+        for (let i = 0; i < 20; i++) {
+            const off = MGTLoader._slotOffset(i);
+            badMgt[off] = 15; // Invalid type
+        }
+        assert(MGTLoader.isMGT(badMgt) === false, 'invalid file types rejected');
+
+        section('MGTLoader - _slotOffset');
+
+        assert(MGTLoader._slotOffset(0) === 0, 'slot 0 at offset 0');
+        assert(MGTLoader._slotOffset(1) === 256, 'slot 1 at offset 256');
+        assert(MGTLoader._slotOffset(2) === 512, 'slot 2 at offset 512');
+        assert(MGTLoader._slotOffset(3) === 768, 'slot 3 at offset 768');
+
+        section('MGTLoader - getSectorOffset');
+
+        assert(MGTLoader.getSectorOffset(0, 0, 1) === 0, 'T0 S0 Sec1 = 0');
+        assert(MGTLoader.getSectorOffset(0, 0, 2) === 512, 'T0 S0 Sec2 = 512');
+        assert(MGTLoader.getSectorOffset(0, 1, 1) === 10 * 512, 'T0 S1 Sec1');
+        assert(MGTLoader.getSectorOffset(1, 0, 1) === 20 * 512, 'T1 S0 Sec1');
+
+        // Track bit 7 = side
+        assert(MGTLoader.getSectorOffset(0x80, 0, 1) === 10 * 512, 'track 0x80 = T0 S1');
+
+        section('MGTLoader - listFiles / getDiskInfo');
+
+        // Create an MGT with one file in directory slot 0
+        const mgt = new Uint8Array(819200);
+        const slot0 = MGTLoader._slotOffset(0);
+        mgt[slot0] = 4; // CODE file
+        // Name: "TESTFILE  " (10 bytes)
+        const fname = 'TESTFILE  ';
+        for (let i = 0; i < 10; i++) mgt[slot0 + 1 + i] = fname.charCodeAt(i);
+        // Sectors: 3 (big-endian at 11-12)
+        mgt[slot0 + 11] = 0;
+        mgt[slot0 + 12] = 3;
+        // First track/sector
+        mgt[slot0 + 13] = 2; // track 2
+        mgt[slot0 + 14] = 1; // sector 1
+        // Sector address map: 3 sectors
+        mgt[slot0 + 15] = 2; mgt[slot0 + 16] = 1; // T2 S1
+        mgt[slot0 + 17] = 2; mgt[slot0 + 18] = 2; // T2 S2
+        mgt[slot0 + 19] = 2; mgt[slot0 + 20] = 3; // T2 S3
+        // File data length at 212-213
+        mgt[slot0 + 212] = 0x00;
+        mgt[slot0 + 213] = 0x04; // 1024 bytes
+        // Start address at 214-215
+        mgt[slot0 + 214] = 0x00;
+        mgt[slot0 + 215] = 0x80; // 0x8000
+
+        const files = MGTLoader.listFiles(mgt);
+        assert(files.length === 1, 'listFiles: 1 file');
+        assert(files[0].name === 'TESTFILE', 'file name trimmed');
+        assert(files[0].type === 4, 'file type = 4 (CODE)');
+        assert(files[0].typeName === 'CODE', 'typeName = CODE');
+        assert(files[0].sectors === 3, 'sectors = 3');
+        assert(files[0].length === 1024, 'length = 1024');
+        assert(files[0].startAddress === 0x8000, 'startAddress = 0x8000');
+        assert(files[0].sectorMap.length === 3, 'sectorMap has 3 entries');
+
+        const info = MGTLoader.getDiskInfo(mgt);
+        assert(info.fileCount === 1, 'diskInfo: 1 file');
+        assert(info.tracks === 80, 'diskInfo: 80 tracks');
+        assert(info.sectorsPerTrack === 10, 'diskInfo: 10 sectors/track');
+        assert(info.bytesPerSector === 512, 'diskInfo: 512 bytes/sector');
+        assert(info.totalSectors === 1600, 'diskInfo: totalSectors = 1600');
+
+        section('MGTLoader - extractFile');
+
+        // Write recognizable data at T2 S1
+        const t2s1 = MGTLoader.getSectorOffset(2, 0, 1);
+        for (let i = 0; i < 512; i++) mgt[t2s1 + i] = 0xA1;
+        const t2s2 = MGTLoader.getSectorOffset(2, 0, 2);
+        for (let i = 0; i < 512; i++) mgt[t2s2 + i] = 0xA2;
+
+        const extracted = MGTLoader.extractFile(mgt, files[0]);
+        assert(extracted.length === 1024, 'extracted length = 1024');
+        assert(extracted[0] === 0xA1, 'extracted data sector 1 correct');
+        assert(extracted[512] === 0xA2, 'extracted data sector 2 correct');
+
+        section('MGTLoader - Empty slots skipped');
+
+        const mgt2 = new Uint8Array(819200);
+        // All slots type 0 (empty)
+        const files2 = MGTLoader.listFiles(mgt2);
+        assert(files2.length === 0, 'blank disk: 0 files');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // MDRLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runMDRLoaderTests() {
+        section('MDRLoader - Constants');
+
+        assert(MDRLoader.SECTOR_COUNT === 254, 'SECTOR_COUNT = 254');
+        assert(MDRLoader.SECTOR_SIZE === 543, 'SECTOR_SIZE = 543');
+        assert(MDRLoader.DATA_SIZE === 512, 'DATA_SIZE = 512');
+        assert(MDRLoader.IMAGE_SIZE === 254 * 543 + 1, 'IMAGE_SIZE = 137923');
+
+        section('MDRLoader - mdrChecksum');
+
+        const testArr = new Uint8Array([10, 20, 30]);
+        assert(MDRLoader.mdrChecksum(testArr, 0, 3) === 60, 'checksum of [10,20,30] = 60');
+        assert(MDRLoader.mdrChecksum(testArr, 1, 2) === 50, 'checksum of [20,30] = 50');
+
+        // Overflow wraps to mod 256
+        const overArr = new Uint8Array([200, 200]);
+        assert(MDRLoader.mdrChecksum(overArr, 0, 2) === (400 & 0xFF), 'checksum wraps mod 256');
+
+        section('MDRLoader - isMDR');
+
+        const blank = MDRLoader.createBlankMDR('TEST');
+        assert(MDRLoader.isMDR(blank) === true, 'valid MDR recognized');
+        assert(MDRLoader.isMDR(new Uint8Array(100)) === false, 'wrong size rejected');
+        // Without write-protect byte
+        const noWP = blank.slice(0, MDRLoader.IMAGE_SIZE_NO_WP);
+        assert(MDRLoader.isMDR(noWP) === true, 'MDR without WP byte accepted');
+
+        section('MDRLoader - createBlankMDR');
+
+        assert(blank.length === MDRLoader.IMAGE_SIZE, 'blank MDR size correct');
+        // Check first sector header
+        assert(blank[0] === 0x01, 'sector 0: HDFLAG = 1');
+        assert(blank[1] === 254, 'sector 0: HDNUMB = 254 (counts down)');
+        // Cartridge name at offset 4
+        const cname = String.fromCharCode(...blank.slice(4, 14));
+        assert(cname === 'TEST      ', 'cartridge name = "TEST      "');
+        // Header checksum
+        const expectedHdrChk = MDRLoader.mdrChecksum(blank, 0, 14);
+        assert(blank[14] === expectedHdrChk, 'header checksum correct');
+        // Write-protect flag
+        assert(blank[MDRLoader.IMAGE_SIZE - 1] === 0, 'not write-protected');
+
+        section('MDRLoader - buildMDR / listFiles round-trip');
+
+        const fileData = new Uint8Array(100);
+        for (let i = 0; i < 100; i++) fileData[i] = i;
+        const mdr = MDRLoader.buildMDR([
+            { name: 'HELLO', data: fileData, isPrint: false }
+        ], 'MYCART');
+
+        assert(mdr.length === MDRLoader.IMAGE_SIZE, 'built MDR size correct');
+
+        const mdrFiles = MDRLoader.listFiles(mdr);
+        assert(mdrFiles.length === 1, 'listFiles: 1 file');
+        assert(mdrFiles[0].name === 'HELLO', 'file name = HELLO');
+        assert(mdrFiles[0].length === 100, 'file length = 100');
+        assert(mdrFiles[0].sectors === 1, 'file sectors = 1');
+        assert(mdrFiles[0].type === 'File', 'file type = File');
+
+        section('MDRLoader - extractFile');
+
+        const extracted = MDRLoader.extractFile(mdr, mdrFiles[0]);
+        assert(extracted.length === 100, 'extracted length = 100');
+        assert(extracted[0] === 0, 'extracted[0] = 0');
+        assert(extracted[99] === 99, 'extracted[99] = 99');
+
+        section('MDRLoader - Multi-sector file');
+
+        const bigData = new Uint8Array(1500); // > 512 → needs 3 sectors
+        for (let i = 0; i < 1500; i++) bigData[i] = i & 0xFF;
+        const mdr2 = MDRLoader.buildMDR([
+            { name: 'BIG', data: bigData, isPrint: false }
+        ], 'BIG');
+
+        const bigFiles = MDRLoader.listFiles(mdr2);
+        assert(bigFiles.length === 1, 'big file: 1 file');
+        assert(bigFiles[0].sectors === 3, 'big file: 3 sectors');
+        assert(bigFiles[0].length === 1500, 'big file: length = 1500');
+
+        const bigExtracted = MDRLoader.extractFile(mdr2, bigFiles[0]);
+        assert(bigExtracted.length === 1500, 'big file: extracted length = 1500');
+        assert(bigExtracted[0] === 0, 'big file: data[0] = 0');
+        assert(bigExtracted[1499] === (1499 & 0xFF), 'big file: data[1499] correct');
+
+        section('MDRLoader - Multiple files');
+
+        const mdr3 = MDRLoader.buildMDR([
+            { name: 'FILE_A', data: new Uint8Array([0xAA]), isPrint: false },
+            { name: 'FILE_B', data: new Uint8Array([0xBB]), isPrint: true },
+            { name: 'FILE_C', data: new Uint8Array([0xCC]), isPrint: false }
+        ], 'MULTI');
+
+        const multiFiles = MDRLoader.listFiles(mdr3);
+        assert(multiFiles.length === 3, 'multi: 3 files');
+        assert(multiFiles[0].name === 'FILE_A', 'multi: file A name');
+        assert(multiFiles[1].name === 'FILE_B', 'multi: file B name');
+        assert(multiFiles[2].name === 'FILE_C', 'multi: file C name');
+        assert(multiFiles[1].type === 'PRINT', 'file B: type = PRINT');
+
+        // Extract each
+        const exA = MDRLoader.extractFile(mdr3, multiFiles[0]);
+        const exB = MDRLoader.extractFile(mdr3, multiFiles[1]);
+        const exC = MDRLoader.extractFile(mdr3, multiFiles[2]);
+        assert(exA[0] === 0xAA, 'extract A: 0xAA');
+        assert(exB[0] === 0xBB, 'extract B: 0xBB');
+        assert(exC[0] === 0xCC, 'extract C: 0xCC');
+
+        section('MDRLoader - getDiskInfo');
+
+        const info = MDRLoader.getDiskInfo(mdr3);
+        assert(info.cartridgeName.startsWith('MULTI'), 'diskInfo: cartridge name');
+        assert(info.fileCount === 3, 'diskInfo: 3 files');
+        assert(info.totalSectors === 254, 'diskInfo: 254 total sectors');
+        assert(info.usedSectors === 3, 'diskInfo: 3 used sectors');
+        assert(info.freeSectors === 251, 'diskInfo: 251 free sectors');
+        assert(info.writeProtect === false, 'diskInfo: not write-protected');
+
+        section('MDRLoader - Empty MDR');
+
+        const emptyMdr = MDRLoader.createBlankMDR('EMPTY');
+        const emptyFiles = MDRLoader.listFiles(emptyMdr);
+        assert(emptyFiles.length === 0, 'empty MDR: 0 files');
+        const emptyInfo = MDRLoader.getDiskInfo(emptyMdr);
+        assert(emptyInfo.fileCount === 0, 'empty diskInfo: 0 files');
+        // createBlankMDR sets HDFLAG=1 (valid header) for all sectors,
+        // so getDiskInfo counts them as used (hdflag !== 0), freeSectors = 0
+        assert(emptyInfo.freeSectors === 0, 'empty: formatted sectors counted as used (hdflag=1)');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // OPDLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runOPDLoaderTests() {
+        section('OPDLoader - Constants');
+
+        assert(OPDLoader.SECTORS_PER_TRACK === 18, 'SECTORS_PER_TRACK = 18');
+        assert(OPDLoader.BYTES_PER_SECTOR === 256, 'BYTES_PER_SECTOR = 256');
+        assert(OPDLoader.TRACKS === 40, 'TRACKS = 40');
+        assert(OPDLoader.SS_SIZE === 184320, 'SS_SIZE = 184320');
+        assert(OPDLoader.DS_SIZE === 368640, 'DS_SIZE = 368640');
+
+        section('OPDLoader - isOPD');
+
+        assert(OPDLoader.isOPD(new Uint8Array(184320)) === true, 'SS size valid');
+        assert(OPDLoader.isOPD(new Uint8Array(368640)) === true, 'DS size valid');
+        assert(OPDLoader.isOPD(new Uint8Array(100000)) === false, 'wrong size rejected');
+        assert(OPDLoader.isOPD(new Uint8Array(0)) === false, 'empty rejected');
+
+        section('OPDLoader - isDoubleSided');
+
+        assert(OPDLoader.isDoubleSided(new Uint8Array(184320)) === false, 'SS not double-sided');
+        assert(OPDLoader.isDoubleSided(new Uint8Array(368640)) === true, 'DS is double-sided');
+
+        section('OPDLoader - getSectorOffset');
+
+        // Single-sided
+        assert(OPDLoader.getSectorOffset(0, 0, 0, 1) === 0, 'SS: T0 S0 = 0');
+        assert(OPDLoader.getSectorOffset(0, 0, 1, 1) === 256, 'SS: T0 S1 = 256');
+        assert(OPDLoader.getSectorOffset(1, 0, 0, 1) === 18 * 256, 'SS: T1 S0');
+        // Double-sided
+        assert(OPDLoader.getSectorOffset(0, 0, 0, 2) === 0, 'DS: T0 S0 S0 = 0');
+        assert(OPDLoader.getSectorOffset(0, 1, 0, 2) === 18 * 256, 'DS: T0 S1 S0');
+        assert(OPDLoader.getSectorOffset(1, 0, 0, 2) === 36 * 256, 'DS: T1 S0 S0');
+
+        section('OPDLoader - createBlankOPD');
+
+        const ssOPD = OPDLoader.createBlankOPD(1);
+        assert(ssOPD.length === 184320, 'SS blank size = 184320');
+        // Directory end sentinel at entry 1, offset for last_block
+        const dirOff = OPDLoader.DIR_START_SECTOR * 256;
+        assert(ssOPD[dirOff + 16 + 4] === 0xFF, 'end sentinel low = 0xFF');
+        assert(ssOPD[dirOff + 16 + 5] === 0xFF, 'end sentinel high = 0xFF');
+        // Data area filled with 0xE5
+        const dataStart = OPDLoader.DATA_START_SECTOR * 256;
+        assert(ssOPD[dataStart] === 0xE5, 'data area filled with 0xE5');
+
+        const dsOPD = OPDLoader.createBlankOPD(2);
+        assert(dsOPD.length === 368640, 'DS blank size = 368640');
+
+        section('OPDLoader - buildOPD / listFiles round-trip');
+
+        const fileData = new Uint8Array(50);
+        for (let i = 0; i < 50; i++) fileData[i] = i + 1;
+        const opd = OPDLoader.buildOPD([
+            { name: 'GAME', type: 3, data: fileData, startAddr: 0x6000, autostart: 0 }
+        ], 'MYDISK', 1);
+
+        assert(opd.length === 184320, 'built OPD size correct');
+
+        const opdFiles = OPDLoader.listFiles(opd);
+        assert(opdFiles.length === 1, 'listFiles: 1 file');
+        assert(opdFiles[0].name === 'GAME', 'file name = GAME');
+        assert(opdFiles[0].type === 3, 'file type = 3 (CODE)');
+        assert(opdFiles[0].typeName === 'CODE', 'typeName = CODE');
+        assert(opdFiles[0].length === 50, 'file length = 50');
+        assert(opdFiles[0].startAddr === 0x6000, 'startAddr = 0x6000');
+
+        section('OPDLoader - extractFile');
+
+        const extracted = OPDLoader.extractFile(opd, opdFiles[0]);
+        assert(extracted !== null, 'extracted not null');
+        assert(extracted.length === 50, 'extracted length = 50');
+        assert(extracted[0] === 1, 'extracted[0] = 1');
+        assert(extracted[49] === 50, 'extracted[49] = 50');
+
+        section('OPDLoader - getDiskInfo');
+
+        const info = OPDLoader.getDiskInfo(opd);
+        assert(info.tracks === 40, 'diskInfo: 40 tracks');
+        assert(info.sides === 1, 'diskInfo: 1 side');
+        assert(info.sectorsPerTrack === 18, 'diskInfo: 18 sectors/track');
+        assert(info.fileCount === 1, 'diskInfo: 1 file');
+        assert(info.totalSectors === 720, 'diskInfo: totalSectors = 720');
+        // 8 reserved + 1 file sector = 9 used
+        assert(info.usedSectors === 9, 'diskInfo: 9 used sectors');
+        assert(info.freeSectors === 711, 'diskInfo: 711 free sectors');
+
+        section('OPDLoader - Multiple files');
+
+        const f1data = new Uint8Array(200);
+        const f2data = new Uint8Array(100);
+        f1data.fill(0x11);
+        f2data.fill(0x22);
+        const opd2 = OPDLoader.buildOPD([
+            { name: 'FILE1', type: 3, data: f1data, startAddr: 0x8000, autostart: 0 },
+            { name: 'FILE2', type: 0, data: f2data, startAddr: 0, autostart: 10 }
+        ], 'MULTI', 1);
+
+        const opd2Files = OPDLoader.listFiles(opd2);
+        assert(opd2Files.length === 2, 'multi: 2 files');
+        assert(opd2Files[0].name === 'FILE1', 'multi: file 1 name');
+        assert(opd2Files[1].name === 'FILE2', 'multi: file 2 name');
+        assert(opd2Files[1].type === 0, 'file 2: type = 0 (BASIC)');
+        assert(opd2Files[1].typeName === 'BASIC', 'file 2: typeName = BASIC');
+
+        const ex1 = OPDLoader.extractFile(opd2, opd2Files[0]);
+        const ex2 = OPDLoader.extractFile(opd2, opd2Files[1]);
+        assert(ex1[0] === 0x11, 'extract file 1: 0x11');
+        assert(ex2[0] === 0x22, 'extract file 2: 0x22');
+
+        section('OPDLoader - Empty disk');
+
+        const emptyOpd = OPDLoader.createBlankOPD(1);
+        const emptyFiles = OPDLoader.listFiles(emptyOpd);
+        assert(emptyFiles.length === 0, 'empty disk: 0 files');
+
+        section('OPDLoader - Double-sided buildOPD');
+
+        const dsOpd = OPDLoader.buildOPD([
+            { name: 'DSIDE', type: 3, data: new Uint8Array(10), startAddr: 0, autostart: 0 }
+        ], 'DS_DISK', 2);
+        assert(dsOpd.length === 368640, 'DS build: correct size');
+        const dsInfo = OPDLoader.getDiskInfo(dsOpd);
+        assert(dsInfo.sides === 2, 'DS diskInfo: 2 sides');
+        assert(dsInfo.totalSectors === 1440, 'DS: totalSectors = 1440');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Run All
+    // ═══════════════════════════════════════════════════════
+    function runAll() {
+        logEl.innerHTML = '';
+        passed = 0;
+        failed = 0;
+        try { runTapeLoaderTests(); } catch(e) { log(`ERROR in TapeLoader: ${e.message}`, 'fail'); }
+        try { runBetaDiskBasicTests(); } catch(e) { log(`ERROR in BetaDisk Basic: ${e.message}`, 'fail'); }
+        try { runBetaDiskCommandTests(); } catch(e) { log(`ERROR in BetaDisk Commands: ${e.message}`, 'fail'); }
+        try { runBetaDiskDataTests(); } catch(e) { log(`ERROR in BetaDisk Data: ${e.message}`, 'fail'); }
+        try { runPlusDDiskTests(); } catch(e) { log(`ERROR in PlusDDisk: ${e.message}`, 'fail'); }
+        try { runMicrodriveTests(); } catch(e) { log(`ERROR in Microdrive: ${e.message}`, 'fail'); }
+        try { runMGTLoaderTests(); } catch(e) { log(`ERROR in MGTLoader: ${e.message}`, 'fail'); }
+        try { runMDRLoaderTests(); } catch(e) { log(`ERROR in MDRLoader: ${e.message}`, 'fail'); }
+        try { runOPDLoaderTests(); } catch(e) { log(`ERROR in OPDLoader: ${e.message}`, 'fail'); }
+        updateSummary();
+    }
+
+    // Expose to global scope for buttons
+    window.runAll = runAll;
+    window.runTapeLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runTapeLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runBetaDiskBasicTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runBetaDiskBasicTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runBetaDiskCommandTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runBetaDiskCommandTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runBetaDiskDataTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runBetaDiskDataTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runPlusDDiskTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runPlusDDiskTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runMicrodriveTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMicrodriveTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runMGTLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMGTLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runMDRLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMDRLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runOPDLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runOPDLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

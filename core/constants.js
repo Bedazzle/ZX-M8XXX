@@ -91,14 +91,15 @@ export const PORT_WD_DATA   = 0x7F;   // Data register
 export const PORT_WD_SYS    = 0xFF;   // System register (active-high)
 
 // =============================================================================
-// +D (DISCiPLE/+D) WD1772 port addresses (active-low decode on low byte)
+// +D (DISCiPLE/+D) port addresses (per FUSE plusd.c, active-low decode on low byte)
 // =============================================================================
 
-export const PORT_PLUSD_CTRL  = 0xE3;  // +D control register (write: drive/side/page; read: INTRQ/DRQ)
-export const PORT_PLUSD_CMD   = 0xE7;  // +D WD1772 command/status register
-export const PORT_PLUSD_TRACK = 0xEF;  // +D WD1772 track register
-export const PORT_PLUSD_SEC   = 0xF7;  // +D WD1772 sector register
-export const PORT_PLUSD_DATA  = 0xFF;  // +D WD1772 data register
+export const PORT_PLUSD_CMD   = 0xE3;  // +D WD1772 command/status register
+export const PORT_PLUSD_TRACK = 0xEB;  // +D WD1772 track register
+export const PORT_PLUSD_SEC   = 0xF3;  // +D WD1772 sector register
+export const PORT_PLUSD_DATA  = 0xFB;  // +D WD1772 data register
+export const PORT_PLUSD_CTRL  = 0xEF;  // +D control register (write: drive/side/printer)
+export const PORT_PLUSD_PAGE  = 0xE7;  // +D paging register (read=page in, write=page out)
 
 // =============================================================================
 // Interface 1 / Microdrive port addresses
@@ -114,6 +115,12 @@ export const IF1_PORT_NET     = 0x10;  // Bits 4:3 = 10 → network ($F7)
 export const IF1_PAGE_IN_RST8   = 0x0008;  // Opcode fetch at RST 8 → page in IF1 ROM
 export const IF1_PAGE_IN_CLOSE  = 0x1708;  // Opcode fetch at CLOSE# → page in IF1 ROM
 export const IF1_PAGE_OUT_ADDR  = 0x0700;  // RET at $0700 → page out IF1 ROM
+
+// +D ROM auto-paging trigger addresses (per FUSE z80_ops.c)
+export const PLUSD_PAGE_IN_RST8    = 0x0008;  // RST 8 — error handler (intercepts BASIC commands)
+export const PLUSD_PAGE_IN_KEYNEXT = 0x003A;  // KEY-NEXT — token reading
+export const PLUSD_PAGE_IN_NMI     = 0x0066;  // NMI handler
+export const PLUSD_PAGE_IN_KEYSCAN = 0x028E;  // KEY-SCAN routine
 
 // =============================================================================
 // SNA snapshot format

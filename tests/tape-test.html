@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Tape &amp; AY Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Tape &amp; AY Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runTapePlayerBasicTests()">TapePlayer Basic</button>
+        <button onclick="runTapePlayerPlaybackTests()">TapePlayer Playback</button>
+        <button onclick="runTapePlayerAdvancedTests()">TapePlayer Advanced</button>
+        <button onclick="runTZXLoaderTests()">TZXLoader</button>
+        <button onclick="runAYBasicTests()">AY Basic</button>
+        <button onclick="runAYSoundTests()">AY Sound</button>
+        <button onclick="runAYPSGTests()">AY PSG Export</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { TapeLoader, TapePlayer, TZXLoader } from '../core/loaders.js';
+    import { AY } from '../core/ay.js';
+
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+    }
+
+    function assert(condition, name, detail = '') {
+        if (condition) {
+            passed++;
+            log(`  \u2713 ${name}`, 'pass');
+        } else {
+            failed++;
+            log(`  \u2717 ${name}${detail ? ' \u2014 ' + detail : ''}`, 'fail');
+        }
+    }
+
+    function section(name) {
+        log(`\n\u2550\u2550\u2550 ${name} \u2550\u2550\u2550`, 'section');
+    }
+
+    function updateSummary() {
+        summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`;
+        summaryEl.className = failed > 0 ? 'fail' : 'pass';
+    }
+
+    // ========== Helper: build a minimal TAP binary ==========
+    function buildTAP(blocks) {
+        // blocks = array of Uint8Array (each block = flag + data + checksum)
+        const parts = [];
+        for (const block of blocks) {
+            // TAP format: 2-byte length (little-endian) + block data
+            const len = block.length;
+            parts.push(new Uint8Array([len & 0xFF, (len >> 8) & 0xFF]));
+            parts.push(block);
+        }
+        const totalLen = parts.reduce((s, p) => s + p.length, 0);
+        const result = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const p of parts) {
+            result.set(p, offset);
+            offset += p.length;
+        }
+        return result;
+    }
+
+    // ========== Helper: build a TAP block with checksum ==========
+    function makeTAPBlock(flag, data) {
+        const block = new Uint8Array(data.length + 2);
+        block[0] = flag;
+        block.set(data, 1);
+        let checksum = flag;
+        for (let i = 0; i < data.length; i++) checksum ^= data[i];
+        block[block.length - 1] = checksum;
+        return block;
+    }
+
+    // ========== Helper: build a minimal TZX binary ==========
+    function buildTZX(blockEntries) {
+        // blockEntries = array of Uint8Array (each is blockId + block data)
+        const header = new Uint8Array(10);
+        const sig = 'ZXTape!';
+        for (let i = 0; i < 7; i++) header[i] = sig.charCodeAt(i);
+        header[7] = 0x1A;
+        header[8] = 1; // major version
+        header[9] = 20; // minor version
+
+        const totalLen = 10 + blockEntries.reduce((s, b) => s + b.length, 0);
+        const result = new Uint8Array(totalLen);
+        result.set(header, 0);
+        let offset = 10;
+        for (const b of blockEntries) {
+            result.set(b, offset);
+            offset += b.length;
+        }
+        return result;
+    }
+
+    // ========== Helper: build TZX standard data block (0x10) ==========
+    function tzxStandardBlock(pauseMs, tapBlock) {
+        const entry = new Uint8Array(5 + tapBlock.length);
+        entry[0] = 0x10; // block ID
+        entry[1] = pauseMs & 0xFF;
+        entry[2] = (pauseMs >> 8) & 0xFF;
+        entry[3] = tapBlock.length & 0xFF;
+        entry[4] = (tapBlock.length >> 8) & 0xFF;
+        entry.set(tapBlock, 5);
+        return entry;
+    }
+
+    // ========== Helper: build TZX pure tone block (0x12) ==========
+    function tzxPureTone(pulseLength, pulseCount) {
+        return new Uint8Array([0x12,
+            pulseLength & 0xFF, (pulseLength >> 8) & 0xFF,
+            pulseCount & 0xFF, (pulseCount >> 8) & 0xFF]);
+    }
+
+    // ========== Helper: build TZX pulse sequence block (0x13) ==========
+    function tzxPulseSequence(pulses) {
+        const entry = new Uint8Array(2 + pulses.length * 2);
+        entry[0] = 0x13;
+        entry[1] = pulses.length;
+        for (let i = 0; i < pulses.length; i++) {
+            entry[2 + i * 2] = pulses[i] & 0xFF;
+            entry[3 + i * 2] = (pulses[i] >> 8) & 0xFF;
+        }
+        return entry;
+    }
+
+    // ========== Helper: build TZX pause block (0x20) ==========
+    function tzxPause(pauseMs) {
+        return new Uint8Array([0x20, pauseMs & 0xFF, (pauseMs >> 8) & 0xFF]);
+    }
+
+    // ========== Helper: build TZX loop start block (0x24) ==========
+    function tzxLoopStart(repetitions) {
+        return new Uint8Array([0x24, repetitions & 0xFF, (repetitions >> 8) & 0xFF]);
+    }
+
+    // ========== Helper: build TZX loop end block (0x25) ==========
+    function tzxLoopEnd() {
+        return new Uint8Array([0x25]);
+    }
+
+    // ========== Helper: build TZX turbo data block (0x11) ==========
+    function tzxTurboBlock(data, opts = {}) {
+        const pilotPulse = opts.pilotPulse || 2168;
+        const sync1 = opts.sync1 || 667;
+        const sync2 = opts.sync2 || 735;
+        const zero = opts.zero || 855;
+        const one = opts.one || 1710;
+        const pilotCount = opts.pilotCount || 3223;
+        const usedBits = opts.usedBits || 8;
+        const pause = opts.pause || 1000;
+        const dataLen = data.length;
+
+        const entry = new Uint8Array(19 + dataLen);
+        entry[0] = 0x11;
+        entry[1] = pilotPulse & 0xFF; entry[2] = (pilotPulse >> 8) & 0xFF;
+        entry[3] = sync1 & 0xFF; entry[4] = (sync1 >> 8) & 0xFF;
+        entry[5] = sync2 & 0xFF; entry[6] = (sync2 >> 8) & 0xFF;
+        entry[7] = zero & 0xFF; entry[8] = (zero >> 8) & 0xFF;
+        entry[9] = one & 0xFF; entry[10] = (one >> 8) & 0xFF;
+        entry[11] = pilotCount & 0xFF; entry[12] = (pilotCount >> 8) & 0xFF;
+        entry[13] = usedBits;
+        entry[14] = pause & 0xFF; entry[15] = (pause >> 8) & 0xFF;
+        entry[16] = dataLen & 0xFF; entry[17] = (dataLen >> 8) & 0xFF; entry[18] = (dataLen >> 16) & 0xFF;
+        entry.set(data, 19);
+        return entry;
+    }
+
+    // ========== Helper: build TZX pure data block (0x14) ==========
+    function tzxPureData(data, opts = {}) {
+        const zero = opts.zero || 855;
+        const one = opts.one || 1710;
+        const usedBits = opts.usedBits || 8;
+        const pause = opts.pause || 1000;
+        const dataLen = data.length;
+
+        const entry = new Uint8Array(11 + dataLen);
+        entry[0] = 0x14;
+        entry[1] = zero & 0xFF; entry[2] = (zero >> 8) & 0xFF;
+        entry[3] = one & 0xFF; entry[4] = (one >> 8) & 0xFF;
+        entry[5] = usedBits;
+        entry[6] = pause & 0xFF; entry[7] = (pause >> 8) & 0xFF;
+        entry[8] = dataLen & 0xFF; entry[9] = (dataLen >> 8) & 0xFF; entry[10] = (dataLen >> 16) & 0xFF;
+        entry.set(data, 11);
+        return entry;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TapePlayer Basic Tests
+    // ═══════════════════════════════════════════════════════
+    function runTapePlayerBasicTests() {
+        section('TapePlayer - Construction');
+
+        const tp = new TapePlayer();
+        assert(tp.blocks.length === 0, 'starts with no blocks');
+        assert(tp.currentBlock === 0, 'currentBlock = 0');
+        assert(tp.playing === false, 'not playing');
+        assert(tp.earBit === false, 'earBit = false');
+        assert(tp.phase === 'idle', 'phase = idle');
+
+        section('TapePlayer - Timing constants');
+
+        assert(TapePlayer.PILOT_PULSE === 2168, 'PILOT_PULSE = 2168');
+        assert(TapePlayer.SYNC1_PULSE === 667, 'SYNC1_PULSE = 667');
+        assert(TapePlayer.SYNC2_PULSE === 735, 'SYNC2_PULSE = 735');
+        assert(TapePlayer.ZERO_PULSE === 855, 'ZERO_PULSE = 855');
+        assert(TapePlayer.ONE_PULSE === 1710, 'ONE_PULSE = 1710');
+        assert(TapePlayer.HEADER_PILOT_COUNT === 8063, 'HEADER_PILOT_COUNT = 8063');
+        assert(TapePlayer.DATA_PILOT_COUNT === 3223, 'DATA_PILOT_COUNT = 3223');
+        assert(TapePlayer.PAUSE_MS === 1000, 'PAUSE_MS = 1000');
+        assert(TapePlayer.TSTATES_PER_MS === 3500, 'TSTATES_PER_MS = 3500');
+        assert(TapePlayer.TAIL_PULSE === 945, 'TAIL_PULSE = 945');
+
+        section('TapePlayer - loadBlocks');
+
+        const tp2 = new TapePlayer();
+        const blocks = [
+            { type: 'data', flag: 0x00, data: new Uint8Array([0x00, 0x03, 0x41]), length: 3, pauseMs: 1000 },
+            { type: 'data', flag: 0xFF, data: new Uint8Array([0xFF, 0x42]), length: 2, pauseMs: 1000 }
+        ];
+        tp2.loadBlocks(blocks);
+        assert(tp2.blocks.length === 2, 'loadBlocks: 2 blocks loaded');
+        assert(tp2.currentBlock === 0, 'loadBlocks: rewinds to 0');
+        assert(tp2.phase === 'idle', 'loadBlocks: phase = idle');
+
+        section('TapePlayer - loadFromTapeLoader');
+
+        // Build a simple TAP and load via TapeLoader
+        const headerData = new Uint8Array(17);
+        headerData[0] = 0x00; // header flag
+        headerData[1] = 0x03; // type: bytes
+        // filename "TESTFILE  "
+        const fn = 'TESTFILE  ';
+        for (let i = 0; i < 10; i++) headerData[2 + i] = fn.charCodeAt(i);
+        headerData[12] = 0x02; headerData[13] = 0x00; // data length = 2
+        headerData[14] = 0x00; headerData[15] = 0x80; // start address = 0x8000
+        headerData[16] = 0x00; // unused
+        let xor = 0;
+        for (let i = 0; i < 17; i++) xor ^= headerData[i];
+
+        const headerBlock = new Uint8Array(19);
+        headerBlock.set(headerData, 0);
+        headerBlock[17] = xor;
+
+        const dataBlock = makeTAPBlock(0xFF, new Uint8Array([0xAA, 0xBB]));
+        const tapData = buildTAP([headerBlock, dataBlock]);
+
+        const tl = new TapeLoader();
+        tl.load(tapData);
+
+        const tp3 = new TapePlayer();
+        tp3.loadFromTapeLoader(tl);
+        assert(tp3.blocks.length >= 2, 'loadFromTapeLoader: blocks loaded');
+        assert(tp3.currentBlock === 0, 'loadFromTapeLoader: rewound');
+
+        section('TapePlayer - play / stop / rewind');
+
+        const tp4 = new TapePlayer();
+        assert(tp4.play() === false, 'play with no blocks returns false');
+
+        tp4.loadBlocks([{ type: 'data', flag: 0xFF, data: new Uint8Array([0xFF, 0x42]), length: 2, pauseMs: 1000 }]);
+        assert(tp4.play() === true, 'play with blocks returns true');
+        assert(tp4.playing === true, 'playing = true after play()');
+        assert(tp4.isPlaying() === true, 'isPlaying() = true');
+
+        tp4.stop();
+        assert(tp4.playing === false, 'stop: playing = false');
+        assert(tp4.isPlaying() === false, 'stop: isPlaying() = false');
+
+        tp4.currentBlock = 99;
+        tp4.rewind();
+        assert(tp4.currentBlock === 0, 'rewind: currentBlock = 0');
+        assert(tp4.phase === 'idle', 'rewind: phase = idle');
+        assert(tp4.earBit === false, 'rewind: earBit = false');
+        assert(tp4.totalTstates === 0, 'rewind: totalTstates = 0');
+
+        section('TapePlayer - getPosition');
+
+        const tp5 = new TapePlayer();
+        tp5.loadBlocks([
+            { type: 'data', flag: 0x00, data: new Uint8Array([0x00, 0x01, 0x02]), length: 3, pauseMs: 1000 },
+            { type: 'data', flag: 0xFF, data: new Uint8Array([0xFF, 0x42]), length: 2, pauseMs: 1000 }
+        ]);
+
+        const pos = tp5.getPosition();
+        assert(pos.block === 0, 'getPosition: block = 0');
+        assert(pos.totalBlocks === 2, 'getPosition: totalBlocks = 2');
+        assert(pos.phase === 'idle', 'getPosition: phase = idle');
+        assert(pos.playing === false, 'getPosition: playing = false');
+
+        section('TapePlayer - getEarBit');
+
+        const tp6 = new TapePlayer();
+        assert(tp6.getEarBit() === false, 'getEarBit: initial = false');
+
+        section('TapePlayer - callbacks');
+
+        const tp7 = new TapePlayer();
+        let blockStartCalled = false, blockEndCalled = false, tapeEndCalled = false;
+        tp7.onBlockStart = (idx, block) => { blockStartCalled = true; };
+        tp7.onBlockEnd = (idx) => { blockEndCalled = true; };
+        tp7.onTapeEnd = () => { tapeEndCalled = true; };
+
+        // Single tiny data block
+        tp7.loadBlocks([{
+            type: 'data', flag: 0xFF,
+            data: new Uint8Array([0xFF]),
+            length: 1, pauseMs: 0
+        }]);
+        tp7.play();
+
+        // Update enough to play through entire block
+        for (let i = 0; i < 100000; i++) {
+            tp7.update(1000);
+            if (!tp7.playing) break;
+        }
+
+        assert(blockStartCalled, 'onBlockStart called');
+        assert(blockEndCalled, 'onBlockEnd called');
+        // After all blocks + pause, tape should end
+        assert(tapeEndCalled || !tp7.playing, 'tape finishes (onTapeEnd or stopped)');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TapePlayer Playback Tests
+    // ═══════════════════════════════════════════════════════
+    function runTapePlayerPlaybackTests() {
+        section('TapePlayer - Pilot phase');
+
+        const tp = new TapePlayer();
+        tp.loadBlocks([{
+            type: 'data', flag: 0x00,
+            data: new Uint8Array([0x00, 0x03, 0x41]),
+            length: 3, pauseMs: 1000,
+            pilotPulse: 2168, pilotCount: 5,
+            sync1Pulse: 667, sync2Pulse: 735,
+            zeroPulse: 855, onePulse: 1710, usedBits: 8
+        }]);
+        tp.play();
+
+        assert(tp.phase === 'pilot', 'starts in pilot phase');
+        assert(tp.pilotCount === 5, 'pilotCount = 5');
+
+        // TapePlayer timing model: advancePhase() fires when pulseRemaining <= 0
+        // at the START of the next update iteration after the pulse is fully consumed.
+        // So we need pulse_duration + 1 T-states to cross the boundary.
+        const initialEar = tp.earBit;
+        tp.update(2168 + 1); // consume one pilot pulse + 1 to trigger toggle
+        assert(tp.earBit !== initialEar, 'earBit toggles after pilot pulse');
+
+        // After remaining 4 pilot pulses, should be in sync1
+        // We already consumed 1 T-state into the 2nd pilot pulse, so step through
+        // the remaining pulses using single-step to avoid cumulative offset issues
+        for (let i = 0; i < 4; i++) {
+            while (tp.phase === 'pilot') tp.update(1);
+        }
+        assert(tp.phase === 'sync1', 'enters sync1 after pilot');
+
+        section('TapePlayer - Sync phases');
+
+        // Step through sync1
+        while (tp.phase === 'sync1') tp.update(1);
+        assert(tp.phase === 'sync2', 'enters sync2 after sync1');
+        // Step through sync2
+        while (tp.phase === 'sync2') tp.update(1);
+        assert(tp.phase === 'data', 'enters data after sync2');
+
+        section('TapePlayer - Data phase bit encoding');
+
+        // Test with known data byte: 0x00 = all zero bits
+        const tp2 = new TapePlayer();
+        tp2.loadBlocks([{
+            type: 'data', flag: 0x00,
+            data: new Uint8Array([0x00]),
+            length: 1, pauseMs: 1000,
+            pilotCount: 1, // minimal pilot
+            pilotPulse: 100, sync1Pulse: 100, sync2Pulse: 100,
+            zeroPulse: 855, onePulse: 1710, usedBits: 8
+        }]);
+        tp2.play();
+        // Skip pilot + sync by stepping until we reach data phase
+        while (tp2.phase !== 'data' && tp2.playing) tp2.update(1);
+        assert(tp2.phase === 'data', 'in data phase after skipping pilot+sync');
+
+        // Each 0 bit = 2 pulses of 855 T-states = 1710 T-states per bit
+        // 8 bits * 1710 = 13680 T-states for one byte of zeros
+        const earBefore = tp2.earBit;
+        tp2.update(855); // first pulse of first bit
+        assert(tp2.earBit !== earBefore, 'earBit toggles for zero-bit pulse 1');
+        tp2.update(855); // second pulse of first bit
+        // Bit complete, earBit toggles again
+
+        section('TapePlayer - Tail and pause phases');
+
+        // Play a small block all the way through to tail/pause
+        const tp3 = new TapePlayer();
+        tp3.loadBlocks([{
+            type: 'data', flag: 0xFF,
+            data: new Uint8Array([0xFF]),
+            length: 1, pauseMs: 500,
+            pilotCount: 1,
+            pilotPulse: 100, sync1Pulse: 100, sync2Pulse: 100,
+            zeroPulse: 100, onePulse: 200, usedBits: 8
+        }]);
+        tp3.play();
+
+        // Advance through entire block
+        let maxIter = 100000;
+        while (tp3.phase !== 'tail' && tp3.phase !== 'pause' && tp3.phase !== 'idle' && maxIter-- > 0) {
+            tp3.update(100);
+        }
+        assert(tp3.phase === 'tail' || tp3.phase === 'pause', 'reaches tail or pause after data');
+
+        // Continue through tail+pause to idle
+        while (tp3.playing && maxIter-- > 0) {
+            tp3.update(10000);
+        }
+        assert(!tp3.playing, 'stops playing after last block');
+
+        section('TapePlayer - Multi-block playback');
+
+        const tp4 = new TapePlayer();
+        tp4.loadBlocks([
+            { type: 'data', flag: 0x00, data: new Uint8Array([0x00]), length: 1, pauseMs: 1,
+              pilotCount: 1, pilotPulse: 100, sync1Pulse: 100, sync2Pulse: 100,
+              zeroPulse: 100, onePulse: 200, usedBits: 8 },
+            { type: 'data', flag: 0xFF, data: new Uint8Array([0xFF]), length: 1, pauseMs: 1,
+              pilotCount: 1, pilotPulse: 100, sync1Pulse: 100, sync2Pulse: 100,
+              zeroPulse: 100, onePulse: 200, usedBits: 8 }
+        ]);
+
+        let blocksStarted = [];
+        tp4.onBlockStart = (idx) => blocksStarted.push(idx);
+        tp4.play();
+
+        maxIter = 500000;
+        while (tp4.playing && maxIter-- > 0) {
+            tp4.update(100);
+        }
+        assert(blocksStarted.includes(0), 'block 0 started');
+        assert(blocksStarted.includes(1), 'block 1 started');
+        assert(!tp4.playing, 'stops after both blocks');
+
+        section('TapePlayer - update returns earBit');
+
+        const tp5 = new TapePlayer();
+        tp5.loadBlocks([{
+            type: 'data', flag: 0xFF,
+            data: new Uint8Array([0xFF]),
+            length: 1, pauseMs: 1000,
+            pilotCount: 2,
+            pilotPulse: 1000, sync1Pulse: 100, sync2Pulse: 100,
+            zeroPulse: 100, onePulse: 200, usedBits: 8
+        }]);
+        tp5.play();
+        const ear = tp5.update(500); // mid-pulse
+        assert(ear === tp5.earBit, 'update() returns current earBit');
+
+        section('TapePlayer - totalTstates tracking');
+
+        const tp6 = new TapePlayer();
+        tp6.loadBlocks([{
+            type: 'data', flag: 0xFF, data: new Uint8Array([0xFF]), length: 1,
+            pauseMs: 1, pilotCount: 1, pilotPulse: 100,
+            sync1Pulse: 50, sync2Pulse: 50, zeroPulse: 50, onePulse: 100, usedBits: 8
+        }]);
+        tp6.play();
+        tp6.update(5000);
+        assert(tp6.totalTstates === 5000, 'totalTstates = 5000 after update(5000)');
+        tp6.update(3000);
+        assert(tp6.totalTstates === 8000, 'totalTstates accumulates');
+
+        section('TapePlayer - edge transitions');
+
+        const tp7 = new TapePlayer();
+        tp7.loadBlocks([{
+            type: 'data', flag: 0xFF, data: new Uint8Array([0xFF]), length: 1,
+            pauseMs: 1, pilotCount: 3, pilotPulse: 1000,
+            sync1Pulse: 100, sync2Pulse: 100, zeroPulse: 100, onePulse: 200, usedBits: 8
+        }]);
+        tp7.play();
+        tp7.startFrame(0);
+        tp7.update(5000, 5000); // should produce several edge transitions
+        const edges = tp7.getEdgeTransitions();
+        assert(edges.length > 0, 'edge transitions recorded');
+        assert(edges[0].tStates !== undefined, 'edge has tStates field');
+        assert(edges[0].level === 0 || edges[0].level === 1, 'edge has level 0 or 1');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TapePlayer Advanced Tests
+    // ═══════════════════════════════════════════════════════
+    function runTapePlayerAdvancedTests() {
+        section('TapePlayer - Tone block');
+
+        const tp = new TapePlayer();
+        tp.loadBlocks([{
+            type: 'tone',
+            pulseLength: 500,
+            pulseCount: 4
+        }]);
+        tp.play();
+        assert(tp.phase === 'tone', 'tone block: phase = tone');
+
+        // 4 pulses of 500 T-states each
+        // advancePhase fires AFTER pulse is consumed, so we need 4*500 + extra
+        let toggleCount = 0;
+        let prevEar = tp.earBit;
+        for (let i = 0; i < 2100; i++) {
+            tp.update(1);
+            if (tp.earBit !== prevEar) {
+                toggleCount++;
+                prevEar = tp.earBit;
+            }
+        }
+        assert(toggleCount === 4, 'tone block: 4 ear toggles');
+        assert(!tp.playing || tp.phase !== 'tone', 'tone block: exits tone phase');
+
+        section('TapePlayer - Pulses block');
+
+        const tp2 = new TapePlayer();
+        tp2.loadBlocks([{
+            type: 'pulses',
+            pulses: [300, 500, 700]
+        }]);
+        tp2.play();
+        assert(tp2.phase === 'pulses', 'pulses block: phase = pulses');
+
+        // Advance past all 3 pulses
+        tp2.update(300 + 500 + 700 + 100);
+        assert(tp2.phase !== 'pulses', 'pulses block: exits after all pulses');
+
+        section('TapePlayer - Stop block');
+
+        const tp3 = new TapePlayer();
+        tp3.loadBlocks([
+            { type: 'data', flag: 0xFF, data: new Uint8Array([0xFF]), length: 1,
+              pauseMs: 0, pilotCount: 1, pilotPulse: 100, sync1Pulse: 50,
+              sync2Pulse: 50, zeroPulse: 50, onePulse: 100, usedBits: 8, noPilot: true },
+            { type: 'stop' },
+            { type: 'data', flag: 0xFF, data: new Uint8Array([0xFF]), length: 1,
+              pauseMs: 1, pilotCount: 1, pilotPulse: 100, sync1Pulse: 50,
+              sync2Pulse: 50, zeroPulse: 50, onePulse: 100, usedBits: 8 }
+        ]);
+        tp3.play();
+
+        let maxIter = 100000;
+        while (tp3.playing && maxIter-- > 0) {
+            tp3.update(100);
+        }
+        assert(!tp3.playing, 'stop block: playback stopped');
+        assert(tp3.currentBlock === 1, 'stop block: stopped at block 1 (not 2)');
+
+        section('TapePlayer - Pause block');
+
+        const tp4 = new TapePlayer();
+        tp4.loadBlocks([{
+            type: 'pause',
+            pauseMs: 100
+        }]);
+        tp4.play();
+        assert(tp4.phase === 'pause', 'pause block: enters pause');
+        tp4.update(100 * 3500 + 100); // 100ms + extra
+        assert(tp4.currentBlock >= 1, 'pause block: advances after pause');
+
+        section('TapePlayer - Loop blocks');
+
+        const tp5 = new TapePlayer();
+        let loopBlockStarts = 0;
+        tp5.onBlockStart = () => { loopBlockStarts++; };
+        tp5.loadBlocks([
+            { type: 'loopStart', repetitions: 3 },
+            { type: 'tone', pulseLength: 100, pulseCount: 1 },
+            { type: 'loopEnd' }
+        ]);
+        tp5.play();
+
+        maxIter = 100000;
+        while (tp5.playing && maxIter-- > 0) {
+            tp5.update(200);
+        }
+        // The tone block should be played 3 times
+        assert(loopBlockStarts === 3, 'loop: tone block started 3 times');
+
+        section('TapePlayer - noPilot data block (Pure Data)');
+
+        const tp6 = new TapePlayer();
+        tp6.loadBlocks([{
+            type: 'data', flag: 0xFF,
+            data: new Uint8Array([0xAA]),
+            length: 1, pauseMs: 0,
+            zeroPulse: 500, onePulse: 1000,
+            usedBits: 8, noPilot: true
+        }]);
+        tp6.play();
+        assert(tp6.phase === 'data', 'noPilot: starts directly in data phase (no pilot)');
+
+        section('TapePlayer - usedBits < 8 (partial last byte)');
+
+        const tp7 = new TapePlayer();
+        let dataBitsPlayed = 0;
+        tp7.loadBlocks([{
+            type: 'data', flag: 0xFF,
+            data: new Uint8Array([0xFF]), // 1 byte
+            length: 1, pauseMs: 0,
+            pilotCount: 1, pilotPulse: 100, sync1Pulse: 50, sync2Pulse: 50,
+            zeroPulse: 100, onePulse: 200,
+            usedBits: 3, noPilot: true  // Only 3 bits used in last byte
+        }]);
+        tp7.play();
+
+        // With noPilot, starts in data phase directly
+        // 3 bits * 2 pulses each = 6 pulses at 200 T-states (all ones) = 1200 T-states
+        maxIter = 50000;
+        while (tp7.phase === 'data' && maxIter-- > 0) {
+            tp7.update(1);
+        }
+        // Should be done with data after 3 bits, not 8
+        assert(tp7.phase !== 'data', 'usedBits=3: exits data phase after 3 bits');
+
+        section('TapePlayer - play after end rewinds');
+
+        const tp8 = new TapePlayer();
+        tp8.loadBlocks([{ type: 'tone', pulseLength: 100, pulseCount: 1 }]);
+        tp8.play();
+        tp8.update(200);
+        // Should have advanced past end
+        while (tp8.playing) tp8.update(1000);
+        assert(tp8.currentBlock >= tp8.blocks.length, 'after end: currentBlock past blocks');
+
+        const played = tp8.play();
+        assert(played === true, 'play after end: returns true (rewinds)');
+        assert(tp8.currentBlock <= 1, 'play after end: rewinds to start');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // TZXLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runTZXLoaderTests() {
+        section('TZXLoader - isTZX detection');
+
+        assert(TZXLoader.isTZX(buildTZX([])) === true, 'recognises valid TZX header');
+        assert(TZXLoader.isTZX(new Uint8Array(10)) === false, 'rejects zeroed data');
+        assert(TZXLoader.isTZX(new Uint8Array(5)) === false, 'rejects too-small file');
+
+        // Wrong signature
+        const bad = new Uint8Array(10);
+        const wrongSig = 'ZXTape?';
+        for (let i = 0; i < 7; i++) bad[i] = wrongSig.charCodeAt(i);
+        bad[7] = 0x1A;
+        assert(TZXLoader.isTZX(bad) === false, 'rejects wrong signature');
+
+        // Wrong marker byte
+        const bad2 = new Uint8Array(10);
+        const sig2 = 'ZXTape!';
+        for (let i = 0; i < 7; i++) bad2[i] = sig2.charCodeAt(i);
+        bad2[7] = 0x00; // should be 0x1A
+        assert(TZXLoader.isTZX(bad2) === false, 'rejects wrong marker byte');
+
+        section('TZXLoader - Version parsing');
+
+        const tzx = new TZXLoader();
+        const tapBlock = makeTAPBlock(0x00, new Uint8Array(17).fill(0x20));
+        const data = buildTZX([tzxStandardBlock(1000, tapBlock)]);
+        tzx.load(data);
+        assert(tzx.version.major === 1, 'version major = 1');
+        assert(tzx.version.minor === 20, 'version minor = 20');
+
+        section('TZXLoader - Block 0x10 Standard Data');
+
+        const tzx2 = new TZXLoader();
+        const headerBlock = makeTAPBlock(0x00, new Uint8Array(17).fill(0x20));
+        const dataBlock = makeTAPBlock(0xFF, new Uint8Array([0xAA, 0xBB, 0xCC]));
+        const data2 = buildTZX([
+            tzxStandardBlock(500, headerBlock),
+            tzxStandardBlock(1000, dataBlock)
+        ]);
+        const ok = tzx2.load(data2);
+        assert(ok === true, 'load returns true');
+        assert(tzx2.blocks.length === 2, '2 blocks parsed');
+
+        const b0 = tzx2.blocks[0];
+        assert(b0.type === 'data', 'block 0 type = data');
+        assert(b0.flag === 0x00, 'block 0 flag = 0x00 (header)');
+        assert(b0.pauseMs === 500, 'block 0 pause = 500ms');
+        assert(b0.pilotCount === 8063, 'block 0 pilot count = 8063 (header)');
+        assert(b0.pilotPulse === 2168, 'block 0 pilot pulse = 2168');
+        assert(b0.zeroPulse === 855, 'block 0 zero pulse = 855');
+        assert(b0.onePulse === 1710, 'block 0 one pulse = 1710');
+
+        const b1 = tzx2.blocks[1];
+        assert(b1.flag === 0xFF, 'block 1 flag = 0xFF (data)');
+        assert(b1.pilotCount === 3223, 'block 1 pilot count = 3223 (data)');
+        assert(b1.pauseMs === 1000, 'block 1 pause = 1000ms');
+        assert(b1.data[1] === 0xAA, 'block 1 data[1] correct');
+
+        section('TZXLoader - Block 0x11 Turbo Data');
+
+        const tzx3 = new TZXLoader();
+        const turboData = new Uint8Array([0xFF, 0x11, 0x22]);
+        const data3 = buildTZX([tzxTurboBlock(turboData, {
+            pilotPulse: 1000, sync1: 400, sync2: 500,
+            zero: 600, one: 1200, pilotCount: 100,
+            usedBits: 6, pause: 250
+        })]);
+        tzx3.load(data3);
+        assert(tzx3.blocks.length === 1, 'turbo: 1 block');
+        const tb = tzx3.blocks[0];
+        assert(tb.type === 'data', 'turbo: type = data');
+        assert(tb.pilotPulse === 1000, 'turbo: pilotPulse = 1000');
+        assert(tb.sync1Pulse === 400, 'turbo: sync1 = 400');
+        assert(tb.sync2Pulse === 500, 'turbo: sync2 = 500');
+        assert(tb.zeroPulse === 600, 'turbo: zero = 600');
+        assert(tb.onePulse === 1200, 'turbo: one = 1200');
+        assert(tb.pilotCount === 100, 'turbo: pilotCount = 100');
+        assert(tb.usedBits === 6, 'turbo: usedBits = 6');
+        assert(tb.pauseMs === 250, 'turbo: pause = 250');
+        assert(tb.data.length === 3, 'turbo: data length = 3');
+
+        section('TZXLoader - Block 0x12 Pure Tone');
+
+        const tzx4 = new TZXLoader();
+        const data4 = buildTZX([tzxPureTone(2000, 500)]);
+        tzx4.load(data4);
+        assert(tzx4.blocks.length === 1, 'tone: 1 block');
+        assert(tzx4.blocks[0].type === 'tone', 'tone: type = tone');
+        assert(tzx4.blocks[0].pulseLength === 2000, 'tone: pulseLength = 2000');
+        assert(tzx4.blocks[0].pulseCount === 500, 'tone: pulseCount = 500');
+
+        section('TZXLoader - Block 0x13 Pulse Sequence');
+
+        const tzx5 = new TZXLoader();
+        const data5 = buildTZX([tzxPulseSequence([100, 200, 300])]);
+        tzx5.load(data5);
+        assert(tzx5.blocks.length === 1, 'pulses: 1 block');
+        assert(tzx5.blocks[0].type === 'pulses', 'pulses: type = pulses');
+        assert(tzx5.blocks[0].pulses.length === 3, 'pulses: 3 pulses');
+        assert(tzx5.blocks[0].pulses[0] === 100, 'pulses[0] = 100');
+        assert(tzx5.blocks[0].pulses[1] === 200, 'pulses[1] = 200');
+        assert(tzx5.blocks[0].pulses[2] === 300, 'pulses[2] = 300');
+
+        section('TZXLoader - Block 0x14 Pure Data');
+
+        const tzx6 = new TZXLoader();
+        const pureBytes = new Uint8Array([0xDE, 0xAD]);
+        const data6 = buildTZX([tzxPureData(pureBytes, { zero: 700, one: 1400, usedBits: 4, pause: 200 })]);
+        tzx6.load(data6);
+        assert(tzx6.blocks.length === 1, 'pure data: 1 block');
+        const pd = tzx6.blocks[0];
+        assert(pd.type === 'data', 'pure data: type = data');
+        assert(pd.noPilot === true, 'pure data: noPilot = true');
+        assert(pd.zeroPulse === 700, 'pure data: zero = 700');
+        assert(pd.onePulse === 1400, 'pure data: one = 1400');
+        assert(pd.usedBits === 4, 'pure data: usedBits = 4');
+        assert(pd.pauseMs === 200, 'pure data: pause = 200');
+        assert(pd.data[0] === 0xDE, 'pure data: data[0] = 0xDE');
+
+        section('TZXLoader - Block 0x20 Pause/Stop');
+
+        const tzx7 = new TZXLoader();
+        const data7 = buildTZX([tzxPause(2000)]);
+        tzx7.load(data7);
+        assert(tzx7.blocks.length === 1, 'pause: 1 block');
+        assert(tzx7.blocks[0].type === 'pause', 'pause: type = pause');
+        assert(tzx7.blocks[0].pauseMs === 2000, 'pause: 2000ms');
+
+        // Pause 0 = stop
+        const tzx8 = new TZXLoader();
+        const data8 = buildTZX([tzxPause(0)]);
+        tzx8.load(data8);
+        assert(tzx8.blocks[0].type === 'stop', 'pause 0: type = stop');
+
+        section('TZXLoader - Blocks 0x24/0x25 Loop Start/End');
+
+        const tzx9 = new TZXLoader();
+        const tapB = makeTAPBlock(0xFF, new Uint8Array([0x42]));
+        const data9 = buildTZX([
+            tzxLoopStart(5),
+            tzxStandardBlock(100, tapB),
+            tzxLoopEnd()
+        ]);
+        tzx9.load(data9);
+        assert(tzx9.blocks.length === 3, 'loop: 3 blocks');
+        assert(tzx9.blocks[0].type === 'loopStart', 'loop: block 0 = loopStart');
+        assert(tzx9.blocks[0].repetitions === 5, 'loop: repetitions = 5');
+        assert(tzx9.blocks[1].type === 'data', 'loop: block 1 = data');
+        assert(tzx9.blocks[2].type === 'loopEnd', 'loop: block 2 = loopEnd');
+
+        section('TZXLoader - Navigation methods');
+
+        const tzx10 = new TZXLoader();
+        const tapN = makeTAPBlock(0xFF, new Uint8Array([0x01]));
+        const data10 = buildTZX([
+            tzxStandardBlock(100, tapN),
+            tzxStandardBlock(200, tapN),
+            tzxStandardBlock(300, tapN)
+        ]);
+        tzx10.load(data10);
+
+        assert(tzx10.getBlockCount() === 3, 'getBlockCount = 3');
+        assert(tzx10.hasMoreBlocks() === true, 'hasMoreBlocks = true');
+        assert(tzx10.getCurrentBlock() === 0, 'getCurrentBlock = 0');
+
+        const next = tzx10.getNextBlock();
+        assert(next !== null, 'getNextBlock returns block');
+        assert(tzx10.getCurrentBlock() === 1, 'getCurrentBlock = 1 after getNextBlock');
+
+        tzx10.setCurrentBlock(2);
+        assert(tzx10.getCurrentBlock() === 2, 'setCurrentBlock(2)');
+
+        tzx10.rewind();
+        assert(tzx10.getCurrentBlock() === 0, 'rewind → 0');
+
+        section('TZXLoader - Mixed block types');
+
+        const tzx11 = new TZXLoader();
+        const tapM = makeTAPBlock(0xFF, new Uint8Array([0x42]));
+        const data11 = buildTZX([
+            tzxStandardBlock(1000, tapM),
+            tzxPureTone(1000, 50),
+            tzxPulseSequence([100, 200]),
+            tzxPause(500),
+            tzxStandardBlock(1000, tapM)
+        ]);
+        tzx11.load(data11);
+        assert(tzx11.blocks.length === 5, 'mixed: 5 blocks');
+        assert(tzx11.blocks[0].type === 'data', 'mixed block 0: data');
+        assert(tzx11.blocks[1].type === 'tone', 'mixed block 1: tone');
+        assert(tzx11.blocks[2].type === 'pulses', 'mixed block 2: pulses');
+        assert(tzx11.blocks[3].type === 'pause', 'mixed block 3: pause');
+        assert(tzx11.blocks[4].type === 'data', 'mixed block 4: data');
+
+        section('TZXLoader - TZX to TapePlayer integration');
+
+        const tzx12 = new TZXLoader();
+        const tapI = makeTAPBlock(0xFF, new Uint8Array([0x42, 0x43]));
+        const data12 = buildTZX([tzxStandardBlock(1000, tapI)]);
+        tzx12.load(data12);
+
+        const player = new TapePlayer();
+        player.loadBlocks(tzx12.blocks);
+        assert(player.blocks.length === 1, 'TZX→Player: 1 block loaded');
+        player.play();
+        assert(player.playing === true, 'TZX→Player: playing');
+        assert(player.phase === 'pilot', 'TZX→Player: starts with pilot');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // AY Basic Tests
+    // ═══════════════════════════════════════════════════════
+    function runAYBasicTests() {
+        section('AY - Construction');
+
+        const ay = new AY();
+        assert(ay.clockRate === 1773400, 'default clock rate = 1773400');
+        assert(ay.registers.length === 16, '16 registers');
+        assert(ay.selectedRegister === 0, 'selectedRegister = 0');
+        assert(ay.stereoMode === 'abc', 'default stereo = abc');
+
+        const ayP = new AY(1750000);
+        assert(ayP.clockRate === 1750000, 'custom clock rate (Pentagon)');
+
+        section('AY - Register read/write');
+
+        const ay2 = new AY();
+        ay2.selectRegister(0);
+        ay2.writeRegister(0xAB);
+        assert(ay2.readRegister() === 0xAB, 'R0: full byte written (0xFF mask)');
+
+        ay2.selectRegister(1);
+        ay2.writeRegister(0xFF);
+        assert(ay2.readRegister() === 0x0F, 'R1: masked to 4 bits (0x0F)');
+
+        ay2.selectRegister(6);
+        ay2.writeRegister(0xFF);
+        assert(ay2.readRegister() === 0x1F, 'R6: noise period masked to 5 bits');
+
+        ay2.selectRegister(7);
+        ay2.writeRegister(0xC0);
+        assert(ay2.readRegister() === 0xC0, 'R7: mixer full byte');
+
+        ay2.selectRegister(8);
+        ay2.writeRegister(0xFF);
+        assert(ay2.readRegister() === 0x1F, 'R8: amplitude masked to 5 bits');
+
+        ay2.selectRegister(13);
+        ay2.writeRegister(0xFF);
+        assert(ay2.readRegister() === 0x0F, 'R13: envelope shape masked to 4 bits');
+
+        section('AY - writeRegisterDirect');
+
+        const ay3 = new AY();
+        ay3.writeRegisterDirect(2, 0x42);
+        assert(ay3.selectedRegister === 2, 'writeRegisterDirect sets selectedRegister');
+        assert(ay3.registers[2] === 0x42, 'writeRegisterDirect writes value');
+
+        section('AY - selectRegister masking');
+
+        const ay4 = new AY();
+        ay4.selectRegister(0x1F); // should mask to 0x0F
+        assert(ay4.selectedRegister === 0x0F, 'selectRegister masks to 4 bits');
+
+        section('AY - getTonePeriod');
+
+        const ay5 = new AY();
+        ay5.writeRegisterDirect(0, 0x80); // R0 = fine = 0x80
+        ay5.writeRegisterDirect(1, 0x03); // R1 = coarse = 0x03
+        assert(ay5.getTonePeriod(0) === 0x0380, 'channel A period = 0x0380');
+
+        ay5.writeRegisterDirect(2, 0xFF); // R2
+        ay5.writeRegisterDirect(3, 0x0F); // R3
+        assert(ay5.getTonePeriod(1) === 0x0FFF, 'channel B period = 0x0FFF (max)');
+
+        section('AY - getNoisePeriod');
+
+        const ay6 = new AY();
+        ay6.writeRegisterDirect(6, 0);
+        assert(ay6.getNoisePeriod() === 1, 'noise period 0 returns 1 (avoid div by zero)');
+        ay6.writeRegisterDirect(6, 0x1F);
+        assert(ay6.getNoisePeriod() === 0x1F, 'noise period = 31');
+
+        section('AY - getEnvelopePeriod');
+
+        const ay7 = new AY();
+        ay7.writeRegisterDirect(11, 0x00);
+        ay7.writeRegisterDirect(12, 0x00);
+        assert(ay7.getEnvelopePeriod() === 1, 'envelope period 0 returns 1');
+        ay7.writeRegisterDirect(11, 0x34);
+        ay7.writeRegisterDirect(12, 0x12);
+        assert(ay7.getEnvelopePeriod() === 0x1234, 'envelope period = 0x1234');
+
+        section('AY - Mixer control');
+
+        const ay8 = new AY();
+        ay8.writeRegisterDirect(7, 0x00); // All enabled (bits 0-5 = 0)
+        assert(ay8.isToneEnabled(0) === true, 'R7=0: tone A enabled');
+        assert(ay8.isToneEnabled(1) === true, 'R7=0: tone B enabled');
+        assert(ay8.isToneEnabled(2) === true, 'R7=0: tone C enabled');
+        assert(ay8.isNoiseEnabled(0) === true, 'R7=0: noise A enabled');
+        assert(ay8.isNoiseEnabled(1) === true, 'R7=0: noise B enabled');
+        assert(ay8.isNoiseEnabled(2) === true, 'R7=0: noise C enabled');
+
+        ay8.writeRegisterDirect(7, 0x3F); // All disabled (bits 0-5 = 1)
+        assert(ay8.isToneEnabled(0) === false, 'R7=0x3F: tone A disabled');
+        assert(ay8.isToneEnabled(1) === false, 'R7=0x3F: tone B disabled');
+        assert(ay8.isNoiseEnabled(0) === false, 'R7=0x3F: noise A disabled');
+        assert(ay8.isNoiseEnabled(2) === false, 'R7=0x3F: noise C disabled');
+
+        ay8.writeRegisterDirect(7, 0x01); // Only tone A disabled
+        assert(ay8.isToneEnabled(0) === false, 'R7=0x01: tone A disabled');
+        assert(ay8.isToneEnabled(1) === true, 'R7=0x01: tone B enabled');
+        assert(ay8.isNoiseEnabled(0) === true, 'R7=0x01: noise A enabled');
+
+        section('AY - Reset');
+
+        const ay9 = new AY();
+        ay9.writeRegisterDirect(0, 0xFF);
+        ay9.writeRegisterDirect(7, 0x3F);
+        ay9.selectedRegister = 5;
+        ay9.toneOutputs[0] = 1;
+        ay9.noiseShift = 0;
+        ay9.prescaler = 100;
+
+        ay9.reset();
+        assert(ay9.registers[0] === 0, 'reset: registers cleared');
+        assert(ay9.registers[7] === 0, 'reset: mixer cleared');
+        assert(ay9.selectedRegister === 0, 'reset: selectedRegister = 0');
+        assert(ay9.toneOutputs[0] === 0, 'reset: toneOutputs cleared');
+        assert(ay9.noiseShift === 0x1FFFF, 'reset: noise LFSR reset');
+        assert(ay9.prescaler === 0, 'reset: prescaler = 0');
+
+        section('AY - Stereo panning');
+
+        const ay10 = new AY();
+        assert(ay10.channelPan[0] === 0.2, 'ABC: A left (0.2)');
+        assert(ay10.channelPan[1] === 0.5, 'ABC: B center (0.5)');
+        assert(ay10.channelPan[2] === 0.8, 'ABC: C right (0.8)');
+
+        ay10.stereoMode = 'acb';
+        ay10.updateStereoPanning();
+        assert(ay10.channelPan[1] === 0.8, 'ACB: B right (0.8)');
+        assert(ay10.channelPan[2] === 0.5, 'ACB: C center (0.5)');
+
+        ay10.stereoMode = 'mono';
+        ay10.updateStereoPanning();
+        assert(ay10.channelPan[0] === 0.5, 'Mono: A center');
+        assert(ay10.channelPan[1] === 0.5, 'Mono: B center');
+        assert(ay10.channelPan[2] === 0.5, 'Mono: C center');
+
+        section('AY - setClockRate');
+
+        const ay11 = new AY();
+        ay11.setClockRate(1750000);
+        assert(ay11.clockRate === 1750000, 'setClockRate: 1750000');
+
+        section('AY - State export/import');
+
+        const ay12 = new AY();
+        ay12.writeRegisterDirect(0, 0xAB);
+        ay12.writeRegisterDirect(7, 0x38);
+        ay12.selectedRegister = 3;
+        ay12.toneOutputs[1] = 1;
+        ay12.noiseShift = 0x12345;
+        ay12.envelopePosition = 10;
+        ay12.prescaler = 50;
+
+        const state = ay12.exportState();
+        assert(state.registers[0] === 0xAB, 'export: R0 = 0xAB');
+        assert(state.registers[7] === 0x38, 'export: R7 = 0x38');
+        assert(state.selectedRegister === 3, 'export: selectedRegister = 3');
+        assert(state.toneOutputs[1] === 1, 'export: toneOutputs[1] = 1');
+        assert(state.noiseShift === 0x12345, 'export: noiseShift');
+        assert(state.prescaler === 50, 'export: prescaler');
+
+        const ay13 = new AY();
+        ay13.importState(state);
+        assert(ay13.registers[0] === 0xAB, 'import: R0 = 0xAB');
+        assert(ay13.registers[7] === 0x38, 'import: R7 = 0x38');
+        assert(ay13.selectedRegister === 3, 'import: selectedRegister');
+        assert(ay13.toneOutputs[1] === 1, 'import: toneOutputs');
+        assert(ay13.noiseShift === 0x12345, 'import: noiseShift');
+        assert(ay13.prescaler === 50, 'import: prescaler');
+
+        // Import null is safe
+        const ay14 = new AY();
+        ay14.importState(null);
+        assert(ay14.registers[0] === 0, 'importState(null) is safe');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // AY Sound Generation Tests
+    // ═══════════════════════════════════════════════════════
+    function runAYSoundTests() {
+        section('AY - Volume table');
+
+        assert(AY.VOLUME_TABLE.length === 16, 'volume table has 16 entries');
+        assert(AY.VOLUME_TABLE[0] === 0, 'volume[0] = 0 (silence)');
+        assert(AY.VOLUME_TABLE[15] === 1, 'volume[15] = 1 (max)');
+        // Verify monotonically increasing
+        let mono = true;
+        for (let i = 1; i < 16; i++) {
+            if (AY.VOLUME_TABLE[i] <= AY.VOLUME_TABLE[i - 1]) { mono = false; break; }
+        }
+        assert(mono, 'volume table is monotonically increasing');
+
+        section('AY - Tone generation (step)');
+
+        const ay = new AY();
+        ay.writeRegisterDirect(0, 8);  // Channel A period = 8
+        ay.writeRegisterDirect(1, 0);
+        ay.writeRegisterDirect(7, 0x3E); // Only tone A enabled (bit 0 = 0)
+        ay.writeRegisterDirect(8, 0x0F); // Max amplitude
+
+        // Step enough times for tone to toggle
+        // Tone runs at clock/8, period=8, so toggle every 8*8=64 steps
+        let toggles = 0;
+        let prev = ay.toneOutputs[0];
+        for (let i = 0; i < 256; i++) {
+            ay.step();
+            if (ay.toneOutputs[0] !== prev) {
+                toggles++;
+                prev = ay.toneOutputs[0];
+            }
+        }
+        assert(toggles > 0, 'tone output toggles during stepping');
+
+        section('AY - Noise generation');
+
+        const ay2 = new AY();
+        ay2.writeRegisterDirect(6, 1);    // Noise period = 1 (fast)
+        ay2.writeRegisterDirect(7, 0x07); // Only noise enabled (bits 3-5 = 0)
+
+        let noiseChanges = 0;
+        let prevNoise = ay2.noiseOutput;
+        for (let i = 0; i < 1000; i++) {
+            ay2.step();
+            if (ay2.noiseOutput !== prevNoise) {
+                noiseChanges++;
+                prevNoise = ay2.noiseOutput;
+            }
+        }
+        assert(noiseChanges > 0, 'noise output changes during stepping');
+        assert(ay2.noiseShift !== 0x1FFFF, 'noise LFSR has advanced');
+
+        section('AY - Channel amplitude (fixed)');
+
+        const ay3 = new AY();
+        ay3.writeRegisterDirect(8, 0x0A); // Channel A amplitude = 10
+        assert(ay3.getChannelAmplitude(0) === 10, 'fixed amplitude = 10');
+
+        ay3.writeRegisterDirect(8, 0x00);
+        assert(ay3.getChannelAmplitude(0) === 0, 'amplitude = 0 (silence)');
+
+        section('AY - Channel amplitude (envelope)');
+
+        const ay4 = new AY();
+        ay4.writeRegisterDirect(8, 0x10); // Channel A uses envelope (bit 4)
+        // Envelope shape 12 = //// (continuous attack)
+        ay4.writeRegisterDirect(11, 1);   // Envelope period = 1 (fast)
+        ay4.writeRegisterDirect(12, 0);
+        ay4.writeRegisterDirect(13, 12);  // Shape 12: attack
+
+        // Step to advance envelope
+        for (let i = 0; i < 1000; i++) ay4.step();
+
+        const envAmp = ay4.getChannelAmplitude(0);
+        assert(envAmp >= 0 && envAmp <= 15, 'envelope amplitude in range 0-15');
+
+        section('AY - Envelope shapes');
+
+        assert(AY.ENVELOPE_SHAPES.length === 16, '16 envelope shapes');
+
+        // Shape 0-3: decay then off
+        assert(AY.ENVELOPE_SHAPES[0].attack === false, 'shape 0: no attack');
+        assert(AY.ENVELOPE_SHAPES[0].hold === true, 'shape 0: hold');
+        assert(AY.ENVELOPE_SHAPES[0].holdLevel === 0, 'shape 0: holdLevel = 0');
+
+        // Shape 8: continuous decay
+        assert(AY.ENVELOPE_SHAPES[8].repeat === true, 'shape 8: repeat');
+        assert(AY.ENVELOPE_SHAPES[8].attack === false, 'shape 8: no attack');
+
+        // Shape 12: continuous attack
+        assert(AY.ENVELOPE_SHAPES[12].attack === true, 'shape 12: attack');
+        assert(AY.ENVELOPE_SHAPES[12].repeat === true, 'shape 12: repeat');
+
+        // Shape 11: decay then max
+        assert(AY.ENVELOPE_SHAPES[11].holdLevel === 15, 'shape 11: holdLevel = 15');
+
+        // Shape 10: alternating
+        assert(AY.ENVELOPE_SHAPES[10].alternate === true, 'shape 10: alternate');
+
+        section('AY - Envelope restart on shape write');
+
+        const ay5 = new AY();
+        ay5.writeRegisterDirect(11, 1);
+        ay5.writeRegisterDirect(12, 0);
+        ay5.writeRegisterDirect(13, 8); // Start envelope
+
+        // Advance it
+        for (let i = 0; i < 500; i++) ay5.step();
+        const posBefore = ay5.envelopePosition;
+
+        // Write shape again - should restart
+        ay5.writeRegisterDirect(13, 12);
+        assert(ay5.envelopePosition === 0, 'envelope restarts on shape write');
+        assert(ay5.envelopeCounter === 0, 'envelope counter resets on shape write');
+        assert(ay5.envelopeHolding === false, 'envelopeHolding reset on shape write');
+
+        section('AY - getSample output');
+
+        const ay6 = new AY();
+        // All channels silent (mixer all disabled, amplitude 0)
+        ay6.writeRegisterDirect(7, 0x3F);
+        ay6.writeRegisterDirect(8, 0);
+        ay6.writeRegisterDirect(9, 0);
+        ay6.writeRegisterDirect(10, 0);
+
+        const [left, right] = ay6.getSample();
+        assert(left === 0, 'silent: left = 0');
+        assert(right === 0, 'silent: right = 0');
+
+        // Channel A at max, all disabled (output = 1 when both tone+noise disabled)
+        ay6.writeRegisterDirect(7, 0x3F); // All disabled → output always 1
+        ay6.writeRegisterDirect(8, 0x0F); // Channel A max
+        const [left2, right2] = ay6.getSample();
+        assert(left2 > 0, 'channel A max: left > 0');
+        assert(right2 > 0, 'channel A max: right > 0');
+
+        section('AY - stepMultiple and getAveragedSample');
+
+        const ay7 = new AY();
+        ay7.writeRegisterDirect(7, 0x3F);
+        ay7.writeRegisterDirect(8, 0x0F);
+
+        ay7.stepMultiple(100);
+        assert(ay7.sampleCount === 100, 'stepMultiple: 100 samples accumulated');
+
+        const [avgL, avgR] = ay7.getAveragedSample();
+        assert(avgL > 0, 'averaged: left > 0');
+        assert(ay7.sampleCount === 0, 'getAveragedSample: count reset');
+        assert(ay7.sampleAccumulator[0] === 0, 'getAveragedSample: accumulator reset');
+
+        // Empty accumulator
+        const [emptyL, emptyR] = ay7.getAveragedSample();
+        assert(emptyL === 0 && emptyR === 0, 'empty accumulator returns [0,0]');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // AY PSG Export Tests
+    // ═══════════════════════════════════════════════════════
+    function runAYPSGTests() {
+        section('AY - PSG logging');
+
+        const ay = new AY();
+        assert(ay.loggingEnabled === false, 'logging disabled by default');
+
+        ay.startLogging();
+        assert(ay.loggingEnabled === true, 'startLogging: enabled');
+        assert(ay.logFrameNumber === 0, 'startLogging: frame 0');
+
+        ay.writeRegisterDirect(0, 0x42);
+        ay.writeRegisterDirect(7, 0x38);
+        ay.advanceLogFrame();
+        ay.writeRegisterDirect(8, 0x0F);
+
+        assert(ay.registerLog.length === 3, '3 register writes logged');
+        assert(ay.registerLog[0].frame === 0, 'log[0] frame = 0');
+        assert(ay.registerLog[0].register === 0, 'log[0] register = 0');
+        assert(ay.registerLog[0].value === 0x42, 'log[0] value = 0x42');
+        assert(ay.registerLog[2].frame === 1, 'log[2] frame = 1');
+
+        ay.stopLogging();
+        assert(ay.loggingEnabled === false, 'stopLogging: disabled');
+
+        ay.writeRegisterDirect(0, 0xFF);
+        assert(ay.registerLog.length === 3, 'no logging after stop');
+
+        section('AY - PSG log stats');
+
+        const stats = ay.getLogStats();
+        assert(stats.frames === 2, 'stats: 2 frames');
+        assert(stats.writes === 3, 'stats: 3 writes');
+        assert(stats.duration === '0.0', 'stats: duration = 0.0s');
+
+        section('AY - PSG log clear');
+
+        ay.clearLog();
+        assert(ay.registerLog.length === 0, 'clearLog: empty');
+        assert(ay.logFrameNumber === 0, 'clearLog: frame reset');
+
+        const emptyStats = ay.getLogStats();
+        assert(emptyStats.frames === 0, 'cleared stats: 0 frames');
+        assert(emptyStats.writes === 0, 'cleared stats: 0 writes');
+
+        section('AY - PSG export empty');
+
+        const ay2 = new AY();
+        assert(ay2.exportPSG() === null, 'exportPSG: null when no log');
+
+        section('AY - PSG export format');
+
+        const ay3 = new AY();
+        ay3.startLogging();
+        ay3.writeRegisterDirect(0, 0x80);
+        ay3.writeRegisterDirect(1, 0x01);
+        ay3.advanceLogFrame();
+        ay3.writeRegisterDirect(8, 0x0F);
+        ay3.stopLogging();
+
+        const psg = ay3.exportPSG();
+        assert(psg !== null, 'exportPSG: not null');
+        assert(psg instanceof Uint8Array, 'exportPSG: returns Uint8Array');
+
+        // Check header
+        assert(psg[0] === 0x50 && psg[1] === 0x53 && psg[2] === 0x47, 'PSG header: "PSG"');
+        assert(psg[3] === 0x1A, 'PSG header: 0x1A marker');
+        assert(psg[4] === 0x10, 'PSG header: version 1.0');
+        assert(psg[5] === 0x00, 'PSG header: 50Hz');
+
+        // Check data starts at offset 16
+        // Frame 0: reg 0 + val, reg 1 + val, 0xFF (end frame)
+        // Frame 1: reg 8 + val, 0xFF (end frame)
+        // 0xFD (end of music)
+        assert(psg[16] === 0, 'data: reg 0');
+        assert(psg[17] === 0x80, 'data: val 0x80');
+        assert(psg[18] === 1, 'data: reg 1');
+        assert(psg[19] === 0x01, 'data: val 0x01');
+        assert(psg[20] === 0xFF, 'data: end of frame 0');
+        assert(psg[21] === 8, 'data: reg 8');
+        assert(psg[22] === 0x0F, 'data: val 0x0F');
+        assert(psg[23] === 0xFF, 'data: end of frame 1');
+        assert(psg[24] === 0xFD, 'data: end of music');
+
+        section('AY - PSG export changedOnly mode');
+
+        const ay4 = new AY();
+        ay4.startLogging();
+        ay4.writeRegisterDirect(0, 0x42);
+        ay4.advanceLogFrame();
+        ay4.writeRegisterDirect(0, 0x42); // Same value — should be skipped
+        ay4.writeRegisterDirect(0, 0x43); // Different value — should be kept
+        ay4.stopLogging();
+
+        const psgChanged = ay4.exportPSG(true);
+        // Frame 0: reg0=0x42, FF
+        // Frame 1: reg0=0x43 (0x42 skipped), FF
+        // FD
+        let frame1Offset = 16 + 2 + 1; // past frame 0 data
+        assert(psgChanged[frame1Offset] === 0, 'changedOnly: reg 0 in frame 1');
+        assert(psgChanged[frame1Offset + 1] === 0x43, 'changedOnly: only changed value (0x43)');
+
+        section('AY - PSG export empty frame skipping');
+
+        const ay5 = new AY();
+        ay5.startLogging();
+        ay5.writeRegisterDirect(0, 0x10); // frame 0
+        // Skip many frames
+        for (let i = 0; i < 10; i++) ay5.advanceLogFrame();
+        ay5.writeRegisterDirect(0, 0x20); // frame 10
+        ay5.stopLogging();
+
+        const psgSkip = ay5.exportPSG();
+        assert(psgSkip !== null, 'skip export: not null');
+        // Should contain 0xFE skip commands for the empty frames
+        let hasFE = false;
+        for (let i = 16; i < psgSkip.length; i++) {
+            if (psgSkip[i] === 0xFE) { hasFE = true; break; }
+        }
+        assert(hasFE, 'empty frames use 0xFE skip command');
+
+        section('AY - advanceLogFrame when not logging');
+
+        const ay6 = new AY();
+        ay6.advanceLogFrame(); // Should not crash
+        assert(ay6.logFrameNumber === 0, 'advanceLogFrame: no change when not logging');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Run All
+    // ═══════════════════════════════════════════════════════
+    function runAll() {
+        passed = 0;
+        failed = 0;
+        logEl.innerHTML = '';
+        log('Running all Tape & AY tests...', 'info');
+
+        runTapePlayerBasicTests();
+        runTapePlayerPlaybackTests();
+        runTapePlayerAdvancedTests();
+        runTZXLoaderTests();
+        runAYBasicTests();
+        runAYSoundTests();
+        runAYPSGTests();
+
+        log(`\nDone. ${passed} passed, ${failed} failed.`, failed > 0 ? 'fail' : 'pass');
+        updateSummary();
+    }
+
+    // Expose to buttons
+    window.runAll = runAll;
+    window.runTapePlayerBasicTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTapePlayerBasicTests(); };
+    window.runTapePlayerPlaybackTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTapePlayerPlaybackTests(); };
+    window.runTapePlayerAdvancedTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTapePlayerAdvancedTests(); };
+    window.runTZXLoaderTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTZXLoaderTests(); };
+    window.runAYBasicTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYBasicTests(); };
+    window.runAYSoundTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYSoundTests(); };
+    window.runAYPSGTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYPSGTests(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

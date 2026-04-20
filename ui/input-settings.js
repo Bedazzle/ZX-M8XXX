@@ -253,10 +253,10 @@ export function initInputSettings({
             chkIF1.checked = false;
             spectrum.if1Enabled = false;
             storageSet('zxm8_if1', false);
-            spectrum.updateBetaDiskPagingFlag();
             updateIF1Status();
             showMessage('+D enabled — Interface 1 disabled (conflicting ports $E7/$EF)');
         }
+        spectrum.updateBetaDiskPagingFlag();
         updatePlusDStatus();
         showMessage(chkPlusD.checked ?
             '+D interface enabled (MGT disks)' :
@@ -301,6 +301,7 @@ export function initInputSettings({
         if (savedPlusD && romData['plusd.rom'] && !spectrum.memory.hasPlusDRom()) {
             spectrum.memory.loadPlusDRom(romData['plusd.rom']);
         }
+        spectrum.updateBetaDiskPagingFlag();
         updatePlusDStatus();
     }
 

@@ -25,6 +25,8 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     const comparePageInfo = document.getElementById('comparePageInfo');
     const compareGoToPage = document.getElementById('compareGoToPage');
     const compareGoPage = document.getElementById('compareGoPage');
+    const compareMemBinOptions = document.getElementById('compareMemBinOptions');
+    const compareMemBinStart = document.getElementById('compareMemBinStart');
 
     let compareDataA = null;
     let compareDataB = null;
@@ -274,14 +276,15 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     document.querySelectorAll('input[name="compareMode"]').forEach(radio => {
         radio.addEventListener('change', () => {
             const mode = document.querySelector('input[name="compareMode"]:checked').value;
-            if (mode === 'sna-emu') {
+            if (mode === 'sna-emu' || mode === 'mem-bin') {
                 compareFileBContainer.style.display = 'none';
             } else {
                 compareFileBContainer.style.display = 'block';
             }
+            compareMemBinOptions.style.display = mode === 'mem-bin' ? 'flex' : 'none';
             // Exclude screen only makes sense for snapshot comparisons
             const excludeScreenLabel = chkCompareExcludeScreen.parentElement;
-            if (mode === 'bin-bin') {
+            if (mode === 'bin-bin' || mode === 'mem-bin') {
                 excludeScreenLabel.style.opacity = '0.4';
                 chkCompareExcludeScreen.disabled = true;
             } else {
@@ -363,7 +366,13 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         const mode = document.querySelector('input[name="compareMode"]:checked').value;
         clearCompareResults();
 
-        if (mode === 'sna-emu') {
+        if (mode === 'mem-bin') {
+            if (!compareDataA) {
+                alert('Please select a binary file');
+                return;
+            }
+            compareMemoryVsBinary(compareDataA);
+        } else if (mode === 'sna-emu') {
             if (!compareDataA) {
                 alert('Please select a snapshot file (.SNA or .Z80)');
                 return;
@@ -940,5 +949,54 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     // Keep old function as alias
     function compareSnaVsEmulator(data) {
         compareSnapshotVsEmulator(data);
+    }
+
+    function compareMemoryVsBinary(binData) {
+        const showEqual = chkCompareShowEqual.checked;
+        const showHexDump = chkCompareHexDump.checked;
+
+        const startAddr = parseInt(compareMemBinStart.value, 16);
+        if (isNaN(startAddr) || startAddr < 0 || startAddr > 0xFFFF) {
+            alert('Invalid start address');
+            return;
+        }
+
+        if (binData.length === 0) {
+            alert('File is empty');
+            return;
+        }
+
+        const length = Math.min(binData.length, 0x10000 - startAddr);
+
+        // Read current emulator memory into an array
+        const emuState = getEmulatorState();
+        const emuMemory = new Uint8Array(0x10000);
+        for (let i = 0; i < length; i++) {
+            emuMemory[startAddr + i] = emuState.memory.read(startAddr + i);
+        }
+
+        // Build file array aligned to same address space
+        const fileMemory = new Uint8Array(0x10000);
+        for (let i = 0; i < length; i++) {
+            fileMemory[startAddr + i] = binData[i];
+        }
+
+        const result = compareMemoryData(fileMemory, emuMemory, startAddr, length, showEqual, showHexDump, false, false, 'Memory');
+
+        if (length < binData.length) {
+            compareHeaderResults.style.display = 'block';
+            compareHeaderTable.innerHTML = `<div style="color:var(--yellow)">File truncated: ${binData.length} bytes from $${hex16(startAddr)} would exceed $FFFF, comparing first ${length} bytes</div>`;
+        }
+
+        if (result.count === 0) {
+            compareNoResults.style.display = 'block';
+            comparePagination.style.display = 'none';
+        } else {
+            compareDataResults.style.display = 'block';
+            const blocksNote = result.totalBlocks ? `, ${result.totalBlocks} blocks` : '';
+            compareDiffCount.textContent = `${result.count} bytes differ${blocksNote} (${length} bytes from $${hex16(startAddr)})`;
+            compareDataTable.innerHTML = result.html;
+            updateComparePagination();
+        }
     }
 }

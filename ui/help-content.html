@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.9.11</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.11.0</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -50,7 +50,7 @@
                         <li>Game Browser - search and download games from Spectrum Computing</li>
                         <li>Fullscreen mode (F11) with crisp/fit/stretch options</li>
                         <li>Automated test suite with screenshot comparison</li>
-                        <li>Compare tool for snapshots and binaries</li>
+                        <li>Compare tool for snapshots, binaries, and emulator memory</li>
                         <li>Explorer for file analysis (BASIC decoder, disassembly, hex dump)</li>
                         <li>Game Mapper for capturing rooms and building navigable map grids</li>
                         <li>OCR Text Ripper for screen text recognition and font extraction</li>
@@ -156,9 +156,11 @@
                         <tr><td>Shift+1-5 (paused)</td><td>Set left panel bookmark</td></tr>
                         <tr><td>6-9, 0 (paused)</td><td>Jump to right panel bookmark</td></tr>
                         <tr><td>Shift+6-9, 0 (paused)</td><td>Set right panel bookmark</td></tr>
-                        <tr><td>F1</td><td>Cycle canvas zoom (x1 в†’ x2 в†’ x3)</td></tr>
+                        <tr><td>F1</td><td>Cycle canvas zoom (x1 в†' x2 в†' x3)</td></tr>
+                        <tr><td>F3</td><td>Screenshot (single capture), or toggle auto-capture when Batch is checked</td></tr>
+                        <tr><td>Ctrl+F3</td><td>Stop auto-capture (if running) + save batch screenshots as ZIP</td></tr>
                         <tr><td>Ctrl+F</td><td>Toggle autofire on/off</td></tr>
-                        <tr><td>F10</td><td>Cycle overlay mode (Normal в†’ Grid в†’ Box в†’ ...)</td></tr>
+                        <tr><td>F10</td><td>Cycle overlay mode (Normal в†' Grid в†' Box в†' ...)</td></tr>
                     </table>
                 </div>
                 <div class="fullhelp-section hidden" id="help-debugger">
@@ -867,8 +869,19 @@
                         <li><strong>Get Player</strong> - Download Z80 assembly player source</li>
                     </ul>
                     <p>The player source is sjasmplus-compatible. Use <code>INCBIN "music.psg"</code> to include your recorded music, then assemble to create a playable .sna file.</p>
+                    <h5>Screenshot Button</h5>
+                    <p>The &#128247; button below the screen (or <strong>F3</strong>) captures a screenshot. Configure its behavior in the Export/Import tab:</p>
+                    <table>
+                        <tr><td><strong>Format</strong></td><td>PNG (image), SCR (raw 6912 bytes), GIF (flash) &mdash; 2-frame animated GIF showing both flash phases</td></tr>
+                        <tr><td><strong>Size</strong></td><td>Screen only (256&times;192) or With border (full display including border)</td></tr>
+                        <tr><td><strong>Zoom</strong></td><td>x1, x2, or x3 &mdash; output pixel scaling (does not apply to SCR)</td></tr>
+                        <tr><td><strong>Overlay</strong></td><td>Include overlay (grid, etc.) in the capture (does not apply to SCR)</td></tr>
+                        <tr><td><strong>Batch</strong></td><td>Buffer screenshots instead of downloading. Press <strong>Ctrl+F3</strong> to save all as ZIP</td></tr>
+                        <tr><td><strong>Every / frames|seconds</strong></td><td>Auto-capture interval. When Batch is checked, <strong>F3</strong> starts/stops timed auto-capture at this interval. "frames" counts emulator frames; "seconds" converts to frames at 50fps</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">Settings are saved to localStorage and restored on reload. SCR with ULAplus appends the 64-byte palette (6976 bytes total), but cannot capture raster palette effects (HAM256 etc.) that change palette registers mid-frame &mdash; use PNG for those. GIF format falls back to PNG during auto-capture (animated flash GIF per frame is impractical).</p>
                     <h5>Screen Export</h5>
-                    <p>Capture frames in Settings в†’ Export section:</p>
+                    <p>Capture frames in Settings в†' Export/Import section:</p>
                     <table>
                         <tr><td><strong>ZIP</strong></td><td>PNG sequence in ZIP archive</td></tr>
                         <tr><td><strong>GIF</strong></td><td>Animated GIF</td></tr>
@@ -891,6 +904,13 @@
                         <tr><td><strong>Custom</strong></td><td>Enter 8 hex bytes manually</td></tr>
                     </table>
                     <p style="font-size: 11px; color: var(--text-dim);">Type 1 is for multicolor animations where bitmap stays constant and only attributes change. Automatic mode detects if screen uses a consistent 8-byte pattern; prompts for choice if not detected.</p>
+                    <h5>Binary Export/Import</h5>
+                    <p>Export or import raw memory blocks in the Export/Import tab, "Binary" section:</p>
+                    <ul>
+                        <li><strong>Export</strong> &mdash; Save a memory range to a .bin file. Enter start address, length or end address (hex). Length and End are mutually synced; End is clamped to never fall below Start</li>
+                        <li><strong>Import</strong> &mdash; Load a .bin file into emulator memory at the specified start address. Screen refreshes immediately (works while paused). Accepts .bin, .dat, or any file</li>
+                    </ul>
+                    <p>Both operations respect the current banking state (128K page, TR-DOS, +2A special paging, etc.).</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-assembler">
                     <h4>Z80 Assembler</h4>
@@ -1122,6 +1142,7 @@
                         <tr><td><strong>Snapshots</strong></td><td>Compare two snapshot files (.SNA or .Z80, 48K or 128K)</td></tr>
                         <tr><td><strong>Binaries</strong></td><td>Compare two raw binary files byte-by-byte</td></tr>
                         <tr><td><strong>Snapshot vs Emulator</strong></td><td>Compare a snapshot file against current emulator state</td></tr>
+                        <tr><td><strong>Memory vs Binary</strong></td><td>Compare a binary file against current emulator memory at a specified start address. Respects current banking state</td></tr>
                     </table>
 
                     <h5>Supported Formats</h5>

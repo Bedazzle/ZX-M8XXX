@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Z80 Disassembler Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Z80 Disassembler Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runMainOpcodes()">Main Opcodes</button>
+        <button onclick="runCBPrefix()">CB Prefix</button>
+        <button onclick="runEDPrefix()">ED Prefix</button>
+        <button onclick="runIXIY()">IX/IY</button>
+        <button onclick="runIndexedCB()">Indexed CB</button>
+        <button onclick="runChainedPrefixes()">Chained Prefixes</button>
+        <button onclick="runRefExtraction()">Ref Extraction</button>
+        <button onclick="runEdgeCases()">Edge Cases</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { Disassembler } from '../core/disasm.js';
+
+    const TEST_VERSION = '0.9.12';
+
+    let totalPassed = 0;
+    let totalFailed = 0;
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+
+    function updateSummary() {
+        const total = totalPassed + totalFailed;
+        const rate = total > 0 ? ((totalPassed / total) * 100).toFixed(1) : '0.0';
+        summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${totalPassed}</span> | <span class="fail">Fail: ${totalFailed}</span> | Total: ${total} | Rate: ${rate}%`;
+    }
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function section(name) {
+        log('');
+        log(`\u2550\u2550\u2550 ${name} \u2550\u2550\u2550`, 'section');
+    }
+
+    function assert(condition, msg, detail = '') {
+        if (condition) {
+            totalPassed++;
+            log(`\u2713 ${msg}`, 'pass');
+        } else {
+            totalFailed++;
+            log(`\u2717 ${msg}${detail ? ': ' + detail : ''}`, 'fail');
+        }
+        updateSummary();
+    }
+
+    // Create a mock memory from byte array, placed at baseAddr
+    function makeMem(bytes, baseAddr = 0) {
+        const mem = new Uint8Array(65536);
+        for (let i = 0; i < bytes.length; i++) {
+            mem[(baseAddr + i) & 0xFFFF] = bytes[i];
+        }
+        return { read: (addr) => mem[addr & 0xFFFF], _data: mem };
+    }
+
+    // Disassemble bytes at address, return {mnemonic, length, bytes, refs?}
+    function dis(bytes, addr = 0, extractRefs = false) {
+        const mem = makeMem(bytes, addr);
+        const d = new Disassembler(mem);
+        return d.disassemble(addr, extractRefs);
+    }
+
+    // ==================== MAIN OPCODE TESTS ====================
+
+    function runMainOpcodes() {
+        section('Main - NOP, HALT, misc single-byte');
+
+        assert(dis([0x00]).mnemonic === 'NOP', 'NOP');
+        assert(dis([0x76]).mnemonic === 'HALT', 'HALT');
+        assert(dis([0x08]).mnemonic === "EX AF,AF'", "EX AF,AF'");
+        assert(dis([0xD9]).mnemonic === 'EXX', 'EXX');
+        assert(dis([0xEB]).mnemonic === 'EX DE,HL', 'EX DE,HL');
+        assert(dis([0xE3]).mnemonic === 'EX (SP),HL', 'EX (SP),HL');
+        assert(dis([0xE9]).mnemonic === 'JP (HL)', 'JP (HL)');
+        assert(dis([0xF9]).mnemonic === 'LD SP,HL', 'LD SP,HL');
+        assert(dis([0xF3]).mnemonic === 'DI', 'DI');
+        assert(dis([0xFB]).mnemonic === 'EI', 'EI');
+        assert(dis([0x27]).mnemonic === 'DAA', 'DAA');
+        assert(dis([0x2F]).mnemonic === 'CPL', 'CPL');
+        assert(dis([0x37]).mnemonic === 'SCF', 'SCF');
+        assert(dis([0x3F]).mnemonic === 'CCF', 'CCF');
+
+        section('Main - Rotate accumulator');
+
+        assert(dis([0x07]).mnemonic === 'RLCA', 'RLCA');
+        assert(dis([0x0F]).mnemonic === 'RRCA', 'RRCA');
+        assert(dis([0x17]).mnemonic === 'RLA', 'RLA');
+        assert(dis([0x1F]).mnemonic === 'RRA', 'RRA');
+
+        section('Main - 8-bit loads');
+
+        assert(dis([0x7F]).mnemonic === 'LD A,A', 'LD A,A');
+        assert(dis([0x78]).mnemonic === 'LD A,B', 'LD A,B');
+        assert(dis([0x41]).mnemonic === 'LD B,C', 'LD B,C');
+        assert(dis([0x6F]).mnemonic === 'LD L,A', 'LD L,A');
+        assert(dis([0x7E]).mnemonic === 'LD A,(HL)', 'LD A,(HL)');
+        assert(dis([0x70]).mnemonic === 'LD (HL),B', 'LD (HL),B');
+        assert(dis([0x0A]).mnemonic === 'LD A,(BC)', 'LD A,(BC)');
+        assert(dis([0x1A]).mnemonic === 'LD A,(DE)', 'LD A,(DE)');
+        assert(dis([0x02]).mnemonic === 'LD (BC),A', 'LD (BC),A');
+        assert(dis([0x12]).mnemonic === 'LD (DE),A', 'LD (DE),A');
+
+        section('Main - 8-bit immediate loads');
+
+        assert(dis([0x3E, 0x42]).mnemonic === 'LD A,42h', 'LD A,42h');
+        assert(dis([0x06, 0x00]).mnemonic === 'LD B,00h', 'LD B,00h');
+        assert(dis([0x36, 0xFF]).mnemonic === 'LD (HL),FFh', 'LD (HL),FFh');
+        assert(dis([0x3E, 0x42]).length === 2, 'LD A,n is 2 bytes');
+
+        section('Main - 16-bit loads');
+
+        assert(dis([0x01, 0x34, 0x12]).mnemonic === 'LD BC,1234h', 'LD BC,nn');
+        assert(dis([0x11, 0x00, 0x80]).mnemonic === 'LD DE,8000h', 'LD DE,nn');
+        assert(dis([0x21, 0xFF, 0xFF]).mnemonic === 'LD HL,FFFFh', 'LD HL,nn');
+        assert(dis([0x31, 0x00, 0x00]).mnemonic === 'LD SP,0000h', 'LD SP,nn');
+        assert(dis([0x01, 0x34, 0x12]).length === 3, 'LD rr,nn is 3 bytes');
+
+        section('Main - 16-bit indirect loads');
+
+        assert(dis([0x22, 0x00, 0x50]).mnemonic === 'LD (5000h),HL', 'LD (nn),HL');
+        assert(dis([0x2A, 0x00, 0x50]).mnemonic === 'LD HL,(5000h)', 'LD HL,(nn)');
+        assert(dis([0x32, 0x00, 0x90]).mnemonic === 'LD (9000h),A', 'LD (nn),A');
+        assert(dis([0x3A, 0x00, 0x90]).mnemonic === 'LD A,(9000h)', 'LD A,(nn)');
+
+        section('Main - INC/DEC 8-bit');
+
+        assert(dis([0x3C]).mnemonic === 'INC A', 'INC A');
+        assert(dis([0x04]).mnemonic === 'INC B', 'INC B');
+        assert(dis([0x34]).mnemonic === 'INC (HL)', 'INC (HL)');
+        assert(dis([0x3D]).mnemonic === 'DEC A', 'DEC A');
+        assert(dis([0x05]).mnemonic === 'DEC B', 'DEC B');
+        assert(dis([0x35]).mnemonic === 'DEC (HL)', 'DEC (HL)');
+
+        section('Main - INC/DEC 16-bit');
+
+        assert(dis([0x03]).mnemonic === 'INC BC', 'INC BC');
+        assert(dis([0x13]).mnemonic === 'INC DE', 'INC DE');
+        assert(dis([0x23]).mnemonic === 'INC HL', 'INC HL');
+        assert(dis([0x33]).mnemonic === 'INC SP', 'INC SP');
+        assert(dis([0x0B]).mnemonic === 'DEC BC', 'DEC BC');
+        assert(dis([0x1B]).mnemonic === 'DEC DE', 'DEC DE');
+        assert(dis([0x2B]).mnemonic === 'DEC HL', 'DEC HL');
+        assert(dis([0x3B]).mnemonic === 'DEC SP', 'DEC SP');
+
+        section('Main - ADD HL,rr');
+
+        assert(dis([0x09]).mnemonic === 'ADD HL,BC', 'ADD HL,BC');
+        assert(dis([0x19]).mnemonic === 'ADD HL,DE', 'ADD HL,DE');
+        assert(dis([0x29]).mnemonic === 'ADD HL,HL', 'ADD HL,HL');
+        assert(dis([0x39]).mnemonic === 'ADD HL,SP', 'ADD HL,SP');
+
+        section('Main - ALU with register');
+
+        assert(dis([0x80]).mnemonic === 'ADD A,B', 'ADD A,B');
+        assert(dis([0x88]).mnemonic === 'ADC A,B', 'ADC A,B');
+        assert(dis([0x90]).mnemonic === 'SUB B', 'SUB B');
+        assert(dis([0x98]).mnemonic === 'SBC A,B', 'SBC A,B');
+        assert(dis([0xA0]).mnemonic === 'AND B', 'AND B');
+        assert(dis([0xA8]).mnemonic === 'XOR B', 'XOR B');
+        assert(dis([0xB0]).mnemonic === 'OR B', 'OR B');
+        assert(dis([0xB8]).mnemonic === 'CP B', 'CP B');
+        assert(dis([0x87]).mnemonic === 'ADD A,A', 'ADD A,A');
+        assert(dis([0xBE]).mnemonic === 'CP (HL)', 'CP (HL)');
+
+        section('Main - ALU with immediate');
+
+        assert(dis([0xC6, 0x10]).mnemonic === 'ADD A,10h', 'ADD A,n');
+        assert(dis([0xCE, 0x20]).mnemonic === 'ADC A,20h', 'ADC A,n');
+        assert(dis([0xD6, 0x01]).mnemonic === 'SUB 01h', 'SUB n');
+        assert(dis([0xDE, 0x02]).mnemonic === 'SBC A,02h', 'SBC A,n');
+        assert(dis([0xE6, 0x0F]).mnemonic === 'AND 0Fh', 'AND n');
+        assert(dis([0xEE, 0xFF]).mnemonic === 'XOR FFh', 'XOR n');
+        assert(dis([0xF6, 0x80]).mnemonic === 'OR 80h', 'OR n');
+        assert(dis([0xFE, 0x00]).mnemonic === 'CP 00h', 'CP n');
+
+        section('Main - PUSH/POP');
+
+        assert(dis([0xC5]).mnemonic === 'PUSH BC', 'PUSH BC');
+        assert(dis([0xD5]).mnemonic === 'PUSH DE', 'PUSH DE');
+        assert(dis([0xE5]).mnemonic === 'PUSH HL', 'PUSH HL');
+        assert(dis([0xF5]).mnemonic === 'PUSH AF', 'PUSH AF');
+        assert(dis([0xC1]).mnemonic === 'POP BC', 'POP BC');
+        assert(dis([0xD1]).mnemonic === 'POP DE', 'POP DE');
+        assert(dis([0xE1]).mnemonic === 'POP HL', 'POP HL');
+        assert(dis([0xF1]).mnemonic === 'POP AF', 'POP AF');
+
+        section('Main - JP/JR/DJNZ');
+
+        {
+            const r = dis([0xC3, 0x00, 0x80]);
+            assert(r.mnemonic === 'JP 8000h', 'JP nn');
+            assert(r.length === 3, 'JP nn is 3 bytes');
+        }
+
+        // JP cc,nn (all 8 conditions)
+        assert(dis([0xC2, 0x00, 0x50]).mnemonic === 'JP NZ,5000h', 'JP NZ,nn');
+        assert(dis([0xCA, 0x00, 0x50]).mnemonic === 'JP Z,5000h', 'JP Z,nn');
+        assert(dis([0xD2, 0x00, 0x50]).mnemonic === 'JP NC,5000h', 'JP NC,nn');
+        assert(dis([0xDA, 0x00, 0x50]).mnemonic === 'JP C,5000h', 'JP C,nn');
+        assert(dis([0xE2, 0x00, 0x50]).mnemonic === 'JP PO,5000h', 'JP PO,nn');
+        assert(dis([0xEA, 0x00, 0x50]).mnemonic === 'JP PE,5000h', 'JP PE,nn');
+        assert(dis([0xF2, 0x00, 0x50]).mnemonic === 'JP P,5000h', 'JP P,nn');
+        assert(dis([0xFA, 0x00, 0x50]).mnemonic === 'JP M,5000h', 'JP M,nn');
+
+        // JR e - at address 0x8000, displacement +5: target = 0x8002 + 5 = 0x8007
+        {
+            const r = dis([0x18, 0x05], 0x8000);
+            assert(r.mnemonic === 'JR 8007h', 'JR forward');
+        }
+        // JR e - backward: at 0x8000, displacement -2 (0xFE): target = 0x8002 + (-2) = 0x8000
+        {
+            const r = dis([0x18, 0xFE], 0x8000);
+            assert(r.mnemonic === 'JR 8000h', 'JR backward (self-loop)');
+        }
+
+        // JR cc,e
+        {
+            const r = dis([0x20, 0x03], 0x8000);
+            assert(r.mnemonic === 'JR NZ,8005h', 'JR NZ,e');
+        }
+        {
+            const r = dis([0x28, 0x03], 0x8000);
+            assert(r.mnemonic === 'JR Z,8005h', 'JR Z,e');
+        }
+        {
+            const r = dis([0x30, 0x03], 0x8000);
+            assert(r.mnemonic === 'JR NC,8005h', 'JR NC,e');
+        }
+        {
+            const r = dis([0x38, 0x03], 0x8000);
+            assert(r.mnemonic === 'JR C,8005h', 'JR C,e');
+        }
+
+        // DJNZ
+        {
+            const r = dis([0x10, 0xFE], 0x8000);
+            assert(r.mnemonic === 'DJNZ 8000h', 'DJNZ backward');
+            assert(r.length === 2, 'DJNZ is 2 bytes');
+        }
+
+        section('Main - CALL/RET/RST');
+
+        assert(dis([0xCD, 0x00, 0x60]).mnemonic === 'CALL 6000h', 'CALL nn');
+        assert(dis([0xC9]).mnemonic === 'RET', 'RET');
+
+        // CALL cc,nn
+        assert(dis([0xC4, 0x00, 0x60]).mnemonic === 'CALL NZ,6000h', 'CALL NZ,nn');
+        assert(dis([0xCC, 0x00, 0x60]).mnemonic === 'CALL Z,6000h', 'CALL Z,nn');
+        assert(dis([0xD4, 0x00, 0x60]).mnemonic === 'CALL NC,6000h', 'CALL NC,nn');
+        assert(dis([0xDC, 0x00, 0x60]).mnemonic === 'CALL C,6000h', 'CALL C,nn');
+
+        // RET cc
+        assert(dis([0xC0]).mnemonic === 'RET NZ', 'RET NZ');
+        assert(dis([0xC8]).mnemonic === 'RET Z', 'RET Z');
+        assert(dis([0xD0]).mnemonic === 'RET NC', 'RET NC');
+        assert(dis([0xD8]).mnemonic === 'RET C', 'RET C');
+        assert(dis([0xE0]).mnemonic === 'RET PO', 'RET PO');
+        assert(dis([0xE8]).mnemonic === 'RET PE', 'RET PE');
+        assert(dis([0xF0]).mnemonic === 'RET P', 'RET P');
+        assert(dis([0xF8]).mnemonic === 'RET M', 'RET M');
+
+        // RST
+        assert(dis([0xC7]).mnemonic === 'RST 00h', 'RST 00h');
+        assert(dis([0xCF]).mnemonic === 'RST 08h', 'RST 08h');
+        assert(dis([0xD7]).mnemonic === 'RST 10h', 'RST 10h');
+        assert(dis([0xDF]).mnemonic === 'RST 18h', 'RST 18h');
+        assert(dis([0xE7]).mnemonic === 'RST 20h', 'RST 20h');
+        assert(dis([0xEF]).mnemonic === 'RST 28h', 'RST 28h');
+        assert(dis([0xF7]).mnemonic === 'RST 30h', 'RST 30h');
+        assert(dis([0xFF]).mnemonic === 'RST 38h', 'RST 38h');
+
+        section('Main - I/O');
+
+        assert(dis([0xDB, 0xFE]).mnemonic === 'IN A,(FEh)', 'IN A,(n)');
+        assert(dis([0xD3, 0xFE]).mnemonic === 'OUT (FEh),A', 'OUT (n),A');
+    }
+
+    // ==================== CB PREFIX TESTS ====================
+
+    function runCBPrefix() {
+        section('CB - Rotate/Shift');
+
+        assert(dis([0xCB, 0x00]).mnemonic === 'RLC B', 'RLC B');
+        assert(dis([0xCB, 0x07]).mnemonic === 'RLC A', 'RLC A');
+        assert(dis([0xCB, 0x06]).mnemonic === 'RLC (HL)', 'RLC (HL)');
+        assert(dis([0xCB, 0x08]).mnemonic === 'RRC B', 'RRC B');
+        assert(dis([0xCB, 0x10]).mnemonic === 'RL B', 'RL B');
+        assert(dis([0xCB, 0x18]).mnemonic === 'RR B', 'RR B');
+        assert(dis([0xCB, 0x20]).mnemonic === 'SLA B', 'SLA B');
+        assert(dis([0xCB, 0x28]).mnemonic === 'SRA B', 'SRA B');
+        assert(dis([0xCB, 0x30]).mnemonic === 'SLL B', 'SLL B (undocumented)');
+        assert(dis([0xCB, 0x38]).mnemonic === 'SRL B', 'SRL B');
+        assert(dis([0xCB, 0x00]).length === 2, 'CB instructions are 2 bytes');
+
+        section('CB - BIT');
+
+        assert(dis([0xCB, 0x40]).mnemonic === 'BIT 0,B', 'BIT 0,B');
+        assert(dis([0xCB, 0x47]).mnemonic === 'BIT 0,A', 'BIT 0,A');
+        assert(dis([0xCB, 0x46]).mnemonic === 'BIT 0,(HL)', 'BIT 0,(HL)');
+        assert(dis([0xCB, 0x7F]).mnemonic === 'BIT 7,A', 'BIT 7,A');
+        assert(dis([0xCB, 0x68]).mnemonic === 'BIT 5,B', 'BIT 5,B');
+
+        section('CB - RES');
+
+        assert(dis([0xCB, 0x80]).mnemonic === 'RES 0,B', 'RES 0,B');
+        assert(dis([0xCB, 0x87]).mnemonic === 'RES 0,A', 'RES 0,A');
+        assert(dis([0xCB, 0x86]).mnemonic === 'RES 0,(HL)', 'RES 0,(HL)');
+        assert(dis([0xCB, 0xBF]).mnemonic === 'RES 7,A', 'RES 7,A');
+
+        section('CB - SET');
+
+        assert(dis([0xCB, 0xC0]).mnemonic === 'SET 0,B', 'SET 0,B');
+        assert(dis([0xCB, 0xC7]).mnemonic === 'SET 0,A', 'SET 0,A');
+        assert(dis([0xCB, 0xC6]).mnemonic === 'SET 0,(HL)', 'SET 0,(HL)');
+        assert(dis([0xCB, 0xFF]).mnemonic === 'SET 7,A', 'SET 7,A');
+    }
+
+    // ==================== ED PREFIX TESTS ====================
+
+    function runEDPrefix() {
+        section('ED - I/O instructions');
+
+        assert(dis([0xED, 0x40]).mnemonic === 'IN B,(C)', 'IN B,(C)');
+        assert(dis([0xED, 0x48]).mnemonic === 'IN C,(C)', 'IN C,(C)');
+        assert(dis([0xED, 0x78]).mnemonic === 'IN A,(C)', 'IN A,(C)');
+        assert(dis([0xED, 0x70]).mnemonic === 'IN (C)', 'IN (C) - undocumented');
+        assert(dis([0xED, 0x41]).mnemonic === 'OUT (C),B', 'OUT (C),B');
+        assert(dis([0xED, 0x49]).mnemonic === 'OUT (C),C', 'OUT (C),C');
+        assert(dis([0xED, 0x79]).mnemonic === 'OUT (C),A', 'OUT (C),A');
+        assert(dis([0xED, 0x71]).mnemonic === 'OUT (C),0', 'OUT (C),0 - undocumented');
+
+        section('ED - 16-bit arithmetic');
+
+        assert(dis([0xED, 0x42]).mnemonic === 'SBC HL,BC', 'SBC HL,BC');
+        assert(dis([0xED, 0x52]).mnemonic === 'SBC HL,DE', 'SBC HL,DE');
+        assert(dis([0xED, 0x62]).mnemonic === 'SBC HL,HL', 'SBC HL,HL');
+        assert(dis([0xED, 0x72]).mnemonic === 'SBC HL,SP', 'SBC HL,SP');
+        assert(dis([0xED, 0x4A]).mnemonic === 'ADC HL,BC', 'ADC HL,BC');
+        assert(dis([0xED, 0x5A]).mnemonic === 'ADC HL,DE', 'ADC HL,DE');
+        assert(dis([0xED, 0x6A]).mnemonic === 'ADC HL,HL', 'ADC HL,HL');
+        assert(dis([0xED, 0x7A]).mnemonic === 'ADC HL,SP', 'ADC HL,SP');
+
+        section('ED - 16-bit indirect loads');
+
+        assert(dis([0xED, 0x43, 0x00, 0x50]).mnemonic === 'LD (5000h),BC', 'LD (nn),BC');
+        assert(dis([0xED, 0x53, 0x00, 0x50]).mnemonic === 'LD (5000h),DE', 'LD (nn),DE');
+        assert(dis([0xED, 0x63, 0x00, 0x50]).mnemonic === 'LD (5000h),HL', 'LD (nn),HL via ED');
+        assert(dis([0xED, 0x73, 0x00, 0x50]).mnemonic === 'LD (5000h),SP', 'LD (nn),SP');
+        assert(dis([0xED, 0x4B, 0x00, 0x50]).mnemonic === 'LD BC,(5000h)', 'LD BC,(nn)');
+        assert(dis([0xED, 0x5B, 0x00, 0x50]).mnemonic === 'LD DE,(5000h)', 'LD DE,(nn)');
+        assert(dis([0xED, 0x6B, 0x00, 0x50]).mnemonic === 'LD HL,(5000h)', 'LD HL,(nn) via ED');
+        assert(dis([0xED, 0x7B, 0x00, 0x50]).mnemonic === 'LD SP,(5000h)', 'LD SP,(nn)');
+        assert(dis([0xED, 0x43, 0x00, 0x50]).length === 4, 'ED LD (nn),rr is 4 bytes');
+
+        section('ED - NEG, RETI, RETN, IM');
+
+        assert(dis([0xED, 0x44]).mnemonic === 'NEG', 'NEG');
+        assert(dis([0xED, 0x4D]).mnemonic === 'RETI', 'RETI');
+        assert(dis([0xED, 0x45]).mnemonic === 'RETN', 'RETN');
+        assert(dis([0xED, 0x46]).mnemonic === 'IM 0', 'IM 0');
+        assert(dis([0xED, 0x56]).mnemonic === 'IM 1', 'IM 1');
+        assert(dis([0xED, 0x5E]).mnemonic === 'IM 2', 'IM 2');
+
+        section('ED - Special registers');
+
+        assert(dis([0xED, 0x47]).mnemonic === 'LD I,A', 'LD I,A');
+        assert(dis([0xED, 0x4F]).mnemonic === 'LD R,A', 'LD R,A');
+        assert(dis([0xED, 0x57]).mnemonic === 'LD A,I', 'LD A,I');
+        assert(dis([0xED, 0x5F]).mnemonic === 'LD A,R', 'LD A,R');
+
+        section('ED - RRD/RLD');
+
+        assert(dis([0xED, 0x67]).mnemonic === 'RRD', 'RRD');
+        assert(dis([0xED, 0x6F]).mnemonic === 'RLD', 'RLD');
+
+        section('ED - Block instructions');
+
+        assert(dis([0xED, 0xA0]).mnemonic === 'LDI', 'LDI');
+        assert(dis([0xED, 0xA1]).mnemonic === 'CPI', 'CPI');
+        assert(dis([0xED, 0xA2]).mnemonic === 'INI', 'INI');
+        assert(dis([0xED, 0xA3]).mnemonic === 'OUTI', 'OUTI');
+        assert(dis([0xED, 0xA8]).mnemonic === 'LDD', 'LDD');
+        assert(dis([0xED, 0xA9]).mnemonic === 'CPD', 'CPD');
+        assert(dis([0xED, 0xAA]).mnemonic === 'IND', 'IND');
+        assert(dis([0xED, 0xAB]).mnemonic === 'OUTD', 'OUTD');
+        assert(dis([0xED, 0xB0]).mnemonic === 'LDIR', 'LDIR');
+        assert(dis([0xED, 0xB1]).mnemonic === 'CPIR', 'CPIR');
+        assert(dis([0xED, 0xB2]).mnemonic === 'INIR', 'INIR');
+        assert(dis([0xED, 0xB3]).mnemonic === 'OTIR', 'OTIR');
+        assert(dis([0xED, 0xB8]).mnemonic === 'LDDR', 'LDDR');
+        assert(dis([0xED, 0xB9]).mnemonic === 'CPDR', 'CPDR');
+        assert(dis([0xED, 0xBA]).mnemonic === 'INDR', 'INDR');
+        assert(dis([0xED, 0xBB]).mnemonic === 'OTDR', 'OTDR');
+
+        section('ED - Undefined opcodes become NOP');
+
+        assert(dis([0xED, 0x00]).mnemonic === 'NOP', 'ED 00 → NOP');
+        assert(dis([0xED, 0xFF]).mnemonic === 'NOP', 'ED FF → NOP');
+        assert(dis([0xED, 0x00]).length === 2, 'ED undefined is 2 bytes');
+    }
+
+    // ==================== IX/IY PREFIX TESTS ====================
+
+    function runIXIY() {
+        section('IX/IY - 16-bit loads');
+
+        assert(dis([0xDD, 0x21, 0x34, 0x12]).mnemonic === 'LD IX,1234h', 'LD IX,nn');
+        assert(dis([0xFD, 0x21, 0x34, 0x12]).mnemonic === 'LD IY,1234h', 'LD IY,nn');
+        assert(dis([0xDD, 0x22, 0x00, 0x50]).mnemonic === 'LD (5000h),IX', 'LD (nn),IX');
+        assert(dis([0xFD, 0x22, 0x00, 0x50]).mnemonic === 'LD (5000h),IY', 'LD (nn),IY');
+        assert(dis([0xDD, 0x2A, 0x00, 0x50]).mnemonic === 'LD IX,(5000h)', 'LD IX,(nn)');
+        assert(dis([0xFD, 0x2A, 0x00, 0x50]).mnemonic === 'LD IY,(5000h)', 'LD IY,(nn)');
+        assert(dis([0xDD, 0x21, 0x34, 0x12]).length === 4, 'DD LD IX,nn is 4 bytes');
+
+        section('IX/IY - INC/DEC index register');
+
+        assert(dis([0xDD, 0x23]).mnemonic === 'INC IX', 'INC IX');
+        assert(dis([0xDD, 0x2B]).mnemonic === 'DEC IX', 'DEC IX');
+        assert(dis([0xFD, 0x23]).mnemonic === 'INC IY', 'INC IY');
+        assert(dis([0xFD, 0x2B]).mnemonic === 'DEC IY', 'DEC IY');
+
+        section('IX/IY - ADD IX/IY,rr');
+
+        assert(dis([0xDD, 0x09]).mnemonic === 'ADD IX,BC', 'ADD IX,BC');
+        assert(dis([0xDD, 0x19]).mnemonic === 'ADD IX,DE', 'ADD IX,DE');
+        assert(dis([0xDD, 0x29]).mnemonic === 'ADD IX,IX', 'ADD IX,IX');
+        assert(dis([0xDD, 0x39]).mnemonic === 'ADD IX,SP', 'ADD IX,SP');
+        assert(dis([0xFD, 0x09]).mnemonic === 'ADD IY,BC', 'ADD IY,BC');
+        assert(dis([0xFD, 0x29]).mnemonic === 'ADD IY,IY', 'ADD IY,IY');
+
+        section('IX/IY - Indexed memory (IX+d)/(IY+d)');
+
+        // LD A,(IX+5) : DD 7E 05
+        {
+            const r = dis([0xDD, 0x7E, 0x05]);
+            assert(r.mnemonic === 'LD A,(IX+5h)', 'LD A,(IX+d) positive');
+        }
+        // LD (IX-3),B : DD 70 FD (-3 = 0xFD)
+        {
+            const r = dis([0xDD, 0x70, 0xFD]);
+            assert(r.mnemonic === 'LD (IX-3h),B', 'LD (IX+d),B negative');
+        }
+        // LD (IY+0),C : FD 71 00
+        {
+            const r = dis([0xFD, 0x71, 0x00]);
+            assert(r.mnemonic === 'LD (IY+0h),C', 'LD (IY+0),C');
+        }
+        // INC (IX+10h) : DD 34 10
+        assert(dis([0xDD, 0x34, 0x10]).mnemonic === 'INC (IX+10h)', 'INC (IX+d)');
+        // DEC (IY-1) : FD 35 FF
+        assert(dis([0xFD, 0x35, 0xFF]).mnemonic === 'DEC (IY-1h)', 'DEC (IY+d) negative');
+        // LD (IX+d),n : DD 36 05 42
+        assert(dis([0xDD, 0x36, 0x05, 0x42]).mnemonic === 'LD (IX+5h),42h', 'LD (IX+d),n');
+
+        section('IX/IY - ALU with indexed');
+
+        // ADD A,(IX+3) : DD 86 03
+        assert(dis([0xDD, 0x86, 0x03]).mnemonic === 'ADD A,(IX+3h)', 'ADD A,(IX+d)');
+        // CP (IY+0) : FD BE 00
+        assert(dis([0xFD, 0xBE, 0x00]).mnemonic === 'CP (IY+0h)', 'CP (IY+d)');
+        // SUB (IX+1) : DD 96 01
+        assert(dis([0xDD, 0x96, 0x01]).mnemonic === 'SUB (IX+1h)', 'SUB (IX+d)');
+
+        section('IX/IY - Undocumented half-register');
+
+        // LD A,IXH : DD 7C
+        assert(dis([0xDD, 0x7C]).mnemonic === 'LD A,IXH', 'LD A,IXH');
+        // LD A,IXL : DD 7D
+        assert(dis([0xDD, 0x7D]).mnemonic === 'LD A,IXL', 'LD A,IXL');
+        // LD IYH,E : FD 63
+        assert(dis([0xFD, 0x63]).mnemonic === 'LD IYH,E', 'LD IYH,E');
+        // INC IXH : DD 24
+        assert(dis([0xDD, 0x24]).mnemonic === 'INC IXH', 'INC IXH');
+        // DEC IXL : DD 2D
+        assert(dis([0xDD, 0x2D]).mnemonic === 'DEC IXL', 'DEC IXL');
+        // ADD A,IYL : FD 85
+        assert(dis([0xFD, 0x85]).mnemonic === 'ADD A,IYL', 'ADD A,IYL');
+        // LD IXH,n : DD 26 42
+        assert(dis([0xDD, 0x26, 0x42]).mnemonic === 'LD IXH,42h', 'LD IXH,n');
+
+        section('IX/IY - PUSH/POP/EX/JP/LD SP');
+
+        assert(dis([0xDD, 0xE5]).mnemonic === 'PUSH IX', 'PUSH IX');
+        assert(dis([0xDD, 0xE1]).mnemonic === 'POP IX', 'POP IX');
+        assert(dis([0xFD, 0xE5]).mnemonic === 'PUSH IY', 'PUSH IY');
+        assert(dis([0xFD, 0xE1]).mnemonic === 'POP IY', 'POP IY');
+        assert(dis([0xDD, 0xE3]).mnemonic === 'EX (SP),IX', 'EX (SP),IX');
+        assert(dis([0xFD, 0xE3]).mnemonic === 'EX (SP),IY', 'EX (SP),IY');
+        assert(dis([0xDD, 0xE9]).mnemonic === 'JP (IX)', 'JP (IX)');
+        assert(dis([0xFD, 0xE9]).mnemonic === 'JP (IY)', 'JP (IY)');
+        assert(dis([0xDD, 0xF9]).mnemonic === 'LD SP,IX', 'LD SP,IX');
+        assert(dis([0xFD, 0xF9]).mnemonic === 'LD SP,IY', 'LD SP,IY');
+    }
+
+    // ==================== INDEXED CB TESTS ====================
+
+    function runIndexedCB() {
+        section('Indexed CB - Rotate/Shift (IX+d)');
+
+        // RLC (IX+5) : DD CB 05 06
+        assert(dis([0xDD, 0xCB, 0x05, 0x06]).mnemonic === 'RLC (IX+5h)', 'RLC (IX+d)');
+        // RRC (IY-2) : FD CB FE 0E
+        assert(dis([0xFD, 0xCB, 0xFE, 0x0E]).mnemonic === 'RRC (IY-2h)', 'RRC (IY+d)');
+        // RL (IX+0) : DD CB 00 16
+        assert(dis([0xDD, 0xCB, 0x00, 0x16]).mnemonic === 'RL (IX+0h)', 'RL (IX+d)');
+        // SLA (IX+1) : DD CB 01 26
+        assert(dis([0xDD, 0xCB, 0x01, 0x26]).mnemonic === 'SLA (IX+1h)', 'SLA (IX+d)');
+        // SRL (IY+3) : FD CB 03 3E
+        assert(dis([0xFD, 0xCB, 0x03, 0x3E]).mnemonic === 'SRL (IY+3h)', 'SRL (IY+d)');
+        assert(dis([0xDD, 0xCB, 0x05, 0x06]).length === 4, 'DD CB d op is 4 bytes');
+
+        section('Indexed CB - Undocumented rotate with store');
+
+        // RLC (IX+5),B : DD CB 05 00 (rotate + store result in B)
+        assert(dis([0xDD, 0xCB, 0x05, 0x00]).mnemonic === 'RLC (IX+5h),B', 'RLC (IX+d),B undoc');
+        // SRL (IX+1),A : DD CB 01 3F
+        assert(dis([0xDD, 0xCB, 0x01, 0x3F]).mnemonic === 'SRL (IX+1h),A', 'SRL (IX+d),A undoc');
+
+        section('Indexed CB - BIT');
+
+        // BIT 3,(IX+5) : DD CB 05 5E
+        assert(dis([0xDD, 0xCB, 0x05, 0x5E]).mnemonic === 'BIT 3,(IX+5h)', 'BIT 3,(IX+d)');
+        // BIT 7,(IY-1) : FD CB FF 7E
+        assert(dis([0xFD, 0xCB, 0xFF, 0x7E]).mnemonic === 'BIT 7,(IY-1h)', 'BIT 7,(IY+d)');
+        // BIT 0,(IX+0) : DD CB 00 46
+        assert(dis([0xDD, 0xCB, 0x00, 0x46]).mnemonic === 'BIT 0,(IX+0h)', 'BIT 0,(IX+0)');
+
+        section('Indexed CB - RES');
+
+        // RES 3,(IX+5) : DD CB 05 9E
+        assert(dis([0xDD, 0xCB, 0x05, 0x9E]).mnemonic === 'RES 3,(IX+5h)', 'RES 3,(IX+d)');
+        // RES 7,(IY+2) : FD CB 02 BE
+        assert(dis([0xFD, 0xCB, 0x02, 0xBE]).mnemonic === 'RES 7,(IY+2h)', 'RES 7,(IY+d)');
+
+        section('Indexed CB - RES/SET with undocumented store');
+
+        // RES 0,(IX+1),B : DD CB 01 80
+        assert(dis([0xDD, 0xCB, 0x01, 0x80]).mnemonic === 'RES 0,(IX+1h),B', 'RES (IX+d),B undoc');
+        // SET 0,(IX+1),B : DD CB 01 C0
+        assert(dis([0xDD, 0xCB, 0x01, 0xC0]).mnemonic === 'SET 0,(IX+1h),B', 'SET (IX+d),B undoc');
+
+        section('Indexed CB - SET');
+
+        // SET 3,(IX+5) : DD CB 05 DE
+        assert(dis([0xDD, 0xCB, 0x05, 0xDE]).mnemonic === 'SET 3,(IX+5h)', 'SET 3,(IX+d)');
+        // SET 0,(IY+0) : FD CB 00 C6
+        assert(dis([0xFD, 0xCB, 0x00, 0xC6]).mnemonic === 'SET 0,(IY+0h)', 'SET 0,(IY+0)');
+    }
+
+    // ==================== CHAINED PREFIX TESTS ====================
+
+    function runChainedPrefixes() {
+        section('Chained Prefixes - Redundant treated as DEFB');
+
+        // DD DD → first DD is DEFB DDh (length 1)
+        {
+            const r = dis([0xDD, 0xDD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB DDh', 'DD DD → DEFB DDh');
+            assert(r.length === 1, 'redundant DD is 1 byte');
+        }
+        // FD FD → first FD is DEFB FDh
+        {
+            const r = dis([0xFD, 0xFD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB FDh', 'FD FD → DEFB FDh');
+        }
+        // DD FD → first DD is DEFB DDh
+        {
+            const r = dis([0xDD, 0xFD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB DDh', 'DD FD → DEFB DDh');
+        }
+        // FD DD → first FD is DEFB FDh
+        {
+            const r = dis([0xFD, 0xDD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB FDh', 'FD DD → DEFB FDh');
+        }
+        // DD ED → DD is DEFB DDh
+        {
+            const r = dis([0xDD, 0xED, 0xB0]);
+            assert(r.mnemonic === 'DEFB DDh', 'DD ED → DEFB DDh');
+            assert(r.length === 1, 'DD before ED is 1 byte');
+        }
+        // FD ED → FD is DEFB FDh
+        {
+            const r = dis([0xFD, 0xED, 0xB0]);
+            assert(r.mnemonic === 'DEFB FDh', 'FD ED → DEFB FDh');
+        }
+        // ED ED → ED is DEFB EDh
+        {
+            const r = dis([0xED, 0xED, 0xB0]);
+            assert(r.mnemonic === 'DEFB EDh', 'ED ED → DEFB EDh');
+            assert(r.length === 1, 'redundant ED is 1 byte');
+        }
+        // ED DD → ED is DEFB EDh
+        {
+            const r = dis([0xED, 0xDD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB EDh', 'ED DD → DEFB EDh');
+        }
+        // ED FD → ED is DEFB EDh
+        {
+            const r = dis([0xED, 0xFD, 0x21, 0x00, 0x00]);
+            assert(r.mnemonic === 'DEFB EDh', 'ED FD → DEFB EDh');
+        }
+        // ED CB → ED is DEFB EDh
+        {
+            const r = dis([0xED, 0xCB, 0x00]);
+            assert(r.mnemonic === 'DEFB EDh', 'ED CB → DEFB EDh');
+        }
+
+        section('Chained Prefixes - Sequential disassembly after redundant');
+
+        // DD DD 21 34 12 → at addr 0: DEFB DDh (1 byte), at addr 1: LD IX,1234h (4 bytes)
+        {
+            const mem = makeMem([0xDD, 0xDD, 0x21, 0x34, 0x12], 0);
+            const d = new Disassembler(mem);
+            const r1 = d.disassemble(0);
+            assert(r1.length === 1, 'first instruction is 1 byte');
+            const r2 = d.disassemble(r1.length);
+            assert(r2.mnemonic === 'LD IX,1234h', 'second instruction after redundant prefix');
+        }
+    }
+
+    // ==================== REFERENCE EXTRACTION TESTS ====================
+
+    function runRefExtraction() {
+        section('Ref Extraction - Jumps');
+
+        {
+            const r = dis([0xC3, 0x00, 0x80], 0, true);
+            assert(r.refs && r.refs.length === 1, 'JP nn extracts 1 ref');
+            assert(r.refs[0].type === 'jp', 'JP ref type is jp');
+            assert(r.refs[0].target === 0x8000, 'JP target correct');
+        }
+        {
+            const r = dis([0xCA, 0x00, 0x60], 0, true);
+            assert(r.refs && r.refs.length === 1, 'JP Z,nn extracts ref');
+            assert(r.refs[0].type === 'jp', 'JP cc ref type');
+            assert(r.refs[0].target === 0x6000, 'JP cc target correct');
+        }
+
+        section('Ref Extraction - Relative jumps');
+
+        {
+            const r = dis([0x18, 0x05], 0x8000, true);
+            assert(r.refs && r.refs.length === 1, 'JR e extracts ref');
+            assert(r.refs[0].type === 'jr', 'JR ref type');
+            assert(r.refs[0].target === 0x8007, 'JR target correct');
+        }
+        {
+            const r = dis([0x20, 0xFE], 0x8000, true);
+            assert(r.refs && r.refs.length === 1, 'JR NZ,e extracts ref');
+            assert(r.refs[0].target === 0x8000, 'JR NZ backward target');
+        }
+
+        section('Ref Extraction - DJNZ');
+
+        {
+            const r = dis([0x10, 0xFE], 0x8000, true);
+            assert(r.refs && r.refs.length === 1, 'DJNZ extracts ref');
+            assert(r.refs[0].type === 'djnz', 'DJNZ ref type');
+            assert(r.refs[0].target === 0x8000, 'DJNZ target correct');
+        }
+
+        section('Ref Extraction - CALL');
+
+        {
+            const r = dis([0xCD, 0x00, 0x60], 0, true);
+            assert(r.refs && r.refs.length === 1, 'CALL nn extracts ref');
+            assert(r.refs[0].type === 'call', 'CALL ref type');
+            assert(r.refs[0].target === 0x6000, 'CALL target correct');
+        }
+        {
+            const r = dis([0xC4, 0x00, 0x50], 0, true);
+            assert(r.refs && r.refs.length === 1, 'CALL NZ,nn extracts ref');
+            assert(r.refs[0].type === 'call', 'CALL cc ref type');
+        }
+
+        section('Ref Extraction - RST');
+
+        {
+            const r = dis([0xEF], 0, true);
+            assert(r.refs && r.refs.length === 1, 'RST extracts ref');
+            assert(r.refs[0].type === 'rst', 'RST ref type');
+            assert(r.refs[0].target === 0x28, 'RST 28h target');
+        }
+
+        section('Ref Extraction - LD immediate (16-bit)');
+
+        {
+            const r = dis([0x01, 0x34, 0x12], 0, true);
+            assert(r.refs && r.refs.length === 1, 'LD BC,nn extracts ref');
+            assert(r.refs[0].type === 'ld_imm', 'LD rr,nn ref type');
+            assert(r.refs[0].target === 0x1234, 'LD BC,nn target');
+        }
+
+        section('Ref Extraction - LD indirect');
+
+        {
+            const r = dis([0x32, 0x00, 0x90], 0, true);
+            assert(r.refs && r.refs.length === 1, 'LD (nn),A extracts ref');
+            assert(r.refs[0].type === 'ld_ind', 'LD (nn),A ref type');
+            assert(r.refs[0].target === 0x9000, 'LD (nn),A target');
+        }
+        {
+            const r = dis([0x3A, 0x00, 0x50], 0, true);
+            assert(r.refs && r.refs.length === 1, 'LD A,(nn) extracts ref');
+            assert(r.refs[0].target === 0x5000, 'LD A,(nn) target');
+        }
+
+        section('Ref Extraction - ED indirect loads');
+
+        {
+            const r = dis([0xED, 0x43, 0x00, 0x50], 0, true);
+            assert(r.refs && r.refs.length === 1, 'ED LD (nn),BC extracts ref');
+            assert(r.refs[0].type === 'ld_ind', 'ED LD (nn),rr ref type');
+            assert(r.refs[0].target === 0x5000, 'ED LD (nn),BC target');
+        }
+
+        section('Ref Extraction - IX/IY loads');
+
+        {
+            const r = dis([0xDD, 0x21, 0x34, 0x12], 0, true);
+            assert(r.refs && r.refs.length === 1, 'LD IX,nn extracts ref');
+            assert(r.refs[0].type === 'ld_imm', 'LD IX,nn ref type');
+            assert(r.refs[0].target === 0x1234, 'LD IX,nn target');
+        }
+        {
+            const r = dis([0xDD, 0x22, 0x00, 0x50], 0, true);
+            assert(r.refs && r.refs.length === 1, 'LD (nn),IX extracts ref');
+            assert(r.refs[0].type === 'ld_ind', 'LD (nn),IX ref type');
+        }
+
+        section('Ref Extraction - No refs when extractRefs=false');
+
+        {
+            const r = dis([0xC3, 0x00, 0x80], 0, false);
+            assert(!r.refs, 'no refs when extractRefs=false');
+        }
+
+        section('Ref Extraction - No refs for non-ref instructions');
+
+        {
+            const r = dis([0x00], 0, true);
+            assert(!r.refs, 'NOP has no refs');
+        }
+        {
+            const r = dis([0x80], 0, true);
+            assert(!r.refs, 'ADD A,B has no refs');
+        }
+    }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    function runEdgeCases() {
+        section('Edge Cases - Instruction length');
+
+        assert(dis([0x00]).length === 1, 'NOP is 1 byte');
+        assert(dis([0x3E, 0x42]).length === 2, 'LD A,n is 2 bytes');
+        assert(dis([0xC3, 0x00, 0x80]).length === 3, 'JP nn is 3 bytes');
+        assert(dis([0xDD, 0x21, 0x34, 0x12]).length === 4, 'DD LD IX,nn is 4 bytes');
+        assert(dis([0xDD, 0xCB, 0x05, 0x06]).length === 4, 'DD CB d op is 4 bytes');
+        assert(dis([0xED, 0x43, 0x00, 0x50]).length === 4, 'ED LD (nn),BC is 4 bytes');
+        assert(dis([0xCB, 0x00]).length === 2, 'CB op is 2 bytes');
+
+        section('Edge Cases - Bytes array matches input');
+
+        {
+            const r = dis([0xCD, 0x34, 0x12]);
+            assert(r.bytes.length === 3, 'CALL nn has 3 bytes in array');
+            assert(r.bytes[0] === 0xCD && r.bytes[1] === 0x34 && r.bytes[2] === 0x12,
+                'CALL nn bytes correct');
+        }
+        {
+            const r = dis([0xDD, 0xCB, 0x05, 0x46]);
+            assert(r.bytes.length === 4, 'DD CB d op has 4 bytes');
+            assert(r.bytes[0] === 0xDD && r.bytes[1] === 0xCB &&
+                   r.bytes[2] === 0x05 && r.bytes[3] === 0x46,
+                'DD CB bytes correct');
+        }
+
+        section('Edge Cases - Address wrapping at 0xFFFF');
+
+        // Instruction at 0xFFFF wraps around to 0x0000 for operand
+        {
+            const mem = makeMem([]);
+            mem._data[0xFFFF] = 0x18; // JR
+            mem._data[0x0000] = 0x00; // displacement 0 → target = 0x0001 + 0 = 0x0001
+            const d = new Disassembler(mem);
+            const r = d.disassemble(0xFFFF);
+            assert(r.mnemonic === 'JR 0001h', 'JR at 0xFFFF wraps address',
+                `got: ${r.mnemonic}`);
+            assert(r.length === 2, 'length still 2 even across boundary');
+        }
+
+        section('Edge Cases - addr field set correctly');
+
+        {
+            const r = dis([0x00], 0x8000);
+            assert(r.addr === 0x8000, 'addr field reflects start address');
+        }
+
+        section('Edge Cases - Hex formatting');
+
+        // Verify hex output uses uppercase with 'h' suffix
+        assert(dis([0x3E, 0xAB]).mnemonic === 'LD A,ABh', 'hex8 uppercase with h suffix');
+        assert(dis([0xC3, 0xEF, 0xBE]).mnemonic === 'JP BEEFh', 'hex16 uppercase with h suffix');
+        // Leading zeros
+        assert(dis([0x3E, 0x01]).mnemonic === 'LD A,01h', 'hex8 leading zero');
+        assert(dis([0xC3, 0x10, 0x00]).mnemonic === 'JP 0010h', 'hex16 leading zeros');
+
+        section('Edge Cases - Displacement formatting');
+
+        // Positive displacement: +Nh
+        {
+            const r = dis([0xDD, 0x7E, 0x7F]); // LD A,(IX+127)
+            assert(r.mnemonic === 'LD A,(IX+7Fh)', 'max positive displacement');
+        }
+        // Negative displacement: -Nh
+        {
+            const r = dis([0xDD, 0x7E, 0x80]); // LD A,(IX-128)
+            assert(r.mnemonic === 'LD A,(IX-80h)', 'max negative displacement');
+        }
+    }
+
+    // ==================== RUN ALL ====================
+
+    async function runAll() {
+        logEl.innerHTML = '';
+        totalPassed = 0;
+        totalFailed = 0;
+        updateSummary();
+
+        log(`Z80 Disassembler Test Suite v${TEST_VERSION}`, 'info');
+        log(`Started: ${new Date().toLocaleTimeString()}`, 'info');
+
+        runMainOpcodes();
+        runCBPrefix();
+        runEDPrefix();
+        runIXIY();
+        runIndexedCB();
+        runChainedPrefixes();
+        runRefExtraction();
+        runEdgeCases();
+
+        log('');
+        log(`Completed: ${new Date().toLocaleTimeString()}`, 'info');
+        log(`Total: ${totalPassed + totalFailed} | Pass: ${totalPassed} | Fail: ${totalFailed}`, totalFailed > 0 ? 'fail' : 'pass');
+    }
+
+    // Expose to buttons
+    window.runAll = runAll;
+    window.runMainOpcodes = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runMainOpcodes(); };
+    window.runCBPrefix = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runCBPrefix(); };
+    window.runEDPrefix = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runEDPrefix(); };
+    window.runIXIY = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runIXIY(); };
+    window.runIndexedCB = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runIndexedCB(); };
+    window.runChainedPrefixes = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runChainedPrefixes(); };
+    window.runRefExtraction = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runRefExtraction(); };
+    window.runEdgeCases = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runEdgeCases(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

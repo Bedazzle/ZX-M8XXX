@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.9.11</title>
+    <title>ZX-M8XXX v0.11.0</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -6496,7 +6496,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.9.11 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.11.0 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6536,7 +6536,7 @@
         </div>
         
         <div class="controls">
-            <button id="btnScreenshotMain" title="Save screenshot">📷</button>
+            <button id="btnScreenshotMain" title="Save screenshot (F3)">📷</button>
             <button id="btnRun" class="primary" title="Run/Pause emulation (F5)">Run</button>
             <button id="btnReset" title="Reset machine">Reset</button>
             <select id="speedSelect" title="Emulation speed">
@@ -7642,14 +7642,14 @@ start:
                         <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
                     </div>
                     <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable +D interface for MGT disks (requires plusd.rom)" style="display: inline-block;">
-                            <input type="checkbox" id="chkPlusD"> +D Interface (MGT)
+                        <label class="checkbox-label" title="+D interface is currently under development" style="display: inline-block; opacity: 0.5;">
+                            <input type="checkbox" id="chkPlusD" disabled> +D Interface (MGT)
                         </label>
-                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">coming soon</span>
                         <input type="file" id="romPlusDInput" class="file-input" accept=".rom,.bin" style="display:none">
                     </div>
                     <div style="margin-top: 4px;">
-                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
+                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" disabled style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
                         <button id="btnNmiPlusD" title="Trigger +D NMI (snapshot button)" disabled style="font-size: 11px; padding: 2px 10px;">NMI</button>
                     </div>
                     <div style="margin-top: 4px;">
@@ -7704,7 +7704,7 @@ start:
                 <button class="tools-subtab-btn active" data-toolstab="explorer">Explorer</button>
                 <button class="tools-subtab-btn" data-toolstab="compare">Compare</button>
                 <button class="tools-subtab-btn" data-toolstab="tests">Tests</button>
-                <button class="tools-subtab-btn" data-toolstab="export">Export</button>
+                <button class="tools-subtab-btn" data-toolstab="export">Export/Import</button>
                 <button class="tools-subtab-btn" data-toolstab="mapper">Mapper</button>
                 <button class="tools-subtab-btn" data-toolstab="graphics">GFX</button>
                 <button class="tools-subtab-btn" data-toolstab="info">Info</button>
@@ -7723,9 +7723,8 @@ start:
                     <label class="tests-checkbox-label" title="Highlight pixel differences with semi-transparent overlay">
                         <input type="checkbox" id="chkHighlightDiff"> Highlight Diff
                     </label>
-                    <a href="tests/system-test.html" class="test-link" title="Run system tests">System Tests</a>
-                    <a href="tests/fuse-test.html" class="test-link" title="Run FUSE Z80 CPU tests">FUSE Tests</a>
-                    <a href="tests/asm-test.html" class="test-link" title="Run assembler tests">Assembler Tests</a>
+                    <a href="tests/fuse-test.html" class="test-link" title="FUSE Z80 CPU tests (external suite)">FUSE Tests</a>
+                    <a href="tests/all-tests.html" class="test-link" title="Unit test suites">Unit Tests</a>
                     <span class="tests-status" id="testsStatus">Loading tests...</span>
                 </div>
 
@@ -7837,6 +7836,9 @@ start:
                     <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
                         <input type="radio" name="compareMode" value="sna-emu"> Snapshot vs Emulator
                     </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="mem-bin"> Memory vs Binary
+                    </label>
                 </div>
 
                 <!-- File Inputs -->
@@ -7849,6 +7851,12 @@ start:
                         <label style="display:block;margin-bottom:5px;color:var(--text-secondary);font-size:11px">File B:</label>
                         <input type="file" id="compareFileB" accept=".sna,.z80,.szx,.rzx,.bin,.rom,.dat,*" style="width:100%">
                     </div>
+                </div>
+
+                <!-- Memory vs Binary address -->
+                <div id="compareMemBinOptions" style="display:none;align-items:center;gap:8px;font-size:12px">
+                    <label style="color:var(--text-secondary)">Start address:</label>
+                    <input type="text" id="compareMemBinStart" maxlength="4" value="0000" style="width:42px;font-family:monospace;font-size:11px;text-transform:uppercase" title="Memory start address (hex) — binary file is compared against memory starting at this address">
                 </div>
 
                 <!-- Compare Options -->
@@ -7914,6 +7922,7 @@ start:
                     <button class="explorer-subtab" data-subtab="basic">BASIC</button>
                     <button class="explorer-subtab" data-subtab="disasm">Disasm</button>
                     <button class="explorer-subtab" data-subtab="hexdump">Hex Dump</button>
+                    <button class="explorer-subtab" data-subtab="text">Text</button>
                     <button class="explorer-subtab" data-subtab="edit">Edit</button>
                 </div>
 
@@ -7972,6 +7981,26 @@ start:
                             <button id="btnExplorerHex" class="explorer-btn">View</button>
                         </div>
                         <div id="explorerHexOutput" class="explorer-output">
+                            <span class="explorer-empty">Select a source and click View</span>
+                        </div>
+                    </div>
+
+                    <!-- Text Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-text" style="display:none">
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Source:</span>
+                            <select id="explorerTextSource" class="explorer-select"></select>
+                            <span class="explorer-label">Codepage:</span>
+                            <select id="explorerTextCodepage" class="explorer-select">
+                                <option value="ascii">ASCII</option>
+                                <option value="cp866" selected>CP866 (DOS Cyrillic)</option>
+                                <option value="win1251">Windows-1251</option>
+                                <option value="koi8r">KOI8-R</option>
+                                <option value="iso88591">ISO 8859-1 (Latin-1)</option>
+                            </select>
+                            <button id="btnExplorerText" class="explorer-btn">View</button>
+                        </div>
+                        <div id="explorerTextOutput" class="explorer-output">
                             <span class="explorer-empty">Select a source and click View</span>
                         </div>
                     </div>
@@ -8167,6 +8196,40 @@ start:
             <div class="settings-tab-content">
                 <div class="settings-section full-width">
                     <div class="settings-row">
+                        <span style="font-weight: bold; font-size: 12px;">Screenshot Button</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="screenshotFormat">Format:</label>
+                        <select id="screenshotFormat">
+                            <option value="png">PNG</option>
+                            <option value="scr">SCR</option>
+                            <option value="gif">GIF (flash)</option>
+                        </select>
+                        <label for="screenshotSize" style="min-width: auto; margin-left: 10px;">Size:</label>
+                        <select id="screenshotSize">
+                            <option value="screen">Screen only</option>
+                            <option value="border">With border</option>
+                        </select>
+                        <label for="screenshotZoom" style="min-width: auto; margin-left: 10px;">Zoom:</label>
+                        <select id="screenshotZoom">
+                            <option value="1">x1</option>
+                            <option value="2">x2</option>
+                            <option value="3">x3</option>
+                        </select>
+                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotOverlay"> Overlay</label>
+                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotBatch"> Batch</label>
+                        <span id="screenshotBatchCount" style="font-size: 11px; color: var(--cyan); display: none;"></span>
+                        <label style="min-width: auto; margin-left: 10px;">Every:</label>
+                        <input type="number" id="screenshotInterval" value="50" min="1" step="1" style="width: 50px;">
+                        <select id="screenshotIntervalUnit">
+                            <option value="frames">frames</option>
+                            <option value="seconds">seconds</option>
+                        </select>
+                    </div>
+                </div>
+                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 4px 0;">
+                <div class="settings-section full-width">
+                    <div class="settings-row">
                         <button id="btnScreenshot" title="Export current screen in selected format">Export</button>
                     </div>
                     <div class="settings-row">
@@ -8251,6 +8314,24 @@ start:
                         <button id="btnRzxRecCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
                     </div>
                     <div class="frame-grab-status" id="rzxRecStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">Binary</span>
+                    </div>
+                    <div class="settings-row" style="gap: 4px; align-items: center;">
+                        <label style="font-size: 11px; min-width: 30px;">Start</label>
+                        <input type="text" id="binExportStart" maxlength="4" value="4000" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Start address (hex)">
+                        <label style="font-size: 11px; min-width: 18px;">Len</label>
+                        <input type="text" id="binExportLength" maxlength="4" value="1B00" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Length in bytes (hex)">
+                        <label style="font-size: 11px; min-width: 18px;">End</label>
+                        <input type="text" id="binExportEnd" maxlength="4" value="5AFF" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="End address inclusive (hex)">
+                    </div>
+                    <div class="settings-row frame-export-controls" style="margin-top: 2px;">
+                        <button id="btnBinExport" class="frame-grab-btn" title="Export memory range to .bin file">Export</button>
+                        <button id="btnBinLoad" class="frame-grab-btn" title="Import .bin file into memory at start address">Import</button>
+                        <input type="file" id="binLoadFile" accept=".bin,.dat,*" style="display: none;">
+                    </div>
+                    <div class="frame-grab-status" id="binStatus"></div>
                     <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
                     <div class="settings-row">
                         <label class="checkbox-label" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks when exporting ASM from Memory Map">
@@ -9690,7 +9771,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.9.11';
+        const APP_VERSION = '0.11.0';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -9915,6 +9996,7 @@ start:
             getPaletteValue: () => displayAPI.getPaletteValue(),
             onDisasmReset: () => { disasm = null; }
         });
+
 
         // Compare Tool (extracted to compare-tool.js)
         initCompareTool({
@@ -10151,6 +10233,7 @@ start:
         const { updateRightDisassemblyView } = initRightDisasmView({
             getSpectrum: () => spectrum, getDisasm: () => disasm,
             subroutineManager, labelManager, foldManager,
+            commentManager, regionManager,
             getCurrentPage, formatAddrColumn, replaceMnemonicAddresses,
             formatMnemonic, isFlowBreak, disassembleWithFolding,
             getRightDisasmViewAddress: () => rightDisasmViewAddress,
@@ -10642,26 +10725,348 @@ start:
                 a.click();
                 URL.revokeObjectURL(url);
                 showMessage(msg);
+            } else if (format === 'gif') {
+                // GIF (flash): 2-frame animated GIF if flash content, otherwise still image
+                const canvas = document.getElementById('screen');
+                const w = canvas.width, h = canvas.height;
+                const savedFlash = spectrum.ula.flashState;
+                const savedCounter = spectrum.ula.frameCounter;
+
+                spectrum.ula.frameCounter = 0;
+                spectrum.ula.flashState = false;
+                spectrum.renderToScreen();
+                const imgData1 = canvas.getContext('2d').getImageData(0, 0, w, h);
+
+                spectrum.ula.frameCounter = 0;
+                spectrum.ula.flashState = true;
+                spectrum.renderToScreen();
+                const imgData2 = canvas.getContext('2d').getImageData(0, 0, w, h);
+
+                spectrum.ula.frameCounter = savedCounter;
+                spectrum.ula.flashState = savedFlash;
+                spectrum.renderToScreen();
+
+                // Check if frames differ (flash is visible)
+                let hasFlash = false;
+                for (let i = 0; i < imgData1.data.length; i++) {
+                    if (imgData1.data[i] !== imgData2.data[i]) { hasFlash = true; break; }
+                }
+
+                const fn = `${baseName}_${timestamp}.gif`;
+                setTimeout(() => {
+                    const gif = new GifEncoder(w, h);
+                    if (hasFlash) {
+                        gif.addFrame(imgData1.data, 32); // 320ms per phase
+                        gif.addFrame(imgData2.data, 32);
+                    } else {
+                        gif.addFrame(imgData1.data, 0); // Still image
+                    }
+                    const gifData = gif.finish();
+                    downloadFile(fn, gifData);
+                    showMessage(hasFlash ? 'GIF saved (2-frame flash)' : 'GIF saved (still image)');
+                }, 20);
             } else if (format === 'bsc') {
                 // BSC requires frame capture - start single frame capture
                 showMessage('Use Start/Stop for BSC format', 'info');
             } else {
-                // Other formats (zip, gif, sca) need frame sequence
+                // Other formats (zip, sca) need frame sequence
                 showMessage(`Use Start/Stop for ${format.toUpperCase()} format`, 'info');
             }
         });
 
+        // Helper: capture screen canvas with configurable crop, zoom, and overlay
+        function captureScreenCanvas(size, zoom, includeOverlay) {
+            const screenCanvas = document.getElementById('screen');
+            const dims = spectrum.ula.getDimensions();
+            let sx, sy, sw, sh;
+            if (size === 'screen') {
+                sx = dims.borderLeft;
+                sy = dims.borderTop;
+                sw = 256;
+                sh = 192;
+            } else {
+                sx = 0;
+                sy = 0;
+                sw = dims.width;
+                sh = dims.height;
+            }
+            const outW = sw * zoom;
+            const outH = sh * zoom;
+            const tmpCanvas = document.createElement('canvas');
+            tmpCanvas.width = outW;
+            tmpCanvas.height = outH;
+            const ctx = tmpCanvas.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(screenCanvas, sx, sy, sw, sh, 0, 0, outW, outH);
+            if (includeOverlay && spectrum.overlayMode !== 'none') {
+                const ovCanvas = document.getElementById('overlayCanvas');
+                const curZoom = getCurrentZoom();
+                ctx.drawImage(ovCanvas, sx * curZoom, sy * curZoom, sw * curZoom, sh * curZoom, 0, 0, outW, outH);
+            }
+            return tmpCanvas;
+        }
+
+        // Batch screenshot buffer: {name, data} entries for ZIP export
+        const screenshotBatch = [];
+
+        function updateBatchCount() {
+            const el = document.getElementById('screenshotBatchCount');
+            if (screenshotBatch.length > 0) {
+                el.textContent = `(${screenshotBatch.length})`;
+                el.style.display = '';
+            } else {
+                el.style.display = 'none';
+            }
+        }
+
+        function saveBatchAsZip() {
+            if (screenshotBatch.length === 0) {
+                showMessage('No screenshots in batch');
+                return;
+            }
+            const baseName = getExportBaseName() || 'screenshot';
+            const zipData = createZip(screenshotBatch);
+            downloadFile(`${baseName}_batch.zip`, zipData);
+            showMessage(`ZIP saved (${screenshotBatch.length} files)`);
+            screenshotBatch.length = 0;
+            updateBatchCount();
+        }
+
+        // Expose saveBatchAsZip for keyboard shortcut access
+        window._screenshotSaveBatchAsZip = saveBatchAsZip;
+
+        // Auto-capture state
+        let autoCaptureActive = false;
+        let autoCaptureFrameCounter = 0;
+        let autoCaptureSeqNum = 0;
+        let autoCaptureSavedOnFrame = null;
+        let autoCaptureIntervalFrames = 50;
+
+        function startAutoCapture() {
+            const interval = parseFloat(document.getElementById('screenshotInterval').value) || 50;
+            const unit = document.getElementById('screenshotIntervalUnit').value;
+            autoCaptureIntervalFrames = unit === 'seconds' ? Math.max(1, Math.round(interval * 50)) : Math.max(1, Math.round(interval));
+            autoCaptureFrameCounter = 0;
+            autoCaptureSeqNum = screenshotBatch.length;
+
+            autoCaptureSavedOnFrame = spectrum.onFrame;
+            spectrum.onFrame = (fc) => {
+                autoCaptureFrameCounter++;
+                if (autoCaptureFrameCounter >= autoCaptureIntervalFrames) {
+                    autoCaptureFrameCounter = 0;
+                    autoCaptureOneFrame();
+                }
+                if (autoCaptureSavedOnFrame) autoCaptureSavedOnFrame(fc);
+            };
+
+            autoCaptureActive = true;
+            const format = document.getElementById('screenshotFormat').value;
+            let msg = `Auto-capture started (every ${interval} ${unit})`;
+            if (format === 'gif') msg += ' — using PNG (GIF flash N/A in batch)';
+            showMessage(msg);
+        }
+
+        function stopAutoCapture() {
+            spectrum.onFrame = autoCaptureSavedOnFrame;
+            autoCaptureSavedOnFrame = null;
+            autoCaptureActive = false;
+            showMessage(`Auto-capture stopped (${screenshotBatch.length} screenshots)`);
+        }
+
+        function autoCaptureOneFrame() {
+            const format = document.getElementById('screenshotFormat').value;
+            const size = document.getElementById('screenshotSize').value;
+            const zoom = parseInt(document.getElementById('screenshotZoom').value, 10);
+            const includeOverlay = document.getElementById('chkScreenshotOverlay').checked;
+            const baseName = getExportBaseName() || 'screenshot';
+            const seq = String(autoCaptureSeqNum++).padStart(5, '0');
+
+            if (format === 'scr') {
+                let data;
+                if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
+                    data = new Uint8Array(6912 + 64);
+                    for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
+                    data.set(spectrum.ula.ulaplus.palette, 6912);
+                } else {
+                    data = new Uint8Array(6912);
+                    for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
+                }
+                screenshotBatch.push({ name: `${baseName}_${seq}.scr`, data });
+            } else {
+                // PNG (also used for GIF mode — flash GIF per frame is impractical)
+                const cap = captureScreenCanvas(size, zoom, includeOverlay);
+                const dataUrl = cap.toDataURL('image/png');
+                const bin = dataUrlToUint8Array(dataUrl);
+                screenshotBatch.push({ name: `${baseName}_${seq}.png`, data: bin });
+            }
+            updateBatchCount();
+        }
+
+        function dataUrlToUint8Array(dataUrl) {
+            const base64 = dataUrl.split(',')[1];
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+        }
+
+        window._screenshotAutoCapture = {
+            start: startAutoCapture,
+            stop: stopAutoCapture,
+            isActive: () => autoCaptureActive
+        };
+
+        function captureToBuffer(name, data) {
+            screenshotBatch.push({ name, data: data instanceof Uint8Array ? data : new Uint8Array(data) });
+            updateBatchCount();
+            showMessage(`Batch: ${screenshotBatch.length} screenshot(s) buffered`);
+        }
+
         document.getElementById('btnScreenshotMain').addEventListener('click', () => {
-            const canvas = document.getElementById('screen');
-            canvas.toBlob((blob) => {
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `screenshot_${spectrum.machineType}_${Date.now()}.png`;
-                a.click();
-                URL.revokeObjectURL(url);
-                showMessage('Screenshot saved');
-            }, 'image/png');
+            const format = document.getElementById('screenshotFormat').value;
+            const size = document.getElementById('screenshotSize').value;
+            const zoom = parseInt(document.getElementById('screenshotZoom').value, 10);
+            const includeOverlay = document.getElementById('chkScreenshotOverlay').checked;
+            const batch = document.getElementById('chkScreenshotBatch').checked;
+            const baseName = getExportBaseName() || 'screenshot';
+            const timestamp = Date.now();
+
+            if (format === 'scr') {
+                // SCR: raw 6912 bytes from $4000 — zoom/size/overlay don't apply
+                let data, msg;
+                if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
+                    data = new Uint8Array(6912 + 64);
+                    for (let i = 0; i < 6912; i++) {
+                        data[i] = spectrum.memory.read(0x4000 + i);
+                    }
+                    data.set(spectrum.ula.ulaplus.palette, 6912);
+                    msg = 'SCR saved with ULAplus palette (6976 bytes)';
+                } else {
+                    data = new Uint8Array(6912);
+                    for (let i = 0; i < 6912; i++) {
+                        data[i] = spectrum.memory.read(0x4000 + i);
+                    }
+                    msg = 'SCR saved (6912 bytes)';
+                }
+                const fn = `${baseName}_${timestamp}.scr`;
+                if (batch) {
+                    captureToBuffer(fn, data);
+                } else {
+                    const blob = new Blob([data], { type: 'application/octet-stream' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fn;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showMessage(msg);
+                }
+            } else if (format === 'gif') {
+                // GIF (flash): 2-frame animated GIF showing both flash phases
+                const savedFlash = spectrum.ula.flashState;
+                const savedCounter = spectrum.ula.frameCounter;
+
+                spectrum.ula.frameCounter = 0;
+                spectrum.ula.flashState = false;
+                spectrum.renderToScreen();
+                const cap1 = captureScreenCanvas(size, zoom, includeOverlay);
+                const imgData1 = cap1.getContext('2d').getImageData(0, 0, cap1.width, cap1.height);
+
+                spectrum.ula.frameCounter = 0;
+                spectrum.ula.flashState = true;
+                spectrum.renderToScreen();
+                const cap2 = captureScreenCanvas(size, zoom, includeOverlay);
+                const imgData2 = cap2.getContext('2d').getImageData(0, 0, cap2.width, cap2.height);
+
+                spectrum.ula.frameCounter = savedCounter;
+                spectrum.ula.flashState = savedFlash;
+                spectrum.renderToScreen();
+
+                showMessage('Encoding GIF...');
+                const w = cap1.width, h = cap1.height;
+                const fn = `${baseName}_${timestamp}.gif`;
+                setTimeout(() => {
+                    const gif = new GifEncoder(w, h);
+                    gif.addFrame(imgData1.data, 32);
+                    gif.addFrame(imgData2.data, 32);
+                    const gifData = gif.finish();
+                    if (batch) {
+                        captureToBuffer(fn, gifData);
+                    } else {
+                        downloadFile(fn, gifData);
+                        showMessage('GIF screenshot saved');
+                    }
+                }, 20);
+            } else {
+                // PNG
+                const tmpCanvas = captureScreenCanvas(size, zoom, includeOverlay);
+                const fn = `${baseName}_${timestamp}.png`;
+                if (batch) {
+                    tmpCanvas.toBlob((blob) => {
+                        blob.arrayBuffer().then(buf => {
+                            captureToBuffer(fn, new Uint8Array(buf));
+                        });
+                    }, 'image/png');
+                } else {
+                    tmpCanvas.toBlob((blob) => {
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = fn;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        showMessage('PNG screenshot saved');
+                    }, 'image/png');
+                }
+            }
+        });
+
+        // Screenshot button settings: persist to localStorage
+        function saveScreenshotSettings() {
+            storageSet('zxm8_screenshot', JSON.stringify({
+                format: document.getElementById('screenshotFormat').value,
+                size: document.getElementById('screenshotSize').value,
+                zoom: document.getElementById('screenshotZoom').value,
+                overlay: document.getElementById('chkScreenshotOverlay').checked,
+                batch: document.getElementById('chkScreenshotBatch').checked,
+                interval: document.getElementById('screenshotInterval').value,
+                intervalUnit: document.getElementById('screenshotIntervalUnit').value
+            }));
+        }
+        function loadScreenshotSettings() {
+            const json = storageGet('zxm8_screenshot');
+            if (json) {
+                try {
+                    const s = JSON.parse(json);
+                    if (s.format) document.getElementById('screenshotFormat').value = s.format;
+                    if (s.size) document.getElementById('screenshotSize').value = s.size;
+                    if (s.zoom) document.getElementById('screenshotZoom').value = s.zoom;
+                    if (s.overlay !== undefined) document.getElementById('chkScreenshotOverlay').checked = s.overlay;
+                    if (s.batch !== undefined) document.getElementById('chkScreenshotBatch').checked = s.batch;
+                    if (s.interval) document.getElementById('screenshotInterval').value = s.interval;
+                    if (s.intervalUnit) {
+                        document.getElementById('screenshotIntervalUnit').value = s.intervalUnit;
+                        document.getElementById('screenshotInterval').step = s.intervalUnit === 'seconds' ? 'any' : '1';
+                    }
+                } catch (e) { /* ignore corrupt data */ }
+            }
+        }
+        loadScreenshotSettings();
+        document.getElementById('screenshotFormat').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('screenshotSize').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('screenshotZoom').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('chkScreenshotOverlay').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('chkScreenshotBatch').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('screenshotInterval').addEventListener('change', saveScreenshotSettings);
+        document.getElementById('screenshotIntervalUnit').addEventListener('change', () => {
+            const intervalInput = document.getElementById('screenshotInterval');
+            if (document.getElementById('screenshotIntervalUnit').value === 'frames') {
+                intervalInput.step = '1';
+                intervalInput.value = Math.max(1, Math.round(parseFloat(intervalInput.value) || 50));
+            } else {
+                intervalInput.step = 'any';
+            }
+            saveScreenshotSettings();
         });
 
         // Load dropdown handler
@@ -10785,6 +11190,8 @@ start:
             }
             spectrum.updateBetaDiskPagingFlag();
             updateBetaDiskStatus();
+            updatePlusDStatus();
+            updateIF1Status();
             diskActivityAPI.setup();
 
             if (wasRunning) {
@@ -10855,6 +11262,9 @@ start:
             structMapperAPI.stopMapping();
             codePathAPI.stopRecording();
             profilerAPI.clearResults();
+            if (window._screenshotAutoCapture && window._screenshotAutoCapture.isActive()) {
+                window._screenshotAutoCapture.stop();
+            }
         }
 
         // Project save/load (extracted to ui/project-io.js)
@@ -10936,7 +11346,7 @@ start:
             }));
 
         // Frame Export & PSG Recording (extracted to ui/frame-export.js)
-        const { getExportBaseName } = initFrameExport({
+        const { getExportBaseName, GifEncoder, createZip } = initFrameExport({
             getScreenCanvas: () => canvas,
             getDimensions: () => spectrum.ula.getDimensions(),
             getUlaPlusState: () => ({
@@ -10964,6 +11374,117 @@ start:
 
         // PSG player (extracted to ui/psg-player.js)
         initPsgPlayer({ showMessage });
+
+        // Binary export/load
+        {
+            const binStart = document.getElementById('binExportStart');
+            const binLength = document.getElementById('binExportLength');
+            const binEnd = document.getElementById('binExportEnd');
+            const binStatus = document.getElementById('binStatus');
+            let lastEditedField = 'length'; // track whether user last edited Length or End
+
+            function parseBinHex(input) {
+                const v = parseInt(input.value, 16);
+                return isNaN(v) ? -1 : v;
+            }
+
+            function formatHex4(v) {
+                return v.toString(16).toUpperCase().padStart(4, '0');
+            }
+
+            function syncBinFields(source) {
+                const start = parseBinHex(binStart);
+                if (start < 0 || start > 0xFFFF) return;
+                if (source === 'length') {
+                    let len = parseBinHex(binLength);
+                    if (len < 0) return;
+                    if (len < 1) len = 1;
+                    if (start + len > 0x10000) len = 0x10000 - start;
+                    binLength.value = formatHex4(len);
+                    binEnd.value = formatHex4(start + len - 1);
+                    lastEditedField = 'length';
+                } else if (source === 'end') {
+                    let end = parseBinHex(binEnd);
+                    if (end < 0) return;
+                    if (end < start) end = start;
+                    if (end > 0xFFFF) end = 0xFFFF;
+                    binEnd.value = formatHex4(end);
+                    binLength.value = formatHex4(end - start + 1);
+                    lastEditedField = 'end';
+                } else if (source === 'start') {
+                    if (lastEditedField === 'end') {
+                        // Clamp end if it fell below new start
+                        let end = parseBinHex(binEnd);
+                        if (end >= 0 && end < start) {
+                            binEnd.value = formatHex4(start);
+                        }
+                        syncBinFields('end');
+                    } else {
+                        syncBinFields('length');
+                    }
+                }
+            }
+
+            binStart.addEventListener('input', () => syncBinFields('start'));
+            binLength.addEventListener('input', () => syncBinFields('length'));
+            binEnd.addEventListener('input', () => syncBinFields('end'));
+
+            document.getElementById('btnBinExport').addEventListener('click', () => {
+                const start = parseBinHex(binStart);
+                const end = parseBinHex(binEnd);
+                const len = parseBinHex(binLength);
+                if (start < 0 || start > 0xFFFF) {
+                    binStatus.textContent = 'Invalid start address';
+                    return;
+                }
+                if (end < 0 || end > 0xFFFF || end < start) {
+                    binStatus.textContent = 'End address must be >= start address';
+                    return;
+                }
+                if (len <= 0 || len > 0x10000) {
+                    binStatus.textContent = 'Invalid length';
+                    return;
+                }
+                if (start + len > 0x10000) {
+                    binStatus.textContent = 'Range exceeds 64K';
+                    return;
+                }
+                const data = spectrum.memory.getBlock(start, len);
+                const baseName = getExportBaseName();
+                const addrSuffix = '_' + start.toString(16).toUpperCase().padStart(4, '0');
+                downloadFile(baseName + addrSuffix + '.bin', data);
+                binStatus.textContent = 'Exported ' + len + ' bytes from $' + start.toString(16).toUpperCase().padStart(4, '0');
+            });
+
+            const binLoadFile = document.getElementById('binLoadFile');
+            document.getElementById('btnBinLoad').addEventListener('click', () => {
+                binLoadFile.click();
+            });
+
+            binLoadFile.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const data = new Uint8Array(reader.result);
+                    const start = parseBinHex(binStart);
+                    if (start < 0 || start > 0xFFFF) {
+                        binStatus.textContent = 'Invalid start address';
+                        return;
+                    }
+                    if (start + data.length > 0x10000) {
+                        binStatus.textContent = 'Data exceeds 64K (start + ' + data.length + ' bytes)';
+                        return;
+                    }
+                    spectrum.memory.setBlock(start, data);
+                    spectrum.renderToScreen();
+                    binStatus.textContent = 'Loaded ' + data.length + ' bytes at $' + start.toString(16).toUpperCase().padStart(4, '0');
+                    updateDebugger();
+                };
+                reader.readAsArrayBuffer(file);
+                binLoadFile.value = '';
+            });
+        }
 
         canvas.tabIndex = 0;
 

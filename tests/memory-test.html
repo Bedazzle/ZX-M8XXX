@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Memory Banking Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Memory Banking Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="run48kTests()">48K</button>
+        <button onclick="run128kTests()">128K</button>
+        <button onclick="runPlus2aTests()">+2A</button>
+        <button onclick="runPentagonTests()">Pentagon</button>
+        <button onclick="runPentagon1024Tests()">Pentagon 1024</button>
+        <button onclick="runScorpionTests()">Scorpion</button>
+        <button onclick="runRomTests()">ROM/TRDOS</button>
+        <button onclick="runCallbackTests()">Callbacks</button>
+        <button onclick="runStateTests()">State</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { Memory } from '../core/memory.js';
+
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+    }
+
+    function assert(condition, name, detail = '') {
+        if (condition) {
+            passed++;
+            log(`  ✓ ${name}`, 'pass');
+        } else {
+            failed++;
+            log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`, 'fail');
+        }
+    }
+
+    function section(name) {
+        log(`\n═══ ${name} ═══`, 'section');
+    }
+
+    function updateSummary() {
+        summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`;
+        summaryEl.className = failed > 0 ? 'fail' : 'pass';
+    }
+
+    function reset() {
+        passed = 0;
+        failed = 0;
+        logEl.innerHTML = '';
+    }
+
+    // ==================== 48K TESTS ====================
+
+    function run48kTests() {
+        section('48K - Initialization');
+
+        {
+            const mem = new Memory('48k');
+            assert(mem.machineType === '48k', 'machineType = 48k');
+            assert(mem.rom.length === 1, '1 ROM bank');
+            assert(mem.rom[0].length === 16384, 'ROM bank = 16KB');
+            assert(mem.ram.length === 1, '1 RAM block');
+            assert(mem.ram[0].length === 49152, 'RAM block = 48KB (3 pages)');
+        }
+
+        section('48K - ROM read/write protection');
+
+        {
+            const mem = new Memory('48k');
+            mem.rom[0][0] = 0xAA;
+            assert(mem.read(0x0000) === 0xAA, 'ROM readable');
+            mem.write(0x0000, 0x55);
+            assert(mem.read(0x0000) === 0xAA, 'ROM not writable via write()');
+        }
+
+        section('48K - RAM read/write');
+
+        {
+            const mem = new Memory('48k');
+            mem.write(0x4000, 0x42);
+            assert(mem.read(0x4000) === 0x42, 'write/read at 0x4000');
+            mem.write(0x8000, 0x77);
+            assert(mem.read(0x8000) === 0x77, 'write/read at 0x8000');
+            mem.write(0xC000, 0xBB);
+            assert(mem.read(0xC000) === 0xBB, 'write/read at 0xC000');
+            mem.write(0xFFFF, 0xDD);
+            assert(mem.read(0xFFFF) === 0xDD, 'write/read at 0xFFFF');
+        }
+
+        section('48K - RAM is contiguous');
+
+        {
+            const mem = new Memory('48k');
+            // Write at three different slots, verify they all go into ram[0]
+            mem.write(0x4000, 0x11);
+            mem.write(0x8000, 0x22);
+            mem.write(0xC000, 0x33);
+            assert(mem.ram[0][0] === 0x11, 'ram[0][0x0000] = 0x11 (slot 1)');
+            assert(mem.ram[0][0x4000] === 0x22, 'ram[0][0x4000] = 0x22 (slot 2)');
+            assert(mem.ram[0][0x8000] === 0x33, 'ram[0][0x8000] = 0x33 (slot 3)');
+        }
+
+        section('48K - No paging');
+
+        {
+            const mem = new Memory('48k');
+            mem.writePaging(0x17); // Should do nothing
+            assert(mem.currentRamBank === 0, 'paging has no effect on RAM bank');
+            assert(mem.currentRomBank === 0, 'paging has no effect on ROM bank');
+        }
+
+        section('48K - Reset clears RAM');
+
+        {
+            const mem = new Memory('48k');
+            mem.write(0x8000, 0xFF);
+            assert(mem.read(0x8000) === 0xFF, 'data written');
+            mem.reset();
+            assert(mem.read(0x8000) === 0x00, 'RAM cleared after reset');
+        }
+
+        section('48K - Contention');
+
+        {
+            const mem = new Memory('48k');
+            mem.contentionEnabled = true;
+            assert(mem.isContended(0x0000) === false, 'ROM not contended');
+            assert(mem.isContended(0x3FFF) === false, 'ROM end not contended');
+            assert(mem.isContended(0x4000) === true, 'screen start contended');
+            assert(mem.isContended(0x7FFF) === true, 'screen end contended');
+            assert(mem.isContended(0x8000) === false, 'slot 2 not contended');
+            assert(mem.isContended(0xC000) === false, 'slot 3 not contended');
+        }
+
+        section('48K - setBlock/getBlock');
+
+        {
+            const mem = new Memory('48k');
+            mem.setBlock(0x8000, [0x01, 0x02, 0x03, 0x04]);
+            assert(mem.read(0x8000) === 0x01, 'setBlock byte 0');
+            assert(mem.read(0x8003) === 0x04, 'setBlock byte 3');
+            const block = mem.getBlock(0x8000, 4);
+            assert(block[0] === 0x01 && block[1] === 0x02 && block[2] === 0x03 && block[3] === 0x04,
+                'getBlock returns correct bytes');
+        }
+
+        section('48K - getScreenBase');
+
+        {
+            const mem = new Memory('48k');
+            const sb = mem.getScreenBase();
+            assert(sb.ram === mem.ram[0], 'screen uses ram[0]');
+            assert(sb.offset === 0, 'screen offset = 0');
+        }
+
+        section('48K - writeDebug');
+
+        {
+            const mem = new Memory('48k');
+            mem.rom[0][0x100] = 0xAA;
+            // Without allowRomEdit, ROM write fails
+            const result1 = mem.writeDebug(0x100, 0x55);
+            assert(result1 === false, 'writeDebug returns false when ROM edit disabled');
+            assert(mem.read(0x100) === 0xAA, 'ROM unchanged');
+            // With allowRomEdit
+            mem.allowRomEdit = true;
+            const result2 = mem.writeDebug(0x100, 0x55);
+            assert(result2 === true, 'writeDebug returns true when ROM edit enabled');
+            assert(mem.read(0x100) === 0x55, 'ROM modified via writeDebug');
+            // RAM write always works
+            const result3 = mem.writeDebug(0x8000, 0x77);
+            assert(result3 === true, 'writeDebug returns true for RAM');
+            assert(mem.read(0x8000) === 0x77, 'RAM written via writeDebug');
+        }
+    }
+
+    // ==================== 128K TESTS ====================
+
+    function run128kTests() {
+        section('128K - Initialization');
+
+        {
+            const mem = new Memory('128k');
+            assert(mem.machineType === '128k', 'machineType = 128k');
+            assert(mem.rom.length === 2, '2 ROM banks');
+            assert(mem.ram.length === 8, '8 RAM pages');
+            for (let i = 0; i < 8; i++) {
+                assert(mem.ram[i].length === 16384, `RAM page ${i} = 16KB`);
+            }
+        }
+
+        section('128K - Default slot layout');
+
+        {
+            const mem = new Memory('128k');
+            // Slot 0: ROM 0, Slot 1: RAM 5, Slot 2: RAM 2, Slot 3: RAM 0
+            mem.rom[0][0] = 0xAA;
+            assert(mem.read(0x0000) === 0xAA, 'slot 0 reads ROM 0');
+            mem.ram[5][0] = 0xBB;
+            assert(mem.read(0x4000) === 0xBB, 'slot 1 reads RAM 5');
+            mem.ram[2][0] = 0xCC;
+            assert(mem.read(0x8000) === 0xCC, 'slot 2 reads RAM 2');
+            mem.ram[0][0] = 0xDD;
+            assert(mem.read(0xC000) === 0xDD, 'slot 3 reads RAM 0 (default bank)');
+        }
+
+        section('128K - RAM bank switching via writePaging');
+
+        {
+            const mem = new Memory('128k');
+            // Write unique values to each RAM page at offset 0
+            for (let i = 0; i < 8; i++) {
+                mem.ram[i][0] = 0x10 + i;
+            }
+            // Switch through all banks and verify slot 3 reads correct page
+            for (let bank = 0; bank < 8; bank++) {
+                mem.pagingDisabled = false;
+                mem.writePaging(bank);
+                assert(mem.read(0xC000) === 0x10 + bank,
+                    `bank ${bank}: slot 3 reads 0x${(0x10 + bank).toString(16)}`);
+                assert(mem.currentRamBank === bank, `currentRamBank = ${bank}`);
+            }
+        }
+
+        section('128K - ROM bank switching');
+
+        {
+            const mem = new Memory('128k');
+            mem.rom[0][0] = 0xAA;
+            mem.rom[1][0] = 0xBB;
+
+            mem.writePaging(0x00); // ROM 0
+            assert(mem.read(0x0000) === 0xAA, 'ROM 0 at slot 0');
+            assert(mem.currentRomBank === 0, 'currentRomBank = 0');
+
+            mem.writePaging(0x10); // ROM 1 (bit 4)
+            assert(mem.read(0x0000) === 0xBB, 'ROM 1 at slot 0');
+            assert(mem.currentRomBank === 1, 'currentRomBank = 1');
+        }
+
+        section('128K - Screen bank switching');
+
+        {
+            const mem = new Memory('128k');
+            mem.writePaging(0x00);
+            assert(mem.screenBank === 5, 'default screen = bank 5');
+
+            mem.writePaging(0x08); // Bit 3 = screen bank 7
+            assert(mem.screenBank === 7, 'screen bank 7 selected');
+
+            mem.writePaging(0x00);
+            assert(mem.screenBank === 5, 'screen bank 5 restored');
+        }
+
+        section('128K - Paging lock (bit 5)');
+
+        {
+            const mem = new Memory('128k');
+            mem.writePaging(0x23); // Bank 3 + lock (bit 5)
+            assert(mem.currentRamBank === 3, 'bank 3 selected');
+            assert(mem.pagingDisabled === true, 'paging locked');
+
+            mem.writePaging(0x05); // Try to switch to bank 5
+            assert(mem.currentRamBank === 3, 'bank still 3 after lock');
+        }
+
+        section('128K - Contention (odd banks)');
+
+        {
+            const mem = new Memory('128k');
+            mem.contentionEnabled = true;
+
+            // Slot 1 (bank 5) always contended
+            assert(mem.isContended(0x4000) === true, 'slot 1 contended');
+
+            // Slot 3: contended when odd bank paged in
+            mem.writePaging(0); // Bank 0
+            assert(mem.isContended(0xC000) === false, 'bank 0 not contended');
+            mem.writePaging(1); // Bank 1
+            assert(mem.isContended(0xC000) === true, 'bank 1 contended');
+            mem.writePaging(3); // Bank 3
+            assert(mem.isContended(0xC000) === true, 'bank 3 contended');
+            mem.writePaging(4); // Bank 4
+            assert(mem.isContended(0xC000) === false, 'bank 4 not contended');
+
+            // Slot 2 (bank 2) not contended
+            assert(mem.isContended(0x8000) === false, 'slot 2 not contended');
+            // ROM not contended
+            assert(mem.isContended(0x0000) === false, 'ROM not contended');
+        }
+
+        section('128K - Slot 1/2 fixed mapping');
+
+        {
+            const mem = new Memory('128k');
+            // Slot 1 always maps to RAM 5, slot 2 always maps to RAM 2
+            mem.ram[5][0x100] = 0x55;
+            mem.ram[2][0x100] = 0x22;
+
+            // Switch banks shouldn't affect slots 1 and 2
+            for (let bank = 0; bank < 8; bank++) {
+                mem.pagingDisabled = false;
+                mem.writePaging(bank);
+                assert(mem.read(0x4100) === 0x55, `bank ${bank}: slot 1 still RAM 5`);
+                assert(mem.read(0x8100) === 0x22, `bank ${bank}: slot 2 still RAM 2`);
+            }
+        }
+
+        section('128K - writePort decode');
+
+        {
+            const mem = new Memory('128k');
+            mem.ram[3][0] = 0x33;
+            // 128K decode: (port & 0x8002) === 0
+            mem.writePort(0x7FFD, 3); // Standard port
+            assert(mem.currentRamBank === 3, 'standard port 7FFD works');
+            assert(mem.read(0xC000) === 0x33, 'bank 3 data readable');
+
+            // Loose decode: any port matching (& 0x8002) === 0 should work
+            mem.pagingDisabled = false;
+            mem.ram[5][0] = 0x55;
+            mem.writePort(0x5FFD, 5); // Also matches (bit 15=0, bit 1=0)
+            assert(mem.currentRamBank === 5, 'loose decode port 0x5FFD works');
+        }
+
+        section('128K - getScreenBase');
+
+        {
+            const mem = new Memory('128k');
+            mem.ram[5][0] = 0xAA;
+            mem.ram[7][0] = 0xBB;
+
+            let sb = mem.getScreenBase();
+            assert(sb.ram === mem.ram[5], 'default screen = RAM 5');
+
+            mem.writePaging(0x08); // Screen bank 7
+            sb = mem.getScreenBase();
+            assert(sb.ram === mem.ram[7], 'screen bank 7 selected');
+        }
+
+        section('128K - getRamBank');
+
+        {
+            const mem = new Memory('128k');
+            for (let i = 0; i < 8; i++) {
+                assert(mem.getRamBank(i) === mem.ram[i], `getRamBank(${i}) returns correct page`);
+            }
+            assert(mem.getRamBank(8) === null, 'getRamBank(8) = null');
+            assert(mem.getRamBank(-1) === null, 'getRamBank(-1) = null');
+        }
+    }
+
+    // ==================== +2A TESTS ====================
+
+    function runPlus2aTests() {
+        section('+2A - Initialization');
+
+        {
+            const mem = new Memory('+2a');
+            assert(mem.rom.length === 4, '4 ROM banks');
+            assert(mem.ram.length === 8, '8 RAM pages');
+            assert(mem.profile.pagingModel === '+2a', 'paging model = +2a');
+        }
+
+        section('+2A - 4 ROM bank selection');
+
+        {
+            const mem = new Memory('+2a');
+            for (let i = 0; i < 4; i++) mem.rom[i][0] = 0xA0 + i;
+
+            // ROM bank = ((1FFD >> 2) & 1) << 1 | ((7FFD >> 4) & 1)
+            // Bank 0: 1FFD bit2=0, 7FFD bit4=0
+            mem.write1FFD(0x00);
+            mem.writePaging(0x00);
+            assert(mem.read(0x0000) === 0xA0, 'ROM bank 0');
+
+            // Bank 1: 1FFD bit2=0, 7FFD bit4=1
+            mem.pagingDisabled = false;
+            mem.write1FFD(0x00);
+            mem.writePaging(0x10);
+            assert(mem.read(0x0000) === 0xA1, 'ROM bank 1');
+
+            // Bank 2: 1FFD bit2=1, 7FFD bit4=0
+            mem.pagingDisabled = false;
+            mem.write1FFD(0x04);
+            mem.writePaging(0x00);
+            assert(mem.read(0x0000) === 0xA2, 'ROM bank 2');
+
+            // Bank 3: 1FFD bit2=1, 7FFD bit4=1
+            mem.pagingDisabled = false;
+            mem.write1FFD(0x04);
+            mem.writePaging(0x10);
+            assert(mem.read(0x0000) === 0xA3, 'ROM bank 3');
+        }
+
+        section('+2A - Special paging mode config 0: banks 0,1,2,3');
+
+        {
+            const mem = new Memory('+2a');
+            for (let i = 0; i < 8; i++) mem.ram[i][0] = 0x10 + i;
+
+            mem.write1FFD(0x01); // Special paging, config 0 (bits 1-2 = 00)
+            assert(mem.specialPagingMode === true, 'special mode enabled');
+            assert(mem.read(0x0000) === 0x10, 'slot 0 = bank 0');
+            assert(mem.read(0x4000) === 0x11, 'slot 1 = bank 1');
+            assert(mem.read(0x8000) === 0x12, 'slot 2 = bank 2');
+            assert(mem.read(0xC000) === 0x13, 'slot 3 = bank 3');
+        }
+
+        section('+2A - Special paging mode config 1: banks 4,5,6,7');
+
+        {
+            const mem = new Memory('+2a');
+            for (let i = 0; i < 8; i++) mem.ram[i][0] = 0x10 + i;
+
+            mem.write1FFD(0x03); // Config 1 (bits 1-2 = 01)
+            assert(mem.read(0x0000) === 0x14, 'slot 0 = bank 4');
+            assert(mem.read(0x4000) === 0x15, 'slot 1 = bank 5');
+            assert(mem.read(0x8000) === 0x16, 'slot 2 = bank 6');
+            assert(mem.read(0xC000) === 0x17, 'slot 3 = bank 7');
+        }
+
+        section('+2A - Special paging mode config 2: banks 4,5,6,3');
+
+        {
+            const mem = new Memory('+2a');
+            for (let i = 0; i < 8; i++) mem.ram[i][0] = 0x10 + i;
+
+            mem.write1FFD(0x05); // Config 2 (bits 1-2 = 10)
+            assert(mem.read(0x0000) === 0x14, 'slot 0 = bank 4');
+            assert(mem.read(0x4000) === 0x15, 'slot 1 = bank 5');
+            assert(mem.read(0x8000) === 0x16, 'slot 2 = bank 6');
+            assert(mem.read(0xC000) === 0x13, 'slot 3 = bank 3');
+        }
+
+        section('+2A - Special paging mode config 3: banks 4,7,6,3');
+
+        {
+            const mem = new Memory('+2a');
+            for (let i = 0; i < 8; i++) mem.ram[i][0] = 0x10 + i;
+
+            mem.write1FFD(0x07); // Config 3 (bits 1-2 = 11)
+            assert(mem.read(0x0000) === 0x14, 'slot 0 = bank 4');
+            assert(mem.read(0x4000) === 0x17, 'slot 1 = bank 7');
+            assert(mem.read(0x8000) === 0x16, 'slot 2 = bank 6');
+            assert(mem.read(0xC000) === 0x13, 'slot 3 = bank 3');
+        }
+
+        section('+2A - Special paging mode writable');
+
+        {
+            const mem = new Memory('+2a');
+            mem.write1FFD(0x01); // Config 0: banks 0,1,2,3
+            // All slots should be writable in special mode
+            mem.write(0x0000, 0xAA);
+            assert(mem.read(0x0000) === 0xAA, 'slot 0 writable in special mode');
+            mem.write(0x4000, 0xBB);
+            assert(mem.read(0x4000) === 0xBB, 'slot 1 writable');
+            mem.write(0x8000, 0xCC);
+            assert(mem.read(0x8000) === 0xCC, 'slot 2 writable');
+            mem.write(0xC000, 0xDD);
+            assert(mem.read(0xC000) === 0xDD, 'slot 3 writable');
+        }
+
+        section('+2A - Return to normal paging');
+
+        {
+            const mem = new Memory('+2a');
+            mem.rom[0][0] = 0xAA;
+            mem.write1FFD(0x01); // Special mode
+            assert(mem.specialPagingMode === true, 'in special mode');
+            mem.write1FFD(0x00); // Normal mode
+            assert(mem.specialPagingMode === false, 'back to normal mode');
+            assert(mem.read(0x0000) === 0xAA, 'ROM visible again');
+        }
+
+        section('+2A - Contention (banks 4-7)');
+
+        {
+            const mem = new Memory('+2a');
+            mem.contentionEnabled = true;
+
+            // Normal mode: slot 1 always contended, slot 3 contended when bank >= 4
+            assert(mem.isContended(0x4000) === true, 'slot 1 contended');
+            mem.writePaging(0); // Bank 0
+            assert(mem.isContended(0xC000) === false, 'bank 0 not contended');
+            mem.pagingDisabled = false;
+            mem.writePaging(4); // Bank 4
+            assert(mem.isContended(0xC000) === true, 'bank 4 contended');
+            mem.pagingDisabled = false;
+            mem.writePaging(7); // Bank 7
+            assert(mem.isContended(0xC000) === true, 'bank 7 contended');
+
+            // Special mode contention based on bank >= 4
+            mem.pagingDisabled = false;
+            mem.write1FFD(0x03); // Config 1: banks 4,5,6,7
+            assert(mem.isContended(0x0000) === true, 'special: bank 4 in slot 0 contended');
+            assert(mem.isContended(0x4000) === true, 'special: bank 5 in slot 1 contended');
+
+            mem.write1FFD(0x01); // Config 0: banks 0,1,2,3
+            assert(mem.isContended(0x0000) === false, 'special: bank 0 in slot 0 not contended');
+        }
+
+        section('+2A - writePort decode (+3 style)');
+
+        {
+            const mem = new Memory('+2a');
+            // +2A uses strict decode: (port & 0xC002) === 0x4000 for 7FFD
+            mem.ram[3][0] = 0x33;
+            mem.writePort(0x7FFD, 3);
+            assert(mem.currentRamBank === 3, '7FFD accepted');
+
+            // Port 0x3FFD: bit 14=0, so (0x3FFD & 0xC002) = 0x0000 ≠ 0x4000 → rejected
+            mem.pagingDisabled = false;
+            mem.writePort(0x3FFD, 5);
+            assert(mem.currentRamBank === 3, '0x3FFD rejected by +2A strict decode (bit 14=0)');
+
+            // 1FFD port
+            mem.writePort(0x1FFD, 0x01);
+            assert(mem.specialPagingMode === true, '1FFD accepted via writePort');
+        }
+    }
+
+    // ==================== PENTAGON TESTS ====================
+
+    function runPentagonTests() {
+        section('Pentagon - Initialization');
+
+        {
+            const mem = new Memory('pentagon');
+            assert(mem.rom.length === 2, '2 ROM banks');
+            assert(mem.ram.length === 8, '8 RAM pages');
+            assert(mem.profile.hasContention === false, 'no contention');
+        }
+
+        section('Pentagon - No contention');
+
+        {
+            const mem = new Memory('pentagon');
+            mem.contentionEnabled = true;
+            assert(mem.isContended(0x4000) === false, 'slot 1 not contended');
+            assert(mem.isContended(0xC000) === false, 'slot 3 not contended');
+        }
+
+        section('Pentagon - Standard 128K paging');
+
+        {
+            const mem = new Memory('pentagon');
+            for (let i = 0; i < 8; i++) mem.ram[i][0] = 0x10 + i;
+
+            mem.writePaging(7); // Bank 7
+            assert(mem.read(0xC000) === 0x17, 'bank 7 at slot 3');
+            assert(mem.currentRamBank === 7, 'currentRamBank = 7');
+        }
+    }
+
+    // ==================== PENTAGON 1024 TESTS ====================
+
+    function runPentagon1024Tests() {
+        section('Pentagon 1024 - Initialization');
+
+        {
+            const mem = new Memory('pentagon1024');
+            assert(mem.ram.length === 64, '64 RAM pages');
+            assert(mem.profile.pagingModel === 'pentagon1024', 'paging model = pentagon1024');
+        }
+
+        section('Pentagon 1024 - Extended bank selection');
+
+        {
+            const mem = new Memory('pentagon1024');
+            // Write unique values to pages 0-63
+            for (let i = 0; i < 64; i++) mem.ram[i][0] = i;
+
+            // Bits 0-2: basic bank select (0-7)
+            mem.writePaging(5);
+            assert(mem.read(0xC000) === 5, 'bank 5 via bits 0-2');
+
+            // Bits 6-7 add bank bits 3-4
+            mem.pagingDisabled = false;
+            mem.writePaging(0x41); // bit 6 set → bank bit 3 → page 8+1=9
+            assert(mem.currentRamBank === 9, 'bank 9 via bit 6');
+
+            mem.pagingDisabled = false;
+            mem.writePaging(0xC3); // bits 6+7 set → bank bits 3+4 → page 24+3=27
+            // Note: bit 5 is lock bit in 128K mode, so page = (0xC3 & 7) | ((0xC0) >> 3) = 3 | 24 = 27
+            // But bit 5 will lock paging since pentagon1024Mode is false by default
+            // Let's enable 1MB mode first
+            mem.writePortEFF7(0x00); // bit 2=0 → 1MB mode
+            mem.pagingDisabled = false;
+            mem.writePaging(0xE3); // 0xE3 = 1110 0011: bits 0-2=3, bit 5=32, bits 6-7=24
+            // page = 3 | 24 | 32 = 59
+            assert(mem.currentRamBank === 59, 'bank 59 in 1MB mode');
+        }
+
+        section('Pentagon 1024 - 1MB mode via EFF7');
+
+        {
+            const mem = new Memory('pentagon1024');
+            // Default: 128K compat mode
+            assert(mem.pentagon1024Mode === false, 'default: 128K compat mode');
+
+            mem.writePortEFF7(0x00); // Bit 2=0 → 1MB mode
+            assert(mem.pentagon1024Mode === true, '1MB mode enabled');
+
+            mem.writePortEFF7(0x04); // Bit 2=1 → 128K mode
+            assert(mem.pentagon1024Mode === false, '128K mode restored');
+        }
+
+        section('Pentagon 1024 - RAM over ROM');
+
+        {
+            const mem = new Memory('pentagon1024');
+            mem.rom[0][0] = 0xAA;
+            mem.ram[0][0] = 0xBB;
+
+            assert(mem.read(0x0000) === 0xAA, 'ROM visible by default');
+
+            mem.writePortEFF7(0x08); // Bit 3=1 → RAM page 0 over ROM
+            assert(mem.ramInRomMode === true, 'RAM-in-ROM mode');
+            assert(mem.read(0x0000) === 0xBB, 'RAM page 0 visible at slot 0');
+
+            // Writing to slot 0 goes to RAM page 0
+            mem.write(0x0000, 0xCC);
+            assert(mem.ram[0][0] === 0xCC, 'write goes to RAM page 0');
+        }
+
+        section('Pentagon 1024 - Lock bit behavior');
+
+        {
+            const mem = new Memory('pentagon1024');
+            // In 128K mode, bit 5 locks paging
+            mem.writePaging(0x23); // Bank 3 + lock
+            assert(mem.pagingDisabled === true, '128K mode: bit 5 locks');
+            assert(mem.currentRamBank === 3, 'bank 3');
+
+            // In 1MB mode, bit 5 is bank bit 5 (no lock)
+            mem.pagingDisabled = false;
+            mem.writePortEFF7(0x00); // 1MB mode
+            mem.writePaging(0x20); // Bit 5 = bank bit 5 → page 32
+            assert(mem.pagingDisabled === false, '1MB mode: bit 5 does NOT lock');
+            assert(mem.currentRamBank === 32, 'bit 5 = bank bit 5 in 1MB mode');
+        }
+    }
+
+    // ==================== SCORPION TESTS ====================
+
+    function runScorpionTests() {
+        section('Scorpion - Initialization');
+
+        {
+            const mem = new Memory('scorpion');
+            assert(mem.ram.length === 16, '16 RAM pages');
+            assert(mem.rom.length === 4, '4 ROM banks');
+            assert(mem.profile.pagingModel === 'scorpion', 'paging model = scorpion');
+        }
+
+        section('Scorpion - RAM page selection (7FFD + 1FFD)');
+
+        {
+            const mem = new Memory('scorpion');
+            for (let i = 0; i < 16; i++) mem.ram[i][0] = 0x20 + i;
+
+            // Low bits from 7FFD (bits 0-2)
+            mem.writePaging(5); // Page 5
+            assert(mem.currentRamBank === 5, 'page 5 via 7FFD bits 0-2');
+
+            // High bit from 1FFD (bit 4 → +8)
+            mem.pagingDisabled = false;
+            mem.writeScorpion1FFD(0x10); // 1FFD bit 4 set → page high bit
+            // Page = ((0x10 & 0x10) >> 1) | (5 & 7) = 8 | 5 = 13
+            assert(mem.currentRamBank === 13, 'page 13 via 1FFD bit 4 + 7FFD');
+        }
+
+        section('Scorpion - ROM bank selection');
+
+        {
+            const mem = new Memory('scorpion');
+            for (let i = 0; i < 4; i++) mem.rom[i][0] = 0xA0 + i;
+
+            // Default: ROM 0 (128 BASIC)
+            mem.writePaging(0x00); // 7FFD bit 4=0
+            assert(mem.read(0x0000) === 0xA0, 'ROM 0 (128 BASIC)');
+
+            // 7FFD bit 4=1 → ROM 1 (48 BASIC)
+            mem.pagingDisabled = false;
+            mem.writePaging(0x10);
+            assert(mem.read(0x0000) === 0xA1, 'ROM 1 (48 BASIC)');
+
+            // 1FFD bit 1=1 → ROM 2 (Service Monitor)
+            mem.pagingDisabled = false;
+            mem.writeScorpion1FFD(0x02);
+            assert(mem.read(0x0000) === 0xA2, 'ROM 2 (Service Monitor)');
+
+            // 1FFD bit 1=0 → fallback to 7FFD bit 4 selection
+            mem.writeScorpion1FFD(0x00);
+            assert(mem.read(0x0000) === 0xA1, 'ROM 1 restored from stored 7FFD');
+        }
+
+        section('Scorpion - RAM over ROM');
+
+        {
+            const mem = new Memory('scorpion');
+            mem.rom[0][0] = 0xAA;
+            mem.ram[0][0] = 0xBB;
+
+            assert(mem.read(0x0000) === 0xAA, 'ROM visible by default');
+
+            mem.writeScorpion1FFD(0x01); // Bit 0=1 → RAM page 0 over ROM
+            assert(mem.scorpionRamInRomMode === true, 'RAM-in-ROM enabled');
+            assert(mem.read(0x0000) === 0xBB, 'RAM page 0 at slot 0');
+
+            mem.write(0x0000, 0xCC);
+            assert(mem.ram[0][0] === 0xCC, 'write to slot 0 goes to RAM page 0');
+        }
+
+        section('Scorpion - TR-DOS in ROM bank 3');
+
+        {
+            const mem = new Memory('scorpion');
+            mem.rom[3][0] = 0xDD;
+            assert(mem.profile.trdosInRom === true, 'trdosInRom flag');
+            assert(mem.profile.trdosRomBank === 3, 'trdosRomBank = 3');
+
+            mem.trdosActive = true;
+            assert(mem.read(0x0000) === 0xDD, 'TR-DOS reads from ROM bank 3');
+        }
+
+        section('Scorpion - Paging lock');
+
+        {
+            const mem = new Memory('scorpion');
+            mem.writePaging(0x25); // Bank 5 + lock (bit 5)
+            assert(mem.pagingDisabled === true, 'paging locked');
+            assert(mem.currentRamBank === 5, 'bank 5 before lock');
+
+            mem.writePaging(0x00); // Should be ignored
+            assert(mem.currentRamBank === 5, 'writePaging ignored after lock');
+
+            mem.writeScorpion1FFD(0x10); // Should also be ignored
+            assert(mem.currentRamBank === 5, 'writeScorpion1FFD ignored after lock');
+        }
+
+        section('Scorpion - writePort decode');
+
+        {
+            const mem = new Memory('scorpion');
+            for (let i = 0; i < 16; i++) mem.ram[i][0] = 0x20 + i;
+
+            // 7FFD: (port & 0x8002) === 0 AND (port & 0xF002) !== 0x1000
+            // This distinguishes 7FFD from 1FFD
+            mem.writePort(0x7FFD, 3);
+            assert(mem.currentRamBank === 3, '7FFD via writePort');
+
+            // 1FFD: (port & 0xF002) === 0x1000
+            mem.pagingDisabled = false;
+            mem.writePort(0x1FFD, 0x10); // 1FFD bit 4 → page high bit
+            // Page = ((0x10 & 0x10) >> 1) | (3 & 7) = 8 | 3 = 11
+            assert(mem.currentRamBank === 11, '1FFD via writePort');
+        }
+    }
+
+    // ==================== ROM/TRDOS TESTS ====================
+
+    function runRomTests() {
+        section('ROM - loadRom');
+
+        {
+            const mem = new Memory('128k');
+            const romData = new Uint8Array(16384);
+            romData[0] = 0xF3; // DI
+            romData[1] = 0xAF; // XOR A
+            mem.loadRom(romData, 0);
+            assert(mem.rom[0][0] === 0xF3, 'ROM bank 0 loaded');
+            assert(mem.rom[0][1] === 0xAF, 'ROM bank 0 byte 1');
+
+            const romData2 = new Uint8Array(16384);
+            romData2[0] = 0xED;
+            mem.loadRom(romData2, 1);
+            assert(mem.rom[1][0] === 0xED, 'ROM bank 1 loaded');
+        }
+
+        section('ROM - loadRom truncation');
+
+        {
+            const mem = new Memory('48k');
+            const bigData = new Uint8Array(32768); // Larger than one bank
+            bigData[0] = 0xAA;
+            bigData[16384] = 0xBB; // Beyond bank size
+            mem.loadRom(bigData, 0);
+            assert(mem.rom[0][0] === 0xAA, 'first byte loaded');
+            // Bank can only hold 16384 bytes
+            assert(mem.rom[0].length === 16384, 'ROM bank size unchanged');
+        }
+
+        section('ROM - loadRom invalid bank');
+
+        {
+            const mem = new Memory('48k');
+            // Should not crash on out-of-range bank
+            mem.loadRom(new Uint8Array(16384), 5);
+            assert(true, 'loadRom to invalid bank does not crash');
+        }
+
+        section('TR-DOS ROM - loadTrdosRom');
+
+        {
+            const mem = new Memory('128k');
+            const trdosData = new Uint8Array(16384);
+            trdosData[0] = 0x3E; // LD A,n
+            mem.loadTrdosRom(trdosData);
+            assert(mem.trdosRom[0] === 0x3E, 'TR-DOS ROM loaded');
+        }
+
+        section('TR-DOS ROM - hasTrdosRom');
+
+        {
+            const mem = new Memory('128k');
+            assert(mem.hasTrdosRom() === false, 'empty TR-DOS ROM not detected');
+
+            mem.trdosRom[0] = 0xF3;
+            assert(mem.hasTrdosRom() === true, 'non-zero TR-DOS ROM detected');
+        }
+
+        section('TR-DOS ROM - hasTrdosRom for Scorpion');
+
+        {
+            const mem = new Memory('scorpion');
+            assert(mem.hasTrdosRom() === false, 'Scorpion: empty ROM bank 3 not detected');
+
+            mem.rom[3][0] = 0xF3;
+            assert(mem.hasTrdosRom() === true, 'Scorpion: non-zero ROM bank 3 detected');
+        }
+
+        section('TR-DOS - Paging in 128K');
+
+        {
+            const mem = new Memory('128k');
+            mem.rom[0][0] = 0xAA;
+            mem.trdosRom[0] = 0xBB;
+
+            assert(mem.read(0x0000) === 0xAA, 'normal: ROM visible');
+            mem.trdosActive = true;
+            assert(mem.read(0x0000) === 0xBB, 'trdos: TR-DOS ROM visible');
+            mem.trdosActive = false;
+            assert(mem.read(0x0000) === 0xAA, 'trdos off: ROM restored');
+        }
+
+        section('TR-DOS - Paging in 48K');
+
+        {
+            const mem = new Memory('48k');
+            mem.rom[0][0] = 0xAA;
+            mem.trdosRom[0] = 0xBB;
+
+            mem.trdosActive = true;
+            assert(mem.read(0x0000) === 0xBB, '48K: TR-DOS ROM visible');
+        }
+
+        section('+D ROM - loadPlusDRom/hasPlusDRom');
+
+        {
+            const mem = new Memory('48k');
+            assert(mem.hasPlusDRom() === false, 'no +D ROM initially');
+            const plusDData = new Uint8Array(8192);
+            plusDData[0] = 0xC3;
+            mem.loadPlusDRom(plusDData);
+            assert(mem.hasPlusDRom() === true, '+D ROM loaded and detected');
+        }
+
+        section('+D - Paging overlay');
+
+        {
+            const mem = new Memory('48k');
+            const romData = new Uint8Array(8192);
+            romData[0] = 0xDD;
+            mem.loadPlusDRom(romData);
+
+            mem.rom[0][0] = 0xAA;
+
+            assert(mem.read(0x0000) === 0xAA, 'normal: main ROM visible');
+            mem.plusDActive = true;
+            assert(mem.read(0x0000) === 0xDD, '+D: +D ROM at 0x0000');
+
+            // +D RAM at 0x2000-0x3FFF
+            mem.write(0x2000, 0xEE);
+            assert(mem.plusDRam[0] === 0xEE, '+D RAM writable at 0x2000');
+            assert(mem.read(0x2000) === 0xEE, '+D RAM readable at 0x2000');
+        }
+
+        section('IF1 ROM - loadIF1Rom/hasIF1Rom');
+
+        {
+            const mem = new Memory('48k');
+            assert(mem.hasIF1Rom() === false, 'no IF1 ROM initially');
+            const if1Data = new Uint8Array(8192);
+            if1Data[0] = 0xE5;
+            mem.loadIF1Rom(if1Data);
+            assert(mem.hasIF1Rom() === true, 'IF1 ROM loaded and detected');
+        }
+
+        section('IF1 - Paging overlay (0x0000-0x1FFF only)');
+
+        {
+            const mem = new Memory('48k');
+            const if1Data = new Uint8Array(8192);
+            if1Data[0] = 0xF1;
+            mem.loadIF1Rom(if1Data);
+
+            mem.rom[0][0] = 0xAA;
+            mem.rom[0][0x2000] = 0xBB;
+
+            mem.if1Active = true;
+            assert(mem.read(0x0000) === 0xF1, 'IF1 ROM at 0x0000');
+            // IF1 only shadows 0x0000-0x1FFF, so 0x2000 should be main ROM
+            // Actually in the code, if1Active check is only for addr < 0x2000
+            // After that falls through to normal path
+            // For 48k, addr 0x2000 < 0x4000 → reads rom[0][0x2000]
+            assert(mem.read(0x2000) === 0xBB, '0x2000 reads main ROM (IF1 is 8KB only)');
+        }
+
+        section('IF1 vs +D priority');
+
+        {
+            const mem = new Memory('48k');
+            const if1Data = new Uint8Array(8192);
+            if1Data[0] = 0x11;
+            mem.loadIF1Rom(if1Data);
+            const plusDData = new Uint8Array(8192);
+            plusDData[0] = 0x22;
+            mem.loadPlusDRom(plusDData);
+
+            // IF1 takes priority over +D (checked first in read())
+            mem.if1Active = true;
+            mem.plusDActive = true;
+            assert(mem.read(0x0000) === 0x11, 'IF1 ROM has priority over +D');
+
+            mem.if1Active = false;
+            assert(mem.read(0x0000) === 0x22, '+D visible when IF1 inactive');
+        }
+    }
+
+    // ==================== CALLBACK TESTS ====================
+
+    function runCallbackTests() {
+        section('Callbacks - onRead fires');
+
+        {
+            const mem = new Memory('48k');
+            mem.write(0x8000, 0x42);
+            let readAddr = -1, readVal = -1;
+            mem.onRead = (addr, val) => { readAddr = addr; readVal = val; };
+            mem.read(0x8000);
+            assert(readAddr === 0x8000, 'onRead receives correct address');
+            assert(readVal === 0x42, 'onRead receives correct value');
+        }
+
+        section('Callbacks - onWrite fires before write');
+
+        {
+            const mem = new Memory('48k');
+            let writeAddr = -1, writeVal = -1;
+            mem.onWrite = (addr, val) => { writeAddr = addr; writeVal = val; };
+            mem.write(0x8000, 0x77);
+            assert(writeAddr === 0x8000, 'onWrite receives correct address');
+            assert(writeVal === 0x77, 'onWrite receives correct value');
+        }
+
+        section('Callbacks - onRead for ROM');
+
+        {
+            const mem = new Memory('48k');
+            mem.rom[0][0] = 0xAA;
+            let called = false;
+            mem.onRead = () => { called = true; };
+            mem.read(0x0000);
+            assert(called, 'onRead fires for ROM reads');
+        }
+
+        section('Callbacks - onWrite for ROM area (no-op)');
+
+        {
+            const mem = new Memory('48k');
+            let called = false;
+            mem.onWrite = () => { called = true; };
+            mem.write(0x0000, 0x55); // ROM write — discarded but callback still fires
+            assert(called, 'onWrite fires even for ROM area writes');
+        }
+
+        section('Callbacks - null callbacks safe');
+
+        {
+            const mem = new Memory('48k');
+            mem.onRead = null;
+            mem.onWrite = null;
+            // Should not crash
+            mem.write(0x8000, 0x42);
+            const val = mem.read(0x8000);
+            assert(val === 0x42, 'read/write works with null callbacks');
+        }
+    }
+
+    // ==================== STATE TESTS ====================
+
+    function runStateTests() {
+        section('State - getPagingState/setPagingState round-trip (128K)');
+
+        {
+            const mem = new Memory('128k');
+            mem.writePaging(0x13); // Bank 3, ROM 1, screen 5
+            const state = mem.getPagingState();
+            assert(state.ramBank === 3, 'state.ramBank = 3');
+            assert(state.romBank === 1, 'state.romBank = 1');
+            assert(state.screenBank === 5, 'state.screenBank = 5');
+
+            // Reset and restore
+            mem.reset();
+            assert(mem.currentRamBank === 0, 'reset: bank 0');
+            mem.setPagingState(state);
+            assert(mem.currentRamBank === 3, 'restored: bank 3');
+            assert(mem.currentRomBank === 1, 'restored: ROM 1');
+        }
+
+        section('State - getPagingState/setPagingState round-trip (+2A)');
+
+        {
+            const mem = new Memory('+2a');
+            mem.write1FFD(0x05); // Special mode, config 2
+            const state = mem.getPagingState();
+            assert(state.specialPagingMode === true, 'state has specialPagingMode');
+            assert(state.port1FFD === 0x05, 'state has port1FFD');
+            assert(JSON.stringify(state.specialBanks) === JSON.stringify([4, 5, 6, 3]),
+                'state has specialBanks [4,5,6,3]');
+
+            mem.reset();
+            mem.setPagingState(state);
+            assert(mem.specialPagingMode === true, 'restored special mode');
+            assert(JSON.stringify(mem.specialBanks) === JSON.stringify([4, 5, 6, 3]),
+                'restored specialBanks');
+        }
+
+        section('State - getPagingState for Pentagon 1024');
+
+        {
+            const mem = new Memory('pentagon1024');
+            mem.writePortEFF7(0x08); // RAM in ROM mode
+            const state = mem.getPagingState();
+            assert(state.ramInRomMode === true, 'state has ramInRomMode');
+            assert(state.portEFF7 === 0x08, 'state has portEFF7');
+        }
+
+        section('State - getFullState includes all banks');
+
+        {
+            const mem = new Memory('128k');
+            mem.ram[5][0] = 0xAA;
+            mem.rom[1][0] = 0xBB;
+            const state = mem.getFullState();
+            assert(state.ram.length === 8, 'full state has 8 RAM banks');
+            assert(state.rom.length === 2, 'full state has 2 ROM banks');
+            assert(state.ram[5][0] === 0xAA, 'RAM data preserved');
+            assert(state.rom[1][0] === 0xBB, 'ROM data preserved');
+            // Verify it's a copy, not a reference
+            state.ram[5][0] = 0x00;
+            assert(mem.ram[5][0] === 0xAA, 'full state is a deep copy');
+        }
+
+        section('State - getFullSnapshot returns 64K view');
+
+        {
+            const mem = new Memory('128k');
+            mem.rom[0][0] = 0x11;
+            mem.ram[5][0] = 0x22;
+            mem.ram[2][0] = 0x33;
+            mem.ram[0][0] = 0x44;
+            const snap = mem.getFullSnapshot();
+            assert(snap.length === 65536, 'snapshot = 64KB');
+            assert(snap[0x0000] === 0x11, 'ROM at 0x0000');
+            assert(snap[0x4000] === 0x22, 'RAM 5 at 0x4000');
+            assert(snap[0x8000] === 0x33, 'RAM 2 at 0x8000');
+            assert(snap[0xC000] === 0x44, 'RAM 0 at 0xC000');
+        }
+
+        section('State - setRamBank/setRomBank/setScreenBank');
+
+        {
+            const mem = new Memory('128k');
+            mem.setRamBank(6);
+            assert(mem.currentRamBank === 6, 'setRamBank(6)');
+            mem.setRomBank(1);
+            assert(mem.currentRomBank === 1, 'setRomBank(1)');
+            mem.setScreenBank(7);
+            assert(mem.screenBank === 7, 'setScreenBank(7)');
+            mem.setScreenBank(3); // Invalid → defaults to 5
+            assert(mem.screenBank === 5, 'setScreenBank(3) → 5');
+        }
+
+        section('State - setRamBank wraps to page count');
+
+        {
+            const mem = new Memory('128k');
+            mem.setRamBank(10); // 10 % 8 = 2
+            assert(mem.currentRamBank === 2, 'setRamBank(10) wraps to 2');
+        }
+
+        section('State - paging setters no-op for 48K');
+
+        {
+            const mem = new Memory('48k');
+            mem.setRamBank(5);
+            assert(mem.currentRamBank === 0, 'setRamBank no-op on 48K');
+            mem.setRomBank(1);
+            assert(mem.currentRomBank === 0, 'setRomBank no-op on 48K');
+            mem.setScreenBank(7);
+            assert(mem.screenBank === 5, 'setScreenBank no-op on 48K');
+        }
+
+        section('State - reset restores defaults');
+
+        {
+            const mem = new Memory('128k');
+            mem.writePaging(0x17); // Bank 7, ROM 1
+            mem.trdosActive = true;
+            mem.reset();
+            assert(mem.currentRamBank === 0, 'reset: RAM bank 0');
+            assert(mem.currentRomBank === 0, 'reset: ROM bank 0');
+            assert(mem.screenBank === 5, 'reset: screen bank 5');
+            assert(mem.pagingDisabled === false, 'reset: paging enabled');
+            assert(mem.trdosActive === false, 'reset: TR-DOS inactive');
+        }
+
+        section('State - readPort returns 0xFF');
+
+        {
+            const mem = new Memory('128k');
+            assert(mem.readPort(0x7FFD) === 0xFF, 'readPort returns 0xFF');
+        }
+    }
+
+    // ==================== RUN ALL ====================
+
+    function runAll() {
+        reset();
+        run48kTests();
+        run128kTests();
+        runPlus2aTests();
+        runPentagonTests();
+        runPentagon1024Tests();
+        runScorpionTests();
+        runRomTests();
+        runCallbackTests();
+        runStateTests();
+        updateSummary();
+    }
+
+    // Expose to buttons
+    window.runAll = runAll;
+    window.run48kTests = () => { reset(); run48kTests(); updateSummary(); };
+    window.run128kTests = () => { reset(); run128kTests(); updateSummary(); };
+    window.runPlus2aTests = () => { reset(); runPlus2aTests(); updateSummary(); };
+    window.runPentagonTests = () => { reset(); runPentagonTests(); updateSummary(); };
+    window.runPentagon1024Tests = () => { reset(); runPentagon1024Tests(); updateSummary(); };
+    window.runScorpionTests = () => { reset(); runScorpionTests(); updateSummary(); };
+    window.runRomTests = () => { reset(); runRomTests(); updateSummary(); };
+    window.runCallbackTests = () => { reset(); runCallbackTests(); updateSummary(); };
+    window.runStateTests = () => { reset(); runStateTests(); updateSummary(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Signature Pack Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Signature Pack Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runConstructorTests()">Constructor</button>
+        <button onclick="runPackManagementTests()">Pack Management</button>
+        <button onclick="runMatchingTests()">Matching Engine</button>
+        <button onclick="runApplyLabelsTests()">Apply Labels</button>
+        <button onclick="runSkoolParserTests()">Skool Parser</button>
+        <button onclick="runAsmParserTests()">ASM Parser</button>
+        <button onclick="runAddrMaskTests()">Address Mask</button>
+        <button onclick="runHelperTests()">Helpers</button>
+        <button onclick="runBuildAnchorsTests()">Build Anchors</button>
+    </div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { SignaturePackManager } from '../debug/signature-pack-manager.js';
+        import { LabelManager, RegionManager } from '../debug/managers.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            if (cls) div.className = cls;
+            div.textContent = msg;
+            logEl.appendChild(div);
+        }
+        function assert(cond, msg) {
+            if (cond) { passed++; log('  \u2713 ' + msg, 'pass'); }
+            else { failed++; log('  \u2717 ' + msg + ' - FAILED', 'fail'); }
+        }
+        function section(name) { log('\n\u2550\u2550\u2550 ' + name + ' \u2550\u2550\u2550', 'section'); }
+        function updateSummary() {
+            summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`;
+        }
+
+        // --- Helper: create a readByte function from a byte array at a base address ---
+        function makeReadByte(baseAddr, bytes) {
+            const mem = new Uint8Array(65536);
+            for (let i = 0; i < bytes.length; i++) mem[baseAddr + i] = bytes[i];
+            return addr => mem[addr & 0xFFFF];
+        }
+
+        // --- Helper: fill memory with specific patterns ---
+        function makeMemory(fills) {
+            const mem = new Uint8Array(65536);
+            for (const { addr, bytes } of fills) {
+                for (let i = 0; i < bytes.length; i++) mem[addr + i] = bytes[i];
+            }
+            return addr => mem[addr & 0xFFFF];
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Constructor & Defaults
+        // ═══════════════════════════════════════════════════════
+        function runConstructorTests() {
+            section('SignaturePackManager - Constructor');
+
+            const spm = new SignaturePackManager();
+            assert(Array.isArray(spm.packs), 'packs is array');
+            assert(spm.packs.length === 0, 'packs initially empty');
+            assert(typeof spm.loadedPacks === 'object', 'loadedPacks is object');
+            assert(spm._Assembler === null, '_Assembler is null');
+            assert(spm._VFS === null, '_VFS is null');
+            assert(spm.getPackCount() === 0, 'getPackCount = 0');
+            assert(spm.getEnabledCount() === 0, 'getEnabledCount = 0');
+
+            // setAssembler
+            const fakeAsm = {};
+            const fakeVFS = {};
+            spm.setAssembler(fakeAsm, fakeVFS);
+            assert(spm._Assembler === fakeAsm, 'setAssembler: _Assembler set');
+            assert(spm._VFS === fakeVFS, 'setAssembler: _VFS set');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Pack Management
+        // ═══════════════════════════════════════════════════════
+        function runPackManagementTests() {
+            section('SignaturePackManager - Pack Management');
+
+            const spm = new SignaturePackManager();
+
+            // addPack
+            const pack1 = { id: 'test1', name: 'Test Pack 1', type: 'game', labels: {}, anchors: [] };
+            const entry1 = spm.addPack(pack1);
+            assert(entry1.id === 'test1', 'addPack: entry id');
+            assert(entry1.name === 'Test Pack 1', 'addPack: entry name');
+            assert(entry1.enabled === true, 'addPack: enabled by default');
+            assert(spm.getPackCount() === 1, 'pack count = 1');
+            assert(spm.loadedPacks['test1'] === pack1, 'loadedPacks has pack');
+
+            // addPack replaces existing
+            const pack1b = { id: 'test1', name: 'Test Pack 1 Updated', labels: {}, anchors: [] };
+            spm.addPack(pack1b);
+            assert(spm.getPackCount() === 1, 'addPack replace: count still 1');
+            assert(spm.loadedPacks['test1'] === pack1b, 'addPack replace: updated');
+
+            // Add second pack
+            const pack2 = { id: 'test2', name: 'Test Pack 2', type: 'engine', labels: {}, anchors: [] };
+            spm.addPack(pack2);
+            assert(spm.getPackCount() === 2, 'pack count = 2');
+
+            // getEnabledPacks
+            assert(spm.getEnabledPacks().length === 2, 'getEnabledPacks: 2');
+            assert(spm.getEnabledCount() === 2, 'getEnabledCount: 2');
+
+            // setEnabled
+            spm.setEnabled('test1', false);
+            assert(spm.getEnabledPacks().length === 1, 'after disable: 1 enabled');
+            assert(spm.getEnabledPacks()[0].id === 'test2', 'test2 still enabled');
+
+            spm.setEnabled('test1', true);
+            assert(spm.getEnabledPacks().length === 2, 'after re-enable: 2 enabled');
+
+            // setEnabled on nonexistent pack
+            spm.setEnabled('nonexistent', true);  // should not throw
+            assert(spm.getPackCount() === 2, 'setEnabled nonexistent: no change');
+
+            // removePack
+            spm.removePack('test1');
+            assert(spm.getPackCount() === 1, 'after remove: count = 1');
+            assert(spm.loadedPacks['test1'] === undefined, 'removed from loadedPacks');
+            assert(spm.packs[0].id === 'test2', 'remaining pack is test2');
+
+            // removePack nonexistent
+            spm.removePack('nonexistent');
+            assert(spm.getPackCount() === 1, 'remove nonexistent: no change');
+
+            // exportPack
+            const exported = spm.exportPack('test2');
+            assert(typeof exported === 'string', 'exportPack: returns string');
+            const parsed = JSON.parse(exported);
+            assert(parsed.id === 'test2', 'exported pack id correct');
+
+            // exportPack nonexistent
+            assert(spm.exportPack('nonexistent') === null, 'exportPack nonexistent: null');
+
+            // importPackJSON
+            const spm2 = new SignaturePackManager();
+            const jsonStr = JSON.stringify({ id: 'imported', name: 'Imported Pack', labels: {}, anchors: [] });
+            const entry = spm2.importPackJSON(jsonStr);
+            assert(entry !== null, 'importPackJSON: returns entry');
+            assert(entry.id === 'imported', 'importPackJSON: id correct');
+            assert(spm2.getPackCount() === 1, 'importPackJSON: count = 1');
+
+            // importPackJSON invalid
+            assert(spm2.importPackJSON('not json') === null, 'importPackJSON: invalid json → null');
+            assert(spm2.importPackJSON('{}') === null, 'importPackJSON: missing id → null');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Matching Engine
+        // ═══════════════════════════════════════════════════════
+        function runMatchingTests() {
+            section('SignaturePackManager - Matching Engine');
+
+            const spm = new SignaturePackManager();
+
+            // Create a pack with anchors
+            const pack = {
+                id: 'match-test',
+                name: 'Match Test',
+                type: 'game',
+                anchors: [
+                    { address: 0x8000, bytes: [0x3E, 0x42, 0xCD, 0x00, 0x80], mask: null, label: 'entry' },
+                    { address: 0x8010, bytes: [0xC9, 0x00, 0x00], mask: null, label: 'ret_point' }
+                ],
+                labels: { '8000': 'entry', '8010': 'ret_point' }
+            };
+            spm.addPack(pack);
+
+            // Exact match at same address
+            const readByte = makeMemory([
+                { addr: 0x8000, bytes: [0x3E, 0x42, 0xCD, 0x00, 0x80] },
+                { addr: 0x8010, bytes: [0xC9, 0x00, 0x00] }
+            ]);
+            const results = spm.scanMemory(readByte, 0x4000, 0xFFFF);
+            assert(results.length === 1, 'scanMemory: 1 result');
+            assert(results[0].matched === 2, 'both anchors matched');
+            assert(results[0].confidence === 1.0, 'confidence = 1.0');
+            assert(results[0].anchorMatches.length === 2, '2 anchor matches');
+
+            // Partial match (only one anchor)
+            const readByte2 = makeMemory([
+                { addr: 0x8000, bytes: [0x3E, 0x42, 0xCD, 0x00, 0x80] }
+                // 0x8010 is zeros — won't match [0xC9, 0x00, 0x00] because first byte differs
+            ]);
+            const results2 = spm.scanMemory(readByte2, 0x4000, 0xFFFF);
+            assert(results2.length === 1, 'partial: 1 result');
+            assert(results2[0].matched === 1, 'partial: 1 anchor matched');
+            assert(results2[0].confidence === 0.5, 'partial: confidence = 0.5');
+
+            // No match
+            const readByte3 = makeMemory([]);
+            const results3 = spm.scanMemory(readByte3, 0x4000, 0xFFFF);
+            assert(results3.length === 0, 'no match: 0 results');
+
+            // Relocated match (same bytes at different address)
+            const readByte4 = makeMemory([
+                { addr: 0x9000, bytes: [0x3E, 0x42, 0xCD, 0x00, 0x80] },
+                { addr: 0x9010, bytes: [0xC9, 0x00, 0x00] }
+            ]);
+            const results4 = spm.scanMemory(readByte4, 0x4000, 0xFFFF);
+            assert(results4.length === 1, 'relocated: 1 result');
+            assert(results4[0].matched === 2, 'relocated: both matched');
+            const offsets4 = results4[0].anchorMatches.map(m => m.offset);
+            assert(offsets4.every(o => o === 0x1000), 'relocated: offset = 0x1000');
+
+            // Masked match — anchor has mask for address operands
+            const packMasked = {
+                id: 'mask-test',
+                name: 'Mask Test',
+                type: 'game',
+                anchors: [
+                    {
+                        address: 0x8000,
+                        bytes: [0xCD, 0x00, 0x80, 0x3E, 0x01],  // CALL $8000; LD A,1
+                        mask: [0xFF, 0x00, 0x00, 0xFF, 0xFF],    // mask out CALL address
+                        label: 'masked_entry'
+                    }
+                ],
+                labels: { '8000': 'masked_entry' }
+            };
+            spm.addPack(packMasked);
+
+            // Same opcodes, different CALL address
+            const readByte5 = makeMemory([
+                { addr: 0x8000, bytes: [0xCD, 0x50, 0x90, 0x3E, 0x01] }  // CALL $9050; LD A,1
+            ]);
+            const results5 = spm.scanMemory(readByte5, 0x4000, 0xFFFF);
+            const maskResult = results5.find(r => r.packId === 'mask-test');
+            assert(maskResult !== undefined, 'masked match: found');
+            assert(maskResult.matched === 1, 'masked match: anchor matched');
+
+            // Results sorted by confidence
+            const results6 = spm.scanMemory(readByte, 0x4000, 0xFFFF);
+            if (results6.length >= 2) {
+                assert(results6[0].confidence >= results6[1].confidence, 'results sorted by confidence');
+            } else {
+                assert(true, 'results sorted (only 1+ result)');
+            }
+
+            // scanMemory with no enabled packs
+            spm.setEnabled('match-test', false);
+            spm.setEnabled('mask-test', false);
+            const results7 = spm.scanMemory(readByte, 0x4000, 0xFFFF);
+            assert(results7.length === 0, 'disabled packs: no results');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Apply Labels
+        // ═══════════════════════════════════════════════════════
+        function runApplyLabelsTests() {
+            section('SignaturePackManager - Apply Labels');
+
+            const spm = new SignaturePackManager();
+
+            // --- Uniform offset apply ---
+            const pack = {
+                id: 'apply-test',
+                type: 'game',
+                anchors: [{ address: 0x8000, bytes: [0x3E, 0x42], mask: null, label: 'start' }],
+                labels: { '8000': 'entry', '8005': 'loop', '800A': 'done' },
+                regions: [{ start: 0x8000, end: 0x800F, type: 'code', comment: 'Main code' }]
+            };
+            const matchResult = {
+                pack: pack,
+                anchorMatches: [{ anchor: pack.anchors[0], origAddr: 0x8000, foundAddr: 0x8000, offset: 0 }]
+            };
+
+            const lm = new LabelManager();
+            const rm = new RegionManager();
+            const result = spm.applyLabels(matchResult, lm, rm);
+            assert(result.labelCount === 3, 'applyLabels: 3 labels added');
+            assert(result.regionCount === 1, 'applyLabels: 1 region added');
+            assert(result.offset === 0, 'applyLabels: offset = 0');
+            assert(lm.get(0x8000, null) !== null, 'label at 0x8000 exists');
+            assert(lm.get(0x8000, null).name === 'entry', 'label name = entry');
+            assert(lm.get(0x8005, null).name === 'loop', 'label name = loop');
+            assert(rm.get(0x8000, null) !== null, 'region at 0x8000 exists');
+
+            // --- Uniform offset with relocation ---
+            const matchResult2 = {
+                pack: pack,
+                anchorMatches: [{ anchor: pack.anchors[0], origAddr: 0x8000, foundAddr: 0x9000, offset: 0x1000 }]
+            };
+            const lm2 = new LabelManager();
+            const rm2 = new RegionManager();
+            const result2 = spm.applyLabels(matchResult2, lm2, rm2);
+            assert(result2.labelCount === 3, 'relocated: 3 labels');
+            assert(result2.offset === 0x1000, 'relocated: offset = 0x1000');
+            assert(lm2.get(0x9000, null).name === 'entry', 'relocated: entry at 0x9000');
+            assert(lm2.get(0x9005, null).name === 'loop', 'relocated: loop at 0x9005');
+            assert(rm2.get(0x9000, null) !== null, 'relocated: region at 0x9000');
+
+            // --- Existing labels not overwritten ---
+            const lm3 = new LabelManager();
+            lm3.add({ address: 0x8000, page: null, name: 'my_custom_label' });
+            const result3 = spm.applyLabels(matchResult, lm3, new RegionManager());
+            assert(lm3.get(0x8000, null).name === 'my_custom_label', 'user label preserved');
+            assert(result3.labelCount === 2, 'only 2 new labels (1 skipped)');
+
+            // --- System pattern type ---
+            const sysPack = {
+                id: 'sys-test',
+                type: 'system',
+                anchors: [
+                    { address: 0x8100, bytes: [0x10, 0xFE], mask: null, label: 'delay_djnz' },
+                    { address: 0x8200, bytes: [0xED, 0xB0], mask: null, label: 'block_ldir' }
+                ],
+                labels: {}
+            };
+            const sysMatch = {
+                pack: sysPack,
+                anchorMatches: [
+                    { anchor: sysPack.anchors[0], origAddr: 0x8100, foundAddr: 0x6000, offset: -0x2100 },
+                    { anchor: sysPack.anchors[1], origAddr: 0x8200, foundAddr: 0x7000, offset: -0x1200 }
+                ]
+            };
+            const lm4 = new LabelManager();
+            const result4 = spm.applyLabels(sysMatch, lm4, new RegionManager());
+            assert(result4.labelCount === 2, 'system: 2 labels');
+            assert(lm4.get(0x6000, null).name === 'delay_djnz', 'system: label at foundAddr');
+            assert(lm4.get(0x7000, null).name === 'block_ldir', 'system: label at foundAddr');
+
+            // --- System labels skip user labels but replace auto labels ---
+            const lm5 = new LabelManager();
+            lm5.add({ address: 0x6000, page: null, name: 'sub_6000', source: 'auto' });
+            lm5.add({ address: 0x7000, page: null, name: 'my_routine' });
+            const result5 = spm.applyLabels(sysMatch, lm5, new RegionManager());
+            assert(lm5.get(0x6000, null).name === 'delay_djnz', 'system: replaces auto label');
+            assert(lm5.get(0x7000, null).name === 'my_routine', 'system: user label preserved');
+
+            // --- Empty anchor matches ---
+            const emptyMatch = { pack: pack, anchorMatches: [] };
+            const result6 = spm.applyLabels(emptyMatch, new LabelManager(), new RegionManager());
+            assert(result6.labelCount === 0, 'empty matches: 0 labels');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Skool Parser
+        // ═══════════════════════════════════════════════════════
+        function runSkoolParserTests() {
+            section('SignaturePackManager - Skool Parser');
+
+            const spm = new SignaturePackManager();
+
+            // Basic skool file
+            const skool1 = `@label=start
+c$8000 XOR A
+ $8001 LD HL,$4000
+ $8004 RET
+
+@label=data_block
+b$8005 DEFB 1,2,3
+`;
+            const pack1 = spm.parseSkoolFile(skool1, 'skool1', 'Test Skool');
+            assert(pack1.id === 'skool1', 'skool: id correct');
+            assert(pack1.name === 'Test Skool', 'skool: name correct');
+            assert(pack1.type === 'game', 'skool: type = game');
+            assert(pack1.source === 'skool-import', 'skool: source correct');
+            assert(pack1.baseAddress === 0x8000, 'skool: baseAddress = 0x8000');
+            assert(pack1.labels['8000'] === 'start', 'skool: label at 8000');
+            assert(pack1.labels['8005'] === 'data_block', 'skool: label at 8005');
+            assert(pack1.regions.length >= 1, 'skool: at least 1 region');
+            assert(pack1.stats.labels >= 2, 'skool: stats.labels >= 2');
+
+            // @equ directive
+            const skool2 = `@equ=SCREEN=$4000
+@label=clear_screen
+c$8000 LD HL,$4000
+`;
+            const pack2 = spm.parseSkoolFile(skool2, 'skool2', 'EQU Test');
+            assert(pack2.labels['8000'] === 'clear_screen', 'skool equ: label correct');
+
+            // Comments
+            const skool3 = `@label=init
+c$8000 XOR A ; Clear accumulator
+ $8001 RET
+`;
+            const pack3 = spm.parseSkoolFile(skool3, 'skool3', 'Comment Test');
+            assert(pack3.comments['8000'] === 'Clear accumulator', 'skool: inline comment captured');
+
+            // Multiple region types
+            const skool4 = `@label=code_start
+c$8000 NOP
+ $8001 RET
+
+@label=text_data
+t$8002 DEFM "HELLO"
+
+@label=word_table
+w$8007 DEFW $1234,$5678
+`;
+            const pack4 = spm.parseSkoolFile(skool4, 'skool4', 'Region Types');
+            assert(pack4.labels['8000'] === 'code_start', 'regions: code label');
+            assert(pack4.labels['8002'] === 'text_data', 'regions: text label');
+            assert(pack4.labels['8007'] === 'word_table', 'regions: word label');
+            // Should have code, text, and dw regions
+            const types = pack4.regions.map(r => r.type);
+            assert(types.includes('code'), 'regions: has code type');
+            assert(types.includes('text'), 'regions: has text type');
+            assert(types.includes('dw'), 'regions: has dw type');
+
+            // Auto-generate label from header comment
+            const skool5 = `; Print character
+c$8000 LD A,(HL)
+ $8001 RET
+`;
+            const pack5 = spm.parseSkoolFile(skool5, 'skool5', 'Auto Label');
+            assert(pack5.labels['8000'] === 'print_character', 'auto-label from header comment');
+
+            // Skip generic header comments
+            const skool6 = `; Routine at 8000
+c$8000 NOP
+`;
+            const pack6 = spm.parseSkoolFile(skool6, 'skool6', 'Skip Generic');
+            assert(pack6.labels['8000'] === undefined, 'generic header not used as label');
+
+            // Empty skool file
+            const pack7 = spm.parseSkoolFile('', 'empty', 'Empty');
+            assert(pack7.baseAddress === 0, 'empty skool: baseAddress = 0');
+            assert(Object.keys(pack7.labels).length === 0, 'empty skool: no labels');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // ASM Parser
+        // ═══════════════════════════════════════════════════════
+        function runAsmParserTests() {
+            section('SignaturePackManager - ASM Parser');
+
+            const spm = new SignaturePackManager();
+
+            // Basic ASM
+            const asm1 = `        ORG $8000
+start:  XOR A
+        LD HL,$4000
+        RET
+`;
+            const pack1 = spm.parseAsmFiles(asm1, 'asm1', 'Test ASM');
+            assert(pack1.id === 'asm1', 'asm: id correct');
+            assert(pack1.baseAddress === 0x8000, 'asm: baseAddress');
+            assert(pack1.labels['8000'] === 'start', 'asm: label at 8000');
+            assert(pack1.regions.length >= 1, 'asm: at least 1 region');
+
+            // EQU constants
+            const asm2 = `SCREEN  EQU $4000
+SIZE    EQU 6912
+        ORG $8000
+main:   LD HL,SCREEN
+        RET
+`;
+            const pack2 = spm.parseAsmFiles(asm2, 'asm2', 'EQU Test');
+            assert(pack2.labels['8000'] === 'main', 'asm equ: label correct');
+
+            // Multiple files
+            const files = [
+                { path: 'main.asm', text: `        ORG $8000
+        INCLUDE "sub.asm"
+start:  CALL sub1
+        RET
+` },
+                { path: 'sub.asm', text: `sub1:   XOR A
+        RET
+` }
+            ];
+            const pack3 = spm.parseAsmFiles(files, 'asm3', 'Multi File');
+            // Should find labels from both files
+            const labelNames = Object.values(pack3.labels);
+            assert(labelNames.includes('sub1') || labelNames.includes('start'), 'multi-file: has labels from files');
+
+            // Data directives
+            const asm4 = `        ORG $8000
+data:   DEFB 1,2,3
+words:  DEFW $1234,$5678
+space:  DEFS 10
+code:   NOP
+        RET
+`;
+            const pack4 = spm.parseAsmFiles(asm4, 'asm4', 'Data Test');
+            assert(pack4.labels['8000'] === 'data', 'data: label at data');
+            assert(pack4.regions.length >= 1, 'data: has regions');
+
+            // DEFINE directive
+            const asm5 = `        DEFINE DEBUG
+        ORG $8000
+test:   NOP
+`;
+            const pack5 = spm.parseAsmFiles(asm5, 'asm5', 'Define Test');
+            assert(pack5.labels['8000'] === 'test', 'define: label correct');
+
+            // Labels with and without colon
+            const asm6 = `        ORG $8000
+with_colon:  NOP
+no_colon     NOP
+        RET
+`;
+            const pack6 = spm.parseAsmFiles(asm6, 'asm6', 'Colon Test');
+            assert(pack6.labels['8000'] === 'with_colon', 'label with colon');
+            assert(pack6.labels['8001'] === 'no_colon', 'label without colon');
+
+            // Comments preserved
+            const asm7 = `        ORG $8000
+init:   XOR A  ; Initialize
+        RET
+`;
+            const pack7 = spm.parseAsmFiles(asm7, 'asm7', 'Comment Test');
+            assert(pack7.comments['8000'] === 'Initialize', 'asm: comment captured');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Address Mask (_z80AddrMask)
+        // ═══════════════════════════════════════════════════════
+        function runAddrMaskTests() {
+            section('SignaturePackManager - Address Mask');
+
+            const spm = new SignaturePackManager();
+
+            // All single-byte instructions — no mask needed
+            const mask1 = spm._z80AddrMask([0x00, 0x76, 0xC9]);  // NOP, HALT, RET
+            assert(mask1 === null, 'single-byte only: null mask');
+
+            // CALL nn (3 bytes) — mask address bytes
+            const mask2 = spm._z80AddrMask([0xCD, 0x00, 0x80]);  // CALL $8000
+            assert(mask2 !== null, 'CALL nn: mask not null');
+            assert(mask2[0] === 0xFF, 'CALL opcode: 0xFF');
+            assert(mask2[1] === 0x00, 'CALL addr low: 0x00');
+            assert(mask2[2] === 0x00, 'CALL addr high: 0x00');
+
+            // JP nn (3 bytes)
+            const mask3 = spm._z80AddrMask([0xC3, 0x50, 0x60]);  // JP $6050
+            assert(mask3[0] === 0xFF, 'JP opcode: 0xFF');
+            assert(mask3[1] === 0x00, 'JP addr low: 0x00');
+            assert(mask3[2] === 0x00, 'JP addr high: 0x00');
+
+            // LD HL,nn (3 bytes)
+            const mask4 = spm._z80AddrMask([0x21, 0x00, 0x40]);  // LD HL,$4000
+            assert(mask4[0] === 0xFF, 'LD HL,nn opcode: 0xFF');
+            assert(mask4[1] === 0x00, 'LD HL,nn addr low: 0x00');
+
+            // LD A,n (2 bytes) — no address, just immediate
+            const mask5 = spm._z80AddrMask([0x3E, 0x42]);  // LD A,$42
+            assert(mask5 === null, 'LD A,n: null mask (no 16-bit addr)');
+
+            // JP cc,nn (3 bytes)
+            const mask6 = spm._z80AddrMask([0xCA, 0x00, 0x80]);  // JP Z,$8000
+            assert(mask6[0] === 0xFF, 'JP cc,nn opcode: 0xFF');
+            assert(mask6[1] === 0x00, 'JP cc,nn addr low: 0x00');
+
+            // CALL cc,nn (3 bytes)
+            const mask7 = spm._z80AddrMask([0xCC, 0x10, 0x80]);  // CALL Z,$8010
+            assert(mask7[0] === 0xFF, 'CALL cc,nn opcode: 0xFF');
+            assert(mask7[1] === 0x00, 'CALL cc,nn addr low: 0x00');
+
+            // LD (nn),A (3 bytes)
+            const mask8 = spm._z80AddrMask([0x32, 0x00, 0x5B]);  // LD ($5B00),A
+            assert(mask8[1] === 0x00, 'LD (nn),A addr low: 0x00');
+
+            // ED prefix: LD (nn),BC (4 bytes)
+            const mask9 = spm._z80AddrMask([0xED, 0x43, 0x00, 0x80]);
+            assert(mask9[0] === 0xFF, 'ED prefix: 0xFF');
+            assert(mask9[1] === 0xFF, 'ED opcode: 0xFF');
+            assert(mask9[2] === 0x00, 'ED addr low: 0x00');
+            assert(mask9[3] === 0x00, 'ED addr high: 0x00');
+
+            // DD prefix: LD IX,nn (4 bytes)
+            const mask10 = spm._z80AddrMask([0xDD, 0x21, 0x00, 0x80]);
+            assert(mask10[0] === 0xFF, 'DD prefix: 0xFF');
+            assert(mask10[1] === 0xFF, 'DD opcode: 0xFF');
+            assert(mask10[2] === 0x00, 'DD IX,nn addr low: 0x00');
+            assert(mask10[3] === 0x00, 'DD IX,nn addr high: 0x00');
+
+            // CB prefix (2 bytes, no addresses)
+            const mask11 = spm._z80AddrMask([0xCB, 0x47]);  // BIT 0,A
+            assert(mask11 === null, 'CB prefix: null mask');
+
+            // Mixed: NOP + CALL nn + RET
+            const mask12 = spm._z80AddrMask([0x00, 0xCD, 0x00, 0x80, 0xC9]);
+            assert(mask12[0] === 0xFF, 'mixed: NOP = 0xFF');
+            assert(mask12[1] === 0xFF, 'mixed: CALL opcode = 0xFF');
+            assert(mask12[2] === 0x00, 'mixed: CALL addr low = 0x00');
+            assert(mask12[3] === 0x00, 'mixed: CALL addr high = 0x00');
+            assert(mask12[4] === 0xFF, 'mixed: RET = 0xFF');
+
+            // DJNZ (2 bytes, relative — both bytes preserved)
+            const mask13 = spm._z80AddrMask([0x10, 0xFE]);  // DJNZ $
+            assert(mask13 === null, 'DJNZ: null mask');
+
+            // JR (2 bytes, relative)
+            const mask14 = spm._z80AddrMask([0x18, 0x05]);
+            assert(mask14 === null, 'JR: null mask');
+
+            // DD CB d op (4 bytes, no address)
+            const mask15 = spm._z80AddrMask([0xDD, 0xCB, 0x02, 0x46]);  // BIT 0,(IX+2)
+            assert(mask15 === null, 'DD CB: null mask');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Helper Methods
+        // ═══════════════════════════════════════════════════════
+        function runHelperTests() {
+            section('SignaturePackManager - Helpers');
+
+            const spm = new SignaturePackManager();
+
+            // _parseAsmValue
+            assert(spm._parseAsmValue('$FF', {}) === 255, 'parseAsmValue: $FF = 255');
+            assert(spm._parseAsmValue('0xFF', {}) === 255, 'parseAsmValue: 0xFF = 255');
+            assert(spm._parseAsmValue('0FFh', {}) === 255, 'parseAsmValue: 0FFh = 255');
+            assert(spm._parseAsmValue('255', {}) === 255, 'parseAsmValue: 255 = 255');
+            assert(spm._parseAsmValue('0b11111111', {}) === 255, 'parseAsmValue: 0b11111111 = 255');
+            assert(spm._parseAsmValue('SCREEN', { SCREEN: 16384 }) === 16384, 'parseAsmValue: EQU lookup');
+            assert(spm._parseAsmValue('$0', {}) === 0, 'parseAsmValue: $0 = 0');
+            assert(spm._parseAsmValue('unknown', {}) === 0, 'parseAsmValue: unknown = 0');
+
+            // _countDataBytes
+            assert(spm._countDataBytes('1,2,3') === 3, 'countData: 1,2,3 = 3');
+            assert(spm._countDataBytes('"HELLO"') === 5, 'countData: "HELLO" = 5');
+            assert(spm._countDataBytes('"AB",0') === 3, 'countData: "AB",0 = 3');
+            assert(spm._countDataBytes('$FF') === 1, 'countData: $FF = 1');
+            assert(spm._countDataBytes("'X'") === 1, 'countData: single quoted char = 1');
+
+            // _splitDataItems
+            assert(spm._splitDataItems('$1234,$5678').length === 2, 'splitData: 2 items');
+            assert(spm._splitDataItems('"A,B",0').length === 2, 'splitData: string with comma = 2');
+            assert(spm._splitDataItems('').length === 0, 'splitData: empty = 0');
+            assert(spm._splitDataItems('42').length === 1, 'splitData: single = 1');
+
+            // _isZ80Mnemonic
+            assert(spm._isZ80Mnemonic('NOP') === true, 'isZ80: NOP');
+            assert(spm._isZ80Mnemonic('LD') === true, 'isZ80: LD');
+            assert(spm._isZ80Mnemonic('DJNZ') === true, 'isZ80: DJNZ');
+            assert(spm._isZ80Mnemonic('LDIR') === true, 'isZ80: LDIR');
+            assert(spm._isZ80Mnemonic('nop') === true, 'isZ80: nop (case insensitive)');
+            assert(spm._isZ80Mnemonic('myLabel') === false, 'isZ80: myLabel = false');
+            assert(spm._isZ80Mnemonic('SCREEN') === false, 'isZ80: SCREEN = false');
+            assert(spm._isZ80Mnemonic('ORG') === true, 'isZ80: ORG');
+            assert(spm._isZ80Mnemonic('DEFB') === true, 'isZ80: DEFB');
+
+            // _z80InstrSize
+            assert(spm._z80InstrSize('NOP', {}) === 1, 'instrSize: NOP = 1');
+            assert(spm._z80InstrSize('RET', {}) === 1, 'instrSize: RET = 1');
+            assert(spm._z80InstrSize('RET NZ', {}) === 1, 'instrSize: RET NZ = 1');
+            assert(spm._z80InstrSize('HALT', {}) === 1, 'instrSize: HALT = 1');
+            assert(spm._z80InstrSize('DI', {}) === 1, 'instrSize: DI = 1');
+            assert(spm._z80InstrSize('DJNZ $8000', {}) === 2, 'instrSize: DJNZ = 2');
+            assert(spm._z80InstrSize('JR $8010', {}) === 2, 'instrSize: JR = 2');
+            assert(spm._z80InstrSize('JP $8000', {}) === 3, 'instrSize: JP nn = 3');
+            assert(spm._z80InstrSize('JP (HL)', {}) === 1, 'instrSize: JP (HL) = 1');
+            assert(spm._z80InstrSize('JP (IX)', {}) === 2, 'instrSize: JP (IX) = 2');
+            assert(spm._z80InstrSize('CALL $8000', {}) === 3, 'instrSize: CALL = 3');
+            assert(spm._z80InstrSize('RST $38', {}) === 1, 'instrSize: RST = 1');
+            assert(spm._z80InstrSize('PUSH HL', {}) === 1, 'instrSize: PUSH HL = 1');
+            assert(spm._z80InstrSize('PUSH IX', {}) === 2, 'instrSize: PUSH IX = 2');
+            assert(spm._z80InstrSize('IM 1', {}) === 2, 'instrSize: IM = 2');
+            assert(spm._z80InstrSize('NEG', {}) === 2, 'instrSize: NEG = 2');
+            assert(spm._z80InstrSize('LDIR', {}) === 2, 'instrSize: LDIR = 2');
+            assert(spm._z80InstrSize('LD A,$42', {}) === 2, 'instrSize: LD A,n = 2');
+            assert(spm._z80InstrSize('LD HL,$4000', {}) === 3, 'instrSize: LD HL,nn = 3');
+            assert(spm._z80InstrSize('LD IX,$4000', {}) === 4, 'instrSize: LD IX,nn = 4');
+            assert(spm._z80InstrSize('LD A,B', {}) === 1, 'instrSize: LD A,B = 1');
+            assert(spm._z80InstrSize('BIT 0,A', {}) === 2, 'instrSize: BIT = 2');
+            assert(spm._z80InstrSize('BIT 0,(IX+5)', {}) === 4, 'instrSize: BIT (IX+d) = 4');
+            assert(spm._z80InstrSize('ADD A,$10', {}) === 2, 'instrSize: ADD A,n = 2');
+            assert(spm._z80InstrSize('ADD HL,BC', {}) === 1, 'instrSize: ADD HL,BC = 1');
+            assert(spm._z80InstrSize('INC (IX+3)', {}) === 3, 'instrSize: INC (IX+d) = 3');
+            assert(spm._z80InstrSize('IN A,($FE)', {}) === 2, 'instrSize: IN A,(n) = 2');
+
+            // _findNearestAnchor
+            const sorted = [
+                { origAddr: 0x100, offset: 0 },
+                { origAddr: 0x200, offset: 0 },
+                { origAddr: 0x300, offset: 0 }
+            ];
+            assert(spm._findNearestAnchor(sorted, 0x100).origAddr === 0x100, 'nearest: exact match');
+            assert(spm._findNearestAnchor(sorted, 0x150).origAddr === 0x100, 'nearest: between → closer');
+            assert(spm._findNearestAnchor(sorted, 0x250).origAddr === 0x200, 'nearest: between 200-300 → 200');
+            assert(spm._findNearestAnchor(sorted, 0x050).origAddr === 0x100, 'nearest: before first → first');
+            assert(spm._findNearestAnchor(sorted, 0x400).origAddr === 0x300, 'nearest: after last → last');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Build Anchors from Memory
+        // ═══════════════════════════════════════════════════════
+        function runBuildAnchorsTests() {
+            section('SignaturePackManager - Build Anchors from Memory');
+
+            const spm = new SignaturePackManager();
+
+            // Build anchors from memory
+            const pack = {
+                labels: { '8000': 'entry', '8010': 'loop' }
+            };
+            const bytes8000 = [0x3E, 0x42, 0xCD, 0x00, 0x80, 0x21, 0x00, 0x40, 0xC9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+            const bytes8010 = [0x10, 0xFE, 0xC9, 0x00, 0x00, 0x00, 0x3E, 0x01, 0xC9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+            const readByte = makeMemory([
+                { addr: 0x8000, bytes: bytes8000 },
+                { addr: 0x8010, bytes: bytes8010 }
+            ]);
+
+            const anchors = spm.buildAnchorsFromMemory(pack, readByte);
+            assert(anchors.length === 2, 'buildAnchors: 2 anchors');
+            assert(anchors[0].address === 0x8000, 'anchor[0] at 0x8000');
+            assert(anchors[0].label === 'entry', 'anchor[0] label = entry');
+            assert(anchors[0].bytes.length === 16, 'anchor[0] 16 bytes');
+            assert(anchors[0].bytes[0] === 0x3E, 'anchor[0] first byte correct');
+            assert(anchors[1].address === 0x8010, 'anchor[1] at 0x8010');
+
+            // Anchors have masks
+            assert(anchors[0].mask !== null, 'anchor[0] has mask (has CALL)');
+
+            // Skip all-zero labels
+            const pack2 = { labels: { '0000': 'zero_region' } };
+            const readZero = addr => 0;
+            const anchors2 = spm.buildAnchorsFromMemory(pack2, readZero);
+            assert(anchors2.length === 0, 'all-zero: skipped');
+
+            // Skip all-FF labels
+            const pack3 = { labels: { '8000': 'ff_region' } };
+            const readFF = addr => 0xFF;
+            const anchors3 = spm.buildAnchorsFromMemory(pack3, readFF);
+            assert(anchors3.length === 0, 'all-FF: skipped');
+
+            // Skip address too close to end
+            const pack4 = { labels: { 'FFF8': 'near_end' } };
+            const anchors4 = spm.buildAnchorsFromMemory(pack4, readByte);
+            assert(anchors4.length === 0, 'near end of address space: skipped');
+
+            // Invalid address in labels
+            const pack5 = { labels: { 'not_a_number': 'bad' } };
+            const anchors5 = spm.buildAnchorsFromMemory(pack5, readByte);
+            assert(anchors5.length === 0, 'invalid address: skipped');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Run All
+        // ═══════════════════════════════════════════════════════
+        function runAll() {
+            passed = 0; failed = 0;
+            logEl.innerHTML = '';
+            runConstructorTests();
+            runPackManagementTests();
+            runMatchingTests();
+            runApplyLabelsTests();
+            runSkoolParserTests();
+            runAsmParserTests();
+            runAddrMaskTests();
+            runHelperTests();
+            runBuildAnchorsTests();
+        }
+
+        window.runAll = runAll;
+        window.runConstructorTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runConstructorTests(); };
+        window.runPackManagementTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runPackManagementTests(); };
+        window.runMatchingTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runMatchingTests(); };
+        window.runApplyLabelsTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runApplyLabelsTests(); };
+        window.runSkoolParserTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runSkoolParserTests(); };
+        window.runAsmParserTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runAsmParserTests(); };
+        window.runAddrMaskTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runAddrMaskTests(); };
+        window.runHelperTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runHelperTests(); };
+        window.runBuildAnchorsTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runBuildAnchorsTests(); };
+
+        runAll();
+    </script>
+</body>
+</html>

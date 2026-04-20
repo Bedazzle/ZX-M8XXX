@@ -9,14 +9,15 @@ import {
     SLOT1_START, SLOT2_START, SLOT3_START,
     PORT_1FFD, PORT_ULAPLUS_REG, PORT_ULAPLUS_DATA,
     PORT_WD_CMD, PORT_WD_TRACK, PORT_WD_SECTOR, PORT_WD_DATA, PORT_WD_SYS,
-    PORT_PLUSD_CTRL, PORT_PLUSD_CMD, PORT_PLUSD_TRACK, PORT_PLUSD_SEC, PORT_PLUSD_DATA,
+    PORT_PLUSD_CMD, PORT_PLUSD_TRACK, PORT_PLUSD_SEC, PORT_PLUSD_DATA, PORT_PLUSD_CTRL, PORT_PLUSD_PAGE,
     DECODE_128K_MASK, DECODE_PLUS2A_MASK, DECODE_PLUS2A_MASK2,
     DECODE_7FFD_PLUS2A, DECODE_1FFD_PLUS2A,
     DECODE_FDC_MSR, DECODE_FDC_DATA,
     DECODE_AY_MASK, DECODE_AY_REG, DECODE_AY_DATA,
     DECODE_P1024_MASK, DECODE_P1024_VAL,
     IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL, IF1_PORT_NET,
-    IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR
+    IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR,
+    PLUSD_PAGE_IN_RST8, PLUSD_PAGE_IN_KEYNEXT, PLUSD_PAGE_IN_NMI, PLUSD_PAGE_IN_KEYSCAN
 } from './constants.js';
 import { hex8, hex16, storageGet } from './utils.js';
 import { Z80 } from './z80.js';
@@ -198,9 +199,6 @@ import { Disassembler } from './disasm.js';
             this.plusD = new PlusDDisk();
             this.plusDEnabled = false;
             this._plusDPagingEnabled = false;
-            this.plusD.onPageOut = () => {
-                this.memory.plusDActive = false;  // Page out +D ROM/RAM
-            };
 
             // Interface 1 (Microdrive)
             this.microdrive = new Microdrive();
@@ -1211,6 +1209,15 @@ import { Disassembler } from './disasm.js';
             // Clear struct mapper
             this.structMapper.enabled = false;
             this.structMapper.fields = new Map();
+
+            // +D reset (per FUSE plusd_reset):
+            // - Reset WD1772 FDC
+            // - Page in +D ROM so boot code at $0000 runs and initializes workspace
+            if (this.plusDEnabled && this.memory.hasPlusDRom() &&
+                this.profile.pagingModel !== '+2a') {
+                this.plusD.reset();
+                this.memory.plusDActive = true;
+            }
         }
 
         // ========== Port I/O ==========
@@ -1221,8 +1228,10 @@ import { Disassembler } from './disasm.js';
         }
 
         _isPlusDActive() {
-            return this.plusDEnabled && this.plusD && this.plusD.hasAnyDisk() &&
-                this.memory.hasPlusDRom();
+            // Per FUSE: +D ports always respond when hardware is available
+            // (not gated by memory paging state or disk presence)
+            return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
+                this.profile.pagingModel !== '+2a';
         }
 
         _isIF1Active() {
@@ -1232,8 +1241,8 @@ import { Disassembler } from './disasm.js';
 
         triggerPlusDNmi() {
             if (!this.plusDEnabled || !this.memory.hasPlusDRom()) return;
-            this.memory.plusDActive = true;  // Page in +D ROM/RAM
-            this.cpu.nmi();                  // CPU jumps to 0x0066
+            this.memory.plusDActive = true;
+            this.cpu.nmi();
         }
 
         portRead(port) {
@@ -1294,7 +1303,7 @@ import { Disassembler } from './disasm.js';
                 // Interface 1 (Microdrive) ports — checked before +D (port conflict on $E7/$EF)
                 const if1Active = this._isIF1Active();
 
-                // +D interface ports (when enabled and disk inserted)
+                // +D interface ports (when enabled and ROM paged in or disk inserted)
                 const plusDActive = this._isPlusDActive();
 
                 // Beta Disk ports (Pentagon with disk inserted)
@@ -1371,12 +1380,13 @@ import { Disassembler } from './disasm.js';
                         result = this.microdrive.readStatus();
                     }
                 } else if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
-                           lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_CTRL)) {
-                    // +D WD1772 registers (cmd/status, track, sector, control)
+                           lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_DATA)) {
+                    // +D WD1772 registers ($E3/$EB/$F3/$FB) — $EF is write-only per FUSE
                     result = this.plusD.read(port);
-                } else if (plusDActive && !betaDiskActive && lowByte === PORT_PLUSD_DATA) {
-                    // +D data register (0xFF) — only when Beta Disk not active (shared port)
-                    result = this.plusD.read(port);
+                } else if (plusDActive && lowByte === PORT_PLUSD_PAGE) {
+                    // +D paging register read ($E7) — pages in +D ROM/RAM
+                    this.memory.plusDActive = true;
+                    result = 0;
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -1525,7 +1535,7 @@ import { Disassembler } from './disasm.js';
             // Interface 1 (Microdrive) ports — checked before +D (port conflict on $E7/$EF)
             const if1Active = this._isIF1Active();
 
-            // +D interface ports (when enabled and disk inserted)
+            // +D interface ports (when enabled and ROM paged in or disk inserted)
             const plusDActive = this._isPlusDActive();
 
             // Beta Disk ports (when enabled and any disk inserted)
@@ -1624,14 +1634,16 @@ import { Disassembler } from './disasm.js';
                 return;
             }
             if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
-                lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_CTRL)) {
-                // +D WD1772 registers (cmd, track, sector, control)
+                lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_DATA ||
+                lowByte === PORT_PLUSD_CTRL)) {
+                // +D WD1772 registers + control ($E3/$EB/$F3/$FB/$EF)
                 this.plusD.write(port, val);
                 return;
             }
-            if (plusDActive && !betaDiskActive && lowByte === PORT_PLUSD_DATA) {
-                // +D data register (0xFF) — only when Beta Disk not active (shared port)
-                this.plusD.write(port, val);
+            if (plusDActive && lowByte === PORT_PLUSD_PAGE) {
+                // +D paging register write ($E7) — pages out +D ROM/RAM
+                console.log(`+D page-out @ PC=$${this.cpu.pc.toString(16).padStart(4,'0')}`);
+                this.memory.plusDActive = false;
                 return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
@@ -1852,6 +1864,8 @@ import { Disassembler } from './disasm.js';
                 if (this._betaDiskPagingEnabled) this.updateBetaDiskPaging();
                 // Interface 1 ROM auto-paging ($0008/$1708 page in, $0700 page out)
                 if (this._if1PagingEnabled) this.updateIF1Paging();
+                // +D ROM auto-paging ($0008/$003A/$0066/$028E page in, port $E3 bit 6 page out)
+                if (this._plusDPagingEnabled) this.updatePlusDPaging();
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
                 const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
@@ -2478,6 +2492,8 @@ import { Disassembler } from './disasm.js';
                 this.updateBetaDiskPaging();
                 // Interface 1 ROM auto-paging
                 if (this._if1PagingEnabled) this.updateIF1Paging();
+                // +D ROM auto-paging
+                if (this._plusDPagingEnabled) this.updatePlusDPaging();
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
@@ -3673,6 +3689,12 @@ import { Disassembler } from './disasm.js';
                 this.if1Enabled &&
                 this.memory.hasIF1Rom() &&
                 this.profile.pagingModel !== '+2a';
+            // +D ROM auto-paging flag: +D enabled + ROM loaded + compatible machine
+            // +D is NOT compatible with +2A/+3 (they have their own extended paging)
+            this._plusDPagingEnabled =
+                this.plusDEnabled &&
+                this.memory.hasPlusDRom() &&
+                this.profile.pagingModel !== '+2a';
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
@@ -3725,6 +3747,27 @@ import { Disassembler } from './disasm.js';
                 if (pc === IF1_PAGE_OUT_ADDR) {
                     this._if1PageOutPending = true;
                 }
+            }
+        }
+
+        /**
+         * +D (DISCiPLE/+D) ROM auto-paging (per FUSE z80_ops.c)
+         * Page IN: opcode fetch at $0008 (RST 8), $003A (KEY-NEXT),
+         *          $0066 (NMI), $028E (KEY-SCAN)
+         * Page OUT: via writing to paging port $E7
+         * Note: FUSE does NOT restrict page-in to BASIC ROM only — the +D
+         * intercepts these addresses regardless of which ROM bank is selected.
+         */
+        updatePlusDPaging() {
+            if (!this._plusDPagingEnabled) return;
+            if (this.memory.plusDActive) return;  // Already paged in
+
+            const pc = this.cpu.pc;
+            if (pc === PLUSD_PAGE_IN_RST8 || pc === PLUSD_PAGE_IN_KEYNEXT ||
+                pc === PLUSD_PAGE_IN_NMI || pc === PLUSD_PAGE_IN_KEYSCAN) {
+                const names = {0x0008:'RST8',0x003A:'KEY-NEXT',0x0066:'NMI',0x028E:'KEY-SCAN'};
+                console.log(`+D page-in @ $${pc.toString(16).padStart(4,'0')} (${names[pc]})`);
+                this.memory.plusDActive = true;
             }
         }
 

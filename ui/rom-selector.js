@@ -211,7 +211,6 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // Update TR-DOS ROM flag for trap handler (must be called for all machines,
         // including Scorpion where TR-DOS is in main ROM bank)
         if (spec.trdosTrap) spec.trdosTrap.updateTrdosRomFlag();
-        spec.updateBetaDiskPagingFlag();
         // Load +D ROM if available and +D is enabled
         if (romData['plusd.rom'] && spec.plusDEnabled) {
             spec.memory.loadPlusDRom(romData['plusd.rom']);
@@ -220,6 +219,9 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (romData['if1.rom'] && spec.if1Enabled) {
             spec.memory.loadIF1Rom(romData['if1.rom']);
         }
+        // Recalculate paging flags AFTER all ROMs are loaded — hasPlusDRom()/hasIF1Rom()
+        // must return true for _plusDPagingEnabled/_if1PagingEnabled to be set
+        spec.updateBetaDiskPagingFlag();
         spec.romLoaded = true;
         return true;
     }

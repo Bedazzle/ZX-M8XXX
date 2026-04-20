@@ -3845,7 +3845,9 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Extract file data from MGT image by following sector address map
+         * Extract file data from MGT image by following sector address map.
+         * Falls back to contiguous allocation from firstTrack/firstSector
+         * when the sector map is empty or contains only zero entries.
          */
         static extractFile(data, fileInfo) {
             const bytes = new Uint8Array(data);
@@ -3853,20 +3855,70 @@ const VERSION = '0.6.4';
             const result = new Uint8Array(fileInfo.sectors * sectorSize);
             let destPos = 0;
 
-            for (let i = 0; i < fileInfo.sectorMap.length; i++) {
-                const entry = fileInfo.sectorMap[i];
-                const track = entry.track;
-                const sector = entry.sector;
+            // Check if sector map contains valid entries: track 0-79 or 128-207 (bit7=side),
+            // sector 1-10. If all entries are invalid/zero, fall back to contiguous allocation.
+            const hasValidMap = fileInfo.sectorMap.length > 0 && fileInfo.sectorMap.every(e => {
+                const physTrack = e.track & 0x7F;
+                return physTrack < 80 && e.sector >= 1 && e.sector <= 10;
+            });
 
-                // Decode track: bit 7 = side
-                const physTrack = track & 0x7F;
-                const side = (track & 0x80) ? 1 : 0;
-                const offset = ((physTrack * 2 + side) * 10 + (sector - 1)) * sectorSize;
+            if (hasValidMap) {
+                // Follow the sector address map
+                for (let i = 0; i < fileInfo.sectorMap.length; i++) {
+                    const entry = fileInfo.sectorMap[i];
+                    const track = entry.track;
+                    const sector = entry.sector;
 
-                if (offset + sectorSize <= bytes.length) {
-                    result.set(bytes.slice(offset, offset + sectorSize), destPos);
+                    // Decode track: bit 7 = side
+                    const physTrack = track & 0x7F;
+                    const side = (track & 0x80) ? 1 : 0;
+                    const offset = ((physTrack * 2 + side) * 10 + (sector - 1)) * sectorSize;
+
+                    if (offset >= 0 && offset + sectorSize <= bytes.length) {
+                        result.set(bytes.slice(offset, offset + sectorSize), destPos);
+                    }
+                    destPos += sectorSize;
                 }
-                destPos += sectorSize;
+            } else {
+                // Contiguous allocation: read sequential sectors from firstTrack/firstSector.
+                // Detect single-sided images: if side 1 has no data, stay on side 0 only.
+                let doubleSided = false;
+                for (let t = 2; t < 80 && !doubleSided; t++) {
+                    for (let s = 0; s < 10; s++) {
+                        const off = ((t * 2 + 1) * 10 + s) * sectorSize;
+                        if (off + sectorSize <= bytes.length && bytes[off] !== 0) {
+                            doubleSided = true;
+                            break;
+                        }
+                    }
+                }
+
+                let curTrack = fileInfo.firstTrack & 0x7F;
+                let curSide = (fileInfo.firstTrack & 0x80) ? 1 : 0;
+                let curSector = fileInfo.firstSector; // 1-based
+
+                for (let i = 0; i < fileInfo.sectors; i++) {
+                    const offset = ((curTrack * 2 + curSide) * 10 + (curSector - 1)) * sectorSize;
+                    if (offset >= 0 && offset + sectorSize <= bytes.length) {
+                        result.set(bytes.slice(offset, offset + sectorSize), destPos);
+                    }
+                    destPos += sectorSize;
+
+                    // Advance to next sector
+                    curSector++;
+                    if (curSector > 10) {
+                        curSector = 1;
+                        if (doubleSided) {
+                            curSide++;
+                            if (curSide > 1) {
+                                curSide = 0;
+                                curTrack++;
+                            }
+                        } else {
+                            curTrack++;
+                        }
+                    }
+                }
             }
 
             // Return only the actual file length
@@ -3925,8 +3977,8 @@ const VERSION = '0.6.4';
     /**
      * +D WD1772 Floppy Disk Controller
      * DISCiPLE/+D interface: 2 drives, 80 tracks × 2 sides × 10 sectors × 512 bytes
-     * Port addresses: 0xE3 (control), 0xE7 (cmd/status), 0xEF (track),
-     *                 0xF7 (sector), 0xFF (data)
+     * Port addresses: 0xE3 (cmd/status), 0xEB (track), 0xF3 (sector),
+     *                 0xFB (data), 0xEF (control), 0xE7 (paging)
      */
     export class PlusDDisk {
         static get VERSION() { return VERSION; }
@@ -3972,7 +4024,8 @@ const VERSION = '0.6.4';
             this.indexCounter = 0;
 
             // Track last command type for status bit interpretation
-            this.lastCmdType = 0;  // 1=Type I, 2=Type II/III
+            // WD1772: after power-on/reset, status register uses Type I format
+            this.lastCmdType = 1;
 
             // Status bits (same as WD1793)
             this.BUSY = 0x01;
@@ -4057,17 +4110,20 @@ const VERSION = '0.6.4';
 
         // Calculate sector offset in disk image
         getSectorOffset(track, side, sector) {
-            // MGT layout: interleaved (track 0 side 0, track 0 side 1, track 1 side 0, ...)
-            // Each track-side has 10 sectors of 512 bytes = 5120 bytes
-            return ((track * 2 + side) * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
+            // G+DOS ROM uses logical track numbering (0-159):
+            //   logical 0 = cylinder 0 side 0, logical 1 = cylinder 0 side 1, etc.
+            // ROM never sets side bit in control register ($EF) — side is encoded in track number.
+            // MGT file stores tracks interleaved: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
+            // Logical track N maps to file offset N * sectorsPerTrack * bytesPerSector.
+            return (track * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
         }
 
-        // Port read
+        // Port read (port mapping per FUSE plusd.c)
         read(port) {
             const reg = port & 0xFF;
 
             switch (reg) {
-                case 0xE7: // Status register (WD1772 command/status)
+                case 0xE3: // Status register (WD1772 command/status)
                     if (!this.currentDisk.diskData) {
                         return this.NOT_READY;
                     }
@@ -4088,13 +4144,13 @@ const VERSION = '0.6.4';
                         return st;
                     }
 
-                case 0xEF: // Track register
+                case 0xEB: // Track register
                     return this.track;
 
-                case 0xF7: // Sector register
+                case 0xF3: // Sector register
                     return this.sector;
 
-                case 0xFF: // Data register
+                case 0xFB: // Data register
                     if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
                         this._sysReadsSinceData = 0;
                         this.data = this.dataBuffer[this.dataPos++];
@@ -4118,7 +4174,7 @@ const VERSION = '0.6.4';
                     }
                     return this.data;
 
-                case 0xE3: // Control register read: INTRQ/DRQ status
+                case 0xEF: // Control register read: INTRQ/DRQ status
                     {
                         let ctrl = 0;
                         if (this.intrq) ctrl |= 0x80;
@@ -4154,24 +4210,24 @@ const VERSION = '0.6.4';
             }
         }
 
-        // Port write
+        // Port write (port mapping per FUSE plusd.c)
         write(port, value) {
             const reg = port & 0xFF;
 
             switch (reg) {
-                case 0xE7: // Command register
+                case 0xE3: // Command register
                     this.executeCommand(value);
                     break;
 
-                case 0xEF: // Track register
+                case 0xEB: // Track register
                     this.track = value;
                     break;
 
-                case 0xF7: // Sector register
+                case 0xF3: // Sector register
                     this.sector = value;
                     break;
 
-                case 0xFF: // Data register
+                case 0xFB: // Data register
                     this.data = value;
                     if (this.writing && this.dataBuffer && this.dataPos < this.dataLen) {
                         this.dataBuffer[this.dataPos++] = value;
@@ -4196,13 +4252,9 @@ const VERSION = '0.6.4';
                     }
                     break;
 
-                case 0xE3: // Control register
-                    this.drive = value & 0x01;  // Bit 0: drive select (0 or 1)
-                    this.side = (value & 0x04) ? 1 : 0;  // Bit 2: side select
-                    // Bit 6: page out +D ROM/RAM
-                    if (value & 0x40) {
-                        if (this.onPageOut) this.onPageOut();
-                    }
+                case 0xEF: // Control register (per FUSE: bits 0-1=drive, bit 7=side, bit 6=printer)
+                    this.drive = (value & 0x03) === 2 ? 1 : 0;  // Drive select (FUSE convention)
+                    this.side = (value & 0x80) ? 1 : 0;  // Bit 7: side select
                     break;
             }
         }
@@ -4247,8 +4299,8 @@ const VERSION = '0.6.4';
                     this.currentDisk.headTrack = this.data;
                     if (this.track === 0) this.status |= this.TRACK0;
                 } else if ((cmd & 0xE0) === 0x40) {
-                    // Step in
-                    if (this.track < 79) this.track++;
+                    // Step in — logical tracks 0-159 (80 cylinders × 2 sides)
+                    if (this.track < 159) this.track++;
                     this.currentDisk.headTrack = this.track;
                 } else if ((cmd & 0xE0) === 0x60) {
                     // Step out
@@ -4278,7 +4330,9 @@ const VERSION = '0.6.4';
             }
 
             // Type IV command (force interrupt)
+            // WD1772: "rest of Status Register is updated according to Type I commands"
             if ((cmd & 0xF0) === 0xD0) {
+                this.lastCmdType = 1;  // Status uses Type I format after Force Interrupt
                 this.reading = false;
                 this.writing = false;
                 this.multiSector = false;
@@ -4334,6 +4388,13 @@ const VERSION = '0.6.4';
             this.dataLen = this.bytesPerSector;
             this.reading = true;
             this.status |= this.DRQ | this.BUSY;
+
+            // DEBUG: dump first 16 bytes of sector
+            const preview = Array.from(this.dataBuffer.subarray(0, 16))
+                .map(b => b.toString(16).padStart(2, '0')).join(' ');
+            const ascii = Array.from(this.dataBuffer.subarray(0, 16))
+                .map(b => b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.').join('');
+            console.log(`+D RdSec T${this.track}:S${this.sector} @${offset}: ${preview} |${ascii}|`);
         }
 
         writeSector() {
@@ -4960,8 +5021,11 @@ const VERSION = '0.6.4';
         static get MAX_DIR_ENTRIES() { return 112; }  // 7 * 256 / 16
         static get DATA_START_SECTOR() { return 8; }  // first data sector
 
-        // File header (6 bytes at start of file data on disk)
-        static get FILE_HEADER_SIZE() { return 6; }
+        // File header (7 bytes at start of file data on disk)
+        // Layout: type(1), length(2 LE), param1(2 LE), param2(2 LE)
+        // BASIC: param1=autostart line, param2=program length (VARS-PROG)
+        // CODE:  param1=start address, param2=32768
+        static get FILE_HEADER_SIZE() { return 7; }
 
         static isOPD(data) {
             const len = data instanceof Uint8Array ? data.length : data.byteLength;
@@ -4997,16 +5061,18 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Read the 6-byte file header from the start of a file's data area.
-         * Header: type(1), length(2 LE), startAddr(2 LE), extra(1)
+         * Read the 7-byte file header from the start of a file's data area.
+         * Header: type(1), length(2 LE), param1(2 LE), param2(2 LE)
+         * BASIC: param1=autostart line, param2=program length (VARS-PROG)
+         * CODE:  param1=start address, param2=32768
          */
         static _readFileHeader(data, sectorOffset) {
-            if (sectorOffset + 6 > data.length) return null;
+            if (sectorOffset + 7 > data.length) return null;
             const type = data[sectorOffset];
             const length = data[sectorOffset + 1] | (data[sectorOffset + 2] << 8);
-            const startAddr = data[sectorOffset + 3] | (data[sectorOffset + 4] << 8);
-            const extra = data[sectorOffset + 5];
-            return { type, length, startAddr, extra };
+            const param1 = data[sectorOffset + 3] | (data[sectorOffset + 4] << 8);
+            const param2 = data[sectorOffset + 5] | (data[sectorOffset + 6] << 8);
+            return { type, length, param1, param2 };
         }
 
         static getDiskInfo(data) {
@@ -5089,8 +5155,8 @@ const VERSION = '0.6.4';
                     type: header ? header.type : -1,
                     typeName: header ? (typeNames[header.type] || 'Unknown') : 'Unknown',
                     ext: header ? (extMap[header.type] || 'C') : 'C',
-                    startAddr: header ? header.startAddr : 0,
-                    autostart: header ? header.extra : 0,
+                    startAddr: header ? (header.type === 0 ? 0 : header.param1) : 0,
+                    autostart: header ? (header.type === 0 ? header.param1 : 0) : 0,
                     dataOffset
                 });
             }
@@ -5100,13 +5166,15 @@ const VERSION = '0.6.4';
 
         /**
          * Extract file data from OPD image (without the 6-byte Opus header).
+         * Uses directory-derived rawLength rather than the header's length field,
+         * which may not represent the total data size on real Opus disks.
          * Returns Uint8Array of file content, or null on error.
          */
         static extractFile(data, fileInfo) {
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const dataStart = fileInfo.dataOffset + OPDLoader.FILE_HEADER_SIZE;
-            const dataLen = fileInfo.length;
-            if (dataStart + dataLen > bytes.length) return null;
+            const dataLen = fileInfo.rawLength - OPDLoader.FILE_HEADER_SIZE;
+            if (dataLen <= 0 || dataStart + dataLen > bytes.length) return null;
             return bytes.slice(dataStart, dataStart + dataLen);
         }
 
@@ -5246,16 +5314,22 @@ const VERSION = '0.6.4';
                     disk[entryOff + 6 + i] = name.charCodeAt(i);
                 }
 
-                // Write file header (6 bytes) at the image sector
+                // Write file header (7 bytes) at the image sector
+                // Layout: type(1), length(2 LE), param1(2 LE), param2(2 LE)
                 const dataOff = nextSector * BPS;
-                disk[dataOff + 0] = f.type !== undefined ? f.type : 3; // default CODE
+                const ftype = f.type !== undefined ? f.type : 3; // default CODE
+                disk[dataOff + 0] = ftype;
                 const len = fileData.length;
                 disk[dataOff + 1] = len & 0xFF;
                 disk[dataOff + 2] = (len >> 8) & 0xFF;
-                const addr = f.startAddr || 0;
-                disk[dataOff + 3] = addr & 0xFF;
-                disk[dataOff + 4] = (addr >> 8) & 0xFF;
-                disk[dataOff + 5] = f.autostart || 0;
+                // BASIC: param1=autostart, param2=program length
+                // CODE:  param1=start address, param2=32768
+                const param1 = ftype === 0 ? (f.autostart || 0x8000) : (f.startAddr || 0);
+                disk[dataOff + 3] = param1 & 0xFF;
+                disk[dataOff + 4] = (param1 >> 8) & 0xFF;
+                const param2 = ftype === 0 ? (f.progLength || len) : 0x8000;
+                disk[dataOff + 5] = param2 & 0xFF;
+                disk[dataOff + 6] = (param2 >> 8) & 0xFF;
 
                 // Write file data
                 disk.set(fileData, dataOff + headerLen);

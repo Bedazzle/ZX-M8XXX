@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Machine Profile &amp; Utility Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Machine Profile &amp; Utility Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runProfileTests()">Profiles</button>
+        <button onclick="runLookupTests()">Lookups</button>
+        <button onclick="runIs128kCompatTests()">is128kCompat</button>
+        <button onclick="runConstantsTests()">Constants</button>
+        <button onclick="runUtilTests()">Utilities</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { getMachineProfile, getMachineTypes, getMachineByZ80HwMode, getMachineBySzxId,
+             DEFAULT_VISIBLE_MACHINES, is128kCompat, MACHINE_PROFILES } from '../core/machines.js';
+    import { hex8, hex16, escapeHtml, arrayToBase64, storageGet, storageSet, storageRemove } from '../core/utils.js';
+    import {
+        PAGE_SIZE, BANK_MASK, SLOT1_START, SLOT2_START, SLOT3_START, ADDR_MAX,
+        SCREEN_BITMAP, SCREEN_ATTR, SCREEN_END, SCREEN_AFTER, SCREEN_SIZE,
+        PORT_7FFD, PORT_1FFD, PORT_EFF7, PORT_AY_REG, PORT_AY_DATA,
+        PORT_FDC_MSR, PORT_FDC_DATA,
+        DECODE_128K_MASK, DECODE_PLUS2A_MASK, DECODE_7FFD_PLUS2A,
+        SNA_HEADER_SIZE, SNA_48K_SIZE, SNA_128K_SIZE
+    } from '../core/constants.js';
+
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+    }
+
+    function assert(condition, name, detail = '') {
+        if (condition) {
+            passed++;
+            log(`  ✓ ${name}`, 'pass');
+        } else {
+            failed++;
+            log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`, 'fail');
+        }
+    }
+
+    function section(name) {
+        log(`\n═══ ${name} ═══`, 'section');
+    }
+
+    function updateSummary() {
+        summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`;
+        summaryEl.className = failed > 0 ? 'fail' : 'pass';
+    }
+
+    function reset() {
+        passed = 0;
+        failed = 0;
+        logEl.innerHTML = '';
+    }
+
+    // ==================== MACHINE PROFILE TESTS ====================
+
+    function runProfileTests() {
+        section('Profiles - All machine types exist');
+
+        {
+            const types = getMachineTypes();
+            assert(types.includes('48k'), '48k exists');
+            assert(types.includes('128k'), '128k exists');
+            assert(types.includes('+2'), '+2 exists');
+            assert(types.includes('+2a'), '+2a exists');
+            assert(types.includes('+3'), '+3 exists');
+            assert(types.includes('pentagon'), 'pentagon exists');
+            assert(types.includes('pentagon1024'), 'pentagon1024 exists');
+            assert(types.includes('scorpion'), 'scorpion exists');
+            assert(types.length === 8, `8 machine types total, got ${types.length}`);
+        }
+
+        section('Profiles - getMachineProfile returns correct profiles');
+
+        {
+            const p48 = getMachineProfile('48k');
+            assert(p48.id === '48k', '48k profile id');
+            assert(p48.name === 'ZX Spectrum 48K', '48k name');
+            assert(p48.group === 'Sinclair', '48k group');
+
+            const p128 = getMachineProfile('128k');
+            assert(p128.id === '128k', '128k profile id');
+            assert(p128.ramPages === 8, '128k has 8 RAM pages');
+            assert(p128.romBanks === 2, '128k has 2 ROM banks');
+
+            const p3 = getMachineProfile('+3');
+            assert(p3.id === '+3', '+3 profile id');
+            assert(p3.hasFDC === true, '+3 has FDC');
+            assert(p3.romBanks === 4, '+3 has 4 ROM banks');
+        }
+
+        section('Profiles - getMachineProfile fallback');
+
+        {
+            const fallback = getMachineProfile('nonexistent');
+            assert(fallback.id === '48k', 'unknown type falls back to 48k');
+
+            const nullFallback = getMachineProfile(null);
+            assert(nullFallback.id === '48k', 'null type falls back to 48k');
+
+            const undefinedFallback = getMachineProfile(undefined);
+            assert(undefinedFallback.id === '48k', 'undefined type falls back to 48k');
+        }
+
+        section('Profiles - 48K properties');
+
+        {
+            const p = getMachineProfile('48k');
+            assert(p.ramPages === 1, 'ramPages = 1');
+            assert(p.romBanks === 1, 'romBanks = 1');
+            assert(p.romFile === '48.rom', 'romFile = 48.rom');
+            assert(p.romSize === 16384, 'romSize = 16384');
+            assert(p.basicRomBank === 0, 'basicRomBank = 0');
+            assert(p.pagingModel === 'none', 'pagingModel = none');
+            assert(p.ulaProfile === '48k', 'ulaProfile = 48k');
+            assert(p.hasContention === true, 'has contention');
+            assert(p.hasIOContention === true, 'has IO contention');
+            assert(p.hasInternalContention === true, 'has internal contention');
+            assert(p.contentionPattern === '65432100', 'contention pattern = 65432100');
+            assert(p.borderQuantization === true, 'border quantization');
+            assert(p.intPulseDuration === 32, 'INT pulse = 32 T-states');
+            assert(p.earlyIntTiming === true, 'early INT timing');
+            assert(p.ayDefault === false, 'AY not default');
+            assert(p.betaDiskDefault === false, 'Beta Disk not default');
+            assert(p.hasFDC === false, 'no FDC');
+            assert(p.is128kCompat === false, 'not 128K compatible');
+        }
+
+        section('Profiles - 128K properties');
+
+        {
+            const p = getMachineProfile('128k');
+            assert(p.ramPages === 8, 'ramPages = 8');
+            assert(p.romBanks === 2, 'romBanks = 2');
+            assert(p.basicRomBank === 1, 'basicRomBank = 1');
+            assert(p.pagingModel === '128k', 'pagingModel = 128k');
+            assert(p.ulaProfile === '128k', 'ulaProfile = 128k');
+            assert(p.intPulseDuration === 36, 'INT pulse = 36');
+            assert(p.earlyIntTiming === false, 'no early INT timing');
+            assert(p.ayDefault === true, 'AY default enabled');
+            assert(p.ayClockHz === 1773400, 'AY clock = 1773400');
+            assert(p.is128kCompat === true, '128K compatible');
+        }
+
+        section('Profiles - +2A properties');
+
+        {
+            const p = getMachineProfile('+2a');
+            assert(p.romBanks === 4, '4 ROM banks');
+            assert(p.basicRomBank === 3, 'basicRomBank = 3');
+            assert(p.pagingModel === '+2a', 'pagingModel = +2a');
+            assert(p.hasContention === true, 'has contention');
+            assert(p.hasIOContention === false, 'no IO contention');
+            assert(p.hasInternalContention === false, 'no internal contention');
+            assert(p.contentionPattern === '76543210', 'contention pattern = 76543210');
+            assert(p.hasFDC === false, '+2a has no FDC');
+            assert(p.is128kCompat === true, '128K compatible');
+        }
+
+        section('Profiles - +3 properties');
+
+        {
+            const p = getMachineProfile('+3');
+            assert(p.pagingModel === '+2a', 'shares +2a paging model');
+            assert(p.hasFDC === true, 'has FDC');
+            assert(p.romSize === 65536, 'romSize = 65536 (4 banks)');
+            assert(p.contentionPattern === '76543210', 'contention pattern = 76543210');
+            assert(p.hasIOContention === false, 'no IO contention');
+        }
+
+        section('Profiles - Pentagon properties');
+
+        {
+            const p = getMachineProfile('pentagon');
+            assert(p.group === 'Pentagon', 'group = Pentagon');
+            assert(p.hasContention === false, 'no contention');
+            assert(p.hasIOContention === false, 'no IO contention');
+            assert(p.hasInternalContention === false, 'no internal contention');
+            assert(p.contentionPattern === 'none', 'contention pattern = none');
+            assert(p.borderQuantization === false, 'no border quantization');
+            assert(p.ulaProfile === 'pentagon', 'ulaProfile = pentagon');
+            assert(p.ayClockHz === 1750000, 'AY clock = 1750000');
+            assert(p.betaDiskDefault === true, 'Beta Disk default');
+            assert(p.is128kCompat === false, 'not 128K compatible');
+        }
+
+        section('Profiles - Pentagon 1024 properties');
+
+        {
+            const p = getMachineProfile('pentagon1024');
+            assert(p.ramPages === 64, 'ramPages = 64');
+            assert(p.pagingModel === 'pentagon1024', 'pagingModel = pentagon1024');
+            assert(p.romFile === 'pentagon.rom', 'shares Pentagon ROM');
+            assert(p.betaDiskDefault === true, 'Beta Disk default');
+            assert(p.z80HwMode === 9, 'same Z80 hw mode as Pentagon 128');
+            assert(p.szxMachineId === 7, 'same SZX ID as Pentagon 128');
+        }
+
+        section('Profiles - Scorpion properties');
+
+        {
+            const p = getMachineProfile('scorpion');
+            assert(p.group === 'Scorpion', 'group = Scorpion');
+            assert(p.ramPages === 16, 'ramPages = 16');
+            assert(p.romBanks === 4, 'romBanks = 4');
+            assert(p.pagingModel === 'scorpion', 'pagingModel = scorpion');
+            assert(p.ulaProfile === 'pentagon', 'shares Pentagon ULA timing');
+            assert(p.betaDiskDefault === true, 'Beta Disk default');
+            assert(p.trdosInRom === true, 'TR-DOS in ROM');
+            assert(p.trdosRomBank === 3, 'TR-DOS in ROM bank 3');
+            assert(p.szxMachineId === 8, 'szxMachineId = 8');
+            assert(p.basicRomBank === 1, 'basicRomBank = 1');
+        }
+
+        section('Profiles - +2 properties');
+
+        {
+            const p = getMachineProfile('+2');
+            assert(p.pagingModel === '128k', 'shares 128k paging model');
+            assert(p.ulaProfile === '128k', 'shares 128k ULA timing');
+            assert(p.z80HwMode === 12, 'z80HwMode = 12');
+            assert(p.szxMachineId === 3, 'szxMachineId = 3');
+            assert(p.is128kCompat === true, '128K compatible');
+        }
+
+        section('Profiles - DEFAULT_VISIBLE_MACHINES');
+
+        {
+            assert(Array.isArray(DEFAULT_VISIBLE_MACHINES), 'is an array');
+            assert(DEFAULT_VISIBLE_MACHINES.includes('48k'), 'includes 48k');
+            assert(DEFAULT_VISIBLE_MACHINES.includes('128k'), 'includes 128k');
+            assert(DEFAULT_VISIBLE_MACHINES.includes('pentagon'), 'includes pentagon');
+            assert(DEFAULT_VISIBLE_MACHINES.length === 3, 'exactly 3 defaults');
+        }
+
+        section('Profiles - ROM sizes match bank counts');
+
+        {
+            for (const type of getMachineTypes()) {
+                const p = getMachineProfile(type);
+                assert(p.romSize === p.romBanks * 16384,
+                    `${type}: romSize ${p.romSize} = ${p.romBanks} banks × 16384`);
+            }
+        }
+
+        section('Profiles - All profiles have required fields');
+
+        {
+            const requiredFields = [
+                'id', 'name', 'group', 'ramPages', 'romBanks', 'romFile', 'romSize',
+                'basicRomBank', 'pagingModel', 'ulaProfile', 'hasContention',
+                'contentionPattern', 'intPulseDuration', 'ayDefault', 'hasFDC',
+                'z80HwMode', 'szxMachineId', 'is128kCompat'
+            ];
+            for (const type of getMachineTypes()) {
+                const p = getMachineProfile(type);
+                for (const field of requiredFields) {
+                    assert(field in p, `${type} has field '${field}'`);
+                }
+            }
+        }
+    }
+
+    // ==================== LOOKUP TESTS ====================
+
+    function runLookupTests() {
+        section('Z80 HW Mode - Version 3 lookups');
+
+        {
+            // Version 3 (extHeaderLen != 23)
+            assert(getMachineByZ80HwMode(0, 54) === '48k', 'hwMode 0 = 48k');
+            assert(getMachineByZ80HwMode(1, 54) === '48k', 'hwMode 1 = 48k');
+            assert(getMachineByZ80HwMode(4, 54) === '128k', 'hwMode 4 = 128k');
+            assert(getMachineByZ80HwMode(5, 54) === '128k', 'hwMode 5 = 128k');
+            assert(getMachineByZ80HwMode(6, 54) === '128k', 'hwMode 6 = 128k');
+            assert(getMachineByZ80HwMode(7, 54) === '+3', 'hwMode 7 = +3');
+            assert(getMachineByZ80HwMode(9, 54) === 'pentagon', 'hwMode 9 = pentagon');
+            assert(getMachineByZ80HwMode(12, 54) === '+2', 'hwMode 12 = +2');
+            assert(getMachineByZ80HwMode(13, 54) === '+2a', 'hwMode 13 = +2a');
+        }
+
+        section('Z80 HW Mode - Version 2 lookups');
+
+        {
+            // Version 2 (extHeaderLen = 23)
+            assert(getMachineByZ80HwMode(0, 23) === '48k', 'V2 hwMode 0 = 48k');
+            assert(getMachineByZ80HwMode(3, 23) === '128k', 'V2 hwMode 3 = 128k');
+            assert(getMachineByZ80HwMode(4, 23) === '128k', 'V2 hwMode 4 = 128k (with IF1)');
+            assert(getMachineByZ80HwMode(9, 23) === 'pentagon', 'V2 hwMode 9 = pentagon');
+        }
+
+        section('Z80 HW Mode - Unknown modes fallback to 48k');
+
+        {
+            assert(getMachineByZ80HwMode(99, 54) === '48k', 'V3 unknown mode = 48k');
+            assert(getMachineByZ80HwMode(99, 23) === '48k', 'V2 unknown mode = 48k');
+            assert(getMachineByZ80HwMode(2, 54) === '48k', 'V3 hwMode 2 = 48k (48K+IF1)');
+        }
+
+        section('SZX Machine ID - Profile lookups');
+
+        {
+            assert(getMachineBySzxId(1) === '48k', 'szxId 1 = 48k');
+            assert(getMachineBySzxId(2) === '128k', 'szxId 2 = 128k');
+            assert(getMachineBySzxId(3) === '+2', 'szxId 3 = +2');
+            assert(getMachineBySzxId(4) === '+2a', 'szxId 4 = +2a');
+            assert(getMachineBySzxId(5) === '+3', 'szxId 5 = +3');
+            assert(getMachineBySzxId(7) === 'pentagon', 'szxId 7 = pentagon');
+            assert(getMachineBySzxId(8) === 'scorpion', 'szxId 8 = scorpion');
+        }
+
+        section('SZX Machine ID - Fallback lookups');
+
+        {
+            assert(getMachineBySzxId(0) === '48k', 'szxId 0 = 48k (fallback)');
+            assert(getMachineBySzxId(6) === '128k', 'szxId 6 = 128k (fallback)');
+            assert(getMachineBySzxId(99) === 'unknown', 'szxId 99 = unknown');
+        }
+
+        section('Z80 HW Mode - Pentagon always overrides');
+
+        {
+            // Pentagon hwMode 9 should return pentagon regardless of V2/V3
+            assert(getMachineByZ80HwMode(9, 23) === 'pentagon', 'Pentagon V2');
+            assert(getMachineByZ80HwMode(9, 54) === 'pentagon', 'Pentagon V3');
+            assert(getMachineByZ80HwMode(9, 0) === 'pentagon', 'Pentagon extLen=0');
+        }
+
+        section('Snapshot IDs - All profiles have unique szxMachineId (except pentagon/p1024)');
+
+        {
+            const szxIds = {};
+            for (const type of getMachineTypes()) {
+                const p = getMachineProfile(type);
+                if (!szxIds[p.szxMachineId]) szxIds[p.szxMachineId] = [];
+                szxIds[p.szxMachineId].push(type);
+            }
+            // pentagon and pentagon1024 share szxMachineId 7
+            assert(szxIds[7].length === 2, 'pentagon & pentagon1024 share szxMachineId 7');
+            assert(szxIds[7].includes('pentagon') && szxIds[7].includes('pentagon1024'),
+                'szxMachineId 7 belongs to pentagon and pentagon1024');
+            // All other IDs should be unique
+            for (const [id, types] of Object.entries(szxIds)) {
+                if (id !== '7') {
+                    assert(types.length === 1, `szxMachineId ${id} is unique (${types[0]})`);
+                }
+            }
+        }
+    }
+
+    // ==================== IS128KCOMPAT TESTS ====================
+
+    function runIs128kCompatTests() {
+        section('is128kCompat - Compatible machines');
+
+        {
+            assert(is128kCompat('128k') === true, '128k is compatible');
+            assert(is128kCompat('+2') === true, '+2 is compatible');
+            assert(is128kCompat('+2a') === true, '+2a is compatible');
+            assert(is128kCompat('+3') === true, '+3 is compatible');
+        }
+
+        section('is128kCompat - Incompatible machines');
+
+        {
+            assert(is128kCompat('48k') === false, '48k not compatible');
+            assert(is128kCompat('pentagon') === false, 'pentagon not compatible');
+            assert(is128kCompat('pentagon1024') === false, 'pentagon1024 not compatible');
+            assert(is128kCompat('scorpion') === false, 'scorpion not compatible');
+        }
+
+        section('is128kCompat - Invalid inputs');
+
+        {
+            assert(is128kCompat('') === false, 'empty string not compatible');
+            assert(is128kCompat(null) === false, 'null not compatible');
+            assert(is128kCompat(undefined) === false, 'undefined not compatible');
+            assert(is128kCompat('spectrum') === false, 'unknown string not compatible');
+        }
+
+        section('is128kCompat - Matches profile flag');
+
+        {
+            for (const type of getMachineTypes()) {
+                const p = getMachineProfile(type);
+                assert(is128kCompat(type) === p.is128kCompat,
+                    `${type}: is128kCompat() matches profile.is128kCompat`);
+            }
+        }
+    }
+
+    // ==================== CONSTANTS TESTS ====================
+
+    function runConstantsTests() {
+        section('Constants - Memory layout');
+
+        {
+            assert(PAGE_SIZE === 0x4000, 'PAGE_SIZE = 16384');
+            assert(BANK_MASK === 0x3FFF, 'BANK_MASK = 0x3FFF');
+            assert(SLOT1_START === 0x4000, 'SLOT1_START = 0x4000');
+            assert(SLOT2_START === 0x8000, 'SLOT2_START = 0x8000');
+            assert(SLOT3_START === 0xC000, 'SLOT3_START = 0xC000');
+            assert(ADDR_MAX === 0xFFFF, 'ADDR_MAX = 0xFFFF');
+        }
+
+        section('Constants - Screen memory');
+
+        {
+            assert(SCREEN_BITMAP === 0x4000, 'SCREEN_BITMAP = 0x4000');
+            assert(SCREEN_ATTR === 0x5800, 'SCREEN_ATTR = 0x5800');
+            assert(SCREEN_END === 0x5AFF, 'SCREEN_END = 0x5AFF');
+            assert(SCREEN_AFTER === 0x5B00, 'SCREEN_AFTER = 0x5B00');
+            assert(SCREEN_SIZE === 6912, 'SCREEN_SIZE = 6912');
+            assert(SCREEN_SIZE === (SCREEN_END - SCREEN_BITMAP + 1), 'SCREEN_SIZE = end - start + 1');
+            assert(SCREEN_ATTR === SCREEN_BITMAP + 6144, 'ATTR starts after 6144 bitmap bytes');
+        }
+
+        section('Constants - Port addresses');
+
+        {
+            assert(PORT_7FFD === 0x7FFD, 'PORT_7FFD');
+            assert(PORT_1FFD === 0x1FFD, 'PORT_1FFD');
+            assert(PORT_EFF7 === 0xEFF7, 'PORT_EFF7');
+            assert(PORT_AY_REG === 0xFFFD, 'PORT_AY_REG');
+            assert(PORT_AY_DATA === 0xBFFD, 'PORT_AY_DATA');
+            assert(PORT_FDC_MSR === 0x2FFD, 'PORT_FDC_MSR');
+            assert(PORT_FDC_DATA === 0x3FFD, 'PORT_FDC_DATA');
+        }
+
+        section('Constants - Port decode masks');
+
+        {
+            // 128K paging: (port & 0x8002) === 0
+            assert(DECODE_128K_MASK === 0x8002, 'DECODE_128K_MASK');
+            assert((PORT_7FFD & DECODE_128K_MASK) === 0, '7FFD matches 128K decode');
+
+            // +2A paging: (port & 0xC002) === 0x4000
+            assert(DECODE_PLUS2A_MASK === 0xC002, 'DECODE_PLUS2A_MASK');
+            assert(DECODE_7FFD_PLUS2A === 0x4000, 'DECODE_7FFD_PLUS2A');
+            assert((PORT_7FFD & DECODE_PLUS2A_MASK) === DECODE_7FFD_PLUS2A, '7FFD matches +2A decode');
+        }
+
+        section('Constants - SNA format sizes');
+
+        {
+            assert(SNA_HEADER_SIZE === 27, 'SNA header = 27 bytes');
+            assert(SNA_48K_SIZE === 49179, 'SNA 48K = 49179');
+            assert(SNA_128K_SIZE === 131103, 'SNA 128K = 131103');
+            assert(SNA_48K_SIZE === SNA_HEADER_SIZE + 3 * PAGE_SIZE, '48K = header + 3 pages');
+        }
+
+        section('Constants - Memory math consistency');
+
+        {
+            // Verify BANK_MASK works for all slot starts
+            assert((SLOT1_START & BANK_MASK) === 0, 'SLOT1_START aligned to page');
+            assert((SLOT2_START & BANK_MASK) === 0, 'SLOT2_START aligned to page');
+            assert((SLOT3_START & BANK_MASK) === 0, 'SLOT3_START aligned to page');
+            // Verify slots are contiguous
+            assert(SLOT1_START - 0 === PAGE_SIZE, 'slot 0-1 gap = PAGE_SIZE');
+            assert(SLOT2_START - SLOT1_START === PAGE_SIZE, 'slot 1-2 gap = PAGE_SIZE');
+            assert(SLOT3_START - SLOT2_START === PAGE_SIZE, 'slot 2-3 gap = PAGE_SIZE');
+            assert(ADDR_MAX - SLOT3_START + 1 === PAGE_SIZE, 'slot 3 size = PAGE_SIZE');
+        }
+    }
+
+    // ==================== UTILITY TESTS ====================
+
+    function runUtilTests() {
+        section('hex8 - Basic formatting');
+
+        {
+            assert(hex8(0) === '00', 'hex8(0) = 00');
+            assert(hex8(1) === '01', 'hex8(1) = 01');
+            assert(hex8(0x0F) === '0F', 'hex8(0x0F) = 0F');
+            assert(hex8(0x10) === '10', 'hex8(0x10) = 10');
+            assert(hex8(0xFF) === 'FF', 'hex8(0xFF) = FF');
+            assert(hex8(0xAB) === 'AB', 'hex8(0xAB) = AB');
+        }
+
+        section('hex8 - Masking to 8 bits');
+
+        {
+            assert(hex8(0x100) === '00', 'hex8(0x100) masks to 00');
+            assert(hex8(0x1FF) === 'FF', 'hex8(0x1FF) masks to FF');
+            assert(hex8(0xABCD) === 'CD', 'hex8(0xABCD) masks to CD');
+            assert(hex8(-1) === 'FF', 'hex8(-1) = FF (two\'s complement)');
+        }
+
+        section('hex16 - Basic formatting');
+
+        {
+            assert(hex16(0) === '0000', 'hex16(0) = 0000');
+            assert(hex16(1) === '0001', 'hex16(1) = 0001');
+            assert(hex16(0xFF) === '00FF', 'hex16(0xFF) = 00FF');
+            assert(hex16(0x100) === '0100', 'hex16(0x100) = 0100');
+            assert(hex16(0xFFFF) === 'FFFF', 'hex16(0xFFFF) = FFFF');
+            assert(hex16(0x1234) === '1234', 'hex16(0x1234) = 1234');
+            assert(hex16(0xABCD) === 'ABCD', 'hex16(0xABCD) = ABCD');
+        }
+
+        section('hex16 - Masking to 16 bits');
+
+        {
+            assert(hex16(0x10000) === '0000', 'hex16(0x10000) masks to 0000');
+            assert(hex16(0x1FFFF) === 'FFFF', 'hex16(0x1FFFF) masks to FFFF');
+            assert(hex16(-1) === 'FFFF', 'hex16(-1) = FFFF');
+        }
+
+        section('escapeHtml - Basic escaping');
+
+        {
+            assert(escapeHtml('hello') === 'hello', 'plain text unchanged');
+            assert(escapeHtml('<b>') === '&lt;b&gt;', 'angle brackets escaped');
+            assert(escapeHtml('a&b') === 'a&amp;b', 'ampersand escaped');
+            assert(escapeHtml('"hi"') === '&quot;hi&quot;', 'double quotes escaped');
+            assert(escapeHtml('<a href="x">&') === '&lt;a href=&quot;x&quot;&gt;&amp;',
+                'mixed HTML characters escaped');
+        }
+
+        section('escapeHtml - Edge cases');
+
+        {
+            assert(escapeHtml('') === '', 'empty string unchanged');
+            assert(escapeHtml('no special chars') === 'no special chars', 'no-op for safe text');
+            assert(escapeHtml('<<<') === '&lt;&lt;&lt;', 'multiple same characters');
+        }
+
+        section('arrayToBase64 - Encoding');
+
+        {
+            // Empty array
+            assert(arrayToBase64(new Uint8Array([])) === '', 'empty array = empty string');
+
+            // Known values: [0] = 'AA=='
+            assert(arrayToBase64(new Uint8Array([0])) === 'AA==', 'single zero byte');
+
+            // [72, 101, 108, 108, 111] = 'Hello' = 'SGVsbG8='
+            assert(arrayToBase64(new Uint8Array([72, 101, 108, 108, 111])) === 'SGVsbG8=',
+                'Hello encodes correctly');
+
+            // Verify round-trip with atob
+            const testData = new Uint8Array([1, 2, 3, 255, 0, 128]);
+            const b64 = arrayToBase64(testData);
+            const decoded = atob(b64);
+            let match = true;
+            for (let i = 0; i < testData.length; i++) {
+                if (decoded.charCodeAt(i) !== testData[i]) { match = false; break; }
+            }
+            assert(match, 'round-trip via atob preserves data');
+        }
+
+        section('arrayToBase64 - Accepts non-Uint8Array');
+
+        {
+            // Regular array should also work (converted internally)
+            const b64 = arrayToBase64([65, 66, 67]);
+            assert(b64 === 'QUJD', 'regular array [65,66,67] = ABC = QUJD');
+        }
+
+        section('storageGet/storageSet/storageRemove - Basic operations');
+
+        {
+            const testKey = '__machine_test_tmp_' + Date.now();
+
+            // Get non-existent key returns fallback
+            assert(storageGet(testKey) === null, 'missing key returns null');
+            assert(storageGet(testKey, 'default') === 'default', 'missing key returns fallback');
+
+            // Set and get
+            const setResult = storageSet(testKey, 'test_value');
+            assert(setResult === true, 'storageSet returns true on success');
+            assert(storageGet(testKey) === 'test_value', 'storageGet returns stored value');
+
+            // Remove
+            storageRemove(testKey);
+            assert(storageGet(testKey) === null, 'removed key returns null');
+        }
+    }
+
+    // ==================== RUN ALL ====================
+
+    function runAll() {
+        reset();
+        runProfileTests();
+        runLookupTests();
+        runIs128kCompatTests();
+        runConstantsTests();
+        runUtilTests();
+        updateSummary();
+    }
+
+    // Expose to buttons
+    window.runAll = runAll;
+    window.runProfileTests = () => { reset(); runProfileTests(); updateSummary(); };
+    window.runLookupTests = () => { reset(); runLookupTests(); updateSummary(); };
+    window.runIs128kCompatTests = () => { reset(); runIs128kCompatTests(); updateSummary(); };
+    window.runConstantsTests = () => { reset(); runConstantsTests(); updateSummary(); };
+    window.runUtilTests = () => { reset(); runUtilTests(); updateSummary(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

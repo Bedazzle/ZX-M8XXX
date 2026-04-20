@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>FDC &amp; DSK Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>FDC &amp; DSK Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="mapper-test.html">Mapper Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runDSKImageTests()">DSKImage</button>
+        <button onclick="runDSKLoaderTests()">DSKLoader</button>
+        <button onclick="runDSKFilesystemTests()">DSK Filesystem</button>
+        <button onclick="runUPD765BasicTests()">UPD765 Basic</button>
+        <button onclick="runUPD765CommandTests()">UPD765 Commands</button>
+        <button onclick="runUPD765DataTests()">UPD765 Data Transfer</button>
+        <button onclick="runRoundTripTests()">Round-trip</button>
+    </div>
+    <div id="log"></div>
+
+<script type="module">
+    import { DSKImage, DSKLoader, UPD765 } from '../core/fdc.js';
+
+    const logEl = document.getElementById('log');
+    const summaryEl = document.getElementById('summary');
+    let passed = 0, failed = 0;
+
+    function log(msg, cls = '') {
+        const div = document.createElement('div');
+        if (cls) div.className = cls;
+        div.textContent = msg;
+        logEl.appendChild(div);
+    }
+
+    function assert(condition, name, detail = '') {
+        if (condition) {
+            passed++;
+            log(`  \u2713 ${name}`, 'pass');
+        } else {
+            failed++;
+            log(`  \u2717 ${name}${detail ? ' \u2014 ' + detail : ''}`, 'fail');
+        }
+    }
+
+    function section(name) {
+        log(`\n\u2550\u2550\u2550 ${name} \u2550\u2550\u2550`, 'section');
+    }
+
+    function updateSummary() {
+        summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed + failed}`;
+        summaryEl.className = failed > 0 ? 'fail' : 'pass';
+    }
+
+    // ========== Helper: build a standard DSK binary (MV - CPC) ==========
+    function buildStandardDSK(numTracks, numSides, sectors) {
+        // sectors = array of { cylinder, head, id, sizeCode, data }
+        // All tracks have same sectors layout
+        const sectorSize = 128 << (sectors[0]?.sizeCode || 2);
+        const trackDataSize = 0x100 + sectors.length * sectorSize;
+        const trackSize = Math.ceil(trackDataSize / 256) * 256;
+        const totalTracks = numTracks * numSides;
+        const fileSize = 0x100 + totalTracks * trackSize;
+        const buf = new Uint8Array(fileSize);
+
+        // Disk info block
+        const sig = 'MV - CPCEMU Disk-File\r\nDisk-Info\r\n';
+        for (let i = 0; i < sig.length; i++) buf[i] = sig.charCodeAt(i);
+        buf[0x30] = numTracks;
+        buf[0x31] = numSides;
+        buf[0x32] = trackSize & 0xFF;
+        buf[0x33] = (trackSize >> 8) & 0xFF;
+
+        let offset = 0x100;
+        for (let t = 0; t < totalTracks; t++) {
+            const cylinder = Math.floor(t / numSides);
+            const side = t % numSides;
+
+            // Track-Info
+            const trackSig = 'Track-Info\r\n';
+            for (let i = 0; i < trackSig.length; i++) buf[offset + i] = trackSig.charCodeAt(i);
+            buf[offset + 0x10] = cylinder;
+            buf[offset + 0x11] = side;
+            buf[offset + 0x14] = sectors[0]?.sizeCode || 2;
+            buf[offset + 0x15] = sectors.length;
+            buf[offset + 0x16] = 0x4E;
+            buf[offset + 0x17] = 0xE5;
+
+            let dataOff = offset + 0x100;
+            for (let s = 0; s < sectors.length; s++) {
+                const sec = sectors[s];
+                const infoBase = offset + 0x18 + s * 8;
+                buf[infoBase] = cylinder;
+                buf[infoBase + 1] = side;
+                buf[infoBase + 2] = sec.id;
+                buf[infoBase + 3] = sec.sizeCode;
+                buf[infoBase + 4] = sec.st1 || 0;
+                buf[infoBase + 5] = sec.st2 || 0;
+
+                if (sec.data) {
+                    const len = Math.min(sec.data.length, sectorSize);
+                    for (let i = 0; i < len; i++) buf[dataOff + i] = sec.data[i];
+                }
+                dataOff += sectorSize;
+            }
+            offset += trackSize;
+        }
+        return buf;
+    }
+
+    // ========== Helper: build extended DSK binary ==========
+    function buildExtendedDSK(numTracks, numSides, trackDefs) {
+        // trackDefs = array of { sectors: [{ cylinder, head, id, sizeCode, data, st1, st2 }] }
+        // One entry per track (totalTracks = numTracks * numSides)
+        const totalTracks = numTracks * numSides;
+
+        // Compute track sizes
+        const trackSizes = [];
+        let totalSize = 0x100;
+        for (let t = 0; t < totalTracks; t++) {
+            const td = trackDefs[t];
+            if (!td || !td.sectors || td.sectors.length === 0) {
+                trackSizes.push(0);
+                continue;
+            }
+            let dataSize = 0x100;
+            for (const sec of td.sectors) {
+                dataSize += (sec.data ? sec.data.length : (128 << sec.sizeCode));
+            }
+            dataSize = Math.ceil(dataSize / 256) * 256;
+            trackSizes.push(dataSize);
+            totalSize += dataSize;
+        }
+
+        const buf = new Uint8Array(totalSize);
+
+        // Disk info block
+        const sig = 'EXTENDED CPC DSK File\r\nDisk-Info\r\n';
+        for (let i = 0; i < sig.length; i++) buf[i] = sig.charCodeAt(i);
+        buf[0x30] = numTracks;
+        buf[0x31] = numSides;
+        // Track size table (high bytes)
+        for (let t = 0; t < totalTracks; t++) {
+            buf[0x34 + t] = (trackSizes[t] / 256) | 0;
+        }
+
+        let offset = 0x100;
+        for (let t = 0; t < totalTracks; t++) {
+            if (trackSizes[t] === 0) continue;
+            const td = trackDefs[t];
+            const cylinder = Math.floor(t / numSides);
+            const side = t % numSides;
+
+            const trackSig = 'Track-Info\r\n';
+            for (let i = 0; i < trackSig.length; i++) buf[offset + i] = trackSig.charCodeAt(i);
+            buf[offset + 0x10] = cylinder;
+            buf[offset + 0x11] = side;
+            buf[offset + 0x14] = td.sectors[0].sizeCode;
+            buf[offset + 0x15] = td.sectors.length;
+            buf[offset + 0x16] = 0x4E;
+            buf[offset + 0x17] = 0xE5;
+
+            let dataOff = offset + 0x100;
+            for (let s = 0; s < td.sectors.length; s++) {
+                const sec = td.sectors[s];
+                const infoBase = offset + 0x18 + s * 8;
+                buf[infoBase] = sec.cylinder !== undefined ? sec.cylinder : cylinder;
+                buf[infoBase + 1] = sec.head !== undefined ? sec.head : side;
+                buf[infoBase + 2] = sec.id;
+                buf[infoBase + 3] = sec.sizeCode;
+                buf[infoBase + 4] = sec.st1 || 0;
+                buf[infoBase + 5] = sec.st2 || 0;
+                const actualLen = sec.data ? sec.data.length : (128 << sec.sizeCode);
+                buf[infoBase + 6] = actualLen & 0xFF;
+                buf[infoBase + 7] = (actualLen >> 8) & 0xFF;
+
+                if (sec.data) {
+                    for (let i = 0; i < sec.data.length; i++) buf[dataOff + i] = sec.data[i];
+                }
+                dataOff += actualLen;
+            }
+            offset += trackSizes[t];
+        }
+        return buf;
+    }
+
+    // ========== Helper: make a simple +3 formatted DSK with boot spec ==========
+    function makeFormattedDSK() {
+        return DSKLoader.createBlankDSK();
+    }
+
+    // ========== Helper: send full FDC command and collect results ==========
+    function fdcCommand(fdc, bytes) {
+        for (const b of bytes) fdc.writeData(b);
+        const result = [];
+        while ((fdc.readMSR() & 0x40) && fdc.phase === fdc.PHASE_RESULT) {
+            result.push(fdc.readData());
+        }
+        return result;
+    }
+
+    // ========== Helper: read all execution data ==========
+    function fdcReadAllData(fdc) {
+        const data = [];
+        while (fdc.phase === fdc.PHASE_EXECUTION) {
+            data.push(fdc.readData());
+        }
+        return data;
+    }
+
+    // ========== Helper: write execution data ==========
+    function fdcWriteAllData(fdc, data) {
+        for (const b of data) fdc.writeData(b);
+    }
+
+    // ========== Helper: collect result bytes after execution ==========
+    function fdcCollectResult(fdc) {
+        const result = [];
+        while (fdc.phase === fdc.PHASE_RESULT) {
+            result.push(fdc.readData());
+        }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DSKImage Tests
+    // ═══════════════════════════════════════════════════════
+    function runDSKImageTests() {
+        section('DSKImage - Construction');
+
+        const img = new DSKImage();
+        assert(img.numTracks === 0, 'default numTracks is 0');
+        assert(img.numSides === 0, 'default numSides is 0');
+        assert(img.isExtended === false, 'default isExtended is false');
+        assert(img.tracks.length === 0, 'default tracks array empty');
+
+        section('DSKImage - getTrack');
+
+        img.numTracks = 2;
+        img.numSides = 1;
+        img.tracks[0] = { sectors: [{ id: 0xC1, data: new Uint8Array(512) }] };
+        img.tracks[1] = { sectors: [{ id: 0xC1, data: new Uint8Array(512) }] };
+        assert(img.getTrack(0, 0) === img.tracks[0], 'getTrack(0,0) returns track 0');
+        assert(img.getTrack(1, 0) === img.tracks[1], 'getTrack(1,0) returns track 1');
+        assert(img.getTrack(5, 0) === null, 'getTrack(5,0) returns null for missing');
+
+        // Two-sided disk
+        const img2 = new DSKImage();
+        img2.numTracks = 2;
+        img2.numSides = 2;
+        img2.tracks[0] = { sectors: [] }; // cyl 0, head 0
+        img2.tracks[1] = { sectors: [] }; // cyl 0, head 1
+        img2.tracks[2] = { sectors: [] }; // cyl 1, head 0
+        img2.tracks[3] = { sectors: [] }; // cyl 1, head 1
+        assert(img2.getTrack(0, 0) === img2.tracks[0], '2-sided: getTrack(0,0)');
+        assert(img2.getTrack(0, 1) === img2.tracks[1], '2-sided: getTrack(0,1)');
+        assert(img2.getTrack(1, 0) === img2.tracks[2], '2-sided: getTrack(1,0)');
+        assert(img2.getTrack(1, 1) === img2.tracks[3], '2-sided: getTrack(1,1)');
+
+        section('DSKImage - readSector / writeSector');
+
+        const imgRW = new DSKImage();
+        imgRW.numTracks = 1;
+        imgRW.numSides = 1;
+        const secData = new Uint8Array(512);
+        secData[0] = 0xAA; secData[1] = 0xBB;
+        imgRW.tracks[0] = { sectors: [
+            { id: 0xC1, data: new Uint8Array(secData), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 },
+            { id: 0xC2, data: new Uint8Array(512), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 }
+        ]};
+
+        const read1 = imgRW.readSector(0, 0, 0xC1);
+        assert(read1 !== null, 'readSector finds sector 0xC1');
+        assert(read1[0] === 0xAA && read1[1] === 0xBB, 'readSector returns correct data');
+
+        const read2 = imgRW.readSector(0, 0, 0xC2);
+        assert(read2 !== null, 'readSector finds sector 0xC2');
+
+        const readMissing = imgRW.readSector(0, 0, 0xC9);
+        assert(readMissing === null, 'readSector returns null for missing sector ID');
+
+        const readNoTrack = imgRW.readSector(5, 0, 0xC1);
+        assert(readNoTrack === null, 'readSector returns null for missing track');
+
+        // writeSector
+        const newData = new Uint8Array(512);
+        newData[0] = 0xDD; newData[1] = 0xEE;
+        const writeOk = imgRW.writeSector(0, 0, 0xC2, newData);
+        assert(writeOk === true, 'writeSector returns true for existing sector');
+        const readBack = imgRW.readSector(0, 0, 0xC2);
+        assert(readBack[0] === 0xDD && readBack[1] === 0xEE, 'writeSector data persists');
+
+        const writeMissing = imgRW.writeSector(0, 0, 0xFF, newData);
+        assert(writeMissing === false, 'writeSector returns false for missing sector');
+
+        const writeNoTrack = imgRW.writeSector(5, 0, 0xC1, newData);
+        assert(writeNoTrack === false, 'writeSector returns false for missing track');
+
+        section('DSKImage - getTotalTracks');
+
+        const imgT = new DSKImage();
+        imgT.numTracks = 40; imgT.numSides = 1;
+        assert(imgT.getTotalTracks() === 40, 'getTotalTracks 40 tracks x 1 side = 40');
+        imgT.numSides = 2;
+        assert(imgT.getTotalTracks() === 80, 'getTotalTracks 40 tracks x 2 sides = 80');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DSKLoader Tests
+    // ═══════════════════════════════════════════════════════
+    function runDSKLoaderTests() {
+        section('DSKLoader - isDSK');
+
+        const stdSig = new Uint8Array(0x100);
+        const sig1 = 'MV - CPC';
+        for (let i = 0; i < sig1.length; i++) stdSig[i] = sig1.charCodeAt(i);
+        assert(DSKLoader.isDSK(stdSig) === true, 'recognises standard DSK signature');
+
+        const extSig = new Uint8Array(0x100);
+        const sig2 = 'EXTENDED CPC DSK';
+        for (let i = 0; i < sig2.length; i++) extSig[i] = sig2.charCodeAt(i);
+        assert(DSKLoader.isDSK(extSig) === true, 'recognises extended DSK signature');
+
+        assert(DSKLoader.isDSK(new Uint8Array(0x100)) === false, 'rejects zeroed data');
+        assert(DSKLoader.isDSK(new Uint8Array(16)) === false, 'rejects too-small file');
+
+        section('DSKLoader - parse standard DSK');
+
+        // Build a minimal standard DSK: 2 tracks, 1 side, 2 sectors (512B each)
+        const sectors = [
+            { id: 0xC1, sizeCode: 2, data: new Uint8Array([0x10, 0x20, 0x30]) },
+            { id: 0xC2, sizeCode: 2, data: new Uint8Array([0x40, 0x50, 0x60]) }
+        ];
+        const stdBin = buildStandardDSK(2, 1, sectors);
+        const stdImg = DSKLoader.parse(stdBin);
+
+        assert(stdImg.numTracks === 2, 'standard: numTracks = 2');
+        assert(stdImg.numSides === 1, 'standard: numSides = 1');
+        assert(stdImg.isExtended === false, 'standard: isExtended = false');
+
+        const track0 = stdImg.getTrack(0, 0);
+        assert(track0 !== null && track0.sectors.length === 2, 'standard: track 0 has 2 sectors');
+        assert(track0.sectors[0].id === 0xC1, 'standard: sector 0 id = 0xC1');
+        assert(track0.sectors[0].data[0] === 0x10, 'standard: sector 0 data correct');
+        assert(track0.sectors[1].id === 0xC2, 'standard: sector 1 id = 0xC2');
+        assert(track0.sectors[1].data[0] === 0x40, 'standard: sector 1 data correct');
+
+        const track1 = stdImg.getTrack(1, 0);
+        assert(track1 !== null && track1.sectors.length === 2, 'standard: track 1 has 2 sectors');
+
+        section('DSKLoader - parse extended DSK');
+
+        // Build extended DSK with variable sector sizes
+        const extTracks = [
+            { sectors: [
+                { id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xAA) },
+                { id: 0xC2, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xBB) }
+            ]},
+            { sectors: [
+                { id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, data: new Uint8Array(512).fill(0xCC) }
+            ]}
+        ];
+        const extBin = buildExtendedDSK(2, 1, extTracks);
+        const extImg = DSKLoader.parse(extBin);
+
+        assert(extImg.isExtended === true, 'extended: isExtended = true');
+        assert(extImg.numTracks === 2, 'extended: numTracks = 2');
+        const et0 = extImg.getTrack(0, 0);
+        assert(et0.sectors.length === 2, 'extended: track 0 has 2 sectors');
+        assert(et0.sectors[0].data[0] === 0xAA, 'extended: track 0 sector 0 data correct');
+        assert(et0.sectors[1].data[0] === 0xBB, 'extended: track 0 sector 1 data correct');
+        const et1 = extImg.getTrack(1, 0);
+        assert(et1.sectors.length === 1, 'extended: track 1 has 1 sector');
+        assert(et1.sectors[0].data[0] === 0xCC, 'extended: track 1 sector data correct');
+
+        section('DSKLoader - parse with unformatted tracks (EDSK)');
+
+        // Track 0 formatted, track 1 unformatted (size 0 in table)
+        const mixedTracks = [
+            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0x11) }] },
+            null // unformatted
+        ];
+        const mixedBin = buildExtendedDSK(2, 1, mixedTracks);
+        const mixedImg = DSKLoader.parse(mixedBin);
+        const mt0 = mixedImg.getTrack(0, 0);
+        assert(mt0.sectors.length === 1, 'mixed: track 0 has sectors');
+        const mt1 = mixedImg.getTrack(1, 0);
+        assert(mt1 !== null && mt1.sectors.length === 0, 'mixed: track 1 is unformatted (empty sectors)');
+
+        section('DSKLoader - parse errors');
+
+        let threw = false;
+        try { DSKLoader.parse(new Uint8Array(16)); } catch(e) { threw = true; }
+        assert(threw, 'parse throws for too-small file');
+
+        section('DSKLoader - createBlankDSK');
+
+        const blank = DSKLoader.createBlankDSK();
+        assert(blank.numTracks === 40, 'blank: 40 tracks');
+        assert(blank.numSides === 1, 'blank: 1 side');
+        assert(blank.isExtended === true, 'blank: isExtended');
+        assert(blank.getTotalTracks() === 40, 'blank: 40 total tracks');
+
+        // Check track 0 sectors
+        const bt0 = blank.getTrack(0, 0);
+        assert(bt0.sectors.length === 9, 'blank: track 0 has 9 sectors');
+        assert(bt0.sectors[0].id === 0xC1, 'blank: first sector ID is 0xC1');
+        assert(bt0.sectors[8].id === 0xC9, 'blank: last sector ID is 0xC9');
+        assert(bt0.sectors[0].sizeCode === 2, 'blank: sector size code = 2 (512B)');
+
+        // Check boot sector disk spec
+        const bootData = blank.readSector(0, 0, 0xC1);
+        assert(bootData[0] === 0, 'blank boot: disk type = 0');
+        assert(bootData[2] === 40, 'blank boot: 40 tracks per side');
+        assert(bootData[3] === 9, 'blank boot: 9 sectors per track');
+        assert(bootData[4] === 2, 'blank boot: sector size log = 2');
+        assert(bootData[5] === 1, 'blank boot: 1 reserved track');
+        assert(bootData[6] === 3, 'blank boot: block size log = 3 (1024)');
+        assert(bootData[7] === 2, 'blank boot: 2 directory blocks');
+
+        // Verify checksum
+        let sum = 0;
+        for (let i = 0; i < 16; i++) sum = (sum + bootData[i]) & 0xFF;
+        assert(sum === 3, 'blank boot: checksum = 3 (mod 256)');
+
+        // Check directory track filled with 0xE5
+        const dirData = blank.readSector(1, 0, 0xC1);
+        assert(dirData[0] === 0xE5, 'blank: directory sector filled with 0xE5');
+        assert(dirData[511] === 0xE5, 'blank: directory sector end filled with 0xE5');
+
+        section('DSKLoader - getDiskSpec');
+
+        const spec = DSKLoader.getDiskSpec(blank);
+        assert(spec.valid === true, 'getDiskSpec: valid boot sector');
+        assert(spec.reservedTracks === 1, 'getDiskSpec: 1 reserved track');
+        assert(spec.blockSize === 1024, 'getDiskSpec: block size = 1024');
+        assert(spec.blockShift === 3, 'getDiskSpec: block shift = 3');
+        assert(spec.dirBlocks === 2, 'getDiskSpec: 2 directory blocks');
+        assert(spec.sectorSize === 512, 'getDiskSpec: sector size = 512');
+        assert(spec.sectorsPerTrack === 9, 'getDiskSpec: 9 sectors/track');
+        assert(spec.firstSectorId === 0xC1, 'getDiskSpec: first sector ID = 0xC1');
+
+        // Test fallback when checksum is wrong
+        const badBoot = DSKLoader.createBlankDSK();
+        const badBootSec = badBoot.readSector(0, 0, 0xC1);
+        badBootSec[15] = 0x00; // corrupt checksum
+        const fallback = DSKLoader.getDiskSpec(badBoot);
+        assert(fallback.valid === false, 'getDiskSpec: invalid checksum returns valid=false');
+        assert(fallback.reservedTracks === 1, 'getDiskSpec fallback: reservedTracks = 1');
+
+        section('DSKLoader - getBlockAllocationMap');
+
+        const bamImg = DSKLoader.createBlankDSK();
+        const bamSpec = DSKLoader.getDiskSpec(bamImg);
+        const bam = DSKLoader.getBlockAllocationMap(bamImg, bamSpec);
+
+        assert(bam.used instanceof Set, 'BAM: used is a Set');
+        assert(bam.used.has(0), 'BAM: block 0 (dir) is used');
+        assert(bam.used.has(1), 'BAM: block 1 (dir) is used');
+        assert(bam.used.size === 2, 'BAM: only dir blocks used on blank disk');
+        assert(bam.totalBlocks > 0, 'BAM: totalBlocks > 0');
+        assert(bam.freeBlocks === bam.totalBlocks - 2, 'BAM: freeBlocks = total - 2');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DSK Filesystem Tests (listFiles, readFileData, writeDirectory)
+    // ═══════════════════════════════════════════════════════
+    function runDSKFilesystemTests() {
+        section('DSK Filesystem - listFiles on blank disk');
+
+        const blank = DSKLoader.createBlankDSK();
+        const files0 = DSKLoader.listFiles(blank);
+        assert(files0.length === 0, 'blank disk has no files');
+
+        section('DSK Filesystem - listFiles with manual directory entry');
+
+        // Write a CP/M directory entry into the directory track
+        const dsk1 = DSKLoader.createBlankDSK();
+        const dirSec = dsk1.readSector(1, 0, 0xC1); // first directory sector
+
+        // Entry 0: user=0, name="HELLO   ", ext="BAS", extent=0, rc=4 (4*128=512 bytes)
+        // Zero out full 32-byte entry (dir sectors are filled with 0xE5)
+        for (let i = 0; i < 32; i++) dirSec[i] = 0;
+        dirSec[0] = 0;  // user
+        // Filename: HELLO + 3 spaces
+        const fname = 'HELLO   ';
+        for (let i = 0; i < 8; i++) dirSec[1 + i] = fname.charCodeAt(i);
+        // Extension: BAS
+        dirSec[9] = 'B'.charCodeAt(0);
+        dirSec[10] = 'A'.charCodeAt(0);
+        dirSec[11] = 'S'.charCodeAt(0);
+        dirSec[12] = 0;  // extent low
+        dirSec[13] = 0;  // BC
+        dirSec[14] = 0;  // extent high
+        dirSec[15] = 4;  // RC = 4 records (512 bytes)
+        dirSec[16] = 2;  // allocation block 2 (first data block)
+        // Bytes 17-31 already zeroed (only 1 allocation block)
+
+        const files1 = DSKLoader.listFiles(dsk1);
+        assert(files1.length === 1, 'one file found');
+        assert(files1[0].name === 'HELLO', 'filename is HELLO');
+        assert(files1[0].ext === 'BAS', 'extension is BAS');
+        assert(files1[0].user === 0, 'user is 0');
+        assert(files1[0].size === 512, 'size is 512 bytes (4 records * 128)');
+        assert(files1[0].blocks === 1, 'uses 1 allocation block');
+
+        section('DSK Filesystem - listFiles with deleted entries');
+
+        // Add a deleted entry (user = 0xE5)
+        dirSec[32] = 0xE5; // second entry is deleted
+        const filler = 'DELETED ';
+        for (let i = 0; i < 8; i++) dirSec[33 + i] = filler.charCodeAt(i);
+        dirSec[41] = 'C'.charCodeAt(0);
+        dirSec[42] = 'O'.charCodeAt(0);
+        dirSec[43] = 'M'.charCodeAt(0);
+        dirSec[44] = 0; dirSec[45] = 0; dirSec[46] = 0;
+        dirSec[47] = 2;
+        dirSec[48] = 3;
+
+        const files2 = DSKLoader.listFiles(dsk1);
+        assert(files2.length === 1, 'deleted entry not counted');
+
+        section('DSK Filesystem - listFiles multi-extent file');
+
+        // Add a second entry for HELLO.BAS at extent 1
+        for (let i = 64; i < 96; i++) dirSec[i] = 0; // zero out full entry
+        dirSec[64] = 0;  // user
+        for (let i = 0; i < 8; i++) dirSec[65 + i] = fname.charCodeAt(i);
+        dirSec[73] = 'B'.charCodeAt(0);
+        dirSec[74] = 'A'.charCodeAt(0);
+        dirSec[75] = 'S'.charCodeAt(0);
+        dirSec[76] = 1;  // extent low = 1
+        dirSec[77] = 0;  // BC
+        dirSec[78] = 0;  // extent high
+        dirSec[79] = 2;  // RC = 2 (256 bytes in last extent)
+        dirSec[80] = 4;  // allocation block 4
+
+        const files3 = DSKLoader.listFiles(dsk1);
+        assert(files3.length === 1, 'multi-extent file counted once');
+        // Size = extent0 (4*128=512, but extent 1 exists → extent 0 = 16384 bytes) + extent1 (2*128=256)
+        // Actually: size = maxExtent * 16384 + lastRc * 128 = 1 * 16384 + 2 * 128 = 16640
+        assert(files3[0].size === 16640, 'multi-extent size correct (16640)');
+        assert(files3[0].blocks === 2, 'multi-extent: 2 allocation blocks');
+
+        section('DSK Filesystem - readFileData');
+
+        // Create a fresh disk with a simple file
+        const dsk2 = DSKLoader.createBlankDSK();
+        const dirSec2 = dsk2.readSector(1, 0, 0xC1);
+
+        // Write directory entry: file "TEST" in block 2
+        dirSec2[0] = 0;
+        const tname = 'TEST    ';
+        for (let i = 0; i < 8; i++) dirSec2[1 + i] = tname.charCodeAt(i);
+        dirSec2[9] = ' '.charCodeAt(0);
+        dirSec2[10] = ' '.charCodeAt(0);
+        dirSec2[11] = ' '.charCodeAt(0);
+        dirSec2[12] = 0; dirSec2[13] = 0; dirSec2[14] = 0;
+        dirSec2[15] = 1; // 1 record = 128 bytes
+        dirSec2[16] = 2; // block 2
+
+        // Write data into block 2 (which is at the data area after reserved tracks)
+        // Block 2: sector offset = 2 * (1024/512) = 4 sectors from start of data area
+        // Data area starts at track 1 (reserved=1), sectors sorted by ID (0xC1..0xC9)
+        // Block 0 = sectors 0,1 (0xC1,0xC2); block 1 = sectors 2,3 (0xC3,0xC4); block 2 = sectors 4,5 (0xC5,0xC6)
+        const block2sec1 = dsk2.readSector(1, 0, 0xC5);
+        block2sec1[0] = 0x42; block2sec1[1] = 0x43;
+        const block2sec2 = dsk2.readSector(1, 0, 0xC6);
+        block2sec2[0] = 0x99;
+
+        const fileData = DSKLoader.readFileData(dsk2, 'TEST', '', 0, 128);
+        assert(fileData !== null, 'readFileData returns data');
+        assert(fileData.length === 128, 'readFileData returns correct size');
+        assert(fileData[0] === 0x42 && fileData[1] === 0x43, 'readFileData: first sector data correct');
+
+        // File not found
+        const noFile = DSKLoader.readFileData(dsk2, 'NOPE', '', 0, 100);
+        assert(noFile === null, 'readFileData returns null for missing file');
+
+        section('DSK Filesystem - writeDirectory');
+
+        const dsk3 = DSKLoader.createBlankDSK();
+        const spec3 = DSKLoader.getDiskSpec(dsk3);
+        const dir3 = DSKLoader._readDirectory(dsk3, spec3);
+        assert(dir3 !== null, 'readDirectory succeeds');
+
+        // Modify directory data and write back
+        const modDir = dir3.dirData;
+        modDir[0] = 0;  // user 0
+        const wname = 'WRITTEN ';
+        for (let i = 0; i < 8; i++) modDir[1 + i] = wname.charCodeAt(i);
+        modDir[9] = 'T'.charCodeAt(0);
+        modDir[10] = 'X'.charCodeAt(0);
+        modDir[11] = 'T'.charCodeAt(0);
+        modDir[12] = 0; modDir[13] = 0; modDir[14] = 0;
+        modDir[15] = 1;
+        modDir[16] = 2;
+
+        DSKLoader.writeDirectory(dsk3, spec3, modDir);
+
+        // Verify by listing files
+        const files4 = DSKLoader.listFiles(dsk3);
+        assert(files4.length === 1, 'writeDirectory: file appears after write');
+        assert(files4[0].name === 'WRITTEN', 'writeDirectory: correct filename');
+        assert(files4[0].ext === 'TXT', 'writeDirectory: correct extension');
+
+        section('DSK Filesystem - +3DOS header detection');
+
+        // Create a file with +3DOS header
+        const dsk4 = DSKLoader.createBlankDSK();
+        const dirSec4 = dsk4.readSector(1, 0, 0xC1);
+
+        // Directory entry for "CODE" file in block 2
+        dirSec4[0] = 0;
+        const cname = 'CODE    ';
+        for (let i = 0; i < 8; i++) dirSec4[1 + i] = cname.charCodeAt(i);
+        dirSec4[9] = ' '.charCodeAt(0);
+        dirSec4[10] = ' '.charCodeAt(0);
+        dirSec4[11] = ' '.charCodeAt(0);
+        dirSec4[12] = 0; dirSec4[13] = 0; dirSec4[14] = 0;
+        dirSec4[15] = 4; // 4 records = 512 bytes
+        dirSec4[16] = 2; // block 2
+
+        // Write +3DOS header into block 2
+        const headerSec = dsk4.readSector(1, 0, 0xC5);
+        // "PLUS3DOS" signature
+        const p3sig = 'PLUS3DOS';
+        for (let i = 0; i < 8; i++) headerSec[i] = p3sig.charCodeAt(i);
+        headerSec[8] = 0x1A; // soft-EOF
+        headerSec[9] = 1;    // issue
+        headerSec[10] = 0;   // version
+        // File length (including 128-byte header): 128 + 256 = 384
+        headerSec[11] = 0x80; // 384 & 0xFF
+        headerSec[12] = 0x01; // (384 >> 8) & 0xFF
+        headerSec[13] = 0;
+        headerSec[14] = 0;
+        headerSec[15] = 3;    // type = CODE
+        headerSec[16] = 0x00; // load address low
+        headerSec[17] = 0x80; // load address high (0x8000)
+        headerSec[18] = 0x00; // data length low
+        headerSec[19] = 0x01; // data length high (256)
+
+        const files5 = DSKLoader.listFiles(dsk4);
+        assert(files5.length === 1, '+3DOS header: file listed');
+        assert(files5[0].hasPlus3Header === true, '+3DOS header: detected');
+        assert(files5[0].plus3Type === 3, '+3DOS header: type = CODE');
+        assert(files5[0].loadAddress === 0x8000, '+3DOS header: load address = 0x8000');
+        assert(files5[0].size === 256, '+3DOS header: size corrected to 256 (384-128)');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UPD765 Basic Tests
+    // ═══════════════════════════════════════════════════════
+    function runUPD765BasicTests() {
+        section('UPD765 - Construction and reset');
+
+        const fdc = new UPD765();
+        assert(fdc.drives.length === 4, '4 drives');
+        assert(fdc.phase === fdc.PHASE_IDLE, 'starts idle');
+        assert(fdc.interruptPending === false, 'no interrupt pending');
+        assert(fdc.driveBusy === 0, 'no drives busy');
+
+        fdc.phase = fdc.PHASE_COMMAND;
+        fdc.interruptPending = true;
+        fdc.driveBusy = 3;
+        fdc.drives[0].track = 10;
+        fdc.reset();
+        assert(fdc.phase === fdc.PHASE_IDLE, 'reset: phase = idle');
+        assert(fdc.interruptPending === false, 'reset: no interrupt');
+        assert(fdc.driveBusy === 0, 'reset: no busy drives');
+        assert(fdc.drives[0].track === 0, 'reset: drive track = 0');
+
+        section('UPD765 - setMotor');
+
+        fdc.setMotor(true);
+        assert(fdc.drives[0].motorOn === true, 'setMotor(true): drive 0 on');
+        assert(fdc.drives[1].motorOn === true, 'setMotor(true): drive 1 on');
+        assert(fdc.drives[3].motorOn === true, 'setMotor(true): drive 3 on');
+        fdc.setMotor(false);
+        assert(fdc.drives[0].motorOn === false, 'setMotor(false): drive 0 off');
+
+        section('UPD765 - hasDisk / ejectDisk');
+
+        const fdc2 = new UPD765();
+        assert(fdc2.hasDisk(0) === false, 'no disk in drive 0');
+        assert(fdc2.hasDisk() === false, 'no disk in any drive');
+
+        const dsk = DSKLoader.createBlankDSK();
+        fdc2.drives[0].disk = dsk;
+        assert(fdc2.hasDisk(0) === true, 'disk in drive 0');
+        assert(fdc2.hasDisk(1) === false, 'no disk in drive 1');
+        assert(fdc2.hasDisk() === true, 'disk in some drive');
+
+        fdc2.ejectDisk(0);
+        assert(fdc2.hasDisk(0) === false, 'disk ejected from drive 0');
+        assert(fdc2.drives[0].track === 0, 'eject: track reset to 0');
+        assert(fdc2.drives[0].motorOn === false, 'eject: motor off');
+
+        section('UPD765 - readMSR states');
+
+        const fdc3 = new UPD765();
+        let msr = fdc3.readMSR();
+        assert((msr & 0x80) !== 0, 'MSR: RQM always set');
+        assert((msr & 0x40) === 0, 'MSR: DIO=0 in idle (CPU→FDC)');
+        assert((msr & 0x10) === 0, 'MSR: CB=0 in idle');
+        assert((msr & 0x20) === 0, 'MSR: EXM=0 in idle');
+
+        // After entering result phase
+        fdc3.phase = fdc3.PHASE_RESULT;
+        msr = fdc3.readMSR();
+        assert((msr & 0x40) !== 0, 'MSR: DIO=1 in result phase');
+        assert((msr & 0x10) !== 0, 'MSR: CB=1 in result phase');
+
+        // Drive busy bits
+        fdc3.phase = fdc3.PHASE_IDLE;
+        fdc3.driveBusy = 0x05; // drives 0 and 2 busy
+        msr = fdc3.readMSR();
+        assert((msr & 0x0F) === 0x05, 'MSR: drive busy bits reflected');
+
+        section('UPD765 - Unknown command');
+
+        const fdc4 = new UPD765();
+        fdc4.writeData(0x1F); // Unknown command (0x1F & 0x1F = 0x1F)
+        assert(fdc4.phase === fdc4.PHASE_RESULT, 'unknown cmd: enters result phase');
+        const r = fdc4.readData();
+        assert(r === 0x80, 'unknown cmd: ST0 = 0x80 (invalid)');
+        assert(fdc4.phase === fdc4.PHASE_IDLE, 'unknown cmd: returns to idle after result read');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UPD765 Command Tests
+    // ═══════════════════════════════════════════════════════
+    function runUPD765CommandTests() {
+        section('UPD765 - Specify');
+
+        const fdc = new UPD765();
+        fdc.writeData(0x03); // Specify
+        fdc.writeData(0xDF); // SRT/HUT
+        fdc.writeData(0x02); // HLT/ND
+        assert(fdc.phase === fdc.PHASE_IDLE, 'Specify: no result phase');
+
+        section('UPD765 - Seek + Sense Interrupt Status');
+
+        const fdc2 = new UPD765();
+        const dsk = DSKLoader.createBlankDSK();
+        fdc2.drives[0].disk = dsk;
+
+        // Seek to track 10
+        fdc2.writeData(0x0F); // Seek
+        fdc2.writeData(0x00); // drive 0
+        fdc2.writeData(10);   // track 10
+        assert(fdc2.phase === fdc2.PHASE_IDLE, 'Seek: goes to idle');
+        assert(fdc2.drives[0].track === 10, 'Seek: drive head at track 10');
+        assert(fdc2.interruptPending === true, 'Seek: interrupt pending');
+        assert((fdc2.driveBusy & 0x01) !== 0, 'Seek: drive 0 busy bit set');
+
+        // Check MSR shows drive busy
+        const msrBusy = fdc2.readMSR();
+        assert((msrBusy & 0x01) !== 0, 'Seek: MSR shows drive 0 busy');
+
+        // Sense Interrupt Status
+        fdc2.writeData(0x08);
+        assert(fdc2.phase === fdc2.PHASE_RESULT, 'SIS: enters result phase');
+        const st0 = fdc2.readData();
+        const pcn = fdc2.readData();
+        assert((st0 & 0x20) !== 0, 'SIS: ST0 seek end bit set');
+        assert((st0 & 0x03) === 0, 'SIS: ST0 drive = 0');
+        assert(pcn === 10, 'SIS: present cylinder = 10');
+        assert(fdc2.interruptPending === false, 'SIS: interrupt cleared');
+        assert((fdc2.driveBusy & 0x01) === 0, 'SIS: drive busy bit cleared');
+
+        // SIS with no interrupt pending
+        fdc2.writeData(0x08);
+        const invSt0 = fdc2.readData();
+        assert(invSt0 === 0x80, 'SIS no interrupt: ST0 = 0x80');
+
+        section('UPD765 - Recalibrate');
+
+        const fdc3 = new UPD765();
+        fdc3.drives[0].disk = dsk;
+        fdc3.drives[0].track = 20;
+
+        fdc3.writeData(0x07); // Recalibrate
+        fdc3.writeData(0x00); // drive 0
+        assert(fdc3.drives[0].track === 0, 'Recalibrate: track = 0');
+        assert(fdc3.interruptPending === true, 'Recalibrate: interrupt pending');
+
+        // SIS after recalibrate
+        fdc3.writeData(0x08);
+        const rSt0 = fdc3.readData();
+        const rPcn = fdc3.readData();
+        assert((rSt0 & 0x20) !== 0, 'Recalibrate SIS: seek end bit');
+        assert(rPcn === 0, 'Recalibrate SIS: PCN = 0');
+
+        section('UPD765 - Sense Drive Status');
+
+        const fdc4 = new UPD765();
+        // No disk
+        fdc4.writeData(0x04);
+        fdc4.writeData(0x00); // drive 0, head 0
+        assert(fdc4.phase === fdc4.PHASE_RESULT, 'SDS: enters result');
+        let st3 = fdc4.readData();
+        assert((st3 & 0x20) === 0, 'SDS no disk: RDY not set');
+        assert((st3 & 0x40) !== 0, 'SDS no disk: WP set');
+        assert((st3 & 0x10) !== 0, 'SDS no disk: T0 set (track=0)');
+
+        // With disk
+        const fdc5 = new UPD765();
+        fdc5.drives[0].disk = DSKLoader.createBlankDSK();
+        fdc5.writeData(0x04);
+        fdc5.writeData(0x00);
+        st3 = fdc5.readData();
+        assert((st3 & 0x20) !== 0, 'SDS with disk: RDY set');
+        assert((st3 & 0x40) === 0, 'SDS with disk: WP not set');
+        assert((st3 & 0x10) !== 0, 'SDS with disk at T0: T0 set');
+
+        // Head on non-zero track
+        fdc5.drives[0].track = 5;
+        fdc5.writeData(0x04);
+        fdc5.writeData(0x00);
+        st3 = fdc5.readData();
+        assert((st3 & 0x10) === 0, 'SDS track 5: T0 not set');
+
+        // Two-sided disk
+        const fdc6 = new UPD765();
+        const dsk2side = new DSKImage();
+        dsk2side.numTracks = 2;
+        dsk2side.numSides = 2;
+        fdc6.drives[0].disk = dsk2side;
+        fdc6.writeData(0x04);
+        fdc6.writeData(0x00);
+        st3 = fdc6.readData();
+        assert((st3 & 0x08) !== 0, 'SDS 2-sided: TS bit set');
+
+        section('UPD765 - Read ID');
+
+        const fdc7 = new UPD765();
+        const ridDsk = DSKLoader.createBlankDSK();
+        fdc7.drives[0].disk = ridDsk;
+        fdc7.drives[0].track = 0;
+
+        fdc7.writeData(0x4A); // Read ID (MFM | 0x0A)
+        fdc7.writeData(0x00); // drive 0
+        assert(fdc7.phase === fdc7.PHASE_RESULT, 'ReadID: enters result');
+
+        const ridResult = [];
+        while (fdc7.phase === fdc7.PHASE_RESULT) ridResult.push(fdc7.readData());
+        assert(ridResult.length === 7, 'ReadID: 7 result bytes');
+        assert(ridResult[3] === 0, 'ReadID: cylinder = 0');
+        assert(ridResult[4] === 0, 'ReadID: head = 0');
+        assert(ridResult[5] === 0xC1, 'ReadID: first sector ID = 0xC1');
+        assert(ridResult[6] === 2, 'ReadID: size code = 2');
+
+        // Read ID with no disk
+        const fdc8 = new UPD765();
+        fdc8.writeData(0x4A);
+        fdc8.writeData(0x00);
+        const ridNoRes = [];
+        while (fdc8.phase === fdc8.PHASE_RESULT) ridNoRes.push(fdc8.readData());
+        assert((ridNoRes[0] & 0x40) !== 0, 'ReadID no disk: ST0 abnormal termination');
+
+        section('UPD765 - Scan commands (stubs)');
+
+        const fdc9 = new UPD765();
+        fdc9.drives[0].disk = DSKLoader.createBlankDSK();
+        // Scan Equal (0x11)
+        const scanCmd = [0x51, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of scanCmd) fdc9.writeData(b);
+        assert(fdc9.phase === fdc9.PHASE_RESULT, 'Scan: enters result');
+        const scanRes = [];
+        while (fdc9.phase === fdc9.PHASE_RESULT) scanRes.push(fdc9.readData());
+        assert((scanRes[2] & 0x08) !== 0, 'Scan: ST2 SN (scan not satisfied) set');
+
+        section('UPD765 - Drive selection');
+
+        const fdc10 = new UPD765();
+        fdc10.drives[1].disk = DSKLoader.createBlankDSK();
+        fdc10.drives[1].track = 0;
+
+        // Seek drive 1 to track 5
+        fdc10.writeData(0x0F);
+        fdc10.writeData(0x01); // drive 1
+        fdc10.writeData(5);
+        assert(fdc10.drives[1].track === 5, 'Seek drive 1: track = 5');
+        assert(fdc10.drives[0].track === 0, 'Seek drive 1: drive 0 unchanged');
+        assert((fdc10.driveBusy & 0x02) !== 0, 'Seek drive 1: busy bit 1 set');
+
+        // SIS clears correct drive
+        fdc10.writeData(0x08);
+        const sis1 = fdc10.readData();
+        const pcn1 = fdc10.readData();
+        assert((sis1 & 0x03) === 1, 'SIS drive 1: correct drive in ST0');
+        assert(pcn1 === 5, 'SIS drive 1: PCN = 5');
+        assert((fdc10.driveBusy & 0x02) === 0, 'SIS drive 1: busy bit cleared');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UPD765 Data Transfer Tests
+    // ═══════════════════════════════════════════════════════
+    function runUPD765DataTests() {
+        section('UPD765 - Read Data (single sector)');
+
+        const fdc = new UPD765();
+        const dsk = DSKLoader.createBlankDSK();
+        // Write known data to track 0, sector 0xC1
+        const testData = dsk.readSector(0, 0, 0xC1);
+        testData[0] = 0x42; testData[1] = 0x43; testData[511] = 0xFE;
+        fdc.drives[0].disk = dsk;
+        fdc.drives[0].track = 0;
+
+        // Read Data: C=0, H=0, R=0xC1, N=2, EOT=0xC1 (single sector)
+        const readCmd = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of readCmd) fdc.writeData(b);
+
+        assert(fdc.phase === fdc.PHASE_EXECUTION, 'ReadData: enters execution phase');
+        assert(fdc.dataDirection === 1, 'ReadData: direction = FDC→CPU');
+
+        const data = fdcReadAllData(fdc);
+        assert(data.length === 512, 'ReadData: 512 bytes read');
+        assert(data[0] === 0x42, 'ReadData: byte 0 correct');
+        assert(data[1] === 0x43, 'ReadData: byte 1 correct');
+        assert(data[511] === 0xFE, 'ReadData: last byte correct');
+
+        // Collect result
+        assert(fdc.phase === fdc.PHASE_RESULT, 'ReadData: enters result after data');
+        const result = fdcCollectResult(fdc);
+        assert(result.length === 7, 'ReadData result: 7 bytes');
+        assert((result[0] & 0x40) !== 0, 'ReadData result: ST0 abnormal (TC not connected)');
+        assert((result[1] & 0x80) !== 0, 'ReadData result: ST1 EN set');
+
+        section('UPD765 - Read Data (multi-sector R to EOT)');
+
+        const fdc2 = new UPD765();
+        const dsk2 = DSKLoader.createBlankDSK();
+        // Write data to sectors 0xC1, 0xC2, 0xC3 on track 0
+        dsk2.readSector(0, 0, 0xC1)[0] = 0x11;
+        dsk2.readSector(0, 0, 0xC2)[0] = 0x22;
+        dsk2.readSector(0, 0, 0xC3)[0] = 0x33;
+        fdc2.drives[0].disk = dsk2;
+        fdc2.drives[0].track = 0;
+
+        // R=0xC1, EOT=0xC3 (3 sectors)
+        const readMulti = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC3, 0x4E, 0xFF];
+        for (const b of readMulti) fdc2.writeData(b);
+
+        const multiData = fdcReadAllData(fdc2);
+        assert(multiData.length === 512 * 3, 'ReadData multi: 1536 bytes (3 sectors)');
+        assert(multiData[0] === 0x11, 'ReadData multi: sector 0xC1 data');
+        assert(multiData[512] === 0x22, 'ReadData multi: sector 0xC2 data');
+        assert(multiData[1024] === 0x33, 'ReadData multi: sector 0xC3 data');
+
+        fdcCollectResult(fdc2);
+
+        section('UPD765 - Read Data uses physical track (drive.track)');
+
+        const fdc3 = new UPD765();
+        const dsk3 = DSKLoader.createBlankDSK();
+        dsk3.readSector(5, 0, 0xC1)[0] = 0x55; // data on physical track 5
+        fdc3.drives[0].disk = dsk3;
+
+        // Seek to track 5
+        fdc3.writeData(0x0F); fdc3.writeData(0x00); fdc3.writeData(5);
+        fdc3.writeData(0x08); fdc3.readData(); fdc3.readData(); // clear SIS
+
+        // Read with C=0 in command but head on track 5
+        const readPhys = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of readPhys) fdc3.writeData(b);
+        const physData = fdcReadAllData(fdc3);
+        assert(physData[0] === 0x55, 'ReadData: reads from physical track (drive.track), not C param');
+        fdcCollectResult(fdc3);
+
+        section('UPD765 - Read Data with no disk');
+
+        const fdcNd = new UPD765();
+        const readNd = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of readNd) fdcNd.writeData(b);
+        assert(fdcNd.phase === fdcNd.PHASE_RESULT, 'ReadData no disk: straight to result');
+        const ndRes = fdcCollectResult(fdcNd);
+        assert((ndRes[0] & 0x40) !== 0, 'ReadData no disk: ST0 abnormal');
+
+        section('UPD765 - Read Data sector not found');
+
+        const fdcNf = new UPD765();
+        fdcNf.drives[0].disk = DSKLoader.createBlankDSK();
+        fdcNf.drives[0].track = 0;
+        // Read sector 0xFF which doesn't exist
+        const readNf = [0x46, 0x00, 0, 0, 0xFF, 2, 0xFF, 0x4E, 0xFF];
+        for (const b of readNf) fdcNf.writeData(b);
+        assert(fdcNf.phase === fdcNf.PHASE_RESULT, 'ReadData missing sector: result phase');
+        const nfRes = fdcCollectResult(fdcNf);
+        assert((nfRes[1] & 0x04) !== 0, 'ReadData missing sector: ST1 ND (no data) set');
+
+        section('UPD765 - Write Data (single sector)');
+
+        const fdcW = new UPD765();
+        const dskW = DSKLoader.createBlankDSK();
+        fdcW.drives[0].disk = dskW;
+        fdcW.drives[0].track = 0;
+
+        // Write Data: C=0, H=0, R=0xC1, N=2, EOT=0xC1
+        const writeCmd = [0x45, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of writeCmd) fdcW.writeData(b);
+
+        assert(fdcW.phase === fdcW.PHASE_EXECUTION, 'WriteData: enters execution');
+        assert(fdcW.dataDirection === 0, 'WriteData: direction = CPU→FDC');
+
+        // Write 512 bytes
+        const writeData = new Uint8Array(512);
+        writeData[0] = 0xAB; writeData[1] = 0xCD; writeData[511] = 0xEF;
+        fdcWriteAllData(fdcW, writeData);
+
+        // Should be in result now
+        assert(fdcW.phase === fdcW.PHASE_RESULT, 'WriteData: enters result after write');
+        const wResult = fdcCollectResult(fdcW);
+        assert(wResult.length === 7, 'WriteData result: 7 bytes');
+
+        // Verify data written to disk
+        const verifyData = dskW.readSector(0, 0, 0xC1);
+        assert(verifyData[0] === 0xAB, 'WriteData: byte 0 written to disk');
+        assert(verifyData[1] === 0xCD, 'WriteData: byte 1 written to disk');
+        assert(verifyData[511] === 0xEF, 'WriteData: last byte written to disk');
+
+        section('UPD765 - Write Data (multi-sector)');
+
+        const fdcW2 = new UPD765();
+        const dskW2 = DSKLoader.createBlankDSK();
+        fdcW2.drives[0].disk = dskW2;
+        fdcW2.drives[0].track = 0;
+
+        // R=0xC1, EOT=0xC2 (2 sectors)
+        const writeMulti = [0x45, 0x00, 0, 0, 0xC1, 2, 0xC2, 0x4E, 0xFF];
+        for (const b of writeMulti) fdcW2.writeData(b);
+
+        const writeData2 = new Uint8Array(1024);
+        writeData2[0] = 0x11;   // sector 1
+        writeData2[512] = 0x22; // sector 2
+        fdcWriteAllData(fdcW2, writeData2);
+        fdcCollectResult(fdcW2);
+
+        assert(dskW2.readSector(0, 0, 0xC1)[0] === 0x11, 'WriteData multi: sector 0xC1 written');
+        assert(dskW2.readSector(0, 0, 0xC2)[0] === 0x22, 'WriteData multi: sector 0xC2 written');
+
+        section('UPD765 - Format Track');
+
+        const fdcF = new UPD765();
+        const dskF = DSKLoader.createBlankDSK();
+        fdcF.drives[0].disk = dskF;
+        fdcF.drives[0].track = 5; // format track 5
+
+        // Format Track: N=2, sectors=3, gap=0x4E, fill=0xE5
+        const fmtCmd = [0x4D, 0x00, 2, 3, 0x4E, 0xE5];
+        for (const b of fmtCmd) fdcF.writeData(b);
+
+        assert(fdcF.phase === fdcF.PHASE_EXECUTION, 'Format: enters execution');
+
+        // Send format data: 4 bytes per sector (C, H, R, N)
+        const fmtData = [
+            5, 0, 0x01, 2,   // sector with ID 0x01
+            5, 0, 0x02, 2,   // sector with ID 0x02
+            5, 0, 0x03, 2    // sector with ID 0x03
+        ];
+        fdcWriteAllData(fdcF, fmtData);
+
+        assert(fdcF.phase === fdcF.PHASE_RESULT, 'Format: enters result');
+        fdcCollectResult(fdcF);
+
+        // Verify formatted track
+        const fmtTrack = dskF.getTrack(5, 0);
+        assert(fmtTrack !== null, 'Format: track 5 exists');
+        assert(fmtTrack.sectors.length === 3, 'Format: 3 sectors created');
+        assert(fmtTrack.sectors[0].id === 0x01, 'Format: sector 0 ID = 0x01');
+        assert(fmtTrack.sectors[1].id === 0x02, 'Format: sector 1 ID = 0x02');
+        assert(fmtTrack.sectors[2].id === 0x03, 'Format: sector 2 ID = 0x03');
+        assert(fmtTrack.sectors[0].data[0] === 0xE5, 'Format: fill byte correct');
+        assert(fmtTrack.sectors[0].data.length === 512, 'Format: sector size = 512');
+
+        section('UPD765 - Read Track');
+
+        const fdcRT = new UPD765();
+        const dskRT = DSKLoader.createBlankDSK();
+        dskRT.readSector(0, 0, 0xC1)[0] = 0xA1;
+        dskRT.readSector(0, 0, 0xC2)[0] = 0xA2;
+        fdcRT.drives[0].disk = dskRT;
+        fdcRT.drives[0].track = 0;
+
+        // Read Track: C=0, H=0, R=0xC1, N=2, EOT=0xC9
+        const rtCmd = [0x42, 0x00, 0, 0, 0xC1, 2, 0xC9, 0x4E, 0xFF];
+        for (const b of rtCmd) fdcRT.writeData(b);
+
+        assert(fdcRT.phase === fdcRT.PHASE_EXECUTION, 'ReadTrack: enters execution');
+        const rtData = fdcReadAllData(fdcRT);
+        assert(rtData.length === 512 * 9, 'ReadTrack: reads all 9 sectors (4608 bytes)');
+        assert(rtData[0] === 0xA1, 'ReadTrack: sector 0xC1 data present');
+        assert(rtData[512] === 0xA2, 'ReadTrack: sector 0xC2 data present');
+
+        fdcCollectResult(fdcRT);
+
+        section('UPD765 - Activity callback');
+
+        const fdcAct = new UPD765();
+        fdcAct.drives[0].disk = DSKLoader.createBlankDSK();
+        fdcAct.drives[0].track = 0;
+        let activityLog = [];
+        fdcAct.onDiskActivity = (type, c, s, h, d) => {
+            activityLog.push({ type, c, s, h, d });
+        };
+
+        // Read Data
+        const actRead = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        for (const b of actRead) fdcAct.writeData(b);
+        fdcReadAllData(fdcAct);
+        fdcCollectResult(fdcAct);
+
+        assert(activityLog.length === 1, 'Activity: callback fired on read');
+        assert(activityLog[0].type === 'read', 'Activity: type = read');
+
+        // Write Data
+        activityLog = [];
+        const actWrite = [0x45, 0x00, 0, 0, 0xC2, 2, 0xC2, 0x4E, 0xFF];
+        for (const b of actWrite) fdcAct.writeData(b);
+        fdcWriteAllData(fdcAct, new Uint8Array(512));
+        fdcCollectResult(fdcAct);
+
+        assert(activityLog.length === 1, 'Activity: callback fired on write');
+        assert(activityLog[0].type === 'write', 'Activity: type = write');
+
+        section('UPD765 - Write during result phase resets');
+
+        const fdcRst = new UPD765();
+        fdcRst.drives[0].disk = DSKLoader.createBlankDSK();
+        fdcRst.drives[0].track = 0;
+
+        // Start a Read ID
+        fdcRst.writeData(0x4A);
+        fdcRst.writeData(0x00);
+        assert(fdcRst.phase === fdcRst.PHASE_RESULT, 'pre-reset: in result phase');
+
+        // Write during result phase — should reset to idle and start new command
+        fdcRst.writeData(0x03); // Specify command
+        // After write-during-result, it should start a new command
+        assert(fdcRst.phase === fdcRst.PHASE_COMMAND || fdcRst.phase === fdcRst.PHASE_IDLE,
+            'write during result: accepted as new command');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Round-trip Tests (toBuffer + parse)
+    // ═══════════════════════════════════════════════════════
+    function runRoundTripTests() {
+        section('Round-trip - createBlankDSK → toBuffer → parse');
+
+        const original = DSKLoader.createBlankDSK();
+        const buf = original.toBuffer();
+        assert(DSKLoader.isDSK(buf) === true, 'exported buffer is valid DSK');
+
+        const parsed = DSKLoader.parse(buf);
+        assert(parsed.numTracks === 40, 'round-trip: 40 tracks');
+        assert(parsed.numSides === 1, 'round-trip: 1 side');
+        assert(parsed.isExtended === true, 'round-trip: extended format');
+
+        const t0 = parsed.getTrack(0, 0);
+        assert(t0.sectors.length === 9, 'round-trip: track 0 has 9 sectors');
+        assert(t0.sectors[0].id === 0xC1, 'round-trip: sector IDs preserved');
+
+        // Verify boot sector data survived
+        const bootData = parsed.readSector(0, 0, 0xC1);
+        let sum = 0;
+        for (let i = 0; i < 16; i++) sum = (sum + bootData[i]) & 0xFF;
+        assert(sum === 3, 'round-trip: boot sector checksum intact');
+
+        // Verify directory data survived
+        const dirData = parsed.readSector(1, 0, 0xC1);
+        assert(dirData[0] === 0xE5, 'round-trip: directory data intact');
+
+        section('Round-trip - written data survives');
+
+        const dsk = DSKLoader.createBlankDSK();
+        // Write test data to various sectors
+        dsk.readSector(0, 0, 0xC5)[0] = 0xDE;
+        dsk.readSector(0, 0, 0xC5)[1] = 0xAD;
+        dsk.readSector(10, 0, 0xC3)[100] = 0xBE;
+        dsk.readSector(39, 0, 0xC9)[511] = 0xEF;
+
+        const buf2 = dsk.toBuffer();
+        const parsed2 = DSKLoader.parse(buf2);
+
+        assert(parsed2.readSector(0, 0, 0xC5)[0] === 0xDE, 'round-trip: data sector byte 0');
+        assert(parsed2.readSector(0, 0, 0xC5)[1] === 0xAD, 'round-trip: data sector byte 1');
+        assert(parsed2.readSector(10, 0, 0xC3)[100] === 0xBE, 'round-trip: track 10 data');
+        assert(parsed2.readSector(39, 0, 0xC9)[511] === 0xEF, 'round-trip: last track data');
+
+        section('Round-trip - disk spec survives');
+
+        const spec = DSKLoader.getDiskSpec(parsed2);
+        assert(spec.valid === true, 'round-trip: disk spec valid');
+        assert(spec.blockSize === 1024, 'round-trip: block size = 1024');
+        assert(spec.reservedTracks === 1, 'round-trip: 1 reserved track');
+        assert(spec.sectorsPerTrack === 9, 'round-trip: 9 sectors/track');
+
+        section('Round-trip - file listing survives');
+
+        // Create a disk with a file, export, re-import, verify file listing
+        const dskFile = DSKLoader.createBlankDSK();
+        const dirSec = dskFile.readSector(1, 0, 0xC1);
+        dirSec[0] = 0; // user
+        const testName = 'ROUNDTRP';
+        for (let i = 0; i < 8; i++) dirSec[1 + i] = testName.charCodeAt(i);
+        dirSec[9] = 'C'.charCodeAt(0);
+        dirSec[10] = 'O'.charCodeAt(0);
+        dirSec[11] = 'M'.charCodeAt(0);
+        dirSec[12] = 0; dirSec[13] = 0; dirSec[14] = 0;
+        dirSec[15] = 8; // 8 records = 1024 bytes
+        dirSec[16] = 2; // block 2
+
+        const files1 = DSKLoader.listFiles(dskFile);
+        assert(files1.length === 1, 'pre-export: file found');
+
+        const buf3 = dskFile.toBuffer();
+        const parsed3 = DSKLoader.parse(buf3);
+        const files2 = DSKLoader.listFiles(parsed3);
+        assert(files2.length === 1, 'round-trip: file still found');
+        assert(files2[0].name === 'ROUNDTRP', 'round-trip: filename preserved');
+        assert(files2[0].ext === 'COM', 'round-trip: extension preserved');
+
+        section('Round-trip - toBuffer header structure');
+
+        const dskH = DSKLoader.createBlankDSK();
+        const bufH = dskH.toBuffer();
+
+        // Verify EDSK signature
+        const sigStr = String.fromCharCode(...bufH.slice(0, 21));
+        assert(sigStr === 'EXTENDED CPC DSK File', 'toBuffer: EDSK signature');
+
+        // Verify creator
+        const creator = String.fromCharCode(...bufH.slice(0x22, 0x30));
+        assert(creator.startsWith('ZX-M8XXX'), 'toBuffer: creator = ZX-M8XXX');
+
+        // Track/side counts
+        assert(bufH[0x30] === 40, 'toBuffer: numTracks = 40');
+        assert(bufH[0x31] === 1, 'toBuffer: numSides = 1');
+
+        // Track size table
+        assert(bufH[0x34] > 0, 'toBuffer: track 0 size > 0');
+        assert(bufH[0x35] > 0, 'toBuffer: track 1 size > 0');
+
+        section('Round-trip - weak sector handling (EDSK)');
+
+        // Create an extended DSK with a weak sector (2 copies of 512-byte data with differences)
+        const weakData = new Uint8Array(1024); // 2 copies of 512 bytes
+        for (let i = 0; i < 512; i++) weakData[i] = 0xAA;       // copy 1
+        for (let i = 512; i < 1024; i++) weakData[i] = 0xAA;   // copy 2 (mostly same)
+        weakData[512 + 100] = 0xBB; // difference at byte 100
+
+        const weakTracks = [
+            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
+        ];
+        const weakBin = buildExtendedDSK(1, 1, weakTracks);
+        const weakImg = DSKLoader.parse(weakBin);
+
+        const weakSec = weakImg.getTrack(0, 0).sectors[0];
+        assert(weakSec.weakMap !== null, 'weak sector: weakMap generated');
+        assert(weakSec.data.length === 512, 'weak sector: data trimmed to nominal size');
+        assert(weakSec.weakMap[100] === 1, 'weak sector: byte 100 marked as weak');
+        assert(weakSec.weakMap[0] === 0, 'weak sector: byte 0 is stable');
+
+        // Verify non-weak bytes are correct
+        assert(weakSec.data[0] === 0xAA, 'weak sector: stable byte value correct');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Run All
+    // ═══════════════════════════════════════════════════════
+    function runAll() {
+        passed = 0;
+        failed = 0;
+        logEl.innerHTML = '';
+        log('Running all FDC & DSK tests...', 'info');
+
+        runDSKImageTests();
+        runDSKLoaderTests();
+        runDSKFilesystemTests();
+        runUPD765BasicTests();
+        runUPD765CommandTests();
+        runUPD765DataTests();
+        runRoundTripTests();
+
+        log(`\nDone. ${passed} passed, ${failed} failed.`, failed > 0 ? 'fail' : 'pass');
+        updateSummary();
+    }
+
+    // Expose to buttons
+    window.runAll = runAll;
+    window.runDSKImageTests = () => { passed=0; failed=0; logEl.innerHTML=''; runDSKImageTests(); };
+    window.runDSKLoaderTests = () => { passed=0; failed=0; logEl.innerHTML=''; runDSKLoaderTests(); };
+    window.runDSKFilesystemTests = () => { passed=0; failed=0; logEl.innerHTML=''; runDSKFilesystemTests(); };
+    window.runUPD765BasicTests = () => { passed=0; failed=0; logEl.innerHTML=''; runUPD765BasicTests(); };
+    window.runUPD765CommandTests = () => { passed=0; failed=0; logEl.innerHTML=''; runUPD765CommandTests(); };
+    window.runUPD765DataTests = () => { passed=0; failed=0; logEl.innerHTML=''; runUPD765DataTests(); };
+    window.runRoundTripTests = () => { passed=0; failed=0; logEl.innerHTML=''; runRoundTripTests(); };
+
+    // Auto-run
+    runAll();
+</script>
+</body>
+</html>

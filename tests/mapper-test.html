@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Game Mapper Tests v0.9.12</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body.light-theme {
+            --bg-primary: #e8e8f0;
+            --bg-secondary: #d0d0e0;
+            --bg-tertiary: #f5f5fa;
+            --text-primary: #222;
+            --text-secondary: #666;
+            --border-color: #aaa;
+            --cyan: #0088aa;
+            --yellow: #aa8800;
+            --green: #008800;
+            --red: #cc0000;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        h2 { color: var(--yellow); margin-top: 30px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Game Mapper Tests <span class="version">v0.9.12</span></h1>
+    <div class="test-resources">
+        <p><a href="system-test.html">System Tests</a> |
+        <a href="fuse-test.html">FUSE CPU Tests</a> |
+        <a href="debug-test.html">Debug Manager Tests</a> |
+        <a href="breakpoint-test.html">Breakpoint Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="machine-test.html">Machine Tests</a> |
+        <a href="memory-test.html">Memory Tests</a> |
+        <a href="fdc-test.html">FDC Tests</a> |
+        <a href="tape-test.html">Tape &amp; AY Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="disk-test.html">Disk Tests</a> |
+        <a href="sigpack-test.html">Signature Pack Tests</a> |
+        <a href="calculator-test.html">Calculator Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button onclick="runAll()">Run All</button>
+        <button onclick="runConstructorTests()">Constructor</button>
+        <button onclick="runRoomTests()">Rooms</button>
+        <button onclick="runScreenshotTests()">Screenshots</button>
+        <button onclick="runNavigationTests()">Navigation</button>
+        <button onclick="runBoundsTests()">Bounds &amp; Floors</button>
+        <button onclick="runExportImportTests()">Export/Import</button>
+        <button onclick="runTextSlideTests()">Text Slides</button>
+        <button onclick="runMoveRoomTests()">Move Room</button>
+        <button onclick="runDisplayImageTests()">Display Image</button>
+        <button onclick="runClearTests()">Clear</button>
+    </div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { GameMapper } from '../tools/game-mapper.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            if (cls) div.className = cls;
+            div.textContent = msg;
+            logEl.appendChild(div);
+        }
+        function assert(cond, msg) {
+            if (cond) { passed++; log('  \u2713 ' + msg, 'pass'); }
+            else { failed++; log('  \u2717 ' + msg + ' - FAILED', 'fail'); }
+        }
+        function section(name) { log('\n\u2550\u2550\u2550 ' + name + ' \u2550\u2550\u2550', 'section'); }
+        function updateSummary() {
+            summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`;
+        }
+
+        // --- Fake data URL for testing (not a real image, just unique strings) ---
+        function fakeDataUrl(id) { return 'data:image/png;base64,FAKE' + id; }
+
+        // ═══════════════════════════════════════════════════════
+        // Constructor & Defaults
+        // ═══════════════════════════════════════════════════════
+        function runConstructorTests() {
+            section('GameMapper - Constructor & Defaults');
+
+            const m = new GameMapper();
+            assert(m.version === 2, 'version is 2');
+            assert(m.rooms instanceof Map, 'rooms is a Map');
+            assert(m.rooms.size === 0, 'rooms initially empty');
+            assert(m.currentX === 0, 'currentX = 0');
+            assert(m.currentY === 0, 'currentY = 0');
+            assert(m.currentFloor === 0, 'currentFloor = 0');
+            assert(m.captureRegion.w === 32, 'capture width = 32');
+            assert(m.captureRegion.h === 24, 'capture height = 24');
+            assert(m.captureRegion.x === 0, 'capture x = 0');
+            assert(m.captureRegion.y === 0, 'capture y = 0');
+            assert(m.gapH === 0, 'gapH = 0');
+            assert(m.gapV === 0, 'gapV = 0');
+            assert(m.floorGap === 8, 'floorGap = 8');
+            assert(m.exportLayout === 'separate', 'exportLayout = separate');
+            assert(m.overviewZoom === 'fit', 'overviewZoom = fit');
+            assert(m.overviewFollow === false, 'overviewFollow = false');
+            assert(m.highlightColor === '#4ecdc4', 'highlightColor default');
+            assert(m.metadata.author === '', 'metadata.author empty');
+            assert(m.metadata.game === '', 'metadata.game empty');
+            assert(m._imageCache instanceof Map, '_imageCache is a Map');
+            assert(m.currentRoom === '0,0,0', 'currentRoom key = "0,0,0"');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Room Management
+        // ═══════════════════════════════════════════════════════
+        function runRoomTests() {
+            section('GameMapper - Room Management');
+
+            const m = new GameMapper();
+
+            // getRoom on nonexistent key
+            assert(m.getRoom('0,0,0') === null, 'getRoom: null for nonexistent');
+            assert(m.getCurrentRoom() === null, 'getCurrentRoom: null initially');
+
+            // ensureRoom creates room
+            const room = m.ensureRoom('0,0,0');
+            assert(room !== null, 'ensureRoom: creates room');
+            assert(room.screenshots.length === 0, 'ensureRoom: empty screenshots');
+            assert(room.selectedIndex === 0, 'ensureRoom: selectedIndex = 0');
+            assert(room.blended === null, 'ensureRoom: blended = null');
+            assert(room.stamps.length === 0, 'ensureRoom: empty stamps');
+            assert(room.mark === null, 'ensureRoom: mark = null');
+            assert(room.textSlide === null, 'ensureRoom: textSlide = null');
+
+            // ensureRoom returns existing room
+            const same = m.ensureRoom('0,0,0');
+            assert(same === room, 'ensureRoom: returns existing room');
+            assert(m.rooms.size === 1, 'rooms size = 1');
+
+            // getRoom returns the room
+            assert(m.getRoom('0,0,0') === room, 'getRoom: returns created room');
+            assert(m.getCurrentRoom() === room, 'getCurrentRoom: returns room at 0,0,0');
+
+            // ensureRoom at different key
+            const room2 = m.ensureRoom('1,2,3');
+            assert(m.rooms.size === 2, 'rooms size = 2 after second room');
+            assert(room2 !== room, 'different key = different room');
+
+            // deleteRoom
+            m.currentX = 1; m.currentY = 2; m.currentFloor = 3;
+            assert(m.deleteRoom() === true, 'deleteRoom: returns true');
+            assert(m.rooms.size === 1, 'rooms size = 1 after delete');
+            assert(m.getRoom('1,2,3') === null, 'deleted room is gone');
+
+            // deleteRoom on nonexistent
+            assert(m.deleteRoom() === false, 'deleteRoom: false for nonexistent');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Screenshots
+        // ═══════════════════════════════════════════════════════
+        function runScreenshotTests() {
+            section('GameMapper - Screenshots');
+
+            const m = new GameMapper();
+
+            // addScreenshot creates room and adds screenshot
+            m.addScreenshot(fakeDataUrl(1));
+            const room = m.getCurrentRoom();
+            assert(room !== null, 'addScreenshot: creates room');
+            assert(room.screenshots.length === 1, 'screenshots: 1 after add');
+            assert(room.screenshots[0] === fakeDataUrl(1), 'screenshot[0] correct');
+            assert(room.selectedIndex === 0, 'selectedIndex = 0');
+
+            // Add more screenshots
+            m.addScreenshot(fakeDataUrl(2));
+            m.addScreenshot(fakeDataUrl(3));
+            assert(room.screenshots.length === 3, 'screenshots: 3 after 3 adds');
+            assert(room.selectedIndex === 2, 'selectedIndex = 2 (latest)');
+
+            // deleteScreenshot by index
+            m.deleteScreenshot(1);  // Remove middle one
+            assert(room.screenshots.length === 2, 'screenshots: 2 after delete');
+            assert(room.screenshots[0] === fakeDataUrl(1), 'screenshot[0] unchanged');
+            assert(room.screenshots[1] === fakeDataUrl(3), 'screenshot[1] was #3');
+            assert(room.selectedIndex === 1, 'selectedIndex adjusted to 1');
+
+            // deleteCurrentScreenshot
+            m.deleteCurrentScreenshot();
+            assert(room.screenshots.length === 1, 'screenshots: 1 after deleteCurrent');
+            assert(room.selectedIndex === 0, 'selectedIndex back to 0');
+
+            // Delete last screenshot removes room
+            m.deleteCurrentScreenshot();
+            assert(m.getCurrentRoom() === null, 'room deleted when last screenshot removed');
+            assert(m.rooms.size === 0, 'rooms empty');
+
+            // deleteScreenshot on nonexistent room
+            m.deleteScreenshot(0);  // should not throw
+            assert(true, 'deleteScreenshot on no room: no crash');
+
+            // deleteCurrentScreenshot on nonexistent room
+            m.deleteCurrentScreenshot();
+            assert(true, 'deleteCurrentScreenshot on no room: no crash');
+
+            // deleteScreenshot invalid index
+            m.addScreenshot(fakeDataUrl(10));
+            m.deleteScreenshot(-1);
+            assert(m.getCurrentRoom().screenshots.length === 1, 'deleteScreenshot: invalid index ignored');
+            m.deleteScreenshot(99);
+            assert(m.getCurrentRoom().screenshots.length === 1, 'deleteScreenshot: out-of-range ignored');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Navigation
+        // ═══════════════════════════════════════════════════════
+        function runNavigationTests() {
+            section('GameMapper - Navigation');
+
+            const m = new GameMapper();
+
+            // move
+            m.move(1, 0);
+            assert(m.currentX === 1, 'move(1,0): currentX = 1');
+            assert(m.currentY === 0, 'move(1,0): currentY = 0');
+
+            m.move(0, -1);
+            assert(m.currentX === 1, 'move(0,-1): currentX = 1');
+            assert(m.currentY === -1, 'move(0,-1): currentY = -1');
+
+            m.move(-2, 3);
+            assert(m.currentX === -1, 'move(-2,3): currentX = -1');
+            assert(m.currentY === 2, 'move(-2,3): currentY = 2');
+
+            // moveFloor
+            m.moveFloor(1);
+            assert(m.currentFloor === 1, 'moveFloor(1): floor = 1');
+            m.moveFloor(-2);
+            assert(m.currentFloor === -1, 'moveFloor(-2): floor = -1');
+
+            // selectRoom
+            m.selectRoom(5, 10, 3);
+            assert(m.currentX === 5, 'selectRoom: x = 5');
+            assert(m.currentY === 10, 'selectRoom: y = 10');
+            assert(m.currentFloor === 3, 'selectRoom: floor = 3');
+            assert(m.currentRoom === '5,10,3', 'currentRoom key correct');
+
+            // selectRoom without floor
+            m.selectRoom(0, 0);
+            assert(m.currentX === 0, 'selectRoom no floor: x = 0');
+            assert(m.currentY === 0, 'selectRoom no floor: y = 0');
+            assert(m.currentFloor === 3, 'selectRoom no floor: floor unchanged');
+
+            // negative coordinates
+            m.selectRoom(-5, -10, -2);
+            assert(m.currentRoom === '-5,-10,-2', 'negative coords in key');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Bounds & Floors
+        // ═══════════════════════════════════════════════════════
+        function runBoundsTests() {
+            section('GameMapper - Bounds & Floors');
+
+            const m = new GameMapper();
+
+            // Empty map
+            assert(m.getBounds(0) === null, 'getBounds: null on empty map');
+            assert(m.getFloors().length === 0, 'getFloors: empty');
+            assert(m.getRoomCount() === 0, 'getRoomCount: 0');
+            assert(m.getRoomCount(0) === 0, 'getRoomCount(0): 0');
+
+            // Add rooms on floor 0
+            m.selectRoom(0, 0, 0); m.addScreenshot(fakeDataUrl(1));
+            m.selectRoom(3, 2, 0); m.addScreenshot(fakeDataUrl(2));
+            m.selectRoom(-1, -1, 0); m.addScreenshot(fakeDataUrl(3));
+
+            // Add rooms on floor 1
+            m.selectRoom(10, 10, 1); m.addScreenshot(fakeDataUrl(4));
+            m.selectRoom(11, 12, 1); m.addScreenshot(fakeDataUrl(5));
+
+            assert(m.getRoomCount() === 5, 'getRoomCount: 5 total');
+            assert(m.getRoomCount(0) === 3, 'getRoomCount(0): 3');
+            assert(m.getRoomCount(1) === 2, 'getRoomCount(1): 2');
+            assert(m.getRoomCount(2) === 0, 'getRoomCount(2): 0');
+
+            // Bounds for floor 0
+            const b0 = m.getBounds(0);
+            assert(b0 !== null, 'getBounds(0): not null');
+            assert(b0.minX === -1, 'floor 0 minX = -1');
+            assert(b0.maxX === 3, 'floor 0 maxX = 3');
+            assert(b0.minY === -1, 'floor 0 minY = -1');
+            assert(b0.maxY === 2, 'floor 0 maxY = 2');
+
+            // Bounds for floor 1
+            const b1 = m.getBounds(1);
+            assert(b1.minX === 10, 'floor 1 minX = 10');
+            assert(b1.maxX === 11, 'floor 1 maxX = 11');
+            assert(b1.minY === 10, 'floor 1 minY = 10');
+            assert(b1.maxY === 12, 'floor 1 maxY = 12');
+
+            // Bounds for all floors
+            const bAll = m.getBounds(null);
+            assert(bAll.minX === -1, 'all floors minX = -1');
+            assert(bAll.maxX === 11, 'all floors maxX = 11');
+
+            // getFloors
+            const floors = m.getFloors();
+            assert(floors.length === 2, 'getFloors: 2 floors');
+            assert(floors[0] === 0, 'floors[0] = 0');
+            assert(floors[1] === 1, 'floors[1] = 1');
+
+            // getRoomsOnFloor
+            const floor0Rooms = m.getRoomsOnFloor(0);
+            assert(floor0Rooms.length === 3, 'getRoomsOnFloor(0): 3 rooms');
+            const floor1Rooms = m.getRoomsOnFloor(1);
+            assert(floor1Rooms.length === 2, 'getRoomsOnFloor(1): 2 rooms');
+            assert(floor1Rooms[0].x === 10 || floor1Rooms[1].x === 10, 'floor 1 has room at x=10');
+
+            // getRoomsOnFloor empty floor
+            assert(m.getRoomsOnFloor(99).length === 0, 'getRoomsOnFloor(99): 0 rooms');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Export/Import JSON
+        // ═══════════════════════════════════════════════════════
+        function runExportImportTests() {
+            section('GameMapper - Export/Import JSON');
+
+            const m = new GameMapper();
+            m.metadata.game = 'Test Game';
+            m.metadata.author = 'Tester';
+            m.highlightColor = '#ff0000';
+            m.gapH = 4;
+            m.gapV = 8;
+            m.floorGap = 16;
+            m.exportLayout = '2x';
+            m.overviewZoom = 'x1';
+            m.overviewFollow = true;
+            m.captureRegion = { x: 2, y: 3, w: 28, h: 20 };
+
+            // Add rooms with screenshots
+            m.selectRoom(0, 0, 0); m.addScreenshot(fakeDataUrl('A'));
+            m.selectRoom(1, 0, 0); m.addScreenshot(fakeDataUrl('B'));
+            m.selectRoom(0, 0, 1); m.addScreenshot(fakeDataUrl('C'));
+
+            // Set a mark
+            m.getRoom('0,0,0').mark = '#ff00ff';
+
+            const json = m.exportJSON();
+            assert(typeof json === 'string', 'exportJSON returns string');
+
+            const parsed = JSON.parse(json);
+            assert(parsed.version === 2, 'export: version = 2');
+            assert(parsed.metadata.game === 'Test Game', 'export: metadata.game');
+            assert(parsed.metadata.author === 'Tester', 'export: metadata.author');
+            assert(parsed.metadata.modified !== '', 'export: modified timestamp set');
+            assert(parsed.highlightColor === '#ff0000', 'export: highlightColor');
+            assert(parsed.gapH === 4, 'export: gapH');
+            assert(parsed.gapV === 8, 'export: gapV');
+            assert(parsed.floorGap === 16, 'export: floorGap');
+            assert(parsed.exportLayout === '2x', 'export: exportLayout');
+            assert(parsed.overviewZoom === 'x1', 'export: overviewZoom');
+            assert(parsed.overviewFollow === true, 'export: overviewFollow');
+            assert(parsed.captureRegion.w === 28, 'export: captureRegion.w');
+            assert(Object.keys(parsed.rooms).length === 3, 'export: 3 rooms');
+            assert(parsed.rooms['0,0,0'].mark === '#ff00ff', 'export: mark preserved');
+
+            // Import into a new mapper
+            const m2 = new GameMapper();
+            m2.importJSON(json);
+            assert(m2.metadata.game === 'Test Game', 'import: metadata.game');
+            assert(m2.highlightColor === '#ff0000', 'import: highlightColor');
+            assert(m2.gapH === 4, 'import: gapH');
+            assert(m2.gapV === 8, 'import: gapV');
+            assert(m2.floorGap === 16, 'import: floorGap');
+            assert(m2.exportLayout === '2x', 'import: exportLayout');
+            assert(m2.overviewZoom === 'x1', 'import: overviewZoom');
+            assert(m2.overviewFollow === true, 'import: overviewFollow');
+            assert(m2.captureRegion.w === 28, 'import: captureRegion.w');
+            assert(m2.rooms.size === 3, 'import: 3 rooms');
+            assert(m2.getRoom('0,0,0').mark === '#ff00ff', 'import: mark preserved');
+            assert(m2.getRoom('0,0,0').screenshots.length === 1, 'import: screenshots preserved');
+            assert(m2.currentX === 0, 'import: currentX from currentRoom');
+
+            // V1 migration: "x,y" keys → "x,y,0"
+            const v1Json = {
+                version: 1,
+                rooms: { '3,4': { screenshots: ['url1'], selectedIndex: 0, blended: null } },
+                currentRoom: '3,4',
+                gap: 5
+            };
+            const m3 = new GameMapper();
+            m3.importJSON(v1Json);
+            assert(m3.rooms.has('3,4,0'), 'v1 migration: key "3,4" → "3,4,0"');
+            assert(m3.getRoom('3,4,0').screenshots[0] === 'url1', 'v1 migration: data preserved');
+            assert(m3.gapH === 5, 'v1 migration: gap → gapH');
+            assert(m3.gapV === 5, 'v1 migration: gap → gapV');
+            assert(m3.currentFloor === 0, 'v1 migration: currentFloor = 0');
+
+            // Layout migration
+            const m4 = new GameMapper();
+            m4.importJSON({ rooms: {}, exportLayout: 'horizontal' });
+            assert(m4.exportLayout === 'x1', 'layout migration: horizontal → x1');
+
+            const m5 = new GameMapper();
+            m5.importJSON({ rooms: {}, exportLayout: 'vertical' });
+            assert(m5.exportLayout === '1x', 'layout migration: vertical → 1x');
+
+            const m6 = new GameMapper();
+            m6.importJSON({ rooms: {}, exportLayout: 'grid' });
+            assert(m6.exportLayout === 'separate', 'layout migration: grid → separate');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Text Slides
+        // ═══════════════════════════════════════════════════════
+        function runTextSlideTests() {
+            section('GameMapper - Text Slides');
+
+            const m = new GameMapper();
+
+            // setTextSlide creates room with textSlide and renders
+            m.setTextSlide('Hello World', { font: 'Arial', fontSize: 20, color: '#fff', paper: '#000' });
+            const room = m.getCurrentRoom();
+            assert(room !== null, 'setTextSlide: creates room');
+            assert(room.textSlide !== null, 'textSlide set');
+            assert(room.textSlide.text === 'Hello World', 'textSlide.text correct');
+            assert(room.textSlide.font === 'Arial', 'textSlide.font correct');
+            assert(room.textSlide.fontSize === 20, 'textSlide.fontSize correct');
+            assert(room.textSlide.color === '#fff', 'textSlide.color correct');
+            assert(room.textSlide.paper === '#000', 'textSlide.paper correct');
+            assert(room.screenshots.length === 1, 'text slide rendered to screenshot');
+            assert(room.screenshots[0].startsWith('data:image/png'), 'screenshot is data URL');
+
+            // isTextSlide
+            assert(m.isTextSlide(room) === true, 'isTextSlide: true for text slide room');
+            assert(m.isTextSlide(null) === false, 'isTextSlide: false for null');
+            assert(m.isTextSlide({ textSlide: null }) === false, 'isTextSlide: false for non-text room');
+
+            // setTextSlide with defaults
+            m.selectRoom(1, 0, 0);
+            m.setTextSlide('Default', {});
+            const room2 = m.getCurrentRoom();
+            assert(room2.textSlide.font === m.textSlideDefaults.font, 'default font used');
+            assert(room2.textSlide.fontSize === m.textSlideDefaults.fontSize, 'default fontSize used');
+
+            // Delete text slide screenshot removes room
+            m.deleteScreenshot(0);
+            assert(m.getCurrentRoom() === null, 'text slide deletion removes room');
+
+            // renderTextToCanvas static method
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 192;
+            GameMapper.renderTextToCanvas(canvas, 'Test', 'monospace', 14, '#ff0', '#00f');
+            const ctx = canvas.getContext('2d');
+            const pixel = ctx.getImageData(0, 0, 1, 1).data;
+            // Paper color should be blue (0, 0, 255)
+            assert(pixel[2] > 200, 'renderTextToCanvas: paper color applied (blue channel)');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Move Room
+        // ═══════════════════════════════════════════════════════
+        function runMoveRoomTests() {
+            section('GameMapper - Move Room');
+
+            const m = new GameMapper();
+            m.addScreenshot(fakeDataUrl('M1'));
+
+            // Move to new position
+            assert(m.moveRoom(5, 5) === true, 'moveRoom: returns true');
+            assert(m.currentX === 5, 'moveRoom: currentX updated');
+            assert(m.currentY === 5, 'moveRoom: currentY updated');
+            assert(m.rooms.has('5,5,0'), 'room at new key');
+            assert(!m.rooms.has('0,0,0'), 'old key removed');
+
+            // Move to same position
+            assert(m.moveRoom(5, 5) === false, 'moveRoom: false for same position');
+
+            // Move to occupied position
+            m.selectRoom(0, 0, 0);
+            m.addScreenshot(fakeDataUrl('M2'));
+            m.selectRoom(0, 0, 0);
+            assert(m.moveRoom(5, 5) === false, 'moveRoom: false for occupied target');
+
+            // Move when no room at current position
+            m.selectRoom(99, 99, 0);
+            assert(m.moveRoom(100, 100) === false, 'moveRoom: false when no source room');
+
+            // Move to different floor
+            m.selectRoom(0, 0, 0);
+            assert(m.moveRoom(0, 0, 1) === true, 'moveRoom: to different floor');
+            assert(m.currentFloor === 1, 'moveRoom: floor updated');
+            assert(m.rooms.has('0,0,1'), 'room at new floor');
+            assert(!m.rooms.has('0,0,0'), 'old floor key removed');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Display Image
+        // ═══════════════════════════════════════════════════════
+        function runDisplayImageTests() {
+            section('GameMapper - Display Image');
+
+            const m = new GameMapper();
+
+            // null for null room
+            assert(m.getDisplayImage(null) === null, 'getDisplayImage(null) = null');
+
+            // Selected screenshot
+            const room = m.ensureRoom('0,0,0');
+            room.screenshots = [fakeDataUrl('D1'), fakeDataUrl('D2'), fakeDataUrl('D3')];
+            room.selectedIndex = 1;
+            assert(m.getDisplayImage(room) === fakeDataUrl('D2'), 'displays selected screenshot');
+
+            // selectedIndex = -1 with blend
+            room.selectedIndex = -1;
+            room.blended = fakeDataUrl('BLEND');
+            assert(m.getDisplayImage(room) === fakeDataUrl('BLEND'), 'selectedIndex=-1 shows blend');
+
+            // selectedIndex = -1 without blend but with screenshots
+            room.blended = null;
+            assert(m.getDisplayImage(room) === fakeDataUrl('D1'), 'fallback to first screenshot');
+
+            // No screenshots but blended
+            room.screenshots = [];
+            room.blended = fakeDataUrl('BLEND2');
+            assert(m.getDisplayImage(room) === fakeDataUrl('BLEND2'), 'no screenshots: shows blend');
+
+            // Empty room
+            room.screenshots = [];
+            room.blended = null;
+            room.selectedIndex = 0;
+            assert(m.getDisplayImage(room) === null, 'empty room: null');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Clear
+        // ═══════════════════════════════════════════════════════
+        function runClearTests() {
+            section('GameMapper - Clear');
+
+            const m = new GameMapper();
+            m.metadata.game = 'Test';
+            m.gapH = 10;
+            m.gapV = 20;
+            m.selectRoom(5, 5, 2);
+            m.addScreenshot(fakeDataUrl('C1'));
+            m.selectRoom(0, 0, 0);
+            m.addScreenshot(fakeDataUrl('C2'));
+
+            assert(m.rooms.size === 2, 'pre-clear: 2 rooms');
+
+            m.clear();
+            assert(m.rooms.size === 0, 'clear: rooms empty');
+            assert(m.currentX === 0, 'clear: currentX = 0');
+            assert(m.currentY === 0, 'clear: currentY = 0');
+            assert(m.currentFloor === 0, 'clear: currentFloor = 0');
+            assert(m.gapH === 0, 'clear: gapH = 0');
+            assert(m.gapV === 0, 'clear: gapV = 0');
+            assert(m.metadata.game === '', 'clear: metadata.game empty');
+            assert(m._imageCache.size === 0, 'clear: imageCache empty');
+            assert(m.captureRegion.w === 32, 'clear: captureRegion reset');
+
+            updateSummary();
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // Run All
+        // ═══════════════════════════════════════════════════════
+        function runAll() {
+            passed = 0; failed = 0;
+            logEl.innerHTML = '';
+            runConstructorTests();
+            runRoomTests();
+            runScreenshotTests();
+            runNavigationTests();
+            runBoundsTests();
+            runExportImportTests();
+            runTextSlideTests();
+            runMoveRoomTests();
+            runDisplayImageTests();
+            runClearTests();
+        }
+
+        // Expose to onclick handlers
+        window.runAll = runAll;
+        window.runConstructorTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runConstructorTests(); };
+        window.runRoomTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runRoomTests(); };
+        window.runScreenshotTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runScreenshotTests(); };
+        window.runNavigationTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runNavigationTests(); };
+        window.runBoundsTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runBoundsTests(); };
+        window.runExportImportTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runExportImportTests(); };
+        window.runTextSlideTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runTextSlideTests(); };
+        window.runMoveRoomTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runMoveRoomTests(); };
+        window.runDisplayImageTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runDisplayImageTests(); };
+        window.runClearTests = () => { passed = 0; failed = 0; logEl.innerHTML = ''; runClearTests(); };
+
+        // Auto-run
+        runAll();
+    </script>
+</body>
+</html>
