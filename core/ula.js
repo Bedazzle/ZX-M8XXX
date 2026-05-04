@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - ULA (Video and Keyboard)
- * @version 0.9.0
+ * @version 0.12.0
  * @license GPL-3.0
  *
  * Cycle-accurate scanline-based rendering for multicolor effects.
@@ -8,7 +8,7 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 
-const VERSION = '0.9.0';
+const VERSION = '0.12.0';
 
     export class ULA {
         static get VERSION() { return VERSION; }
@@ -1071,11 +1071,25 @@ const VERSION = '0.9.0';
             }
         }
 
-        // Called when screen bank changes (for scroll17-style effects)
+        // Called when screen bank changes (for scroll17-style effects and double-buffering)
         setScreenBankAt(bank, tStates) {
             const lastBank = this.screenBankChanges[this.screenBankChanges.length - 1].bank;
             if (bank !== lastBank) {
                 this.screenBankChanges.push({tState: tStates, bank: bank});
+
+                // Re-capture attrInitial from the NEW screen bank.
+                // Without this, double-buffered games show flickering: attrInitial
+                // holds attributes from the old bank (captured at frame start), but
+                // renderScanline reads pixels from the new bank via getScreenBase().
+                // The mismatch causes wrong colors on every column that has no
+                // tracked attribute change (the common case).
+                const newBankRam = this.memory.getRamBank(bank);
+                if (newBankRam && this.attrInitial) {
+                    this.attrInitial.set(newBankRam.subarray(0x1800, 0x1B00));
+                }
+                // Clear tracked attribute changes — they were recorded for writes
+                // to the old bank's attribute addresses and don't apply to the new bank.
+                this.attrChanges = {};
             }
         }
 

@@ -2,6 +2,9 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.12.0
+- **Double-Buffer Flickering Fix**: Fixed sprite flickering in 128K games that use double-buffered screen rendering (e.g. the game "Shadow Fields"). Two related issues: (1) The multicolor attribute snapshot (`attrInitial`) was captured from the pre-swap screen bank at frame start, causing attribute/pixel bank mismatch after the ISR swaps the display bank — `setScreenBankAt()` now re-captures `attrInitial` from the new bank and clears stale attribute changes. (2) Attribute write tracking (`onMemWrite`) was recording writes to the back buffer ($5800 = always bank 5) as display changes even when bank 7 was being displayed, polluting the multicolor rendering path with irrelevant data — added `screenBank === 5` guard.
+
 ## v0.11.2
 - **Auto-Screenshot (Timed Batch Capture)**: When Batch is checked, **F3** starts/stops timed auto-capture at a configurable interval (frames or seconds). Screenshots buffer automatically while the emulator runs. **Ctrl+F3** stops auto-capture and saves the buffer as ZIP. New "Every" input and "frames/seconds" dropdown in the Screenshot Button section. GIF format falls back to PNG during auto-capture. Auto-capture stops on machine reset/change. Settings persist to localStorage.
 - **Right Panel Comments & Regions**: The right disassembly panel now shows user comments (before/inline/after/separator), region type markers (B/W/T/G/S), subroutine end markers, and user fold end markers — matching the left panel.

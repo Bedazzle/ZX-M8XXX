@@ -543,9 +543,11 @@ import { Disassembler } from './disasm.js';
                 this.contentionEnabled = false;
 
                 // Multicolor tracking for Pentagon (no contention, simple tStates)
+                // Only track when displaying bank 5 — $5800 writes always go to bank 5,
+                // so when displaying bank 7 these writes affect the back buffer, not the display
                 this.ula.mcWriteAdjust = 5;
                 this.cpu.onMemWrite = (addr, val) => {
-                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END) {
+                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
                         this.ula.setAttrAt(addr - SCREEN_ATTR, val, this.cpu.tStates);
                         this.ula.hadAttrChanges = true;
                     }
@@ -804,7 +806,7 @@ import { Disassembler } from './disasm.js';
 
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
-                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END) {
+                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
                         const writeT = this.cpu.tStates + mcycleOffset;
                         this.ula.setAttrAt(addr - SCREEN_ATTR, val, writeT);
                         this.ula.hadAttrChanges = true;
@@ -923,9 +925,10 @@ import { Disassembler } from './disasm.js';
                 };
 
                 // Multicolor tracking with accurate timing (same as 48K)
+                // Only track when displaying bank 5 — $5800 writes always target bank 5
                 this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
-                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END) {
+                    if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
                         const writeT = this.cpu.tStates + mcycleOffset;
                         this.ula.setAttrAt(addr - SCREEN_ATTR, val, writeT);
                         this.ula.hadAttrChanges = true;
@@ -938,12 +941,13 @@ import { Disassembler } from './disasm.js';
             }
 
             // Pentagon: no contention, simple multicolor tracking
+            // Only track when displaying bank 5 — $5800 writes always target bank 5
             this.cpu.contend = null;
             this.cpu.ioContend = null;
             this.contentionEnabled = false;
             this.ula.mcWriteAdjust = 5;
             this.cpu.onMemWrite = (addr, val) => {
-                if (addr >= SCREEN_ATTR && addr <= SCREEN_END) {
+                if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
                     this.ula.setAttrAt(addr - SCREEN_ATTR, val, this.cpu.tStates);
                     this.ula.hadAttrChanges = true;
                 }
@@ -1850,6 +1854,10 @@ import { Disassembler } from './disasm.js';
             while (this.rzxPlaying ? true : this.cpu.tStates < tstatesPerFrame) {
 
                 // Render complete scanline (paper + border) at line END
+                // Line-end rendering ensures all beam-racing attribute writes (e.g. Nirvana
+                // multicolor engine) are captured in attrChanges before the T-state lookup
+                // resolves them per-column. Paper-start rendering would fire before the CPU
+                // has executed those writes, breaking multicolor effects.
                 while (nextLineToRender < totalLines) {
                     const lineEndT = (nextLineToRender + 1) * tstatesPerLine;
                     if (this.cpu.tStates >= lineEndT) {
@@ -2477,7 +2485,7 @@ import { Disassembler } from './disasm.js';
             // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
             // During RZX playback, frame ends based on instruction count, not T-states (FUSE-style)
             while (this.rzxPlaying ? true : this.cpu.tStates < tstatesPerFrame) {
-                // Render complete scanlines as we pass them (same as runFrame)
+                // Render complete scanlines at line END (same as runFrame)
                 while (nextLineToRender < totalLines) {
                     const lineEndT = (nextLineToRender + 1) * tstatesPerLine;
                     if (this.cpu.tStates >= lineEndT) {
