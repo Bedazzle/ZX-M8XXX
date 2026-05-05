@@ -14,6 +14,8 @@ export function initRightDisasmView({
     DISASM_LINES
 }) {
     const rightDisassemblyView = document.getElementById('rightDisassemblyView');
+    const chkFlowBreakSpacing = document.getElementById('chkFlowBreakSpacing');
+    const chkShowPCCursor = document.getElementById('chkShowPCCursor');
 
     function updateRightDisassemblyView() {
         const spectrum = getSpectrum();
@@ -50,10 +52,10 @@ export function initRightDisasmView({
             const hasBp = spectrum.hasBreakpoint(line.addr);
             const hasDisabledBp = !hasBp && spectrum.hasDisabledBreakpoint(line.addr);
             const classes = ['disasm-line'];
-            if (isCurrent) classes.push('current');
+            if (isCurrent && (chkShowPCCursor.checked || !spectrum.running)) classes.push('current');
             if (hasBp) classes.push('breakpoint');
             if (line.isData) classes.push('data-line');
-            if (isFlowBreak(line.mnemonic)) classes.push('flow-break');
+            if (chkFlowBreakSpacing.checked && isFlowBreak(line.mnemonic)) classes.push('flow-break');
 
             const timing = (showTstates && !line.isData) ? disasm.getTiming(line.bytes) : '';
             const timingHtml = timing ? `<span class="disasm-tstates">${timing}</span>` : '';

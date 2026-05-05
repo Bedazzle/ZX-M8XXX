@@ -572,6 +572,28 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     // Load palettes on startup
     loadPalettes();
 
+    // ===== Debugger display settings =====
+
+    const chkFlowBreakSpacing = document.getElementById('chkFlowBreakSpacing');
+    const chkShowPCCursor = document.getElementById('chkShowPCCursor');
+    const chkFollowPC = document.getElementById('chkFollowPC');
+
+    // Restore (default true for all)
+    if (chkFlowBreakSpacing) chkFlowBreakSpacing.checked = storageGet('zxm8_flowBreakSpacing') !== 'false';
+    if (chkShowPCCursor) chkShowPCCursor.checked = storageGet('zxm8_showPCCursor') !== 'false';
+    if (chkFollowPC) chkFollowPC.checked = storageGet('zxm8_followPC') !== 'false';
+
+    // Persist on change
+    if (chkFlowBreakSpacing) chkFlowBreakSpacing.addEventListener('change', () => {
+        storageSet('zxm8_flowBreakSpacing', chkFlowBreakSpacing.checked);
+    });
+    if (chkShowPCCursor) chkShowPCCursor.addEventListener('change', () => {
+        storageSet('zxm8_showPCCursor', chkShowPCCursor.checked);
+    });
+    if (chkFollowPC) chkFollowPC.addEventListener('change', () => {
+        storageSet('zxm8_followPC', chkFollowPC.checked);
+    });
+
     // ===== Public API =====
 
     return {

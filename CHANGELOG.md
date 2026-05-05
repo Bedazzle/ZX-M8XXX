@@ -2,6 +2,18 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.13.1
+- **Debugger Display Settings**: Three new checkboxes in Settings → Display for debugger view control:
+  - **Flow break spacing** — toggle extra space after flow control instructions (JP, JR, RET, DJNZ). Default ON.
+  - **Show PC cursor** — when OFF, hides the PC highlight during real-time running (always shown when paused). Default ON.
+  - **Follow PC** — auto-scroll disassembly to follow the program counter. Moved from the disasm toolbar to Settings. Default ON.
+  - All three settings persist to localStorage and apply to both left and right disassembly panels.
+
+## v0.13.0
+- **Assembler Undo/Redo**: Multi-level undo/redo for the assembler editor (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). 100 levels of history with checkpoints at line breaks (Enter), typing pauses (400ms), and explicit actions (Tab, Replace). Cursor position saved/restored with each step. Stack resets on file switch, project load, and Clear.
+- **Assembler Clear Confirmation**: The Clear button now shows a confirmation dialog before erasing all files and assembled output.
+- **Assembler Example Code**: Updated the placeholder example to a random border stripes program using `LD A, R` / `OUT ($FE), A`.
+
 ## v0.12.0
 - **Double-Buffer Flickering Fix**: Fixed sprite flickering in 128K games that use double-buffered screen rendering (e.g. the game "Shadow Fields"). Two related issues: (1) The multicolor attribute snapshot (`attrInitial`) was captured from the pre-swap screen bank at frame start, causing attribute/pixel bank mismatch after the ISR swaps the display bank — `setScreenBankAt()` now re-captures `attrInitial` from the new bank and clears stale attribute changes. (2) Attribute write tracking (`onMemWrite`) was recording writes to the back buffer ($5800 = always bank 5) as display changes even when bank 7 was being displayed, polluting the multicolor rendering path with irrelevant data — added `screenBank === 5` guard.
 

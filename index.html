@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.12.0</title>
+    <title>ZX-M8XXX v0.13.0</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -6496,7 +6496,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.12.0 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.13.0 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6642,7 +6642,6 @@
                             <input type="text" id="tstatesInput" class="tstates-input" placeholder="T" maxlength="8" value="1000" title="Number of T-states to run">
                             <button id="btnRunTstates" title="Run specified T-states">Tstates</button>
                             <label style="margin-left: 8px; font-size: 11px;" title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> comm</label>
-                            <label style="margin-left: 8px; font-size: 11px;" title="Auto-scroll disassembly to follow PC"><input type="checkbox" id="chkFollowPC"> follow</label>
                         </div>
                     </div>
                     <div class="right-column">
@@ -7322,14 +7321,16 @@
                             <div class="asm-line-numbers" id="asmLineNumbers"></div>
                             <div class="asm-editor-wrap">
                                 <pre class="asm-highlight" id="asmHighlight"></pre>
-                                <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Enter Z80 assembly code here
+                                <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Random border stripes
 ; @entry start
-; Example:
+
         ORG $8000
+
 start:
-        LD A, 2
-        OUT (254), A
-        JP start"></textarea>
+        LD A, R
+        AND 7
+        OUT ($FE), A
+        JR start"></textarea>
                             </div>
                         </div>
                     </div>
@@ -7437,6 +7438,17 @@ start:
                     </div>
                 </div>
             </div>
+                <div class="settings-row" style="margin-top: 10px;">
+                    <label class="checkbox-label" title="Add spacing after flow control instructions (JP, JR, RET, DJNZ)">
+                        <input type="checkbox" id="chkFlowBreakSpacing" checked> Flow break spacing
+                    </label>
+                    <label class="checkbox-label" style="margin-left: 15px;" title="Highlight current PC line while running (always shown when paused)">
+                        <input type="checkbox" id="chkShowPCCursor" checked> Show PC cursor
+                    </label>
+                    <label class="checkbox-label" style="margin-left: 15px;" title="Auto-scroll disassembly to follow PC">
+                        <input type="checkbox" id="chkFollowPC" checked> Follow PC
+                    </label>
+                </div>
             </div><!-- settings-display -->
 
             <!-- Input Sub-tab -->
@@ -9771,7 +9783,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.12.0';
+        const APP_VERSION = '0.13.0';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 

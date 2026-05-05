@@ -35,6 +35,8 @@ export function initDebuggerDisplay({
     const pagesInfo = document.getElementById('pagesInfo');
     const disassemblyView = document.getElementById('disassemblyView');
     const chkFollowPC = document.getElementById('chkFollowPC');
+    const chkFlowBreakSpacing = document.getElementById('chkFlowBreakSpacing');
+    const chkShowPCCursor = document.getElementById('chkShowPCCursor');
 
     function createRegisterItem(name, value, editable = null, bits = 16) {
         const editClass = editable ? ' editable' : '';
@@ -220,13 +222,13 @@ export function initDebuggerDisplay({
             const hasBp = spectrum.hasBreakpoint(line.addr);
             const hasDisabledBp = !hasBp && spectrum.hasDisabledBreakpoint(line.addr);
             const classes = ['disasm-line'];
-            if (isCurrent) classes.push('current');
+            if (isCurrent && (chkShowPCCursor.checked || !spectrum.running)) classes.push('current');
             if (isTrace) classes.push('trace');
             if (hasBp) classes.push('breakpoint');
             if (line.isData) classes.push('data-line');
 
             // Add spacing after flow control instructions
-            if (isFlowBreak(line.mnemonic)) {
+            if (chkFlowBreakSpacing.checked && isFlowBreak(line.mnemonic)) {
                 classes.push('flow-break');
             }
 

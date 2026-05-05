@@ -53,6 +53,77 @@ export function initAssemblerUI({
     let openTabs = [];                  // List of open tab paths
     let fileModified = {};              // Track modified state per file
 
+    // ========== Undo/Redo system ==========
+    // Checkpoints created at: typing pause (400ms), Enter key, explicit actions (Tab, Replace).
+    // beforeinput captures baseline before first edit after quiet period.
+    const ASM_UNDO_LIMIT = 100;
+    let asmUndoStack = [];   // [{text, cursor}]
+    let asmRedoStack = [];
+    let asmUndoTimer = null; // non-null while typing burst is active
+
+    function asmUndoPush() {
+        if (!asmEditor) return;
+        const text = asmEditor.value;
+        // Skip if identical to top of stack
+        if (asmUndoStack.length > 0 && text === asmUndoStack[asmUndoStack.length - 1].text) return;
+        asmUndoStack.push({ text, cursor: asmEditor.selectionStart });
+        if (asmUndoStack.length > ASM_UNDO_LIMIT) asmUndoStack.shift();
+        asmRedoStack = [];
+    }
+
+    function asmUndoPushImmediate() {
+        clearTimeout(asmUndoTimer);
+        asmUndoTimer = null;
+        asmUndoPush();
+    }
+
+    function asmUndoSchedule() {
+        clearTimeout(asmUndoTimer);
+        asmUndoTimer = setTimeout(() => {
+            asmUndoPush();  // checkpoint at end of typing burst
+            asmUndoTimer = null;
+        }, 400);
+    }
+
+    function asmUndo() {
+        if (!asmEditor || asmUndoStack.length === 0) return;
+        clearTimeout(asmUndoTimer);
+        asmUndoTimer = null;
+        const current = asmEditor.value;
+        // Skip top if it matches current (pause checkpoint with no subsequent edits)
+        if (asmUndoStack[asmUndoStack.length - 1].text === current) {
+            asmUndoStack.pop();
+            if (asmUndoStack.length === 0) return;
+        }
+        asmRedoStack.push({ text: current, cursor: asmEditor.selectionStart });
+        const prev = asmUndoStack.pop();
+        asmEditor.value = prev.text;
+        asmEditor.selectionStart = asmEditor.selectionEnd = prev.cursor;
+        updateLineNumbers();
+        updateHighlight();
+        syncEditorToVFS();
+    }
+
+    function asmRedo() {
+        if (!asmEditor || asmRedoStack.length === 0) return;
+        clearTimeout(asmUndoTimer);
+        asmUndoTimer = null;
+        asmUndoStack.push({ text: asmEditor.value, cursor: asmEditor.selectionStart });
+        const next = asmRedoStack.pop();
+        asmEditor.value = next.text;
+        asmEditor.selectionStart = asmEditor.selectionEnd = next.cursor;
+        updateLineNumbers();
+        updateHighlight();
+        syncEditorToVFS();
+    }
+
+    function asmUndoReset() {
+        asmUndoStack = [];
+        asmRedoStack = [];
+        clearTimeout(asmUndoTimer);
+        asmUndoTimer = null;
+    }
+
     // Show/hide buttons based on project state
     function updateProjectButtons() {
         const fileCount = Object.keys(VFS.files).length;
@@ -168,6 +239,7 @@ export function initAssemblerUI({
         }
 
         currentOpenFile = path;
+        asmUndoReset();
         updateLineNumbers();
         updateHighlight();
         updateFileTabs();
@@ -560,7 +632,15 @@ export function initAssemblerUI({
         // Debounce timer for defines detection
         let definesUpdateTimer = null;
 
+        // Capture pre-edit baseline at the start of each typing burst
+        asmEditor.addEventListener('beforeinput', () => {
+            if (asmUndoTimer === null) {
+                asmUndoPush();
+            }
+        });
+
         asmEditor.addEventListener('input', () => {
+            asmUndoSchedule();
             updateLineNumbers();
             updateHighlight();
             syncEditorToVFS();
@@ -589,6 +669,7 @@ export function initAssemblerUI({
         asmEditor.addEventListener('focus', syncScroll);
 
         // Handle paste - need delay for content to be inserted
+        // (beforeinput already captured pre-paste state)
         asmEditor.addEventListener('paste', () => {
             setTimeout(() => {
                 updateLineNumbers();
@@ -600,9 +681,26 @@ export function initAssemblerUI({
         });
 
         asmEditor.addEventListener('keydown', (e) => {
+            // Ctrl+Z - Undo
+            if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+                e.preventDefault();
+                asmUndo();
+                return;
+            }
+            // Ctrl+Y or Ctrl+Shift+Z - Redo
+            if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'Z')) {
+                e.preventDefault();
+                asmRedo();
+                return;
+            }
+            // Enter - checkpoint before newline (line = natural undo boundary)
+            if (e.key === 'Enter') {
+                asmUndoPushImmediate();
+            }
             // Tab inserts actual tab
             if (e.key === 'Tab') {
                 e.preventDefault();
+                asmUndoPushImmediate();
                 const start = asmEditor.selectionStart;
                 const end = asmEditor.selectionEnd;
                 asmEditor.value = asmEditor.value.substring(0, start) + '\t' + asmEditor.value.substring(end);
@@ -1019,6 +1117,7 @@ export function initAssemblerUI({
                 }
                 currentOpenFile = file;
                 asmEditor.value = targetFile.content;
+                asmUndoReset();
                 updateFileTabs();
                 updateLineNumbers();
                 updateHighlight();
@@ -1116,6 +1215,7 @@ export function initAssemblerUI({
     function replaceOne() {
         if (searchMatches.length === 0 || currentMatchIndex < 0) return;
 
+        asmUndoPushImmediate();
         const pos = searchMatches[currentMatchIndex];
         const len = asmSearchInput.value.length;
         const replacement = asmReplaceInput.value;
@@ -1160,6 +1260,7 @@ export function initAssemblerUI({
             text = text.replace(regex, replacement);
         }
 
+        asmUndoPushImmediate();
         asmEditor.value = text;
         updateLineNumbers();
         updateHighlight();
@@ -1252,8 +1353,10 @@ export function initAssemblerUI({
     // Button handlers
     if (btnAsmClear) {
         btnAsmClear.addEventListener('click', () => {
+            if (!confirm('Clear all files and assembled output?')) return;
             asmEditor.value = '';
             asmOutput.innerHTML = '<span class="asm-hint">Press Assemble to compile</span>';
+            asmUndoReset();
             updateLineNumbers();
             updateHighlight();
             // Close any open project and reset tabs
@@ -2735,6 +2838,7 @@ export function initAssemblerUI({
             } else if (data.editorContent && asmEditor) {
                 asmEditor.value = data.editorContent;
             }
+            asmUndoReset();
             updateLineNumbers();
             updateHighlight();
             updateFileTabs();
