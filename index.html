@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.13.0</title>
+    <title>ZX-M8XXX v0.13.4</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -6496,7 +6496,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.13.0 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.13.4 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6609,11 +6609,11 @@
                         <div class="memory-view" id="leftMemoryView" style="display:none"></div>
                         <div class="bookmarks-bar" id="disasmBookmarks">
                             <span class="bookmarks-label">Bookmarks:</span>
-                            <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set">-</button>
-                            <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set">-</button>
-                            <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set">-</button>
-                            <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set">-</button>
-                            <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set">-</button>
+                            <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                            <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                            <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                            <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                            <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
                         </div>
                         <div class="memory-search inline left-memory-search" style="display:none">
                             <div class="search-row">
@@ -6819,11 +6819,11 @@
                             </div>
                             <div class="bookmarks-bar" id="memoryBookmarks">
                                 <span class="bookmarks-label">Bookmarks:</span>
-                                <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set">-</button>
-                                <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set">-</button>
-                                <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set">-</button>
-                                <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set">-</button>
-                                <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set">-</button>
+                                <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                                <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                                <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                                <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
+                                <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set, Ctrl+click: clear">-</button>
                             </div>
                             <div class="debugger-controls right-debugger-controls" style="display:none">
                                 <button id="btnRightStepInto" title="Step Into (F7)">Step Into</button>
@@ -7271,7 +7271,7 @@
                         <button id="btnAsmClear" title="Clear all">Clear</button>
                         <button id="btnAsmNew" title="Create new file">New</button>
                         <button id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load</button>
-                        <button id="btnAsmExport" title="Export all source files as ZIP" style="display:none">Export</button>
+                        <button id="btnAsmExport" title="Export source files (plain text or ZIP)" style="display:none">Export</button>
                         <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
                         <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
                         <label class="asm-option"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
@@ -7447,6 +7447,11 @@ start:
                     </label>
                     <label class="checkbox-label" style="margin-left: 15px;" title="Auto-scroll disassembly to follow PC">
                         <input type="checkbox" id="chkFollowPC" checked> Follow PC
+                    </label>
+                </div>
+                <div class="settings-row" style="margin-top: 10px;">
+                    <label class="checkbox-label" title="Always export assembler source as ZIP even for single file (default: single file saved as plain text)">
+                        <input type="checkbox" id="chkAsmExportZip"> Assembler: export as ZIP
                     </label>
                 </div>
             </div><!-- settings-display -->
@@ -9783,7 +9788,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.13.0';
+        const APP_VERSION = '0.13.4';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10477,7 +10482,12 @@ start:
             updateStatus,
             updateLabelsList,
             is128kCompat,
-            arrayToBase64
+            arrayToBase64,
+            goToAddress,
+            goToRightDisasmAddress,
+            getLeftPanelType: () => leftPanelType,
+            getRightPanelType: () => rightPanelType,
+            switchLeftPanelType
         });
 
 

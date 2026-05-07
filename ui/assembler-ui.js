@@ -16,7 +16,12 @@ export function initAssemblerUI({
     updateStatus,
     updateLabelsList,
     is128kCompat,
-    arrayToBase64
+    arrayToBase64,
+    goToAddress,
+    goToRightDisasmAddress,
+    getLeftPanelType,
+    getRightPanelType,
+    switchLeftPanelType
 }) {
     // ========== Assembler ==========
     const asmEditor = document.getElementById('asmEditor');
@@ -34,6 +39,7 @@ export function initAssemblerUI({
     const btnAsmDownload = document.getElementById('btnAsmDownload');
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
+    const chkAsmExportZip = document.getElementById('chkAsmExportZip');
     const asmDefinesInput = document.getElementById('asmDefines');
     const asmDetectedDefines = document.getElementById('asmDetectedDefines');
     const btnAsmExport = document.getElementById('btnAsmExport');
@@ -46,6 +52,186 @@ export function initAssemblerUI({
     const fileSelectorBody = document.getElementById('fileSelectorBody');
     const fileSelectorTitle = document.getElementById('fileSelectorTitle');
     const btnFileSelectorClose = document.getElementById('btnFileSelectorClose');
+
+    // Encoding chosen by user for non-UTF-8 files (persisted in localStorage)
+    let chosenFallbackEncoding = storageGet('zxm8_asmEncoding') || null;
+
+    // Supported fallback encodings
+    const FALLBACK_ENCODINGS = [
+        { id: 'ibm866',        label: 'CP866 (DOS Cyrillic)' },
+        { id: 'windows-1251',  label: 'Windows-1251 (Cyrillic)' },
+        { id: 'koi8-r',        label: 'KOI8-R (Russian)' },
+        { id: 'koi8-u',        label: 'KOI8-U (Ukrainian)' },
+        { id: 'windows-1250',  label: 'Windows-1250 (Central European)' },
+        { id: 'windows-1253',  label: 'Windows-1253 (Greek)' },
+        { id: 'windows-1254',  label: 'Windows-1254 (Turkish)' },
+        { id: 'windows-1257',  label: 'Windows-1257 (Baltic)' },
+        { id: 'iso-8859-1',    label: 'ISO 8859-1 (Western European)' },
+        { id: 'iso-8859-2',    label: 'ISO 8859-2 (Central European)' },
+        { id: 'iso-8859-15',   label: 'ISO 8859-15 (Western w/ Euro)' }
+    ];
+
+    // Auto-detect most likely encoding from byte patterns
+    function detectEncoding(bytes) {
+        // Count bytes in discriminating ranges
+        let cp866Score = 0, win1251Score = 0, koi8Score = 0;
+        for (const b of bytes) {
+            if (b >= 0x80 && b <= 0xAF) cp866Score++;       // Cyrillic in CP866, symbols in Win-1251
+            else if (b >= 0xC0 && b <= 0xFF) win1251Score++; // Cyrillic in Win-1251, box drawing + р-я in CP866
+            if (b >= 0xC0 && b <= 0xDF) koi8Score++;         // Lowercase Cyrillic in KOI8-R
+        }
+        if (cp866Score >= 3 && cp866Score >= win1251Score) return 'ibm866';
+        if (win1251Score >= 3) return 'windows-1251';
+        if (koi8Score >= 3) return 'koi8-r';
+        return chosenFallbackEncoding || 'ibm866';
+    }
+
+    // Extract a meaningful text sample (skip leading blank lines, take ~20 lines with high-byte content)
+    function extractPreviewSample(bytes, encoding) {
+        const decoded = new TextDecoder(encoding).decode(bytes);
+        const lines = decoded.split('\n');
+        const sample = [];
+        let collecting = false;
+        for (const line of lines) {
+            if (!collecting && line.trim() === '') continue;
+            collecting = true;
+            sample.push(line);
+            if (sample.length >= 20) break;
+        }
+        return sample.join('\n');
+    }
+
+    // Show encoding preview dialog with side-by-side raw vs decoded view
+    // Returns Promise<string|null> — encoding id or null if aborted
+    function showEncodingDialog(bytes) {
+        return new Promise((resolve) => {
+            const detected = detectEncoding(bytes);
+
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
+
+            const box = document.createElement('div');
+            box.style.cssText = 'background:var(--bg-secondary,#1e1e2e);border:1px solid var(--border-color,#444);border-radius:6px;padding:16px;max-width:720px;width:92%;color:var(--text-primary,#ccc);font-family:monospace;font-size:12px;';
+
+            // Title
+            const title = document.createElement('div');
+            title.style.cssText = 'font-size:13px;font-weight:bold;margin-bottom:12px;color:var(--text-highlight,#fff);';
+            title.textContent = 'Non-UTF-8 encoding detected';
+            box.appendChild(title);
+
+            // Encoding selector row
+            const selectorRow = document.createElement('div');
+            selectorRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;';
+
+            const label = document.createElement('span');
+            label.textContent = 'Encoding:';
+            label.style.cssText = 'font-size:11px;color:var(--text-secondary,#aaa);';
+            selectorRow.appendChild(label);
+
+            const select = document.createElement('select');
+            select.style.cssText = 'font-size:11px;padding:3px 6px;font-family:monospace;flex:1;max-width:280px;';
+            for (const enc of FALLBACK_ENCODINGS) {
+                const opt = document.createElement('option');
+                opt.value = enc.id;
+                opt.textContent = enc.label;
+                if (enc.id === detected) opt.selected = true;
+                select.appendChild(opt);
+            }
+            selectorRow.appendChild(select);
+            box.appendChild(selectorRow);
+
+            // Side-by-side preview
+            const previewRow = document.createElement('div');
+            previewRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
+
+            // Raw (UTF-8 lossy) preview
+            const rawBox = document.createElement('div');
+            rawBox.style.cssText = 'flex:1;min-width:0;';
+            const rawLabel = document.createElement('div');
+            rawLabel.style.cssText = 'font-size:10px;color:var(--text-secondary,#888);margin-bottom:4px;';
+            rawLabel.textContent = 'Raw (UTF-8):';
+            rawBox.appendChild(rawLabel);
+            const rawPre = document.createElement('pre');
+            rawPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--text-secondary,#888);margin:0;';
+            const rawText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+            const rawLines = rawText.split('\n').slice(0, 20);
+            rawPre.textContent = rawLines.join('\n');
+            rawBox.appendChild(rawPre);
+            previewRow.appendChild(rawBox);
+
+            // Decoded preview
+            const decBox = document.createElement('div');
+            decBox.style.cssText = 'flex:1;min-width:0;';
+            const decLabel = document.createElement('div');
+            decLabel.style.cssText = 'font-size:10px;color:var(--cyan,#0af);margin-bottom:4px;';
+            decLabel.textContent = 'Decoded:';
+            decBox.appendChild(decLabel);
+            const decPre = document.createElement('pre');
+            decPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--text-primary,#ccc);margin:0;';
+            decBox.appendChild(decPre);
+            previewRow.appendChild(decBox);
+            box.appendChild(previewRow);
+
+            function updateDecoded() {
+                const enc = select.value;
+                decPre.textContent = extractPreviewSample(bytes, enc);
+            }
+            select.addEventListener('change', updateDecoded);
+            updateDecoded();
+
+            // Sync scroll between panels
+            rawPre.addEventListener('scroll', () => { decPre.scrollTop = rawPre.scrollTop; });
+            decPre.addEventListener('scroll', () => { rawPre.scrollTop = decPre.scrollTop; });
+
+            // Buttons
+            const btnRow = document.createElement('div');
+            btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;';
+
+            const btnAbort = document.createElement('button');
+            btnAbort.textContent = 'Abort';
+            btnAbort.style.cssText = 'padding:5px 16px;font-size:12px;cursor:pointer;';
+            btnAbort.addEventListener('click', () => {
+                document.body.removeChild(overlay);
+                resolve(null);
+            });
+            btnRow.appendChild(btnAbort);
+
+            const btnImport = document.createElement('button');
+            btnImport.textContent = 'Import';
+            btnImport.style.cssText = 'padding:5px 16px;font-size:12px;cursor:pointer;font-weight:bold;';
+            btnImport.addEventListener('click', () => {
+                chosenFallbackEncoding = select.value;
+                storageSet('zxm8_asmEncoding', select.value);
+                document.body.removeChild(overlay);
+                resolve(select.value);
+            });
+            btnRow.appendChild(btnImport);
+
+            box.appendChild(btnRow);
+            overlay.appendChild(box);
+            document.body.appendChild(overlay);
+
+            // Focus import button
+            btnImport.focus();
+        });
+    }
+
+    // Async decode: UTF-8 if valid, otherwise prompt user for encoding
+    async function decodeText(data) {
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        // Try UTF-8
+        try {
+            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch (e) { /* not valid UTF-8 */ }
+        // Use previously chosen encoding without asking again
+        if (chosenFallbackEncoding) {
+            return new TextDecoder(chosenFallbackEncoding).decode(bytes);
+        }
+        // Ask user
+        const encoding = await showEncodingDialog(bytes);
+        if (!encoding) return null; // aborted
+        return new TextDecoder(encoding).decode(bytes);
+    }
 
     // Current project state
     let currentProjectMainFile = null;  // Main file for compilation
@@ -102,6 +288,7 @@ export function initAssemblerUI({
         updateLineNumbers();
         updateHighlight();
         syncEditorToVFS();
+        updateProjectButtons();
     }
 
     function asmRedo() {
@@ -115,6 +302,7 @@ export function initAssemblerUI({
         updateLineNumbers();
         updateHighlight();
         syncEditorToVFS();
+        updateProjectButtons();
     }
 
     function asmUndoReset() {
@@ -132,7 +320,7 @@ export function initAssemblerUI({
         const hasContent = asmEditor && asmEditor.value.trim().length > 0;
 
         if (btnAsmExport) {
-            btnAsmExport.style.display = hasFiles ? 'inline-block' : 'none';
+            btnAsmExport.style.display = (hasFiles || hasContent) ? 'inline-block' : 'none';
         }
         // Files button: always visible, disabled when 0 or 1 file
         if (btnAsmFiles) {
@@ -861,8 +1049,9 @@ export function initAssemblerUI({
                         }
 
                         if (isText) {
-                            const decoder = new TextDecoder('utf-8');
-                            VFS.addFile(f.name, decoder.decode(f.data));
+                            const text = await decodeText(f.data);
+                            if (text === null) { showMessage('Import aborted'); return; }
+                            VFS.addFile(f.name, text);
                             if (['.asm', '.z80', '.s', '.a80'].includes(ext)) {
                                 lastAddedFile = normalizedPath;
                             }
@@ -940,8 +1129,9 @@ export function initAssemblerUI({
                     }
 
                     if (isText) {
-                        const decoder = new TextDecoder('utf-8');
-                        VFS.addFile(targetPath, decoder.decode(new Uint8Array(arrayBuffer)));
+                        const text = await decodeText(arrayBuffer);
+                        if (text === null) { showMessage('Import aborted'); return; }
+                        VFS.addFile(targetPath, text);
                         if (['.asm', '.z80', '.s', '.a80'].includes(ext)) {
                             lastAddedFile = VFS.normalizePath(targetPath);
                         }
@@ -1485,7 +1675,22 @@ export function initAssemblerUI({
                 return;
             }
 
-            // Create simple uncompressed ZIP
+            const alwaysZip = chkAsmExportZip && chkAsmExportZip.checked;
+
+            // Single file: save as plain text (unless "Export ZIP" checked)
+            if (sourceFiles.length === 1 && !alwaysZip) {
+                const file = sourceFiles[0];
+                const blob = new Blob([file.content], { type: 'text/plain' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = file.name;
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showMessage(`Exported ${file.name}`);
+                return;
+            }
+
+            // Multiple files (or forced ZIP): create uncompressed ZIP
             const zipParts = [];
             const centralDir = [];
             let offset = 0;
@@ -1586,7 +1791,7 @@ export function initAssemblerUI({
             a.click();
             URL.revokeObjectURL(a.href);
 
-            showMessage(`Exported ${sourceFiles.length} source file(s)`);
+            showMessage(`Exported ${sourceFiles.length} source file(s) as ZIP`);
         });
     }
 
@@ -2274,6 +2479,16 @@ export function initAssemblerUI({
                 debuggerTab.click();
             }
 
+            // Navigate disassembly to entry address
+            if (getLeftPanelType() === 'disasm') {
+                goToAddress(entryPoint);
+            } else if (getRightPanelType() === 'disasm') {
+                goToRightDisasmAddress(entryPoint);
+            } else {
+                switchLeftPanelType('disasm');
+                goToAddress(entryPoint);
+            }
+
             // Update debugger view
             updateDebugger();
             updateStatus();
@@ -2383,39 +2598,28 @@ export function initAssemblerUI({
 
         const startAddr = cmd.start;
 
-        // SNA header (27 bytes)
-        // I register
-        snaData[0] = 0x3F;
-        // HL', DE', BC', AF' (alternate registers)
-        snaData[1] = 0; snaData[2] = 0;  // HL'
-        snaData[3] = 0; snaData[4] = 0;  // DE'
-        snaData[5] = 0; snaData[6] = 0;  // BC'
-        snaData[7] = 0; snaData[8] = 0;  // AF'
-        // HL, DE, BC (main registers)
-        snaData[9] = 0; snaData[10] = 0;  // HL
-        snaData[11] = 0; snaData[12] = 0; // DE
-        snaData[13] = 0; snaData[14] = 0; // BC
-        // IY, IX
-        snaData[15] = 0x5C; snaData[16] = 0x3A; // IY = 5C3Ah (standard)
-        snaData[17] = 0; snaData[18] = 0;        // IX
-        // Interrupt (bit 2 = IFF2)
-        snaData[19] = 0x04; // IFF2 enabled
-        // R register
-        snaData[20] = 0;
-        // AF
-        snaData[21] = 0; snaData[22] = 0;         // AF
-        // SP
-        if (is128k) {
-            // 128K: PC stored in extended header, SP is actual value
-            snaData[23] = 0; snaData[24] = 0; // SP = 0x0000
-        } else {
-            // 48K: PC stored on stack via RETN trick, SP points below pushed PC
-            snaData[23] = 0xFE; snaData[24] = 0xFF; // SP = 0xFFFE
-        }
-        // Interrupt mode
-        snaData[25] = 1; // IM 1
-        // Border color
-        snaData[26] = 7; // White border
+        // SNA header (27 bytes) — USR 0 register state matching sjasmplus
+        //  I    L'   H'   E'   D'   C'   B'   F'   A'   L    H    E    D    C    B
+        //  IYL  IYH  IXL  IXH  IFF2 R    F    A    SPL  SPH  IM   Border
+        snaData[0]  = 0x3F;                          // I
+        snaData[1]  = 0x58; snaData[2]  = 0x27;     // HL' = 0x2758
+        snaData[3]  = 0x9B; snaData[4]  = 0x36;     // DE' = 0x369B
+        snaData[5]  = 0x00; snaData[6]  = 0x00;     // BC' = 0x0000
+        snaData[7]  = 0x44; snaData[8]  = 0x00;     // AF' = 0x0044
+        snaData[9]  = 0x2B; snaData[10] = 0x2D;     // HL  = 0x2D2B
+        snaData[11] = 0xDC; snaData[12] = 0x5C;     // DE  = 0x5CDC
+        // BC = start address (sjasmplus convention)
+        snaData[13] = startAddr & 0xFF;
+        snaData[14] = (startAddr >> 8) & 0xFF;
+        snaData[15] = 0x3A; snaData[16] = 0x5C;     // IY  = 0x5C3A
+        snaData[17] = 0x3C; snaData[18] = 0xFF;     // IX  = 0xFF3C
+        snaData[19] = 0x00;                          // IFF2 = disabled
+        snaData[20] = 0x00;                          // R
+        snaData[21] = 0x54; snaData[22] = 0x00;     // AF  = 0x0054
+        // SP — set below after RAM dump (depends on stack analysis)
+        snaData[23] = 0x00; snaData[24] = 0x00;     // SP (placeholder)
+        snaData[25] = 0x01;                          // IM 1
+        snaData[26] = 0x07;                          // Border = white
 
         // RAM dump (48K starting at 0x4000)
         // Copy assembled data into 48K section
@@ -2431,8 +2635,8 @@ export function initAssemblerUI({
                     }
                 }
             } else {
-                // ZXSPECTRUM48: pages 5, 2, 0 map to 0x4000-0xFFFF
-                const pageMap = [5, 2, 0];
+                // ZXSPECTRUM48: pages 1, 2, 3 map to 0x4000-0xFFFF
+                const pageMap = [1, 2, 3];
                 for (let page = 0; page < 3; page++) {
                     const pageData = AsmMemory.getPage(pageMap[page]);
                     if (pageData) {
@@ -2453,14 +2657,17 @@ export function initAssemblerUI({
         }
 
         if (is128k) {
+            // 128K: SP = default stack address (USR 0 state)
+            snaData[23] = 0x58; snaData[24] = 0x5D; // SP = 0x5D58
+
             // 128K extended header at offset 49179
             const offset = 49179;
             // PC
             snaData[offset] = startAddr & 0xFF;
             snaData[offset + 1] = (startAddr >> 8) & 0xFF;
-            // Port 0x7FFD value
+            // Port 0x7FFD value: bits 0-2 = current bank, bit 4 = ROM bank 1 (48K BASIC, USR 0 state)
             const currentBank = AsmMemory.slots[3].page;
-            snaData[offset + 2] = currentBank & 0x07;
+            snaData[offset + 2] = 0x10 | (currentBank & 0x07);
             // TR-DOS ROM not paged
             snaData[offset + 3] = 0;
             // Remaining RAM banks (excluding 5, 2, and current bank at C000)
@@ -2475,9 +2682,31 @@ export function initAssemblerUI({
                 bankOffset += 0x4000;
             }
         } else {
-            // 48K: Place start address on stack for RETN
-            snaData[27 + (0xFFFE - 0x4000)] = startAddr & 0xFF;
-            snaData[27 + (0xFFFE - 0x4000) + 1] = (startAddr >> 8) & 0xFF;
+            // 48K: Check if default stack is unmodified (sjasmplus approach)
+            // Default stack at $5D58-$5D5B: 03 13 00 3E
+            // Plus two zero bytes before it at $5D56-$5D57 (for 48K PC injection check)
+            const stackAddr = 0x5D58; // ZxRamTop(0x5D5B) + 1 - 4
+            const ramOffset = 27; // SNA header size
+            const defaultStackOK =
+                snaData[ramOffset + (stackAddr - 0x4000)]     === 0x03 &&
+                snaData[ramOffset + (stackAddr - 0x4000) + 1] === 0x13 &&
+                snaData[ramOffset + (stackAddr - 0x4000) + 2] === 0x00 &&
+                snaData[ramOffset + (stackAddr - 0x4000) + 3] === 0x3E &&
+                snaData[ramOffset + (stackAddr - 0x4000) - 2] === 0x00 &&
+                snaData[ramOffset + (stackAddr - 0x4000) - 1] === 0x00;
+
+            if (defaultStackOK) {
+                // Inject PC below the default stack at $5D56
+                snaData[ramOffset + (0x5D56 - 0x4000)]     = startAddr & 0xFF;
+                snaData[ramOffset + (0x5D56 - 0x4000) + 1] = (startAddr >> 8) & 0xFF;
+                // SP points at injected PC
+                snaData[23] = 0x56; snaData[24] = 0x5D; // SP = 0x5D56
+            } else {
+                // Stack was modified — fallback: inject PC at $4000, SP = $4000
+                snaData[ramOffset]     = startAddr & 0xFF;
+                snaData[ramOffset + 1] = (startAddr >> 8) & 0xFF;
+                snaData[23] = 0x00; snaData[24] = 0x40; // SP = 0x4000
+            }
         }
 
         return snaData;

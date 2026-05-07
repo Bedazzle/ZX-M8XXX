@@ -130,10 +130,21 @@ export const Z80Asm = {
 export const InstructionEncoder = {
     // Encode a single instruction
     // Returns { bytes: [...], size: n, undefined: bool }
+    // Normalize IX/IY half-register aliases to canonical names
+    // sjasmplus accepts: XH/HX/IXH, XL/LX/IXL, YH/HY/IYH, YL/LY/IYL
+    normalizeOperand(op) {
+        const u = op.toUpperCase();
+        if (u === 'XH' || u === 'HX') return 'IXH';
+        if (u === 'XL' || u === 'LX') return 'IXL';
+        if (u === 'YH' || u === 'HY') return 'IYH';
+        if (u === 'YL' || u === 'LY') return 'IYL';
+        return op;
+    },
+
     encode(mnemonic, operands, currentAddress, symbols) {
         const mn = mnemonic.toUpperCase();
-        const ops = operands.map(o => o.trim());
-        
+        const ops = operands.map(o => this.normalizeOperand(o.trim()));
+
         // Dispatch to specific encoder
         const encoder = this.encoders[mn];
         if (!encoder) {

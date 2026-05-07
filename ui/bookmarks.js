@@ -33,7 +33,7 @@ export function initBookmarks({
                 btn.textContent = `${emoji}${hex16(bm.addr)}`;
                 btn.classList.add('set');
                 btn.classList.toggle('type-mismatch', bm.type !== currentType);
-                btn.title = `${bm.type}: ${hex16(bm.addr)} (Click: go, Right-click: set)`;
+                btn.title = `${bm.type}: ${hex16(bm.addr)} (Click: go, Right-click: set, Ctrl+click: clear)`;
             } else if (bm !== null) {
                 // Legacy format: just address (assume current panel type)
                 btn.textContent = hex16(bm);
@@ -57,7 +57,30 @@ export function initBookmarks({
             const idx = parseInt(btn.dataset.index);
 
             // Left click: navigate to bookmark (switch panel type if needed)
-            btn.addEventListener('click', () => {
+            // Ctrl+click: clear bookmark
+            btn.addEventListener('click', (e) => {
+                if (e.ctrlKey) {
+                    const currentBookmarks = getBookmarks();
+                    const oldBm = currentBookmarks[idx];
+                    if (oldBm !== null) {
+                        setBookmark(idx, null);
+                        updateBookmarkButtons(bar, getBookmarks(), panelSide);
+                        undoManager.push({
+                            type: 'bookmark',
+                            description: `Clear ${panelSide} bookmark ${idx + 1}`,
+                            undo: () => {
+                                setBookmark(idx, oldBm);
+                                updateBookmarkButtons(bar, getBookmarks(), panelSide);
+                            },
+                            redo: () => {
+                                setBookmark(idx, null);
+                                updateBookmarkButtons(bar, getBookmarks(), panelSide);
+                            }
+                        });
+                        showMessage(`${panelSide === 'left' ? 'Left' : 'Right'} bookmark ${idx + 1} cleared`);
+                    }
+                    return;
+                }
                 const currentBookmarks = getBookmarks();
                 const bm = currentBookmarks[idx];
                 if (bm !== null) {

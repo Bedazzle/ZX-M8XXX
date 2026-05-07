@@ -4477,16 +4477,27 @@ import { Disassembler } from './disasm.js';
             if (this.running || !this.romLoaded) return false;
             const pc = this.cpu.pc;
             const opcode = this.memory.read(pc);
-            
+
             // Check if it's a CALL or RST instruction
             const isCall = (opcode === 0xCD) || // CALL nn
                           (opcode & 0xC7) === 0xC4 || // CALL cc,nn
                           (opcode & 0xC7) === 0xC7;   // RST n
-            
-            if (isCall) {
+
+            // Check if it's a repeating block instruction (ED prefix)
+            // LDIR(B0) CPIR(B1) INIR(B2) OTIR(B3) LDDR(B8) CPDR(B9) INDR(BA) OTDR(BB)
+            let isBlockRepeat = false;
+            if (opcode === 0xED) {
+                const byte2 = this.memory.read((pc + 1) & 0xffff);
+                if ((byte2 & 0xF4) === 0xB0) isBlockRepeat = true;
+            }
+
+            if (isCall || isBlockRepeat) {
                 // Determine instruction length to find next PC
                 let nextPC;
-                if ((opcode & 0xC7) === 0xC7) {
+                if (isBlockRepeat) {
+                    // ED xx - 2 bytes
+                    nextPC = (pc + 2) & 0xffff;
+                } else if ((opcode & 0xC7) === 0xC7) {
                     // RST - 1 byte
                     nextPC = (pc + 1) & 0xffff;
                 } else {

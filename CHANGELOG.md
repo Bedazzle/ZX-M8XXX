@@ -2,6 +2,24 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.13.4
+- **Assembler SAVESNA sjasmplus Compatibility**: Fixed SAVESNA to produce byte-identical output with the sjasmplus reference assembler:
+  - **Page mapping fix**: ZXSPECTRUM48 page mapping changed from 128K-style [5, 2, 0] to correct [1, 2, 3] — the old mapping silently produced 16K of zeroes since pages 5 and 2 don't exist on the 4-page device.
+  - **USR 0 memory initialization**: DEVICE ZXSPECTRUM* now initializes system variables ($5C00-$5CFF), UDG character data ($FF58-$FFFF), default stack ($5D58-$5D5B), and screen attributes ($5800-$5AFF) to match a real ZX Spectrum after USR 0.
+  - **SNA header registers**: Set to proper USR 0 values (HL', DE', AF', HL, DE, IY, IX, AF, IFF2) matching sjasmplus. BC is set to the start address.
+  - **48K PC injection**: Uses sjasmplus stack-check logic — if default stack is unmodified, injects PC at $5D56 with SP=$5D56; otherwise falls back to $4000.
+  - **128K SNA fix**: SP set to $5D58 (default stack, was $0000). Port 7FFD value now includes bit 4 (ROM bank 1 / 48K BASIC) matching sjasmplus USR 0 state.
+- **Assembler Text Encoding Support**: Non-UTF-8 assembly files are now handled with an encoding selector dialog. When a file fails UTF-8 decoding, the user is prompted to choose from CP866, Windows-1251, KOI8-R, ISO 8859, and other encodings with a live preview. The choice is remembered for subsequent files.
+- **Assembler Error Location**: Error messages now always include the source file name and line number. Previously, errors from instruction encoders (e.g. "Invalid LD operands") showed the message without any location info, making it hard to find the problem.
+- **Assembler IX/IY Half-Register Aliases**: Added support for sjasmplus register name aliases: `XH`/`HX` for `IXH`, `XL`/`LX` for `IXL`, `YH`/`HY` for `IYH`, `YL`/`LY` for `IYL`. These are commonly used in ZX Spectrum assembly code.
+- **Assembler Include Directives**: Added `INSERT` (synonym for `INCBIN`), `INCHOB` (include Hobeta file, auto-skips 17-byte header), and `INCTRD` (extract and include a file from a TRD disk image). All match sjasmplus behavior and support optional offset/length parameters.
+- **Assembler Export Plain Text**: Single source files are now exported as plain text by default instead of ZIP. An "Assembler: export as ZIP" checkbox in Settings → Display forces ZIP format for single files. Multi-file projects always export as ZIP regardless of the setting. Also fixed the Export button not appearing when typing code directly into the editor or after undo/redo.
+
+## v0.13.3
+- **Bookmark Clearing**: Ctrl+click a bookmark button or Ctrl+digit (1-5 left, 6-9/0 right) to clear a bookmark slot. Supports undo/redo.
+- **Step Over Block Instructions**: F8 (Step Over) now executes repeating block instructions (LDIR, LDDR, CPIR, CPDR, INIR, INDR, OTIR, OTDR) to completion instead of stepping through each iteration.
+- **Assembler Debug Navigation**: The Debug button now navigates a disassembly panel to the entry address. Prefers left panel if it's disasm, falls back to right panel if it's disasm, otherwise switches left panel to disasm mode.
+
 ## v0.13.1
 - **Debugger Display Settings**: Three new checkboxes in Settings → Display for debugger view control:
   - **Flow break spacing** — toggle extra space after flow control instructions (JP, JR, RET, DJNZ). Default ON.

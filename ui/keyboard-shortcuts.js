@@ -311,7 +311,45 @@ export function initKeyboardShortcuts({
                 const leftPanelType = getLeftPanelType();
                 const rightPanelType = getRightPanelType();
 
-                if (!e.shiftKey) {
+                if (e.ctrlKey) {
+                    // Ctrl+digit: clear bookmark
+                    if (digit in leftMap && leftPanelType !== 'calc') {
+                        e.preventDefault();
+                        const idx = leftMap[digit];
+                        const leftBookmarks = getLeftBookmarks();
+                        const oldBm = leftBookmarks[idx];
+                        if (oldBm !== null) {
+                            setLeftBookmark(idx, null);
+                            updateBookmarkButtons(disasmBookmarksBar, getLeftBookmarks(), 'left');
+                            undoManager.push({
+                                type: 'bookmark',
+                                description: `Clear left bookmark ${idx + 1}`,
+                                undo: () => { setLeftBookmark(idx, oldBm); updateBookmarkButtons(disasmBookmarksBar, getLeftBookmarks(), 'left'); },
+                                redo: () => { setLeftBookmark(idx, null); updateBookmarkButtons(disasmBookmarksBar, getLeftBookmarks(), 'left'); }
+                            });
+                            showMessage(`Left bookmark ${idx + 1} cleared`);
+                        }
+                        return;
+                    }
+                    if (digit in rightMap && rightPanelType !== 'calc') {
+                        e.preventDefault();
+                        const idx = rightMap[digit];
+                        const rightBookmarks = getRightBookmarks();
+                        const oldBm = rightBookmarks[idx];
+                        if (oldBm !== null) {
+                            setRightBookmark(idx, null);
+                            updateBookmarkButtons(memoryBookmarksBar, getRightBookmarks(), 'right');
+                            undoManager.push({
+                                type: 'bookmark',
+                                description: `Clear right bookmark ${idx + 1}`,
+                                undo: () => { setRightBookmark(idx, oldBm); updateBookmarkButtons(memoryBookmarksBar, getRightBookmarks(), 'right'); },
+                                redo: () => { setRightBookmark(idx, null); updateBookmarkButtons(memoryBookmarksBar, getRightBookmarks(), 'right'); }
+                            });
+                            showMessage(`Right bookmark ${idx + 1} cleared`);
+                        }
+                        return;
+                    }
+                } else if (!e.shiftKey) {
                     // Jump to bookmark
                     if (digit in leftMap && leftPanelType !== 'calc') {
                         e.preventDefault();

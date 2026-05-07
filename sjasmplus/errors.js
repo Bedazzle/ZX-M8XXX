@@ -39,17 +39,27 @@ export const ErrorCollector = {
     errors: [],
     errorCount: 0,
 
+    // Current source location (set by assembler during processing)
+    currentLine: null,
+    currentFile: null,
+
     reset() {
         this.warnings = [];
         this.errors = [];
         this.errorCount = 0;
+        this.currentLine = null;
+        this.currentFile = null;
     },
 
     warn(message, line = null, file = null) {
+        if (line === null) line = this.currentLine;
+        if (file === null) file = this.currentFile;
         this.warnings.push(new AssemblerWarning(message, line, file));
     },
 
     error(message, line = null, file = null) {
+        if (line === null) line = this.currentLine;
+        if (file === null) file = this.currentFile;
         this.errorCount++;
         const err = new AssemblerError(message, line, file);
         this.errors.push({ message, line, file });

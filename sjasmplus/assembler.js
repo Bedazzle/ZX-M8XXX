@@ -154,6 +154,8 @@ export const Assembler = {
                 // Track current source location for error reporting
                 AsmMemory.currentLine = line.line;
                 AsmMemory.currentFile = line.file;
+                ErrorCollector.currentLine = line.line;
+                ErrorCollector.currentFile = line.file;
                 try {
                     this.processLine(line);
                 } catch (e) {
@@ -569,7 +571,14 @@ export const Assembler = {
                 this.dirINCLUDE(ops, line);
                 break;
             case 'INCBIN':
+            case 'INSERT':
                 this.dirINCBIN(ops, line);
+                break;
+            case 'INCHOB':
+                this.dirINCHOB(ops, line);
+                break;
+            case 'INCTRD':
+                this.dirINCTRD(ops, line);
                 break;
             case 'OUTPUT':
                 // OUTPUT is just a hint, we'll use the first save directive
@@ -1363,6 +1372,193 @@ export const Assembler = {
             for (const byte of data) {
                 this.emit(byte);
             }
+        }
+    },
+
+    // INCHOB - include Hobeta file (skip 17-byte header)
+    dirINCHOB(ops, line) {
+        if (ops.length < 1) {
+            ErrorCollector.error('INCHOB requires a filename', line.line, line.file);
+            return;
+        }
+
+        // Get filename (strip quotes)
+        let filename = ops[0];
+        if ((filename.startsWith('"') && filename.endsWith('"')) ||
+            (filename.startsWith("'") && filename.endsWith("'"))) {
+            filename = filename.slice(1, -1);
+        }
+
+        // Parse optional offset and length (relative to data after header)
+        let offset = 0;
+        let length = -1;
+
+        if (ops.length >= 2) {
+            const offsetVal = this.evaluate(ops[1], line);
+            if (!offsetVal.undefined) offset = offsetVal.value;
+        }
+
+        if (ops.length >= 3) {
+            const lengthVal = this.evaluate(ops[2], line);
+            if (!lengthVal.undefined) length = lengthVal.value;
+        }
+
+        const file = VFS.getBinaryFile(filename, line.file);
+        if (file.error) {
+            ErrorCollector.error(file.error, line.line, line.file);
+            return;
+        }
+
+        const HOBETA_HEADER = 17;
+        let data = file.content;
+
+        if (data.length < HOBETA_HEADER) {
+            ErrorCollector.error(`INCHOB: file too small for Hobeta format (${data.length} bytes)`, line.line, line.file);
+            return;
+        }
+
+        // Skip Hobeta header, then apply user offset
+        data = data.slice(HOBETA_HEADER + offset);
+
+        if (length >= 0) {
+            data = data.slice(0, length);
+        }
+
+        for (const byte of data) {
+            this.emit(byte);
+        }
+    },
+
+    // INCTRD - include file from TRD disk image
+    dirINCTRD(ops, line) {
+        if (ops.length < 2) {
+            ErrorCollector.error('INCTRD requires TRD filename and file name within TRD', line.line, line.file);
+            return;
+        }
+
+        // Get TRD image filename
+        let trdFilename = ops[0];
+        if ((trdFilename.startsWith('"') && trdFilename.endsWith('"')) ||
+            (trdFilename.startsWith("'") && trdFilename.endsWith("'"))) {
+            trdFilename = trdFilename.slice(1, -1);
+        }
+
+        // Get file name within TRD
+        let innerFilename = ops[1];
+        if ((innerFilename.startsWith('"') && innerFilename.endsWith('"')) ||
+            (innerFilename.startsWith("'") && innerFilename.endsWith("'"))) {
+            innerFilename = innerFilename.slice(1, -1);
+        }
+
+        // Parse optional offset and length
+        let offset = 0;
+        let length = -1;
+
+        if (ops.length >= 3) {
+            const offsetVal = this.evaluate(ops[2], line);
+            if (!offsetVal.undefined) offset = offsetVal.value;
+        }
+
+        if (ops.length >= 4) {
+            const lengthVal = this.evaluate(ops[3], line);
+            if (!lengthVal.undefined) length = lengthVal.value;
+        }
+
+        // Load TRD image from VFS
+        const file = VFS.getBinaryFile(trdFilename, line.file);
+        if (file.error) {
+            ErrorCollector.error(file.error, line.line, line.file);
+            return;
+        }
+
+        const trdData = file.content;
+
+        // Parse TRD directory to find the file
+        // TRD directory is in sector 0, track 0 — first 2048 bytes (8 sectors × 256 bytes)
+        // Each entry is 16 bytes: name(8) + type(1) + start(2) + length(2) + sectors(1) + firstSector(1) + firstTrack(1)
+        const dirSize = 2048;
+        if (trdData.length < dirSize) {
+            ErrorCollector.error('INCTRD: TRD image too small', line.line, line.file);
+            return;
+        }
+
+        // Split inner filename into name and extension (e.g. "mygfx.C" → "mygfx", "C")
+        let searchName, searchExt;
+        const dotPos = innerFilename.lastIndexOf('.');
+        if (dotPos >= 0) {
+            searchName = innerFilename.substring(0, dotPos);
+            searchExt = innerFilename.substring(dotPos + 1);
+        } else {
+            searchName = innerFilename;
+            searchExt = '';
+        }
+
+        // Search directory
+        let found = null;
+        for (let i = 0; i < 128; i++) {
+            const entryOff = i * 16;
+            if (trdData[entryOff] === 0x00) break;  // End of directory
+            if (trdData[entryOff] === 0x01) continue; // Deleted entry
+
+            // Read 8-char filename (space-padded)
+            let name = '';
+            for (let j = 0; j < 8; j++) {
+                name += String.fromCharCode(trdData[entryOff + j]);
+            }
+            name = name.trimEnd();
+
+            // Read 1-char extension
+            const ext = String.fromCharCode(trdData[entryOff + 8]);
+
+            if (name.toUpperCase() === searchName.toUpperCase() &&
+                ext.toUpperCase() === searchExt.toUpperCase()) {
+                const fileLength = trdData[entryOff + 11] | (trdData[entryOff + 12] << 8);
+                const fileSectors = trdData[entryOff + 13];
+                const firstSector = trdData[entryOff + 14];
+                const firstTrack = trdData[entryOff + 15];
+                found = { fileLength, fileSectors, firstSector, firstTrack };
+                break;
+            }
+        }
+
+        if (!found) {
+            ErrorCollector.error(`INCTRD: file "${innerFilename}" not found in TRD image`, line.line, line.file);
+            return;
+        }
+
+        // Extract file data from TRD
+        // TRD layout: 256 bytes/sector, 16 sectors/track
+        const sectorSize = 256;
+        const sectorsPerTrack = 16;
+        let data = new Uint8Array(found.fileSectors * sectorSize);
+        let track = found.firstTrack;
+        let sector = found.firstSector;
+
+        for (let s = 0; s < found.fileSectors; s++) {
+            const diskOffset = (track * sectorsPerTrack + sector) * sectorSize;
+            if (diskOffset + sectorSize <= trdData.length) {
+                data.set(trdData.slice(diskOffset, diskOffset + sectorSize), s * sectorSize);
+            }
+            sector++;
+            if (sector >= sectorsPerTrack) {
+                sector = 0;
+                track++;
+            }
+        }
+
+        // Trim to actual file length
+        data = data.slice(0, found.fileLength);
+
+        // Apply offset and length
+        if (offset > 0) {
+            data = data.slice(offset);
+        }
+        if (length >= 0) {
+            data = data.slice(0, length);
+        }
+
+        for (const byte of data) {
+            this.emit(byte);
         }
     },
 

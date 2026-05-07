@@ -393,7 +393,7 @@ export const Parser = {
             // Modules
             'MODULE', 'ENDMODULE',
             // Includes
-            'INCLUDE', 'INCBIN',
+            'INCLUDE', 'INCBIN', 'INSERT', 'INCHOB', 'INCTRD',
             // Output
             'OUTPUT', 'OUTEND',
             'SAVEBIN', 'SAVESNA', 'SAVETAP', 'EMPTYTAP', 'SAVETRD', 'EMPTYTRD',

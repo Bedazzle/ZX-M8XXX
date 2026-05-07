@@ -594,6 +594,16 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         storageSet('zxm8_followPC', chkFollowPC.checked);
     });
 
+    // ===== Assembler export settings =====
+
+    const chkAsmExportZip = document.getElementById('chkAsmExportZip');
+    if (chkAsmExportZip) {
+        chkAsmExportZip.checked = storageGet('zxm8_asmExportZip') === 'true';
+        chkAsmExportZip.addEventListener('change', () => {
+            storageSet('zxm8_asmExportZip', chkAsmExportZip.checked);
+        });
+    }
+
     // ===== Public API =====
 
     return {
