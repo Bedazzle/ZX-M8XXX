@@ -2,7 +2,20 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
-## v0.13.4
+## v0.14.3
+- **Assembler T-State Popup**: Selecting code in the assembler editor shows a floating popup with the total T-states for the selected instructions. Appears after 1.5 seconds of inactivity (no mouse, keyboard, or scroll). Disappears immediately on any user interaction (mouse move, click, key press, scroll). Single instructions show timing directly (e.g. `4T`). Multiple instructions show the sum with count (e.g. `42T (3 instr)`). Conditional instructions (DJNZ, JR cc, CALL cc, RET cc, LDIR, etc.) show both taken/not-taken totals (e.g. `17/12T`). Unresolved lines (macros, unknown mnemonics) are prefixed with `~`. Popup font size matches the editor font size setting. Uses the `z80Opcodes` reference table from `opcodes-data.js` for timing data.
+- **Assembler Undefined Symbol Detection**: Fixed a bug where mistyped label names in expressions (e.g. `LD L, LOW somelabel`) would silently assemble as 0 instead of producing an error. Unknown symbols are now registered as forward references during expression evaluation; if never defined, each is reported as a separate error with file name and line number (clickable in the output to navigate to the source).
+- **Assembler DISPLAY Directive**: Implemented the sjasmplus `DISPLAY` directive for outputting messages during assembly. Supports string literals, expressions, and format specifiers: `/H` (hex, default), `/D` (decimal), `/A` (hex and decimal), `/B` (binary), `/C` (character). Messages appear in cyan in the assembler output panel with `>` prefix, clickable to navigate to the source line. Example: `DISPLAY "addr:", /A, label` outputs `> addr:0x6000, 24576`.
+- **Assembler Output Font**: The assembler output panel now uses the same font family and size as the editor (tracks the font size setting).
+
+## v0.14.2
+- **Shadow Screen**: Displays a second screen below the main canvas with five viewing modes selectable via Settings → Display → Shadow dropdown: **Full** (inactive screen bank with full attribute coloring, 128K+ only), **Bitmap** (inactive bank as white-on-black pixels, 128K+ only), **Linear** (renders 6144 bytes row-by-row from a custom address, all machines), **Spectrum** (renders 6144 bytes using ZX Spectrum interleaved screen layout from a custom address, all machines). A hex address input appears for Linear/Spectrum modes. The dropdown dynamically hides Full/Bitmap options on 48K machines. SCR bank indicator in the status bar shows the active screen bank on 128K+. Settings and address persist to localStorage and project files.
+- **Run/Pause Button Tooltip Fix**: The Run/Pause button tooltip incorrectly showed F5 (which is Quickload). Fixed to show F6, which is the actual Pause/Resume shortcut.
+
+## v0.14.1
+- **Assembler Clipboard Sharing**: Share and Import buttons in the assembler toolbar. Share compresses all source files, binary includes, machine type, and settings into a marked text string and copies it to the clipboard. Import parses a pasted string and restores the full project including VFS files, machine selection, and assembler settings. The compressed format uses pako deflate + base64 with `===M8XXX-ASM-BEGIN===`/`===M8XXX-ASM-END===` markers, and tolerates whitespace inserted by email clients or messengers.
+
+## v0.14.0
 - **Assembler SAVESNA sjasmplus Compatibility**: Fixed SAVESNA to produce byte-identical output with the sjasmplus reference assembler:
   - **Page mapping fix**: ZXSPECTRUM48 page mapping changed from 128K-style [5, 2, 0] to correct [1, 2, 3] — the old mapping silently produced 16K of zeroes since pages 5 and 2 don't exist on the 4-page device.
   - **USR 0 memory initialization**: DEVICE ZXSPECTRUM* now initializes system variables ($5C00-$5CFF), UDG character data ($FF58-$FFFF), default stack ($5D58-$5D5B), and screen attributes ($5800-$5AFF) to match a real ZX Spectrum after USR 0.

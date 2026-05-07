@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.13.4</title>
+    <title>ZX-M8XXX v0.14.3</title>
     <style>
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -307,11 +307,34 @@
             padding: 6px;
             border-radius: 8px;
             display: flex;
+            flex-direction: column;
+            align-items: center;
             justify-content: center;
             margin-bottom: 8px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
             overflow: auto;
             position: relative;
+        }
+        .second-screen-container {
+            margin-top: 4px;
+            text-align: center;
+        }
+        .second-screen-container.hidden { display: none; }
+        .second-screen-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 2px 4px;
+            font-size: 11px;
+        }
+        .second-screen-label { color: var(--cyan); font-weight: bold; }
+        .second-screen-tag { color: var(--text-dim); font-size: 10px; margin-left: 12px; }
+        #secondScreen {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            display: block;
+            margin: 0 auto;
+            border: 1px solid var(--border-color);
         }
         .screen-wrapper {
             position: relative;
@@ -829,6 +852,20 @@
             word-spacing: 0;
             background: transparent;
         }
+        .asm-tstate-popup {
+            position: absolute;
+            z-index: 10;
+            background: var(--bg-primary);
+            border: 1px solid var(--accent);
+            color: var(--cyan);
+            padding: 2px 8px;
+            font-size: var(--asm-font-size, 12px);
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            border-radius: 3px;
+            pointer-events: none;
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
         .asm-output-container {
             flex: 0 0 auto;
             display: flex;
@@ -849,8 +886,8 @@
         .asm-output {
             flex: 1;
             padding: 6px 10px;
-            font-family: monospace;
-            font-size: 11px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: var(--asm-font-size, 12px);
             line-height: 1.4;
             overflow: auto;
             color: var(--text-primary);
@@ -927,6 +964,9 @@
         }
         .asm-output .asm-warning {
             color: #ffcc00;
+        }
+        .asm-output .asm-display {
+            color: var(--cyan, #80ffff);
         }
         .asm-output .asm-clickable {
             cursor: pointer;
@@ -6442,6 +6482,30 @@
         </div>
     </div>
 
+    <!-- ASM Import Dialog -->
+    <div id="asmImportDialog" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 520px;">
+            <h2>Import Shared Project</h2>
+            <textarea id="asmImportText" rows="10"
+                placeholder="Paste shared project here (===M8XXX-ASM-BEGIN=== ... ===M8XXX-ASM-END===)"
+                spellcheck="false"
+                style="width:100%; font-family:monospace; font-size:11px; resize:vertical;
+                       background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-color);
+                       padding:8px; box-sizing:border-box;"></textarea>
+            <div id="asmImportPreview" style="display:none; margin-top:8px; padding:8px;
+                       background:var(--bg-secondary); border:1px solid var(--border-color);
+                       font-size:11px; line-height:1.5; max-height:180px; overflow-y:auto;">
+            </div>
+            <label id="asmImportSettingsLabel" style="display:none; margin-top:8px; font-size:12px; cursor:pointer;">
+                <input type="checkbox" id="chkAsmImportSettings" checked> Apply machine &amp; hardware settings
+            </label>
+            <div class="modal-actions">
+                <button id="btnAsmImportCancel">Cancel</button>
+                <button id="btnAsmImportOk">Import</button>
+            </div>
+        </div>
+    </div>
+
     <style>
         .zip-file-list {
             max-height: 300px;
@@ -6496,7 +6560,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.13.4 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.3 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6508,6 +6572,13 @@
                 <canvas id="screen" width="320" height="240"></canvas>
                 <canvas id="overlayCanvas" width="320" height="240"></canvas>
                 <div id="spriteRegionOverlay" class="sprite-region-overlay"></div>
+            </div>
+            <div id="secondScreenContainer" class="second-screen-container hidden">
+                <div class="second-screen-header">
+                    <span id="secondScreenLabel" class="second-screen-label">Bank 7</span>
+                    <span class="second-screen-tag">Shadow screen</span>
+                </div>
+                <canvas id="secondScreen" width="256" height="192"></canvas>
             </div>
             <div id="screenInfoPopup" class="screen-info-popup hidden"></div>
             <div id="xrefTooltip" class="xref-tooltip"></div>
@@ -6533,11 +6604,15 @@
                 <span class="status-label" id="diskLed" title="Disk activity">💾</span>
                 <span class="status-value" id="diskStatus" style="display:inline-block;min-width:6.5em;font-family:monospace;">-</span>
             </span>
+            <span class="status-item" id="screenBankInfo" style="display:none;">
+                <span class="status-label">SCR:</span>
+                <span class="status-value" id="screenBankStatus">5</span>
+            </span>
         </div>
         
         <div class="controls">
             <button id="btnScreenshotMain" title="Save screenshot (F3)">📷</button>
-            <button id="btnRun" class="primary" title="Run/Pause emulation (F5)">Run</button>
+            <button id="btnRun" class="primary" title="Run/Pause emulation (F6)">Run</button>
             <button id="btnReset" title="Reset machine">Reset</button>
             <select id="speedSelect" title="Emulation speed">
                 <option value="10">10%</option>
@@ -7272,6 +7347,8 @@
                         <button id="btnAsmNew" title="Create new file">New</button>
                         <button id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load</button>
                         <button id="btnAsmExport" title="Export source files (plain text or ZIP)" style="display:none">Export</button>
+                        <button id="btnAsmShare" title="Copy project to clipboard for sharing" style="display:none">Share</button>
+                        <button id="btnAsmImport" title="Import shared project from clipboard">Import</button>
                         <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
                         <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
                         <label class="asm-option"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
@@ -7331,6 +7408,7 @@ start:
         AND 7
         OUT ($FE), A
         JR start"></textarea>
+                                <div id="asmTstatePopup" class="asm-tstate-popup" style="display:none"></div>
                             </div>
                         </div>
                     </div>
@@ -7435,6 +7513,20 @@ start:
                     <div class="ulaplus-palette-preview hidden" id="ulaplusPalettePreview">
                         <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">ULA+ Palette (4 CLUTs × 16 colors)</div>
                         <div class="ulaplus-palette-grid" id="ulaplusPaletteGrid"></div>
+                    </div>
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <select id="secondScreenMode" title="Second screen display mode">
+                            <option value="none">Shadow: None</option>
+                            <option value="full">Shadow: Full</option>
+                            <option value="bitmap">Shadow: Bitmap</option>
+                            <option value="linear">Shadow: Linear</option>
+                            <option value="spectrum">Shadow: Spectrum</option>
+                        </select>
+                        <label style="margin-left: 8px; display: none;" id="secondScreenAddrLabel">
+                            Addr: <input type="text" id="secondScreenAddr" value="C000"
+                                style="width: 40px; font-family: monospace; font-size: 11px;"
+                                maxlength="4" title="Start address (hex) for buffer display">
+                        </label>
                     </div>
                 </div>
             </div>
@@ -8234,11 +8326,13 @@ start:
                             <option value="3">x3</option>
                         </select>
                         <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotOverlay"> Overlay</label>
-                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotBatch"> Batch</label>
+                    </div>
+                    <div class="settings-row">
+                        <label style="min-width: auto;"><input type="checkbox" id="chkScreenshotBatch"> Batch</label>
                         <span id="screenshotBatchCount" style="font-size: 11px; color: var(--cyan); display: none;"></span>
                         <label style="min-width: auto; margin-left: 10px;">Every:</label>
                         <input type="number" id="screenshotInterval" value="50" min="1" step="1" style="width: 50px;">
-                        <select id="screenshotIntervalUnit">
+                        <select id="screenshotIntervalUnit" style="width: 70px; flex: none;">
                             <option value="frames">frames</option>
                             <option value="seconds">seconds</option>
                         </select>
@@ -9788,7 +9882,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.13.4';
+        const APP_VERSION = '0.14.3';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -9987,6 +10081,249 @@ start:
             overlayCanvas: overlayCanvas
         });
         window.spectrum = spectrum;
+
+        // ========== Second Screen (Shadow Screen) ==========
+        let secondScreenCtx = null;
+        let secondScreenImageData = null;
+        let secondScreenBuf32 = null;
+        let secondScreenMode = 'none'; // 'none' | 'full' | 'bitmap' | 'linear' | 'spectrum'
+        let secondScreenCustomAddr = 0xC000;
+
+        function updateSecondScreenOptions() {
+            const select = document.getElementById('secondScreenMode');
+            const is128k = spectrum.memory.profile.ramPages > 1;
+            for (const opt of select.options) {
+                if (opt.value === 'full' || opt.value === 'bitmap') {
+                    opt.disabled = !is128k;
+                    opt.style.display = is128k ? '' : 'none';
+                }
+            }
+            // Fall back if current mode not available on this machine
+            if (!is128k && (secondScreenMode === 'full' || secondScreenMode === 'bitmap')) {
+                secondScreenMode = 'none';
+                select.value = 'none';
+                storageSet('zxm8_secondScreen', 'none');
+            }
+        }
+
+        function renderSecondScreen() {
+            if (!secondScreenCtx) {
+                const c = document.getElementById('secondScreen');
+                secondScreenCtx = c.getContext('2d');
+                secondScreenImageData = secondScreenCtx.createImageData(256, 192);
+                secondScreenBuf32 = new Uint32Array(secondScreenImageData.data.buffer);
+            }
+
+            const mem = spectrum.memory;
+            const fb = secondScreenBuf32;
+            const inkC = 0xFFFFFFFF; // white
+            const papC = 0xFF000000; // black
+
+            if (secondScreenMode === 'full' || secondScreenMode === 'bitmap') {
+                // Shadow modes — require 128K+ (two screen banks)
+                if (mem.profile.ramPages <= 1) return;
+                const inactiveBank = (mem.screenBank === 5) ? 7 : 5;
+                const ram = mem.getRamBank(inactiveBank);
+                if (!ram) return;
+
+                if (secondScreenMode === 'bitmap') {
+                    for (let y = 0; y < 192; y++) {
+                        const pixelAddr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+                        const rowOff = y * 256;
+                        for (let col = 0; col < 32; col++) {
+                            const px = ram[pixelAddr + col];
+                            const b = rowOff + (col << 3);
+                            fb[b]   = (px & 0x80) ? inkC : papC;
+                            fb[b+1] = (px & 0x40) ? inkC : papC;
+                            fb[b+2] = (px & 0x20) ? inkC : papC;
+                            fb[b+3] = (px & 0x10) ? inkC : papC;
+                            fb[b+4] = (px & 0x08) ? inkC : papC;
+                            fb[b+5] = (px & 0x04) ? inkC : papC;
+                            fb[b+6] = (px & 0x02) ? inkC : papC;
+                            fb[b+7] = (px & 0x01) ? inkC : papC;
+                        }
+                    }
+                } else {
+                    const ula = spectrum.ula;
+                    const flashActive = ula.flashState;
+                    const ulaPlusActive = ula.ulaplus.enabled && ula.ulaplus.paletteEnabled;
+                    const pal32 = ula.palette32;
+                    const ulaPal32 = ula.ulaplus.palette32;
+                    for (let y = 0; y < 192; y++) {
+                        const pixelAddr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+                        const attrAddr = 0x1800 + ((y >> 3) << 5);
+                        const rowOff = y * 256;
+                        for (let col = 0; col < 32; col++) {
+                            const px = ram[pixelAddr + col];
+                            const attr = ram[attrAddr + col];
+                            let ic, pc;
+                            if (ulaPlusActive) {
+                                const clut = ((attr >> 6) & 3) << 4;
+                                ic = ulaPal32[clut + (attr & 7)];
+                                pc = ulaPal32[clut + 8 + ((attr >> 3) & 7)];
+                            } else {
+                                let ink = attr & 7, paper = (attr >> 3) & 7;
+                                const bright = (attr & 0x40) ? 8 : 0;
+                                if ((attr & 0x80) && flashActive) { const t = ink; ink = paper; paper = t; }
+                                ic = pal32[ink + bright];
+                                pc = pal32[paper + bright];
+                            }
+                            const b = rowOff + (col << 3);
+                            fb[b]   = (px & 0x80) ? ic : pc;
+                            fb[b+1] = (px & 0x40) ? ic : pc;
+                            fb[b+2] = (px & 0x20) ? ic : pc;
+                            fb[b+3] = (px & 0x10) ? ic : pc;
+                            fb[b+4] = (px & 0x08) ? ic : pc;
+                            fb[b+5] = (px & 0x04) ? ic : pc;
+                            fb[b+6] = (px & 0x02) ? ic : pc;
+                            fb[b+7] = (px & 0x01) ? ic : pc;
+                        }
+                    }
+                }
+                secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
+                document.getElementById('secondScreenLabel').textContent =
+                    'Bank ' + ((mem.screenBank === 5) ? 7 : 5) + '  (active: bank ' + mem.screenBank + ')';
+
+            } else if (secondScreenMode === 'spectrum') {
+                // Spectrum interleaved layout from custom address, white-on-black
+                const baseAddr = secondScreenCustomAddr;
+                for (let y = 0; y < 192; y++) {
+                    const lineOffset = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+                    const rowOff = y * 256;
+                    for (let col = 0; col < 32; col++) {
+                        const px = mem.read((baseAddr + lineOffset + col) & 0xFFFF);
+                        const b = rowOff + (col << 3);
+                        fb[b]   = (px & 0x80) ? inkC : papC;
+                        fb[b+1] = (px & 0x40) ? inkC : papC;
+                        fb[b+2] = (px & 0x20) ? inkC : papC;
+                        fb[b+3] = (px & 0x10) ? inkC : papC;
+                        fb[b+4] = (px & 0x08) ? inkC : papC;
+                        fb[b+5] = (px & 0x04) ? inkC : papC;
+                        fb[b+6] = (px & 0x02) ? inkC : papC;
+                        fb[b+7] = (px & 0x01) ? inkC : papC;
+                    }
+                }
+                secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
+                document.getElementById('secondScreenLabel').textContent =
+                    'Spectrum @ $' + baseAddr.toString(16).toUpperCase().padStart(4, '0');
+
+            } else if (secondScreenMode === 'linear') {
+                // Linear row-sequential layout from custom address, white-on-black
+                const baseAddr = secondScreenCustomAddr;
+                for (let y = 0; y < 192; y++) {
+                    const lineOffset = y * 32;
+                    const rowOff = y * 256;
+                    for (let col = 0; col < 32; col++) {
+                        const px = mem.read((baseAddr + lineOffset + col) & 0xFFFF);
+                        const b = rowOff + (col << 3);
+                        fb[b]   = (px & 0x80) ? inkC : papC;
+                        fb[b+1] = (px & 0x40) ? inkC : papC;
+                        fb[b+2] = (px & 0x20) ? inkC : papC;
+                        fb[b+3] = (px & 0x10) ? inkC : papC;
+                        fb[b+4] = (px & 0x08) ? inkC : papC;
+                        fb[b+5] = (px & 0x04) ? inkC : papC;
+                        fb[b+6] = (px & 0x02) ? inkC : papC;
+                        fb[b+7] = (px & 0x01) ? inkC : papC;
+                    }
+                }
+                secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
+                document.getElementById('secondScreenLabel').textContent =
+                    'Linear @ $' + baseAddr.toString(16).toUpperCase().padStart(4, '0');
+            }
+        }
+
+        function updateSecondScreenVisibility() {
+            const container = document.getElementById('secondScreenContainer');
+            const bankInfo = document.getElementById('screenBankInfo');
+            const addrLabel = document.getElementById('secondScreenAddrLabel');
+            const is128k = spectrum.memory.profile.ramPages > 1;
+
+            // SCR bank indicator — 128K+ only
+            if (is128k) {
+                bankInfo.style.display = '';
+                document.getElementById('screenBankStatus').textContent = spectrum.memory.screenBank;
+            } else {
+                bankInfo.style.display = 'none';
+            }
+
+            // Address input — visible for linear/spectrum modes
+            addrLabel.style.display = (secondScreenMode === 'linear' || secondScreenMode === 'spectrum') ? '' : 'none';
+
+            // Container visibility — any non-none mode (linear/spectrum work on all machines)
+            if (secondScreenMode !== 'none') {
+                container.classList.remove('hidden');
+                updateSecondScreenSize();
+                renderSecondScreen();
+            } else {
+                container.classList.add('hidden');
+            }
+        }
+
+        function updateSecondScreenSize() {
+            if (secondScreenMode === 'none') return;
+            const ssCanvas = document.getElementById('secondScreen');
+            const zoom = getCurrentZoom();
+            ssCanvas.style.width = (256 * zoom) + 'px';
+            ssCanvas.style.height = (192 * zoom) + 'px';
+            const header = document.querySelector('.second-screen-header');
+            if (header) header.style.width = (256 * zoom) + 'px';
+        }
+
+        // Set onFrame hook early (before auto-capture or profiler hook it)
+        const savedOnFrame = spectrum.onFrame;
+        spectrum.onFrame = (fc) => {
+            if (spectrum.memory.profile.ramPages > 1) {
+                document.getElementById('screenBankStatus').textContent = spectrum.memory.screenBank;
+            }
+            if (secondScreenMode !== 'none') renderSecondScreen();
+            if (savedOnFrame) savedOnFrame(fc);
+        };
+
+        // Settings wiring for second screen dropdown
+        const secondScreenSelect = document.getElementById('secondScreenMode');
+        const secondScreenAddrInput = document.getElementById('secondScreenAddr');
+        const savedMode = storageGet('zxm8_secondScreen');
+        // Migrate legacy boolean value
+        if (savedMode === 'true') {
+            secondScreenMode = 'full';
+            storageSet('zxm8_secondScreen', 'full');
+        } else if (['full', 'bitmap', 'linear', 'spectrum'].includes(savedMode)) {
+            secondScreenMode = savedMode;
+        } else {
+            secondScreenMode = 'none';
+        }
+        const savedAddr = storageGet('zxm8_secondScreenAddr');
+        if (savedAddr) {
+            const parsed = parseInt(savedAddr, 16);
+            if (!isNaN(parsed)) {
+                secondScreenCustomAddr = parsed & 0xFFFF;
+                secondScreenAddrInput.value = secondScreenCustomAddr.toString(16).toUpperCase().padStart(4, '0');
+            }
+        }
+        secondScreenSelect.value = secondScreenMode;
+        updateSecondScreenOptions();
+        updateSecondScreenVisibility();
+
+        secondScreenSelect.addEventListener('change', () => {
+            secondScreenMode = secondScreenSelect.value;
+            storageSet('zxm8_secondScreen', secondScreenMode);
+            updateSecondScreenVisibility();
+        });
+
+        secondScreenAddrInput.addEventListener('change', () => {
+            const parsed = parseInt(secondScreenAddrInput.value, 16);
+            if (!isNaN(parsed)) {
+                secondScreenCustomAddr = parsed & 0xFFFF;
+                secondScreenAddrInput.value = secondScreenCustomAddr.toString(16).toUpperCase().padStart(4, '0');
+                storageSet('zxm8_secondScreenAddr', secondScreenAddrInput.value);
+                if (secondScreenMode === 'linear' || secondScreenMode === 'spectrum') renderSecondScreen();
+            }
+        });
+
+        // Sync second screen size on zoom button clicks
+        document.getElementById('zoom1').addEventListener('click', () => updateSecondScreenSize());
+        document.getElementById('zoom2').addEventListener('click', () => updateSecondScreenSize());
+        document.getElementById('zoom3').addEventListener('click', () => updateSecondScreenSize());
 
         // Shared memory access wrappers (used by many UI modules via DI)
         const readMemory = (addr) => spectrum.memory.read(addr);
@@ -10483,6 +10820,7 @@ start:
             updateLabelsList,
             is128kCompat,
             arrayToBase64,
+            pako: window.pako,
             goToAddress,
             goToRightDisasmAddress,
             getLeftPanelType: () => leftPanelType,
@@ -10703,6 +11041,8 @@ start:
             document.getElementById('diskInfo').style.display = 'none';
             mediaCatalogAPI.clearDiskCatalog();
             mediaCatalogAPI.buildTapeCatalog();
+            updateSecondScreenOptions();
+            updateSecondScreenVisibility();
             showMessage('Machine reset');
         });
 
@@ -11222,6 +11562,8 @@ start:
                 spectrum.runFrame();
             }
 
+            updateSecondScreenOptions();
+            updateSecondScreenVisibility();
             if (typeof updateGraphicsViewer === 'function') updateGraphicsViewer();
             showMessage(`Switched to ${type.toUpperCase()}`);
             updateStatus();

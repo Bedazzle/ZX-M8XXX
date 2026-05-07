@@ -132,6 +132,7 @@ export const Assembler = {
             this.includeStack = [];
             this.saveCommands = [];
             this.linesProcessed = 0;  // Global counter including macro expansions
+            this.displayMessages = [];  // DISPLAY messages (only last pass is kept)
             
             // Save previous pass temp labels for forward references
             // then clear for new collection
@@ -176,8 +177,18 @@ export const Assembler = {
             
             // If undefined count not decreasing, we have unresolvable refs
             if (undefinedSyms.length > 0 && undefinedSyms.length >= lastUndefinedCount && this.pass > 2) {
-                const names = undefinedSyms.map(u => u.name).join(', ');
-                ErrorCollector.error(`Undefined symbols: ${names}`);
+                // Record each undefined symbol as a separate error with its file/line
+                for (const u of undefinedSyms) {
+                    ErrorCollector.errorCount++;
+                    ErrorCollector.errors.push({
+                        message: `Undefined symbol: ${u.name}`,
+                        line: u.line,
+                        file: u.file
+                    });
+                }
+                throw new AssemblerError(
+                    `${undefinedSyms.length} undefined symbol${undefinedSyms.length > 1 ? 's' : ''}`
+                );
             }
             
             // If no undefined but still changing after many passes, something is wrong
@@ -192,6 +203,11 @@ export const Assembler = {
             ErrorCollector.error('Assembly did not converge within maximum passes');
         }
         
+        // Add DISPLAY messages from last pass (prefixed for UI identification)
+        for (const msg of this.displayMessages) {
+            ErrorCollector.warn('DISPLAY: ' + msg.message, msg.line, msg.file);
+        }
+
         // Generate warnings for unused labels
         const unused = SymbolTable.checkUnused();
         for (const u of unused) {
@@ -497,6 +513,9 @@ export const Assembler = {
                 break;
             case 'ASSERT':
                 this.dirASSERT(ops, line);
+                break;
+            case 'DISPLAY':
+                this.dirDISPLAY(ops, line);
                 break;
             case 'END':
                 // Stop processing
@@ -997,6 +1016,69 @@ export const Assembler = {
             const msg = ops.length > 1 ? ops[1] : 'Assertion failed';
             ErrorCollector.error(`ASSERT: ${msg}`, line.line, line.file);
         }
+    },
+
+    // DISPLAY directive — output messages during assembly
+    // Syntax: DISPLAY "text", /A, expr, /D, expr, /H, expr
+    // Format specifiers are separate operands that modify the NEXT operand:
+    //   /H = hex only (default), /D = decimal only, /A = hex and decimal,
+    //   /B = binary (8-bit), /C = character in apostrophes (8-bit)
+    dirDISPLAY(ops, line) {
+        if (ops.length < 1) {
+            ErrorCollector.error('DISPLAY requires at least one argument', line.line, line.file);
+        }
+
+        let result = '';
+        let format = 'H';  // default format for next expression
+        for (const op of ops) {
+            const trimmed = op.trim();
+            const upper = trimmed.toUpperCase();
+
+            // Format specifier — applies to next operand
+            if (upper === '/D' || upper === '/H' || upper === '/A' ||
+                upper === '/B' || upper === '/C') {
+                format = upper.charAt(1);
+                continue;
+            }
+
+            // String literal
+            if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+                (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+                result += trimmed.slice(1, -1);
+                format = 'H';  // reset format after consuming
+                continue;
+            }
+
+            // Expression — evaluate and format
+            const val = this.evaluate(trimmed, line);
+            if (val.undefined) {
+                result += '?';
+            } else {
+                const v = val.value;
+                switch (format) {
+                    case 'D':
+                        result += v.toString(10);
+                        break;
+                    case 'A':
+                        result += '0x' + ((v & 0xFFFF) >>> 0).toString(16).toUpperCase().padStart(4, '0');
+                        result += ', ' + v.toString(10);
+                        break;
+                    case 'B':
+                        result += (v & 0xFF).toString(2).padStart(8, '0');
+                        break;
+                    case 'C':
+                        result += "'" + String.fromCharCode(v & 0xFF) + "'";
+                        break;
+                    case 'H':
+                    default:
+                        result += '0x' + ((v & 0xFFFF) >>> 0).toString(16).toUpperCase().padStart(4, '0');
+                        break;
+                }
+            }
+            format = 'H';  // reset format after consuming
+        }
+
+        this.displayMessages.push({ message: result, line: line.line, file: line.file });
     },
 
     // DEVICE directive

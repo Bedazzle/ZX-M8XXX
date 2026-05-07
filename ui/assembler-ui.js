@@ -1,6 +1,7 @@
 // assembler-ui.js — Assembler UI module (extracted from index.html)
 // ES module with init-function pattern
 import { escapeHtml, hex8, hex16, storageGet, storageSet } from '../core/utils.js';
+import { z80Opcodes } from '../debug/opcodes-data.js';
 
 export function initAssemblerUI({
     VFS,
@@ -17,6 +18,7 @@ export function initAssemblerUI({
     updateLabelsList,
     is128kCompat,
     arrayToBase64,
+    pako,
     goToAddress,
     goToRightDisasmAddress,
     getLeftPanelType,
@@ -52,6 +54,448 @@ export function initAssemblerUI({
     const fileSelectorBody = document.getElementById('fileSelectorBody');
     const fileSelectorTitle = document.getElementById('fileSelectorTitle');
     const btnFileSelectorClose = document.getElementById('btnFileSelectorClose');
+    const btnAsmShare = document.getElementById('btnAsmShare');
+    const btnAsmImport = document.getElementById('btnAsmImport');
+    const asmImportDialog = document.getElementById('asmImportDialog');
+    const asmImportText = document.getElementById('asmImportText');
+    const btnAsmImportCancel = document.getElementById('btnAsmImportCancel');
+    const btnAsmImportOk = document.getElementById('btnAsmImportOk');
+    const asmImportPreview = document.getElementById('asmImportPreview');
+    const asmImportSettingsLabel = document.getElementById('asmImportSettingsLabel');
+    const chkAsmImportSettings = document.getElementById('chkAsmImportSettings');
+
+    const asmTstatePopup = document.getElementById('asmTstatePopup');
+
+    // ========== T-state selection popup ==========
+
+    // Build lookup map: uppercase mnemonic pattern → T-state string (e.g. '4', '17/10')
+    const tstateMap = new Map();
+    for (const op of z80Opcodes) {
+        const key = op.m.toUpperCase();
+        if (!tstateMap.has(key)) tstateMap.set(key, op.c);
+    }
+
+    // All Z80 register names (used during mnemonic normalization)
+    const Z80_REGS = new Set([
+        'A','B','C','D','E','H','L','F','I','R','SP','PC',
+        'AF','BC','DE','HL','IX','IY','IXH','IXL','IYH','IYL',
+        // Assembler aliases for half-regs
+        'XH','HX','XL','LX','YH','HY','YL','LY',
+        // Alternate register set
+        "AF'"
+    ]);
+
+    // Condition codes for JP/JR/CALL/RET
+    const Z80_CONDITIONS = new Set(['NZ','Z','NC','C','PO','PE','P','M']);
+
+    // Assembler directives that don't produce Z80 instructions
+    const ASM_DIRECTIVES = new Set([
+        'ORG','EQU','DEFINE','DEFL','=',
+        'DEFB','DB','BYTE','DEFM','DM',
+        'DEFW','DW','WORD',
+        'DEFS','DS','BLOCK',
+        'INCLUDE','INCBIN','INSERT','INCHOB','INCTRD',
+        'MACRO','ENDM','ENDMACRO','REPT','ENDR',
+        'IF','IFDEF','IFNDEF','ELSE','ENDIF',
+        'STRUCT','ENDS','ALIGN','PHASE','DEPHASE','UNPHASE',
+        'MODULE','ENDMODULE','SECTION','ENDSECTION',
+        'DEVICE','SLOT','PAGE','SAVEBIN','SAVESNA','SAVETAP','SAVETRD',
+        'ASSERT','DISPLAY','OPT','EMPTYTAP','OUTPUT',
+        'DUP','EDUP','ENT','PROC','ENDP','LOCAL'
+    ]);
+
+    // Mnemonics that take a relative jump target as operand
+    const REL_JUMP_MNEMONICS = new Set(['JR','DJNZ']);
+
+    // Mnemonics whose sole non-condition operand is always nn (16-bit address)
+    const NN_MNEMONICS = new Set(['JP','CALL']);
+
+    /**
+     * Normalize an assembler source line to a canonical opcode table pattern.
+     * Returns null if the line is a directive, comment-only, label-only, or empty.
+     */
+    function normalizeMnemonic(line) {
+        // Strip comment (but not inside strings)
+        let s = line;
+        const semiIdx = s.indexOf(';');
+        if (semiIdx >= 0) s = s.substring(0, semiIdx);
+        s = s.trim();
+        if (!s) return null;
+
+        // Strip label: "label:" at start, or bare "label" if next word is a mnemonic
+        // Label with colon
+        const colonMatch = s.match(/^[A-Za-z_@.][A-Za-z0-9_@.$]*:\s*/);
+        if (colonMatch) {
+            s = s.substring(colonMatch[0].length).trim();
+            if (!s) return null;
+        }
+
+        // Split into tokens
+        const parts = s.split(/\s+/);
+        if (parts.length === 0) return null;
+        const mnemonic = parts[0].toUpperCase();
+
+        // Check if it's a directive
+        if (ASM_DIRECTIVES.has(mnemonic)) return null;
+
+        // Check if it's a label without colon (mnemonic on next token)
+        if (parts.length >= 2 && !isZ80Mnemonic(mnemonic)) {
+            // Assume first token is a label
+            const actualMnemonic = parts[1].toUpperCase();
+            if (ASM_DIRECTIVES.has(actualMnemonic)) return null;
+            if (!isZ80Mnemonic(actualMnemonic)) return null;
+            // Re-parse with label stripped
+            return normalizeMnemonic(s.substring(parts[0].length).trim());
+        }
+
+        if (!isZ80Mnemonic(mnemonic)) return null;
+
+        // No operands — just the mnemonic (NOP, RET, HALT, EXX, etc.)
+        const operandStr = parts.slice(1).join(' ').trim();
+        if (!operandStr) return mnemonic;
+
+        // Split operands by comma (but not inside parentheses)
+        const operands = splitOperands(operandStr);
+        const normalized = operands.map((op, idx) => normalizeOperand(op.trim(), mnemonic, idx, operands.length));
+
+        // Handle RST: table uses hex+H format (e.g. RST 38H)
+        if (mnemonic === 'RST') {
+            return 'RST ' + normalizeRstTarget(normalized[0]);
+        }
+
+        return mnemonic + ' ' + normalized.join(',');
+    }
+
+    /**
+     * Normalize a single operand to match the opcode table pattern.
+     */
+    function normalizeOperand(op, mnemonic, idx, totalOps) {
+        const upper = op.toUpperCase().replace(/\s+/g, '');
+
+        // Register or register pair (including AF')
+        if (Z80_REGS.has(upper)) {
+            // Map assembler aliases to canonical names
+            if (upper === 'XH' || upper === 'HX') return 'IXH';
+            if (upper === 'XL' || upper === 'LX') return 'IXL';
+            if (upper === 'YH' || upper === 'HY') return 'IYH';
+            if (upper === 'YL' || upper === 'LY') return 'IYL';
+            return upper;
+        }
+
+        // Condition code in first operand position for JP/JR/CALL/RET
+        if (idx === 0 && Z80_CONDITIONS.has(upper) &&
+            (mnemonic === 'JP' || mnemonic === 'JR' || mnemonic === 'CALL' || mnemonic === 'RET')) {
+            return upper;
+        }
+
+        // Indirect register: (HL), (BC), (DE), (SP), (C)
+        const indirRegMatch = upper.match(/^\((BC|DE|HL|SP|C|IX|IY)\)$/);
+        if (indirRegMatch) return '(' + indirRegMatch[1] + ')';
+
+        // (IX+d) or (IY+d) with any expression
+        const ixdMatch = upper.match(/^\((IX|IY)([+-].*)\)$/);
+        if (ixdMatch) return '(' + ixdMatch[1] + '+d)';
+
+        // (nn) — indirect address
+        if (upper.startsWith('(') && upper.endsWith(')')) return '(nn)';
+
+        // Relative jump target
+        if (REL_JUMP_MNEMONICS.has(mnemonic)) return 'e';
+
+        // JP/CALL target (always nn for conditional/unconditional)
+        if (NN_MNEMONICS.has(mnemonic)) return 'nn';
+
+        // BIT/SET/RES bit number (0-7) — keep as-is (digit)
+        if ((mnemonic === 'BIT' || mnemonic === 'SET' || mnemonic === 'RES') && idx === 0) {
+            const bitNum = parseInt(upper);
+            if (!isNaN(bitNum) && bitNum >= 0 && bitNum <= 7) return String(bitNum);
+        }
+
+        // IM number (0, 1, 2) — keep as-is
+        if (mnemonic === 'IM') {
+            const imNum = parseInt(upper);
+            if (!isNaN(imNum) && imNum >= 0 && imNum <= 2) return String(imNum);
+        }
+
+        // For LD: always emit 'n'; lookupTiming fallback handles n→nn for LD rr,nn
+        if (mnemonic === 'LD' && idx === 1) return 'n';
+
+        // Default: if it's an immediate/label, classify as n or nn
+        // Most ALU operations take n (8-bit): ADD A,n / SUB n / AND n / CP n etc.
+        // For standalone 2-operand instructions where second is an immediate → n
+        return 'n';
+    }
+
+    /**
+     * Normalize RST target to table format (e.g. "38H").
+     */
+    function normalizeRstTarget(op) {
+        // Parse the value regardless of format ($38, 0x38, 38h, 56, etc.)
+        let val = parseAsmValue(op);
+        if (val === null) val = parseAsmValue(op.replace(/H$/i, ''));
+        if (val === null) return op;
+        return val.toString(16).toUpperCase().padStart(2, '0') + 'H';
+    }
+
+    /**
+     * Parse an assembler numeric value ($hex, 0xhex, decimal, hex+H).
+     */
+    function parseAsmValue(s) {
+        s = s.trim().toUpperCase();
+        if (s.startsWith('$')) { const v = parseInt(s.substring(1), 16); return isNaN(v) ? null : v; }
+        if (s.startsWith('0X')) { const v = parseInt(s.substring(2), 16); return isNaN(v) ? null : v; }
+        if (s.endsWith('H')) { const v = parseInt(s.substring(0, s.length - 1), 16); return isNaN(v) ? null : v; }
+        const v = parseInt(s, 10);
+        return isNaN(v) ? null : v;
+    }
+
+    /**
+     * Split operands by comma, respecting parentheses.
+     */
+    function splitOperands(s) {
+        const result = [];
+        let depth = 0, start = 0;
+        for (let i = 0; i < s.length; i++) {
+            if (s[i] === '(') depth++;
+            else if (s[i] === ')') depth--;
+            else if (s[i] === ',' && depth === 0) {
+                result.push(s.substring(start, i));
+                start = i + 1;
+            }
+        }
+        result.push(s.substring(start));
+        return result;
+    }
+
+    // Set of known Z80 mnemonics for label detection
+    const Z80_MNEMONICS = new Set([
+        'ADC','ADD','AND','BIT','CALL','CCF','CP','CPD','CPDR','CPI','CPIR',
+        'CPL','DAA','DEC','DI','DJNZ','EI','EX','EXX','HALT','IM','IN',
+        'INC','IND','INDR','INI','INIR','JP','JR','LD','LDD','LDDR','LDI','LDIR',
+        'NEG','NOP','OR','OTDR','OTIR','OUT','OUTD','OUTI',
+        'POP','PUSH','RES','RET','RETI','RETN','RL','RLA','RLC','RLCA','RLD',
+        'RR','RRA','RRC','RRCA','RRD','RST','SBC','SCF','SET','SLA','SLL',
+        'SRA','SRL','SUB','XOR'
+    ]);
+
+    function isZ80Mnemonic(s) { return Z80_MNEMONICS.has(s); }
+
+    /**
+     * Look up T-state timing for a normalized mnemonic pattern.
+     * Returns the timing string (e.g. '4', '17/10') or null if not found.
+     */
+    function lookupTiming(normalized) {
+        if (!normalized) return null;
+        const key = normalized.toUpperCase();
+        if (tstateMap.has(key)) return tstateMap.get(key);
+
+        // Fallback: try nn→n or n→nn substitution
+        if (key.includes(',N,') || key.endsWith(',N')) {
+            const nnKey = key.replace(/,N$/,',NN').replace(/,N,/,',NN,');
+            if (tstateMap.has(nnKey)) return tstateMap.get(nnKey);
+        }
+        if (key.includes(',NN') || key.endsWith(',NN')) {
+            const nKey = key.replace(/,NN$/,',N').replace(/,NN,/,',N,');
+            if (tstateMap.has(nKey)) return tstateMap.get(nKey);
+        }
+        // Fallback for LD rr,nn: try with nn if n didn't match
+        if (key.startsWith('LD ') && key.endsWith(',N')) {
+            const nnKey = key.replace(/,N$/, ',NN');
+            if (tstateMap.has(nnKey)) return tstateMap.get(nnKey);
+        }
+
+        // BIT/SET/RES with specific bit number → try generic b pattern
+        const bitMatch = key.match(/^(BIT|SET|RES) ([0-7]),(.+)$/);
+        if (bitMatch) {
+            const genericKey = bitMatch[1] + ' b,' + bitMatch[3];
+            if (tstateMap.has(genericKey)) return tstateMap.get(genericKey);
+            // Also try 'r' for register operand
+            const rKey = bitMatch[1] + ' b,r';
+            if (tstateMap.has(rKey)) return tstateMap.get(rKey);
+        }
+
+        // (nn) → (N) fallback for LD A,(nn) style
+        if (key.includes('(NN)')) {
+            const nKey = key.replace(/\(NN\)/g, '(N)');
+            if (tstateMap.has(nKey)) return tstateMap.get(nKey);
+        }
+
+        return null;
+    }
+
+    /**
+     * Compute total T-states for an array of source lines.
+     * Returns { totalMin, totalMax, instrCount, failCount }.
+     */
+    function computeTstatesForLines(lines) {
+        let totalMin = 0, totalMax = 0, instrCount = 0, failCount = 0;
+        for (const line of lines) {
+            const normalized = normalizeMnemonic(line);
+            if (normalized === null) continue; // directive, comment, label, empty
+            const timing = lookupTiming(normalized);
+            if (timing === null) {
+                failCount++;
+                instrCount++;
+                continue;
+            }
+            instrCount++;
+            if (timing.includes('/')) {
+                const [max, min] = timing.split('/').map(Number);
+                totalMax += max;
+                totalMin += min;
+            } else {
+                const t = Number(timing);
+                totalMax += t;
+                totalMin += t;
+            }
+        }
+        return { totalMin, totalMax, instrCount, failCount };
+    }
+
+    /**
+     * Show or update the T-state popup based on current selection.
+     */
+    function showTstatePopup() {
+        if (!asmTstatePopup) return;
+
+        // Only show when asmEditor is focused
+        if (document.activeElement !== asmEditor) {
+            asmTstatePopup.style.display = 'none';
+            return;
+        }
+
+        const start = asmEditor.selectionStart;
+        const end = asmEditor.selectionEnd;
+        if (start === end) {
+            // No selection
+            asmTstatePopup.style.display = 'none';
+            return;
+        }
+
+        const selectedText = asmEditor.value.substring(start, end);
+        const lines = selectedText.split('\n');
+        const result = computeTstatesForLines(lines);
+
+        if (result.instrCount === 0) {
+            asmTstatePopup.style.display = 'none';
+            return;
+        }
+
+        // Format display
+        let text = '';
+        if (result.failCount > 0) text += '~';
+        if (result.totalMax !== result.totalMin) {
+            text += result.totalMax + '/' + result.totalMin + 'T';
+        } else {
+            text += result.totalMax + 'T';
+        }
+        if (result.instrCount > 1) {
+            text += ' (' + result.instrCount + ' instr)';
+        }
+
+        asmTstatePopup.textContent = text;
+        asmTstatePopup.style.display = '';
+
+        // Position using textarea selection coordinates
+        positionTstatePopupFromTextarea(start, end);
+    }
+
+    /**
+     * Position popup based on textarea character positions.
+     */
+    function positionTstatePopupFromTextarea(selStart, selEnd) {
+        const text = asmEditor.value;
+        // Find the line and column of the selection end
+        const textBefore = text.substring(0, selEnd);
+        const linesBefore = textBefore.split('\n');
+        const endLine = linesBefore.length - 1;
+
+        // Compute position from line number and scroll
+        const style = window.getComputedStyle(asmEditor);
+        const lineHeight = parseFloat(style.lineHeight) || 17;
+        const paddingTop = parseFloat(style.paddingTop) || 10;
+        const paddingLeft = parseFloat(style.paddingLeft) || 10;
+
+        const top = paddingTop + (endLine * lineHeight) - asmEditor.scrollTop;
+        // Place to the right — estimate column position or just use right edge
+        const lastLineLen = linesBefore[endLine].length;
+        const fontSize = parseFloat(style.fontSize) || 12;
+        const charWidth = fontSize * 0.6; // approximate monospace char width
+        let left = paddingLeft + (lastLineLen * charWidth) - asmEditor.scrollLeft + 12;
+
+        // Clamp within editor bounds
+        const wrapRect = asmEditor.parentElement.getBoundingClientRect();
+        const popupWidth = asmTstatePopup.offsetWidth || 80;
+        if (left + popupWidth > wrapRect.width) {
+            left = wrapRect.width - popupWidth - 4;
+        }
+        if (left < 0) left = 4;
+
+        // Clamp vertically
+        if (top < 0 || top > wrapRect.height - 20) {
+            asmTstatePopup.style.display = 'none';
+            return;
+        }
+
+        asmTstatePopup.style.left = left + 'px';
+        asmTstatePopup.style.top = top + 'px';
+    }
+
+    // Debounce timer for selection change
+    let tstateTimer = null;
+
+    function scheduleTstateUpdate() {
+        if (tstateTimer) clearTimeout(tstateTimer);
+        tstateTimer = setTimeout(() => {
+            tstateTimer = null;
+            showTstatePopup();
+        }, 1500);
+    }
+
+    function hideTstatePopup() {
+        if (tstateTimer) { clearTimeout(tstateTimer); tstateTimer = null; }
+        if (asmTstatePopup) asmTstatePopup.style.display = 'none';
+    }
+
+    // Wire up events for T-state popup
+    document.addEventListener('selectionchange', () => {
+        if (document.activeElement === asmEditor) {
+            hideTstatePopup();
+            scheduleTstateUpdate();
+        } else {
+            hideTstatePopup();
+        }
+    });
+
+    asmEditor.addEventListener('mousedown', () => {
+        hideTstatePopup();
+    });
+
+    asmEditor.addEventListener('mousemove', () => {
+        if (asmTstatePopup && asmTstatePopup.style.display !== 'none') {
+            hideTstatePopup();
+            scheduleTstateUpdate();
+        }
+    });
+
+    asmEditor.addEventListener('keydown', () => {
+        hideTstatePopup();
+    });
+
+    asmEditor.addEventListener('scroll', () => {
+        hideTstatePopup();
+    });
+
+    asmEditor.addEventListener('blur', () => {
+        hideTstatePopup();
+    });
+
+    // ========== End T-state popup ==========
+
+    const SHARE_MARKER_BEGIN = '===M8XXX-ASM-BEGIN===';
+    const SHARE_MARKER_END = '===M8XXX-ASM-END===';
+
+    let pendingImportPayload = null;  // Parsed payload awaiting confirmation
 
     // Encoding chosen by user for non-UTF-8 files (persisted in localStorage)
     let chosenFallbackEncoding = storageGet('zxm8_asmEncoding') || null;
@@ -321,6 +765,9 @@ export function initAssemblerUI({
 
         if (btnAsmExport) {
             btnAsmExport.style.display = (hasFiles || hasContent) ? 'inline-block' : 'none';
+        }
+        if (btnAsmShare) {
+            btnAsmShare.style.display = (hasFiles || hasContent) ? 'inline-block' : 'none';
         }
         // Files button: always visible, disabled when 0 or 1 file
         if (btnAsmFiles) {
@@ -616,8 +1063,6 @@ export function initAssemblerUI({
         'AF', 'BC', 'DE', 'HL', 'IX', 'IY', 'SP', 'PC',
         'IXH', 'IXL', 'IYH', 'IYL', "AF'"
     ]);
-
-    const Z80_CONDITIONS = new Set(['Z', 'NZ', 'C', 'NC', 'PE', 'PO', 'P', 'M']);
 
     // Simple tokenizer for syntax highlighting
     function tokenizeAsmLine(line) {
@@ -1540,6 +1985,291 @@ export function initAssemblerUI({
         });
     }
 
+    // ========== Share / Import ==========
+
+    function shareProject() {
+        syncEditorToVFS();
+
+        // Collect text and binary files from VFS
+        const textFiles = {};
+        const binFiles = {};
+        for (const path in VFS.files) {
+            const file = VFS.files[path];
+            if (file.binary) {
+                // Convert binary content to base64
+                const data = file.content instanceof Uint8Array ? file.content : new Uint8Array(file.content);
+                binFiles[path] = arrayToBase64(data);
+            } else {
+                textFiles[path] = file.content;
+            }
+        }
+
+        // If VFS empty but editor has content, use editor text
+        if (Object.keys(textFiles).length === 0 && Object.keys(binFiles).length === 0) {
+            if (asmEditor && asmEditor.value.trim().length > 0) {
+                textFiles['source.asm'] = asmEditor.value;
+            } else {
+                showMessage('Nothing to share', 'error');
+                return;
+            }
+        }
+
+        // Read machine settings
+        const machineSelect = document.getElementById('machineSelect');
+        const machine = machineSelect ? machineSelect.value : (storageGet('zxm8_machine') || '48k');
+
+        const settings = {
+            betaDisk: storageGet('zxm8_betaDisk') === 'true',
+            ulaplus: storageGet('zxm8_ulaplus') === 'true',
+            if1: storageGet('zxm8_if1') === 'true',
+            plusD: storageGet('zxm8_plusD') === 'true',
+            lateTiming: storageGet('zxm8_lateTiming') === 'true',
+            ay48k: storageGet('zxm8_ay48k') === 'true'
+        };
+
+        const asmSettings = {
+            mainFile: currentProjectMainFile || null,
+            defines: asmDefinesInput ? asmDefinesInput.value : '',
+            encoding: chosenFallbackEncoding || null
+        };
+
+        const payload = {
+            v: 1,
+            ts: new Date().toISOString(),
+            machine: machine,
+            settings: settings,
+            asm: asmSettings,
+            files: textFiles
+        };
+        if (Object.keys(binFiles).length > 0) {
+            payload.binFiles = binFiles;
+        }
+
+        // Compress: JSON → UTF-8 → pako.deflate → base64
+        const jsonStr = JSON.stringify(payload);
+        const utf8 = new TextEncoder().encode(jsonStr);
+        const compressed = pako.deflate(utf8);
+        const b64 = arrayToBase64(compressed);
+
+        const shareText = SHARE_MARKER_BEGIN + '\n' + b64 + '\n' + SHARE_MARKER_END;
+
+        const totalFiles = Object.keys(textFiles).length + Object.keys(binFiles).length;
+        const sizeKB = (shareText.length / 1024).toFixed(1);
+
+        // Copy to clipboard
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(shareText).then(() => {
+                showMessage(`Copied to clipboard (${totalFiles} file${totalFiles !== 1 ? 's' : ''}, ${sizeKB} KB)`);
+            }).catch(() => {
+                prompt('Copy this text to share:', shareText);
+            });
+        } else {
+            prompt('Copy this text to share:', shareText);
+        }
+    }
+
+    function parseShareData(text) {
+        // Find markers
+        const beginIdx = text.indexOf(SHARE_MARKER_BEGIN);
+        const endIdx = text.indexOf(SHARE_MARKER_END);
+        if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) {
+            showMessage('Invalid share data: markers not found', 'error');
+            return null;
+        }
+
+        const raw = text.substring(beginIdx + SHARE_MARKER_BEGIN.length, endIdx);
+        // Strip all whitespace for messenger resilience
+        const b64 = raw.replace(/\s/g, '');
+
+        let payload;
+        try {
+            // base64 → Uint8Array → pako.inflate → UTF-8 → JSON
+            const binStr = atob(b64);
+            const bytes = new Uint8Array(binStr.length);
+            for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+            const inflated = pako.inflate(bytes);
+            const jsonStr = new TextDecoder().decode(inflated);
+            payload = JSON.parse(jsonStr);
+        } catch (e) {
+            showMessage('Failed to decode share data: ' + e.message, 'error');
+            return null;
+        }
+
+        if (!payload || payload.v !== 1) {
+            showMessage('Unsupported share format version', 'error');
+            return null;
+        }
+
+        return payload;
+    }
+
+    function buildImportPreview(payload) {
+        const lines = [];
+
+        // Files summary
+        const textCount = payload.files ? Object.keys(payload.files).length : 0;
+        const binCount = payload.binFiles ? Object.keys(payload.binFiles).length : 0;
+        const totalCount = textCount + binCount;
+        lines.push(`<strong>Files:</strong> ${totalCount} (${textCount} source${binCount ? ', ' + binCount + ' binary' : ''})`);
+        // List filenames
+        const allNames = [
+            ...Object.keys(payload.files || {}),
+            ...Object.keys(payload.binFiles || {})
+        ];
+        if (allNames.length <= 12) {
+            for (const name of allNames) {
+                lines.push('&nbsp;&nbsp;' + escapeHtml(name));
+            }
+        } else {
+            for (let i = 0; i < 10; i++) {
+                lines.push('&nbsp;&nbsp;' + escapeHtml(allNames[i]));
+            }
+            lines.push(`&nbsp;&nbsp;<em>...and ${allNames.length - 10} more</em>`);
+        }
+
+        // Assembler settings
+        if (payload.asm) {
+            if (payload.asm.mainFile) lines.push(`<strong>Main file:</strong> ${escapeHtml(payload.asm.mainFile)}`);
+            if (payload.asm.defines) lines.push(`<strong>Defines:</strong> ${escapeHtml(payload.asm.defines)}`);
+            if (payload.asm.encoding) lines.push(`<strong>Encoding:</strong> ${escapeHtml(payload.asm.encoding)}`);
+        }
+
+        // Machine & hardware settings
+        const settingsLines = [];
+        if (payload.machine) settingsLines.push(`<strong>Machine:</strong> ${escapeHtml(payload.machine)}`);
+        if (payload.settings) {
+            const s = payload.settings;
+            const labels = {
+                betaDisk: 'Beta Disk', ulaplus: 'ULAplus', if1: 'Interface 1',
+                plusD: '+D', lateTiming: 'Late timings', ay48k: 'AY on 48K'
+            };
+            const enabled = [];
+            for (const [key, label] of Object.entries(labels)) {
+                if (s[key]) enabled.push(label);
+            }
+            if (enabled.length > 0) settingsLines.push(`<strong>Hardware:</strong> ${enabled.join(', ')}`);
+        }
+
+        if (settingsLines.length > 0) {
+            lines.push('<hr style="border:none;border-top:1px solid var(--border-color);margin:4px 0;">');
+            lines.push(...settingsLines);
+        }
+
+        if (payload.ts) {
+            const d = new Date(payload.ts);
+            if (!isNaN(d)) lines.push(`<span style="color:var(--text-secondary)">Shared: ${d.toLocaleString()}</span>`);
+        }
+
+        return lines.join('<br>');
+    }
+
+    function applyImportPayload(payload, applySettings) {
+        if (applySettings) {
+            // Apply machine type
+            if (payload.machine) {
+                const machineSelect = document.getElementById('machineSelect');
+                if (machineSelect) {
+                    storageSet('zxm8_machine', payload.machine);
+                    machineSelect.value = payload.machine;
+                    machineSelect.dispatchEvent(new Event('change'));
+                }
+            }
+
+            // Apply hardware settings
+            if (payload.settings) {
+                const s = payload.settings;
+                if (s.betaDisk !== undefined) storageSet('zxm8_betaDisk', s.betaDisk);
+                if (s.ulaplus !== undefined) storageSet('zxm8_ulaplus', s.ulaplus);
+                if (s.if1 !== undefined) storageSet('zxm8_if1', s.if1);
+                if (s.plusD !== undefined) storageSet('zxm8_plusD', s.plusD);
+                if (s.lateTiming !== undefined) storageSet('zxm8_lateTiming', s.lateTiming);
+                if (s.ay48k !== undefined) storageSet('zxm8_ay48k', s.ay48k);
+                // Update checkboxes if they exist
+                const checkboxMap = {
+                    betaDisk: 'chkBetaDisk', ulaplus: 'chkULAplus', if1: 'chkIF1',
+                    plusD: 'chkPlusD', lateTiming: 'chkLateTimings', ay48k: 'chkAY48k'
+                };
+                for (const [key, id] of Object.entries(checkboxMap)) {
+                    if (s[key] !== undefined) {
+                        const chk = document.getElementById(id);
+                        if (chk) {
+                            chk.checked = s[key];
+                            chk.dispatchEvent(new Event('change'));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply assembler settings (always — they're about the source, not the emulator)
+        if (payload.asm) {
+            if (payload.asm.defines && asmDefinesInput) {
+                asmDefinesInput.value = payload.asm.defines;
+            }
+            if (payload.asm.encoding) {
+                chosenFallbackEncoding = payload.asm.encoding;
+                storageSet('zxm8_asmEncoding', payload.asm.encoding);
+            }
+        }
+
+        // Reset VFS and populate
+        VFS.reset();
+        currentProjectMainFile = null;
+        currentOpenFile = null;
+        openTabs = [];
+        fileModified = {};
+
+        // Add text files
+        if (payload.files) {
+            for (const path in payload.files) {
+                VFS.files[path] = { content: payload.files[path], binary: false };
+            }
+        }
+
+        // Add binary files
+        if (payload.binFiles) {
+            for (const path in payload.binFiles) {
+                const binStr = atob(payload.binFiles[path]);
+                const bytes = new Uint8Array(binStr.length);
+                for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+                VFS.files[path] = { content: bytes, binary: true };
+            }
+        }
+
+        // Determine main file
+        const mainFile = (payload.asm && payload.asm.mainFile) || VFS.findMainFile();
+        if (mainFile && VFS.files[mainFile]) {
+            currentProjectMainFile = mainFile;
+            currentOpenFile = mainFile;
+            openTabs.push(mainFile);
+            if (!VFS.files[mainFile].binary) {
+                asmEditor.value = VFS.files[mainFile].content || '';
+            }
+        } else {
+            // Open first text file
+            const firstText = Object.keys(VFS.files).find(p => !VFS.files[p].binary);
+            if (firstText) {
+                currentOpenFile = firstText;
+                openTabs.push(firstText);
+                asmEditor.value = VFS.files[firstText].content || '';
+            }
+        }
+
+        asmUndoReset();
+        updateLineNumbers();
+        updateHighlight();
+        updateFileTabs();
+        updateProjectButtons();
+        updateDefinesDropdown();
+
+        const totalFiles = Object.keys(VFS.files).length;
+        const msg = applySettings
+            ? `Imported project: ${totalFiles} file${totalFiles !== 1 ? 's' : ''}, machine: ${payload.machine || 'default'}`
+            : `Imported project: ${totalFiles} file${totalFiles !== 1 ? 's' : ''} (settings not applied)`;
+        showMessage(msg);
+        return true;
+    }
+
     // Button handlers
     if (btnAsmClear) {
         btnAsmClear.addEventListener('click', () => {
@@ -1670,6 +2400,11 @@ export function initAssemblerUI({
                 }
             }
 
+            // If no VFS files but editor has content, export editor text directly
+            if (sourceFiles.length === 0 && asmEditor && asmEditor.value.trim().length > 0) {
+                sourceFiles.push({ name: 'source.asm', content: asmEditor.value });
+            }
+
             if (sourceFiles.length === 0) {
                 showMessage('No source files to export');
                 return;
@@ -1792,6 +2527,96 @@ export function initAssemblerUI({
             URL.revokeObjectURL(a.href);
 
             showMessage(`Exported ${sourceFiles.length} source file(s) as ZIP`);
+        });
+    }
+
+    // Share project to clipboard
+    if (btnAsmShare) {
+        btnAsmShare.addEventListener('click', shareProject);
+    }
+
+    // Import shared project — two-phase flow
+    function resetImportDialog() {
+        pendingImportPayload = null;
+        if (asmImportText) { asmImportText.value = ''; asmImportText.style.display = ''; }
+        if (asmImportPreview) asmImportPreview.style.display = 'none';
+        if (asmImportSettingsLabel) asmImportSettingsLabel.style.display = 'none';
+        if (chkAsmImportSettings) chkAsmImportSettings.checked = true;
+        if (btnAsmImportOk) btnAsmImportOk.textContent = 'Import';
+    }
+
+    if (btnAsmImport) {
+        btnAsmImport.addEventListener('click', () => {
+            if (asmImportDialog) {
+                resetImportDialog();
+                asmImportDialog.classList.remove('hidden');
+                asmImportText.focus();
+            }
+        });
+    }
+
+    if (btnAsmImportCancel) {
+        btnAsmImportCancel.addEventListener('click', () => {
+            if (asmImportDialog) asmImportDialog.classList.add('hidden');
+            pendingImportPayload = null;
+        });
+    }
+
+    if (btnAsmImportOk) {
+        btnAsmImportOk.addEventListener('click', () => {
+            if (pendingImportPayload) {
+                // Phase 2: apply
+                const applySettings = chkAsmImportSettings ? chkAsmImportSettings.checked : true;
+                if (applyImportPayload(pendingImportPayload, applySettings)) {
+                    asmImportDialog.classList.add('hidden');
+                    pendingImportPayload = null;
+                }
+            } else {
+                // Phase 1: parse and show preview
+                const text = asmImportText ? asmImportText.value : '';
+                if (!text.trim()) {
+                    showMessage('Paste shared project data first', 'error');
+                    return;
+                }
+                const payload = parseShareData(text);
+                if (!payload) return;
+
+                pendingImportPayload = payload;
+
+                // Show preview
+                if (asmImportPreview) {
+                    asmImportPreview.innerHTML = buildImportPreview(payload);
+                    asmImportPreview.style.display = 'block';
+                }
+                // Show settings checkbox (only if payload has machine/settings)
+                if (asmImportSettingsLabel && (payload.machine || payload.settings)) {
+                    asmImportSettingsLabel.style.display = 'block';
+                }
+                // Make textarea readonly so user focuses on the preview
+                if (asmImportText) asmImportText.style.display = 'none';
+                // Change button text
+                btnAsmImportOk.textContent = 'Apply';
+            }
+        });
+    }
+
+    // Import dialog: backdrop click to close
+    if (asmImportDialog) {
+        asmImportDialog.addEventListener('click', (e) => {
+            if (e.target === asmImportDialog) {
+                asmImportDialog.classList.add('hidden');
+                pendingImportPayload = null;
+            }
+        });
+        // Escape to close, Ctrl+Enter to import/apply
+        asmImportDialog.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                asmImportDialog.classList.add('hidden');
+                pendingImportPayload = null;
+            } else if (e.key === 'Enter' && e.ctrlKey) {
+                e.preventDefault();
+                btnAsmImportOk.click();
+            }
         });
     }
 
@@ -2076,13 +2901,26 @@ export function initAssemblerUI({
                 const statusMsg = `OK: ${output.length} bytes at ${startAddr.toString(16).toUpperCase()}h (${result.passes} pass${result.passes > 1 ? 'es' : ''})`;
                 html += `<div class="asm-status-line success">${statusMsg}</div>`;
 
-                // Show warnings (filter unused labels based on checkbox)
+                // Show DISPLAY messages and warnings
                 const showUnused = chkAsmUnusedLabels && chkAsmUnusedLabels.checked;
                 const realWarnings = warnings.filter(w =>
                     showUnused || !w.message.startsWith('Unused label:')
                 );
                 realWarnings.forEach(w => {
-                    html += formatErrorLocation(w.file, w.line, w.message, false);
+                    if (w.message.startsWith('DISPLAY: ')) {
+                        const displayMsg = escapeHtml(w.message.slice(9));
+                        const dataFile = w.file ? `data-file="${escapeHtml(w.file)}"` : '';
+                        const dataLine = w.line ? `data-line="${w.line}"` : '';
+                        let location = '';
+                        if (w.file) {
+                            location = w.file.split('/').pop() + ':' + (w.line || '?');
+                        } else if (w.line) {
+                            location = 'Line ' + w.line;
+                        }
+                        html += `<div class="asm-display asm-clickable" ${dataFile} ${dataLine} style="cursor:pointer" title="Click to go to location">&gt; ${location ? location + ': ' : ''}${displayMsg}</div>`;
+                    } else {
+                        html += formatErrorLocation(w.file, w.line, w.message, false);
+                    }
                 });
 
                 const showCompiled = chkAsmShowCompiled && chkAsmShowCompiled.checked;
@@ -2225,7 +3063,13 @@ export function initAssemblerUI({
             // Handle AssemblerError with file/line info
             const statusMsg = 'Assembly failed';
             let html = `<div class="asm-status-line error">${statusMsg}</div>`;
-            if (e.file || e.line) {
+            // Show collected errors with individual file/line locations
+            const collectedErrors = ErrorCollector.errors || [];
+            if (collectedErrors.length > 0) {
+                for (const err of collectedErrors) {
+                    html += formatErrorLocation(err.file, err.line, err.message, true);
+                }
+            } else if (e.file || e.line) {
                 html += formatErrorLocation(e.file, e.line, e.message, true);
             } else {
                 html += `<div class="asm-error">${escapeHtml(e.message || e.toString())}</div>`;

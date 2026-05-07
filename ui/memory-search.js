@@ -52,8 +52,13 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
                     // Single hex byte
                     pattern.push(parseInt(token, 16));
                     mask.push(0xFF);
+                } else if (/^[0-9A-Fa-f]{4}$/.test(token)) {
+                    // 4-digit hex = 16-bit word, store as little-endian
+                    const val = parseInt(token, 16);
+                    pattern.push(val & 0xFF, (val >> 8) & 0xFF);
+                    mask.push(0xFF, 0xFF);
                 } else if (/^[0-9A-Fa-f]+$/.test(token) && token.length % 2 === 0) {
-                    // Concatenated hex bytes like "CD21" - split them
+                    // Concatenated hex bytes like "CD2100" - split into byte pairs
                     for (let i = 0; i < token.length; i += 2) {
                         pattern.push(parseInt(token.substr(i, 2), 16));
                         mask.push(0xFF);
@@ -71,9 +76,15 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
             const mask = [];
             for (const part of parts) {
                 const val = parseInt(part, 10);
-                if (isNaN(val) || val < 0 || val > 255) return null;
-                pattern.push(val);
-                mask.push(0xFF);
+                if (isNaN(val) || val < 0 || val > 65535) return null;
+                if (val > 255) {
+                    // 16-bit word — store as little-endian
+                    pattern.push(val & 0xFF, (val >> 8) & 0xFF);
+                    mask.push(0xFF, 0xFF);
+                } else {
+                    pattern.push(val);
+                    mask.push(0xFF);
+                }
             }
             return pattern.length > 0 ? { pattern, mask } : null;
         } else {
@@ -227,11 +238,11 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
 
         // Update placeholder and tooltip based on mode
         if (mode === 'hex') {
-            memSearchInput.placeholder = 'CD ? 00...';
-            memSearchInput.title = 'Hex bytes, use ? for wildcard';
+            memSearchInput.placeholder = 'CD ? 00 or ABCD...';
+            memSearchInput.title = 'Hex bytes (? = wildcard, 4 digits = word little-endian)';
         } else if (mode === 'dec') {
             memSearchInput.placeholder = '205 33 0...';
-            memSearchInput.title = 'Decimal bytes (0-255)';
+            memSearchInput.title = 'Decimal values (0-255 = byte, 256-65535 = word little-endian)';
         } else {
             memSearchInput.placeholder = 'text...';
             memSearchInput.title = 'Text string to search';
@@ -333,11 +344,11 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         if (leftSearchOptionsDiv) leftSearchOptionsDiv.style.display = mode === 'text' ? 'flex' : 'none';
 
         if (mode === 'hex') {
-            leftMemSearchInput.placeholder = 'CD ? 00...';
-            leftMemSearchInput.title = 'Hex bytes, use ? for wildcard';
+            leftMemSearchInput.placeholder = 'CD ? 00 or ABCD...';
+            leftMemSearchInput.title = 'Hex bytes (? = wildcard, 4 digits = word little-endian)';
         } else if (mode === 'dec') {
             leftMemSearchInput.placeholder = '205 33 0...';
-            leftMemSearchInput.title = 'Decimal bytes (0-255)';
+            leftMemSearchInput.title = 'Decimal values (0-255 = byte, 256-65535 = word little-endian)';
         } else {
             leftMemSearchInput.placeholder = 'text...';
             leftMemSearchInput.title = 'Text string to search';

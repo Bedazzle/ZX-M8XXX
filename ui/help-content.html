@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.13.4</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.14.3</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -268,6 +268,16 @@
                         <li><strong>No Attr</strong>: Screen bitmap without attribute colors (monochrome)</li>
                         <li><strong>No Bitmap</strong>: Attribute colors only вЂ” bitmap replaced by diagonal X crosses per cell (ink on paper)</li>
                     </ul>
+                    <h5>Shadow Screen</h5>
+                    <p>Displays a second screen view below the main canvas (Settings &rarr; Display &rarr; Shadow dropdown):</p>
+                    <ul>
+                        <li><strong>None</strong>: Shadow screen hidden</li>
+                        <li><strong>Full</strong>: Inactive screen bank with full attribute coloring (128K+ only)</li>
+                        <li><strong>Bitmap</strong>: Inactive screen bank as white-on-black pixels (128K+ only)</li>
+                        <li><strong>Linear</strong>: Render 6144 bytes from a custom address as sequential rows (white-on-black, all machines)</li>
+                        <li><strong>Spectrum</strong>: Render 6144 bytes from a custom address using ZX Spectrum interleaved screen layout (white-on-black, all machines)</li>
+                    </ul>
+                    <p style="font-size: 11px; color: var(--text-dim);">Linear and Spectrum modes show an address input field (hex). On 48K machines, only None/Linear/Spectrum are available. The SCR bank indicator in the status bar shows which screen bank is active (128K+ only).</p>
                     <h5>Bookmarks</h5>
                     <p>Quick navigation: click bookmark to jump, right-click to set bookmark at current address, Ctrl+click to clear. 5 slots for disassembly, 5 for memory view.</p>
                     <p><strong>Hotkeys (paused mode only):</strong> 1-5 = left panel bookmarks, 6-9,0 = right panel bookmarks. Shift+digit sets bookmark, Ctrl+digit clears bookmark.</p>
@@ -937,6 +947,8 @@
                         <li><strong>New</strong> - Add a new file to the project</li>
                         <li><strong>Load</strong> - Load .asm file or .zip project</li>
                         <li><strong>Export</strong> - Save source files as ZIP</li>
+                        <li><strong>Share</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
+                        <li><strong>Import</strong> - Import a shared project from clipboard. Paste the <code>===M8XXX-ASM-BEGIN===...===M8XXX-ASM-END===</code> string and click Import. A preview shows the files and machine/hardware settings that will be applied. Uncheck "Apply machine &amp; hardware settings" to import only the source files without changing the emulator configuration</li>
                         <li><strong>Download</strong> - Download generated output files (.bin, .sna, .tap). If multiple files, downloads as ZIP archive</li>
                     </ul>
                     <h5>Drag & Drop</h5>
@@ -995,6 +1007,14 @@
                     <p>Or use the MD5CHECK macro:</p>
                     <pre>MD5CHECK "game.bin", "a1b2c3d4e5f6..."</pre>
                     <p>Output shows <span style="color:#80ff80">MD5 OK</span> or <span style="color:#ff8080">MD5 MISMATCH</span>.</p>
+                    <h5>T-State Popup</h5>
+                    <p>Select one or more lines of Z80 code to see a floating popup with the total T-state timing for the selected instructions. The popup appears after 1.5 seconds of inactivity and disappears immediately on any mouse movement, click, key press, or scroll.</p>
+                    <ul>
+                        <li>Single instruction: shows timing directly, e.g. <code>4T</code></li>
+                        <li>Multiple instructions: shows total with count, e.g. <code>42T (3 instr)</code></li>
+                        <li>Conditional instructions (DJNZ, JR cc, CALL cc, RET cc, LDIR, etc.): shows taken/not-taken, e.g. <code>17/12T</code></li>
+                        <li>Unrecognised lines (macros, directives): total is prefixed with <code>~</code></li>
+                    </ul>
                     <h5>Supported Directives</h5>
                     <ul>
                         <li><strong>ORG</strong> - Set origin address</li>
@@ -1015,6 +1035,8 @@
                         <li><strong>STRUCT/ENDS</strong> - Define structure</li>
                         <li><strong>DEVICE</strong> - Set target device (ZXSPECTRUM48, ZXSPECTRUM128)</li>
                         <li><strong>SLOT/PAGE</strong> - Memory paging (128K)</li>
+                        <li><strong>DISPLAY</strong> - Output message during assembly. Supports strings, expressions, format specifiers: <code>/H</code> (hex), <code>/D</code> (decimal), <code>/A</code> (hex+decimal), <code>/B</code> (binary), <code>/C</code> (character). Example: <code>DISPLAY "addr:", /A, label</code></li>
+                        <li><strong>ASSERT</strong> - Assert condition (error if false)</li>
                     </ul>
                 </div>
                 <div class="fullhelp-section hidden" id="help-tests">

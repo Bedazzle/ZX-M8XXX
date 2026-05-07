@@ -150,7 +150,9 @@ export function initProjectIO({
                     cfaSkipRom: document.getElementById('chkCfaSkipRom').checked,
                     cfaISR: document.getElementById('chkCfaISR').checked,
                     cfaEntries: document.getElementById('cfaExtraEntries').value,
-                    if1Enabled: spectrum.if1Enabled
+                    if1Enabled: spectrum.if1Enabled,
+                    secondScreenMode: document.getElementById('secondScreenMode').value,
+                    secondScreenAddr: document.getElementById('secondScreenAddr').value
                 },
                 // CPU timing state (not stored in SNA format)
                 cpuTiming: {
@@ -623,6 +625,16 @@ export function initProjectIO({
                     const chkIF1 = document.getElementById('chkIF1');
                     if (chkIF1) chkIF1.checked = spectrum.if1Enabled;
                     spectrum.updateBetaDiskPagingFlag();
+                }
+                if (project.settings.secondScreenAddr !== undefined) {
+                    const ssAddr = document.getElementById('secondScreenAddr');
+                    ssAddr.value = project.settings.secondScreenAddr;
+                    ssAddr.dispatchEvent(new Event('change'));
+                }
+                if (project.settings.secondScreenMode !== undefined) {
+                    const ssSelect = document.getElementById('secondScreenMode');
+                    ssSelect.value = project.settings.secondScreenMode;
+                    ssSelect.dispatchEvent(new Event('change'));
                 }
 
             }

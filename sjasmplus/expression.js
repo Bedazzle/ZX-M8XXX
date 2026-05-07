@@ -469,7 +469,8 @@ export const ExpressionParser = {
                 }
             }
 
-            // Undefined symbol
+            // Undefined symbol — register as forward reference so checkUndefined() can catch it
+            SymbolTable.reference(name, ErrorCollector.currentLine, ErrorCollector.currentFile);
             return { value: 0, undefined: true, symbol: name };
         }
 
@@ -485,7 +486,11 @@ export const ExpressionParser = {
 
 // Helper function to parse expression from source string
 export function parseExpression(source, symbols = {}, currentAddress = 0, sectionStart = 0) {
+    const savedLine = ErrorCollector.currentLine;
+    const savedFile = ErrorCollector.currentFile;
     ErrorCollector.reset();
+    ErrorCollector.currentLine = savedLine;
+    ErrorCollector.currentFile = savedFile;
     const lexer = new Lexer(source);
     const tokens = lexer.tokenize().filter(t => 
         t.type !== TokenType.NEWLINE && t.type !== TokenType.EOF
