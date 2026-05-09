@@ -424,9 +424,44 @@
                             blockShift: blockShift,
                             blockSize: 128 << blockShift,
                             dirBlocks: dirBlocks,
+                            use16bit: blockShift >= 4,
                             valid: true
                         };
                     }
+                }
+            }
+
+            // Checksum failed — try DPB fields anyway if they look structurally valid.
+            // Some emulators (e.g. RealSpectrum) write valid DPB data but a zero checksum byte.
+            if (bootData && bootData.length >= 16) {
+                const sectorSizeLog = bootData[4];
+                const reservedTracks = bootData[5];
+                const blockShift = bootData[6];
+                const dirBlocks = bootData[7];
+                const specSectors = bootData[3];
+                const specTracks = bootData[2];
+                const actualSectors = sorted.length;
+                // Validate: fields must be sane and match actual track geometry
+                if (blockShift >= 3 && blockShift <= 5 && reservedTracks <= 4
+                    && dirBlocks >= 1 && dirBlocks <= 8
+                    && sectorSizeLog >= 1 && sectorSizeLog <= 3
+                    && specSectors === actualSectors
+                    && specTracks >= 40 && specTracks <= 160) {
+                    return {
+                        diskType: bootData[0],
+                        sides: (bootData[1] & 0x03) + 1,
+                        tracksPerSide: specTracks,
+                        sectorsPerTrack: specSectors,
+                        firstSectorId: sorted[0].id,
+                        sectorSizeLog: sectorSizeLog,
+                        sectorSize: 128 << sectorSizeLog,
+                        reservedTracks: reservedTracks,
+                        blockShift: blockShift,
+                        blockSize: 128 << blockShift,
+                        dirBlocks: dirBlocks,
+                        use16bit: blockShift >= 4,
+                        valid: true
+                    };
                 }
             }
 
@@ -499,6 +534,20 @@
         }
 
         /**
+         * Convert a logical track number to physical cylinder/head.
+         * Single-sided disks (all standard +3 disks): returns { cylinder: N, head: 0 }.
+         * Double-sided disks: alternating sides (track 0=cyl0/head0, track 1=cyl0/head1, ...).
+         * @param {object} spec - Disk specification (may contain sides)
+         * @param {number} logicalTrack - Logical track number (0-based)
+         * @returns {{ cylinder: number, head: number }}
+         */
+        static _logicalTrackToPhysical(spec, logicalTrack) {
+            const sides = spec.sides || 1;
+            if (sides <= 1) return { cylinder: logicalTrack, head: 0 };
+            return { cylinder: Math.floor(logicalTrack / sides), head: logicalTrack % sides };
+        }
+
+        /**
          * Read directory data from a DSK image, accounting for reserved tracks.
          * @param {DSKImage} dskImage
          * @param {object} spec - Disk specification from getDiskSpec()
@@ -507,7 +556,8 @@
         static _readDirectory(dskImage, spec) {
             // Directory is at the start of the data area (after reserved tracks)
             const dirTrackNum = spec.reservedTracks;
-            const dirTrack = dskImage.getTrack(dirTrackNum, 0);
+            const dirPhys = DSKLoader._logicalTrackToPhysical(spec, dirTrackNum);
+            const dirTrack = dskImage.getTrack(dirPhys.cylinder, dirPhys.head);
             if (!dirTrack || dirTrack.sectors.length === 0) return null;
 
             const sortedSectors = [...dirTrack.sectors].sort((a, b) => a.id - b.id);
@@ -529,8 +579,9 @@
                     currentTrack++;
                     logicalSector = 0;
                 }
+                const phys = DSKLoader._logicalTrackToPhysical(spec, currentTrack);
                 const sectorId = DSKLoader._logicalToSectorId(spec, logicalSector);
-                const secData = dskImage.readSector(currentTrack, 0, sectorId);
+                const secData = dskImage.readSector(phys.cylinder, phys.head, sectorId);
                 if (secData) {
                     const copyLen = Math.min(secData.length, totalDirBytes - pos);
                     dirData.set(secData.subarray(0, copyLen), pos);
@@ -615,9 +666,17 @@
                 }
 
                 // Allocation blocks (16 bytes at offset 16-31)
+                // 16-bit block pointers: 8 LE word pairs; 8-bit: 16 single bytes
                 let blockCount = 0;
-                for (let j = 16; j < 32; j++) {
-                    if (dirData[entryBase + j] !== 0) blockCount++;
+                if (spec.use16bit) {
+                    for (let j = 16; j < 32; j += 2) {
+                        const blk = dirData[entryBase + j] | (dirData[entryBase + j + 1] << 8);
+                        if (blk !== 0) blockCount++;
+                    }
+                } else {
+                    for (let j = 16; j < 32; j++) {
+                        if (dirData[entryBase + j] !== 0) blockCount++;
+                    }
                 }
 
                 const key = `${user}:${name}.${ext}`;
@@ -641,10 +700,17 @@
 
                 // Save first allocation block number from extent 0
                 if (extent === 0 && entry.firstBlock === undefined) {
-                    for (let j = 16; j < 32; j++) {
-                        if (dirData[entryBase + j] !== 0) {
-                            entry.firstBlock = dirData[entryBase + j];
-                            break;
+                    if (spec.use16bit) {
+                        for (let j = 16; j < 32; j += 2) {
+                            const blk = dirData[entryBase + j] | (dirData[entryBase + j + 1] << 8);
+                            if (blk !== 0) { entry.firstBlock = blk; break; }
+                        }
+                    } else {
+                        for (let j = 16; j < 32; j++) {
+                            if (dirData[entryBase + j] !== 0) {
+                                entry.firstBlock = dirData[entryBase + j];
+                                break;
+                            }
                         }
                     }
                 }
@@ -709,8 +775,9 @@
                 const trackNum = reservedTracks + Math.floor(absSector / sectorsPerTrack);
                 const sectorInTrack = absSector % sectorsPerTrack;
                 const sectorId = DSKLoader._logicalToSectorId(spec, sectorInTrack);
+                const phys = DSKLoader._logicalTrackToPhysical(spec, trackNum);
 
-                const sectorData = dskImage.readSector(trackNum, 0, sectorId);
+                const sectorData = dskImage.readSector(phys.cylinder, phys.head, sectorId);
                 if (!sectorData || sectorData.length < 5) continue;
 
                 // Try +3DOS header: "PLUS3DOS" signature at bytes 0-7, 0x1A at byte 8
@@ -732,8 +799,8 @@
                     file.headerSize = 128;
 
                     if (file.plus3Type === 3) {
-                        file.loadAddress = sectorData[16] | (sectorData[17] << 8);
-                        file.dataLength = sectorData[18] | (sectorData[19] << 8);
+                        file.dataLength = sectorData[16] | (sectorData[17] << 8);
+                        file.loadAddress = sectorData[18] | (sectorData[19] << 8);
                     } else if (file.plus3Type === 0) {
                         file.dataLength = sectorData[16] | (sectorData[17] << 8);
                         file.autostart = sectorData[18] | (sectorData[19] << 8);
@@ -839,11 +906,18 @@
                     ? dirData[entryBase + 12]
                     : dirData[entryBase + 12] + (dirData[entryBase + 14] * 32);
 
-                // Allocation block numbers (single byte each for small disks)
+                // Allocation block numbers: 16-bit LE pairs for large disks, single bytes otherwise
                 const blocks = [];
-                for (let j = 16; j < 32; j++) {
-                    if (dirData[entryBase + j] !== 0) {
-                        blocks.push(dirData[entryBase + j]);
+                if (spec.use16bit) {
+                    for (let j = 16; j < 32; j += 2) {
+                        const blk = dirData[entryBase + j] | (dirData[entryBase + j + 1] << 8);
+                        if (blk !== 0) blocks.push(blk);
+                    }
+                } else {
+                    for (let j = 16; j < 32; j++) {
+                        if (dirData[entryBase + j] !== 0) {
+                            blocks.push(dirData[entryBase + j]);
+                        }
                     }
                 }
 
@@ -880,8 +954,9 @@
                     const curTrack = trackNum + Math.floor(curSectorInTrack / sectorsPerTrack);
                     const curSector = curSectorInTrack % sectorsPerTrack;
                     const sectorId = DSKLoader._logicalToSectorId(spec, curSector);
+                    const phys = DSKLoader._logicalTrackToPhysical(spec, curTrack);
 
-                    const sectorData = dskImage.readSector(curTrack, 0, sectorId);
+                    const sectorData = dskImage.readSector(phys.cylinder, phys.head, sectorId);
                     if (sectorData) {
                         const copyLen = Math.min(sectorSize, result.length - writePos);
                         result.set(sectorData.subarray(0, copyLen), writePos);
@@ -973,10 +1048,17 @@
                     const entryBase = i * 32;
                     const user = dirData[entryBase];
                     if (user === 0xE5 || user > 15) continue;
-                    // Allocation block numbers (single byte each)
-                    for (let j = 16; j < 32; j++) {
-                        if (dirData[entryBase + j] !== 0) {
-                            used.add(dirData[entryBase + j]);
+                    // Allocation block numbers: 16-bit LE pairs or single bytes
+                    if (spec.use16bit) {
+                        for (let j = 16; j < 32; j += 2) {
+                            const blk = dirData[entryBase + j] | (dirData[entryBase + j + 1] << 8);
+                            if (blk !== 0) used.add(blk);
+                        }
+                    } else {
+                        for (let j = 16; j < 32; j++) {
+                            if (dirData[entryBase + j] !== 0) {
+                                used.add(dirData[entryBase + j]);
+                            }
                         }
                     }
                 }
@@ -1020,7 +1102,8 @@
                     logicalSector = 0;
                 }
                 const sectorId = DSKLoader._logicalToSectorId(spec, logicalSector);
-                const track = dskImage.getTrack(currentTrack, 0);
+                const phys = DSKLoader._logicalTrackToPhysical(spec, currentTrack);
+                const track = dskImage.getTrack(phys.cylinder, phys.head);
                 if (!track) break;
                 const sec = track.sectors.find(s => s.id === sectorId);
                 if (sec) {

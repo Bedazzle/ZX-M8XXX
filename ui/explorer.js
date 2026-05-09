@@ -7492,7 +7492,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const { dirData } = dir;
         const maxEntries = Math.floor(dirData.length / 32);
 
-        const requiredExtents = Math.ceil(requiredBlocks / 16);
+        const blocksPerExtent = spec.use16bit ? 8 : 16;
+        const requiredExtents = Math.ceil(requiredBlocks / blocksPerExtent);
         let freeSlots = 0;
         for (let i = 0; i < maxEntries; i++) {
             if (dirData[i * 32] === 0xE5) freeSlots++;
@@ -7515,6 +7516,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const curSectorInTrack = (absoluteSector + s) % sectorsPerTrack;
                 const curTrack = reservedTracks + Math.floor((absoluteSector + s) / sectorsPerTrack);
                 const sectorId = DSKLoader._logicalToSectorId(spec, curSectorInTrack);
+                const phys = DSKLoader._logicalTrackToPhysical(spec, curTrack);
 
                 const sectorData = new Uint8Array(sectorSize);
                 const srcOffset = dataOffset + s * sectorSize;
@@ -7522,7 +7524,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     const copyLen = Math.min(sectorSize, fullData.length - srcOffset);
                     sectorData.set(fullData.subarray(srcOffset, srcOffset + copyLen));
                 }
-                dskImage.writeSector(curTrack, 0, sectorId, sectorData);
+                dskImage.writeSector(phys.cylinder, phys.head, sectorId, sectorData);
             }
         }
 
@@ -7543,12 +7545,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 dirData[entryBase + 9 + j] = j < paddedExt.length ? paddedExt.charCodeAt(j) & 0x7F : 0x20;
             }
 
-            const startBlock = extNum * 16;
-            const endBlock = Math.min(startBlock + 16, requiredBlocks);
+            const startBlock = extNum * blocksPerExtent;
+            const endBlock = Math.min(startBlock + blocksPerExtent, requiredBlocks);
             const blocksInExtent = endBlock - startBlock;
 
-            for (let j = 0; j < 16; j++) {
-                dirData[entryBase + 16 + j] = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
+            if (spec.use16bit) {
+                for (let j = 0; j < 8; j++) {
+                    const blk = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
+                    dirData[entryBase + 16 + j * 2] = blk & 0xFF;
+                    dirData[entryBase + 16 + j * 2 + 1] = (blk >> 8) & 0xFF;
+                }
+            } else {
+                for (let j = 0; j < 16; j++) {
+                    dirData[entryBase + 16 + j] = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
+                }
             }
 
             if (spec.isTOS) {
@@ -7828,6 +7838,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const parsed = zipParseInnerFile(innerData, innerExt);
         if (parsed) {
             await loadFileIntoPanel(panel, innerData, zipEntry.name, innerExt, parsed);
+            // Sync explorer display so File Info drills into the selected file
+            if (panel === editorPanels.left) {
+                explorerFileName.textContent += ' > ' + zipEntry.name;
+                explorerFileSize.textContent = `(${innerData.length.toLocaleString()} bytes)`;
+                explorerFileType = innerExt;
+                explorerZipFiles = [];
+                explorerRenderFileInfo();
+            }
         }
     }
 
