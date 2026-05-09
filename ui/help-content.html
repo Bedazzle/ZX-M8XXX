@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.14.3</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.14.6</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -142,7 +142,7 @@
                     <table>
                         <tr><td>F6 / Pause</td><td>Pause/Resume emulation</td></tr>
                         <tr><td>F7</td><td>Step Into (single instruction)</td></tr>
-                        <tr><td>F8</td><td>Step Over (skip CALL/RST)</td></tr>
+                        <tr><td>F8</td><td>Step Over (skip CALL/RST/DJNZ/block repeats)</td></tr>
                         <tr><td>F4</td><td>Run to Cursor</td></tr>
                         <tr><td>F9</td><td>Toggle Breakpoint at PC</td></tr>
                         <tr><td>F11</td><td>Toggle Fullscreen</td></tr>
@@ -158,7 +158,7 @@
                         <tr><td>Shift+6-9, 0 (paused)</td><td>Set right panel bookmark</td></tr>
                         <tr><td>Ctrl+1-5 (paused)</td><td>Clear left panel bookmark</td></tr>
                         <tr><td>Ctrl+6-9, 0 (paused)</td><td>Clear right panel bookmark</td></tr>
-                        <tr><td>F1</td><td>Cycle canvas zoom (x1 в†' x2 в†' x3)</td></tr>
+                        <tr><td>F1</td><td>Cycle canvas zoom (x1 &rarr; x2 &rarr; x3 &rarr; x4 &rarr; x5)</td></tr>
                         <tr><td>F3</td><td>Screenshot (single capture), or toggle auto-capture when Batch is checked</td></tr>
                         <tr><td>Ctrl+F3</td><td>Stop auto-capture (if running) + save batch screenshots as ZIP</td></tr>
                         <tr><td>Ctrl+F</td><td>Toggle autofire on/off</td></tr>
@@ -179,6 +179,7 @@
                         <li>Left panel: Disasm or Memory</li>
                         <li>Right panel: Memory, Disasm, or Calculator</li>
                         <li>Step controls (Step Into, Step Over, etc.) appear in disasm panels</li>
+                        <li><strong>Step Over</strong> (F8) treats CALL, RST, DJNZ, and block repeats (LDIR, etc.) as atomic &mdash; runs until execution returns past them. For DJNZ, the loop body is statically analyzed: if it contains no branches or B-modifying instructions, the loop runs to completion; otherwise a configurable T-state limit applies (Settings &rarr; Display, default 80K). The limit also applies to CALL/RST. If the limit is reached, a red warning appears near the current PC line</li>
                         <li>Search controls appear in both panels (see Pattern Search below)</li>
                         <li>Bookmarks show panel type: рџ”Ќ disasm, рџ“¦ memory</li>
                     </ul>
@@ -278,6 +279,8 @@
                         <li><strong>Spectrum</strong>: Render 6144 bytes from a custom address using ZX Spectrum interleaved screen layout (white-on-black, all machines)</li>
                     </ul>
                     <p style="font-size: 11px; color: var(--text-dim);">Linear and Spectrum modes show an address input field (hex). On 48K machines, only None/Linear/Spectrum are available. The SCR bank indicator in the status bar shows which screen bank is active (128K+ only).</p>
+                    <h5>UI Scale</h5>
+                    <p>Scales the entire interface (text, controls, panels) from 100% to 200% without affecting the emulator canvas. Useful for high-resolution displays where the default font is too small. Avoids browser zoom which degrades pixel-perfect canvas rendering. The setting persists across sessions and is saved in project files.</p>
                     <h5>Bookmarks</h5>
                     <p>Quick navigation: click bookmark to jump, right-click to set bookmark at current address, Ctrl+click to clear. 5 slots for disassembly, 5 for memory view.</p>
                     <p><strong>Hotkeys (paused mode only):</strong> 1-5 = left panel bookmarks, 6-9,0 = right panel bookmarks. Shift+digit sets bookmark, Ctrl+digit clears bookmark.</p>
@@ -1231,7 +1234,7 @@
                     <h5>Sub-tabs</h5>
                     <ul>
                         <li><strong>File Info</strong> - File structure, blocks, registers, disk catalog</li>
-                        <li><strong>BASIC</strong> - Decode and display BASIC programs with syntax highlighting</li>
+                        <li><strong>BASIC</strong> - Decode and display BASIC programs with syntax highlighting. View dropdown switches between <em>Code</em> (syntax-highlighted) and <em>Screen</em> (ZX Spectrum pixel font, Unicode block graphics, hidden control codes)</li>
                         <li><strong>Disasm</strong> - Z80 disassembly with ROM labels, click addresses in BASIC to jump</li>
                         <li><strong>Hex Dump</strong> - Raw hex view with ASCII column</li>
                         <li><strong>Edit</strong> - Dual-panel file editor for TAP, TZX, TRD/SCL, MGT, DSK, and OPD formats (see below)</li>
@@ -1620,6 +1623,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         <li><strong>ZXMAK2</strong> - .NET Spectrum emulator</li>
                         <li><strong>IDA Pro</strong> - Interactive disassembler (debugger UI concepts)</li>
                         <li><strong>Ghidra</strong> - NSA reverse engineering tool (analysis features)</li>
+                    </ul>
+                    <h5>Libraries &amp; Fonts</h5>
+                    <ul>
+                        <li><strong>pako</strong> — zlib decompression library (<a href="https://github.com/nodeca/pako" target="_blank" style="color: var(--cyan);">github.com/nodeca/pako</a>, MIT + Zlib license)</li>
+                        <li><strong>ZX82 System</strong> — ZX Spectrum display font by Paul van der Laan (<a href="https://type-invaders.com/sinclair/zx82system/" target="_blank" style="color: var(--cyan);">type-invaders.com</a>)</li>
                     </ul>
                     <h5>Known Limitations</h5>
                     <ul>

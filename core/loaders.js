@@ -3770,7 +3770,7 @@ const VERSION = '0.6.4';
             const files = [];
             const typeNames = {
                 0: 'Erased', 1: 'BASIC', 2: 'Num array', 3: 'Str array',
-                4: 'CODE', 5: '48K Snap', 6: 'Microdrive', 7: 'SCREEN$',
+                4: 'Code', 5: '48K Snap', 6: 'Microdrive', 7: 'SCREEN$',
                 8: 'Special', 9: '128K Snap', 10: 'Opentype', 11: 'Execute'
             };
 
@@ -3816,11 +3816,14 @@ const VERSION = '0.6.4';
                 // File data length (LSB, MSB at offsets 212-213)
                 const length = bytes[offset + 212] | (bytes[offset + 213] << 8);
 
-                // Param 1: start address (CODE) or autostart line (BASIC)
+                // Offset 214-215: start address (CODE load addr, BASIC PROG sysvar)
                 const param1 = bytes[offset + 214] | (bytes[offset + 215] << 8);
 
-                // Param 2: body length (BASIC) or 32768 (CODE)
+                // Offset 216-217: type-specific (BASIC program body length, CODE = 32768)
                 const param2 = bytes[offset + 216] | (bytes[offset + 217] << 8);
+
+                // Offset 218-219: autostart line (BASIC) or autostart address
+                const param3 = bytes[offset + 218] | (bytes[offset + 219] << 8);
 
                 const typeName = typeNames[fileType] || `Type ${fileType}`;
 
@@ -3836,7 +3839,7 @@ const VERSION = '0.6.4';
                     firstTrack,
                     firstSector,
                     sectorMap,
-                    autostart: (fileType === 1) ? param1 : null,
+                    autostart: (fileType === 1) ? param3 : null,
                     slotIndex: i
                 });
             }
@@ -3845,84 +3848,93 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Extract file data from MGT image by following sector address map.
-         * Falls back to contiguous allocation from firstTrack/firstSector
-         * when the sector map is empty or contains only zero entries.
+         * Extract file data from MGT image by following sector chain.
+         * Each sector stores 510 bytes of file data + 2-byte chain pointer
+         * (track, sector of next sector) in the last 2 bytes.
+         * SPECIAL (type 8) files use contiguous 512-byte sectors without chain.
+         * Non-SPECIAL files have a 9-byte file header prepended to the data;
+         * this is stripped so the returned data is the payload only,
+         * trimmed to fileInfo.length.
          */
         static extractFile(data, fileInfo) {
+            const bytes = new Uint8Array(data);
+            const sectorSize = 512;
+            const isContig = fileInfo.type === 8; // SPECIAL uses full 512-byte sectors
+            const dataPerSector = isContig ? 512 : 510;
+            const result = new Uint8Array(fileInfo.sectors * dataPerSector);
+            let destPos = 0;
+
+            let curTrack = fileInfo.firstTrack;
+            let curSector = fileInfo.firstSector;
+
+            for (let i = 0; i < fileInfo.sectors; i++) {
+                const offset = MGTLoader.getSectorOffset(curTrack, 0, curSector);
+
+                if (offset >= 0 && offset + sectorSize <= bytes.length) {
+                    result.set(bytes.slice(offset, offset + dataPerSector), destPos);
+
+                    if (!isContig) {
+                        // Last 2 bytes of sector = chain pointer (track, sector)
+                        curTrack = bytes[offset + 510];
+                        curSector = bytes[offset + 511];
+                    }
+                }
+                destPos += dataPerSector;
+
+                if (isContig) {
+                    // Advance sequentially
+                    curSector++;
+                    if (curSector > 10) {
+                        curSector = 1;
+                        curTrack++;
+                    }
+                }
+            }
+
+            if (isContig) {
+                return result.slice(0, fileInfo.length);
+            }
+            // Strip 9-byte file header, return payload trimmed to directory length
+            return result.slice(9, 9 + fileInfo.length);
+        }
+
+        /**
+         * Extract raw sector data from MGT image (full 512-byte sectors).
+         * Used by disk editor for round-trip read/write.
+         */
+        static extractFileRaw(data, fileInfo) {
             const bytes = new Uint8Array(data);
             const sectorSize = 512;
             const result = new Uint8Array(fileInfo.sectors * sectorSize);
             let destPos = 0;
 
-            // Check if sector map contains valid entries: track 0-79 or 128-207 (bit7=side),
-            // sector 1-10. If all entries are invalid/zero, fall back to contiguous allocation.
-            const hasValidMap = fileInfo.sectorMap.length > 0 && fileInfo.sectorMap.every(e => {
-                const physTrack = e.track & 0x7F;
-                return physTrack < 80 && e.sector >= 1 && e.sector <= 10;
-            });
+            let curTrack = fileInfo.firstTrack;
+            let curSector = fileInfo.firstSector;
+            const isContig = fileInfo.type === 8;
 
-            if (hasValidMap) {
-                // Follow the sector address map
-                for (let i = 0; i < fileInfo.sectorMap.length; i++) {
-                    const entry = fileInfo.sectorMap[i];
-                    const track = entry.track;
-                    const sector = entry.sector;
+            for (let i = 0; i < fileInfo.sectors; i++) {
+                const offset = MGTLoader.getSectorOffset(curTrack, 0, curSector);
 
-                    // Decode track: bit 7 = side
-                    const physTrack = track & 0x7F;
-                    const side = (track & 0x80) ? 1 : 0;
-                    const offset = ((physTrack * 2 + side) * 10 + (sector - 1)) * sectorSize;
+                if (offset >= 0 && offset + sectorSize <= bytes.length) {
+                    result.set(bytes.slice(offset, offset + sectorSize), destPos);
 
-                    if (offset >= 0 && offset + sectorSize <= bytes.length) {
-                        result.set(bytes.slice(offset, offset + sectorSize), destPos);
-                    }
-                    destPos += sectorSize;
-                }
-            } else {
-                // Contiguous allocation: read sequential sectors from firstTrack/firstSector.
-                // Detect single-sided images: if side 1 has no data, stay on side 0 only.
-                let doubleSided = false;
-                for (let t = 2; t < 80 && !doubleSided; t++) {
-                    for (let s = 0; s < 10; s++) {
-                        const off = ((t * 2 + 1) * 10 + s) * sectorSize;
-                        if (off + sectorSize <= bytes.length && bytes[off] !== 0) {
-                            doubleSided = true;
-                            break;
-                        }
+                    if (!isContig) {
+                        curTrack = bytes[offset + 510];
+                        curSector = bytes[offset + 511];
                     }
                 }
+                destPos += sectorSize;
 
-                let curTrack = fileInfo.firstTrack & 0x7F;
-                let curSide = (fileInfo.firstTrack & 0x80) ? 1 : 0;
-                let curSector = fileInfo.firstSector; // 1-based
-
-                for (let i = 0; i < fileInfo.sectors; i++) {
-                    const offset = ((curTrack * 2 + curSide) * 10 + (curSector - 1)) * sectorSize;
-                    if (offset >= 0 && offset + sectorSize <= bytes.length) {
-                        result.set(bytes.slice(offset, offset + sectorSize), destPos);
-                    }
-                    destPos += sectorSize;
-
-                    // Advance to next sector
+                if (isContig) {
                     curSector++;
                     if (curSector > 10) {
                         curSector = 1;
-                        if (doubleSided) {
-                            curSide++;
-                            if (curSide > 1) {
-                                curSide = 0;
-                                curTrack++;
-                            }
-                        } else {
-                            curTrack++;
-                        }
+                        curTrack++;
                     }
                 }
             }
 
-            // Return only the actual file length
-            return result.slice(0, fileInfo.length);
+            return result;
         }
 
         /**
@@ -4614,19 +4626,13 @@ const VERSION = '0.6.4';
                 }
             }
 
-            // Count used/free sectors
-            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
-                const off = i * MDRLoader.SECTOR_SIZE;
-                const hdflag = bytes[off];
-                const recflg = bytes[off + 15];
-                if (hdflag === 0 && recflg === 0) {
-                    freeSectors++;
-                } else {
-                    usedSectors++;
-                }
-            }
-
             const files = MDRLoader.listFiles(data);
+
+            // Count used sectors from actual file data
+            for (const f of files) {
+                usedSectors += f.sectors;
+            }
+            freeSectors = MDRLoader.SECTOR_COUNT - usedSectors;
             const writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] : 0;
 
             return {
@@ -5132,15 +5138,16 @@ const VERSION = '0.6.4';
                 if (entry.firstBlock === 0 && entry.lastBlock === 0 && entry.bytesInLast === 0) continue;
 
                 const sectors = entry.lastBlock - entry.firstBlock + 1;
-                const rawLength = (entry.lastBlock - entry.firstBlock) * OPDLoader.BYTES_PER_SECTOR + entry.bytesInLast;
+                // bytesInLast: low 12 bits = bytes used in last sector minus 1 (per Opus manual)
+                const rawLength = (entry.lastBlock - entry.firstBlock) * OPDLoader.BYTES_PER_SECTOR + (entry.bytesInLast & 0x0FFF) + 1;
                 // Block numbers in directory are 0-based from sector 1 (sector 0 is descriptor)
                 // image_sector = block + 1, per EXTRACT.C: fseek(infile, (first_block + 1) * BPS, SEEK_SET)
                 const dataOffset = (entry.firstBlock + 1) * OPDLoader.BYTES_PER_SECTOR;
 
-                // Read the 6-byte file header from the start of the file data
+                // Read the 7-byte file header from the start of the file data
                 const header = OPDLoader._readFileHeader(bytes, dataOffset);
 
-                const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
+                const typeNames = { 0: 'BASIC', 1: 'Num array', 2: 'Str array', 3: 'Code' };
                 const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
 
                 files.push({
@@ -5165,7 +5172,7 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Extract file data from OPD image (without the 6-byte Opus header).
+         * Extract file data from OPD image (without the 7-byte Opus file header).
          * Uses directory-derived rawLength rather than the header's length field,
          * which may not represent the total data size on real Opus disks.
          * Returns Uint8Array of file content, or null on error.
@@ -5299,7 +5306,8 @@ const VERSION = '0.6.4';
                 // (per EXTRACT.C: fseek(infile, (first_block + 1) * BPS, SEEK_SET))
                 const firstBlock = nextSector - 1;
                 const lastBlock = nextSector + sectorsNeeded - 2;
-                const bytesInLast = totalBytes - (sectorsNeeded - 1) * BPS;
+                // bytesInLast stores (actual bytes in last sector) - 1
+                const bytesInLast = totalBytes - (sectorsNeeded - 1) * BPS - 1;
 
                 // Write directory entry (entry fi+1, since entry 0 is label)
                 const entryOff = dirOffset + (fi + 1) * 16;

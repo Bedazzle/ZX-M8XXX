@@ -430,17 +430,72 @@
                 }
             }
 
-            // Fallback: assume standard +3 format (1 reserved track)
+            // No valid +3DOS boot spec — detect format from sector IDs and geometry.
+            // See https://www.seasip.info/Cpm/amsform.html for CPC/PCW format detection.
+            const firstId = sorted[0].id;
+            const numSectors = sorted.length;
+            const secSize = sorted[0].data.length || 512;
+
+            if (firstId >= 0x41 && firstId <= 0x49 && numSectors === 9 && secSize === 512) {
+                // CPC System format: sectors 0x41-0x49, 2 reserved tracks, 64 dir entries
+                return {
+                    reservedTracks: 2, blockSize: 1024, blockShift: 3, dirBlocks: 2,
+                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, valid: false
+                };
+            }
+            if (firstId >= 0xC1 && firstId <= 0xC9 && numSectors === 9 && secSize === 512) {
+                // CPC Data format: sectors 0xC1-0xC9, 0 reserved tracks, 64 dir entries
+                return {
+                    reservedTracks: 0, blockSize: 1024, blockShift: 3, dirBlocks: 2,
+                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, valid: false
+                };
+            }
+            if (numSectors === 16 && secSize === 256) {
+                // Timex FDD3000 (TOS): 16×256-byte sectors, 4 reserved tracks, 128 dir entries
+                // See cpmtools diskdef: seclen 256, sectrk 16, blocksize 1024, maxdir 128, boottrk 4
+                // TOS directory entries use different byte 13-15 layout than standard CP/M:
+                //   byte 13 = tail (bytes in last sector), byte 14-15 = sizeHi:sizeLo (sectors*2)
+                // Source: Tomato FDD3000 tool (tos_image.hpp dirEntry struct)
+                // Sector skew table maps logical sector index to physical sector ID.
+                // The physical disk interleaves sectors for performance; DSK images
+                // store sectors in physical order with IDs matching physical positions.
+                // To read data in logical order, apply this table (self-inverse permutation).
+                // Source: Tomato FDD3000 tool (tos_image.hpp trackSkew[])
+                return {
+                    reservedTracks: 4, blockSize: 1024, blockShift: 3, dirBlocks: 4,
+                    sectorsPerTrack: 16, sectorSize: 256, firstSectorId: firstId, valid: false,
+                    isTOS: true,
+                    skewTable: [0, 7, 14, 5, 12, 3, 10, 1, 8, 15, 6, 13, 4, 11, 2, 9]
+                };
+            }
+
+            // Unknown format — assume standard +3 layout (1 reserved track)
             return {
                 reservedTracks: 1,
                 blockSize: 1024,
                 blockShift: 3,
                 dirBlocks: 2,
-                sectorsPerTrack: sorted.length,
-                sectorSize: sorted[0].data.length || 512,
-                firstSectorId: sorted[0].id,
+                sectorsPerTrack: numSectors,
+                sectorSize: secSize,
+                firstSectorId: firstId,
                 valid: false
             };
+        }
+
+        /**
+         * Map a logical sector index to a physical sector ID, applying skew if present.
+         * Timex FDD3000 DSK images store sectors in physical (interleaved) order;
+         * the skew table maps logical sector index to the correct physical sector ID.
+         * @param {object} spec - Disk specification (may contain skewTable)
+         * @param {number} logicalSector - Logical sector index (0-based within track)
+         * @returns {number} Physical sector ID to pass to readSector()
+         */
+        static _logicalToSectorId(spec, logicalSector) {
+            const base = spec.firstSectorId || 0;
+            if (spec.skewTable) {
+                return base + spec.skewTable[logicalSector % spec.skewTable.length];
+            }
+            return base + logicalSector;
         }
 
         /**
@@ -462,25 +517,28 @@
             const totalDirBytes = dirBlocks * spec.blockSize;
             const dirData = new Uint8Array(totalDirBytes);
             let pos = 0;
-            let currentTrack = dirTrackNum;
-            let sectorIdx = 0;
 
-            // Read sectors sequentially until we have enough directory data.
-            // Sectors may be larger or smaller than the block size.
+            const sectorSize = spec.sectorSize || 512;
+            const sectorsPerTrack = spec.sectorsPerTrack || sortedSectors.length;
+
+            // Read sectors in logical order until we have enough directory data.
+            let logicalSector = 0;
+            let currentTrack = dirTrackNum;
             while (pos < totalDirBytes) {
-                const track = dskImage.getTrack(currentTrack, 0);
-                if (!track || track.sectors.length === 0) break;
-                const tSorted = [...track.sectors].sort((a, b) => a.id - b.id);
-                if (sectorIdx >= tSorted.length) {
+                if (logicalSector >= sectorsPerTrack) {
                     currentTrack++;
-                    sectorIdx = 0;
-                    continue;
+                    logicalSector = 0;
                 }
-                const sec = tSorted[sectorIdx];
-                const copyLen = Math.min(sec.data.length, totalDirBytes - pos);
-                dirData.set(sec.data.subarray(0, copyLen), pos);
-                pos += sec.data.length;
-                sectorIdx++;
+                const sectorId = DSKLoader._logicalToSectorId(spec, logicalSector);
+                const secData = dskImage.readSector(currentTrack, 0, sectorId);
+                if (secData) {
+                    const copyLen = Math.min(secData.length, totalDirBytes - pos);
+                    dirData.set(secData.subarray(0, copyLen), pos);
+                    pos += secData.length;
+                } else {
+                    pos += sectorSize;
+                }
+                logicalSector++;
             }
 
             return { dirData, sortedSectors };
@@ -505,7 +563,7 @@
             const sectorSize = spec.sectorSize || 512;
             const sectorsPerBlock = Math.max(1, Math.round(blockSize / sectorSize));
             const sectorsPerTrack = spec.sectorsPerTrack || sortedSectors.length;
-            const baseSectorId = spec.firstSectorId !== undefined ? spec.firstSectorId : sortedSectors[0].id;
+
             const reservedTracks = spec.reservedTracks;
 
             // Parse CP/M directory entries (32 bytes each)
@@ -537,14 +595,24 @@
 
                 if (name.length === 0) continue;
 
-                // Extent number (for multi-extent files)
-                const extentLo = dirData[entryBase + 12];
-                const extentHi = dirData[entryBase + 14];
-                const extent = extentLo + (extentHi * 32);
+                // Extent number and size fields (layout differs for TOS vs CP/M)
+                // CP/M: byte 12=extentLo, 13=BC (bytes in last record), 14=extentHi, 15=RC (record count)
+                // TOS:  byte 12=part, 13=tail (bytes in last sector), 14=sizeHi, 15=sizeLo
+                const byte12 = dirData[entryBase + 12];
+                const byte13 = dirData[entryBase + 13];
+                const byte14 = dirData[entryBase + 14];
+                const byte15 = dirData[entryBase + 15];
 
-                // Records count (BC = bytes count in last extent, RC = records count)
-                const bc = dirData[entryBase + 13];
-                const rc = dirData[entryBase + 15];
+                let extent, bc, rc;
+                if (spec.isTOS) {
+                    extent = byte12;        // part number
+                    bc = byte13;            // tail (bytes in last sector)
+                    rc = byte15;            // sizeLo (will be used in TOS size calc)
+                } else {
+                    extent = byte12 + (byte14 * 32);
+                    bc = byte13;            // CP/M BC
+                    rc = byte15;            // CP/M RC
+                }
 
                 // Allocation blocks (16 bytes at offset 16-31)
                 let blockCount = 0;
@@ -562,6 +630,7 @@
                         maxExtent: -1,
                         lastRc: 0,
                         lastBc: 0,
+                        lastSizeHi: 0,
                         totalBlocks: 0,
                         firstBlock: undefined
                     });
@@ -585,23 +654,39 @@
                     entry.maxExtent = extent;
                     entry.lastRc = rc;
                     entry.lastBc = bc;
+                    if (spec.isTOS) entry.lastSizeHi = byte14;
                 }
             }
 
             // Calculate file sizes and build result array
             const result = [];
             for (const [, entry] of files) {
-                // Size = (extents before last * 16384) + (rc * 128) + adjustment for bc
-                // Each extent can hold 16K (128 records * 128 bytes)
                 let size;
-                if (entry.maxExtent === 0) {
-                    size = entry.lastRc * 128;
+                if (spec.isTOS) {
+                    // TOS directory: byte 14=sizeHi, byte 15=sizeLo, byte 13=tail
+                    // sizeLo/sizeHi encode sectors*2; tail = bytes used in last sector
+                    // For multi-extent files: full extents = 16K each, last extent uses TOS formula
+                    // Source: Tomato FDD3000 tool (tos_image.hpp/cpp)
+                    const totalSectors = (entry.lastSizeHi * 256 + entry.lastRc) / 2;
+                    let extentSize;
+                    if (entry.lastBc > 0) {
+                        extentSize = (totalSectors - 1) * 256 + entry.lastBc;
+                    } else {
+                        extentSize = totalSectors * 256;
+                    }
+                    size = entry.maxExtent * 16384 + extentSize;
                 } else {
-                    size = entry.maxExtent * 16384 + entry.lastRc * 128;
-                }
-                // If bc > 0, last record isn't full (subtract unused bytes)
-                if (entry.lastBc > 0 && size > 0) {
-                    size = size - 128 + entry.lastBc;
+                    // Standard CP/M: RC = record count (128 bytes each), BC = bytes in last record
+                    // Each extent can hold 16K (128 records * 128 bytes)
+                    if (entry.maxExtent === 0) {
+                        size = entry.lastRc * 128;
+                    } else {
+                        size = entry.maxExtent * 16384 + entry.lastRc * 128;
+                    }
+                    // If bc > 0, last record isn't full (subtract unused bytes)
+                    if (entry.lastBc > 0 && size > 0) {
+                        size = size - 128 + entry.lastBc;
+                    }
                 }
 
                 result.push({
@@ -609,16 +694,13 @@
                     ext: entry.ext,
                     user: entry.user,
                     size: size,
-                    rawSize: size,  // CP/M record-level size (before +3DOS header correction)
+                    rawSize: size,  // Raw size from directory (before header correction)
                     blocks: entry.totalBlocks,
                     firstBlock: entry.firstBlock
                 });
             }
 
-            // Read +3DOS headers to get precise file sizes and type info.
-            // +3DOS files have a 128-byte header: "PLUS3DOS" signature at bytes 0-7,
-            // 0x1A at byte 8, file length (incl. header) at bytes 11-14,
-            // file type at byte 15 (0=BASIC, 3=CODE), type-specific data at 16+.
+            // Read file headers to get type info and precise sizes.
             for (const file of result) {
                 if (file.firstBlock === undefined) continue;
 
@@ -626,41 +708,75 @@
                 const absSector = file.firstBlock * sectorsPerBlock;
                 const trackNum = reservedTracks + Math.floor(absSector / sectorsPerTrack);
                 const sectorInTrack = absSector % sectorsPerTrack;
-                const sectorId = baseSectorId + sectorInTrack;
+                const sectorId = DSKLoader._logicalToSectorId(spec, sectorInTrack);
 
                 const sectorData = dskImage.readSector(trackNum, 0, sectorId);
-                if (!sectorData || sectorData.length < 128) continue;
+                if (!sectorData || sectorData.length < 5) continue;
 
-                // Check +3DOS signature
-                if (sectorData[0] !== 0x50 || sectorData[1] !== 0x4C ||
-                    sectorData[2] !== 0x55 || sectorData[3] !== 0x53 ||
-                    sectorData[4] !== 0x33 || sectorData[5] !== 0x44 ||
-                    sectorData[6] !== 0x4F || sectorData[7] !== 0x53) continue;
+                // Try +3DOS header: "PLUS3DOS" signature at bytes 0-7, 0x1A at byte 8
+                if (sectorData.length >= 128 &&
+                    sectorData[0] === 0x50 && sectorData[1] === 0x4C &&
+                    sectorData[2] === 0x55 && sectorData[3] === 0x53 &&
+                    sectorData[4] === 0x33 && sectorData[5] === 0x44 &&
+                    sectorData[6] === 0x4F && sectorData[7] === 0x53 &&
+                    sectorData[8] === 0x1A) {
 
-                // Verify soft-EOF marker
-                if (sectorData[8] !== 0x1A) continue;
+                    const totalLen = sectorData[11] | (sectorData[12] << 8) |
+                                     (sectorData[13] << 16) | (sectorData[14] << 24);
+                    const dataLen = totalLen - 128;
+                    if (dataLen > 0 && dataLen <= file.size) {
+                        file.size = dataLen;
+                    }
+                    file.plus3Type = sectorData[15];
+                    file.hasPlus3Header = true;
+                    file.headerSize = 128;
 
-                // File length includes the 128-byte header
-                const totalLen = sectorData[11] | (sectorData[12] << 8) |
-                                 (sectorData[13] << 16) | (sectorData[14] << 24);
-                const dataLen = totalLen - 128;
-
-                if (dataLen > 0 && dataLen <= file.size) {
-                    file.size = dataLen;
+                    if (file.plus3Type === 3) {
+                        file.loadAddress = sectorData[16] | (sectorData[17] << 8);
+                        file.dataLength = sectorData[18] | (sectorData[19] << 8);
+                    } else if (file.plus3Type === 0) {
+                        file.dataLength = sectorData[16] | (sectorData[17] << 8);
+                        file.autostart = sectorData[18] | (sectorData[19] << 8);
+                    }
+                    continue;
                 }
 
-                // File type: 0=BASIC, 1=Number array, 2=Char array, 3=CODE
-                file.plus3Type = sectorData[15];
-                file.hasPlus3Header = true;
-
-                if (file.plus3Type === 3) {
-                    // CODE: load address and data length
-                    file.loadAddress = sectorData[16] | (sectorData[17] << 8);
-                    file.dataLength = sectorData[18] | (sectorData[19] << 8);
-                } else if (file.plus3Type === 0) {
-                    // BASIC: program length, autostart line
-                    file.dataLength = sectorData[16] | (sectorData[17] << 8);
-                    file.autostart = sectorData[18] | (sectorData[19] << 8);
+                // Try TOS header (Timex FDD3000): type byte 0-3 at offset 0.
+                // BASIC (type 0): 7-byte header — type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE)
+                // Code/arrays (types 1-3): 5-byte header — type(1) + dataLen(2LE) + address(2LE)
+                // Validation: dataLen + hdrSize == file.size (per Tomato FDD3000 tool)
+                const tosType = sectorData[0];
+                if (tosType <= 3) {
+                    const hdrSize = (tosType === 0) ? 7 : 5;
+                    if (sectorData.length >= hdrSize) {
+                        let dataLen, address, autostart, basLen;
+                        if (tosType === 0) {
+                            // BASIC: autostart(2LE) + dataLen(2LE) + basLen(2LE)
+                            autostart = sectorData[1] | (sectorData[2] << 8);
+                            dataLen = sectorData[3] | (sectorData[4] << 8);
+                            basLen = sectorData[5] | (sectorData[6] << 8);
+                        } else {
+                            // Code/arrays: dataLen(2LE) + address(2LE)
+                            dataLen = sectorData[1] | (sectorData[2] << 8);
+                            address = sectorData[3] | (sectorData[4] << 8);
+                        }
+                        // Validate: dataLen + hdrSize should match file size.
+                        // TOS has exact sizes, so use exact match for TOS.
+                        // CP/M has record-level granularity, allow up to 127 bytes padding.
+                        const totalWithHeader = dataLen + hdrSize;
+                        const isValid = spec.isTOS
+                            ? (dataLen > 0 && totalWithHeader === file.size)
+                            : (dataLen > 0 && totalWithHeader <= file.size &&
+                               totalWithHeader >= file.size - 127);
+                        if (isValid) {
+                            file.plus3Type = tosType;
+                            file.headerSize = hdrSize;
+                            file.dataLength = (tosType === 0) ? basLen : dataLen;
+                            file.size = file.size - hdrSize;
+                            if (tosType === 0) file.autostart = autostart;
+                            if (tosType === 3) file.loadAddress = address;
+                        }
+                    }
                 }
             }
 
@@ -690,7 +806,7 @@
             const sectorSize = spec.sectorSize || 512;
             const sectorsPerBlock = Math.max(1, Math.round(blockSize / sectorSize));
             const sectorsPerTrack = spec.sectorsPerTrack || sortedSectors.length;
-            const baseSectorId = spec.firstSectorId !== undefined ? spec.firstSectorId : sortedSectors[0].id;
+
             const reservedTracks = spec.reservedTracks;
 
             // Collect all extents for this file, sorted by extent number
@@ -717,9 +833,11 @@
 
                 if (user !== fileUser || name !== fileName || ext !== fileExt) continue;
 
-                const extentLo = dirData[entryBase + 12];
-                const extentHi = dirData[entryBase + 14];
-                const extentNum = extentLo + (extentHi * 32);
+                // TOS: byte 12 = part number (no high byte)
+                // CP/M: byte 12 = extentLo, byte 14 = extentHi
+                const extentNum = spec.isTOS
+                    ? dirData[entryBase + 12]
+                    : dirData[entryBase + 12] + (dirData[entryBase + 14] * 32);
 
                 // Allocation block numbers (single byte each for small disks)
                 const blocks = [];
@@ -761,7 +879,7 @@
                     const curSectorInTrack = sectorInTrack + s;
                     const curTrack = trackNum + Math.floor(curSectorInTrack / sectorsPerTrack);
                     const curSector = curSectorInTrack % sectorsPerTrack;
-                    const sectorId = baseSectorId + curSector;
+                    const sectorId = DSKLoader._logicalToSectorId(spec, curSector);
 
                     const sectorData = dskImage.readSector(curTrack, 0, sectorId);
                     if (sectorData) {
@@ -889,25 +1007,30 @@
             const dirTrackNum = spec.reservedTracks;
             const dirBlocks = spec.dirBlocks || 2;
             const totalDirBytes = dirBlocks * spec.blockSize;
+            const sectorSize = spec.sectorSize || 512;
+            const sectorsPerTrack = spec.sectorsPerTrack || 9;
 
             let pos = 0;
+            let logicalSector = 0;
             let currentTrack = dirTrackNum;
-            let sectorIdx = 0;
 
             while (pos < totalDirBytes && pos < dirData.length) {
-                const track = dskImage.getTrack(currentTrack, 0);
-                if (!track || track.sectors.length === 0) break;
-                const tSorted = [...track.sectors].sort((a, b) => a.id - b.id);
-                if (sectorIdx >= tSorted.length) {
+                if (logicalSector >= sectorsPerTrack) {
                     currentTrack++;
-                    sectorIdx = 0;
-                    continue;
+                    logicalSector = 0;
                 }
-                const sec = tSorted[sectorIdx];
-                const copyLen = Math.min(sec.data.length, totalDirBytes - pos);
-                sec.data.set(dirData.subarray(pos, pos + copyLen));
-                pos += sec.data.length;
-                sectorIdx++;
+                const sectorId = DSKLoader._logicalToSectorId(spec, logicalSector);
+                const track = dskImage.getTrack(currentTrack, 0);
+                if (!track) break;
+                const sec = track.sectors.find(s => s.id === sectorId);
+                if (sec) {
+                    const copyLen = Math.min(sec.data.length, totalDirBytes - pos);
+                    sec.data.set(dirData.subarray(pos, pos + copyLen));
+                    pos += sec.data.length;
+                } else {
+                    pos += sectorSize;
+                }
+                logicalSector++;
             }
         }
     }

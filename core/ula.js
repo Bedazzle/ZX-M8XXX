@@ -1,6 +1,5 @@
 /**
  * ZX-M8XXX - ULA (Video and Keyboard)
- * @version 0.14.3
  * @license GPL-3.0
  *
  * Cycle-accurate scanline-based rendering for multicolor effects.
@@ -8,10 +7,7 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 
-const VERSION = '0.14.3';
-
     export class ULA {
-        static get VERSION() { return VERSION; }
 
         constructor(memory, machineType = '48k') {
             this.memory = memory;

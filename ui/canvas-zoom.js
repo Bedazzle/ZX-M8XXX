@@ -7,7 +7,9 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
     const zoomButtons = [
         document.getElementById('zoom1'),
         document.getElementById('zoom2'),
-        document.getElementById('zoom3')
+        document.getElementById('zoom3'),
+        document.getElementById('zoom4'),
+        document.getElementById('zoom5')
     ];
 
     let currentZoom = 1;  // Default zoom x1
@@ -65,6 +67,8 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
     zoomButtons[0].addEventListener('click', () => setZoom(1));
     zoomButtons[1].addEventListener('click', () => setZoom(2));
     zoomButtons[2].addEventListener('click', () => setZoom(3));
+    zoomButtons[3].addEventListener('click', () => setZoom(4));
+    zoomButtons[4].addEventListener('click', () => setZoom(5));
 
     // Theme toggle
     const themeToggle = document.getElementById('themeToggle');
@@ -93,5 +97,32 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
         themeToggle.textContent = darkTheme ? '☀️' : '🌙';
     }
 
-    return { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme };
+    // UI Scale — scales the entire interface without affecting the emulator canvas
+    const uiScaleSelect = document.getElementById('uiScaleSelect');
+    const uiContainer = document.querySelector('.container');
+    const screenWrapper = document.querySelector('.screen-wrapper');
+    const secondScreenContainer = document.getElementById('secondScreenContainer');
+
+    let uiScale = parseFloat(storageGet('zxm8_uiScale', '1')) || 1;
+
+    function setUiScale(scale) {
+        uiScale = scale;
+        uiContainer.style.zoom = scale;
+        screenWrapper.style.zoom = 1 / scale;
+        secondScreenContainer.style.zoom = 1 / scale;
+        storageSet('zxm8_uiScale', scale.toString());
+        uiScaleSelect.value = scale.toString();
+    }
+
+    function getUiScale() { return uiScale; }
+
+    // Init — apply stored scale on load
+    if (uiScale !== 1) setUiScale(uiScale);
+    uiScaleSelect.value = uiScale.toString();
+
+    uiScaleSelect.addEventListener('change', () => {
+        setUiScale(parseFloat(uiScaleSelect.value) || 1);
+    });
+
+    return { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale };
 }

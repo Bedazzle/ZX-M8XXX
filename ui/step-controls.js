@@ -5,6 +5,7 @@ import { hex16 } from '../core/utils.js';
 export function initStepControls({
     getSpectrum, traceManager, commentManager,
     getTraceViewAddress, setTraceViewAddress,
+    getStepOverLimit,
     showMessage, showRomModal, openDebuggerPanel,
     updateDebugger, updateStatus
 }) {
@@ -33,6 +34,31 @@ export function initStepControls({
     // State
     let runToTarget = null;
     let rightRunToTarget = null;
+
+    // Show a temporary red warning popup near the current PC line in disasm
+    function showDisasmWarning(text) {
+        const currentLine = document.querySelector('#disassemblyView .disasm-line.current')
+            || document.querySelector('#rightDisassemblyView .disasm-line.current');
+        if (!currentLine) return;
+        const rect = currentLine.getBoundingClientRect();
+        const popup = document.createElement('div');
+        popup.className = 'disasm-limit-warning';
+        popup.textContent = text;
+        document.body.appendChild(popup);
+        const popupRect = popup.getBoundingClientRect();
+        // Center horizontally over the line, vertically just below it
+        let left = rect.left + (rect.width - popupRect.width) / 2;
+        let top = rect.bottom + 2;
+        // Clamp to viewport
+        if (left + popupRect.width > window.innerWidth - 5) left = window.innerWidth - popupRect.width - 5;
+        if (left < 5) left = 5;
+        popup.style.left = left + 'px';
+        popup.style.top = top + 'px';
+        if (popupRect.bottom > window.innerHeight - 5) {
+            popup.style.top = (window.innerHeight - popupRect.height - 5) + 'px';
+        }
+        setTimeout(() => popup.remove(), 3000);
+    }
 
     // Helper: prepare for step/run (stop if running, go to live trace)
     function prepareStep(spectrum) {
@@ -83,7 +109,12 @@ export function initStepControls({
             return;
         }
         prepareStep(spectrum);
-        spectrum.stepOver();
+        const limit = getStepOverLimit();
+        const result = spectrum.stepOver(limit);
+        if (result.skipped && !result.reached) {
+            const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
+            showDisasmWarning(`T-state limit reached${detail}`);
+        }
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -183,7 +214,12 @@ export function initStepControls({
             return;
         }
         prepareStep(spectrum);
-        spectrum.stepOver();
+        const limit = getStepOverLimit();
+        const result = spectrum.stepOver(limit);
+        if (result.skipped && !result.reached) {
+            const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
+            showDisasmWarning(`T-state limit reached${detail}`);
+        }
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -257,6 +293,7 @@ export function initStepControls({
         getRunToTarget: () => runToTarget,
         setRunToTarget: (v) => { runToTarget = v; },
         getRightRunToTarget: () => rightRunToTarget,
-        setRightRunToTarget: (v) => { rightRunToTarget = v; }
+        setRightRunToTarget: (v) => { rightRunToTarget = v; },
+        showDisasmWarning
     };
 }

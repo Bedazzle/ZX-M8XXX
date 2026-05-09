@@ -594,6 +594,19 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         storageSet('zxm8_followPC', chkFollowPC.checked);
     });
 
+    // ===== Step Over T-state limit =====
+
+    const stepOverMaxTstates = document.getElementById('stepOverMaxTstates');
+    if (stepOverMaxTstates) {
+        stepOverMaxTstates.value = storageGet('zxm8_stepOverLimit') || '80000';
+        stepOverMaxTstates.addEventListener('change', () => {
+            const val = parseInt(stepOverMaxTstates.value);
+            if (val > 0) {
+                storageSet('zxm8_stepOverLimit', val.toString());
+            }
+        });
+    }
+
     // ===== Assembler export settings =====
 
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
@@ -616,6 +629,14 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         toggleSound,
         getPaletteValue: () => paletteSelect?.value || 'default',
         hasLoadedPalettes: () => !!loadedPalettes,
+        getStepOverLimit: () => parseInt(stepOverMaxTstates?.value) || 80000,
+        setStepOverLimit(val) {
+            const v = parseInt(val);
+            if (v > 0 && stepOverMaxTstates) {
+                stepOverMaxTstates.value = v;
+                storageSet('zxm8_stepOverLimit', v.toString());
+            }
+        },
         destroy() { clearInterval(ulaPlusStatusInterval); }
     };
 }

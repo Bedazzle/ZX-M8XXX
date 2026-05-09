@@ -28,7 +28,7 @@ export function initProjectIO({
     updateMediaIndicator, updateBookmarkButtons,
     updateCanvasSize,
     switchLeftPanelType, switchRightPanelType,
-    setZoom, isDarkTheme, setDarkTheme,
+    setZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale,
     applyRomsToEmulator,
     getWatches, setWatches, saveWatches, renderWatches,
     getUpdateGraphicsViewer,
@@ -152,7 +152,9 @@ export function initProjectIO({
                     cfaEntries: document.getElementById('cfaExtraEntries').value,
                     if1Enabled: spectrum.if1Enabled,
                     secondScreenMode: document.getElementById('secondScreenMode').value,
-                    secondScreenAddr: document.getElementById('secondScreenAddr').value
+                    secondScreenAddr: document.getElementById('secondScreenAddr').value,
+                    uiScale: getUiScale(),
+                    stepOverLimit: displayAPI.getStepOverLimit()
                 },
                 // CPU timing state (not stored in SNA format)
                 cpuTiming: {
@@ -570,7 +572,7 @@ export function initProjectIO({
                 }
                 if (project.settings.zoom) {
                     const zoomLevel = parseInt(project.settings.zoom);
-                    if (zoomLevel >= 1 && zoomLevel <= 3) {
+                    if (zoomLevel >= 1 && zoomLevel <= 5) {
                         // Defer setZoom to ensure border preset is applied first
                         setTimeout(() => {
                             setZoom(zoomLevel);
@@ -635,6 +637,16 @@ export function initProjectIO({
                     const ssSelect = document.getElementById('secondScreenMode');
                     ssSelect.value = project.settings.secondScreenMode;
                     ssSelect.dispatchEvent(new Event('change'));
+                }
+                if (project.settings.uiScale !== undefined) {
+                    const scale = parseFloat(project.settings.uiScale);
+                    if (scale >= 0.75 && scale <= 2) {
+                        setUiScale(scale);
+                    }
+                }
+                if (project.settings.stepOverLimit !== undefined) {
+                    const val = parseInt(project.settings.stepOverLimit);
+                    if (val > 0) displayAPI.setStepOverLimit(val);
                 }
 
             }

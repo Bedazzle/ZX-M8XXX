@@ -250,25 +250,38 @@ export const Assembler = {
 
         // Handle REPT/DUP body collection
         if (this.reptState) {
-            if (dir === 'ENDR' || dir === 'EDUP') {
-                // End REPT - expand and process
-                const expanded = [];
-                const reptFile = this.reptState.file;
-                const reptLine = this.reptState.startLine;
-                if (this.reptState.body) {
-                    for (let i = 0; i < this.reptState.count; i++) {
-                        expanded.push(...this.reptState.body);
+            if (dir === 'REPT' || dir === 'DUP') {
+                // Nested DUP/REPT — track depth, collect as raw text
+                this.reptState.depth = (this.reptState.depth || 1) + 1;
+                const rawLine = this.reconstructLine(line);
+                this.reptState.body.push(rawLine);
+            } else if (dir === 'ENDR' || dir === 'EDUP') {
+                // Check nesting depth
+                if (this.reptState.depth > 1) {
+                    // Inner EDUP/ENDR — collect as raw text, decrement depth
+                    this.reptState.depth--;
+                    const rawLine = this.reconstructLine(line);
+                    this.reptState.body.push(rawLine);
+                } else {
+                    // End REPT - expand and process
+                    const expanded = [];
+                    const reptFile = this.reptState.file;
+                    const reptLine = this.reptState.startLine;
+                    if (this.reptState.body) {
+                        for (let i = 0; i < this.reptState.count; i++) {
+                            expanded.push(...this.reptState.body);
+                        }
                     }
-                }
-                this.reptState = null;
-                // Process expanded lines
-                for (const rawLine of expanded) {
-                    const parsed = Parser.parse(rawLine, reptFile || '<rept>')[0];
-                    if (parsed) {
-                        // Preserve original file/line info from REPT definition
-                        parsed.file = reptFile;
-                        parsed.line = reptLine;
-                        this.processLine(parsed);
+                    this.reptState = null;
+                    // Process expanded lines
+                    for (const rawLine of expanded) {
+                        const parsed = Parser.parse(rawLine, reptFile || '<rept>')[0];
+                        if (parsed) {
+                            // Preserve original file/line info from REPT definition
+                            parsed.file = reptFile;
+                            parsed.line = reptLine;
+                            this.processLine(parsed);
+                        }
                     }
                 }
             } else {
@@ -677,12 +690,13 @@ export const Assembler = {
             ErrorCollector.error('DEFL requires a value', line.line, line.file);
         }
         const val = this.evaluate(line.operands[0], line);
-        // DEFL allows redefinition
-        SymbolTable.symbols[SymbolTable.getFullName(line.label)] = {
+        // DEFL allows redefinition — preserve 'used' flag for forward references
+        const fullName = SymbolTable.getFullName(line.label);
+        SymbolTable.symbols[fullName] = {
             value: val.value,
             type: 'defl',
             defined: !val.undefined,
-            used: false,
+            used: SymbolTable.symbols[fullName]?.used || false,
             line: line.line,
             file: line.file
         };
@@ -1261,6 +1275,7 @@ export const Assembler = {
             this.reptState = {
                 count: val.value,
                 body: [],
+                depth: 1,
                 startLine: line.line,
                 file: line.file
             };

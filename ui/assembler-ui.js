@@ -530,15 +530,24 @@ export function initAssemblerUI({
         return chosenFallbackEncoding || 'ibm866';
     }
 
-    // Extract a meaningful text sample (skip leading blank lines, take ~20 lines with high-byte content)
+    // Extract a meaningful text sample prioritizing lines with non-ASCII characters
     function extractPreviewSample(bytes, encoding) {
         const decoded = new TextDecoder(encoding).decode(bytes);
         const lines = decoded.split('\n');
+        // Find lines containing high-byte (non-ASCII) characters
+        const highByteLines = [];
+        for (let i = 0; i < lines.length && highByteLines.length < 20; i++) {
+            if (/[^\x00-\x7F]/.test(lines[i])) {
+                highByteLines.push({ num: i + 1, text: lines[i] });
+            }
+        }
+        if (highByteLines.length > 0) {
+            return highByteLines.map(l => `${l.num}: ${l.text}`).join('\n');
+        }
+        // Fallback: first 20 non-blank lines
         const sample = [];
-        let collecting = false;
         for (const line of lines) {
-            if (!collecting && line.trim() === '') continue;
-            collecting = true;
+            if (sample.length === 0 && line.trim() === '') continue;
             sample.push(line);
             if (sample.length >= 20) break;
         }
@@ -549,7 +558,7 @@ export function initAssemblerUI({
     // Returns Promise<string|null> — encoding id or null if aborted
     function showEncodingDialog(bytes) {
         return new Promise((resolve) => {
-            const detected = detectEncoding(bytes);
+            const detected = chosenFallbackEncoding || detectEncoding(bytes);
 
             const overlay = document.createElement('div');
             overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
@@ -667,11 +676,7 @@ export function initAssemblerUI({
         try {
             return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         } catch (e) { /* not valid UTF-8 */ }
-        // Use previously chosen encoding without asking again
-        if (chosenFallbackEncoding) {
-            return new TextDecoder(chosenFallbackEncoding).decode(bytes);
-        }
-        // Ask user
+        // Always show dialog so user can confirm/change encoding per file
         const encoding = await showEncodingDialog(bytes);
         if (!encoding) return null; // aborted
         return new TextDecoder(encoding).decode(bytes);

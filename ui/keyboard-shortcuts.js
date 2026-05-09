@@ -14,7 +14,7 @@ export function initKeyboardShortcuts({
     getRightBookmarks, setRightBookmark,
     getLeftMemoryViewAddress, getMemoryViewAddress,
     getTraceViewAddress, setTraceViewAddress,
-    getRunToTarget,
+    getRunToTarget, getStepOverLimit, showDisasmWarning,
     showMessage, updateStatus, updateDebugger,
     openDebuggerPanel,
     goToAddress, goToMemoryAddress,
@@ -459,10 +459,10 @@ export function initKeyboardShortcuts({
             return;
         }
 
-        // F1 - Cycle zoom (x1 -> x2 -> x3 -> x1)
+        // F1 - Cycle zoom (x1 -> x2 -> x3 -> x4 -> x5 -> x1)
         if (e.key === 'F1') {
             e.preventDefault();
-            const nextZoom = getCurrentZoom() >= 3 ? 1 : getCurrentZoom() + 1;
+            const nextZoom = getCurrentZoom() >= 5 ? 1 : getCurrentZoom() + 1;
             setZoom(nextZoom);
             showMessage(`Zoom x${nextZoom}`);
             return;
@@ -518,7 +518,12 @@ export function initKeyboardShortcuts({
             }
             traceManager.goToLive();
             setTraceViewAddress(null);
-            spectrum.stepOver();
+            const limit = getStepOverLimit();
+            const result = spectrum.stepOver(limit);
+            if (result.skipped && !result.reached) {
+                const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
+                showDisasmWarning(`T-state limit reached${detail}`);
+            }
             openDebuggerPanel();
             updateDebugger();
             updateStatus();

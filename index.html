@@ -5,8 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.3</title>
+    <title>ZX-M8XXX v0.14.6</title>
     <style>
+        @font-face {
+            font-family: 'ZX82 System';
+            src: url('lib/zx82system.ttf') format('truetype');
+            font-display: swap;
+        }
         * { box-sizing: border-box; }
         .hidden { display: none !important; }
 
@@ -523,6 +528,21 @@
         }
         .message.success { background: #2ecc71; }
         .message.error { background: #e74c3c; }
+        .message.warning { background: #e67e22; }
+        .disasm-limit-warning {
+            position: fixed;
+            background: rgba(200, 40, 40, 0.95);
+            color: #fff;
+            padding: 4px 10px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            z-index: 10000;
+            pointer-events: none;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            animation: fadeIn 0.2s ease;
+        }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -3754,6 +3774,24 @@
         .explorer-basic-comment {
             color: var(--text-secondary);
         }
+        .explorer-basic-screen {
+            font-family: 'ZX82 System', 'Consolas', 'Monaco', monospace;
+            font-size: 16px;
+            line-height: 1.2;
+            background: #c0c0c0;
+            color: #000000;
+            padding: 8px 12px;
+            user-select: text;
+            cursor: text;
+        }
+        .explorer-basic-screen .sb-linenum { color: #000000; display: inline-block; width: 5ch; }
+        .explorer-basic-screen .sb-udg { background: #000000; color: #c0c0c0; }
+        .explorer-basic-screen .sb-control { color: #808080; font-size: 12px; }
+        .explorer-basic-screen .sb-line { min-height: 1.2em; }
+        body.light-theme .explorer-basic-screen {
+            background: #c0c0c0;
+            color: #000000;
+        }
         #explorerDisasmOutput {
             font-family: 'Consolas', 'Monaco', monospace;
             font-size: 11px;
@@ -5770,7 +5808,6 @@
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
-            min-height: 512px;
             padding-top: 5px;
         }
         .memmap-legend {
@@ -5828,7 +5865,7 @@
             border-radius: 4px;
             font-family: monospace;
             font-size: 11px;
-            height: 80px;
+            min-height: 80px;
             overflow: hidden;
             white-space: pre-wrap;
         }
@@ -6560,7 +6597,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.3 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.6 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7463,6 +7500,8 @@ start:
                             <button id="zoom1" class="zoom-btn active" title="Zoom 1x">x1</button>
                             <button id="zoom2" class="zoom-btn" title="Zoom 2x">x2</button>
                             <button id="zoom3" class="zoom-btn" title="Zoom 3x">x3</button>
+                            <button id="zoom4" class="zoom-btn" title="Zoom 4x">x4</button>
+                            <button id="zoom5" class="zoom-btn" title="Zoom 5x">x5</button>
                         </span>
                     </div>
                     <div class="settings-row">
@@ -7476,6 +7515,17 @@ start:
                                 <option value="crisp" selected>Crisp (integer scale)</option>
                                 <option value="fit">Fit (keep aspect ratio)</option>
                                 <option value="stretch">Stretch (fill screen)</option>
+                            </select>
+                        </span>
+                        <span style="margin-left: 15px;">
+                            <label for="uiScaleSelect">UI Scale:</label>
+                            <select id="uiScaleSelect" title="Scale the interface without affecting the emulator canvas">
+                                <option value="0.75">75%</option>
+                                <option value="1">100%</option>
+                                <option value="1.25">125%</option>
+                                <option value="1.5">150%</option>
+                                <option value="1.75">175%</option>
+                                <option value="2">200%</option>
                             </select>
                         </span>
                     </div>
@@ -7544,6 +7594,14 @@ start:
                 <div class="settings-row" style="margin-top: 10px;">
                     <label class="checkbox-label" title="Always export assembler source as ZIP even for single file (default: single file saved as plain text)">
                         <input type="checkbox" id="chkAsmExportZip"> Assembler: export as ZIP
+                    </label>
+                </div>
+                <div class="settings-row" style="margin-top: 10px;">
+                    <label title="Maximum T-states for Step Over (CALL/RST/DJNZ) before stopping">
+                        Step Over T-state limit:
+                        <input type="text" id="stepOverMaxTstates" value="80000"
+                            style="width: 70px; font-family: monospace; font-size: 11px;"
+                            maxlength="10">
                     </label>
                 </div>
             </div><!-- settings-display -->
@@ -8055,6 +8113,11 @@ start:
                         <div class="explorer-controls" style="margin-bottom:10px">
                             <span class="explorer-label">Source:</span>
                             <select id="explorerBasicSource" class="explorer-select"></select>
+                            <span class="explorer-label">View:</span>
+                            <select id="explorerBasicView" class="explorer-select" style="min-width:80px">
+                                <option value="code">Code</option>
+                                <option value="screen">Screen</option>
+                            </select>
                             <button id="btnExplorerBasic" class="explorer-btn">Decode</button>
                         </div>
                         <div id="explorerBasicOutput" class="explorer-output">
@@ -9510,8 +9573,9 @@ start:
                             <div class="memmap-gradient"></div>
                             <div>High</div>
                         </div>
-                        <div class="memmap-export" style="margin-top:8px;display:flex;align-items:center;gap:8px">
+                        <div class="memmap-export" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                             <button id="btnHeatmapExport">Export</button>
+                            <button id="btnHeatmapExportFree" title="Export unaccessed address ranges (free memory)">Free</button>
                             <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipRom" checked> Skip ROM</label>
                             <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipScreen" checked> Skip screen</label>
                         </div>
@@ -9882,7 +9946,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.3';
+        const APP_VERSION = '0.14.6';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10061,7 +10125,7 @@ start:
         setUpdateDebugger(() => updateDebugger());
 
         // Zoom controls and theme toggle (extracted to ui/canvas-zoom.js)
-        const { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme } = initCanvasZoom({
+        const { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale } = initCanvasZoom({
             getSpectrum: () => spectrum,
             getUpdateSpriteRegionPreview: () => typeof updateSpriteRegionPreview === 'function' ? updateSpriteRegionPreview : null
         });
@@ -10324,6 +10388,8 @@ start:
         document.getElementById('zoom1').addEventListener('click', () => updateSecondScreenSize());
         document.getElementById('zoom2').addEventListener('click', () => updateSecondScreenSize());
         document.getElementById('zoom3').addEventListener('click', () => updateSecondScreenSize());
+        document.getElementById('zoom4').addEventListener('click', () => updateSecondScreenSize());
+        document.getElementById('zoom5').addEventListener('click', () => updateSecondScreenSize());
 
         // Shared memory access wrappers (used by many UI modules via DI)
         const readMemory = (addr) => spectrum.memory.read(addr);
@@ -10943,6 +11009,7 @@ start:
             getSpectrum: () => spectrum, traceManager, commentManager,
             getTraceViewAddress: () => traceViewAddress,
             setTraceViewAddress: (v) => { traceViewAddress = v; },
+            getStepOverLimit: () => displayAPI.getStepOverLimit(),
             showMessage, showRomModal, openDebuggerPanel,
             updateDebugger, updateStatus
         });
@@ -11672,7 +11739,7 @@ start:
             updateBookmarkButtons,
             updateCanvasSize,
             switchLeftPanelType, switchRightPanelType,
-            setZoom, isDarkTheme, setDarkTheme,
+            setZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale,
             applyRomsToEmulator,
             getWatches, setWatches, saveWatches, renderWatches,
             getUpdateGraphicsViewer: () => updateGraphicsViewer,
@@ -11886,6 +11953,8 @@ start:
             getTraceViewAddress: () => traceViewAddress,
             setTraceViewAddress: (v) => { traceViewAddress = v; },
             getRunToTarget: () => stepControlsAPI.getRunToTarget(),
+            getStepOverLimit: () => displayAPI.getStepOverLimit(),
+            showDisasmWarning: (text) => stepControlsAPI.showDisasmWarning(text),
             showMessage, updateStatus, updateDebugger,
             openDebuggerPanel,
             goToAddress, goToMemoryAddress,

@@ -4472,9 +4472,9 @@ import { Disassembler } from './disasm.js';
             this.drawOverlay();
         }
 
-        // Execute until past current instruction (skip over CALL/RST)
-        stepOver() {
-            if (this.running || !this.romLoaded) return false;
+        // Execute until past current instruction (skip over CALL/RST/DJNZ)
+        stepOver(maxCycles = 80000) {
+            if (this.running || !this.romLoaded) return { skipped: false, reached: true };
             const pc = this.cpu.pc;
             const opcode = this.memory.read(pc);
 
@@ -4491,11 +4491,14 @@ import { Disassembler } from './disasm.js';
                 if ((byte2 & 0xF4) === 0xB0) isBlockRepeat = true;
             }
 
-            if (isCall || isBlockRepeat) {
+            // Check if it's DJNZ (0x10)
+            const isDJNZ = (opcode === 0x10);
+
+            if (isCall || isBlockRepeat || isDJNZ) {
                 // Determine instruction length to find next PC
                 let nextPC;
-                if (isBlockRepeat) {
-                    // ED xx - 2 bytes
+                if (isBlockRepeat || isDJNZ) {
+                    // ED xx - 2 bytes / DJNZ e - 2 bytes
                     nextPC = (pc + 2) & 0xffff;
                 } else if ((opcode & 0xC7) === 0xC7) {
                     // RST - 1 byte
@@ -4504,14 +4507,136 @@ import { Disassembler } from './disasm.js';
                     // CALL - 3 bytes
                     nextPC = (pc + 3) & 0xffff;
                 }
-                // Run until we return to nextPC
-                this.runToAddress(nextPC, 1000000); // Max 1M cycles
+                // Block repeats (LDIR etc.) always complete; CALL/RST use configurable limit
+                // DJNZ: if loop body is safe (no branches/B-modifying), always complete; else use limit
+                let limit;
+                if (isBlockRepeat) {
+                    limit = 10000000;
+                } else if (isDJNZ) {
+                    const disp = this.memory.read((pc + 1) & 0xffff);
+                    const signedDisp = disp < 128 ? disp : disp - 256;
+                    const target = (pc + 2 + signedDisp) & 0xffff;
+                    limit = (signedDisp < 0 && this._isDjnzLoopSafe(target, pc)) ? 10000000 : maxCycles;
+                } else {
+                    limit = maxCycles;
+                }
+                const reached = this.runToAddress(nextPC, limit);
+                return { skipped: true, reached, isDJNZ };
             } else {
                 this.stepInto();
+                return { skipped: false, reached: true, isDJNZ: false };
             }
-            return true;
         }
-        
+
+        // Check if a DJNZ loop body (from loopStart to djnzAddr-1) is safe to run
+        // without a T-state limit: no branches, no B-modifying instructions.
+        // Returns true if the loop is guaranteed to terminate (B decrements to 0).
+        _isDjnzLoopSafe(loopStart, djnzAddr) {
+            const mem = this.memory;
+
+            // Is this unprefixed opcode a branch or B-modifying instruction?
+            function isUnsafe(op) {
+                // Flow control
+                if (op === 0xC3 || (op & 0xC7) === 0xC2) return true;  // JP nn / JP cc,nn
+                if (op === 0x18 || (op & 0xE7) === 0x20) return true;  // JR e / JR cc,e
+                if (op === 0xCD || (op & 0xC7) === 0xC4) return true;  // CALL nn / CALL cc,nn
+                if ((op & 0xC7) === 0xC7) return true;                 // RST n
+                if (op === 0xC9 || (op & 0xC7) === 0xC0) return true;  // RET / RET cc
+                if (op === 0xE9) return true;                           // JP (HL)
+                if (op === 0x10) return true;                           // nested DJNZ
+                if (op === 0x76) return true;                           // HALT
+                // B-modifying
+                if (op === 0x01) return true;                           // LD BC,nn
+                if (op === 0x03) return true;                           // INC BC
+                if (op === 0x04) return true;                           // INC B
+                if (op === 0x05) return true;                           // DEC B
+                if (op === 0x06) return true;                           // LD B,n
+                if (op === 0x0B) return true;                           // DEC BC
+                if ((op & 0xF8) === 0x40 && op !== 0x40) return true;  // LD B,r (skip LD B,B)
+                if (op === 0xC1) return true;                           // POP BC
+                if (op === 0xD9) return true;                           // EXX
+                return false;
+            }
+
+            // Unprefixed instruction length (1, 2, or 3 bytes)
+            function instrLen(op) {
+                if (op < 0x40) {
+                    if ((op & 0x07) === 6) return 2;                    // LD r,n
+                    if ((op & 0x0F) === 1 && !(op & 0x08)) return 3;   // LD rr,nn
+                    if (op === 0x10 || op === 0x18) return 2;           // DJNZ / JR
+                    if ((op & 0xE7) === 0x20) return 2;                 // JR cc
+                    if (op === 0x22 || op === 0x2A || op === 0x32 || op === 0x3A) return 3;
+                    return 1;
+                }
+                if (op < 0xC0) return 1;                                // LD r,r' / ALU A,r
+                if ((op & 0x07) === 6) return 2;                        // ALU A,n
+                if ((op & 0x07) === 2 || (op & 0x07) === 4) return 3;  // JP cc,nn / CALL cc,nn
+                if (op === 0xC3 || op === 0xCD) return 3;               // JP nn / CALL nn
+                if (op === 0xD3 || op === 0xDB) return 2;               // OUT (n),A / IN A,(n)
+                return 1;
+            }
+
+            // Does this unprefixed opcode reference (HL)? (DD/FD adds displacement byte)
+            function usesHL(op) {
+                if (op === 0x34 || op === 0x35 || op === 0x36) return true; // INC/DEC/LD (HL),n
+                if (op >= 0x40 && op < 0x80 && op !== 0x76) {
+                    if ((op & 0x07) === 0x06 || (op & 0x38) === 0x30) return true;
+                }
+                if (op >= 0x80 && op < 0xC0 && (op & 0x07) === 0x06) return true;
+                return false;
+            }
+
+            let addr = loopStart;
+            for (let n = 0; n < 256 && addr !== djnzAddr; n++) {
+                const op = mem.read(addr);
+
+                // DD/FD prefix (IX/IY)
+                if (op === 0xDD || op === 0xFD) {
+                    const op2 = mem.read((addr + 1) & 0xffff);
+                    if (op2 === 0xCB) {
+                        // DD CB d op — 4 bytes; check if result stored in B
+                        const op4 = mem.read((addr + 3) & 0xffff);
+                        if ((op4 & 0x07) === 0 && (op4 & 0xC0) !== 0x40) return false;
+                        addr = (addr + 4) & 0xffff;
+                        continue;
+                    }
+                    if (op2 === 0xDD || op2 === 0xFD || op2 === 0xED) {
+                        // Chained prefix — skip this one
+                        addr = (addr + 1) & 0xffff;
+                        continue;
+                    }
+                    if (isUnsafe(op2)) return false;
+                    addr = (addr + 1 + instrLen(op2) + (usesHL(op2) ? 1 : 0)) & 0xffff;
+                    continue;
+                }
+
+                // CB prefix (bit/rotate/shift) — 2 bytes
+                if (op === 0xCB) {
+                    const op2 = mem.read((addr + 1) & 0xffff);
+                    // Target register B (bits 0-2 = 0), excluding BIT (read-only)
+                    if ((op2 & 0x07) === 0 && (op2 & 0xC0) !== 0x40) return false;
+                    addr = (addr + 2) & 0xffff;
+                    continue;
+                }
+
+                // ED prefix
+                if (op === 0xED) {
+                    const op2 = mem.read((addr + 1) & 0xffff);
+                    if (op2 === 0x45 || op2 === 0x4D) return false;     // RETN / RETI
+                    if (op2 === 0x40) return false;                     // IN B,(C)
+                    if (op2 === 0x4B) return false;                     // LD BC,(nn)
+                    if ((op2 & 0xE4) === 0xA0) return false;           // block ops (LDI/LDIR/CPI/etc.)
+                    addr = (addr + (((op2 & 0xC7) === 0x43) ? 4 : 2)) & 0xffff;
+                    continue;
+                }
+
+                // Unprefixed
+                if (isUnsafe(op)) return false;
+                addr = (addr + instrLen(op)) & 0xffff;
+            }
+            return addr === djnzAddr;
+        }
+
         // Run until PC reaches target address (or max cycles exceeded)
         runToAddress(targetAddr, maxCycles = 10000000) {
             if (this.running || !this.romLoaded) return false;

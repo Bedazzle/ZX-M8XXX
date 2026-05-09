@@ -1026,16 +1026,36 @@
 
         section('MGTLoader - extractFile');
 
-        // Write recognizable data at T2 S1
+        // Set up 3 sectors with proper chain pointers (last 2 bytes = next track, sector)
+        // and a 9-byte file header at the start of the data.
+        // Sector layout: 510 bytes data + 2 bytes chain per sector.
+        // File data = 9-byte header + 1024 bytes payload.
         const t2s1 = MGTLoader.getSectorOffset(2, 0, 1);
-        for (let i = 0; i < 512; i++) mgt[t2s1 + i] = 0xA1;
         const t2s2 = MGTLoader.getSectorOffset(2, 0, 2);
-        for (let i = 0; i < 512; i++) mgt[t2s2 + i] = 0xA2;
+        const t2s3 = MGTLoader.getSectorOffset(2, 0, 3);
+
+        // Sector 1: 9-byte header + first 501 bytes of payload + chain to T2S2
+        mgt[t2s1] = 0x03; // header byte 0: tape type (CODE)
+        for (let i = 1; i < 9; i++) mgt[t2s1 + i] = 0x00; // rest of header
+        for (let i = 9; i < 510; i++) mgt[t2s1 + i] = 0xA1; // payload data
+        mgt[t2s1 + 510] = 2; mgt[t2s1 + 511] = 2; // chain: T2 S2
+
+        // Sector 2: 510 bytes of payload + chain to T2S3
+        for (let i = 0; i < 510; i++) mgt[t2s2 + i] = 0xA2;
+        mgt[t2s2 + 510] = 2; mgt[t2s2 + 511] = 3; // chain: T2 S3
+
+        // Sector 3: remaining 13 bytes of payload + padding + end of chain
+        for (let i = 0; i < 510; i++) mgt[t2s3 + i] = 0xA3;
+        mgt[t2s3 + 510] = 0; mgt[t2s3 + 511] = 0; // end of chain
 
         const extracted = MGTLoader.extractFile(mgt, files[0]);
         assert(extracted.length === 1024, 'extracted length = 1024');
-        assert(extracted[0] === 0xA1, 'extracted data sector 1 correct');
-        assert(extracted[512] === 0xA2, 'extracted data sector 2 correct');
+        // First byte of payload (after 9-byte header is stripped)
+        assert(extracted[0] === 0xA1, 'extracted data: payload starts correctly');
+        // At offset 501 (end of sector 1 payload), sector 2 data begins
+        assert(extracted[501] === 0xA2, 'extracted data: sector 2 boundary correct');
+        // At offset 501+510=1011, sector 3 data begins
+        assert(extracted[1011] === 0xA3, 'extracted data: sector 3 boundary correct');
 
         section('MGTLoader - Empty slots skipped');
 

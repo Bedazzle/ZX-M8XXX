@@ -64,6 +64,8 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
 
     function openMemoryMap() {
         memmapDialog.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+        memmapAddrInfo.textContent = 'Hover over map to see details\nClick to navigate';
         updateMemmapScale();
         renderCurrentMemmapView();
     }
@@ -80,6 +82,7 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
 
     function closeMemoryMap() {
         memmapDialog.classList.add('hidden');
+        document.body.style.overflow = '';
     }
 
     function setMemmapView(mode) {
@@ -286,7 +289,7 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
                 <div style="width:${writeWidth}%;background:#ff6600" title="Write"></div>
             </div>`;
         } else {
-            memmapBar.innerHTML = '<div class="memmap-bar-fill"><div style="width:100%;background:#333">No data</div></div>';
+            memmapBar.innerHTML = '';
         }
     }
 
@@ -308,6 +311,14 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
             for (const count of autoMapData.executed.values()) maxExec = Math.max(maxExec, count);
             for (const count of autoMapData.read.values()) maxRead = Math.max(maxRead, count);
             for (const count of autoMapData.written.values()) maxWrite = Math.max(maxWrite, count);
+            heatmapData = {
+                executed: autoMapData.executed,
+                read: autoMapData.read,
+                written: autoMapData.written,
+                maxExec, maxRead, maxWrite
+            };
+        } else {
+            heatmapData = null;
         }
 
         const logScale = (count, max) => {
@@ -548,6 +559,87 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
         downloadFile('heatmap.txt', lines.join('\n'));
     }
 
+    function findFreeRanges(accessed, startAddr, endAddr, skipScreen, page) {
+        const ranges = [];
+        let runStart = -1;
+        let prevAddr = -2;
+        for (let addr = startAddr; addr <= endAddr; addr++) {
+            if (skipScreen && addr >= SLOT1_START && addr < SCREEN_AFTER) continue;
+            if (!accessed.has(addr)) {
+                if (addr !== prevAddr + 1) {
+                    if (runStart >= 0) ranges.push({ start: runStart, end: prevAddr, page });
+                    runStart = addr;
+                }
+                prevAddr = addr;
+            } else {
+                if (runStart >= 0) {
+                    ranges.push({ start: runStart, end: prevAddr, page });
+                    runStart = -1;
+                }
+            }
+        }
+        if (runStart >= 0) ranges.push({ start: runStart, end: prevAddr, page });
+        return ranges;
+    }
+
+    function exportFreeAddresses() {
+        const autoMapData = getAutoMapData();
+        const skipRom = document.getElementById('chkHeatSkipRom').checked;
+        const skipScreen = document.getElementById('chkHeatSkipScreen').checked;
+        const info = getMemoryInfo();
+        const is128k = info && info.machineType !== '48k';
+        const numBanks = is128k ? getRAMBanks().length : 0;
+
+        // Flat accessed set for fixed memory (0x0000-0xBFFF, or full 64K on 48K)
+        // Per-bank accessed sets for paged region (0xC000-0xFFFF on 128K)
+        const flatAccessed = new Set();
+        const bankAccessed = new Map(); // bank number -> Set of addresses
+
+        function addAccess(key) {
+            const { addr, page } = parseAutoMapKey(key);
+            if (is128k && addr >= 0xC000 && page !== null && !page.startsWith('R')) {
+                const bank = parseInt(page);
+                if (!bankAccessed.has(bank)) bankAccessed.set(bank, new Set());
+                bankAccessed.get(bank).add(addr);
+            } else {
+                flatAccessed.add(addr);
+            }
+        }
+
+        for (const key of autoMapData.executed.keys()) addAccess(key);
+        for (const key of autoMapData.read.keys()) addAccess(key);
+        for (const key of autoMapData.written.keys()) addAccess(key);
+
+        const startAddr = skipRom ? SLOT1_START : 0x0000;
+        const flatEnd = is128k ? 0xBFFF : 0xFFFF;
+
+        // Scan fixed region
+        const ranges = findFreeRanges(flatAccessed, startAddr, flatEnd, skipScreen, '');
+
+        // Scan each bank for 0xC000-0xFFFF (128K only)
+        if (is128k) {
+            for (let bank = 0; bank < numBanks; bank++) {
+                const accessed = bankAccessed.get(bank) || new Set();
+                const bankRanges = findFreeRanges(accessed, 0xC000, 0xFFFF, false, String(bank));
+                ranges.push(...bankRanges);
+            }
+        }
+
+        // Filter out runs shorter than 10 bytes, sort by length descending
+        const filtered = ranges
+            .map(r => ({ ...r, length: r.end - r.start + 1 }))
+            .filter(r => r.length >= 10)
+            .sort((a, b) => b.length - a.length);
+
+        // Build TSV
+        const lines = ['Start\tEnd\tLength\tPage'];
+        for (const r of filtered) {
+            lines.push(`$${hex16(r.start)}\t$${hex16(r.end)}\t${r.length}\t${r.page}`);
+        }
+        downloadFile('free-addresses.txt', lines.join('\n'));
+    }
+
+    document.getElementById('btnHeatmapExportFree').addEventListener('click', exportFreeAddresses);
     document.getElementById('btnHeatmapExport').addEventListener('click', exportHeatmapData);
     document.getElementById('btnMemoryMap').addEventListener('click', openMemoryMap);
     document.getElementById('btnMemmapClose').addEventListener('click', closeMemoryMap);

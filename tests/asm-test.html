@@ -590,6 +590,37 @@
 
             result = bytes('DUP 2\nRET\nEDUP');
             assertEqual(result.length, 2, 'DUP alias');
+
+            section('Nested DUP/REPT');
+
+            result = bytes('DUP 3\nDUP 2\nNOP\nEDUP\nEDUP');
+            assertEqual(result.length, 6, 'Nested DUP 3x2');
+
+            result = bytes('REPT 2\nREPT 3\nNOP\nENDR\nENDR');
+            assertEqual(result.length, 6, 'Nested REPT 2x3');
+
+            result = bytes('DUP 2\nDUP 2\nDUP 2\nNOP\nEDUP\nEDUP\nEDUP');
+            assertEqual(result.length, 8, 'Triple nested DUP 2x2x2');
+
+            result = bytes('DUP 2\nNOP\nDUP 3\nNOP\nEDUP\nNOP\nEDUP');
+            assertEqual(result.length, 10, 'DUP with inner DUP and surrounding code');
+
+            // Forward reference past nested DUP block
+            result = bytes('ORG $8000\nDUP 2\nDUP 2\nLD HL,target\nEDUP\nEDUP\ntarget: NOP');
+            assert(result !== null, 'Forward ref past nested DUP');
+            if (result) assertEqual(result.length, 13, 'Forward ref past nested DUP size');
+
+            // Mixed DUP/REPT nesting
+            result = bytes('DUP 2\nREPT 3\nNOP\nENDR\nEDUP');
+            assertEqual(result.length, 6, 'DUP containing REPT');
+
+            result = bytes('REPT 2\nDUP 3\nNOP\nEDUP\nENDR');
+            assertEqual(result.length, 6, 'REPT containing DUP');
+
+            // Variable assignment inside nested DUP
+            result = bytes('N = 0\nDUP 2\nDUP 2\nDB N\nN = N + 1\nEDUP\nEDUP');
+            assert(result !== null, 'Variable assignment in nested DUP');
+            if (result) assertEqual(result.length, 4, 'Variable assignment in nested DUP size');
         }
 
         // ==================== CONDITIONAL TESTS ====================
