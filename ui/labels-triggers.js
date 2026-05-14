@@ -104,7 +104,8 @@ export function initLabelsTriggers({ getSpectrum, labelManager }) {
         labelsList.innerHTML = labels.map(label => {
             const addrStr = label.page !== null ? `${label.page}:${hex16(label.address)}` : hex16(label.address);
             const commentHtml = label.comment ? `<span class="label-comment">${escapeHtml(label.comment)}</span>` : '';
-            const sourceTag = label.source === 'profiler' ? '<span class="label-source-tag">P</span>' : '';
+            const sourceTag = label.source === 'profiler' ? '<span class="label-source-tag">P</span>' :
+                              label.source === 'asm' ? '<span class="label-source-tag">A</span>' : '';
             const itemClass = label.isRom ? 'label-item rom-label' : 'label-item';
             const actionsHtml = label.isRom ? '' : `
                 <div class="label-actions">

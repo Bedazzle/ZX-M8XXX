@@ -39,6 +39,10 @@ export function initAssemblerUI({
     const btnAsmInject = document.getElementById('btnAsmInject');
     const btnAsmDebug = document.getElementById('btnAsmDebug');
     const btnAsmDownload = document.getElementById('btnAsmDownload');
+    const asmProgress = document.getElementById('asmProgress');
+    const asmProgressLabel = document.getElementById('asmProgressLabel');
+    const asmProgressFill = document.getElementById('asmProgressFill');
+    const asmProgressPct = document.getElementById('asmProgressPct');
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
@@ -734,6 +738,7 @@ export function initAssemblerUI({
         const prev = asmUndoStack.pop();
         asmEditor.value = prev.text;
         asmEditor.selectionStart = asmEditor.selectionEnd = prev.cursor;
+        assemblyDirty = true;
         updateLineNumbers();
         updateHighlight();
         syncEditorToVFS();
@@ -748,6 +753,7 @@ export function initAssemblerUI({
         const next = asmRedoStack.pop();
         asmEditor.value = next.text;
         asmEditor.selectionStart = asmEditor.selectionEnd = next.cursor;
+        assemblyDirty = true;
         updateLineNumbers();
         updateHighlight();
         syncEditorToVFS();
@@ -982,6 +988,15 @@ export function initAssemblerUI({
 
             // Auto-detect main file
             const detected = VFS.findMainFile();
+
+            // If detected via explicit @main marker, skip the dialog
+            if (detected && VFS.files[detected] && !VFS.files[detected].binary) {
+                const lines = VFS.files[detected].content.split(/\r?\n/).slice(0, 20);
+                if (lines.some(l => /^\s*;\s*@main\b/i.test(l))) {
+                    resolve(detected);
+                    return;
+                }
+            }
 
             // Sort files: detected main file first, then alphabetically
             asmFiles.sort((a, b) => a.localeCompare(b));
@@ -1279,6 +1294,7 @@ export function initAssemblerUI({
 
         asmEditor.addEventListener('input', () => {
             asmUndoSchedule();
+            assemblyDirty = true;
             updateLineNumbers();
             updateHighlight();
             syncEditorToVFS();
@@ -1605,6 +1621,7 @@ export function initAssemblerUI({
                 openFileTab(lastAddedFile);
             }
 
+            assemblyDirty = true;
             updateProjectButtons();
             updateDefinesDropdown();
             updateFileTabs();
@@ -2219,6 +2236,7 @@ export function initAssemblerUI({
 
         // Reset VFS and populate
         VFS.reset();
+        assemblyDirty = true;
         currentProjectMainFile = null;
         currentOpenFile = null;
         openTabs = [];
@@ -2286,6 +2304,7 @@ export function initAssemblerUI({
             updateHighlight();
             // Close any open project and reset tabs
             VFS.reset();
+            assemblyDirty = true;
             currentProjectMainFile = null;
             currentOpenFile = null;
             openTabs = [];
@@ -2324,8 +2343,9 @@ export function initAssemblerUI({
             }
 
             // Create empty file in VFS
-            const template = `; ${finalName}\n; Created: ${new Date().toLocaleDateString()}\n; @entry start\n\n        ORG $8000\n\nstart:\n        ret\n`;
+            const template = `; ${finalName}\n; Created: ${new Date().toLocaleDateString()}\n; @main\n; @entry start\n\n        ORG $8000\n\nstart:\n        ret\n`;
             VFS.addFile(finalName, template);
+            assemblyDirty = true;
 
             // Set as main file if no main file yet
             if (!currentProjectMainFile) {
@@ -2391,18 +2411,12 @@ export function initAssemblerUI({
             // Sync current editor to VFS first
             syncEditorToVFS();
 
-            // Collect source files only (skip binary)
+            // Collect all VFS files (source and binary)
             const sourceFiles = [];
-            const textExtensions = ['.asm', '.z80', '.s', '.a80', '.inc', '.txt', '.def', '.h'];
 
             for (const path in VFS.files) {
                 const file = VFS.files[path];
-                if (!file.binary) {
-                    const ext = '.' + path.split('.').pop().toLowerCase();
-                    if (textExtensions.includes(ext) || !path.includes('.')) {
-                        sourceFiles.push({ name: path, content: file.content });
-                    }
-                }
+                sourceFiles.push({ name: path, content: file.content, binary: !!file.binary });
             }
 
             // If no VFS files but editor has content, export editor text directly
@@ -2417,10 +2431,11 @@ export function initAssemblerUI({
 
             const alwaysZip = chkAsmExportZip && chkAsmExportZip.checked;
 
-            // Single file: save as plain text (unless "Export ZIP" checked)
+            // Single file: save directly (unless "Export ZIP" checked)
             if (sourceFiles.length === 1 && !alwaysZip) {
                 const file = sourceFiles[0];
-                const blob = new Blob([file.content], { type: 'text/plain' });
+                const type = file.binary ? 'application/octet-stream' : 'text/plain';
+                const blob = new Blob([file.content], { type });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = file.name;
@@ -2437,7 +2452,9 @@ export function initAssemblerUI({
 
             for (const file of sourceFiles) {
                 const nameBytes = new TextEncoder().encode(file.name);
-                const contentBytes = new TextEncoder().encode(file.content);
+                const contentBytes = file.binary
+                    ? (file.content instanceof Uint8Array ? file.content : new Uint8Array(file.content))
+                    : new TextEncoder().encode(file.content);
 
                 // CRC-32 calculation
                 let crc = 0xFFFFFFFF;
@@ -2531,7 +2548,7 @@ export function initAssemblerUI({
             a.click();
             URL.revokeObjectURL(a.href);
 
-            showMessage(`Exported ${sourceFiles.length} source file(s) as ZIP`);
+            showMessage(`Exported ${sourceFiles.length} file(s) as ZIP`);
         });
     }
 
@@ -2625,9 +2642,17 @@ export function initAssemblerUI({
         });
     }
 
+    // Mark assembly dirty when defines change
+    if (asmDefinesInput) {
+        asmDefinesInput.addEventListener('input', () => { assemblyDirty = true; });
+    }
+    if (asmDetectedDefines) {
+        asmDetectedDefines.addEventListener('change', () => { assemblyDirty = true; });
+    }
+
     // Simple assembler - enough for basic code
     if (btnAsmAssemble) {
-        btnAsmAssemble.addEventListener('click', assembleCode);
+        btnAsmAssemble.addEventListener('click', () => assembleCode());
     }
 
     // Assembled bytes storage
@@ -2637,6 +2662,7 @@ export function initAssemblerUI({
     let assembledSaveCommands = [];  // SAVESNA/SAVETAP commands from assembly
     let assembledEntryPoint = null;  // Entry point from ; @entry marker
     let assembledSymbols = [];       // Symbols from last assembly {name, value, type}
+    let assemblyDirty = true;        // True when source changed since last successful assembly
 
     // Navigate to file:line in editor
     function goToFileLine(file, line) {
@@ -2773,47 +2799,61 @@ export function initAssemblerUI({
         return selected;
     }
 
-    function assembleCode() {
+    let assembling = false;
+
+    async function assembleCode(sync) {
         const spectrum = getSpectrum();
         // Pause emulator before assembly
         if (spectrum.isRunning()) {
             spectrum.stop();
             updateStatus();
         }
-        // Run assembly directly (no setTimeout to avoid race with Debug button)
-        doAssemble();
+        if (sync) {
+            // Synchronous path for doDebug (needs result immediately)
+            Assembler.progressCallback = null;
+            doAssemble();
+            return;
+        }
+        if (assembling) return; // prevent re-entrance
+        assembling = true;
+        // Show progress bar
+        asmOutput.innerHTML = '';
+        btnAsmAssemble.disabled = true;
+        btnAsmDebug.disabled = true;
+        asmProgressFill.style.width = '0%';
+        asmProgressPct.textContent = '';
+        asmProgressLabel.textContent = 'Assembling\u2026';
+        asmProgress.classList.remove('hidden');
+        try {
+            await doAssembleAsync();
+        } finally {
+            asmProgress.classList.add('hidden');
+            btnAsmAssemble.disabled = false;
+            assembling = false;
+        }
     }
 
-    function doAssemble() {
-        // Use the project main file name if available, otherwise default to current file or 'editor.asm'
+    // Shared setup: sync VFS, parse defines, determine mode
+    function prepareAssembly() {
         const filename = currentProjectMainFile || currentOpenFile || 'editor.asm';
-        // VFS normalizes paths to lowercase
         const normalizedFilename = filename.replace(/\\/g, '/').toLowerCase();
-
-        // Determine if this is a single-file assembly (no project loaded)
         const isSingleFile = !currentProjectMainFile && !currentOpenFile;
 
-        // For single-file mode, always use fresh VFS to avoid stale content
         if (isSingleFile) {
             VFS.reset();
         }
 
-        // Sync current editor to VFS before assembly
         const normalizedOpenFile = currentOpenFile ? currentOpenFile.replace(/\\/g, '/').toLowerCase() : null;
         if (normalizedOpenFile && VFS.files[normalizedOpenFile] && !VFS.files[normalizedOpenFile].binary) {
-            // Update existing file in VFS
             VFS.files[normalizedOpenFile].content = asmEditor.value;
         }
 
-        // Always add/update the file being assembled with current editor content
         if (asmEditor.value.trim()) {
             VFS.addFile(filename, asmEditor.value);
         }
 
-        // Check if we have a multi-file project
         const hasProject = !isSingleFile && Object.keys(VFS.files).length > 1;
 
-        // Parse command-line defines from input (format: "NAME,NAME=value,...")
         const cmdDefines = [];
         if (asmDefinesInput && asmDefinesInput.value.trim()) {
             const defParts = asmDefinesInput.value.split(',').map(s => s.trim()).filter(s => s);
@@ -2822,7 +2862,6 @@ export function initAssemblerUI({
                 if (eqIdx > 0) {
                     const name = part.substring(0, eqIdx).trim();
                     const valueStr = part.substring(eqIdx + 1).trim();
-                    // Parse value as number if possible, otherwise use 1
                     const value = /^-?\d+$/.test(valueStr) ? parseInt(valueStr, 10) :
                                   /^[\$0x]/i.test(valueStr) ? parseInt(valueStr.replace(/^[\$0x]/i, ''), 16) : 1;
                     cmdDefines.push({ name, value });
@@ -2832,14 +2871,45 @@ export function initAssemblerUI({
             }
         }
 
-        // Add selected defines from @define markers dropdown
         const dropdownDefines = getSelectedDefinesFromDropdown();
         for (const def of dropdownDefines) {
-            // Only add if not already in cmdDefines (manual input takes priority)
             if (!cmdDefines.some(d => d.name === def.name)) {
                 cmdDefines.push(def);
             }
         }
+
+        return { filename, normalizedFilename, hasProject, cmdDefines };
+    }
+
+    // Async assembly with progress reporting
+    async function doAssembleAsync() {
+        const { filename, normalizedFilename, hasProject, cmdDefines } = prepareAssembly();
+
+        Assembler.progressCallback = (pass, linesDone, totalLines) => {
+            const pct = totalLines > 0 ? Math.round(linesDone / totalLines * 100) : 0;
+            asmProgressLabel.textContent = `Pass ${pass}\u2026`;
+            asmProgressFill.style.width = pct + '%';
+            asmProgressPct.textContent = pct + '%';
+        };
+
+        try {
+            let result;
+            if (hasProject && VFS.files[normalizedFilename]) {
+                result = await Assembler.assembleProjectAsync(normalizedFilename, cmdDefines);
+            } else {
+                const code = asmEditor.value;
+                result = await Assembler.assembleAsync(code, filename, cmdDefines);
+            }
+            processAssemblyResult(result, normalizedFilename, hasProject);
+        } catch (e) {
+            processAssemblyError(e);
+        } finally {
+            Assembler.progressCallback = null;
+        }
+    }
+
+    function doAssemble() {
+        const { filename, normalizedFilename, hasProject, cmdDefines } = prepareAssembly();
 
         // Use sjasmplus-js assembler
         try {
@@ -2853,6 +2923,14 @@ export function initAssemblerUI({
                 result = Assembler.assemble(code, filename, cmdDefines);
             }
 
+            processAssemblyResult(result, normalizedFilename, hasProject);
+
+        } catch (e) {
+            processAssemblyError(e);
+        }
+    }
+
+    function processAssemblyResult(result, normalizedFilename, hasProject) {
             assembledBytes = result.output;
             assembledOrg = result.outputStart;
             assembledOrgAddresses = result.orgAddresses || [result.outputStart];
@@ -2865,15 +2943,12 @@ export function initAssemblerUI({
             const entryMatch = sourceCode.match(/^\s*;\s*@entry\s+(\S+)/im);
             if (entryMatch) {
                 const entryValue = entryMatch[1];
-                // result.symbols is an array of {name, value, ...}
-                // Try to resolve as label first (case-insensitive)
                 const symbolEntry = result.symbols && result.symbols.find(s =>
                     s.name === entryValue || s.name.toLowerCase() === entryValue.toLowerCase()
                 );
                 if (symbolEntry) {
                     assembledEntryPoint = symbolEntry.value;
                 } else {
-                    // Try parsing as number ($hex, 0xhex, or decimal)
                     const numMatch = entryValue.match(/^(?:\$|0x)([0-9a-f]+)$/i);
                     if (numMatch) {
                         assembledEntryPoint = parseInt(numMatch[1], 16);
@@ -3051,6 +3126,7 @@ export function initAssemblerUI({
                 btnAsmInject.disabled = false;
                 btnAsmDebug.disabled = false;
                 btnAsmDownload.disabled = fileMap.size === 0;
+                assemblyDirty = false;
             }
 
             asmOutput.innerHTML = html;
@@ -3063,12 +3139,11 @@ export function initAssemblerUI({
                     goToFileLine(file, line);
                 });
             });
+    }
 
-        } catch (e) {
-            // Handle AssemblerError with file/line info
+    function processAssemblyError(e) {
             const statusMsg = 'Assembly failed';
             let html = `<div class="asm-status-line error">${statusMsg}</div>`;
-            // Show collected errors with individual file/line locations
             const collectedErrors = ErrorCollector.errors || [];
             if (collectedErrors.length > 0) {
                 for (const err of collectedErrors) {
@@ -3081,7 +3156,6 @@ export function initAssemblerUI({
             }
             asmOutput.innerHTML = html;
 
-            // Add click handlers for error navigation
             asmOutput.querySelectorAll('.asm-clickable').forEach(el => {
                 el.addEventListener('click', () => {
                     const file = el.dataset.file || null;
@@ -3094,7 +3168,6 @@ export function initAssemblerUI({
             btnAsmInject.disabled = true;
             btnAsmDebug.disabled = true;
             btnAsmDownload.disabled = true;
-        }
     }
 
     // Inject assembled code into memory (supports 128K paging)
@@ -3251,100 +3324,155 @@ export function initAssemblerUI({
         });
     }
 
-    // Debug button - assemble, inject code and start debugging
-    if (btnAsmDebug) {
-        btnAsmDebug.addEventListener('click', async () => {
-            const spectrum = getSpectrum();
-            if (!spectrum.memory) {
-                showMessage('Emulator not ready');
-                return;
-            }
+    // Debug - assemble, inject code and start debugging
+    async function doDebug() {
+        const spectrum = getSpectrum();
+        if (!spectrum.memory) {
+            showMessage('Emulator not ready');
+            return;
+        }
 
-            // First, re-assemble the current code
-            doAssemble();
+        // Re-assemble only if source changed since last successful build
+        if (assemblyDirty || (!assembledBytes && !AsmMemory.getDeviceName())) {
+            assembleCode(true);
 
             // Check if assembly succeeded
             if (!assembledBytes && !AsmMemory.getDeviceName()) {
-                showMessage('Assembly failed - cannot debug');
+                // assembleCode already showed errors in the output panel
                 return;
             }
+        }
 
-            // Then inject
-            btnAsmInject.click();
+        // Then inject
+        btnAsmInject.click();
 
-            // Determine entry point - priority: @entry > SAVESNA > single ORG > multiple ORGs (ask)
-            let entryPoint = assembledOrg;
+        // Determine entry point - priority: @entry > SAVESNA > single ORG > multiple ORGs (ask)
+        let entryPoint = assembledOrg;
 
-            if (assembledEntryPoint !== null) {
-                // Use ; @entry marker
-                entryPoint = assembledEntryPoint;
-            } else {
-                // Check if there's a SAVESNA command - use its start address
-                const snaCommand = assembledSaveCommands.find(c => c.type === 'sna');
-                if (snaCommand) {
-                    entryPoint = snaCommand.start;
-                } else if (assembledOrgAddresses.length > 1) {
-                    // Multiple ORGs - ask user to select
-                    entryPoint = await showOrgSelectionDialog(assembledOrgAddresses);
-                    if (entryPoint === null) return;  // User cancelled
-                } else if (assembledOrgAddresses.length === 1) {
-                    entryPoint = assembledOrgAddresses[0];
-                }
+        if (assembledEntryPoint !== null) {
+            // Use ; @entry marker
+            entryPoint = assembledEntryPoint;
+        } else {
+            // Check if there's a SAVESNA command - use its start address
+            const snaCommand = assembledSaveCommands.find(c => c.type === 'sna');
+            if (snaCommand) {
+                entryPoint = snaCommand.start;
+            } else if (assembledOrgAddresses.length > 1) {
+                // Multiple ORGs - ask user to select
+                entryPoint = await showOrgSelectionDialog(assembledOrgAddresses);
+                if (entryPoint === null) return;  // User cancelled
+            } else if (assembledOrgAddresses.length === 1) {
+                entryPoint = assembledOrgAddresses[0];
             }
+        }
 
-            // Reset CPU and frame timing state for clean debug start
-            spectrum.cpu.halted = false;
+        // Reset CPU and frame timing state for clean debug start
+        spectrum.cpu.halted = false;
+        spectrum.cpu.tStates = 0;
+        spectrum.frameStartOffset = 0;
+        spectrum.accumulatedContention = 0;
+        spectrum.pendingInt = false;
+
+        // If SAVESNA is present, set up USR 0 machine state matching SNA output
+        const hasSaveSna = assembledSaveCommands.some(c => c.type === 'sna');
+        if (hasSaveSna) {
+            spectrum.cpu.i = 0x3F;
+            spectrum.cpu.r = 0x00;
+            spectrum.cpu.im = 1;
+            spectrum.cpu.iff1 = 1;
+            spectrum.cpu.iff2 = 0;
+            spectrum.cpu.iy = 0x5C3A;
+            spectrum.cpu.ix = 0xFF3C;
+            spectrum.cpu.hl = 0x2D2B;
+            spectrum.cpu.de = 0x5CDC;
+            spectrum.cpu.bc = entryPoint;
+            spectrum.cpu.a = 0x00;
+            spectrum.cpu.f = 0x54;
+            spectrum.cpu.hlPrime = 0x2758;
+            spectrum.cpu.dePrime = 0x369B;
+            spectrum.cpu.bcPrime = 0x0000;
+            spectrum.cpu.aPrime = 0x00;
+            spectrum.cpu.fPrime = 0x44;
+            spectrum.cpu.sp = 0x5D58;
+        } else {
             spectrum.cpu.iff1 = 0;
             spectrum.cpu.iff2 = 0;
-            spectrum.cpu.tStates = 0;
-            spectrum.frameStartOffset = 0;
-            spectrum.accumulatedContention = 0;
-            spectrum.pendingInt = false;
+        }
 
-            spectrum.cpu.pc = entryPoint;
+        spectrum.cpu.pc = entryPoint;
 
-            // Inject assembler symbols as debugger labels
-            if (assembledSymbols.length > 0) {
-                let injected = 0;
-                for (const sym of assembledSymbols) {
-                    const addr = sym.value & 0xFFFF;
-                    // Skip symbols outside addressable range or internal
-                    if (sym.value < 0 || sym.value > 0xFFFF) continue;
-                    if (sym.name.startsWith('__')) continue;
-                    // Only add if no existing user label at this address
-                    if (!labelManager.get(addr)) {
-                        labelManager.add({ address: addr, name: sym.name });
-                        injected++;
-                    }
-                }
-                if (injected > 0) {
-                    updateLabelsList();
-                }
+        // Inject assembler symbols as debugger labels
+        if (assembledSymbols.length > 0) {
+            // Remove old assembler-injected labels before adding new ones
+            const toRemove = [];
+            for (const label of labelManager.getAll()) {
+                if (label.source === 'asm') toRemove.push(label);
             }
-
-            // Switch to debugger tab
-            const debuggerTab = document.querySelector('.tab-btn[data-tab="debugger"]');
-            if (debuggerTab) {
-                debuggerTab.click();
+            labelManager.autoSaveEnabled = false;
+            for (const label of toRemove) {
+                labelManager.remove(label.address, label.page);
             }
+            labelManager.autoSaveEnabled = true;
 
-            // Navigate disassembly to entry address
-            if (getLeftPanelType() === 'disasm') {
-                goToAddress(entryPoint);
-            } else if (getRightPanelType() === 'disasm') {
-                goToRightDisasmAddress(entryPoint);
-            } else {
-                switchLeftPanelType('disasm');
-                goToAddress(entryPoint);
+            let injected = 0;
+            for (const sym of assembledSymbols) {
+                const addr = sym.value & 0xFFFF;
+                // Skip symbols outside addressable range or internal
+                if (sym.value < 0 || sym.value > 0xFFFF) continue;
+                if (sym.name.startsWith('__')) continue;
+                // Skip if user has their own (non-asm) label at this address
+                const existing = labelManager.labels.get(labelManager._key(addr));
+                if (existing && existing.source !== 'asm') continue;
+                labelManager.add({ address: addr, name: sym.name, source: 'asm' });
+                injected++;
             }
+            if (injected > 0 || toRemove.length > 0) {
+                updateLabelsList();
+            }
+        }
 
-            // Update debugger view
-            updateDebugger();
-            updateStatus();
+        // Switch to debugger tab
+        const debuggerTab = document.querySelector('.tab-btn[data-tab="debugger"]');
+        if (debuggerTab) {
+            debuggerTab.click();
+        }
 
-            showMessage(`Ready to debug at ${entryPoint.toString(16).toUpperCase()}h - press F7 to step`);
-        });
+        // Navigate disassembly to entry address
+        if (getLeftPanelType() === 'disasm') {
+            goToAddress(entryPoint);
+        } else if (getRightPanelType() === 'disasm') {
+            goToRightDisasmAddress(entryPoint);
+        } else {
+            switchLeftPanelType('disasm');
+            goToAddress(entryPoint);
+        }
+
+        // Update debugger view
+        updateDebugger();
+        updateStatus();
+
+        showMessage(`Ready to debug at ${entryPoint.toString(16).toUpperCase()}h - press F7 to step`);
     }
+
+    if (btnAsmDebug) {
+        btnAsmDebug.addEventListener('click', doDebug);
+    }
+
+    // Global F9/Ctrl+F9 shortcuts — active when assembler tab is visible
+    const tabAssembler = document.getElementById('tab-assembler');
+    document.addEventListener('keydown', (e) => {
+        if (!tabAssembler || !tabAssembler.classList.contains('active')) return;
+        if (e.key === 'F9') {
+            e.preventDefault();
+            if (e.ctrlKey) {
+                doDebug();
+            } else {
+                if (btnAsmAssemble && !btnAsmAssemble.disabled) {
+                    btnAsmAssemble.click();
+                }
+            }
+        }
+    });
 
     // Download generated files
     if (btnAsmDownload) {

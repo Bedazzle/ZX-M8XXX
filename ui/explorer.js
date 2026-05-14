@@ -63,6 +63,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerPreviewLabel = document.getElementById('explorerPreviewLabel');
     const explorerPreviewCtx = explorerPreviewCanvas.getContext('2d');
 
+    // Disk Map elements
+    const diskmapGridContainer = document.getElementById('diskmapGridContainer');
+    const diskmapDiskContainer = document.getElementById('diskmapDiskContainer');
+    const diskmapCanvas = document.getElementById('diskmapCanvas');
+    const diskmapLegend = document.getElementById('diskmapLegend');
+    const diskmapInfo = document.getElementById('diskmapInfo');
+    const diskmapStatus = document.getElementById('diskmapStatus');
+    let diskmapSectorMap = null;       // Cached sector map for current DSK
+    let diskmapHighlightFile = -1;     // File index to highlight (-1 = none)
+    let diskmapCurrentView = 'grid';   // 'grid' or 'disk'
+
     // Get current palette from ULA (falls back to default if not available)
     function getExplorerPalette() {
         const palette = getPalette();
@@ -80,10 +91,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         };
     }
 
+    // Sync preview panel height to match info output panel
+    function syncPreviewHeight() {
+        setTimeout(() => {
+            const leftH = explorerInfoOutput.offsetHeight;
+            if (leftH > 0 && !explorerPreviewContainer.classList.contains('hidden')) {
+                explorerPreviewContainer.style.setProperty('height', leftH + 'px', 'important');
+            }
+        }, 50);
+    }
+
     // Preview rendering functions
-    function explorerUpdatePreview(data, blockData = null) {
+    function explorerUpdatePreview(data, blockData = null, fileName = null) {
         if (!data) {
-            explorerPreviewContainer.style.display = 'none';
+            explorerPreviewContainer.classList.add('hidden');
+            explorerPreviewContainer.style.height = '';
             return;
         }
 
@@ -119,13 +141,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         if (!previewType) {
-            explorerPreviewContainer.style.display = 'none';
+            explorerPreviewContainer.classList.add('hidden');
+            explorerPreviewContainer.style.height = '';
             return;
         }
 
         // Show preview
-        explorerPreviewContainer.style.display = 'flex';
-        explorerPreviewLabel.textContent = label;
+        explorerPreviewContainer.classList.remove('hidden');
+        if (fileName) {
+            explorerPreviewLabel.innerHTML = `${escapeHtml(label)}<br><span style="color:var(--cyan)">${escapeHtml(fileName)}</span>`;
+        } else {
+            explorerPreviewLabel.textContent = label;
+        }
 
         // Render based on type
         switch (previewType) {
@@ -154,6 +181,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerRenderRGB3(data);
                 break;
         }
+
+        // Display at 2x zoom
+        explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+        explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+
+        syncPreviewHeight();
     }
 
     function explorerRenderSCR(data) {
@@ -446,7 +479,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // Render two screens side by side for 128K
         explorerPreviewCanvas.width = 520;  // 256 + 8 gap + 256
         explorerPreviewCanvas.height = SCREEN_HEIGHT;
-        explorerPreviewContainer.style.display = 'flex';
+        explorerPreviewContainer.classList.remove('hidden');
         explorerPreviewLabel.textContent = `128K Screens (Bank 5 / Bank 7) - Active: ${activeScreen}`;
 
         const imageData = explorerPreviewCtx.createImageData(520, SCREEN_HEIGHT);
@@ -553,9 +586,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerFileName.textContent = file.name;
             explorerFileSize.textContent = `(${explorerData.length.toLocaleString()} bytes)`;
 
-            // Detect file type
+            // Detect file type (.img is a DISCiPLE/+D alias for .mgt, but only for valid MGT sizes)
             const ext = file.name.split('.').pop().toLowerCase();
-            explorerFileType = ext;
+            const isMgtSize = explorerData.length === 819200 || explorerData.length === 409600;
+            explorerFileType = (ext === 'img' && isMgtSize) ? 'mgt' : ext;
 
             // Parse file
             await explorerParseFile(file.name, ext);
@@ -565,10 +599,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerDisasmOutput.innerHTML = '<div class="explorer-empty">Select a source to disassemble</div>';
             explorerHexOutput.innerHTML = '';
             explorerTextOutput.innerHTML = '<span class="explorer-empty">Select a source and click View</span>';
+            diskmapSectorMap = null;
 
             // Check if Edit tab is active with an editor-supported format
             const activeSubtab = document.querySelector('.explorer-subtab.active');
-            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'opd', 'opu', 'zip'];
+            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'zip'];
             const keepEditTab = activeSubtab && activeSubtab.dataset.subtab === 'edit' && editorFormats.includes(ext);
 
             // Render File Info (suppress auto-switch when staying on Edit tab)
@@ -617,8 +652,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerParsed = explorerParseSCL(explorerData);
                 break;
             case 'mgt':
-            case 'img':
                 explorerParsed = explorerParseMGT(explorerData);
+                break;
+            case 'img':
+                if (explorerData.length === 819200 || explorerData.length === 409600) {
+                    explorerParsed = explorerParseMGT(explorerData);
+                } else {
+                    explorerParsed = { type: 'unknown', size: explorerData.length };
+                }
                 break;
             case 'mdr':
                 explorerParsed = explorerParseMDR(explorerData);
@@ -656,7 +697,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk', 'opd', 'opu'];
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu'];
         if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
@@ -1376,6 +1417,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             name: f.name,
             ext: f.typeName.substring(0, 1).toUpperCase(),  // First char as short type
             typeName: f.typeName,
+            type: f.type,
             mgtType: f.type,
             startAddress: f.startAddress,
             length: f.length,
@@ -1386,6 +1428,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             autostart: f.autostart,
             bodyLength: f.bodyLength,
             tapeType: f.tapeType,
+            isSAMDOS: f.isSAMDOS,
             slotIndex: f.slotIndex
         }));
 
@@ -1403,7 +1446,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const files = MDRLoader.listFiles(data);
         const info = MDRLoader.getDiskInfo(data);
         const explorerFiles = files.map(f => {
-            let ext = f.type === 'PRINT' ? 'P' : 'F';
+            let ext = f.isPrint ? 'P' : 'F';
             let typeName = f.type;
             // Non-PRINT files have a 9-byte Spectrum header:
             // type(1) len(2) start(2) progLen(2) autorun(2)
@@ -1412,25 +1455,33 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             let dataLength = f.length;
             let startAddress = 0;
             let autorunLine = -1;
-            if (!f.isPrint && f.length >= 9) {
+            if (f.length >= 9) {
                 const fileData = MDRLoader.extractFile(data, f);
                 if (fileData && fileData.length >= 9) {
                     const hdrType = fileData[0];
                     const hdrLen = fileData[1] | (fileData[2] << 8);
                     const hdrStart = fileData[3] | (fileData[4] << 8);
-                    dataLength = hdrLen;
-                    if (hdrType === 0) {
-                        ext = 'B'; typeName = 'BASIC';
-                        const hdrAutorun = fileData[7] | (fileData[8] << 8);
-                        autorunLine = hdrAutorun >= 0x8000 ? -1 : hdrAutorun;
-                    } else if (hdrType === 1) { ext = 'D'; typeName = 'Num array'; }
-                    else if (hdrType === 2) { ext = 'D'; typeName = 'Char array'; }
-                    else if (hdrType === 3) {
-                        ext = 'C'; typeName = 'Code';
-                        startAddress = hdrStart;
+                    // For PRINT-flagged files, only accept header if it looks valid
+                    // (handles MDR images from tools that don't set RECFLG bit 2 correctly)
+                    const hasValidHeader = !f.isPrint ||
+                        (hdrType <= 3 && hdrLen > 0 && hdrLen <= fileData.length - 9);
+                    if (hasValidHeader) {
+                        dataLength = hdrLen;
+                        if (hdrType === 0) {
+                            ext = 'B'; typeName = 'BASIC';
+                            const hdrAutorun = fileData[7] | (fileData[8] << 8);
+                            autorunLine = hdrAutorun >= 0x8000 ? -1 : hdrAutorun;
+                        } else if (hdrType === 1) { ext = 'D'; typeName = 'Num array'; }
+                        else if (hdrType === 2) { ext = 'D'; typeName = 'Char array'; }
+                        else if (hdrType === 3) {
+                            ext = 'C'; typeName = 'Code';
+                            startAddress = hdrStart;
+                        }
                     }
                 }
             }
+            // If header was successfully parsed, this is not a PRINT file
+            const resolvedIsPrint = f.isPrint && typeName === f.type;
             return {
                 name: f.name,
                 ext,
@@ -1441,7 +1492,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 autorunLine,
                 sectors: f.sectors,
                 sectorIndices: f.sectorIndices,
-                isPrint: f.isPrint,
+                isPrint: resolvedIsPrint,
+                deleted: f.deleted || false,
                 mdrFile: true
             };
         });
@@ -1509,9 +1561,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
+                if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
                 return supportedExts.includes(ext);
             });
 
@@ -1535,7 +1588,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerData = new Uint8Array(zipFile.data);
                 explorerFileName.textContent = `${explorerZipParentName} > ${zipFile.name}`;
                 explorerFileSize.textContent = `(${explorerData.length.toLocaleString()} bytes)`;
-                explorerFileType = ext;
+                const isMgtSize = explorerData.length === 819200 || explorerData.length === 409600;
+                explorerFileType = (ext === 'img' && isMgtSize) ? 'mgt' : ext;
 
                 // Parse based on type
                 switch (ext) {
@@ -1551,6 +1605,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return explorerParseTRD(explorerData);
                     case 'scl':
                         return explorerParseSCL(explorerData);
+                    case 'mgt':
+                        return explorerParseMGT(explorerData);
+                    case 'img':
+                        if (isMgtSize) return explorerParseMGT(explorerData);
+                        return { type: 'unknown', size: explorerData.length };
                     case 'mdr':
                         return explorerParseMDR(explorerData);
                     case 'opd':
@@ -1682,7 +1741,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For TAP files, check each data block for screen data
         if (explorerParsed && explorerParsed.type === 'tap') {
-            for (const block of explorerBlocks) {
+            for (let bi = 0; bi < explorerBlocks.length; bi++) {
+                const block = explorerBlocks[bi];
                 if (block.blockType === 'data') {
                     // Data block - check if it's a screen (minus flag and checksum bytes)
                     const contentLen = block.data.length - 2; // subtract flag byte and checksum
@@ -1690,7 +1750,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE) {
                         // Extract content (skip flag byte, exclude checksum)
                         const content = block.data.slice(1, block.data.length - 1);
-                        explorerUpdatePreview(content);
+                        const prevBlock = bi > 0 ? explorerBlocks[bi - 1] : null;
+                        const fName = prevBlock && prevBlock.name ? prevBlock.name : null;
+                        explorerUpdatePreview(content, null, fName);
                         return;
                     }
                 }
@@ -1699,7 +1761,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For TZX files, check data blocks for screen data
         if (explorerParsed && explorerParsed.type === 'tzx') {
-            for (const block of explorerBlocks) {
+            for (let bi = 0; bi < explorerBlocks.length; bi++) {
+                const block = explorerBlocks[bi];
                 // Check standard speed data blocks (0x10)
                 if (block.id === 0x10 && block.dataLength) {
                     // Data starts at offset + 1 (block ID) + 4 (pause + length)
@@ -1711,7 +1774,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                             contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE) {
                             const content = blockData.slice(1, blockData.length - 1);
-                            explorerUpdatePreview(content);
+                            const prevBlock = bi > 0 ? explorerBlocks[bi - 1] : null;
+                            const fName = prevBlock && prevBlock.fileName ? prevBlock.fileName : null;
+                            explorerUpdatePreview(content, null, fName);
                             return;
                         }
                     }
@@ -1724,7 +1789,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const contentLen = explorerParsed.file.length;
             if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                 contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE) {
-                explorerUpdatePreview(explorerParsed.file.data);
+                explorerUpdatePreview(explorerParsed.file.data, null, explorerParsed.file.name || null);
                 return;
             }
         }
@@ -1773,9 +1838,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (explorerData.length >= memOffset + SCREEN_SIZE) {
                     const screen = explorerData.slice(memOffset, memOffset + SCREEN_SIZE);
                     // Show preview with custom label for SNA
-                    explorerPreviewContainer.style.display = 'flex';
+                    explorerPreviewContainer.classList.remove('hidden');
                     explorerPreviewLabel.textContent = '48K Screen';
                     explorerRenderSCR(screen);
+                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                    syncPreviewHeight();
                     return;
                 }
             }
@@ -1785,9 +1853,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (explorerParsed && explorerParsed.type === 'z80') {
             const screen = explorerExtractZ80Screen(explorerData, explorerParsed);
             if (screen) {
-                explorerPreviewContainer.style.display = 'flex';
+                explorerPreviewContainer.classList.remove('hidden');
                 explorerPreviewLabel.textContent = `Z80 v${explorerParsed.version} Screen`;
                 explorerRenderSCR(screen);
+                explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                syncPreviewHeight();
                 return;
             }
         }
@@ -1797,9 +1868,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             try {
                 const screen = SZXLoader.extractScreen(explorerData);
                 if (screen) {
-                    explorerPreviewContainer.style.display = 'flex';
+                    explorerPreviewContainer.classList.remove('hidden');
                     explorerPreviewLabel.textContent = `SZX v${explorerParsed.version} Screen`;
                     explorerRenderSCR(screen);
+                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                    syncPreviewHeight();
                     return;
                 }
             } catch (e) {
@@ -1822,9 +1896,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
 
                 if (screen) {
-                    explorerPreviewContainer.style.display = 'flex';
+                    explorerPreviewContainer.classList.remove('hidden');
                     explorerPreviewLabel.textContent = `RZX Embedded ${explorerParsed.snapshotType.toUpperCase()} Screen`;
                     explorerRenderSCR(screen);
+                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                    syncPreviewHeight();
                     return;
                 }
             } catch (e) {
@@ -1835,22 +1912,26 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // For MGT, look for previewable files
         if (explorerParsed && explorerParsed.type === 'mgt') {
             const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
-            for (const file of explorerParsed.files) {
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.length)) {
                     const fileData = MGTLoader.extractFile(explorerData, file);
-                    explorerUpdatePreview(fileData);
+                    explorerUpdatePreview(fileData, null, file.name || `#${fi + 1}`);
                     return;
                 }
             }
         }
 
-        // For MDR, look for previewable files
+        // For MDR, look for previewable files (use dataLength which excludes 9-byte header)
         if (explorerParsed && explorerParsed.type === 'mdr') {
             const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
-            for (const file of explorerParsed.files) {
-                if (previewSizes.includes(file.length)) {
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
+                const contentLen = file.isPrint ? file.length : file.dataLength;
+                if (previewSizes.includes(contentLen)) {
                     const fileData = MDRLoader.extractFile(explorerData, file);
-                    explorerUpdatePreview(fileData);
+                    const content = (!file.isPrint && fileData.length > 9) ? fileData.slice(9) : fileData;
+                    explorerUpdatePreview(content, null, file.name || `#${fi + 1}`);
                     return;
                 }
             }
@@ -1859,11 +1940,29 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // For TRD/SCL, look for previewable files (screens, fonts)
         if (explorerParsed && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')) {
             const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
-            for (const file of explorerParsed.files) {
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.length)) {
                     const fileData = explorerData.slice(file.offset, file.offset + file.length);
-                    explorerUpdatePreview(fileData);
+                    const fLabel = file.name ? `${file.name}${file.ext ? '.' + file.ext : ''}` : `#${fi + 1}`;
+                    explorerUpdatePreview(fileData, null, fLabel);
                     return;
+                }
+            }
+        }
+
+        // For OPD, look for previewable files (extractFile already strips 7-byte header)
+        if (explorerParsed && explorerParsed.type === 'opd') {
+            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
+                if (previewSizes.includes(file.length)) {
+                    const rawData = OPDLoader.extractFile(explorerData, file);
+                    if (rawData) {
+                        const fileData = file.length < rawData.length ? rawData.slice(0, file.length) : rawData;
+                        explorerUpdatePreview(fileData, null, file.name || `#${fi + 1}`);
+                        return;
+                    }
                 }
             }
         }
@@ -1871,7 +1970,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // For DSK, look for previewable files (check data size after +3DOS header)
         if (explorerParsed && explorerParsed.type === 'dsk') {
             const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
-            for (const file of explorerParsed.files) {
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.size)) {
                     const fileData = DSKLoader.readFileData(
                         explorerParsed.dskImage, file.name, file.ext, file.user, file.rawSize || file.size
@@ -1879,7 +1979,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     if (fileData) {
                         // Skip file header (+3DOS 128 bytes / TOS 5-7 bytes) for preview
                         const content = file.headerSize ? fileData.slice(file.headerSize) : fileData;
-                        explorerUpdatePreview(content);
+                        const fLabel = file.name ? `${file.name}${file.ext ? '.' + file.ext : ''}` : `#${fi + 1}`;
+                        explorerUpdatePreview(content, null, fLabel);
                         return;
                     }
                 }
@@ -2018,7 +2119,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 html += `<div class="explorer-block-meta">Flag: ${block.flag} ($${hex8(block.flag)}) | Length: ${block.length - 2} bytes | Checksum: ${hex8(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
                 html += `<div class="explorer-block-details">`;
                 html += `<span class="label">Filename:</span> <span class="filename">"${block.name}"</span><br>`;
-                html += `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                const tapPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.dataLength);
+                const tapPreviewIcon = !tapPreviewable ? '' : block.dataLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
+                html += `<span class="label">Data length:</span> ${block.dataLength} bytes${tapPreviewIcon}`;
 
                 if (block.headerType === 0) {
                     // Program
@@ -2073,9 +2176,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             switch (block.id) {
                 case 0x10: // Standard speed data
                     if (block.headerType) {
+                        const tzxPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.fileLength);
+                        const tzxPreviewIcon = !tzxPreviewable ? '' : block.fileLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
                         details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
-                        details += `<span class="label">Data length:</span> ${block.fileLength} bytes`;
+                        details += `<span class="label">Data length:</span> ${block.fileLength} bytes${tzxPreviewIcon}`;
                         if (block.autostart !== undefined && block.autostart !== null) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
@@ -2754,13 +2859,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const autostart = trdGetBasicAutostart(file);
                 if (autostart >= 0) detail = `LINE ${autostart}`;
             }
+            const len = file.length;
+            const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                len === 11136 || len === 12288 || len === 18432;
+            const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
                 <span class="explorer-file-size">${file.length}</span>
                 <span class="explorer-file-addr">${detail}</span>
-                <span class="explorer-file-sectors">${file.sectors} sectors</span>
+                <span class="explorer-file-preview">${previewIcon}</span>
+                <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
             </div>`;
         }
 
@@ -2799,13 +2910,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const autostart = trdGetBasicAutostart(file);
                 if (autostart >= 0) detail = `LINE ${autostart}`;
             }
+            const len = file.length;
+            const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                len === 11136 || len === 12288 || len === 18432;
+            const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
                 <span class="explorer-file-size">${file.length}</span>
                 <span class="explorer-file-addr">${detail}</span>
-                <span class="explorer-file-sectors">${file.sectors} sectors</span>
+                <span class="explorer-file-preview">${previewIcon}</span>
+                <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
             </div>`;
         }
 
@@ -2815,8 +2932,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function explorerRenderMGTInfo() {
         const info = explorerParsed.info;
+        const hasSAMDOS = explorerParsed.files.some(f => f.isSAMDOS);
+        const hasGDOS = explorerParsed.files.some(f => !f.isSAMDOS);
+        const dosLabel = hasSAMDOS && hasGDOS ? 'SAMDOS + G+DOS (mixed)' :
+                         hasSAMDOS ? 'SAMDOS (SAM Coupé)' : '+D/DISCiPLE (G+DOS)';
         let html = `<div class="explorer-info-section">
-            <div class="explorer-info-header">MGT Disk Image (+D/DISCiPLE)</div>
+            <div class="explorer-info-header">MGT Disk Image — ${dosLabel}</div>
             <table class="explorer-info-table">
                 <tr><th>Size</th><td>${explorerData.length} bytes</td></tr>
                 <tr><th>Geometry</th><td>${info.tracks}T × ${info.sides}S × ${info.sectorsPerTrack}sec × ${info.bytesPerSector}B</td></tr>
@@ -2833,17 +2954,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const file = explorerParsed.files[i];
             const typeName = file.typeName;
             let detail = '';
-            if (file.mgtType === 4 || file.mgtType === 7) {
-                // CODE or SCREEN$
+            if (file.mgtType === 4 || file.mgtType === 7 || file.mgtType === 19 || file.mgtType === 20) {
+                // CODE or SCREEN$ (G+DOS 4/7, SAMDOS 19/20)
                 detail = `${file.startAddress} ($${hex16(file.startAddress)})`;
-            } else if (file.mgtType === 1 && file.autostart != null && file.autostart < 0x8000) {
+            } else if ((file.mgtType === 1 || file.mgtType === 16) && file.autostart != null && file.autostart < 0x8000) {
                 detail = `LINE ${file.autostart}`;
             }
             const len = file.length;
             const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
                 len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
                 len === 11136 || len === 12288 || len === 18432;
-            const previewIcon = previewable ? '\u2B1A' : '';
+            const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
@@ -2860,13 +2981,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function explorerRenderMDRInfo() {
         const info = explorerParsed.info;
+        const isOversized = info.totalSectors > 254;
+        const sizeNote = isOversized ? ` <span style="color:var(--cyan)">(${Math.ceil(info.totalSectors / 254)} cartridges)</span>` : '';
         let html = `<div class="explorer-info-section">
             <div class="explorer-info-header">MDR Cartridge Image (Interface 1 Microdrive)</div>
             <table class="explorer-info-table">
                 <tr><th>Size</th><td>${explorerData.length} bytes</td></tr>
                 <tr><th>Cartridge</th><td>${escapeHtml(info.cartridgeName || '(unnamed)')}</td></tr>
-                <tr><th>Sectors</th><td>${info.totalSectors} (${info.usedSectors} used, ${info.freeSectors} free)</td></tr>
-                <tr><th>Files</th><td>${info.fileCount}</td></tr>
+                <tr><th>Sectors</th><td>${info.totalSectors} (${info.usedSectors} used, ${info.freeSectors} free)${sizeNote}</td></tr>
+                <tr><th>Files</th><td>${info.fileCount}${info.deletedCount ? ` + ${info.deletedCount} deleted` : ''}</td></tr>
                 <tr><th>Write protect</th><td>${info.writeProtect ? 'Yes' : 'No'}</td></tr>
             </table>
         </div>`;
@@ -2883,13 +3006,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 } else if (f.ext === 'B' && f.autorunLine >= 0) {
                     detail = `LINE ${f.autorunLine}`;
                 }
-                html += `<div class="explorer-file-entry" data-index="${i}">
+                const len = f.isPrint ? f.length : f.dataLength;
+                const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                    len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                    len === 11136 || len === 12288 || len === 18432;
+                const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
+                const deletedStyle = f.deleted ? ' style="opacity: 0.45"' : '';
+                const deletedTag = f.deleted ? ' <span style="color:var(--accent);font-size:0.85em">[Deleted]</span>' : '';
+                html += `<div class="explorer-file-entry" data-index="${i}"${deletedStyle}>
                     <span class="explorer-file-num">${i + 1}</span>
                     <span class="explorer-file-type" title="${f.typeName}">${f.typeName}</span>
-                    <span class="explorer-file-name">${escapeHtml(f.name)}</span>
+                    <span class="explorer-file-name">${escapeHtml(f.name)}${deletedTag}</span>
                     <span class="explorer-file-size">${f.dataLength}</span>
                     <span class="explorer-file-addr">${detail}</span>
-                    <span class="explorer-file-sectors">${f.sectors} sectors</span>
+                    <span class="explorer-file-preview">${previewIcon}</span>
+                    <span class="explorer-file-sectors">${f.sectors} sector${f.sectors !== 1 ? 's' : ''}</span>
                 </div>`;
             }
             html += '</div></div>';
@@ -2926,13 +3057,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 } else if (f.type === 0 && f.autostart != null && f.autostart < 0x8000) {
                     detail = `LINE ${f.autostart}`;
                 }
+                const len = f.length || 0;
+                const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                    len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                    len === 11136 || len === 12288 || len === 18432;
+                const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
                 html += `<div class="explorer-file-entry" data-index="${i}">
                     <span class="explorer-file-num">${i + 1}</span>
                     <span class="explorer-file-type">${f.typeName}</span>
                     <span class="explorer-file-name">${escapeHtml(f.name || '(unnamed)')}</span>
-                    <span class="explorer-file-size">${f.length || 0}</span>
+                    <span class="explorer-file-size">${len}</span>
                     <span class="explorer-file-addr">${detail}</span>
-                    <span class="explorer-file-sectors">${f.sectors} sectors</span>
+                    <span class="explorer-file-preview">${previewIcon}</span>
+                    <span class="explorer-file-sectors">${f.sectors} sector${f.sectors !== 1 ? 's' : ''}</span>
                 </div>`;
             }
             html += '</div></div>';
@@ -2959,7 +3096,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const previewable = len === 6912 || len === 6144 || len === 4096 ||
             len === 2048 || len === 768 || len === 9216 ||
             len === 11136 || len === 12288 || len === 18432;
-        const previewIcon = previewable ? ' \u2B1A' : '';
+        const previewIcon = !previewable ? '' : len === 768 ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
         return `<div class="explorer-info-section">
             <div class="explorer-info-header">Hobeta File</div>
             <table class="explorer-info-table">
@@ -2970,6 +3107,1332 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 <tr><th>Start address</th><td>$${hex16(f.startAddress)}</td></tr>
             </table>
         </div>`;
+    }
+
+    function findStringInSector(data, str) {
+        if (!data || data.length < str.length) return -1;
+        const len = data.length - str.length + 1;
+        outer:
+        for (let i = 0; i < len; i++) {
+            for (let j = 0; j < str.length; j++) {
+                if (data[i + j] !== str.charCodeAt(j)) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    function detectDiskProtection(dskImage) {
+        if (!dskImage || dskImage.numTracks === 0) return null;
+
+        // Survey all tracks for uniformity and FDC errors
+        let uniform = true;
+        let hasErrors = false;
+        const t0 = dskImage.getTrack(0, 0);
+        if (!t0) return null;
+        const refCount = t0.sectors.length;
+        const refSize = refCount > 0 ? t0.sectors[0].sizeCode : -1;
+
+        for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+            for (let head = 0; head < dskImage.numSides; head++) {
+                const track = dskImage.getTrack(cyl, head);
+                if (!track) { uniform = false; continue; }
+                if (track.sectors.length !== refCount) uniform = false;
+                for (const sec of track.sectors) {
+                    if (sec.sizeCode !== refSize) uniform = false;
+                    if (sec.st1 || sec.st2) hasErrors = true;
+                }
+            }
+        }
+
+        if (uniform && !hasErrors) return null;
+
+        // Helper: get track data
+        function getTrack(cyl, head) {
+            if (cyl >= dskImage.numTracks) return null;
+            if (head >= dskImage.numSides) return null;
+            return dskImage.getTrack(cyl, head);
+        }
+
+        // Helper: search for string in all sectors of a track
+        function findInTrack(cyl, head, str) {
+            const t = getTrack(cyl, head);
+            if (!t) return false;
+            for (const sec of t.sectors) {
+                if (sec.data && findStringInSector(sec.data, str) >= 0) return true;
+            }
+            return false;
+        }
+
+        // Helper: search in a specific sector index of a track
+        function findInSectorIdx(cyl, head, idx, str) {
+            const t = getTrack(cyl, head);
+            if (!t || idx >= t.sectors.length) return false;
+            return t.sectors[idx].data && findStringInSector(t.sectors[idx].data, str) >= 0;
+        }
+
+        // 1. Alkatraz
+        function detectAlkatraz() {
+            if (findInTrack(0, 0, 'THE ALKATRAZ PROTECTION SYSTEM')) return 'Alkatraz';
+            // Structural: 18-sector track with 256B sectors
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (t && t.sectors.length === 18 && t.sectors[0].sizeCode === 1) return 'Alkatraz';
+                }
+            }
+            return null;
+        }
+
+        // 2. Frontier
+        function detectFrontier() {
+            if (findInTrack(1, 0, 'W DISK PROTECTION SYSTEM. (C) 1990 BY NEW FRONTIER SOFT.'))
+                return 'Frontier';
+            // Structural: T9=1 sector + T0/S0 dataSize=4096
+            const t9 = getTrack(9, 0);
+            if (t9 && t9.sectors.length === 1 && t0.sectors.length > 0 && t0.sectors[0].data && t0.sectors[0].data.length === 4096)
+                return 'Frontier';
+            return null;
+        }
+
+        // 3. Hexagon
+        function detectHexagon() {
+            for (let cyl = 0; cyl <= 3 && cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'HEXAGON DISK PROTECTION c 1989')) return 'Hexagon';
+                if (findInTrack(cyl, 0, 'HEXAGON Disk Protection c 1989')) return 'Hexagon';
+            }
+            // Structural: T0=10sec + track with 1 sector fdcSize=6 st1=32 st2=96
+            if (t0.sectors.length === 10) {
+                for (let cyl = 1; cyl < dskImage.numTracks; cyl++) {
+                    const t = getTrack(cyl, 0);
+                    if (t && t.sectors.length === 1 && t.sectors[0].sizeCode === 6
+                        && t.sectors[0].st1 === 32 && t.sectors[0].st2 === 96)
+                        return `Hexagon (T${cyl}/S0)`;
+                }
+            }
+            return null;
+        }
+
+        // 4. Paul Owens
+        function detectPaulOwens() {
+            if (findInSectorIdx(0, 0, 2, 'PAUL OWENS\x80PROTECTION SYS')) return 'Paul Owens';
+            // Structural: T0=9 T1=0 sectors T2=6 sectors 256B
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length === 9 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length === 6 && t2.sectors[0].sizeCode === 1)
+                return 'Paul Owens';
+            return null;
+        }
+
+        // 5. Speedlock
+        function detectSpeedlock() {
+            // Signature-based: 10 copyright strings
+            const sigTests = [
+                ['Speedlock 1985', 'Speedlock +3 Protection Systems  (C) 1985 Speedlock Associates'],
+                ['Speedlock 1986', 'Speedlock +3 Protection System  (C) 1986 Speedlock Associates'],
+                ['Speedlock 1986', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1986 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1987', 'Speedlock +3 Protection Systems (C) 1987  D.Love & D.Maybury'],
+                ['Speedlock 1987', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1987 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1988', 'Speedlock +3 Protection System (C)1988 Speedlock Associates.'],
+                ['Speedlock 1988', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1988 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1989', 'SPEEDLOCK +3 DISC PROTECTION SYSTEMS (C) 1989 SPEEDLOCK ASSOC.'],
+                ['Speedlock 1989', 'SPEEDLOCK +3 DISC PROTECTION SYSTEM(C) 1989 SPEEDLOCK ASSOCS.'],
+                ['Speedlock 1990', 'SPEEDLOCK DISC PROTECTION SYSTEM (C)1990 SPEEDLOCK ASSOCIATES'],
+            ];
+            for (const [name, sig] of sigTests) {
+                for (let cyl = 0; cyl < Math.min(dskImage.numTracks, 5); cyl++) {
+                    if (findInTrack(cyl, 0, sig)) return name;
+                }
+            }
+            // Structural: +3 1987 — T0=9sec T1=5sec×1024B T0/S6 st2=64 T0/S8 st2=0
+            const t1 = getTrack(1, 0);
+            if (t0.sectors.length === 9 && t1 && t1.sectors.length === 5 && t1.sectors[0].sizeCode === 3) {
+                if (t0.sectors.length > 8 && t0.sectors[6].st2 === 64 && t0.sectors[8].st2 === 0)
+                    return 'Speedlock +3 1987';
+                // +3 1988 — same but T0/S8 st2=64
+                if (t0.sectors.length > 8 && t0.sectors[6].st2 === 64 && t0.sectors[8].st2 === 64)
+                    return 'Speedlock +3 1988';
+            }
+            // 1989/1990: T0>7sec T1=1sec ID=193 st1=32
+            if (t0.sectors.length > 7 && t1 && t1.sectors.length === 1
+                && t1.sectors[0].id === 193 && t1.sectors[0].st1 === 32)
+                return 'Speedlock 1989/1990';
+            return null;
+        }
+
+        // 6. Three Inch
+        function detectThreeInch() {
+            const sigs = [
+                [0, 0, 0, '***Loader Copyright Three Inch Software 1988'],
+                [0, 0, 7, '***Loader Copyright Three Inch Software 1988'],
+                [1, 0, 4, '***Loader Copyright Three Inch Software 1988'],
+                [0, 0, 0, '***Loader (c) Three Inch Software 1988'],
+            ];
+            for (const [cyl, head, idx, sig] of sigs) {
+                if (findInSectorIdx(cyl, head, idx, sig)) return 'Three Inch Loader';
+            }
+            return null;
+        }
+
+        // 7. Laser Load
+        function detectLaserLoad() {
+            if (findInSectorIdx(0, 0, 2, 'Laser Load   By C.J.Pink For Consult Computer    Systems'))
+                return 'Laser Load';
+            return null;
+        }
+
+        // 8. W.R.M
+        function detectWRM() {
+            const t8 = getTrack(8, 0);
+            if (t8 && t8.sectors.length > 9 && t8.sectors[9].data) {
+                const d = t8.sectors[9].data;
+                if (findStringInSector(d, 'W.R.M Disc') >= 0
+                    && findStringInSector(d, 'Protection') >= 0
+                    && findStringInSector(d, 'System (c) 1987') >= 0)
+                    return 'W.R.M.';
+            }
+            return null;
+        }
+
+        // 9. P.M.S.
+        function detectPMS() {
+            if (findInTrack(0, 0, '[C] P.M.S. 1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, 'P.M.S. LOADER [C]1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, '[C]P.M.S.1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, 'P.M.S. PROTECTION [C]1986')) return 'P.M.S.';
+            // Structural: T0 formatted, T1 unformatted, T2 formatted
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length > 0 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length > 0)
+                return 'P.M.S.';
+            return null;
+        }
+
+        // 10. Players
+        function detectPlayers() {
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (!t || t.sectors.length !== 16) continue;
+                    let match = true;
+                    for (let i = 0; i < 16; i++) {
+                        if (t.sectors[i].id !== i || t.sectors[i].sizeCode !== i) { match = false; break; }
+                    }
+                    if (match) return 'Players';
+                }
+            }
+            return null;
+        }
+
+        // 11. Infogrames
+        function detectInfogrames() {
+            const t39 = getTrack(39, 0);
+            if (t39) {
+                for (const sec of t39.sectors) {
+                    if (sec.sizeCode === 2 && sec.data && sec.data.length === 540)
+                        return 'Infogrames';
+                }
+            }
+            return null;
+        }
+
+        // 12. Rainbow Arts
+        function detectRainbowArts() {
+            const t40 = getTrack(40, 0);
+            if (t40) {
+                for (const sec of t40.sectors) {
+                    if (sec.id === 198 && sec.st1 === 32 && sec.st2 === 32)
+                        return 'Rainbow Arts';
+                }
+            }
+            return null;
+        }
+
+        // 13. Remi + KBI
+        function detectRemiKBI() {
+            const parts = [];
+            // Remi Herbulot signature
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'PROTECTION      Remi HERBULOT')) {
+                    parts.push('Remi Herbulot');
+                    break;
+                }
+            }
+            // KBI signature
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, '(c) 1986 for KBI ')) {
+                    parts.push('KBI-19');
+                    break;
+                }
+            }
+            // KBI-10 structural: T39=10sec T38=9sec, T39 sector with st1=32 st2=32
+            if (parts.length === 0 || !parts.includes('KBI-19')) {
+                const t39 = getTrack(39, 0);
+                const t38 = getTrack(38, 0);
+                if (t39 && t38 && t39.sectors.length === 10 && t38.sectors.length === 9) {
+                    for (const sec of t39.sectors) {
+                        if (sec.st1 === 32 && sec.st2 === 32) {
+                            if (!parts.includes('KBI-10')) parts.push('KBI-10');
+                            break;
+                        }
+                    }
+                }
+            }
+            // CAAV
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'ALAIN LAURENT GENERATION 5 1989')) {
+                    parts.push('CAAV');
+                    break;
+                }
+            }
+            return parts.length > 0 ? parts.join(' + ') : null;
+        }
+
+        // 14. DiscSYS
+        function detectDiscSYS() {
+            // Structural: 16-sector track where id=track=side=idx for all sectors
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (!t || t.sectors.length !== 16) continue;
+                    let match = true;
+                    for (let i = 0; i < 16; i++) {
+                        const s = t.sectors[i];
+                        if (s.id !== i || s.cylinder !== cyl || s.head !== head) { match = false; break; }
+                    }
+                    if (match) return 'DiscSYS';
+                }
+            }
+            // Signature
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'discsys')) return 'DiscSYS';
+                if (findInTrack(cyl, 0, 'MEAN PROTECTION SYSTEM')) return 'DiscSYS';
+            }
+            return null;
+        }
+
+        // 15. Amsoft
+        function detectAmsoft() {
+            const t3 = getTrack(3, 0);
+            if (t3) {
+                for (const sec of t3.sectors) {
+                    if (sec.data && findStringInSector(sec.data, 'Amsoft disc protection system') >= 0
+                        && findStringInSector(sec.data, 'EXOPAL') >= 0)
+                        return 'Amsoft/EXOPAL';
+                }
+            }
+            return null;
+        }
+
+        // 16. ARMOURLOC
+        function detectArmourloc() {
+            if (t0.sectors.length > 0 && t0.sectors[0].data && t0.sectors[0].data.length > 7) {
+                if (findStringInSector(t0.sectors[0].data.subarray(0, 10), '0K free') === 2)
+                    return 'ARMOURLOC';
+            }
+            return null;
+        }
+
+        // 17. Studio B
+        function detectStudioB() {
+            if (findInSectorIdx(0, 0, 0, 'Disc format (c) 1986 Studio B Ltd.')) return 'Studio B';
+            if (findInSectorIdx(2, 0, 0, 'DISCLOC')) return 'Studio B/DiscLoc';
+            // Structural: T0 formatted T1 unformatted T2 formatted
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length > 0 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length > 0) {
+                // Only if not already matched by P.M.S.
+                if (!findInTrack(0, 0, 'P.M.S.') && !findInTrack(0, 0, '[C] P.M.S.'))
+                    return 'Studio B';
+            }
+            return null;
+        }
+
+        // Try detectors in order
+        const detectors = [
+            detectAlkatraz, detectFrontier, detectHexagon, detectPaulOwens,
+            detectSpeedlock, detectThreeInch, detectLaserLoad, detectWRM,
+            detectPMS, detectPlayers, detectInfogrames, detectRainbowArts,
+            detectRemiKBI, detectDiscSYS, detectAmsoft, detectArmourloc,
+            detectStudioB
+        ];
+
+        for (const detect of detectors) {
+            const result = detect();
+            if (result) return result;
+        }
+
+        // Fallback: non-uniform or has errors but no match
+        return 'Unknown copy protection';
+    }
+
+    function detectBootloader(dskImage, diskSpec) {
+        if (!dskImage) return null;
+        const firstSectorId = diskSpec && diskSpec.firstSectorId !== undefined
+            ? diskSpec.firstSectorId : 1;
+        const bootSector = dskImage.readSector(0, 0, firstSectorId);
+        if (!bootSector || bootSector.length <= 16) return null;
+        const codeData = bootSector.slice(16);
+        // Blank check: all same byte = no code
+        const first = codeData[0];
+        let blank = true;
+        for (let i = 1; i < codeData.length; i++) {
+            if (codeData[i] !== first) { blank = false; break; }
+        }
+        if (blank) return null;
+        return { bootData: bootSector, codeData };
+    }
+
+    // ========== Disk Map ==========
+
+    function diskMapFileColor(index) {
+        const hue = (index * 137.5) % 360;
+        return `hsl(${hue}, 70%, 50%)`;
+    }
+
+    function diskMapTypeColor(type) {
+        switch (type) {
+            case 'reserved': return '#555';
+            case 'directory': return '#c89b2a';
+            case 'file': return '#2a6'; // fallback, should use fileColor
+            case 'free': return '#1a1a2e';
+            case 'empty': return '#111';
+            case 'data': return '#2a6';
+            case 'error': return '#c33';
+            default: return '#222';
+        }
+    }
+
+    function buildTRDSectorMap(data, files) {
+        const sectorsPerTrack = 16;
+        const sectorSize = 256;
+        const totalSectors = Math.floor(data.length / sectorSize);
+        const numSides = 2;
+        const numCylinders = Math.ceil(totalSectors / (sectorsPerTrack * numSides));
+        const tracks = [];
+        const fileNames = [];
+        const fileColors = [];
+
+        // Build sector-to-file reverse map
+        // TRD: files have contiguous sectors starting at startTrack/startSector
+        const sectorOwner = new Int16Array(totalSectors).fill(-1);
+        const sectorFileIndex = new Int16Array(totalSectors).fill(-1);
+
+        // Mark directory sectors (track 0, sectors 0-8 = first 9 sectors)
+        // Sectors 0-7: directory entries, sector 8: disk info
+        for (let s = 0; s < 9; s++) sectorOwner[s] = -2; // -2 = directory
+
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            fileNames.push(f.name + '.' + f.ext);
+            fileColors.push(diskMapFileColor(i));
+            const startAbsolute = f.startTrack * sectorsPerTrack + f.startSector;
+            for (let s = 0; s < f.sectors; s++) {
+                const absIdx = startAbsolute + s;
+                if (absIdx < totalSectors) {
+                    sectorOwner[absIdx] = 0; // file
+                    sectorFileIndex[absIdx] = i;
+                }
+            }
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            for (let head = 0; head < numSides; head++) {
+                const sideEntry = { sectors: [] };
+                for (let sec = 0; sec < sectorsPerTrack; sec++) {
+                    // TRD layout: track 0 = cyl 0 side 0, track 1 = cyl 0 side 1, etc.
+                    const logicalTrack = cyl * numSides + head;
+                    const absIdx = logicalTrack * sectorsPerTrack + sec;
+                    if (absIdx >= totalSectors) break;
+
+                    const offset = absIdx * sectorSize;
+                    // Check empty
+                    let isEmpty = true;
+                    if (offset + sectorSize <= data.length) {
+                        const first = data[offset];
+                        for (let b = 1; b < sectorSize; b++) {
+                            if (data[offset + b] !== first) { isEmpty = false; break; }
+                        }
+                    }
+
+                    let type, fileIndex = -1, fileName = '', blockNum = -1;
+                    if (sectorOwner[absIdx] === -2) {
+                        type = absIdx < 8 ? 'directory' : 'reserved';
+                    } else if (sectorFileIndex[absIdx] >= 0) {
+                        type = 'file';
+                        fileIndex = sectorFileIndex[absIdx];
+                        fileName = fileNames[fileIndex];
+                    } else {
+                        type = 'free';
+                    }
+
+                    sideEntry.sectors.push({
+                        id: sec,
+                        type,
+                        fileIndex,
+                        fileName,
+                        blockNum,
+                        hasError: false,
+                        isEmpty,
+                        diskOffset: offset
+                    });
+                }
+                trackEntry.sides.push(sideEntry);
+            }
+            tracks.push(trackEntry);
+        }
+
+        return {
+            tracks, numCylinders, numSides,
+            maxSectorsPerTrack: sectorsPerTrack,
+            isCPM: false, isFlat: true, flatSectorSize: sectorSize,
+            fileColors, fileNames
+        };
+    }
+
+    function buildMGTSectorMap(data, files, info) {
+        const sectorsPerTrack = 10;
+        const sectorSize = 512;
+        const numSides = 2;
+        const numCylinders = info ? info.tracks : (data.length === 819200 ? 80 : 40);
+        const totalSectors = numCylinders * numSides * sectorsPerTrack;
+        const tracks = [];
+        const fileNames = [];
+        const fileColors = [];
+
+        // Build sector-to-file reverse map
+        // G+DOS track byte: cylinder in bits 0-6, side in bit 7
+        // Absolute sector index = (cyl * numSides + side) * sectorsPerTrack + (sector - 1)
+        const sectorOwner = new Int16Array(totalSectors).fill(-1);
+        const sectorFileIndex = new Int16Array(totalSectors).fill(-1);
+
+        // Mark directory sectors (cyl 0-1, both sides = 40 sectors)
+        for (let s = 0; s < 40; s++) sectorOwner[s] = -2; // directory
+
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            fileNames.push(f.name);
+            fileColors.push(diskMapFileColor(i));
+            // Follow sector chain to map file sectors (SAM bitmap is unreliable for pairs)
+            let curTrack = f.firstTrack;
+            let curSector = f.firstSector;
+            const isContig = f.type === 8; // SPECIAL uses contiguous sectors
+            for (let s = 0; s < f.sectors && s < 2000; s++) {
+                const cyl = curTrack & 0x7F;
+                const side = (curTrack >> 7) & 1;
+                const absIdx = (cyl * numSides + side) * sectorsPerTrack + (curSector - 1);
+                if (absIdx >= 0 && absIdx < totalSectors) {
+                    sectorOwner[absIdx] = 0;
+                    sectorFileIndex[absIdx] = i;
+                }
+                const off = ((cyl * 2 + side) * 10 + (curSector - 1)) * sectorSize;
+                if (isContig) {
+                    curSector++;
+                    if (curSector > 10) {
+                        curSector = 1;
+                        if ((curTrack & 0x80) === 0) curTrack |= 0x80;
+                        else curTrack = (curTrack & 0x7F) + 1;
+                    }
+                } else if (off >= 0 && off + sectorSize <= data.length) {
+                    curTrack = data[off + 510];
+                    curSector = data[off + 511];
+                    if (curTrack === 0 && curSector === 0) break; // end of chain
+                } else {
+                    break;
+                }
+            }
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            for (let head = 0; head < numSides; head++) {
+                const sideEntry = { sectors: [] };
+                for (let sec = 0; sec < sectorsPerTrack; sec++) {
+                    const absIdx = (cyl * numSides + head) * sectorsPerTrack + sec;
+                    if (absIdx >= totalSectors) break;
+                    const offset = absIdx * sectorSize;
+
+                    let isEmpty = true;
+                    if (offset + sectorSize <= data.length) {
+                        const first = data[offset];
+                        for (let b = 1; b < sectorSize; b++) {
+                            if (data[offset + b] !== first) { isEmpty = false; break; }
+                        }
+                    }
+
+                    let type, fileIndex = -1, fileName = '';
+                    if (sectorOwner[absIdx] === -2) {
+                        type = 'directory';
+                    } else if (sectorFileIndex[absIdx] >= 0) {
+                        type = 'file';
+                        fileIndex = sectorFileIndex[absIdx];
+                        fileName = fileNames[fileIndex];
+                    } else {
+                        type = 'free';
+                    }
+
+                    sideEntry.sectors.push({
+                        id: sec + 1, // MGT sectors are 1-based
+                        type,
+                        fileIndex,
+                        fileName,
+                        blockNum: -1,
+                        hasError: false,
+                        isEmpty,
+                        diskOffset: offset
+                    });
+                }
+                trackEntry.sides.push(sideEntry);
+            }
+            tracks.push(trackEntry);
+        }
+
+        return {
+            tracks, numCylinders, numSides,
+            maxSectorsPerTrack: sectorsPerTrack,
+            isCPM: false, isFlat: true, flatSectorSize: sectorSize,
+            fileColors, fileNames
+        };
+    }
+
+    function buildOPDSectorMap(data, files, info) {
+        const sectorsPerTrack = 18;
+        const sectorSize = 256;
+        const numSides = info ? info.sides : (data.length >= 368640 ? 2 : 1);
+        const numCylinders = 40;
+        const totalSectors = numCylinders * numSides * sectorsPerTrack;
+        const tracks = [];
+        const fileNames = [];
+        const fileColors = [];
+
+        const sectorOwner = new Int16Array(totalSectors).fill(-1);
+        const sectorFileIndex = new Int16Array(totalSectors).fill(-1);
+
+        // OPD: sector 0 = descriptor, sectors 1-7 = directory, sectors 8+ = data
+        sectorOwner[0] = -3; // boot/descriptor
+        for (let s = 1; s <= 7; s++) sectorOwner[s] = -2; // directory
+
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            fileNames.push(f.name);
+            fileColors.push(diskMapFileColor(i));
+            // OPD files are contiguous: sectors from firstBlock+1 to lastBlock+1
+            // block = sector - 1, so sector = block + 1
+            if (f.firstBlock !== undefined && f.lastBlock !== undefined) {
+                for (let blk = f.firstBlock; blk <= f.lastBlock; blk++) {
+                    const sector = blk + 1; // block 7 = sector 8
+                    if (sector < totalSectors) {
+                        sectorOwner[sector] = 0;
+                        sectorFileIndex[sector] = i;
+                    }
+                }
+            }
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            for (let head = 0; head < numSides; head++) {
+                const sideEntry = { sectors: [] };
+                for (let sec = 0; sec < sectorsPerTrack; sec++) {
+                    const absIdx = (cyl * numSides + head) * sectorsPerTrack + sec;
+                    if (absIdx >= totalSectors) break;
+                    const offset = absIdx * sectorSize;
+
+                    let isEmpty = true;
+                    if (offset + sectorSize <= data.length) {
+                        const first = data[offset];
+                        for (let b = 1; b < sectorSize; b++) {
+                            if (data[offset + b] !== first) { isEmpty = false; break; }
+                        }
+                    }
+
+                    let type, fileIndex = -1, fileName = '';
+                    if (sectorOwner[absIdx] === -3) {
+                        type = 'reserved'; // boot/descriptor
+                    } else if (sectorOwner[absIdx] === -2) {
+                        type = 'directory';
+                    } else if (sectorFileIndex[absIdx] >= 0) {
+                        type = 'file';
+                        fileIndex = sectorFileIndex[absIdx];
+                        fileName = fileNames[fileIndex];
+                    } else {
+                        type = 'free';
+                    }
+
+                    sideEntry.sectors.push({
+                        id: sec,
+                        type,
+                        fileIndex,
+                        fileName,
+                        blockNum: -1,
+                        hasError: false,
+                        isEmpty,
+                        diskOffset: offset
+                    });
+                }
+                trackEntry.sides.push(sideEntry);
+            }
+            tracks.push(trackEntry);
+        }
+
+        return {
+            tracks, numCylinders, numSides,
+            maxSectorsPerTrack: sectorsPerTrack,
+            isCPM: false, isFlat: true, flatSectorSize: sectorSize,
+            fileColors, fileNames
+        };
+    }
+
+    function buildMDRSectorMap(data, files) {
+        const bytes = new Uint8Array(data);
+        const sectorCount = Math.floor(bytes.length / 543);
+        // Split into rows of 32 sectors for a compact grid layout
+        const sectorsPerTrack = 32;
+        const numCylinders = Math.ceil(sectorCount / sectorsPerTrack);
+        const numSides = 1;
+        const tracks = [];
+        const fileNames = [];
+        const fileColors = [];
+
+        // Build sector-to-file map from file list
+        const sectorOwner = new Int16Array(sectorCount).fill(-1);
+        const deletedFiles = new Set();
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            fileNames.push(f.name);
+            fileColors.push(diskMapFileColor(i));
+            if (f.deleted) deletedFiles.add(i);
+            if (f.sectorIndices) {
+                for (const si of f.sectorIndices) {
+                    if (si >= 0 && si < sectorCount) {
+                        sectorOwner[si] = i;
+                    }
+                }
+            }
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            const sideEntry = { sectors: [] };
+            const base = cyl * sectorsPerTrack;
+            const count = Math.min(sectorsPerTrack, sectorCount - base);
+
+            for (let sec = 0; sec < count; sec++) {
+                const absIdx = base + sec;
+                const off = absIdx * 543;
+                const hdflag = bytes[off];
+                const hdnumb = bytes[off + 1];
+                const recflg = bytes[off + 15];
+
+                // Determine sector type
+                let type, fileIndex = -1, fileName = '';
+
+                if (sectorOwner[absIdx] >= 0) {
+                    type = 'file';
+                    fileIndex = sectorOwner[absIdx];
+                    fileName = fileNames[fileIndex];
+                } else if (hdflag === 0 && recflg === 0) {
+                    type = 'free';
+                } else {
+                    // Unowned MDR sector — treat as free (garbage/erased sectors not in any file)
+                    type = 'free';
+                }
+
+                // Check if sector data is empty (all same byte)
+                let isEmpty = true;
+                const dataStart = off + 30;
+                if (dataStart + 512 <= bytes.length) {
+                    const first = bytes[dataStart];
+                    for (let b = 1; b < 512; b++) {
+                        if (bytes[dataStart + b] !== first) { isEmpty = false; break; }
+                    }
+                }
+
+                sideEntry.sectors.push({
+                    id: hdnumb,
+                    type,
+                    fileIndex,
+                    fileName,
+                    blockNum: -1,
+                    hasError: false,
+                    isEmpty,
+                    mdrSectorIdx: absIdx
+                });
+            }
+            trackEntry.sides.push(sideEntry);
+            tracks.push(trackEntry);
+        }
+
+        return {
+            tracks, numCylinders, numSides,
+            maxSectorsPerTrack: sectorsPerTrack,
+            totalSectors: sectorCount,
+            isCPM: false, isMDR: true, flatSectorSize: 543,
+            fileColors, fileNames, deletedFiles
+        };
+    }
+
+    function buildDSKSectorMap(dskImage, spec, files) {
+        const numCylinders = dskImage.numTracks;
+        const numSides = dskImage.numSides;
+        const isCPM = spec && (spec.valid || spec.recognized);
+        const tracks = [];
+        let maxSectorsPerTrack = 0;
+
+        // Build block-to-file reverse map for CP/M disks
+        const blockToFile = new Map();
+        const fileNames = [];
+
+        if (isCPM) {
+            const dir = DSKLoader._readDirectory(dskImage, spec);
+            if (dir && dir.dirData) {
+                const dirData = dir.dirData;
+                const maxEntries = Math.floor(dirData.length / 32);
+                const use16bit = spec.use16bit;
+
+                // Collect unique files and their blocks
+                const fileMap = new Map(); // "user:name.ext" -> index
+                for (let i = 0; i < maxEntries; i++) {
+                    const entryBase = i * 32;
+                    const user = dirData[entryBase];
+                    if (user === 0xE5 || user > 15) continue;
+
+                    let name = '';
+                    for (let j = 1; j <= 8; j++) {
+                        const ch = dirData[entryBase + j] & 0x7F;
+                        if (ch >= 0x20) name += String.fromCharCode(ch);
+                    }
+                    name = name.trimEnd();
+
+                    let ext = '';
+                    for (let j = 9; j <= 11; j++) {
+                        const ch = dirData[entryBase + j] & 0x7F;
+                        if (ch >= 0x20) ext += String.fromCharCode(ch);
+                    }
+                    ext = ext.trimEnd();
+
+                    const fileKey = `${user}:${name}.${ext}`;
+                    if (!fileMap.has(fileKey)) {
+                        fileMap.set(fileKey, fileNames.length);
+                        fileNames.push(name + (ext ? '.' + ext : ''));
+                    }
+                    const fileIndex = fileMap.get(fileKey);
+
+                    // Read allocation block numbers
+                    if (use16bit) {
+                        for (let j = 16; j < 32; j += 2) {
+                            const blk = dirData[entryBase + j] | (dirData[entryBase + j + 1] << 8);
+                            if (blk !== 0) blockToFile.set(blk, fileIndex);
+                        }
+                    } else {
+                        for (let j = 16; j < 32; j++) {
+                            if (dirData[entryBase + j] !== 0) {
+                                blockToFile.set(dirData[entryBase + j], fileIndex);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Calculate CP/M layout parameters
+        const sectorSize = (spec && spec.sectorSize) || 512;
+        const blockSize = (spec && spec.blockSize) || 1024;
+        const sectorsPerBlock = Math.max(1, Math.round(blockSize / sectorSize));
+        const reservedTracks = (spec && spec.reservedTracks) || 0;
+        const sectorsPerTrack = (spec && spec.sectorsPerTrack) || 9;
+        const dirBlocks = (spec && spec.dirBlocks) || 2;
+        const sides = (spec && spec.sides) || 1;
+
+        const firstDirBlock = 0;
+        const lastDirBlock = dirBlocks - 1;
+
+        // Iterate all physical cylinders and heads
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            for (let head = 0; head < numSides; head++) {
+                const track = dskImage.getTrack(cyl, head);
+                const sideEntry = { sectors: [] };
+
+                if (!track || track.sectors.length === 0) {
+                    trackEntry.sides.push(sideEntry);
+                    continue;
+                }
+
+                const sorted = [...track.sectors].sort((a, b) => a.id - b.id);
+                if (sorted.length > maxSectorsPerTrack) maxSectorsPerTrack = sorted.length;
+
+                for (let si = 0; si < sorted.length; si++) {
+                    const sector = sorted[si];
+                    const hasError = (sector.st1 !== 0) || (sector.st2 !== 0);
+
+                    // Check if sector is empty (all same byte)
+                    let isEmpty = true;
+                    if (sector.data && sector.data.length > 0) {
+                        const first = sector.data[0];
+                        for (let b = 1; b < sector.data.length; b++) {
+                            if (sector.data[b] !== first) { isEmpty = false; break; }
+                        }
+                    }
+
+                    let type = 'free';
+                    let fileIndex = -1;
+                    let fileName = '';
+                    let blockNum = -1;
+
+                    if (isCPM) {
+                        // Determine logical track from physical cylinder/head
+                        const logicalTrack = (sides > 1) ? (cyl * sides + head) : cyl;
+
+                        if (logicalTrack < reservedTracks) {
+                            type = 'reserved';
+                        } else {
+                            // Map this sector to an allocation block
+                            const logicalSectorIndex = sorted.indexOf(sector);
+                            // Find which logical sector index this sector ID corresponds to
+                            let logSec = -1;
+                            const baseId = (spec && spec.firstSectorId !== undefined) ? spec.firstSectorId : sorted[0].id;
+                            if (spec && spec.skewTable) {
+                                for (let sk = 0; sk < spec.skewTable.length; sk++) {
+                                    if (baseId + spec.skewTable[sk] === sector.id) { logSec = sk; break; }
+                                }
+                            } else {
+                                logSec = sector.id - baseId;
+                            }
+
+                            if (logSec >= 0) {
+                                const dataTrack = logicalTrack - reservedTracks;
+                                const absoluteSector = dataTrack * sectorsPerTrack + logSec;
+                                blockNum = Math.floor(absoluteSector / sectorsPerBlock);
+
+                                if (blockNum >= firstDirBlock && blockNum <= lastDirBlock) {
+                                    type = 'directory';
+                                } else if (blockToFile.has(blockNum)) {
+                                    type = 'file';
+                                    fileIndex = blockToFile.get(blockNum);
+                                    fileName = fileNames[fileIndex] || '';
+                                } else {
+                                    type = 'free';
+                                }
+                            }
+                        }
+                    } else {
+                        // Non-CP/M disk
+                        if (hasError) {
+                            type = 'error';
+                        } else if (isEmpty) {
+                            type = 'empty';
+                        } else {
+                            type = 'data';
+                        }
+                        // Mark boot sector
+                        if (cyl === 0 && head === 0 && si === 0) {
+                            type = hasError ? 'error' : (isEmpty ? 'empty' : 'reserved');
+                        }
+                    }
+
+                    // Override: FDC errors always shown
+                    if (hasError && isCPM) {
+                        // Keep the file assignment but flag the error
+                    }
+
+                    sideEntry.sectors.push({
+                        id: sector.id,
+                        type,
+                        fileIndex,
+                        fileName,
+                        blockNum,
+                        hasError,
+                        isEmpty
+                    });
+                }
+                trackEntry.sides.push(sideEntry);
+            }
+            tracks.push(trackEntry);
+        }
+
+        // Generate file colors
+        const fileColors = [];
+        for (let i = 0; i < fileNames.length; i++) {
+            fileColors.push(diskMapFileColor(i));
+        }
+
+        return {
+            tracks,
+            numCylinders,
+            numSides,
+            maxSectorsPerTrack,
+            isCPM,
+            fileColors,
+            fileNames
+        };
+    }
+
+    function diskmapRenderSideGrid(tracks, numCylinders, side, maxSectorsPerTrack, fileColors, isMDR, deletedFiles) {
+        let html = `<div class="diskmap-grid" style="grid-template-columns: 40px repeat(${maxSectorsPerTrack}, 18px)">`;
+
+        // Column headers
+        html += '<div class="diskmap-row-label"></div>';
+        for (let s = 0; s < maxSectorsPerTrack; s++) {
+            html += `<div class="diskmap-col-label">${s}</div>`;
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackData = tracks[cyl];
+            const sideData = trackData.sides[side];
+            const rowLabel = isMDR ? `${cyl * maxSectorsPerTrack}` : `T${cyl}`;
+            html += `<div class="diskmap-row-label">${rowLabel}</div>`;
+
+            if (!sideData || sideData.sectors.length === 0) {
+                for (let s = 0; s < maxSectorsPerTrack; s++) {
+                    html += `<div class="diskmap-cell" style="background:#0a0a0a" data-cyl="${cyl}" data-head="${side}" data-sec="-1"></div>`;
+                }
+            } else {
+                for (let si = 0; si < maxSectorsPerTrack; si++) {
+                    if (si < sideData.sectors.length) {
+                        const sec = sideData.sectors[si];
+                        let color;
+                        if (sec.type === 'file' && sec.fileIndex >= 0) {
+                            color = fileColors[sec.fileIndex];
+                        } else {
+                            color = diskMapTypeColor(sec.type);
+                        }
+                        const errorBorder = sec.hasError ? '; outline: 1px solid #c33' : '';
+                        const isDeleted = deletedFiles && deletedFiles.has(sec.fileIndex);
+                        const dimStyle = isDeleted ? '; opacity: 0.35' : '';
+                        const cellTitle = isMDR
+                            ? `Sector ${cyl * maxSectorsPerTrack + si}${isDeleted ? ' [Deleted]' : ''}`
+                            : `T${cyl} S${side} #$${hex8(sec.id)}`;
+                        html += `<div class="diskmap-cell" style="background:${color}${errorBorder}${dimStyle}" data-cyl="${cyl}" data-head="${side}" data-sec="${si}" data-type="${sec.type}" data-file="${sec.fileIndex}" data-sid="${hex8(sec.id)}" title="${cellTitle}"></div>`;
+                    } else {
+                        html += `<div class="diskmap-cell" style="background:#0a0a0a"></div>`;
+                    }
+                }
+            }
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function explorerRenderDiskMapGrid(sectorMap) {
+        const { tracks, numCylinders, numSides, maxSectorsPerTrack, fileColors, isMDR, deletedFiles } = sectorMap;
+
+        if (numSides > 1) {
+            // Two-sided: render side-by-side columns
+            let html = '<div class="diskmap-grid-wrapper">';
+            html += `<div class="diskmap-grid-side"><div class="diskmap-side-label">Side 0</div>`;
+            html += diskmapRenderSideGrid(tracks, numCylinders, 0, maxSectorsPerTrack, fileColors, isMDR, deletedFiles);
+            html += '</div>';
+            html += '<div class="diskmap-side-divider"></div>';
+            html += `<div class="diskmap-grid-side"><div class="diskmap-side-label">Side 1</div>`;
+            html += diskmapRenderSideGrid(tracks, numCylinders, 1, maxSectorsPerTrack, fileColors, isMDR, deletedFiles);
+            html += '</div>';
+            html += '</div>';
+            diskmapGridContainer.innerHTML = html;
+        } else {
+            // Single-sided: one grid
+            diskmapGridContainer.innerHTML = diskmapRenderSideGrid(tracks, numCylinders, 0, maxSectorsPerTrack, fileColors, isMDR, deletedFiles);
+        }
+    }
+
+    function explorerRenderDiskMapRadial(sectorMap) {
+        const { tracks, numCylinders, numSides, maxSectorsPerTrack, fileColors, deletedFiles } = sectorMap;
+        const dpr = window.devicePixelRatio || 1;
+        const diskSize = Math.min(380, Math.max(200, numCylinders * 4 + 80));
+        const totalWidth = numSides > 1 ? diskSize * 2 + 20 : diskSize;
+
+        diskmapCanvas.width = totalWidth * dpr;
+        diskmapCanvas.height = diskSize * dpr;
+        diskmapCanvas.style.width = totalWidth + 'px';
+        diskmapCanvas.style.height = diskSize + 'px';
+
+        const ctx = diskmapCanvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, totalWidth, diskSize);
+
+        for (let side = 0; side < numSides; side++) {
+            const cx = numSides > 1 ? (side * (diskSize + 20) + diskSize / 2) : diskSize / 2;
+            const cy = diskSize / 2;
+            const outerRadius = diskSize / 2 - 4;
+            const innerRadius = outerRadius * 0.2;
+            const ringWidth = (outerRadius - innerRadius) / numCylinders;
+
+            for (let cyl = 0; cyl < numCylinders; cyl++) {
+                const trackData = tracks[cyl];
+                const sideData = trackData.sides[side];
+                // Outer ring = cylinder 0
+                const rOuter = outerRadius - cyl * ringWidth;
+                const rInner = rOuter - ringWidth + 0.5;
+
+                if (!sideData || sideData.sectors.length === 0) continue;
+
+                const numSec = sideData.sectors.length;
+                const gapAngle = 0.02;
+                const arcAngle = (2 * Math.PI - numSec * gapAngle) / numSec;
+
+                for (let si = 0; si < numSec; si++) {
+                    const sec = sideData.sectors[si];
+                    const startAngle = -Math.PI / 2 + si * (arcAngle + gapAngle);
+                    const endAngle = startAngle + arcAngle;
+
+                    let color;
+                    if (sec.type === 'file' && sec.fileIndex >= 0) {
+                        color = fileColors[sec.fileIndex];
+                    } else {
+                        color = diskMapTypeColor(sec.type);
+                    }
+
+                    // Dim non-highlighted and deleted-file sectors
+                    const isDeletedSec = deletedFiles && deletedFiles.has(sec.fileIndex);
+                    if (diskmapHighlightFile >= 0 && sec.fileIndex !== diskmapHighlightFile) {
+                        ctx.globalAlpha = 0.2;
+                    } else if (isDeletedSec) {
+                        ctx.globalAlpha = 0.35;
+                    } else {
+                        ctx.globalAlpha = 1;
+                    }
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, rOuter, startAngle, endAngle);
+                    ctx.arc(cx, cy, rInner, endAngle, startAngle, true);
+                    ctx.closePath();
+                    ctx.fillStyle = color;
+                    ctx.fill();
+
+                    // Error indicator
+                    if (sec.hasError) {
+                        ctx.strokeStyle = '#c33';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
+                }
+            }
+
+            ctx.globalAlpha = 1;
+
+            // Center label
+            ctx.fillStyle = '#888';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(numSides > 1 ? `Side ${side}` : '', cx, cy);
+
+            // Center hole
+            ctx.beginPath();
+            ctx.arc(cx, cy, innerRadius * 0.6, 0, 2 * Math.PI);
+            ctx.fillStyle = '#0a0a0a';
+            ctx.fill();
+        }
+    }
+
+    function explorerRenderDiskMapLegend(sectorMap) {
+        const { isCPM, fileColors, fileNames, deletedFiles } = sectorMap;
+        const hasFiles = fileNames && fileNames.length > 0;
+        let html = '';
+
+        if (hasFiles) {
+            // Filesystem disk (CP/M, TR-DOS, MGT, OPD) — show structure + per-file colors
+            html += `<span class="diskmap-legend-item" data-legend="reserved"><span class="diskmap-legend-swatch" style="background:#555"></span>Reserved</span>`;
+            html += `<span class="diskmap-legend-item" data-legend="directory"><span class="diskmap-legend-swatch" style="background:#c89b2a"></span>Directory</span>`;
+            html += `<span class="diskmap-legend-item" data-legend="free"><span class="diskmap-legend-swatch" style="background:#1a1a2e"></span>Free</span>`;
+            if (!isCPM) {
+                html += `<span class="diskmap-legend-item" data-legend="error"><span class="diskmap-legend-swatch" style="background:#c33"></span>Error</span>`;
+            }
+            for (let i = 0; i < fileNames.length; i++) {
+                const isDeleted = deletedFiles && deletedFiles.has(i);
+                const dimAttr = isDeleted ? ' style="opacity:0.45"' : '';
+                const delTag = isDeleted ? ' <span style="color:var(--accent);font-size:0.85em">[Del]</span>' : '';
+                html += `<span class="diskmap-legend-item" data-legend="file" data-file="${i}"${dimAttr}><span class="diskmap-legend-swatch" style="background:${fileColors[i]}"></span>${escapeHtml(fileNames[i])}${delTag}</span>`;
+            }
+        } else {
+            // Non-filesystem disk (copy-protected games, raw data)
+            html += `<span class="diskmap-legend-item" data-legend="reserved"><span class="diskmap-legend-swatch" style="background:#555"></span>Boot</span>`;
+            html += `<span class="diskmap-legend-item" data-legend="data"><span class="diskmap-legend-swatch" style="background:#2a6"></span>Data</span>`;
+            html += `<span class="diskmap-legend-item" data-legend="empty"><span class="diskmap-legend-swatch" style="background:#111"></span>Empty</span>`;
+            html += `<span class="diskmap-legend-item" data-legend="error"><span class="diskmap-legend-swatch" style="background:#c33"></span>Error</span>`;
+        }
+
+        diskmapLegend.innerHTML = html;
+    }
+
+    const DISKMAP_TYPES = ['dsk', 'trd', 'mgt', 'opd', 'mdr'];
+
+    function explorerRenderDiskMap() {
+        if (!explorerParsed || !DISKMAP_TYPES.includes(explorerParsed.type)) {
+            diskmapGridContainer.innerHTML = '<div class="explorer-empty">Load a disk image (DSK, TRD, MGT, MDR, OPD) to view disk map</div>';
+            diskmapDiskContainer.style.display = 'none';
+            diskmapLegend.innerHTML = '';
+            diskmapInfo.textContent = '';
+            diskmapStatus.textContent = '';
+            diskmapSectorMap = null;
+            return;
+        }
+
+        let sectorMap;
+        const t = explorerParsed.type;
+        if (t === 'dsk') {
+            if (!explorerParsed.dskImage) {
+                diskmapGridContainer.innerHTML = '<div class="explorer-empty">DSK image could not be parsed</div>';
+                diskmapSectorMap = null;
+                return;
+            }
+            sectorMap = buildDSKSectorMap(explorerParsed.dskImage, explorerParsed.diskSpec, explorerParsed.files);
+        } else if (t === 'trd') {
+            sectorMap = buildTRDSectorMap(explorerData, explorerParsed.files);
+        } else if (t === 'mgt') {
+            sectorMap = buildMGTSectorMap(explorerData, explorerParsed.files, explorerParsed.info);
+        } else if (t === 'opd') {
+            sectorMap = buildOPDSectorMap(explorerData, explorerParsed.files, explorerParsed.info);
+        } else if (t === 'mdr') {
+            sectorMap = buildMDRSectorMap(explorerData, explorerParsed.files);
+        }
+
+        diskmapSectorMap = sectorMap;
+        diskmapHighlightFile = -1;
+
+        explorerRenderDiskMapGrid(sectorMap);
+        explorerRenderDiskMapRadial(sectorMap);
+        explorerRenderDiskMapLegend(sectorMap);
+
+        if (sectorMap.isMDR) {
+            const total = sectorMap.totalSectors;
+            const carts = total > 254 ? ` (${Math.ceil(total / 254)} cartridges)` : '';
+            diskmapStatus.textContent = `${total} sectors${carts}`;
+        } else {
+            diskmapStatus.textContent = `${sectorMap.numCylinders} cyl \u00d7 ${sectorMap.numSides} side${sectorMap.numSides > 1 ? 's' : ''} \u00d7 ${sectorMap.maxSectorsPerTrack} sec/trk`;
+        }
+        diskmapInfo.textContent = '';
+
+        // Show correct view
+        if (diskmapCurrentView === 'grid') {
+            diskmapGridContainer.style.display = '';
+            diskmapDiskContainer.style.display = 'none';
+        } else {
+            diskmapGridContainer.style.display = 'none';
+            diskmapDiskContainer.style.display = '';
+        }
+    }
+
+    function diskmapGetSectorInfo(cyl, head, secIdx) {
+        if (!diskmapSectorMap || cyl < 0 || cyl >= diskmapSectorMap.numCylinders) return null;
+        const track = diskmapSectorMap.tracks[cyl];
+        if (!track || head < 0 || head >= track.sides.length) return null;
+        const side = track.sides[head];
+        if (!side || secIdx < 0 || secIdx >= side.sectors.length) return null;
+        return side.sectors[secIdx];
+    }
+
+    function diskmapFormatInfo(sec, cyl, head) {
+        if (!sec) return '';
+        let info = (diskmapSectorMap && diskmapSectorMap.isMDR)
+            ? `Sector ${sec.mdrSectorIdx !== undefined ? sec.mdrSectorIdx : cyl * 254 + head}, #${sec.id}`
+            : `Track ${cyl}, Side ${head}, Sector $${hex8(sec.id)}`;
+        if (sec.type === 'file' && sec.fileName) {
+            info += ` \u2014 ${sec.fileName}`;
+            if (sec.blockNum >= 0) info += ` (block ${sec.blockNum})`;
+        } else if (sec.type === 'directory') {
+            info += ' \u2014 Directory';
+        } else if (sec.type === 'reserved') {
+            info += ' \u2014 Reserved/Boot';
+        } else if (sec.type === 'free') {
+            info += ' \u2014 Free';
+        } else if (sec.type === 'error') {
+            info += ' \u2014 FDC Error';
+        } else if (sec.type === 'empty') {
+            info += ' \u2014 Empty';
+        } else if (sec.type === 'data') {
+            info += ' \u2014 Data';
+        }
+        if (sec.hasError) info += ' [ERROR]';
+        return info;
+    }
+
+    function diskmapApplyHighlight(fileIndex) {
+        // Grid highlight
+        const cells = diskmapGridContainer.querySelectorAll('.diskmap-cell');
+        cells.forEach(cell => {
+            const f = parseInt(cell.dataset.file);
+            if (fileIndex < 0) {
+                cell.classList.remove('dimmed');
+            } else {
+                cell.classList.toggle('dimmed', f !== fileIndex);
+            }
+        });
+
+        // Legend highlight
+        const items = diskmapLegend.querySelectorAll('.diskmap-legend-item');
+        items.forEach(item => {
+            if (fileIndex < 0) {
+                item.classList.remove('dimmed');
+            } else {
+                const itemFile = item.dataset.file !== undefined ? parseInt(item.dataset.file) : -2;
+                item.classList.toggle('dimmed', itemFile !== fileIndex);
+            }
+        });
+
+        // Radial highlight
+        diskmapHighlightFile = fileIndex;
+        if (diskmapSectorMap) explorerRenderDiskMapRadial(diskmapSectorMap);
+    }
+
+    function diskmapNavigateToSector(cyl, head, secIdx) {
+        if (!explorerParsed || !diskmapSectorMap) return;
+        const sec = diskmapGetSectorInfo(cyl, head, secIdx);
+        if (!sec) return;
+
+        let sectorData = null;
+        let sectorValue, label;
+
+        if (diskmapSectorMap.isMDR && explorerData && sec.mdrSectorIdx !== undefined) {
+            // MDR cartridge: each sector is 543 bytes (15 hdr + 528 record)
+            const offset = sec.mdrSectorIdx * 543;
+            const size = 543;
+            if (offset + size <= explorerData.length) {
+                sectorData = explorerData.slice(offset, offset + size);
+            }
+            sectorValue = `sector:mdr:${sec.mdrSectorIdx}`;
+            label = `MDR Sector ${sec.mdrSectorIdx} #${sec.id} (543 bytes)`;
+        } else if (diskmapSectorMap.isFlat && explorerData) {
+            // Flat image (TRD/MGT/OPD): read sector by byte offset
+            const offset = sec.diskOffset;
+            const size = diskmapSectorMap.flatSectorSize;
+            if (offset + size <= explorerData.length) {
+                sectorData = explorerData.slice(offset, offset + size);
+            }
+            sectorValue = `sector:flat:${offset}:${size}`;
+            label = `Sector T${cyl} S${head} #${sec.id} (${size} bytes @ $${offset.toString(16).toUpperCase()})`;
+        } else if (explorerParsed.dskImage) {
+            // DSK: use C/H/R addressing
+            sectorData = explorerParsed.dskImage.readSector(cyl, head, sec.id);
+            sectorValue = `sector:${cyl}:${head}:${sec.id}`;
+            label = `Sector T${cyl} S${head} #$${hex8(sec.id)} (${sectorData ? sectorData.length : 0} bytes)`;
+        }
+
+        if (!sectorData) return;
+
+        // Add a temporary sector source option to the hex source selector
+        for (let i = explorerHexSource.options.length - 1; i >= 0; i--) {
+            if (explorerHexSource.options[i].value.startsWith('sector:')) {
+                explorerHexSource.remove(i);
+            }
+        }
+        const opt = document.createElement('option');
+        opt.value = sectorValue;
+        opt.textContent = label;
+        explorerHexSource.appendChild(opt);
+        explorerHexSource.value = sectorValue;
+
+        explorerHexAddr.value = '0000';
+        explorerHexLen.value = sectorData.length.toString();
+
+        // Switch to hex dump tab and render
+        document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
+        explorerRenderHexDump();
     }
 
     function explorerRenderDSKInfo() {
@@ -3001,6 +4464,43 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             specRows += `<tr><th>Reserved</th><td>${spec.reservedTracks} track${spec.reservedTracks !== 1 ? 's' : ''}</td></tr>`;
         }
 
+        const protection = detectDiskProtection(explorerParsed.dskImage);
+
+        // Extract disk label from CP/M directory (user=0xFF for TOS, user=0x20 for CP/M 3.0)
+        let diskLabel = null;
+        if (spec && (spec.valid || spec.recognized) && explorerParsed.dskImage) {
+            const dir = DSKLoader._readDirectory(explorerParsed.dskImage, spec);
+            if (dir && dir.dirData) {
+                const maxEntries = Math.floor(dir.dirData.length / 32);
+                for (let i = 0; i < maxEntries; i++) {
+                    const user = dir.dirData[i * 32];
+                    if (user === 0xFF || user === 0x20) {
+                        let lbl = '';
+                        for (let j = 1; j <= 11; j++) {
+                            const ch = dir.dirData[i * 32 + j] & 0x7F;
+                            if (j === 9 && lbl.trimEnd().length > 0) lbl = lbl.trimEnd() + '.';
+                            if (ch >= 0x20) lbl += String.fromCharCode(ch);
+                        }
+                        diskLabel = lbl.trimEnd();
+                        if (diskLabel.endsWith('.')) diskLabel = diskLabel.slice(0, -1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        const bootInfo = explorerParsed.files.length === 0 && !(spec && (spec.valid || spec.recognized))
+            ? detectBootloader(explorerParsed.dskImage, spec)
+            : null;
+
+        const filesLabel = explorerParsed.files.length === 0
+            ? (spec && (spec.valid || spec.recognized)
+                ? ' <span style="color:var(--text-secondary)">(empty disk)</span>'
+                : (bootInfo
+                    ? ' <span style="color:var(--text-secondary)">(non-CP/M disk)</span>'
+                    : ' <span style="color:var(--text-secondary)">(non-CP/M or empty disk)</span>'))
+            : '';
+
         let html = `<div class="explorer-info-section">
             <div class="explorer-info-header">DSK Disk Image</div>
             <table class="explorer-info-table">
@@ -3009,9 +4509,60 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 <tr><th>Geometry</th><td>${geometry}</td></tr>
                 ${sectorInfo ? `<tr><th>Sectors</th><td>${sectorInfo}</td></tr>` : ''}
                 ${specRows}
-                <tr><th>Files</th><td>${explorerParsed.files.length}${explorerParsed.files.length === 0 ? ' <span style="color:var(--text-secondary)">(non-CP/M or empty disk)</span>' : ''}</td></tr>
+                ${diskLabel ? `<tr><th>Label</th><td>${escapeHtml(diskLabel)}</td></tr>` : ''}
+                ${protection ? `<tr><th>Protection</th><td style="color:var(--yellow)">${escapeHtml(protection)}</td></tr>` : ''}
+                <tr><th>Files</th><td>${explorerParsed.files.length}${filesLabel}</td></tr>
             </table>
         </div>`;
+
+        if (bootInfo) {
+            const bootData = bootInfo.codeData;
+            const baseAddr = 0xFE10;
+            const fakeMemory = { read: (a) => {
+                const off = a - baseAddr;
+                return off >= 0 && off < bootData.length ? bootData[off] : 0;
+            }};
+            const disasm = new Disassembler(fakeMemory);
+            const romLabels = getRomLabels();
+            let bootHtml = '';
+            let offset = 0;
+            let instrCount = 0;
+            while (offset < bootData.length && instrCount < 8) {
+                const currentAddr = baseAddr + offset;
+                const result = disasm.disassemble(currentAddr);
+                const instrLen = result.length || 1;
+                const bytesHex = result.bytes.map(b => hex8(b)).join(' ');
+                let mnemonic = result.mnemonic || '???';
+                const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
+                if (addrMatch) {
+                    const targetAddr = parseInt(addrMatch[1], 16);
+                    const label = romLabels[targetAddr];
+                    if (label) {
+                        mnemonic = mnemonic.replace(addrMatch[0], `<span class="dl">${label}</span>`);
+                    }
+                }
+                bootHtml += `<span class="da">${hex16(currentAddr)}</span>  <span class="dm">${mnemonic.padEnd(20)}</span> <span class="db">; ${bytesHex}</span>\n`;
+                instrCount++;
+                offset += instrLen;
+                // Stop after unconditional JP or JR (not conditional)
+                const plain = mnemonic.replace(/<[^>]+>/g, '').trim().toUpperCase();
+                if (/^JP\s+[0-9A-F]{4}H$/i.test(plain) || /^JR\s+[0-9A-F]{4}H$/i.test(plain) ||
+                    /^JP\s+\(HL\)$/i.test(plain) || /^JP\s+\(IX\)$/i.test(plain) || /^JP\s+\(IY\)$/i.test(plain)) {
+                    break;
+                }
+                // Also stop on JP/JR to a label
+                if (/^JP\s+<span/i.test(mnemonic.trim()) || /^JR\s+<span/i.test(mnemonic.trim())) {
+                    break;
+                }
+            }
+
+            html += `<div class="explorer-info-section">
+                <div class="explorer-info-header">Boot Sector</div>
+                <div style="margin-bottom:4px">Boot sector contains executable code</div>
+                <pre class="explorer-disasm" style="margin:0 0 6px 0">${bootHtml}</pre>
+                <span class="explorer-boot-disasm-link" style="color:var(--accent);cursor:pointer;text-decoration:underline">View in Disasm tab</span>
+            </div>`;
+        }
 
         if (explorerParsed.files.length > 0) {
             const plus3TypeNames = { 0: 'BASIC', 1: 'Num array', 2: 'Char array', 3: 'Code' };
@@ -3019,11 +4570,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 <div class="explorer-info-header">Files</div>
                 <div class="explorer-file-list">`;
 
+            let afterDir = false;
             for (let i = 0; i < explorerParsed.files.length; i++) {
                 const file = explorerParsed.files[i];
+                const isDir = file.ext && file.ext.toUpperCase() === 'DIR';
+                if (isDir) afterDir = true;
 
                 let typeStr;
-                if (file.headerSize) {
+                if (isDir) {
+                    typeStr = 'DIR';
+                } else if (file.headerSize) {
                     typeStr = plus3TypeNames[file.plus3Type] || 'File';
                 } else {
                     typeStr = file.ext || 'File';
@@ -3037,14 +4593,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
 
                 const sectors = file.blocks * Math.max(1, Math.round((spec ? spec.blockSize : 1024) / (spec ? spec.sectorSize : 512)));
+                const previewable = file.size === SCREEN_SIZE || file.size === SCREEN_BITMAP_SIZE || file.size === 4096 ||
+                    file.size === 2048 || file.size === SCREEN_ATTR_SIZE || file.size === 9216 ||
+                    file.size === 11136 || file.size === 12288 || file.size === 18432;
+                const previewIcon = !previewable ? '' : file.size === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
+                const dirChildClass = (afterDir && !isDir) ? ' dir-child' : '';
 
-                html += `<div class="explorer-file-entry" data-index="${i}">
+                const displayName = isDir ? file.name : `${file.name}${file.ext ? '.' + file.ext : ''}`;
+
+                html += `<div class="explorer-file-entry${dirChildClass}" data-index="${i}">
                     <span class="explorer-file-num">${i + 1}</span>
                     <span class="explorer-file-type" title="${typeStr}">${typeStr}</span>
-                    <span class="explorer-file-name">${file.name}${file.headerSize || !file.ext ? '' : '.' + file.ext}</span>
-                    <span class="explorer-file-size">${file.size}</span>
+                    <span class="explorer-file-name">${displayName}</span>
+                    <span class="explorer-file-size">${isDir ? '' : file.size}</span>
                     <span class="explorer-file-addr">${detail}</span>
-                    <span class="explorer-file-sectors">${sectors} sectors</span>
+                    <span class="explorer-file-preview">${previewIcon}</span>
+                    <span class="explorer-file-sectors">${isDir ? '' : sectors + ' sector' + (sectors !== 1 ? 's' : '')}</span>
                 </div>`;
             }
 
@@ -3077,17 +4641,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             <div class="explorer-info-header">File List <span style="font-size:10px;color:var(--text-secondary)">(click to open)</span></div>
             <div class="explorer-block-list">`;
 
+        const supportedZipExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk', 'rzx'];
         for (let i = 0; i < explorerParsed.files.length; i++) {
             const file = explorerParsed.files[i];
             const ext = file.name.split('.').pop().toLowerCase();
-            const supported = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk', 'rzx'].includes(ext);
+            if (!supportedZipExts.includes(ext)) continue;
+            if (ext === 'img' && file.size !== 819200 && file.size !== 409600) continue;
 
             let extraInfo = '';
             if (ext === 'rzx' && file.data && file.data.length > 10) {
                 extraInfo = ' <span style="color:var(--cyan)">[RZX]</span>';
             }
 
-            html += `<div class="explorer-block${supported ? ' explorer-zip-file' : ''}" data-zip-index="${i}" style="${supported ? 'cursor:pointer' : 'opacity:0.5'}">
+            html += `<div class="explorer-block explorer-zip-file" data-zip-index="${i}" style="cursor:pointer">
                 <span class="explorer-block-num">${i + 1}</span>
                 <span class="explorer-block-type">${ext.toUpperCase()}</span>
                 <span class="explorer-block-name">${file.name}${extraInfo}</span>
@@ -3113,6 +4679,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // Handle clicking on ZIP file entries and TAP blocks
     explorerInfoOutput.addEventListener('click', async (e) => {
+        const bootLink = e.target.closest('.explorer-boot-disasm-link');
+        if (bootLink && explorerParsed && explorerParsed.type === 'dsk') {
+            document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
+            explorerDisasmSource.value = 'boot';
+            explorerDisasmAddr.value = 'FE10';
+            explorerDisasmLen.value = 496;
+            explorerRenderDisasm();
+            return;
+        }
+
         const zipEntry = e.target.closest('.explorer-zip-file');
         if (zipEntry) {
             const idx = parseInt(zipEntry.dataset.zipIndex);
@@ -3121,13 +4697,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const zipFile = explorerZipFiles[idx];
             const ext = zipFile.name.split('.').pop().toLowerCase();
 
-            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk', 'rzx'].includes(ext)) return;
+            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk', 'rzx'].includes(ext)) return;
 
             explorerZipParentName = explorerFileName.textContent;
             explorerData = new Uint8Array(zipFile.data);
             explorerFileName.textContent = `${explorerZipParentName} > ${zipFile.name}`;
             explorerFileSize.textContent = `(${explorerData.length.toLocaleString()} bytes)`;
-            explorerFileType = ext;
+            const isMgtSize = explorerData.length === 819200 || explorerData.length === 409600;
+            explorerFileType = (ext === 'img' && isMgtSize) ? 'mgt' : ext;
 
             await explorerParseFile(zipFile.name, ext);
 
@@ -3154,7 +4731,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                     contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                     contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                    explorerUpdatePreview(content);
+                    const prevBlock = idx > 0 ? explorerBlocks[idx - 1] : null;
+                    const fLabel = (prevBlock && prevBlock.name) ? prevBlock.name : `#${idx + 1}`;
+                    explorerUpdatePreview(content, null, fLabel);
                     return;
                 }
             }
@@ -3192,7 +4771,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                     contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                     contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                    explorerUpdatePreview(content);
+                    const prevBlock = idx > 0 ? explorerBlocks[idx - 1] : null;
+                    const fLabel = (prevBlock && prevBlock.fileName) ? prevBlock.fileName : `#${idx + 1}`;
+                    explorerUpdatePreview(content, null, fLabel);
                     return;
                 }
             }
@@ -3233,17 +4814,23 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (isNaN(idx) || !explorerParsed.files[idx]) return;
 
             const file = explorerParsed.files[idx];
-            const fileData = explorerParsed.type === 'mgt'
+            let fileData = explorerParsed.type === 'mgt'
                 ? MGTLoader.extractFile(explorerData, file)
                 : explorerParsed.type === 'mdr'
                 ? MDRLoader.extractFile(explorerData, file)
                 : explorerData.slice(file.offset, file.offset + file.length);
 
+            // MDR extractFile returns raw data including 9-byte Spectrum header — strip it
+            if (explorerParsed.type === 'mdr' && !file.isPrint && fileData.length > 9) {
+                fileData = fileData.slice(9);
+            }
+
             const contentLen = fileData.length;
             if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                 contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                 contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                explorerUpdatePreview(fileData);
+                const fLabel = file.name ? (file.ext && !['C','B','D','F','P'].includes(file.ext) ? `${file.name}.${file.ext}` : file.name) : `#${idx + 1}`;
+                explorerUpdatePreview(fileData, null, fLabel);
                 return;
             }
 
@@ -3284,7 +4871,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                 contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                 contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                explorerUpdatePreview(fileData);
+                const fLabel = file.name ? (file.ext && !['C','B','D','F','P'].includes(file.ext) ? `${file.name}.${file.ext}` : file.name) : `#${idx + 1}`;
+                explorerUpdatePreview(fileData, null, fLabel);
                 return;
             }
 
@@ -3331,7 +4919,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                 contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                 contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                explorerUpdatePreview(contentData);
+                const fLabel = file.name ? (file.ext ? `${file.name}.${file.ext}` : file.name) : `#${idx + 1}`;
+                explorerUpdatePreview(contentData, null, fLabel);
                 return;
             }
 
@@ -3840,7 +5429,27 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let data = null;
         let baseAddr = addr;
 
-        if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
+        // Universal sector source handler (Disk Map click-to-hex for any format)
+        if (source && source.startsWith('sector:')) {
+            const parts = source.split(':');
+            if (parts[1] === 'flat') {
+                const sOff = parseInt(parts[2]);
+                const sSize = parseInt(parts[3]);
+                if (explorerData && sOff + sSize <= explorerData.length) {
+                    data = explorerData.slice(sOff, sOff + sSize);
+                    baseAddr = 0;
+                }
+            } else if (explorerParsed && explorerParsed.dskImage) {
+                const sCyl = parseInt(parts[1]);
+                const sHead = parseInt(parts[2]);
+                const sSid = parseInt(parts[3]);
+                const secData = explorerParsed.dskImage.readSector(sCyl, sHead, sSid);
+                if (secData) {
+                    data = secData;
+                    baseAddr = 0;
+                }
+            }
+        } else if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
             data = explorerData.slice(explorerParsed.memoryOffset || 27);
             baseAddr = SLOT1_START;
         } else if (source && explorerParsed.type === 'tap') {
@@ -3938,7 +5547,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (i === 7) bytesHex += ' ';
             }
 
-            html += `<span class="ha">${hex16(lineAddr)}</span>  <span class="hb">${bytesHex}</span>  <span class="hc">${ascii}</span>\n`;
+            html += `<span class="ha">${hex16(lineAddr)}</span>  <span class="hb">${bytesHex}</span>  <span class="hc">${escapeHtml(ascii)}</span>\n`;
         }
 
         explorerHexOutput.innerHTML = html || '<div class="explorer-empty">No data</div>';
@@ -4163,6 +5772,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     break;
                 }
 
+                // Stop at variables area: ZX BASIC line numbers are 0-9999.
+                // Variable type markers have bit 6 or 7 set, producing
+                // lineNum >= 16384 (0x4000) when read as a BE line number.
+                if (lineNum >= 16384) {
+                    break;
+                }
+
                 const availableLen = data.length - offset - 4;
                 if (lineLen > availableLen) {
                     lineLen = availableLen;
@@ -4172,19 +5788,30 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     break;
                 }
 
-                // Scan for 0x0D terminator to find the actual line end.
-                // The stored lineLen can be incorrect (e.g. +D disk saves);
-                // the ZX ROM LIST routine also uses 0x0D scanning.
-                let actualLen = lineLen;
+                // Scan for 0x0D terminator to find the display end.
+                // REM lines with embedded machine code may contain 0x0D bytes;
+                // always advance by lineLen but only display up to the first 0x0D.
+                // If 0x0D is found beyond lineLen (e.g. +D disk saves with incorrect
+                // length), use that as the actual line boundary.
+                let displayLen = lineLen;
+                let advanceLen = lineLen;
                 const searchEnd = Math.min(offset + 4 + lineLen + 32, data.length);
                 for (let scan = offset + 4; scan < searchEnd; scan++) {
                     if (data[scan] === 0x0D) {
-                        actualLen = scan - offset - 4 + 1; // include the 0x0D
+                        const foundLen = scan - offset - 4 + 1; // include the 0x0D
+                        if (foundLen <= lineLen) {
+                            // 0x0D within lineLen: trust lineLen for advance, display up to 0x0D
+                            displayLen = foundLen;
+                        } else {
+                            // 0x0D beyond lineLen: +D fix, use found position for both
+                            displayLen = foundLen;
+                            advanceLen = foundLen;
+                        }
                         break;
                     }
                 }
 
-                const lineData = data.slice(offset + 4, offset + 4 + actualLen);
+                const lineData = data.slice(offset + 4, offset + 4 + displayLen);
                 const decoded = decodeLine(lineData);
 
                 lines.push({
@@ -4195,7 +5822,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     obfuscations: decoded.obfuscations
                 });
 
-                offset += 4 + actualLen;
+                offset += 4 + advanceLen;
             }
             return lines;
         }
@@ -4568,6 +6195,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (headerBlock && headerBlock.blockType === 'header' && headerBlock.headerType === 0 && blockIdx + 1 < explorerBlocks.length) {
                 const dataBlock = explorerBlocks[blockIdx + 1];
                 data = dataBlock.data.slice(1, -1);
+                // Trim to program body length (varsOffset) to exclude variables area
+                if (data && headerBlock.varsOffset > 0 && headerBlock.varsOffset < data.length) {
+                    data = data.slice(0, headerBlock.varsOffset);
+                }
             }
         } else if (explorerParsed.type === 'tzx') {
             const blockIdx = parseInt(source);
@@ -4576,6 +6207,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const dataBlock = explorerBlocks[blockIdx + 1];
                 if (dataBlock && dataBlock.id === 0x10 && dataBlock.data) {
                     data = dataBlock.data.slice(1, -1);
+                    // Trim to program body length (varsOffset) to exclude variables area
+                    if (data && headerBlock.varsOffset > 0 && headerBlock.varsOffset < data.length) {
+                        data = data.slice(0, headerBlock.varsOffset);
+                    }
                 }
             }
         } else if (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr') {
@@ -4584,6 +6219,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (file) {
                 if (explorerParsed.type === 'mgt') {
                     data = MGTLoader.extractFile(explorerData, file);
+                    // Trim to program body length (excludes variables area)
+                    if (data && (file.mgtType === 1 || file.mgtType === 16) && file.bodyLength > 0 && file.bodyLength < data.length) {
+                        data = data.slice(0, file.bodyLength);
+                    }
                 } else if (explorerParsed.type === 'mdr') {
                     data = MDRLoader.extractFile(explorerData, file);
                     // MDR files include a 9-byte Spectrum header (type, length, start, etc.)
@@ -4618,6 +6257,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         data = rawData.slice(hdr, hdr + file.size);
                     } else {
                         data = rawData.slice(0, file.size);
+                    }
+                    // Trim to program body length (varsOffset) to exclude variables area
+                    if (data && file.plus3Type === 0 && file.varsOffset > 0 && file.varsOffset < data.length) {
+                        data = data.slice(0, file.varsOffset);
                     }
                 }
             }
@@ -6073,7 +7716,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
             html += addrDetail;
             html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sectors)</span>`;
+            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
@@ -6086,7 +7729,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
                 html += '</select>';
                 html += `<label>Addr:</label><input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sectors</label>`;
+                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
                 html += `<button class="editor-apply-btn" data-action="disk-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -6151,15 +7794,26 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // Extract clean file data from MGT editor raw sectors.
     // Raw data has 512-byte sectors: 510 bytes data + 2 bytes chain pointer.
-    // First 9 bytes of concatenated data stream = +D file header (stripped).
+    // G+DOS files have a 9-byte header (type+len+params); auto-detected and stripped if present.
     function mgtExtractCleanData(file) {
         const sectors = file.sectors;
         const clean = new Uint8Array(sectors * 510);
         for (let i = 0; i < sectors; i++) {
             clean.set(file.data.subarray(i * 512, i * 512 + 510), i * 510);
         }
-        // Strip 9-byte +D header, trim to file length
-        return clean.slice(9, 9 + file.length);
+        // Detect 9-byte +D file header: check if byte 0 matches expected tape type
+        // and bytes 1-2 match directory length. Some utilities omit this header.
+        const gdosType = file.mgtType || file.type;
+        const gdosToTape = { 1: 0, 2: 1, 3: 2, 4: 3, 7: 3 };
+        const expectedTape = gdosToTape[gdosType];
+        if (expectedTape !== undefined && clean.length >= 9) {
+            const hdrType = clean[0];
+            const hdrLen = clean[1] | (clean[2] << 8);
+            if (hdrType === expectedTape && hdrLen === file.length) {
+                return clean.slice(9, 9 + file.length);
+            }
+        }
+        return clean.slice(0, file.length);
     }
 
     function diskEditorExtractSelection(panel, format) {
@@ -6180,8 +7834,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             } else {
                 name = trimName + '.' + file.ext;
                 if (isMgt) {
-                    // MGT raw data has 2-byte chain pointers per sector + 9-byte header;
-                    // concatenate 510-byte data portions, strip 9-byte header, trim to length
+                    // MGT: strip 2-byte chain pointers per sector,
+                    // auto-detect and strip 9-byte G+DOS header if present
                     data = mgtExtractCleanData(file);
                 } else {
                     data = file.data.slice(0, file.length);
@@ -6536,9 +8190,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
             let addrDetail = '';
-            if (file.mgtType === 4 || file.mgtType === 7) {
+            if (file.mgtType === 4 || file.mgtType === 7 || file.mgtType === 19 || file.mgtType === 20) {
                 addrDetail = ` <span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
-            } else if (file.mgtType === 1 && file.autostart != null && file.autostart < 0x8000) {
+            } else if ((file.mgtType === 1 || file.mgtType === 16) && file.autostart != null && file.autostart < 0x8000) {
                 addrDetail = ` <span class="file-addr">LINE ${file.autostart}</span>`;
             }
             html += `<span class="dim">${i + 1}:</span> `;
@@ -6546,7 +8200,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
             html += addrDetail;
             html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sectors)</span>`;
+            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
@@ -6560,7 +8214,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
                 html += '</select>';
                 html += `<label>Addr:</label><input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sectors</label>`;
+                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
                 html += `<button class="editor-apply-btn" data-action="mgt-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -6713,12 +8367,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             mgt[dirOffset + 215] = (startAddr >> 8) & 0xFF;
 
             // Offset 216-217: type-specific (BASIC program body length, CODE = 32768)
-            const param2 = f.mgtType === 1 ? (f.bodyLength || f.length) : 0x8000;
+            const isBASICType = f.mgtType === 1 || f.mgtType === 16;
+            const param2 = isBASICType ? (f.bodyLength || f.length) : 0x8000;
             mgt[dirOffset + 216] = param2 & 0xFF;
             mgt[dirOffset + 217] = (param2 >> 8) & 0xFF;
 
             // Offset 218-219: autostart line (BASIC) or 0
-            const autostart = f.mgtType === 1 ? (f.autostart != null && f.autostart >= 0 && f.autostart < 0x8000 ? f.autostart : 0x8000) : 0;
+            const autostart = isBASICType ? (f.autostart != null && f.autostart >= 0 && f.autostart < 0x8000 ? f.autostart : 0x8000) : 0;
             mgt[dirOffset + 218] = autostart & 0xFF;
             mgt[dirOffset + 219] = (autostart >> 8) & 0xFF;
         }
@@ -6729,8 +8384,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function diskEditorSaveMgt(panel) {
         if (panel.diskFiles.length === 0) return;
         const data = diskEditorBuildMgt(panel);
-        const baseName = (panel.fileName || 'output').replace(/\.(mgt|img)$/i, '');
-        downloadFile(baseName + '.mgt', data);
+        const nameMatch = (panel.fileName || 'output').match(/^(.*)\.(mgt|img)$/i);
+        const baseName = nameMatch ? nameMatch[1] : (panel.fileName || 'output');
+        const ext = nameMatch ? nameMatch[2].toLowerCase() : 'mgt';
+        downloadFile(baseName + '.' + ext, data);
     }
 
     function diskEditorImportMgt(panel, data, filename) {
@@ -6829,7 +8486,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const fileData = MDRLoader.extractFile(panel.rawData, f);
             const entry = {
                 name: (f.name + '          ').substring(0, 10),
-                ext: f.type === 'PRINT' ? 'P' : 'F',
+                ext: f.isPrint ? 'P' : 'F',
                 typeName: f.type,
                 length: f.length,
                 sectors: f.sectors,
@@ -6883,7 +8540,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += ` <span class="file-size">\u2014 ${file.dataLength} bytes</span>`;
             if (file.ext === 'C') html += ` <span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
             if (file.ext === 'B' && file.autorunLine >= 0) html += ` <span class="file-addr">LINE ${file.autorunLine}</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sectors)</span>`;
+            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
@@ -6892,9 +8549,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 html += `<label>Name:</label><input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:100px">`;
                 html += `<label>Type:</label><select data-field="mdrtype">`;
                 html += `<option value="F"${!file.isPrint ? ' selected' : ''}>File</option>`;
-                html += `<option value="P"${file.isPrint ? ' selected' : ''}>PRINT</option>`;
+                html += `<option value="P"${file.isPrint ? ' selected' : ''}>Data</option>`;
                 html += '</select>';
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sectors</label>`;
+                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
                 html += `<button class="editor-apply-btn" data-action="mdr-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -6929,12 +8586,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function diskEditorAddMdrFile(panel, data, name, isPrint) {
         const length = data.length;
         const sectors = Math.ceil(length / MDRLoader.DATA_SIZE) || 1;
-        if (sectors > MDRLoader.SECTOR_COUNT) return 'File too large';
+        const totalSectors = panel.rawData ? MDRLoader.getSectorCount(panel.rawData) : MDRLoader.SECTOR_COUNT;
+        const usedSectors = panel.diskFiles.filter(f => !f.deleted).reduce((sum, f) => sum + f.sectors, 0);
+        if (sectors > totalSectors - usedSectors) return 'File too large';
 
         const entry = {
             name: (name + '          ').substring(0, 10),
             ext: isPrint ? 'P' : 'F',
-            typeName: isPrint ? 'PRINT' : 'File',
+            typeName: isPrint ? 'Data' : 'File',
             length: length,
             sectors: sectors,
             sectorIndices: [],
@@ -6954,7 +8613,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             isPrint: f.isPrint
         }));
         const cartridgeName = panel.diskLabel || 'BLANK';
-        return MDRLoader.buildMDR(files, cartridgeName);
+        const sectorCount = panel.rawData ? MDRLoader.getSectorCount(panel.rawData) : MDRLoader.SECTOR_COUNT;
+        return MDRLoader.buildMDR(files, cartridgeName, sectorCount);
     }
 
     function diskEditorSaveMdr(panel) {
@@ -6971,7 +8631,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const fileData = MDRLoader.extractFile(data, f);
             const entry = {
                 name: (f.name + '          ').substring(0, 10),
-                ext: f.type === 'PRINT' ? 'P' : 'F',
+                ext: f.isPrint ? 'P' : 'F',
                 typeName: f.type,
                 length: f.length,
                 sectors: f.sectors,
@@ -7002,7 +8662,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (typeSelect) {
             file.isPrint = typeSelect.value === 'P';
             file.ext = file.isPrint ? 'P' : 'F';
-            file.typeName = file.isPrint ? 'PRINT' : 'File';
+            file.typeName = file.isPrint ? 'Data' : 'File';
         }
 
         panel.expandedBlock = -1;
@@ -7130,7 +8790,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<span class="file-name">${escapeHtml(trimName)}</span>`;
             html += addrDetail;
             html += ` <span class="file-size">\u2014 ${f.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${f.sectors} sectors)</span>`;
+            html += ` <span class="file-sectors">(${f.sectors} sector${f.sectors !== 1 ? 's' : ''})</span>`;
             html += '</span></div>';
 
             if (panel.expandedBlock === i) {
@@ -7280,9 +8940,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const spec = DSKLoader.getDiskSpec(dskImage);
         const files = panel.parsedFile.files || [];
 
-        if (!spec.valid && files.length === 0) {
-            panel.dom.fileList.innerHTML = '<span class="explorer-empty">Non-CP/M disk \u2014 editing not supported for this format</span>';
-            panel.dom.statusSpan.textContent = 'Non-CP/M disk';
+        if (!spec.valid && !spec.recognized && files.length === 0) {
+            const bootInfo = detectBootloader(dskImage, spec);
+            if (bootInfo) {
+                panel.dom.fileList.innerHTML = '<span class="explorer-empty">Non-CP/M disk \u2014 editing not supported for this format</span>'
+                    + '<div style="margin-top:6px"><span class="explorer-boot-disasm-link" style="color:var(--accent);cursor:pointer;text-decoration:underline">Boot sector contains code \u2014 view in Disasm tab</span></div>';
+                panel.dom.statusSpan.textContent = 'Non-CP/M disk (bootloader)';
+            } else {
+                panel.dom.fileList.innerHTML = '<span class="explorer-empty">Non-CP/M disk \u2014 editing not supported for this format</span>';
+                panel.dom.statusSpan.textContent = 'Non-CP/M disk';
+            }
             editorUpdateToolbar();
             return;
         }
@@ -7699,8 +9366,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         downloadFile(baseName + '_extract.zip', zipData);
     }
 
-    function dskEditorNewDsk(panel) {
-        const dskImage = DSKLoader.createBlankDSK();
+    function dskEditorNewDsk(panel, format = 'p3-ss40') {
+        const dskImage = DSKLoader.createBlankDSK(format);
         const spec = DSKLoader.getDiskSpec(dskImage);
         panel.parsedFile = {
             type: 'dsk',
@@ -7708,8 +9375,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             diskSpec: spec,
             files: [],
             isExtended: true,
-            numTracks: 40,
-            numSides: 1,
+            numTracks: dskImage.numTracks,
+            numSides: dskImage.numSides,
             size: 0
         };
         panel.blocks = [];
@@ -7814,7 +9481,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 let dataOff = off;
                 for (const f of parsed.files) { f.offset = dataOff; dataOff += f.sectors * 256; }
             }
-        } else if (innerExt === 'mgt' || innerExt === 'img') {
+        } else if (innerExt === 'mgt' || (innerExt === 'img' && (innerData.length === 819200 || innerData.length === 409600))) {
             parsed = explorerParseMGT(innerData);
         } else if (innerExt === 'mdr') {
             parsed = explorerParseMDR(innerData);
@@ -7842,7 +9509,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (panel === editorPanels.left) {
                 explorerFileName.textContent += ' > ' + zipEntry.name;
                 explorerFileSize.textContent = `(${innerData.length.toLocaleString()} bytes)`;
-                explorerFileType = innerExt;
+                const isMgtSize = innerData.length === 819200 || innerData.length === 409600;
+                explorerFileType = (innerExt === 'img' && isMgtSize) ? 'mgt' : innerExt;
                 explorerZipFiles = [];
                 explorerRenderFileInfo();
             }
@@ -7909,7 +9577,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     async function zipEditorImportZip(panel, data, filename) {
         const rawCopy = new Uint8Array(data);
         const files = await ZipLoader.extract(rawCopy.buffer);
-        const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk'];
+        const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk'];
         const zxFiles = files.filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
             return supported.includes(ext);
@@ -8096,7 +9764,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.parsedFile = parsed || { type: ext, files: [], size: data.length };
             updatePanelHeader(panel);
             diskEditorRenderFileList(panel);
-        } else if (ext === 'mgt') {
+        } else if (ext === 'mgt' || (ext === 'img' && (data.length === 819200 || data.length === 409600))) {
             panel.fileType = 'mgt';
             panel.blocks = [];
             panel.parsedFile = parsed || { type: 'mgt', files: [], size: data.length };
@@ -8140,8 +9808,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
             const zipFiles = await ZipLoader.extract(rawCopy.buffer);
-            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'opd', 'opu', 'dsk'];
-            const candidates = zipFiles.filter(f => supportedExts.includes(f.name.split('.').pop().toLowerCase()));
+            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
+            const candidates = zipFiles.filter(f => {
+                const fext = f.name.split('.').pop().toLowerCase();
+                if (fext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
+                return supportedExts.includes(fext);
+            });
             if (candidates.length === 1) {
                 await zipLoadInnerFile(panel, candidates[0]);
                 return;
@@ -8211,7 +9883,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             for (const idx of sorted) {
                 if (idx < 0 || idx >= panel.diskFiles.length) continue;
                 const f = panel.diskFiles[idx];
-                const isBASIC = f.mgtType === 1;
+                const isBASIC = f.mgtType === 1 || f.mgtType === 16;
                 result.push({
                     name: f.name.replace(/\s+$/, ''),
                     ext: f.ext,
@@ -8372,7 +10044,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                             offset += f.sectors * 256;
                         }
                     }
-                } else if (entryExt === 'mgt' || entryExt === 'img') {
+                } else if (entryExt === 'mgt' || (entryExt === 'img' && (entryData.length === 819200 || entryData.length === 409600))) {
                     // Parse MGT and extract files
                     const mgtFiles = MGTLoader.listFiles(entryData);
                     for (const f of mgtFiles) {
@@ -8394,7 +10066,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         const fileData = MDRLoader.extractFile(entryData, f);
                         result.push({
                             name: f.name.replace(/\s+$/, ''),
-                            ext: f.type === 'PRINT' ? 'P' : 'F',
+                            ext: f.isPrint ? 'P' : 'F',
                             type: 3,
                             addr: 0,
                             autostart: null,
@@ -8458,7 +10130,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
         } else if (dstType === 'mdr') {
             f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
-            // MDR files are either File or PRINT — map ext
+            // MDR files are either File or Data — map ext
             if (!f.ext || f.ext.length === 0) {
                 f.ext = 'F';
             } else if (f.ext === 'B' || f.ext === 'C' || f.ext === 'D') {
@@ -8616,6 +10288,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // ========== Panel file list click handler (delegated) ==========
 
     function handlePanelFileListClick(panel, e) {
+        const bootLink = e.target.closest('.explorer-boot-disasm-link');
+        if (bootLink) {
+            document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
+            explorerDisasmSource.value = 'boot';
+            explorerDisasmAddr.value = 'FE10';
+            explorerDisasmLen.value = 496;
+            explorerRenderDisasm();
+            return;
+        }
+
         const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
@@ -8792,8 +10474,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'mgt': diskEditorNewMgt(panel); break;
             case 'mdr': diskEditorNewMdr(panel); break;
             case 'opd': diskEditorNewOpd(panel); break;
-            case 'dsk': dskEditorNewDsk(panel); break;
             case 'zip': zipEditorNewZip(panel); break;
+            default:
+                if (fmt.startsWith('dsk-')) {
+                    dskEditorNewDsk(panel, fmt.slice(4));
+                }
+                break;
         }
     });
 
@@ -8812,9 +10498,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (panel.fileType === 'zip') {
                 // ZIP panel: add container files directly
                 const ext = file.name.split('.').pop().toLowerCase();
-                const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'mdr', 'dsk'];
+                const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk'];
                 if (!supported.includes(ext)) {
-                    panel.dom.statusSpan.textContent = 'Only .tap/.tzx/.trd/.scl/.mgt/.mdr/.dsk files';
+                    panel.dom.statusSpan.textContent = 'Only .tap/.tzx/.trd/.scl/.mgt/.img/.mdr/.dsk files';
                     panel.pendingFileData = null;
                     return;
                 }
@@ -8864,8 +10550,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 btnDiskAddOk.disabled = tooLarge;
                 diskAddDialog.classList.remove('hidden');
             } else if (panel.fileType === 'mdr') {
-                // MDR: add file directly (no address/type needed — all files are "File" or "PRINT")
-                const maxSize = MDRLoader.SECTOR_COUNT * MDRLoader.DATA_SIZE;
+                // MDR: add file directly (no address/type needed — all files are "File" or "Data")
+                const totalSectors = panel.rawData ? MDRLoader.getSectorCount(panel.rawData) : MDRLoader.SECTOR_COUNT;
+                const usedSectors = panel.diskFiles.filter(f => !f.deleted).reduce((sum, f) => sum + f.sectors, 0);
+                const maxSize = (totalSectors - usedSectors) * MDRLoader.DATA_SIZE;
                 const fileData = panel.pendingFileData;
                 const tooLarge = fileData.length > maxSize;
                 const sectors = Math.ceil(fileData.length / MDRLoader.DATA_SIZE);
@@ -9155,6 +10843,160 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         });
     }
 
+    // Auto-render disk map tab when switched to
+    const diskmapSubtabBtn = document.querySelector('.explorer-subtab[data-subtab="diskmap"]');
+    if (diskmapSubtabBtn) {
+        diskmapSubtabBtn.addEventListener('click', () => {
+            explorerRenderDiskMap();
+        });
+    }
+
+    // Disk Map view toggle (Grid / Disk)
+    document.querySelectorAll('.diskmap-view-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.diskmap-view-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            diskmapCurrentView = btn.dataset.view;
+            if (diskmapCurrentView === 'grid') {
+                diskmapGridContainer.style.display = '';
+                diskmapDiskContainer.style.display = 'none';
+            } else {
+                diskmapGridContainer.style.display = 'none';
+                diskmapDiskContainer.style.display = '';
+            }
+        });
+    });
+
+    // Disk Map grid hover
+    diskmapGridContainer.addEventListener('mousemove', (e) => {
+        const cell = e.target.closest('.diskmap-cell');
+        if (!cell || cell.dataset.sec === '-1') {
+            diskmapInfo.textContent = '';
+            diskmapApplyHighlight(-1);
+            return;
+        }
+        const cyl = parseInt(cell.dataset.cyl);
+        const head = parseInt(cell.dataset.head);
+        const secIdx = parseInt(cell.dataset.sec);
+        const sec = diskmapGetSectorInfo(cyl, head, secIdx);
+        diskmapInfo.textContent = diskmapFormatInfo(sec, cyl, head);
+        if (sec && sec.fileIndex >= 0) {
+            diskmapApplyHighlight(sec.fileIndex);
+        } else {
+            diskmapApplyHighlight(-1);
+        }
+    });
+
+    diskmapGridContainer.addEventListener('mouseleave', () => {
+        diskmapInfo.textContent = '';
+        diskmapApplyHighlight(-1);
+    });
+
+    // Disk Map grid click — navigate to hex dump
+    diskmapGridContainer.addEventListener('click', (e) => {
+        const cell = e.target.closest('.diskmap-cell');
+        if (!cell || cell.dataset.sec === '-1') return;
+        const cyl = parseInt(cell.dataset.cyl);
+        const head = parseInt(cell.dataset.head);
+        const secIdx = parseInt(cell.dataset.sec);
+        if (diskmapGetSectorInfo(cyl, head, secIdx)) {
+            diskmapNavigateToSector(cyl, head, secIdx);
+        }
+    });
+
+    // Disk Map canvas hover/click
+    diskmapCanvas.addEventListener('mousemove', (e) => {
+        if (!diskmapSectorMap) return;
+        const hit = diskmapCanvasHitTest(e);
+        if (hit) {
+            const sec = diskmapGetSectorInfo(hit.cyl, hit.head, hit.secIdx);
+            diskmapInfo.textContent = diskmapFormatInfo(sec, hit.cyl, hit.head);
+            if (sec && sec.fileIndex >= 0) {
+                diskmapApplyHighlight(sec.fileIndex);
+            } else {
+                diskmapApplyHighlight(-1);
+            }
+        } else {
+            diskmapInfo.textContent = '';
+            diskmapApplyHighlight(-1);
+        }
+    });
+
+    diskmapCanvas.addEventListener('mouseleave', () => {
+        diskmapInfo.textContent = '';
+        diskmapApplyHighlight(-1);
+    });
+
+    diskmapCanvas.addEventListener('click', (e) => {
+        if (!diskmapSectorMap) return;
+        const hit = diskmapCanvasHitTest(e);
+        if (hit && diskmapGetSectorInfo(hit.cyl, hit.head, hit.secIdx)) {
+            diskmapNavigateToSector(hit.cyl, hit.head, hit.secIdx);
+        }
+    });
+
+    function diskmapCanvasHitTest(e) {
+        if (!diskmapSectorMap) return null;
+        const { numCylinders, numSides, tracks } = diskmapSectorMap;
+        const rect = diskmapCanvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const diskSize = Math.min(380, Math.max(200, numCylinders * 4 + 80));
+
+        for (let side = 0; side < numSides; side++) {
+            const cx = numSides > 1 ? (side * (diskSize + 20) + diskSize / 2) : diskSize / 2;
+            const cy = diskSize / 2;
+            const outerRadius = diskSize / 2 - 4;
+            const innerRadius = outerRadius * 0.2;
+            const ringWidth = (outerRadius - innerRadius) / numCylinders;
+
+            const dx = mx - cx;
+            const dy = my - cy;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < innerRadius * 0.6 || dist > outerRadius) continue;
+
+            // Determine cylinder
+            const cyl = Math.floor((outerRadius - dist) / ringWidth);
+            if (cyl < 0 || cyl >= numCylinders) continue;
+
+            // Determine sector by angle
+            let angle = Math.atan2(dy, dx) + Math.PI / 2; // offset by -PI/2 to match draw start
+            if (angle < 0) angle += 2 * Math.PI;
+
+            const sideData = tracks[cyl].sides[side];
+            if (!sideData || sideData.sectors.length === 0) continue;
+
+            const numSec = sideData.sectors.length;
+            const gapAngle = 0.02;
+            const arcAngle = (2 * Math.PI - numSec * gapAngle) / numSec;
+            const totalArc = arcAngle + gapAngle;
+
+            const secIdx = Math.floor(angle / totalArc);
+            if (secIdx >= 0 && secIdx < numSec) {
+                // Check we're within the arc (not in the gap)
+                const withinArc = angle - secIdx * totalArc;
+                if (withinArc <= arcAngle) {
+                    return { cyl, head: side, secIdx };
+                }
+            }
+        }
+        return null;
+    }
+
+    // Disk Map legend click — toggle file highlight
+    diskmapLegend.addEventListener('click', (e) => {
+        const item = e.target.closest('.diskmap-legend-item');
+        if (!item) return;
+        const fileIdx = item.dataset.file !== undefined ? parseInt(item.dataset.file) : -1;
+        if (fileIdx < 0) return; // Don't toggle system legend items
+        if (diskmapHighlightFile === fileIdx) {
+            diskmapApplyHighlight(-1);
+        } else {
+            diskmapApplyHighlight(fileIdx);
+        }
+    });
 
     /**
      * Load raw file data into Explorer programmatically
@@ -9175,6 +11017,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerDisasmOutput.innerHTML = '<div class="explorer-empty">Select a source to disassemble</div>';
         explorerHexOutput.innerHTML = '';
         explorerTextOutput.innerHTML = '<span class="explorer-empty">Select a source and click View</span>';
+        diskmapSectorMap = null;
 
         explorerRenderFileInfo();
         document.querySelector('.explorer-subtab[data-subtab="info"]').click();

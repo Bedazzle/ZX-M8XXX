@@ -88,6 +88,10 @@
         <button onclick="runUPD765CommandTests()">UPD765 Commands</button>
         <button onclick="runUPD765DataTests()">UPD765 Data Transfer</button>
         <button onclick="runRoundTripTests()">Round-trip</button>
+        <button onclick="runTOSTests()">TOS Format</button>
+        <button onclick="runSKDeletedTests()">SK/Deleted</button>
+        <button onclick="runWeakSectorTests()">Weak Sectors</button>
+        <button onclick="runProtectionTests()">Protection</button>
     </div>
     <div id="log"></div>
 
@@ -514,12 +518,13 @@
         assert(spec.sectorsPerTrack === 9, 'getDiskSpec: 9 sectors/track');
         assert(spec.firstSectorId === 0xC1, 'getDiskSpec: first sector ID = 0xC1');
 
-        // Test fallback when checksum is wrong
+        // Test fallback when checksum is wrong — DPB fields still valid so valid=true
+        // (RealSpectrum compatibility: accept disks with bad checksum if DPB is structurally sound)
         const badBoot = DSKLoader.createBlankDSK();
         const badBootSec = badBoot.readSector(0, 0, 0xC1);
         badBootSec[15] = 0x00; // corrupt checksum
         const fallback = DSKLoader.getDiskSpec(badBoot);
-        assert(fallback.valid === false, 'getDiskSpec: invalid checksum returns valid=false');
+        assert(fallback.valid === true, 'getDiskSpec: DPB fallback still valid despite bad checksum');
         assert(fallback.reservedTracks === 1, 'getDiskSpec fallback: reservedTracks = 1');
 
         section('DSKLoader - getBlockAllocationMap');
@@ -711,10 +716,10 @@
         headerSec[13] = 0;
         headerSec[14] = 0;
         headerSec[15] = 3;    // type = CODE
-        headerSec[16] = 0x00; // load address low
-        headerSec[17] = 0x80; // load address high (0x8000)
-        headerSec[18] = 0x00; // data length low
-        headerSec[19] = 0x01; // data length high (256)
+        headerSec[16] = 0x00; // data length low (256)
+        headerSec[17] = 0x01; // data length high
+        headerSec[18] = 0x00; // load address low (0x8000)
+        headerSec[19] = 0x80; // load address high
 
         const files5 = DSKLoader.listFiles(dsk4);
         assert(files5.length === 1, '+3DOS header: file listed');
@@ -1353,6 +1358,1135 @@
     }
 
     // ═══════════════════════════════════════════════════════
+    // TOS (Timex FDD3000) Format Tests
+    // ═══════════════════════════════════════════════════════
+    function runTOSTests() {
+        section('TOS - getDiskSpec detects TOS format');
+
+        // Build a DSK with 16 sectors of 256 bytes per track (TOS format)
+        const tosSectors = [];
+        for (let i = 0; i < 16; i++) {
+            const data = new Uint8Array(256);
+            tosSectors.push({ id: i, sizeCode: 1, cylinder: 0, head: 0, data, st1: 0, st2: 0 });
+        }
+        // Need enough tracks: at least 40 to pass specTracks >= 40 validation
+        // TOS has 4 reserved tracks, so we build 40 tracks
+        const trackDefs = [];
+        for (let t = 0; t < 40; t++) {
+            const secs = [];
+            for (let i = 0; i < 16; i++) {
+                const data = new Uint8Array(256);
+                if (t >= 4) data.fill(0xE5); // directory/data tracks
+                else data.fill(0x55); // boot area — not directory
+                secs.push({ id: i, sizeCode: 1, cylinder: t, head: 0, data, st1: 0, st2: 0 });
+            }
+            trackDefs.push({ sectors: secs });
+        }
+        const tosBin = buildExtendedDSK(40, 1, trackDefs);
+        const tosImg = DSKLoader.parse(tosBin);
+        const tosSpec = DSKLoader.getDiskSpec(tosImg);
+
+        assert(tosSpec.isTOS === true, 'TOS: isTOS flag set');
+        assert(tosSpec.recognized === true, 'TOS: recognized flag set');
+        assert(tosSpec.valid === false, 'TOS: valid=false (no +3DOS boot spec)');
+        assert(tosSpec.sectorsPerTrack === 16, 'TOS: 16 sectors/track');
+        assert(tosSpec.sectorSize === 256, 'TOS: 256 byte sectors');
+        assert(tosSpec.reservedTracks === 4, 'TOS: 4 reserved tracks');
+        assert(tosSpec.blockShift === 3, 'TOS: blockShift=3 for 40-track SS');
+        assert(tosSpec.blockSize === 1024, 'TOS: blockSize=1024');
+        assert(tosSpec.skewTable !== undefined, 'TOS: skewTable present');
+        assert(tosSpec.skewTable.length === 16, 'TOS: skewTable has 16 entries');
+        assert(tosSpec.skewTable[0] === 0, 'TOS: skewTable[0] = 0');
+        assert(tosSpec.skewTable[1] === 7, 'TOS: skewTable[1] = 7');
+
+        section('TOS - CP/M variant auto-detection (reservedTracks=2, skew=5)');
+
+        // Build a TOS disk where directory is at track 2 (CP/M variant fdd3000_2)
+        // Track 2 filled with 0xE5 (valid empty dir), tracks 0-1 = boot (non-dir), 3+ = data
+        const cpmTrackDefs = [];
+        for (let t = 0; t < 40; t++) {
+            const secs = [];
+            for (let i = 0; i < 16; i++) {
+                const data = new Uint8Array(256);
+                if (t >= 2) data.fill(0xE5); // directory fill from track 2
+                else data.fill(0x55); // boot area — not directory (must not look like valid entries)
+                secs.push({ id: i, sizeCode: 1, cylinder: t, head: 0, data, st1: 0, st2: 0 });
+            }
+            cpmTrackDefs.push({ sectors: secs });
+        }
+        // Make track 4 NOT look like a directory (put non-E5/non-user data)
+        for (const sec of cpmTrackDefs[4].sectors) {
+            sec.data.fill(0x55);
+        }
+        const cpmTosBin = buildExtendedDSK(40, 1, cpmTrackDefs);
+        const cpmTosImg = DSKLoader.parse(cpmTosBin);
+        const cpmTosSpec = DSKLoader.getDiskSpec(cpmTosImg);
+
+        assert(cpmTosSpec.isTOS === true, 'TOS CP/M: isTOS flag set');
+        assert(cpmTosSpec.reservedTracks === 2, 'TOS CP/M: 2 reserved tracks');
+        assert(cpmTosSpec.skewTable[0] === 0, 'TOS CP/M: skewTable[0] = 0');
+        assert(cpmTosSpec.skewTable[1] === 5, 'TOS CP/M: skewTable[1] = 5 (skew 5)');
+        assert(cpmTosSpec.blockSize === 1024, 'TOS CP/M: blockSize=1024');
+        // With 2 reserved tracks: 38 data tracks, 608 sectors, 152 blocks → fits in 8-bit
+        assert(cpmTosSpec.blockShift === 3, 'TOS CP/M: blockShift=3');
+
+        // Verify listFiles works with CP/M variant
+        // Add a directory entry to track 2
+        const cpmTrackDefs2 = [];
+        for (let t = 0; t < 40; t++) {
+            const secs = [];
+            for (let i = 0; i < 16; i++) {
+                const data = new Uint8Array(256);
+                data.fill(0xE5);
+                secs.push({ id: i, sizeCode: 1, cylinder: t, head: 0, data, st1: 0, st2: 0 });
+            }
+            cpmTrackDefs2.push({ sectors: secs });
+        }
+        // Tracks 0-1: boot area (not directory — must not look like valid entries)
+        for (let t = 0; t < 2; t++) {
+            for (const sec of cpmTrackDefs2[t].sectors) sec.data.fill(0x55);
+        }
+        // Track 4: not directory
+        for (const sec of cpmTrackDefs2[4].sectors) sec.data.fill(0x55);
+        // Put one file entry in track 2 sector 0
+        const cpmDirSec = cpmTrackDefs2[2].sectors[0].data;
+        // Entry at offset 0: user=0, name="HELLO   ", ext="COM", byte12=0, bc=0, sizeHi=0, sizeLo=8, block=4
+        cpmDirSec[0] = 0;   // user
+        const fname = 'HELLO   COM';
+        for (let i = 0; i < 8; i++) cpmDirSec[1 + i] = fname.charCodeAt(i);
+        for (let i = 0; i < 3; i++) cpmDirSec[9 + i] = fname.charCodeAt(8 + i);
+        cpmDirSec[12] = 0;  // extent
+        cpmDirSec[13] = 0;  // tail/bc
+        cpmDirSec[14] = 0;  // sizeHi
+        cpmDirSec[15] = 8;  // sizeLo/rc = 8
+        cpmDirSec[16] = 4;  // first block = 4
+        const cpmTosBin2 = buildExtendedDSK(40, 1, cpmTrackDefs2);
+        const cpmTosImg2 = DSKLoader.parse(cpmTosBin2);
+        const cpmTosFiles = DSKLoader.listFiles(cpmTosImg2);
+        assert(cpmTosFiles.length === 1, 'TOS CP/M: 1 file listed');
+        assert(cpmTosFiles[0].name === 'HELLO', 'TOS CP/M: file name = HELLO');
+        assert(cpmTosFiles[0].ext === 'COM', 'TOS CP/M: file ext = COM');
+
+        section('TOS - disk label variant auto-detection (reservedTracks=0, no skew)');
+
+        // Build a 2-sided 40-track TOS disk with reservedTracks=0.
+        // Directory is at track 0 itself, with a disk label entry (user=0xFF).
+        // Track 0 (cyl0/head0): dir entries with disk label + files
+        // Track 1 (cyl0/head1): dir entries with disk label, rest 0xE5
+        // Track 2+ (cyl1+): file data (non-directory)
+        const dlTrackDefs = [];
+        for (let t = 0; t < 80; t++) { // 40 cyls × 2 sides = 80 logical tracks
+            const cyl = Math.floor(t / 2);
+            const head = t % 2;
+            const secs = [];
+            for (let i = 0; i < 16; i++) {
+                const data = new Uint8Array(256);
+                if (t <= 1) data.fill(0xE5); // directory tracks
+                else data.fill(0x55); // data tracks — not directory
+                secs.push({ id: i, sizeCode: 1, cylinder: cyl, head, data, st1: 0, st2: 0 });
+            }
+            dlTrackDefs.push({ sectors: secs });
+        }
+        // Put disk label in track 0 sector 0 (id=0): user=0xFF, name="1A", ext="DIR"
+        const dlDirSec = dlTrackDefs[0].sectors[0].data;
+        dlDirSec[0] = 0xFF; // user = disk label
+        const dlLabel = '1A      DIR';
+        for (let i = 0; i < 8; i++) dlDirSec[1 + i] = dlLabel.charCodeAt(i);
+        for (let i = 0; i < 3; i++) dlDirSec[9 + i] = dlLabel.charCodeAt(8 + i);
+        // File entry at offset 32: user=0, name="TEST    ", ext="   ", block=4
+        dlDirSec[32] = 0; // user
+        const dlFname = 'TEST       ';
+        for (let i = 0; i < 8; i++) dlDirSec[33 + i] = dlFname.charCodeAt(i);
+        for (let i = 0; i < 3; i++) dlDirSec[41 + i] = dlFname.charCodeAt(8 + i);
+        dlDirSec[44] = 0; // extent
+        dlDirSec[45] = 0; // tail
+        dlDirSec[46] = 0; // sizeHi
+        dlDirSec[47] = 1; // sizeLo
+        dlDirSec[48] = 4; dlDirSec[49] = 0; // first block = 4 (16-bit pointer)
+        // File entry at offset 64: user=0, name="TEST2   ", ext="   ", block=5
+        dlDirSec[64] = 0;
+        const dlFname2 = 'TEST2      ';
+        for (let i = 0; i < 8; i++) dlDirSec[65 + i] = dlFname2.charCodeAt(i);
+        for (let i = 0; i < 3; i++) dlDirSec[73 + i] = dlFname2.charCodeAt(8 + i);
+        dlDirSec[76] = 0;
+        dlDirSec[77] = 0;
+        dlDirSec[78] = 0;
+        dlDirSec[79] = 1;
+        dlDirSec[80] = 5; dlDirSec[81] = 0;
+        // Track 1 (cyl0/head1): disk label "1B DIR", rest 0xE5
+        const dlDirSec1 = dlTrackDefs[1].sectors[0].data;
+        dlDirSec1[0] = 0xFF;
+        const dlLabel2 = '1B      DIR';
+        for (let i = 0; i < 8; i++) dlDirSec1[1 + i] = dlLabel2.charCodeAt(i);
+        for (let i = 0; i < 3; i++) dlDirSec1[9 + i] = dlLabel2.charCodeAt(8 + i);
+
+        const dlBin = buildExtendedDSK(40, 2, dlTrackDefs);
+        const dlImg = DSKLoader.parse(dlBin);
+        const dlSpec = DSKLoader.getDiskSpec(dlImg);
+
+        assert(dlSpec.isTOS === true, 'TOS disk label: isTOS flag set');
+        assert(dlSpec.reservedTracks === 0, 'TOS disk label: reservedTracks=0');
+        assert(dlSpec.skewTable == null, 'TOS disk label: no skew table (sequential sectors)');
+        assert(dlSpec.sides === 2, 'TOS disk label: 2 sides');
+        // 80 logical tracks, 0 reserved → 80 data tracks, 1280 sectors → blockShift=4 (2048)
+        assert(dlSpec.blockShift === 4, 'TOS disk label: blockShift=4');
+        assert(dlSpec.blockSize === 2048, 'TOS disk label: blockSize=2048');
+        assert(dlSpec.use16bit === true, 'TOS disk label: use16bit=true');
+
+        // Verify listFiles returns the 2 files (not the disk labels)
+        const dlFiles = DSKLoader.listFiles(dlImg);
+        assert(dlFiles.length === 2, 'TOS disk label: 2 files listed (labels excluded)');
+        assert(dlFiles[0].name === 'TEST', 'TOS disk label: first file = TEST');
+        assert(dlFiles[1].name === 'TEST2', 'TOS disk label: second file = TEST2');
+
+        section('TOS - _logicalToSectorId applies skew');
+
+        // With skew table [0,7,14,5,12,3,10,1,8,15,6,13,4,11,2,9]
+        // Logical sector 0 → physical ID 0, logical 1 → physical 7, etc.
+        assert(DSKLoader._logicalToSectorId(tosSpec, 0) === 0, 'skew: logical 0 → physical 0');
+        assert(DSKLoader._logicalToSectorId(tosSpec, 1) === 7, 'skew: logical 1 → physical 7');
+        assert(DSKLoader._logicalToSectorId(tosSpec, 2) === 14, 'skew: logical 2 → physical 14');
+        assert(DSKLoader._logicalToSectorId(tosSpec, 7) === 1, 'skew: logical 7 → physical 1');
+
+        // Without skew table (normal +3), just adds firstSectorId
+        const p3Spec = { firstSectorId: 0xC1 };
+        assert(DSKLoader._logicalToSectorId(p3Spec, 0) === 0xC1, 'no skew: logical 0 → 0xC1');
+        assert(DSKLoader._logicalToSectorId(p3Spec, 3) === 0xC4, 'no skew: logical 3 → 0xC4');
+
+        section('TOS - listFiles with TOS CODE file header');
+
+        // Create a TOS disk with a CODE file
+        // Directory at track 4, file data at block 4 (after 4 dir blocks)
+        const tosDsk = DSKLoader.parse(tosBin);
+        const tosSpec2 = DSKLoader.getDiskSpec(tosDsk);
+
+        // Write a directory entry at track 4 (first directory track)
+        // TOS uses sector skew, so logical sector 0 maps to physical sector ID 0
+        const physId = DSKLoader._logicalToSectorId(tosSpec2, 0);
+        const dirSec = tosDsk.readSector(4, 0, physId);
+
+        // Fill with 0xE5 first
+        dirSec.fill(0xE5);
+
+        // Entry 0: user=0, name="GAME    ", ext="   ", part=0, tail=0, sizeHi=0, sizeLo=8
+        // sizeLo/sizeHi encode sectors*2: 8 = 4 sectors × 256 = 1024 bytes
+        for (let i = 0; i < 32; i++) dirSec[i] = 0;
+        dirSec[0] = 0;  // user
+        const tosName = 'GAME    ';
+        for (let i = 0; i < 8; i++) dirSec[1 + i] = tosName.charCodeAt(i);
+        dirSec[9] = ' '.charCodeAt(0);
+        dirSec[10] = ' '.charCodeAt(0);
+        dirSec[11] = ' '.charCodeAt(0);
+        dirSec[12] = 0;  // part (extent) = 0
+        dirSec[13] = 0;  // tail (bytes in last sector) = 0 means full sectors
+        dirSec[14] = 0;  // sizeHi
+        dirSec[15] = 8;  // sizeLo: sectors*2 = 8 → 4 sectors → 1024 bytes
+        dirSec[16] = 4;  // allocation block 4 (first data block after dir blocks)
+
+        // Write TOS CODE header into the file's first sector (block 4)
+        // Block 4: absoluteSector = 4 * (1024/256) = 16 sectors from data start
+        // Data area starts at track 4, so sector 16 = track 5, sector 0
+        const dataSectorId = DSKLoader._logicalToSectorId(tosSpec2, 0);
+        const dataSec = tosDsk.readSector(5, 0, dataSectorId);
+        // TOS CODE header: type(1) + dataLen(2LE) + address(2LE) = 5 bytes
+        dataSec[0] = 3;    // type = CODE
+        dataSec[1] = 0xFB; // dataLen low = 1019 (1024 - 5 = 1019)
+        dataSec[2] = 0x03; // dataLen high (0x03FB = 1019)
+        dataSec[3] = 0x00; // address low = 0x8000
+        dataSec[4] = 0x80; // address high
+        // Fill rest with pattern
+        for (let i = 5; i < 256; i++) dataSec[i] = i & 0xFF;
+
+        const tosFiles = DSKLoader.listFiles(tosDsk);
+        assert(tosFiles.length === 1, 'TOS CODE: 1 file listed');
+        assert(tosFiles[0].name === 'GAME', 'TOS CODE: name = GAME');
+        assert(tosFiles[0].plus3Type === 3, 'TOS CODE: type = 3 (CODE)');
+        assert(tosFiles[0].loadAddress === 0x8000, 'TOS CODE: loadAddress = 0x8000');
+        assert(tosFiles[0].headerSize === 5, 'TOS CODE: headerSize = 5');
+        assert(tosFiles[0].size === 1019, 'TOS CODE: size adjusted (1024 - 5 = 1019)');
+
+        section('TOS - listFiles with TOS BASIC file header');
+
+        // Create another TOS disk for BASIC test
+        const tosDsk2 = DSKLoader.parse(tosBin);
+        const tosSpec3 = DSKLoader.getDiskSpec(tosDsk2);
+        const physId2 = DSKLoader._logicalToSectorId(tosSpec3, 0);
+        const dirSec2 = tosDsk2.readSector(4, 0, physId2);
+
+        dirSec2.fill(0xE5);
+        for (let i = 0; i < 32; i++) dirSec2[i] = 0;
+        dirSec2[0] = 0;
+        const tosName2 = 'PROGRAM ';
+        for (let i = 0; i < 8; i++) dirSec2[1 + i] = tosName2.charCodeAt(i);
+        dirSec2[9] = 'B'.charCodeAt(0);
+        dirSec2[10] = 'A'.charCodeAt(0);
+        dirSec2[11] = 'S'.charCodeAt(0);
+        dirSec2[12] = 0;  // part = 0
+        dirSec2[13] = 0;  // tail = 0
+        dirSec2[14] = 0;  // sizeHi
+        dirSec2[15] = 4;  // sizeLo: sectors*2 = 4 → 2 sectors → 512 bytes
+        dirSec2[16] = 4;  // block 4
+
+        // Write TOS BASIC header: type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE) = 7 bytes
+        const dataSec2 = tosDsk2.readSector(5, 0, DSKLoader._logicalToSectorId(tosSpec3, 0));
+        dataSec2[0] = 0;    // type = BASIC
+        dataSec2[1] = 0x0A; // autostart = 10
+        dataSec2[2] = 0x00;
+        dataSec2[3] = 0xF9; // dataLen = 505 (512 - 7 = 505)
+        dataSec2[4] = 0x01;
+        dataSec2[5] = 0xC8; // basLen = 200
+        dataSec2[6] = 0x00;
+
+        const tosFiles2 = DSKLoader.listFiles(tosDsk2);
+        assert(tosFiles2.length === 1, 'TOS BASIC: 1 file listed');
+        assert(tosFiles2[0].name === 'PROGRAM', 'TOS BASIC: name = PROGRAM');
+        assert(tosFiles2[0].plus3Type === 0, 'TOS BASIC: type = 0 (BASIC)');
+        assert(tosFiles2[0].autostart === 10, 'TOS BASIC: autostart = 10');
+        assert(tosFiles2[0].headerSize === 7, 'TOS BASIC: headerSize = 7');
+        assert(tosFiles2[0].dataLength === 200, 'TOS BASIC: dataLength (basLen) = 200');
+        assert(tosFiles2[0].varsOffset === 200, 'TOS BASIC: varsOffset = 200 (program body length)');
+        assert(tosFiles2[0].size === 505, 'TOS BASIC: size adjusted (512 - 7 = 505)');
+
+        section('TOS - TOS validation rejects mismatched sizes');
+
+        // Same setup but with wrong dataLen — header should NOT be detected
+        const tosDsk3 = DSKLoader.parse(tosBin);
+        const tosSpec4 = DSKLoader.getDiskSpec(tosDsk3);
+        const dirSec3 = tosDsk3.readSector(4, 0, DSKLoader._logicalToSectorId(tosSpec4, 0));
+
+        dirSec3.fill(0xE5);
+        for (let i = 0; i < 32; i++) dirSec3[i] = 0;
+        dirSec3[0] = 0;
+        const tosName3 = 'BADHEAD ';
+        for (let i = 0; i < 8; i++) dirSec3[1 + i] = tosName3.charCodeAt(i);
+        dirSec3[9] = ' '.charCodeAt(0);
+        dirSec3[10] = ' '.charCodeAt(0);
+        dirSec3[11] = ' '.charCodeAt(0);
+        dirSec3[12] = 0;
+        dirSec3[13] = 0;
+        dirSec3[14] = 0;
+        dirSec3[15] = 8;  // 4 sectors = 1024 bytes
+        dirSec3[16] = 4;
+
+        const dataSec3 = tosDsk3.readSector(5, 0, DSKLoader._logicalToSectorId(tosSpec4, 0));
+        dataSec3[0] = 3;    // type = CODE
+        dataSec3[1] = 0x00; // dataLen = 256 → 256 + 5 = 261 ≠ 1024, mismatch
+        dataSec3[2] = 0x01;
+        dataSec3[3] = 0x00;
+        dataSec3[4] = 0x40;
+
+        const tosFiles3 = DSKLoader.listFiles(tosDsk3);
+        assert(tosFiles3.length === 1, 'TOS bad header: file listed');
+        assert(tosFiles3[0].plus3Type === undefined, 'TOS bad header: no type detected (size mismatch)');
+        assert(tosFiles3[0].headerSize === undefined, 'TOS bad header: no headerSize');
+        assert(tosFiles3[0].size === 1024, 'TOS bad header: size unchanged at 1024');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UPD765 SK (Skip Deleted) and Deleted Data Tests
+    // ═══════════════════════════════════════════════════════
+    function runSKDeletedTests() {
+        section('UPD765 - Read Data with DDAM sector (SK=0)');
+
+        // Create a disk with one normal sector and one deleted-data sector
+        const dskSK = DSKLoader.createBlankDSK();
+        const track0 = dskSK.getTrack(0, 0);
+        // Mark sector 0xC2 as having Deleted Data Address Mark (DDAM)
+        // DSK ST2 bit 6 = DDAM
+        const sec2 = track0.sectors.find(s => s.id === 0xC2);
+        sec2.st2 = 0x40; // DDAM flag
+        // Write recognizable data
+        const secC1 = track0.sectors.find(s => s.id === 0xC1);
+        for (let i = 0; i < secC1.data.length; i++) secC1.data[i] = 0x11;
+        for (let i = 0; i < sec2.data.length; i++) sec2.data[i] = 0x22;
+
+        const fdcSK = new UPD765();
+        fdcSK.drives[0].disk = dskSK;
+        fdcSK.drives[0].motorOn = true;
+        fdcSK.drives[0].track = 0;
+
+        // Specify
+        fdcCommand(fdcSK, [0x03, 0xDF, 0x02]);
+
+        // Read Data (normal, SK=0): command byte 0x46 = MF=1, SK=0, Read Data
+        // Read from C1 to C2 (EOT=C2): should read C1 (normal, matches),
+        // then read C2 (DDAM, mismatch) → sets CM flag, terminates
+        fdcSK.writeData(0x46); // MF=1, SK=0, cmd=06
+        fdcSK.writeData(0x00); // drive 0, head 0
+        fdcSK.writeData(0x00); // C = 0
+        fdcSK.writeData(0x00); // H = 0
+        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x02); // N = 2 (512)
+        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x1B); // GPL
+        fdcSK.writeData(0xFF); // DTL
+
+        assert(fdcSK.phase === fdcSK.PHASE_EXECUTION, 'SK=0 DDAM: enters execution phase');
+        const skData = fdcReadAllData(fdcSK);
+        const skResult = fdcCollectResult(fdcSK);
+
+        // Should have read both sectors (1024 bytes)
+        assert(skData.length === 1024, 'SK=0 DDAM: read 2 sectors (1024 bytes)');
+        assert(skData[0] === 0x11, 'SK=0 DDAM: first sector data correct');
+        assert(skData[512] === 0x22, 'SK=0 DDAM: second sector (DDAM) data read');
+
+        // ST2 should have CM flag (bit 6) set
+        assert(skResult.length === 7, 'SK=0 DDAM: 7-byte result');
+        const st2SK0 = skResult[2];
+        assert((st2SK0 & 0x40) !== 0, 'SK=0 DDAM: CM flag set in ST2');
+
+        section('UPD765 - Read Data with DDAM sector (SK=1)');
+
+        // Reset FDC and seek back to track 0
+        fdcSK.reset();
+        fdcSK.drives[0].disk = dskSK;
+        fdcSK.drives[0].motorOn = true;
+        fdcSK.drives[0].track = 0;
+        fdcCommand(fdcSK, [0x03, 0xDF, 0x02]); // Specify
+
+        // Read Data with SK=1: command byte 0x66 = SK=1, MF=1, Read Data
+        // Read from C1 to C2 (EOT=C2): should read C1 (matches),
+        // skip C2 (DDAM, mismatch)
+        fdcSK.writeData(0x66); // SK=1, MF=1, cmd=06
+        fdcSK.writeData(0x00); // drive 0, head 0
+        fdcSK.writeData(0x00); // C = 0
+        fdcSK.writeData(0x00); // H = 0
+        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x02); // N = 2 (512)
+        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x1B); // GPL
+        fdcSK.writeData(0xFF); // DTL
+
+        assert(fdcSK.phase === fdcSK.PHASE_EXECUTION, 'SK=1 DDAM: enters execution phase');
+        const skData2 = fdcReadAllData(fdcSK);
+        const skResult2 = fdcCollectResult(fdcSK);
+
+        // Should have read only C1 (512 bytes), C2 was skipped
+        assert(skData2.length === 512, 'SK=1 DDAM: read 1 sector (512 bytes), DDAM skipped');
+        assert(skData2[0] === 0x11, 'SK=1 DDAM: sector data correct');
+
+        // CM flag should NOT be set (sector was skipped, not read)
+        assert(skResult2.length === 7, 'SK=1 DDAM: 7-byte result');
+        const st2SK1 = skResult2[2];
+        assert((st2SK1 & 0x40) === 0, 'SK=1 DDAM: CM flag NOT set (sector skipped)');
+
+        section('UPD765 - Read Data SK=1 all sectors DDAM');
+
+        // All sectors on track are DDAM — SK=1 should skip all, return EN error
+        fdcSK.reset();
+        fdcSK.drives[0].disk = dskSK;
+        fdcSK.drives[0].motorOn = true;
+        fdcSK.drives[0].track = 0;
+        fdcCommand(fdcSK, [0x03, 0xDF, 0x02]);
+
+        // Mark C1 as DDAM too
+        secC1.st2 = 0x40;
+
+        fdcSK.writeData(0x66); // SK=1, MF=1, cmd=06
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x02);
+        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x1B);
+        fdcSK.writeData(0xFF);
+
+        // Should go straight to result (no data to read)
+        assert(fdcSK.phase === fdcSK.PHASE_RESULT, 'SK=1 all DDAM: straight to result (no data)');
+        const skResult3 = fdcCollectResult(fdcSK);
+        assert(skResult3.length === 7, 'SK=1 all DDAM: 7-byte result');
+        const st0SK3 = skResult3[0];
+        const st1SK3 = skResult3[1];
+        assert((st0SK3 & 0xC0) === 0x40, 'SK=1 all DDAM: abnormal termination');
+        assert((st1SK3 & 0x80) !== 0, 'SK=1 all DDAM: EN flag set (end of track, all skipped)');
+
+        // Clean up: reset C1 DDAM flag
+        secC1.st2 = 0;
+
+        section('UPD765 - Read Deleted Data reads DDAM sectors');
+
+        // Read Deleted Data (0x4C) should read DDAM sectors normally
+        fdcSK.reset();
+        fdcSK.drives[0].disk = dskSK;
+        fdcSK.drives[0].motorOn = true;
+        fdcSK.drives[0].track = 0;
+        fdcCommand(fdcSK, [0x03, 0xDF, 0x02]);
+
+        // C2 is still DDAM — Read Deleted Data should read it normally
+        fdcSK.writeData(0x4C); // MF=1, SK=0, cmd=0C (Read Deleted Data)
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0x00);
+        fdcSK.writeData(0xC2); // R = C2
+        fdcSK.writeData(0x02);
+        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x1B);
+        fdcSK.writeData(0xFF);
+
+        assert(fdcSK.phase === fdcSK.PHASE_EXECUTION, 'ReadDeleted: enters execution');
+        const delData = fdcReadAllData(fdcSK);
+        const delResult = fdcCollectResult(fdcSK);
+
+        assert(delData.length === 512, 'ReadDeleted: read 512 bytes from DDAM sector');
+        assert(delData[0] === 0x22, 'ReadDeleted: DDAM sector data correct');
+        // CM should NOT be set because mark matches command type
+        assert((delResult[2] & 0x40) === 0, 'ReadDeleted: CM not set (mark matches)');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Weak Sector Randomization Tests
+    // ═══════════════════════════════════════════════════════
+    function runWeakSectorTests() {
+        section('Weak sector - randomization on read');
+
+        // Create EDSK with a weak sector (2 copies, difference at byte 100)
+        const weakData = new Uint8Array(1024);
+        for (let i = 0; i < 512; i++) weakData[i] = 0xAA;
+        for (let i = 512; i < 1024; i++) weakData[i] = 0xAA;
+        weakData[512 + 100] = 0xBB; // difference at byte 100
+
+        const weakTracks = [
+            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
+        ];
+        const weakBin = buildExtendedDSK(1, 1, weakTracks);
+        const weakImg = DSKLoader.parse(weakBin);
+
+        // Verify weak sector has weakMap from parsing
+        const weakSec = weakImg.getTrack(0, 0).sectors[0];
+        assert(weakSec.weakMap !== null, 'weak: weakMap generated');
+        assert(weakSec.weakMap[100] === 1, 'weak: byte 100 is weak');
+        assert(weakSec.weakMap[0] === 0, 'weak: byte 0 is stable');
+
+        // Read via UPD765 multiple times — stable bytes should always be same,
+        // weak byte at position 100 should vary (randomized)
+        const fdcW = new UPD765();
+        fdcW.drives[0].disk = weakImg;
+        fdcW.drives[0].motorOn = true;
+        fdcW.drives[0].track = 0;
+        fdcCommand(fdcW, [0x03, 0xDF, 0x02]); // Specify
+
+        const reads = [];
+        for (let attempt = 0; attempt < 10; attempt++) {
+            fdcW.reset();
+            fdcW.drives[0].disk = weakImg;
+            fdcW.drives[0].motorOn = true;
+            fdcW.drives[0].track = 0;
+            fdcCommand(fdcW, [0x03, 0xDF, 0x02]);
+
+            fdcW.writeData(0x46); // Read Data
+            fdcW.writeData(0x00);
+            fdcW.writeData(0x00);
+            fdcW.writeData(0x00);
+            fdcW.writeData(0xC1);
+            fdcW.writeData(0x02);
+            fdcW.writeData(0xC1);
+            fdcW.writeData(0x1B);
+            fdcW.writeData(0xFF);
+
+            const data = fdcReadAllData(fdcW);
+            fdcCollectResult(fdcW);
+            reads.push(data[100]); // weak byte position
+        }
+
+        // Stable byte should be consistent across all reads
+        // (Read byte 0 once to verify)
+        fdcW.reset();
+        fdcW.drives[0].disk = weakImg;
+        fdcW.drives[0].motorOn = true;
+        fdcW.drives[0].track = 0;
+        fdcCommand(fdcW, [0x03, 0xDF, 0x02]);
+        fdcW.writeData(0x46);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0xC1);
+        fdcW.writeData(0x02);
+        fdcW.writeData(0xC1);
+        fdcW.writeData(0x1B);
+        fdcW.writeData(0xFF);
+        const finalData = fdcReadAllData(fdcW);
+        fdcCollectResult(fdcW);
+        assert(finalData[0] === 0xAA, 'weak: stable byte 0 always = 0xAA');
+
+        // Weak byte should have at least some variation across 10 reads
+        // (extremely unlikely to get same random value 10 times: (1/256)^9 ≈ 0)
+        const uniqueValues = new Set(reads);
+        assert(uniqueValues.size >= 2, `weak: byte 100 varies across reads (${uniqueValues.size} unique values in 10 reads)`);
+
+        section('Weak sector - stable bytes unchanged');
+
+        // Verify all non-weak bytes are identical across reads
+        fdcW.reset();
+        fdcW.drives[0].disk = weakImg;
+        fdcW.drives[0].motorOn = true;
+        fdcW.drives[0].track = 0;
+        fdcCommand(fdcW, [0x03, 0xDF, 0x02]);
+        fdcW.writeData(0x46);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0x00);
+        fdcW.writeData(0xC1);
+        fdcW.writeData(0x02);
+        fdcW.writeData(0xC1);
+        fdcW.writeData(0x1B);
+        fdcW.writeData(0xFF);
+        const stableCheck = fdcReadAllData(fdcW);
+        fdcCollectResult(fdcW);
+
+        let allStableCorrect = true;
+        for (let i = 0; i < 512; i++) {
+            if (i === 100) continue; // skip weak byte
+            if (stableCheck[i] !== 0xAA) { allStableCorrect = false; break; }
+        }
+        assert(allStableCorrect, 'weak: all non-weak bytes are stable (0xAA)');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Copy Protection Detection Tests
+    // ═══════════════════════════════════════════════════════
+
+    // Duplicated from explorer.js (pure functions, no DOM deps)
+    function findStringInSector(data, str) {
+        if (!data || data.length < str.length) return -1;
+        const len = data.length - str.length + 1;
+        outer:
+        for (let i = 0; i < len; i++) {
+            for (let j = 0; j < str.length; j++) {
+                if (data[i + j] !== str.charCodeAt(j)) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    function detectDiskProtection(dskImage) {
+        if (!dskImage || dskImage.numTracks === 0) return null;
+
+        let uniform = true;
+        let hasErrors = false;
+        const t0 = dskImage.getTrack(0, 0);
+        if (!t0) return null;
+        const refCount = t0.sectors.length;
+        const refSize = refCount > 0 ? t0.sectors[0].sizeCode : -1;
+
+        for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+            for (let head = 0; head < dskImage.numSides; head++) {
+                const track = dskImage.getTrack(cyl, head);
+                if (!track) { uniform = false; continue; }
+                if (track.sectors.length !== refCount) uniform = false;
+                for (const sec of track.sectors) {
+                    if (sec.sizeCode !== refSize) uniform = false;
+                    if (sec.st1 || sec.st2) hasErrors = true;
+                }
+            }
+        }
+
+        if (uniform && !hasErrors) return null;
+
+        function getTrack(cyl, head) {
+            if (cyl >= dskImage.numTracks) return null;
+            if (head >= dskImage.numSides) return null;
+            return dskImage.getTrack(cyl, head);
+        }
+
+        function findInTrack(cyl, head, str) {
+            const t = getTrack(cyl, head);
+            if (!t) return false;
+            for (const sec of t.sectors) {
+                if (sec.data && findStringInSector(sec.data, str) >= 0) return true;
+            }
+            return false;
+        }
+
+        function findInSectorIdx(cyl, head, idx, str) {
+            const t = getTrack(cyl, head);
+            if (!t || idx >= t.sectors.length) return false;
+            return t.sectors[idx].data && findStringInSector(t.sectors[idx].data, str) >= 0;
+        }
+
+        function detectAlkatraz() {
+            if (findInTrack(0, 0, 'THE ALKATRAZ PROTECTION SYSTEM')) return 'Alkatraz';
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (t && t.sectors.length === 18 && t.sectors[0].sizeCode === 1) return 'Alkatraz';
+                }
+            }
+            return null;
+        }
+
+        function detectFrontier() {
+            if (findInTrack(1, 0, 'W DISK PROTECTION SYSTEM. (C) 1990 BY NEW FRONTIER SOFT.'))
+                return 'Frontier';
+            const t9 = getTrack(9, 0);
+            if (t9 && t9.sectors.length === 1 && t0.sectors.length > 0 && t0.sectors[0].data && t0.sectors[0].data.length === 4096)
+                return 'Frontier';
+            return null;
+        }
+
+        function detectHexagon() {
+            for (let cyl = 0; cyl <= 3 && cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'HEXAGON DISK PROTECTION c 1989')) return 'Hexagon';
+                if (findInTrack(cyl, 0, 'HEXAGON Disk Protection c 1989')) return 'Hexagon';
+            }
+            if (t0.sectors.length === 10) {
+                for (let cyl = 1; cyl < dskImage.numTracks; cyl++) {
+                    const t = getTrack(cyl, 0);
+                    if (t && t.sectors.length === 1 && t.sectors[0].sizeCode === 6
+                        && t.sectors[0].st1 === 32 && t.sectors[0].st2 === 96)
+                        return `Hexagon (T${cyl}/S0)`;
+                }
+            }
+            return null;
+        }
+
+        function detectPaulOwens() {
+            if (findInSectorIdx(0, 0, 2, 'PAUL OWENS\x80PROTECTION SYS')) return 'Paul Owens';
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length === 9 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length === 6 && t2.sectors[0].sizeCode === 1)
+                return 'Paul Owens';
+            return null;
+        }
+
+        function detectSpeedlock() {
+            const sigTests = [
+                ['Speedlock 1985', 'Speedlock +3 Protection Systems  (C) 1985 Speedlock Associates'],
+                ['Speedlock 1986', 'Speedlock +3 Protection System  (C) 1986 Speedlock Associates'],
+                ['Speedlock 1986', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1986 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1987', 'Speedlock +3 Protection Systems (C) 1987  D.Love & D.Maybury'],
+                ['Speedlock 1987', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1987 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1988', 'Speedlock +3 Protection System (C)1988 Speedlock Associates.'],
+                ['Speedlock 1988', 'SPEEDLOCK +3 PROTECTION SYSTEM (C) 1988 SPEEDLOCK ASSOCIATES'],
+                ['Speedlock 1989', 'SPEEDLOCK +3 DISC PROTECTION SYSTEMS (C) 1989 SPEEDLOCK ASSOC.'],
+                ['Speedlock 1989', 'SPEEDLOCK +3 DISC PROTECTION SYSTEM(C) 1989 SPEEDLOCK ASSOCS.'],
+                ['Speedlock 1990', 'SPEEDLOCK DISC PROTECTION SYSTEM (C)1990 SPEEDLOCK ASSOCIATES'],
+            ];
+            for (const [name, sig] of sigTests) {
+                for (let cyl = 0; cyl < Math.min(dskImage.numTracks, 5); cyl++) {
+                    if (findInTrack(cyl, 0, sig)) return name;
+                }
+            }
+            const t1 = getTrack(1, 0);
+            if (t0.sectors.length === 9 && t1 && t1.sectors.length === 5 && t1.sectors[0].sizeCode === 3) {
+                if (t0.sectors.length > 8 && t0.sectors[6].st2 === 64 && t0.sectors[8].st2 === 0)
+                    return 'Speedlock +3 1987';
+                if (t0.sectors.length > 8 && t0.sectors[6].st2 === 64 && t0.sectors[8].st2 === 64)
+                    return 'Speedlock +3 1988';
+            }
+            if (t0.sectors.length > 7 && t1 && t1.sectors.length === 1
+                && t1.sectors[0].id === 193 && t1.sectors[0].st1 === 32)
+                return 'Speedlock 1989/1990';
+            return null;
+        }
+
+        function detectThreeInch() {
+            const sigs = [
+                [0, 0, 0, '***Loader Copyright Three Inch Software 1988'],
+                [0, 0, 7, '***Loader Copyright Three Inch Software 1988'],
+                [1, 0, 4, '***Loader Copyright Three Inch Software 1988'],
+                [0, 0, 0, '***Loader (c) Three Inch Software 1988'],
+            ];
+            for (const [cyl, head, idx, sig] of sigs) {
+                if (findInSectorIdx(cyl, head, idx, sig)) return 'Three Inch Loader';
+            }
+            return null;
+        }
+
+        function detectLaserLoad() {
+            if (findInSectorIdx(0, 0, 2, 'Laser Load   By C.J.Pink For Consult Computer    Systems'))
+                return 'Laser Load';
+            return null;
+        }
+
+        function detectWRM() {
+            const t8 = getTrack(8, 0);
+            if (t8 && t8.sectors.length > 9 && t8.sectors[9].data) {
+                const d = t8.sectors[9].data;
+                if (findStringInSector(d, 'W.R.M Disc') >= 0
+                    && findStringInSector(d, 'Protection') >= 0
+                    && findStringInSector(d, 'System (c) 1987') >= 0)
+                    return 'W.R.M.';
+            }
+            return null;
+        }
+
+        function detectPMS() {
+            if (findInTrack(0, 0, '[C] P.M.S. 1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, 'P.M.S. LOADER [C]1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, '[C]P.M.S.1986')) return 'P.M.S.';
+            if (findInTrack(0, 0, 'P.M.S. PROTECTION [C]1986')) return 'P.M.S.';
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length > 0 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length > 0)
+                return 'P.M.S.';
+            return null;
+        }
+
+        function detectPlayers() {
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (!t || t.sectors.length !== 16) continue;
+                    let match = true;
+                    for (let i = 0; i < 16; i++) {
+                        if (t.sectors[i].id !== i || t.sectors[i].sizeCode !== i) { match = false; break; }
+                    }
+                    if (match) return 'Players';
+                }
+            }
+            return null;
+        }
+
+        function detectInfogrames() {
+            const t39 = getTrack(39, 0);
+            if (t39) {
+                for (const sec of t39.sectors) {
+                    if (sec.sizeCode === 2 && sec.data && sec.data.length === 540)
+                        return 'Infogrames';
+                }
+            }
+            return null;
+        }
+
+        function detectRainbowArts() {
+            const t40 = getTrack(40, 0);
+            if (t40) {
+                for (const sec of t40.sectors) {
+                    if (sec.id === 198 && sec.st1 === 32 && sec.st2 === 32)
+                        return 'Rainbow Arts';
+                }
+            }
+            return null;
+        }
+
+        function detectRemiKBI() {
+            const parts = [];
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'PROTECTION      Remi HERBULOT')) {
+                    parts.push('Remi Herbulot');
+                    break;
+                }
+            }
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, '(c) 1986 for KBI ')) {
+                    parts.push('KBI-19');
+                    break;
+                }
+            }
+            if (parts.length === 0 || !parts.includes('KBI-19')) {
+                const t39 = getTrack(39, 0);
+                const t38 = getTrack(38, 0);
+                if (t39 && t38 && t39.sectors.length === 10 && t38.sectors.length === 9) {
+                    for (const sec of t39.sectors) {
+                        if (sec.st1 === 32 && sec.st2 === 32) {
+                            if (!parts.includes('KBI-10')) parts.push('KBI-10');
+                            break;
+                        }
+                    }
+                }
+            }
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'ALAIN LAURENT GENERATION 5 1989')) {
+                    parts.push('CAAV');
+                    break;
+                }
+            }
+            return parts.length > 0 ? parts.join(' + ') : null;
+        }
+
+        function detectDiscSYS() {
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                for (let head = 0; head < dskImage.numSides; head++) {
+                    const t = getTrack(cyl, head);
+                    if (!t || t.sectors.length !== 16) continue;
+                    let match = true;
+                    for (let i = 0; i < 16; i++) {
+                        const s = t.sectors[i];
+                        if (s.id !== i || s.cylinder !== cyl || s.head !== head) { match = false; break; }
+                    }
+                    if (match) return 'DiscSYS';
+                }
+            }
+            for (let cyl = 0; cyl < dskImage.numTracks; cyl++) {
+                if (findInTrack(cyl, 0, 'discsys')) return 'DiscSYS';
+                if (findInTrack(cyl, 0, 'MEAN PROTECTION SYSTEM')) return 'DiscSYS';
+            }
+            return null;
+        }
+
+        function detectAmsoft() {
+            const t3 = getTrack(3, 0);
+            if (t3) {
+                for (const sec of t3.sectors) {
+                    if (sec.data && findStringInSector(sec.data, 'Amsoft disc protection system') >= 0
+                        && findStringInSector(sec.data, 'EXOPAL') >= 0)
+                        return 'Amsoft/EXOPAL';
+                }
+            }
+            return null;
+        }
+
+        function detectArmourloc() {
+            if (t0.sectors.length > 0 && t0.sectors[0].data && t0.sectors[0].data.length > 7) {
+                if (findStringInSector(t0.sectors[0].data.subarray(0, 10), '0K free') === 2)
+                    return 'ARMOURLOC';
+            }
+            return null;
+        }
+
+        function detectStudioB() {
+            if (findInSectorIdx(0, 0, 0, 'Disc format (c) 1986 Studio B Ltd.')) return 'Studio B';
+            if (findInSectorIdx(2, 0, 0, 'DISCLOC')) return 'Studio B/DiscLoc';
+            const t1 = getTrack(1, 0);
+            const t2 = getTrack(2, 0);
+            if (t0.sectors.length > 0 && t1 && t1.sectors.length === 0
+                && t2 && t2.sectors.length > 0) {
+                if (!findInTrack(0, 0, 'P.M.S.') && !findInTrack(0, 0, '[C] P.M.S.'))
+                    return 'Studio B';
+            }
+            return null;
+        }
+
+        const detectors = [
+            detectAlkatraz, detectFrontier, detectHexagon, detectPaulOwens,
+            detectSpeedlock, detectThreeInch, detectLaserLoad, detectWRM,
+            detectPMS, detectPlayers, detectInfogrames, detectRainbowArts,
+            detectRemiKBI, detectDiscSYS, detectAmsoft, detectArmourloc,
+            detectStudioB
+        ];
+
+        for (const detect of detectors) {
+            const result = detect();
+            if (result) return result;
+        }
+
+        return 'Unknown copy protection';
+    }
+
+    // Helper: build a DSKImage from buildExtendedDSK buffer
+    function parseDSK(buf) {
+        return DSKLoader.parse(buf);
+    }
+
+    // Helper: create sector data with embedded string
+    function makeSectorData(size, str, offset) {
+        const data = new Uint8Array(size);
+        data.fill(0xE5);
+        if (str) {
+            const off = offset || 0;
+            for (let i = 0; i < str.length; i++) {
+                data[off + i] = str.charCodeAt(i);
+            }
+        }
+        return data;
+    }
+
+    // Helper: create N identical sectors for a track
+    function makeUniformSectors(count, sizeCode, startId) {
+        const sectors = [];
+        const base = startId || 0xC1;
+        for (let i = 0; i < count; i++) {
+            sectors.push({ id: base + i, sizeCode, cylinder: 0, head: 0, st1: 0, st2: 0 });
+        }
+        return sectors;
+    }
+
+    function runProtectionTests() {
+        section('findStringInSector');
+
+        const testData = new Uint8Array([72, 101, 108, 108, 111]); // "Hello"
+        assert(findStringInSector(testData, 'Hello') === 0, 'finds string at start');
+        assert(findStringInSector(testData, 'ello') === 1, 'finds string at offset 1');
+        assert(findStringInSector(testData, 'World') === -1, 'returns -1 for missing');
+        assert(findStringInSector(null, 'Hello') === -1, 'returns -1 for null data');
+        assert(findStringInSector(new Uint8Array(0), 'X') === -1, 'returns -1 for empty data');
+
+        section('Uniform clean disk → null');
+
+        // 40 tracks, all 9 sectors × 512B, no errors
+        const uniformTracks = [];
+        for (let t = 0; t < 40; t++) {
+            uniformTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const uniformBuf = buildExtendedDSK(40, 1, uniformTracks);
+        const uniformImg = parseDSK(uniformBuf);
+        assert(detectDiskProtection(uniformImg) === null, 'uniform disk returns null');
+
+        section('Speedlock +3 1987 (structural)');
+
+        // T0=9sec, T1=5sec×1024B, T0/S6 st2=64, T0/S8 st2=0
+        const sl87Tracks = [];
+        // T0: 9 sectors, 512B
+        const t0secs87 = [];
+        for (let i = 0; i < 9; i++) {
+            t0secs87.push({
+                id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0,
+                st1: 0, st2: (i === 6) ? 64 : 0
+            });
+        }
+        sl87Tracks.push({ sectors: t0secs87 });
+        // T1: 5 sectors, 1024B
+        const t1secs87 = [];
+        for (let i = 0; i < 5; i++) {
+            t1secs87.push({ id: 0xC1 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
+        }
+        sl87Tracks.push({ sectors: t1secs87 });
+        // T2-T39: uniform 9×512B
+        for (let t = 2; t < 40; t++) {
+            sl87Tracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const sl87Buf = buildExtendedDSK(40, 1, sl87Tracks);
+        const sl87Img = parseDSK(sl87Buf);
+        assert(detectDiskProtection(sl87Img) === 'Speedlock +3 1987', 'detects Speedlock +3 1987');
+
+        section('Speedlock +3 1988 (structural)');
+
+        // Same as 1987 but T0/S8 st2=64
+        const sl88Tracks = [];
+        const t0secs88 = [];
+        for (let i = 0; i < 9; i++) {
+            t0secs88.push({
+                id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0,
+                st1: 0, st2: (i === 6 || i === 8) ? 64 : 0
+            });
+        }
+        sl88Tracks.push({ sectors: t0secs88 });
+        const t1secs88 = [];
+        for (let i = 0; i < 5; i++) {
+            t1secs88.push({ id: 0xC1 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
+        }
+        sl88Tracks.push({ sectors: t1secs88 });
+        for (let t = 2; t < 40; t++) {
+            sl88Tracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const sl88Buf = buildExtendedDSK(40, 1, sl88Tracks);
+        const sl88Img = parseDSK(sl88Buf);
+        assert(detectDiskProtection(sl88Img) === 'Speedlock +3 1988', 'detects Speedlock +3 1988');
+
+        section('Speedlock 1989/1990 (structural)');
+
+        // T0>7sec, T1=1sec ID=193 st1=32
+        const sl89Tracks = [];
+        sl89Tracks.push({ sectors: makeUniformSectors(9, 2) });
+        sl89Tracks.push({ sectors: [{ id: 193, sizeCode: 2, cylinder: 1, head: 0, st1: 32, st2: 0 }] });
+        for (let t = 2; t < 40; t++) {
+            sl89Tracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const sl89Buf = buildExtendedDSK(40, 1, sl89Tracks);
+        const sl89Img = parseDSK(sl89Buf);
+        assert(detectDiskProtection(sl89Img) === 'Speedlock 1989/1990', 'detects Speedlock 1989/1990');
+
+        section('Alkatraz (signature)');
+
+        const alkTracks = [];
+        const alkSig = 'THE ALKATRAZ PROTECTION SYSTEM';
+        const alkData = makeSectorData(512, alkSig, 0);
+        const alkT0Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: alkData }];
+        for (let i = 1; i < 9; i++) {
+            alkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+        }
+        alkTracks.push({ sectors: alkT0Secs });
+        // T1 different sector count to trigger non-uniform
+        alkTracks.push({ sectors: makeUniformSectors(8, 2) });
+        for (let t = 2; t < 40; t++) {
+            alkTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const alkBuf = buildExtendedDSK(40, 1, alkTracks);
+        const alkImg = parseDSK(alkBuf);
+        assert(detectDiskProtection(alkImg) === 'Alkatraz', 'detects Alkatraz by signature');
+
+        section('Hexagon (signature)');
+
+        const hexTracks = [];
+        hexTracks.push({ sectors: makeUniformSectors(9, 2) });
+        const hexSig = 'HEXAGON DISK PROTECTION c 1989';
+        const hexData = makeSectorData(512, hexSig, 10);
+        const hexT1Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: hexData }];
+        for (let i = 1; i < 8; i++) {
+            hexT1Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
+        }
+        hexTracks.push({ sectors: hexT1Secs });
+        for (let t = 2; t < 40; t++) {
+            hexTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const hexBuf = buildExtendedDSK(40, 1, hexTracks);
+        const hexImg = parseDSK(hexBuf);
+        assert(detectDiskProtection(hexImg) === 'Hexagon', 'detects Hexagon by signature');
+
+        section('Remi + KBI combined');
+
+        const rkTracks = [];
+        // T0: embed Remi signature
+        const remiData = makeSectorData(512, 'PROTECTION      Remi HERBULOT', 0);
+        const rkT0Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: remiData }];
+        for (let i = 1; i < 9; i++) {
+            rkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+        }
+        rkTracks.push({ sectors: rkT0Secs });
+        // T1: embed KBI signature
+        const kbiData = makeSectorData(512, '(c) 1986 for KBI ', 0);
+        const rkT1Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: kbiData }];
+        for (let i = 1; i < 8; i++) {
+            rkT1Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
+        }
+        rkTracks.push({ sectors: rkT1Secs });
+        for (let t = 2; t < 40; t++) {
+            rkTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const rkBuf = buildExtendedDSK(40, 1, rkTracks);
+        const rkImg = parseDSK(rkBuf);
+        assert(detectDiskProtection(rkImg) === 'Remi Herbulot + KBI-19', 'detects combined Remi + KBI');
+
+        section('Unknown protection');
+
+        // Non-uniform tracks with FDC errors, no matching signatures
+        const unkTracks = [];
+        const unkT0Secs = [];
+        for (let i = 0; i < 9; i++) {
+            unkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+        }
+        unkTracks.push({ sectors: unkT0Secs });
+        // T1: different count + errors
+        unkTracks.push({ sectors: [
+            { id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0x20, st2: 0x40 },
+            { id: 0xC2, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
+            { id: 0xC3, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
+        ]});
+        for (let t = 2; t < 40; t++) {
+            unkTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const unkBuf = buildExtendedDSK(40, 1, unkTracks);
+        const unkImg = parseDSK(unkBuf);
+        assert(detectDiskProtection(unkImg) === 'Unknown copy protection', 'non-uniform + errors → Unknown');
+
+        section('P.M.S. (structural)');
+
+        // T0 formatted, T1 empty (0 sectors), T2 formatted
+        const pmsTracks = [];
+        pmsTracks.push({ sectors: makeUniformSectors(9, 2) });
+        pmsTracks.push({ sectors: [] }); // T1 empty
+        pmsTracks.push({ sectors: makeUniformSectors(9, 2) });
+        for (let t = 3; t < 40; t++) {
+            pmsTracks.push({ sectors: makeUniformSectors(9, 2) });
+        }
+        const pmsBuf = buildExtendedDSK(40, 1, pmsTracks);
+        const pmsImg = parseDSK(pmsBuf);
+        assert(detectDiskProtection(pmsImg) === 'P.M.S.', 'detects P.M.S. structural');
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Run All
     // ═══════════════════════════════════════════════════════
     function runAll() {
@@ -1368,6 +2502,10 @@
         runUPD765CommandTests();
         runUPD765DataTests();
         runRoundTripTests();
+        runTOSTests();
+        runSKDeletedTests();
+        runWeakSectorTests();
+        runProtectionTests();
 
         log(`\nDone. ${passed} passed, ${failed} failed.`, failed > 0 ? 'fail' : 'pass');
         updateSummary();
@@ -1382,6 +2520,10 @@
     window.runUPD765CommandTests = () => { passed=0; failed=0; logEl.innerHTML=''; runUPD765CommandTests(); };
     window.runUPD765DataTests = () => { passed=0; failed=0; logEl.innerHTML=''; runUPD765DataTests(); };
     window.runRoundTripTests = () => { passed=0; failed=0; logEl.innerHTML=''; runRoundTripTests(); };
+    window.runTOSTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTOSTests(); };
+    window.runSKDeletedTests = () => { passed=0; failed=0; logEl.innerHTML=''; runSKDeletedTests(); };
+    window.runWeakSectorTests = () => { passed=0; failed=0; logEl.innerHTML=''; runWeakSectorTests(); };
+    window.runProtectionTests = () => { passed=0; failed=0; logEl.innerHTML=''; runProtectionTests(); };
 
     // Auto-run
     runAll();

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.7</title>
+    <title>ZX-M8XXX v0.14.13</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -911,6 +911,40 @@
             line-height: 1.4;
             overflow: auto;
             color: var(--text-primary);
+        }
+        .asm-progress {
+            padding: 8px 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .asm-progress.hidden { display: none; }
+        .asm-progress-label {
+            color: var(--cyan);
+            font-size: 11px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        .asm-progress-bar {
+            flex: 1;
+            height: 6px;
+            background: var(--bg-button);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .asm-progress-fill {
+            width: 0%;
+            height: 100%;
+            border-radius: 3px;
+            background: var(--cyan);
+            transition: width 0.15s linear;
+        }
+        .asm-progress-pct {
+            color: var(--text-secondary);
+            font-size: 10px;
+            min-width: 28px;
+            text-align: right;
+            white-space: nowrap;
         }
         .asm-output .asm-hint {
             color: var(--text-secondary);
@@ -3403,6 +3437,38 @@
             display: flex;
             flex-direction: column;
         }
+        /* Disk Map subtab */
+        .diskmap-body { display: flex; gap: 10px; }
+        .diskmap-left { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
+            min-width: 90px; max-width: 160px; }
+        .diskmap-toolbar { display: flex; align-items: center; gap: 4px; }
+        .diskmap-view-btn { padding: 2px 10px; background: var(--bg-button); border: 1px solid var(--bg-button-border);
+            color: var(--text-primary); cursor: pointer; font-size: 11px; }
+        .diskmap-view-btn.active { background: var(--accent); color: #000; }
+        .diskmap-status { font-size: 10px; color: var(--text-secondary); }
+        .diskmap-legend { display: flex; flex-direction: column; gap: 2px; padding: 0; font-size: 11px;
+            overflow-y: auto; flex: 1; min-height: 0; }
+        .diskmap-legend-item { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; }
+        .diskmap-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+        .diskmap-legend-item.dimmed .diskmap-legend-swatch { opacity: 0.3; }
+        .diskmap-main { flex: 1; min-width: 0; }
+        .diskmap-grid-container { overflow: auto; max-height: 800px; width: fit-content; padding-right: 14px; }
+        .diskmap-grid-wrapper { display: flex; gap: 16px; }
+        .diskmap-grid-side { display: flex; flex-direction: column; }
+        .diskmap-side-label { font-size: 10px; color: var(--text-secondary); text-align: center;
+            padding-bottom: 2px; font-weight: bold; }
+        .diskmap-grid { display: grid; gap: 1px; width: fit-content; }
+        .diskmap-cell { width: 18px; height: 18px; border-radius: 2px; cursor: pointer; transition: opacity 0.1s; }
+        .diskmap-cell:hover { outline: 1px solid #fff; z-index: 1; }
+        .diskmap-cell.dimmed { opacity: 0.25; }
+        .diskmap-row-label { font-size: 9px; color: var(--text-secondary); text-align: right;
+            padding-right: 4px; line-height: 18px; white-space: nowrap; }
+        .diskmap-col-label { font-size: 9px; color: var(--text-secondary); text-align: center; line-height: 18px; }
+        .diskmap-side-divider { width: 2px; background: var(--accent); opacity: 0.3; align-self: stretch; }
+        .diskmap-disk-container { display: flex; justify-content: center; gap: 20px; padding: 10px 0; }
+        #diskmapCanvas { cursor: crosshair; }
+        .diskmap-info { font-size: 11px; color: var(--text-secondary); min-height: 16px; padding: 2px 0; }
         .explorer-output {
             font-family: 'Consolas', 'Monaco', monospace;
             font-size: 12px;
@@ -3432,14 +3498,16 @@
             flex: 1;
             overflow: hidden;
         }
-        .explorer-preview {
+        .explorer-preview:not(.hidden) {
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: flex-start;
             padding: 10px;
             background: var(--bg-primary);
             border: 1px solid var(--bg-button);
             border-radius: 4px;
+            overflow: hidden;
         }
         .explorer-preview canvas {
             image-rendering: pixelated;
@@ -3731,10 +3799,14 @@
         }
         .explorer-file-type {
             color: var(--yellow);
-            width: 20px;
+            white-space: nowrap;
         }
         .explorer-file-name {
             color: #2ecc71;
+        }
+        .explorer-file-entry.dir-child .explorer-file-type,
+        .explorer-file-entry.dir-child .explorer-file-name {
+            padding-left: 16px;
         }
         .explorer-file-size {
             color: var(--text-secondary);
@@ -6597,7 +6669,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.7 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.13 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7379,7 +7451,7 @@
                         </div>
                         <button id="btnAsmAssemble" title="Assemble code (F9)" disabled>Assemble</button>
                         <button id="btnAsmInject" title="Inject assembled code to memory" disabled>Inject</button>
-                        <button id="btnAsmDebug" title="Inject code and start debugging at entry point" disabled>Debug</button>
+                        <button id="btnAsmDebug" title="Inject code and start debugging at entry point (Ctrl+F9)" disabled>Debug</button>
                         <button id="btnAsmClear" title="Clear all">Clear</button>
                         <button id="btnAsmNew" title="Create new file">New</button>
                         <button id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load</button>
@@ -7436,6 +7508,7 @@
                             <div class="asm-editor-wrap">
                                 <pre class="asm-highlight" id="asmHighlight"></pre>
                                 <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Random border stripes
+; @main
 ; @entry start
 
         ORG $8000
@@ -7444,13 +7517,20 @@ start:
         LD A, R
         AND 7
         OUT ($FE), A
-        JR start"></textarea>
+        JR start
+
+        SAVESNA &quot;stripes.sna&quot;, start ; md5: 7b3f9a1e4c6d2f08e5a1b9c3d7f0e2a4"></textarea>
                                 <div id="asmTstatePopup" class="asm-tstate-popup" style="display:none"></div>
                             </div>
                         </div>
                     </div>
                     <div class="asm-output-container">
                         <div class="asm-output-header">Output</div>
+                        <div id="asmProgress" class="asm-progress hidden">
+                            <span class="asm-progress-label" id="asmProgressLabel">Assembling&#x2026;</span>
+                            <div class="asm-progress-bar"><div class="asm-progress-fill" id="asmProgressFill"></div></div>
+                            <span class="asm-progress-pct" id="asmProgressPct"></span>
+                        </div>
                         <div class="asm-output" id="asmOutput"><span class="asm-hint">Press Assemble to compile</span></div>
                     </div>
                 </div>
@@ -7587,7 +7667,7 @@ start:
                     <label class="checkbox-label" style="margin-left: 15px;" title="Highlight current PC line while running (always shown when paused)">
                         <input type="checkbox" id="chkShowPCCursor" checked> Show PC cursor
                     </label>
-                    <label class="checkbox-label" style="margin-left: 15px;" title="Auto-scroll disassembly to follow PC">
+                    <label class="checkbox-label" style="margin-left: 15px;" title="Auto-scroll disassembly to follow PC (Shift+F6)">
                         <input type="checkbox" id="chkFollowPC" checked> Follow PC
                     </label>
                 </div>
@@ -8090,6 +8170,7 @@ start:
                     <button class="explorer-subtab" data-subtab="disasm">Disasm</button>
                     <button class="explorer-subtab" data-subtab="hexdump">Hex Dump</button>
                     <button class="explorer-subtab" data-subtab="text">Text</button>
+                    <button class="explorer-subtab" data-subtab="diskmap">Disk Map</button>
                     <button class="explorer-subtab" data-subtab="edit">Edit</button>
                 </div>
 
@@ -8101,7 +8182,7 @@ start:
                             <div id="explorerInfoOutput" class="explorer-output">
                                 <span class="explorer-empty">Load a file to view its structure</span>
                             </div>
-                            <div id="explorerPreviewContainer" class="explorer-preview" style="display:none">
+                            <div id="explorerPreviewContainer" class="explorer-preview hidden">
                                 <canvas id="explorerPreviewCanvas" width="256" height="192"></canvas>
                                 <div id="explorerPreviewLabel" class="explorer-preview-label"></div>
                             </div>
@@ -8177,6 +8258,27 @@ start:
                         </div>
                     </div>
 
+                    <!-- Disk Map Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-diskmap" style="display:none">
+                        <div class="diskmap-body">
+                            <div class="diskmap-left">
+                                <div class="diskmap-toolbar">
+                                    <button class="diskmap-view-btn active" data-view="grid">Grid</button>
+                                    <button class="diskmap-view-btn" data-view="disk">Disk</button>
+                                </div>
+                                <span id="diskmapStatus" class="diskmap-status"></span>
+                                <div id="diskmapLegend" class="diskmap-legend"></div>
+                            </div>
+                            <div class="diskmap-main">
+                                <div id="diskmapGridContainer" class="diskmap-grid-container"></div>
+                                <div id="diskmapDiskContainer" class="diskmap-disk-container" style="display:none">
+                                    <canvas id="diskmapCanvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="diskmapInfo" class="diskmap-info"></div>
+                    </div>
+
                     <!-- Edit Sub-tab -->
                     <div class="explorer-subtab-content" id="explorer-edit" style="display:none">
                         <!-- Shared toolbar -->
@@ -8190,7 +8292,21 @@ start:
                                 <option value="mgt">MGT (+D disk)</option>
                                 <option value="mdr">MDR (Microdrive)</option>
                                 <option value="opd">OPD (Opus Discovery)</option>
-                                <option value="dsk">DSK (+3 disk)</option>
+                                <optgroup label="DSK — +3">
+                                    <option value="dsk-p3-ss40">DSK +3 SS 40T (180K)</option>
+                                    <option value="dsk-p3-ds80">DSK +3 DS 80T (720K)</option>
+                                </optgroup>
+                                <optgroup label="DSK — CPC">
+                                    <option value="dsk-cpc-sys-ss">DSK CPC System SS (180K)</option>
+                                    <option value="dsk-cpc-sys-ds">DSK CPC System DS (720K)</option>
+                                    <option value="dsk-cpc-data-ss">DSK CPC Data SS (180K)</option>
+                                    <option value="dsk-cpc-data-ds">DSK CPC Data DS (720K)</option>
+                                </optgroup>
+                                <optgroup label="DSK — Timex FDD3000">
+                                    <option value="dsk-tos-40">DSK TOS 40T (160K)</option>
+                                    <option value="dsk-tos-80">DSK TOS 80T (320K)</option>
+                                    <option value="dsk-tos-80ds">DSK TOS 80T DS (640K)</option>
+                                </optgroup>
                             </select>
                             <button id="btnEditorAddFile" class="explorer-btn">Add File</button>
                             <button id="btnEditorSave" class="explorer-btn primary">Save</button>
@@ -9946,7 +10062,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.7';
+        const APP_VERSION = '0.14.13';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10125,7 +10241,7 @@ start:
         setUpdateDebugger(() => updateDebugger());
 
         // Zoom controls and theme toggle (extracted to ui/canvas-zoom.js)
-        const { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale } = initCanvasZoom({
+        const { updateCanvasSize, setZoom, getCurrentZoom, setOnZoomChange, isDarkTheme, setDarkTheme, setUiScale, getUiScale } = initCanvasZoom({
             getSpectrum: () => spectrum,
             getUpdateSpriteRegionPreview: () => typeof updateSpriteRegionPreview === 'function' ? updateSpriteRegionPreview : null
         });
@@ -10384,12 +10500,8 @@ start:
             }
         });
 
-        // Sync second screen size on zoom button clicks
-        document.getElementById('zoom1').addEventListener('click', () => updateSecondScreenSize());
-        document.getElementById('zoom2').addEventListener('click', () => updateSecondScreenSize());
-        document.getElementById('zoom3').addEventListener('click', () => updateSecondScreenSize());
-        document.getElementById('zoom4').addEventListener('click', () => updateSecondScreenSize());
-        document.getElementById('zoom5').addEventListener('click', () => updateSecondScreenSize());
+        // Sync second screen size on any zoom change (buttons, F1 key, etc.)
+        setOnZoomChange(() => updateSecondScreenSize());
 
         // Shared memory access wrappers (used by many UI modules via DI)
         const readMemory = (addr) => spectrum.memory.read(addr);
@@ -10434,8 +10546,8 @@ start:
         spectrum.ula.setFullBorder(true);
         spectrum.updateDisplayDimensions();
 
-        // Set initial zoom to x1 (after spectrum is created)
-        setZoom(1);
+        // Restore saved zoom level (after spectrum is created)
+        setZoom(getCurrentZoom());
 
         // Port I/O logging and trace filters (extracted to ui/port-logging.js)
         const portLoggingAPI = initPortLogging({
@@ -11743,7 +11855,9 @@ start:
             applyRomsToEmulator,
             getWatches, setWatches, saveWatches, renderWatches,
             getUpdateGraphicsViewer: () => updateGraphicsViewer,
-            getUpdateMouseStatus: () => updateMouseStatus
+            getUpdateMouseStatus: () => updateMouseStatus,
+            getCodePathAPI: () => codePathAPI,
+            getStructMapperAPI: () => structMapperAPI
         }));
 
         // Display settings (extracted to ui/display-settings.js)

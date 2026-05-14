@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.14.7</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.14.13</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -162,6 +162,7 @@
                         <tr><td>F3</td><td>Screenshot (single capture), or toggle auto-capture when Batch is checked</td></tr>
                         <tr><td>Ctrl+F3</td><td>Stop auto-capture (if running) + save batch screenshots as ZIP</td></tr>
                         <tr><td>Ctrl+F</td><td>Toggle autofire on/off</td></tr>
+                        <tr><td>Shift+F6</td><td>Toggle Follow PC (auto-scroll disassembly to PC)</td></tr>
                         <tr><td>F10</td><td>Cycle overlay mode (Normal в†' Grid в†' Box в†' ...)</td></tr>
                     </table>
                 </div>
@@ -873,6 +874,9 @@
                         <li>Cross-references</li>
                         <li>Bookmarks</li>
                         <li>Loaded media (TAP/TRD/SCL/DSK/MGT/MDR/OPD) with tape position</li>
+                        <li>Auto-map tracking data (executed/read/written addresses)</li>
+                        <li>Code Path recorded slots (Baseline/Event A/Event B)</li>
+                        <li>Struct Mapper results (field access maps)</li>
                     </ul>
                     <h5>AY Music Export (PSG)</h5>
                     <p>Record AY chip output to PSG file format in Settings в†’ AY Capture:</p>
@@ -934,6 +938,7 @@
                     <h5>Keyboard Shortcuts</h5>
                     <table>
                         <tr><td><strong>F9</strong></td><td>Assemble code</td></tr>
+                        <tr><td><strong>Ctrl+F9</strong></td><td>Debug (assemble, inject, start debugging at entry point)</td></tr>
                         <tr><td><strong>Ctrl+F</strong></td><td>Find</td></tr>
                         <tr><td><strong>Ctrl+R</strong> or <strong>Ctrl+H</strong></td><td>Find and Replace</td></tr>
                         <tr><td><strong>F3</strong></td><td>Find Next</td></tr>
@@ -945,7 +950,7 @@
                         <li><strong>Files в–ј</strong> - Browse project files (disabled when в‰¤1 file)</li>
                         <li><strong>Assemble</strong> - Compile the assembly code (F9)</li>
                         <li><strong>Inject</strong> - Write assembled bytes to emulator memory</li>
-                        <li><strong>Debug</strong> - Inject code, set PC to entry point, switch to debugger. Entry point priority: SAVESNA address > single ORG > prompt if multiple ORGs. Also injects assembler labels into the debugger (visible in disassembly, Calls panel, etc.); internal labels prefixed with <code>__</code> are skipped, and existing debugger labels are not overwritten</li>
+                        <li><strong>Debug</strong> (Ctrl+F9) - Inject code, set PC to entry point, switch to debugger. Entry point priority: <code>; @entry</code> marker &gt; SAVESNA address &gt; single ORG &gt; prompt if multiple ORGs. Also injects assembler labels into the debugger (visible in disassembly, Calls panel, etc.); internal labels prefixed with <code>__</code> are skipped. Old assembler labels are cleared on each Debug run and replaced with current symbols; user-defined labels are preserved</li>
                         <li><strong>Clear</strong> - Clear editor and reset project</li>
                         <li><strong>New</strong> - Add a new file to the project</li>
                         <li><strong>Load</strong> - Load .asm file or .zip project</li>
@@ -968,6 +973,20 @@
                         <li>Use tabs to switch between open files</li>
                         <li>Use <code>INCLUDE "filename.asm"</code> to include other files</li>
                     </ul>
+                    <h5>Source Markers</h5>
+                    <p>Special comment markers control assembler behavior. Place them near the top of your source file:</p>
+                    <table class="help-shortcuts-table">
+                        <tr><td><code>; @main</code></td><td>Designates this file as the main source file in a multi-file project (first 20 lines). Skips the file picker dialog on ZIP load. Without it, the assembler auto-detects by scoring SAVESNA/SAVETAP/INCLUDE directives and shows a picker to confirm</td></tr>
+                        <tr><td><code>; @entry &lt;label&gt;</code></td><td>Sets the Debug entry point (PC value after injection). Can be a label name or address. Priority: <code>@entry</code> &gt; SAVESNA address &gt; single ORG &gt; prompt</td></tr>
+                        <tr><td><code>; @define NAME</code></td><td>Adds a define to the dropdown selector (first 50 lines). See <em>Command-Line Defines</em> below</td></tr>
+                    </table>
+                    <pre>; @main
+; @entry start
+; @define DEBUG
+; @define VERSION=5
+
+        ORG $8000
+start:  ...</pre>
                     <h5>Search All Files</h5>
                     <ul>
                         <li>Open search bar with Ctrl+F</li>
@@ -1034,7 +1053,7 @@
                         <li><strong>IF/ELSE/ENDIF</strong> - Conditional assembly</li>
                         <li><strong>IFDEF/IFNDEF</strong> - Check if defined</li>
                         <li><strong>MACRO/ENDM</strong> - Define macro</li>
-                        <li><strong>REPT/ENDR</strong> - Repeat block</li>
+                        <li><strong>REPT/ENDR, DUP/EDUP</strong> - Repeat block. Optional counter variable: <code>DUP 8, row</code> defines <code>row</code> as 0..7</li>
                         <li><strong>STRUCT/ENDS</strong> - Define structure</li>
                         <li><strong>DEVICE</strong> - Set target device (ZXSPECTRUM48, ZXSPECTRUM128)</li>
                         <li><strong>SLOT/PAGE</strong> - Memory paging (128K)</li>
@@ -1221,6 +1240,8 @@
                         <tr><th>Format</th><th>Description</th></tr>
                         <tr><td>DSK</td><td>+3 CP/M disk images (standard and extended)</td></tr>
                         <tr><td>Hobeta</td><td>Single TR-DOS file containers (.$B, .$C, .$D, .$#, .hobeta)</td></tr>
+                        <tr><td>MGT</td><td>DISCiPLE/+D disk images</td></tr>
+                        <tr><td>OPD</td><td>Opus Discovery disk images</td></tr>
                         <tr><td>RZX</td><td>Input recordings</td></tr>
                         <tr><td>SCL</td><td>TR-DOS file archives</td></tr>
                         <tr><td>SNA</td><td>48K/128K snapshots with registers</td></tr>
@@ -1237,6 +1258,7 @@
                         <li><strong>BASIC</strong> - Decode and display BASIC programs with syntax highlighting. View dropdown switches between <em>Code</em> (syntax-highlighted) and <em>Screen</em> (ZX Spectrum pixel font, Unicode block graphics, hidden control codes)</li>
                         <li><strong>Disasm</strong> - Z80 disassembly with ROM labels, click addresses in BASIC to jump</li>
                         <li><strong>Hex Dump</strong> - Raw hex view with ASCII column</li>
+                        <li><strong>Disk Map</strong> - Sector-level disk structure visualization for DSK, TRD, MGT, and OPD images. Grid View shows a sector-by-track grid; Disk View shows a radial floppy visualization. Sectors are colored by owning file with hover highlighting and click-to-hex navigation</li>
                         <li><strong>Edit</strong> - Dual-panel file editor for TAP, TZX, TRD/SCL, MGT, DSK, and OPD formats (see below)</li>
                     </ul>
                     <h5>Features</h5>
@@ -1640,6 +1662,8 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         <li>Z80 CPU User Manual (Zilog)</li>
                         <li>The Undocumented Z80 Documented (Sean Young)</li>
                         <li>World of Spectrum documentation</li>
+                        <li><strong>DiskImageManager</strong> — DSK copy protection detection logic by Damien Guard (<a href="https://github.com/damieng/DiskImageManager" target="_blank" style="color: var(--cyan);">github.com/damieng/DiskImageManager</a>)</li>
+                        <li><strong>TOS Secrets</strong> — Timex FDD3000 / TOS disk format documentation (<a href="https://loadzx.com/timexcomputerworld/tos-secrets/" target="_blank" style="color: var(--cyan);">loadzx.com/timexcomputerworld/tos-secrets</a>)</li>
                     </ul>
                     <h5>Greetings</h5>
                     <p>Greetings fly out to:</p>

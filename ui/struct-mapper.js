@@ -14,8 +14,10 @@ export function initStructMapper({
     const smResults = document.getElementById('smResults');
 
     let mapping = false;
+    let lastResults = null;   // Map<offset, {reads, writes}> from last completed mapping
+    let lastConfig = null;    // {baseReg, baseAddr, maxOffset} from last completed mapping
 
-    if (!btnSmStart) return { stopMapping() {} };
+    if (!btnSmStart) return { stopMapping() {}, getResults() { return null; }, setResults() {} };
 
     btnSmStart.addEventListener('click', () => {
         if (!mapping) {
@@ -43,6 +45,12 @@ export function initStructMapper({
             mapping = false;
             btnSmStart.textContent = 'Map';
             btnSmStart.classList.remove('active');
+            lastResults = results;
+            lastConfig = {
+                baseReg: smBaseReg.value || null,
+                baseAddr: smBaseReg.value ? 0 : parseAddr(smBaseAddr.value),
+                maxOffset: parseInt(smMaxOffset.value) || 32
+            };
             renderResults(results);
         }
     });
@@ -202,6 +210,43 @@ export function initStructMapper({
     return {
         stopMapping() {
             stopMappingCleanup();
+        },
+        getResults() {
+            if (!lastResults || lastResults.size === 0) return null;
+            // Serialize Map<offset, {reads: Map<pc,count>, writes: Map<pc,count>}>
+            const fields = [];
+            for (const [offset, field] of lastResults) {
+                fields.push({
+                    offset,
+                    reads: [...field.reads.entries()],
+                    writes: [...field.writes.entries()]
+                });
+            }
+            return { config: lastConfig, fields };
+        },
+        setResults(data) {
+            if (!data || !data.fields) return;
+            // Restore config into UI
+            if (data.config) {
+                if (data.config.baseReg) {
+                    smBaseReg.value = data.config.baseReg;
+                } else {
+                    smBaseReg.value = '';
+                    smBaseAddr.value = '$' + hex16(data.config.baseAddr);
+                }
+                smMaxOffset.value = data.config.maxOffset;
+            }
+            // Deserialize fields
+            const fields = new Map();
+            for (const f of data.fields) {
+                fields.set(f.offset, {
+                    reads: new Map(f.reads),
+                    writes: new Map(f.writes)
+                });
+            }
+            lastResults = fields;
+            lastConfig = data.config;
+            renderResults(fields);
         }
     };
 }

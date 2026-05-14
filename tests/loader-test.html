@@ -714,9 +714,8 @@
             const info = MDRLoader.getDiskInfo(mdr);
             assert(info.fileCount === 0, 'blank has 0 files');
             assert(info.totalSectors === 254, 'total sectors = 254');
-            // createBlankMDR sets hdflag=0x01 on all sectors (formatted headers),
-            // getDiskInfo counts free only when hdflag===0, so blank MDR has 0 free sectors
-            assert(info.freeSectors === 0, 'blank formatted MDR has 0 free sectors');
+            // blank formatted MDR has all 254 sectors free (no files)
+            assert(info.freeSectors === 254, 'blank formatted MDR has 254 free sectors');
             assert(info.cartridgeName.trim() === 'HELLO', 'cartridge name correct',
                 `got: "${info.cartridgeName.trim()}"`);
         }
@@ -785,6 +784,181 @@
             assert(MDRLoader.SECTOR_SIZE === 543, 'SECTOR_SIZE = 543');
             assert(MDRLoader.DATA_SIZE === 512, 'DATA_SIZE = 512');
             assert(MDRLoader.IMAGE_SIZE === 137923, 'IMAGE_SIZE = 137923');
+        }
+
+        section('MDR - Oversized: create blank with custom sector count');
+
+        {
+            const mdr = MDRLoader.createBlankMDR('MULTI', 508);
+            assert(mdr.length === 508 * 543 + 1, 'oversized blank size correct (508 sectors)',
+                `got: ${mdr.length}, expected: ${508 * 543 + 1}`);
+            const info = MDRLoader.getDiskInfo(mdr);
+            assert(info.totalSectors === 508, 'total sectors = 508',
+                `got: ${info.totalSectors}`);
+            assert(info.freeSectors === 508, 'all 508 sectors free',
+                `got: ${info.freeSectors}`);
+            assert(info.cartridgeName.trim() === 'MULTI', 'cartridge name correct');
+        }
+
+        section('MDR - Oversized: getSectorCount');
+
+        {
+            const mdr254 = MDRLoader.createBlankMDR('STD');
+            assert(MDRLoader.getSectorCount(mdr254) === 254, 'standard = 254 sectors');
+
+            const mdr508 = MDRLoader.createBlankMDR('BIG', 508);
+            assert(MDRLoader.getSectorCount(mdr508) === 508, 'oversized = 508 sectors');
+
+            const mdr890 = MDRLoader.createBlankMDR('HUGE', 890);
+            assert(MDRLoader.getSectorCount(mdr890) === 890, '890 sector image',
+                `got: ${MDRLoader.getSectorCount(mdr890)}`);
+        }
+
+        section('MDR - Oversized: build and list files round-trip');
+
+        {
+            // Create a file that needs 260 sectors (too large for standard 254-sector cartridge)
+            const bigData = new Uint8Array(260 * 512);
+            for (let i = 0; i < bigData.length; i++) bigData[i] = (i * 3) & 0xFF;
+
+            const mdr = MDRLoader.buildMDR([
+                { name: 'bigfile', data: bigData, isPrint: false }
+            ], 'BIGCART', 508);
+
+            assert(mdr.length === 508 * 543 + 1, 'oversized built MDR size correct');
+
+            const files = MDRLoader.listFiles(mdr);
+            assert(files.length === 1, 'found 1 file');
+            assert(files[0].name.trim() === 'bigfile', 'file name correct');
+            assert(files[0].sectors === 260, 'file occupies 260 sectors',
+                `got: ${files[0].sectors}`);
+        }
+
+        section('MDR - Oversized: extract data round-trip');
+
+        {
+            const original = new Uint8Array(300 * 512);
+            for (let i = 0; i < original.length; i++) original[i] = (i * 11) & 0xFF;
+
+            const mdr = MDRLoader.buildMDR([
+                { name: 'data300', data: original, isPrint: false }
+            ], 'CART', 600);
+
+            const files = MDRLoader.listFiles(mdr);
+            assert(files.length === 1, 'one file found');
+
+            const extracted = MDRLoader.extractFile(mdr, files[0]);
+            assert(extracted.length === original.length, 'extracted length matches',
+                `got: ${extracted.length}, expected: ${original.length}`);
+
+            let match = true;
+            for (let i = 0; i < original.length; i++) {
+                if (extracted[i] !== original[i]) { match = false; break; }
+            }
+            assert(match, 'extracted data matches original byte-for-byte');
+        }
+
+        section('MDR - Oversized: multiple files across cartridge boundary');
+
+        {
+            // Create files that span beyond sector 254
+            const files = [];
+            for (let f = 0; f < 5; f++) {
+                const data = new Uint8Array(100 * 512);  // 100 sectors each
+                for (let i = 0; i < data.length; i++) data[i] = (f * 37 + i) & 0xFF;
+                files.push({ name: `file${f}`, data, isPrint: false });
+            }
+
+            const mdr = MDRLoader.buildMDR(files, 'MULTI5', 600);
+            const listed = MDRLoader.listFiles(mdr);
+            assert(listed.length === 5, 'found all 5 files',
+                `got: ${listed.length}`);
+
+            // Verify file crossing the 254-sector boundary
+            let sectorsSoFar = 0;
+            for (let f = 0; f < 5; f++) {
+                assert(listed[f].name.trim() === `file${f}`, `file ${f} name correct`);
+                assert(listed[f].sectors === 100, `file ${f} has 100 sectors`,
+                    `got: ${listed[f].sectors}`);
+                sectorsSoFar += 100;
+            }
+            assert(sectorsSoFar === 500, 'total used sectors = 500');
+
+            // Verify extraction of a file that starts after sector 254
+            const file3 = listed[3];  // starts at sector 300
+            const extracted = MDRLoader.extractFile(mdr, file3);
+            const origFile3 = files[3].data;
+            assert(extracted.length === origFile3.length, 'file3 extracted length correct');
+            let match = true;
+            for (let i = 0; i < origFile3.length; i++) {
+                if (extracted[i] !== origFile3[i]) { match = false; break; }
+            }
+            assert(match, 'file3 data correct (starts beyond sector 254)');
+        }
+
+        section('MDR - Oversized: disk info');
+
+        {
+            const fileData = new Uint8Array(100 * 512);
+            const mdr = MDRLoader.buildMDR([
+                { name: 'test', data: fileData, isPrint: false }
+            ], 'INFO', 508);
+
+            const info = MDRLoader.getDiskInfo(mdr);
+            assert(info.totalSectors === 508, 'total sectors = 508');
+            assert(info.usedSectors === 100, 'used sectors = 100',
+                `got: ${info.usedSectors}`);
+            assert(info.freeSectors === 408, 'free sectors = 408',
+                `got: ${info.freeSectors}`);
+            assert(info.fileCount === 1, 'file count = 1');
+        }
+
+        section('MDR - Oversized: capacity limit');
+
+        {
+            // Try to add a file that exceeds the oversized image capacity
+            const tooLarge = new Uint8Array(510 * 512);
+            const mdr = MDRLoader.buildMDR([
+                { name: 'huge', data: tooLarge, isPrint: false }
+            ], 'FULL', 508);
+
+            // Should not fit — buildMDR breaks when nextSector + numSectors > sectorCount
+            const files = MDRLoader.listFiles(mdr);
+            assert(files.length === 0, 'file too large for 508 sectors is rejected',
+                `got: ${files.length} files`);
+        }
+
+        section('MDR - Oversized: rebuild preserves sector count');
+
+        {
+            // Simulate editor round-trip: build → list → rebuild
+            const fileData = new Uint8Array(50 * 512);
+            for (let i = 0; i < fileData.length; i++) fileData[i] = i & 0xFF;
+
+            const mdr1 = MDRLoader.buildMDR([
+                { name: 'round', data: fileData, isPrint: false }
+            ], 'TRIP', 890);
+
+            assert(mdr1.length === 890 * 543 + 1, 'initial oversized image size');
+
+            // Simulate editor: list files from image, then rebuild
+            const files = MDRLoader.listFiles(mdr1);
+            const rebuiltFiles = files.map(f => ({
+                name: f.name.trim(),
+                data: MDRLoader.extractFile(mdr1, f),
+                isPrint: f.isPrint
+            }));
+
+            const sectorCount = MDRLoader.getSectorCount(mdr1);
+            const mdr2 = MDRLoader.buildMDR(rebuiltFiles, 'TRIP', sectorCount);
+
+            assert(mdr2.length === mdr1.length, 'rebuilt image same size as original',
+                `got: ${mdr2.length}, expected: ${mdr1.length}`);
+            assert(MDRLoader.getSectorCount(mdr2) === 890, 'rebuilt has 890 sectors');
+
+            const files2 = MDRLoader.listFiles(mdr2);
+            assert(files2.length === 1, 'rebuilt has 1 file');
+            assert(files2[0].name.trim() === 'round', 'rebuilt file name preserved');
         }
     }
 

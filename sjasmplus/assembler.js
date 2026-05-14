@@ -74,6 +74,53 @@ export const Assembler = {
         return this.runPasses();
     },
 
+    // Async single-file assembly with progress reporting
+    async assembleAsync(source, filename = '<input>', cmdDefines = []) {
+        this.reset();
+        for (const def of cmdDefines) {
+            EquTable.define(def.name, def.value, 0, '<cmdline>');
+        }
+        VFS.addFile(filename, source);
+        this.lines = Parser.parse(source, filename);
+        return this.runPassesAsync();
+    },
+
+    // Async multi-file project assembly with progress reporting
+    async assembleProjectAsync(mainFile, cmdDefines = []) {
+        this.currentAddress = 0;
+        this.physicalAddress = null;
+        this.sectionStart = 0;
+        this.output = [];
+        this.outputStart = 0;
+        this.orgAddresses = [];
+        this.lines = [];
+        this.pass = 0;
+        this.changed = false;
+        this.macroCount = 0;
+        this.macroDefinition = null;
+        this.reptState = null;
+        this.includeStack = [];
+        this.saveCommands = [];
+
+        SymbolTable.reset();
+        EquTable.reset();
+        ErrorCollector.reset();
+        AsmMemory.reset();
+        Preprocessor.reset();
+
+        cmdDefines = cmdDefines || [];
+        for (const def of cmdDefines) {
+            EquTable.define(def.name, def.value, 0, '<cmdline>');
+        }
+
+        const file = VFS.getFile(mainFile);
+        if (!file || file.error) {
+            throw new AssemblerError(file ? file.error : `Main file not found: ${mainFile}`);
+        }
+        this.lines = Parser.parse(file.content, file.path);
+        return this.runPassesAsync();
+    },
+
     // Assembly function for multi-file project (files already in VFS)
     assembleProject(mainFile, cmdDefines = []) {
         // Don't reset VFS - files are already loaded
@@ -226,6 +273,118 @@ export const Assembler = {
         };
     },
 
+    // Async version of runPasses — yields between passes and periodically
+    // within each pass so the browser can repaint progress updates.
+    async runPassesAsync() {
+        let lastUndefinedCount = Infinity;
+        const yieldInterval = 2000; // yield every N lines for UI update
+
+        for (this.pass = 1; this.pass <= this.maxPasses; this.pass++) {
+            this.changed = false;
+            this.currentAddress = 0;
+            this.physicalAddress = null;
+            this.sectionStart = 0;
+            this.output = [];
+            this.outputStart = 0;
+            this.macroDefinition = null;
+            this.reptState = null;
+            this.includeStack = [];
+            this.saveCommands = [];
+            this.linesProcessed = 0;
+            this.displayMessages = [];
+
+            SymbolTable.prevTempLabels = SymbolTable.tempLabels;
+            SymbolTable.tempLabels = {};
+            SymbolTable.tempDefOrder = 0;
+            SymbolTable.tempRefOrder = 0;
+            SymbolTable.localPrefix = '';
+            Preprocessor.ifStack = [];
+
+            let lineCount = 0;
+            const totalLines = this.lines.length;
+            for (const line of this.lines) {
+                lineCount++;
+                AsmMemory.currentLine = line.line;
+                AsmMemory.currentFile = line.file;
+                ErrorCollector.currentLine = line.line;
+                ErrorCollector.currentFile = line.file;
+                try {
+                    this.processLine(line);
+                } catch (e) {
+                    if (e instanceof AssemblerError) {
+                        throw e;
+                    }
+                    ErrorCollector.error(e.message, line.line, line.file);
+                }
+
+                // Yield periodically so the browser can repaint
+                if (lineCount % yieldInterval === 0) {
+                    if (this.progressCallback) {
+                        this.progressCallback(this.pass, lineCount, totalLines);
+                    }
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+
+            // Report end-of-pass progress
+            if (this.progressCallback) {
+                this.progressCallback(this.pass, totalLines, totalLines);
+            }
+            // Yield between passes
+            await new Promise(r => setTimeout(r, 0));
+
+            const undefinedSyms = SymbolTable.checkUndefined();
+
+            if (undefinedSyms.length === 0 && !this.changed) {
+                break;
+            }
+
+            if (undefinedSyms.length > 0 && undefinedSyms.length >= lastUndefinedCount && this.pass > 2) {
+                for (const u of undefinedSyms) {
+                    ErrorCollector.errorCount++;
+                    ErrorCollector.errors.push({
+                        message: `Undefined symbol: ${u.name}`,
+                        line: u.line,
+                        file: u.file
+                    });
+                }
+                throw new AssemblerError(
+                    `${undefinedSyms.length} undefined symbol${undefinedSyms.length > 1 ? 's' : ''}`
+                );
+            }
+
+            if (undefinedSyms.length === 0 && this.changed && this.pass > 5) {
+                ErrorCollector.error('Assembly failed to converge - possible circular dependency');
+            }
+
+            lastUndefinedCount = undefinedSyms.length;
+        }
+
+        if (this.pass > this.maxPasses) {
+            ErrorCollector.error('Assembly did not converge within maximum passes');
+        }
+
+        for (const msg of this.displayMessages) {
+            ErrorCollector.warn('DISPLAY: ' + msg.message, msg.line, msg.file);
+        }
+
+        const unused = SymbolTable.checkUnused();
+        for (const u of unused) {
+            ErrorCollector.warn(`Unused label: ${u.name}`, u.line, u.file);
+        }
+
+        return {
+            success: true,
+            output: this.output,
+            outputStart: this.outputStart,
+            orgAddresses: this.orgAddresses.slice(),
+            symbols: SymbolTable.export(),
+            passes: this.pass,
+            warnings: ErrorCollector.warnings,
+            saveCommands: this.saveCommands
+        };
+    },
+
     // Process a single line
     processLine(line) {
         // Track total lines processed (including macro expansions)
@@ -263,25 +422,44 @@ export const Assembler = {
                     const rawLine = this.reconstructLine(line);
                     this.reptState.body.push(rawLine);
                 } else {
-                    // End REPT - expand and process
-                    const expanded = [];
+                    // End REPT - expand and process per-iteration
+                    const reptBody = this.reptState.body;
+                    const reptCount = this.reptState.count;
                     const reptFile = this.reptState.file;
                     const reptLine = this.reptState.startLine;
-                    if (this.reptState.body) {
-                        for (let i = 0; i < this.reptState.count; i++) {
-                            expanded.push(...this.reptState.body);
+                    const counterVar = this.reptState.counterVar;
+                    this.reptState = null;
+                    // Process each iteration, setting counter variable before each
+                    for (let i = 0; i < reptCount; i++) {
+                        // Define counter variable for this iteration
+                        if (counterVar) {
+                            const fullName = SymbolTable.getFullName(counterVar);
+                            SymbolTable.symbols[fullName] = {
+                                value: i,
+                                type: 'equ',
+                                defined: true,
+                                used: true,
+                                line: reptLine,
+                                file: reptFile
+                            };
+                        }
+                        for (const rawLine of reptBody) {
+                            const parsed = Parser.parse(rawLine, reptFile || '<rept>')[0];
+                            if (parsed) {
+                                // Preserve original file/line info from REPT definition
+                                parsed.file = reptFile;
+                                parsed.line = reptLine;
+                                // Update ErrorCollector location for correct error reporting
+                                ErrorCollector.currentLine = reptLine;
+                                ErrorCollector.currentFile = reptFile;
+                                this.processLine(parsed);
+                            }
                         }
                     }
-                    this.reptState = null;
-                    // Process expanded lines
-                    for (const rawLine of expanded) {
-                        const parsed = Parser.parse(rawLine, reptFile || '<rept>')[0];
-                        if (parsed) {
-                            // Preserve original file/line info from REPT definition
-                            parsed.file = reptFile;
-                            parsed.line = reptLine;
-                            this.processLine(parsed);
-                        }
+                    // Clean up counter variable after expansion
+                    if (counterVar) {
+                        const fullName = SymbolTable.getFullName(counterVar);
+                        delete SymbolTable.symbols[fullName];
                     }
                 }
             } else {
@@ -1272,12 +1450,21 @@ export const Assembler = {
         }
         const val = this.evaluate(ops[0], line);
         if (!val.undefined) {
+            // Optional counter variable: REPT count, counterVar / DUP count, counterVar
+            let counterVar = null;
+            if (ops.length >= 2) {
+                const varName = ops[1].trim();
+                if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
+                    counterVar = varName;
+                }
+            }
             this.reptState = {
                 count: val.value,
                 body: [],
                 depth: 1,
                 startLine: line.line,
-                file: line.file
+                file: line.file,
+                counterVar: counterVar
             };
         }
     },

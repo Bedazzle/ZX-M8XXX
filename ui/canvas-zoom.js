@@ -12,7 +12,9 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
         document.getElementById('zoom5')
     ];
 
-    let currentZoom = 1;  // Default zoom x1
+    let currentZoom = parseInt(storageGet('zxm8_zoom', '1'), 10) || 1;
+    if (currentZoom < 1 || currentZoom > 5) currentZoom = 1;
+    let onZoomChange = null;
 
     function updateCanvasSize() {
         const spectrum = getSpectrum();
@@ -40,6 +42,7 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
     function setZoom(level) {
         const spectrum = getSpectrum();
         currentZoom = level;
+        storageSet('zxm8_zoom', level.toString());
         updateCanvasSize();
 
         // Update active button
@@ -58,6 +61,9 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
         if (typeof updateSpriteRegionPreview === 'function') {
             updateSpriteRegionPreview();
         }
+
+        // Notify listeners (e.g. shadow screen resize)
+        if (onZoomChange) onZoomChange(level);
     }
 
     function getCurrentZoom() {
@@ -124,5 +130,7 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
         setUiScale(parseFloat(uiScaleSelect.value) || 1);
     });
 
-    return { updateCanvasSize, setZoom, getCurrentZoom, isDarkTheme, setDarkTheme, setUiScale, getUiScale };
+    function setOnZoomChange(fn) { onZoomChange = fn; }
+
+    return { updateCanvasSize, setZoom, getCurrentZoom, setOnZoomChange, isDarkTheme, setDarkTheme, setUiScale, getUiScale };
 }

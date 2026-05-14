@@ -621,6 +621,67 @@
             result = bytes('N = 0\nDUP 2\nDUP 2\nDB N\nN = N + 1\nEDUP\nEDUP');
             assert(result !== null, 'Variable assignment in nested DUP');
             if (result) assertEqual(result.length, 4, 'Variable assignment in nested DUP size');
+
+            section('DUP/REPT Counter Variable');
+
+            // Basic counter variable
+            result = bytes('DUP 4, i\nDB i\nEDUP');
+            assert(result !== null, 'DUP counter variable');
+            if (result) {
+                assertEqual(result.length, 4, 'DUP counter - 4 bytes');
+                assertEqual(result[0], 0, 'DUP counter i=0');
+                assertEqual(result[1], 1, 'DUP counter i=1');
+                assertEqual(result[2], 2, 'DUP counter i=2');
+                assertEqual(result[3], 3, 'DUP counter i=3');
+            }
+
+            // REPT counter variable
+            result = bytes('REPT 3, j\nDB j * 10\nENDR');
+            assert(result !== null, 'REPT counter variable');
+            if (result) {
+                assertEqual(result.length, 3, 'REPT counter - 3 bytes');
+                assertEqual(result[0], 0, 'REPT counter j*10=0');
+                assertEqual(result[1], 10, 'REPT counter j*10=10');
+                assertEqual(result[2], 20, 'REPT counter j*10=20');
+            }
+
+            // Counter variable in IF condition
+            result = bytes('DUP 4, k\nIF k & 1\nDB 0xFF\nELSE\nDB 0x00\nENDIF\nEDUP');
+            assert(result !== null, 'DUP counter in IF');
+            if (result) {
+                assertEqual(result.length, 4, 'DUP counter IF - 4 bytes');
+                assertEqual(result[0], 0x00, 'DUP counter IF k=0 (even)');
+                assertEqual(result[1], 0xFF, 'DUP counter IF k=1 (odd)');
+                assertEqual(result[2], 0x00, 'DUP counter IF k=2 (even)');
+                assertEqual(result[3], 0xFF, 'DUP counter IF k=3 (odd)');
+            }
+
+            // Nested DUP with counter variables
+            result = bytes('DUP 3, row\nDUP 2, col\nDB row * 2 + col\nEDUP\nEDUP');
+            assert(result !== null, 'Nested DUP counters');
+            if (result) {
+                assertEqual(result.length, 6, 'Nested DUP counters - 6 bytes');
+                assertEqual(result[0], 0, 'row=0,col=0 -> 0');
+                assertEqual(result[1], 1, 'row=0,col=1 -> 1');
+                assertEqual(result[2], 2, 'row=1,col=0 -> 2');
+                assertEqual(result[3], 3, 'row=1,col=1 -> 3');
+                assertEqual(result[4], 4, 'row=2,col=0 -> 4');
+                assertEqual(result[5], 5, 'row=2,col=1 -> 5');
+            }
+
+            // Counter variable with ELSEIF
+            result = bytes('DUP 3, n\nIF n == 0\nDB 0xAA\nELSEIF n == 1\nDB 0xBB\nELSE\nDB 0xCC\nENDIF\nEDUP');
+            assert(result !== null, 'DUP counter ELSEIF');
+            if (result) {
+                assertEqual(result.length, 3, 'DUP counter ELSEIF - 3 bytes');
+                assertEqual(result[0], 0xAA, 'DUP counter n=0');
+                assertEqual(result[1], 0xBB, 'DUP counter n=1');
+                assertEqual(result[2], 0xCC, 'DUP counter n=2');
+            }
+
+            // DUP without counter variable still works
+            result = bytes('DUP 3\nNOP\nEDUP');
+            assertEqual(result.length, 3, 'DUP without counter still works');
         }
 
         // ==================== CONDITIONAL TESTS ====================

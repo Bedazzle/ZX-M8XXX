@@ -470,24 +470,43 @@
             const firstId = sorted[0].id;
             const numSectors = sorted.length;
             const secSize = sorted[0].data.length || 512;
+            const sides = dskImage.numSides || 1;
 
             if (firstId >= 0x41 && firstId <= 0x49 && numSectors === 9 && secSize === 512) {
-                // CPC System format: sectors 0x41-0x49, 2 reserved tracks, 64 dir entries
+                // CPC System format: sectors 0x41-0x49, 2 reserved tracks
+                // Block size and dir entries depend on capacity:
+                //   SS 40T: blockShift=3 (1024), 2 dirBlocks (64 entries)
+                //   DS 80T: blockShift=4 (2048), 4 dirBlocks (256 entries)
+                const cpcSysTotalLogical = dskImage.numTracks * sides;
+                const cpcSysBlockShift = (cpcSysTotalLogical > 40) ? 4 : 3;
+                const cpcSysBlockSize = 128 << cpcSysBlockShift;
+                const cpcSysDirBlocks = (cpcSysTotalLogical > 40) ? 4 : 2;
                 return {
-                    reservedTracks: 2, blockSize: 1024, blockShift: 3, dirBlocks: 2,
-                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, valid: false
+                    reservedTracks: 2, blockSize: cpcSysBlockSize, blockShift: cpcSysBlockShift, dirBlocks: cpcSysDirBlocks,
+                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, sides, valid: false, recognized: true,
+                    use16bit: cpcSysBlockShift >= 4
                 };
             }
             if (firstId >= 0xC1 && firstId <= 0xC9 && numSectors === 9 && secSize === 512) {
-                // CPC Data format: sectors 0xC1-0xC9, 0 reserved tracks, 64 dir entries
+                // CPC Data format: sectors 0xC1-0xC9, 0 reserved tracks
+                // Block size and dir entries depend on capacity:
+                //   SS 40T: blockShift=3 (1024), 2 dirBlocks (64 entries)
+                //   DS 80T: blockShift=4 (2048), 4 dirBlocks (256 entries)
+                const totalLogical = dskImage.numTracks * sides;
+                const cpcBlockShift = (totalLogical > 40) ? 4 : 3;
+                const cpcBlockSize = 128 << cpcBlockShift;
+                const cpcDirBlocks = (totalLogical > 40) ? 4 : 2;
                 return {
-                    reservedTracks: 0, blockSize: 1024, blockShift: 3, dirBlocks: 2,
-                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, valid: false
+                    reservedTracks: 0, blockSize: cpcBlockSize, blockShift: cpcBlockShift, dirBlocks: cpcDirBlocks,
+                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, sides,
+                    valid: false, recognized: true, use16bit: cpcBlockShift >= 4
                 };
             }
             if (numSectors === 16 && secSize === 256) {
-                // Timex FDD3000 (TOS): 16×256-byte sectors, 4 reserved tracks, 128 dir entries
-                // See cpmtools diskdef: seclen 256, sectrk 16, blocksize 1024, maxdir 128, boottrk 4
+                // Timex FDD3000: 16×256-byte sectors, 128 dir entries
+                // Two known formats (cpmtools diskdefs):
+                //   fdd3000   (TOS):  reservedTracks=4, skew=7
+                //   fdd3000_2 (CP/M): reservedTracks=2, skew=5
                 // TOS directory entries use different byte 13-15 layout than standard CP/M:
                 //   byte 13 = tail (bytes in last sector), byte 14-15 = sizeHi:sizeLo (sectors*2)
                 // Source: Tomato FDD3000 tool (tos_image.hpp dirEntry struct)
@@ -496,11 +515,91 @@
                 // store sectors in physical order with IDs matching physical positions.
                 // To read data in logical order, apply this table (self-inverse permutation).
                 // Source: Tomato FDD3000 tool (tos_image.hpp trackSkew[])
+                //
+                // Auto-detect reservedTracks by probing for valid directory data at
+                // track 0, 2, and 4. Three known TOS variants:
+                //   reservedTracks=0 (dir at track 0, no skew) - identified by disk label
+                //     (user=0xFF) as the first entry in track 0 sector 0
+                //   reservedTracks=2 (CP/M variant, skew 5)
+                //   reservedTracks=4 (TOS standard, skew 7)
+                // A valid directory track has all 32-byte entries starting with
+                // user 0-15, 0xE5 (deleted), or 0xFF (disk label).
+                const skew7Table = [0, 7, 14, 5, 12, 3, 10, 1, 8, 15, 6, 13, 4, 11, 2, 9];
+                const skew5Table = [0, 5, 10, 15, 4, 9, 14, 3, 8, 13, 2, 7, 12, 1, 6, 11];
+
+                // Probe a track for valid CP/M directory entries.
+                // Returns { valid, nonEmpty, hasDiskLabel } where valid = count of
+                // valid entries, nonEmpty = non-0xE5 count, hasDiskLabel = first
+                // entry is a disk label (user=0xFF).
+                const probeDir = (trackNum) => {
+                    const phys = DSKLoader._logicalTrackToPhysical({ sides }, trackNum);
+                    const dirTrack = dskImage.getTrack(phys.cylinder, phys.head);
+                    if (!dirTrack || dirTrack.sectors.length === 0) return { valid: 0, nonEmpty: 0, hasDiskLabel: false };
+                    // Read first sector's data (sector with lowest ID = logical sector 0)
+                    const firstSec = [...dirTrack.sectors].sort((a, b) => a.id - b.id)[0];
+                    if (!firstSec || !firstSec.data) return { valid: 0, nonEmpty: 0, hasDiskLabel: false };
+                    // Check 32-byte entries: all must have user 0-15, 0xE5, or 0xFF
+                    const entries = Math.floor(firstSec.data.length / 32);
+                    let valid = 0, nonEmpty = 0;
+                    for (let e = 0; e < entries; e++) {
+                        const user = firstSec.data[e * 32];
+                        if (user === 0xE5 || user <= 15 || user === 0xFF) valid++;
+                        if (user !== 0xE5) nonEmpty++;
+                    }
+                    const hasDiskLabel = firstSec.data[0] === 0xFF;
+                    return { valid, nonEmpty, hasDiskLabel };
+                };
+
+                const probe0 = probeDir(0);
+                const probe2 = probeDir(2);
+                const probe4 = probeDir(4);
+                const maxEntries = Math.floor(secSize / 32); // 8 entries per 256-byte sector
+
+                let reservedTracks, skewTable;
+                if (probe0.valid === maxEntries && probe0.hasDiskLabel) {
+                    // Dir at track 0: disk label variant (reservedTracks=0, no skew)
+                    // Disk label (user=0xFF) as first entry is a definitive marker —
+                    // boot code never starts with 0xFF.
+                    // No skew: unlike TOS/CP/M variants that interleave sectors,
+                    // disk label variant disks store sectors in sequential order.
+                    reservedTracks = 0;
+                    skewTable = null;
+                } else if (probe2.valid === maxEntries && probe2.nonEmpty > 0 &&
+                           probe4.valid < maxEntries) {
+                    // CP/M variant: directory at track 2, skew 5
+                    reservedTracks = 2;
+                    skewTable = skew5Table;
+                } else {
+                    // TOS variant (default): directory at track 4, skew 7
+                    reservedTracks = 4;
+                    skewTable = skew7Table;
+                }
+
+                // Block size depends on disk capacity — CP/M needs total blocks <= 255
+                // for 8-bit allocation pointers. Calculate from total logical tracks:
+                //   40-track 1-sided: 1024 (blockShift=3, dirBlocks=4)
+                //   80-track 1-sided: 2048 (blockShift=4, dirBlocks=2)
+                //   80-track 2-sided: 4096 (blockShift=5, dirBlocks=1)
+                const totalLogicalTracks = dskImage.numTracks * sides;
+                const dataTracks = totalLogicalTracks - reservedTracks;
+                const dataSectors = dataTracks * 16;
+                // Pick smallest block size that keeps total blocks <= 255
+                let blockShift = 3; // 1024
+                while (blockShift < 6) {
+                    const bs = 128 << blockShift;
+                    const sectorsPerBlock = bs / 256;
+                    const totalBlocks = Math.ceil(dataSectors / sectorsPerBlock);
+                    if (totalBlocks <= 255) break;
+                    blockShift++;
+                }
+                const blockSize = 128 << blockShift;
+                // Directory = 128 entries * 32 bytes = 4096 bytes
+                const dirBlocks = Math.max(1, Math.ceil(4096 / blockSize));
                 return {
-                    reservedTracks: 4, blockSize: 1024, blockShift: 3, dirBlocks: 4,
-                    sectorsPerTrack: 16, sectorSize: 256, firstSectorId: firstId, valid: false,
-                    isTOS: true,
-                    skewTable: [0, 7, 14, 5, 12, 3, 10, 1, 8, 15, 6, 13, 4, 11, 2, 9]
+                    reservedTracks, blockSize, blockShift, dirBlocks,
+                    sectorsPerTrack: 16, sectorSize: 256, firstSectorId: firstId, sides, valid: false, recognized: true,
+                    isTOS: true, use16bit: blockShift >= 4,
+                    skewTable
                 };
             }
 
@@ -513,6 +612,7 @@
                 sectorsPerTrack: numSectors,
                 sectorSize: secSize,
                 firstSectorId: firstId,
+                sides,
                 valid: false
             };
         }
@@ -804,12 +904,14 @@
                     } else if (file.plus3Type === 0) {
                         file.dataLength = sectorData[16] | (sectorData[17] << 8);
                         file.autostart = sectorData[18] | (sectorData[19] << 8);
+                        file.varsOffset = sectorData[20] | (sectorData[21] << 8);
                     }
                     continue;
                 }
 
                 // Try TOS header (Timex FDD3000): type byte 0-3 at offset 0.
-                // BASIC (type 0): 7-byte header — type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE)
+                // BASIC (type 0): 7-byte header — type(1) + autostart(2LE) + totalLen(2LE) + progLen(2LE)
+                //   totalLen = full data size (program + variables), progLen = program body only (varsOffset)
                 // Code/arrays (types 1-3): 5-byte header — type(1) + dataLen(2LE) + address(2LE)
                 // Validation: dataLen + hdrSize == file.size (per Tomato FDD3000 tool)
                 const tosType = sectorData[0];
@@ -840,7 +942,10 @@
                             file.headerSize = hdrSize;
                             file.dataLength = (tosType === 0) ? basLen : dataLen;
                             file.size = file.size - hdrSize;
-                            if (tosType === 0) file.autostart = autostart;
+                            if (tosType === 0) {
+                                file.autostart = autostart;
+                                file.varsOffset = basLen;    // program body length (excl. variables)
+                            }
                             if (tosType === 3) file.loadAddress = address;
                         }
                     }
@@ -978,50 +1083,75 @@
          * Boot sector with 16-byte disk spec, directory sectors filled with 0xE5.
          * @returns {DSKImage}
          */
-        static createBlankDSK() {
+        static createBlankDSK(format = 'p3-ss40') {
+            const FORMATS = {
+                'p3-ss40':     { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 1, blockShift: 3, dirBlocks: 2, diskType: 0, gaps: [0x2A, 0x52], bootSpec: true },
+                'p3-ds80':     { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 1, blockShift: 4, dirBlocks: 4, diskType: 3, gaps: [0x2A, 0x52], bootSpec: true },
+                'cpc-sys-ss':  { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0x41, reserved: 2, blockShift: 3, dirBlocks: 2, diskType: 1, gaps: [0x0E, 0x17], bootSpec: true },
+                'cpc-sys-ds':  { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0x41, reserved: 2, blockShift: 4, dirBlocks: 4, diskType: 1, gaps: [0x0E, 0x17], bootSpec: true },
+                'cpc-data-ss': { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 0, blockShift: 3, dirBlocks: 2, bootSpec: false },
+                'cpc-data-ds': { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 0, blockShift: 4, dirBlocks: 4, bootSpec: false },
+                'tos-40':      { tracks: 40, sides: 1, sectors: 16, secSize: 256, secBase: 0, reserved: 4, blockShift: 3, dirBlocks: 4, bootSpec: false },
+                'tos-80':      { tracks: 80, sides: 1, sectors: 16, secSize: 256, secBase: 0, reserved: 4, blockShift: 4, dirBlocks: 2, bootSpec: false },
+                'tos-80ds':    { tracks: 80, sides: 2, sectors: 16, secSize: 256, secBase: 0, reserved: 4, blockShift: 5, dirBlocks: 1, bootSpec: false },
+            };
+
+            const fmt = FORMATS[format] || FORMATS['p3-ss40'];
             const dsk = new DSKImage();
-            dsk.numTracks = 40;
-            dsk.numSides = 1;
+            dsk.numTracks = fmt.tracks;
+            dsk.numSides = fmt.sides;
             dsk.isExtended = true;
 
-            for (let t = 0; t < 40; t++) {
-                const sectors = [];
-                for (let s = 0; s < 9; s++) {
-                    const data = new Uint8Array(512);
-                    // Fill directory sectors (track 1, all sectors) with 0xE5
-                    if (t === 1) data.fill(0xE5);
-                    sectors.push({
-                        cylinder: t,
-                        head: 0,
-                        id: 0xC1 + s,
-                        sizeCode: 2, // 512 bytes
-                        st1: 0,
-                        st2: 0,
-                        data: data
-                    });
+            // Calculate which logical tracks are directory tracks
+            const blockSize = 128 << fmt.blockShift;
+            const dirBytes = fmt.dirBlocks * blockSize;
+            const dirSectors = Math.ceil(dirBytes / fmt.secSize);
+            const dirLogicalTrackStart = fmt.reserved;
+            const dirLogicalTrackCount = Math.ceil(dirSectors / fmt.sectors);
+            const sizeCode = Math.log2(fmt.secSize) - 7; // 2 for 512, 1 for 256
+
+            for (let cyl = 0; cyl < fmt.tracks; cyl++) {
+                for (let head = 0; head < fmt.sides; head++) {
+                    const logicalTrack = cyl * fmt.sides + head;
+                    const isDir = logicalTrack >= dirLogicalTrackStart &&
+                                  logicalTrack < dirLogicalTrackStart + dirLogicalTrackCount;
+                    const sectors = [];
+                    for (let s = 0; s < fmt.sectors; s++) {
+                        const data = new Uint8Array(fmt.secSize);
+                        if (isDir) data.fill(0xE5);
+                        sectors.push({
+                            cylinder: cyl,
+                            head: head,
+                            id: fmt.secBase + s,
+                            sizeCode: sizeCode,
+                            st1: 0,
+                            st2: 0,
+                            data: data
+                        });
+                    }
+                    dsk.tracks.push({ sectors });
                 }
-                dsk.tracks.push({ sectors });
             }
 
-            // Write boot sector disk spec (16 bytes at track 0, first sector)
-            // Layout per +3 manual ch.8 pt.27: type, sides, tracks, sectors,
-            // sectorSizeLog, reservedTracks, blockSizeLog, dirBlocks, rwGap, fmtGap, reserved(5), checksum
-            const bootSector = dsk.readSector(0, 0, 0xC1);
-            bootSector[0] = 0;    // Disk type: 0 = PCW SS SD (+3 standard)
-            bootSector[1] = 0;    // Sidedness (0=single sided)
-            bootSector[2] = 40;   // Tracks per side
-            bootSector[3] = 9;    // Sectors per track
-            bootSector[4] = 2;    // Log2(sector size) - 7  (2 → 512 bytes)
-            bootSector[5] = 1;    // Reserved tracks
-            bootSector[6] = 3;    // Log2(block size / 128)  (3 → 1024 bytes)
-            bootSector[7] = 2;    // Directory blocks
-            bootSector[8] = 0x2A; // R/W gap length
-            bootSector[9] = 0x52; // Format gap length
-            // Bytes 10-14: reserved (0)
-            // Byte 15: checksum — sum of all 16 bytes must equal 3 mod 256
-            let sum = 0;
-            for (let i = 0; i < 15; i++) sum = (sum + bootSector[i]) & 0xFF;
-            bootSector[15] = (3 - sum) & 0xFF;
+            // Write boot sector disk spec (16 bytes at track 0 side 0, first sector)
+            if (fmt.bootSpec) {
+                const bootSector = dsk.readSector(0, 0, fmt.secBase);
+                bootSector[0] = fmt.diskType;
+                bootSector[1] = fmt.sides > 1 ? 1 : 0; // 0=single, 1=double (alternating)
+                bootSector[2] = fmt.tracks;
+                bootSector[3] = fmt.sectors;
+                bootSector[4] = sizeCode;
+                bootSector[5] = fmt.reserved;
+                bootSector[6] = fmt.blockShift;
+                bootSector[7] = fmt.dirBlocks;
+                bootSector[8] = fmt.gaps[0];
+                bootSector[9] = fmt.gaps[1];
+                // Bytes 10-14: reserved (0)
+                // Byte 15: checksum — sum of all 16 bytes must equal 3 mod 256
+                let sum = 0;
+                for (let i = 0; i < 15; i++) sum = (sum + bootSector[i]) & 0xFF;
+                bootSector[15] = (3 - sum) & 0xFF;
+            }
 
             return dsk;
         }

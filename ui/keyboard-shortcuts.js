@@ -482,6 +482,17 @@ export function initKeyboardShortcuts({
             return;
         }
 
+        // Shift+F6 - Toggle Follow PC (must be before plain F6)
+        if ((e.key === 'F6' || e.code === 'F6') && e.shiftKey) {
+            e.preventDefault();
+            const chk = document.getElementById('chkFollowPC');
+            if (chk) {
+                chk.checked = !chk.checked;
+                chk.dispatchEvent(new Event('change'));
+                showMessage(chk.checked ? 'Follow PC: ON' : 'Follow PC: OFF');
+            }
+            return;
+        }
         // F6 - Pause/Resume
         if (e.code === 'F6' || e.key === 'F6' || e.key === 'Pause') {
             e.preventDefault();
@@ -554,8 +565,10 @@ export function initKeyboardShortcuts({
             updateStatus();
             return;
         }
-        // F9 - Toggle Breakpoint at PC
+        // F9 - Toggle Breakpoint at PC (skip when assembler tab is active — F9/Ctrl+F9 handled there)
         if (e.key === 'F9') {
+            const asmTab = document.getElementById('tab-assembler');
+            if (asmTab && asmTab.classList.contains('active')) return;
             e.preventDefault();
             if (!spectrum.romLoaded) return;
             const pc = spectrum.cpu.pc;

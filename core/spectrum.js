@@ -8572,6 +8572,13 @@ import { Disassembler } from './disasm.js';
             };
         }
 
+        // Restore auto-map data (from project load)
+        setAutoMapData(data) {
+            this.autoMap.executed = new Map(data.executed);
+            this.autoMap.read = new Map(data.read);
+            this.autoMap.written = new Map(data.written);
+        }
+
         // ========== Static Code-Flow Analysis ==========
 
         /**

@@ -3706,7 +3706,8 @@ const VERSION = '0.6.4';
             const bytes = new Uint8Array(data);
             if (bytes.length !== 819200 && bytes.length !== 409600) return false;
 
-            // Validate directory: check first few slots have valid file types (0-11)
+            // Validate directory: check first few slots have valid file types
+            // G+DOS types 1-11, SAMDOS types 16-20
             let validCount = 0;
             let emptyCount = 0;
             for (let i = 0; i < 20; i++) {
@@ -3715,7 +3716,7 @@ const VERSION = '0.6.4';
                 const fileType = bytes[slotOffset];
                 if (fileType === 0) {
                     emptyCount++;
-                } else if (fileType >= 1 && fileType <= 11) {
+                } else if ((fileType >= 1 && fileType <= 11) || (fileType >= 16 && fileType <= 20)) {
                     validCount++;
                 } else {
                     // Invalid file type — not MGT
@@ -3749,14 +3750,30 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Calculate image offset for a given track/side/sector
-         * Track: 0-79 or 128-207 (bit 7 = side 1)
-         * Sector: 1-10 (1-based)
+         * Calculate image offset for a given track/side/sector.
+         * Track: physical cylinder (0-79), Side: 0 or 1, Sector: 1-10 (1-based).
+         * If track has bit 7 set, it encodes side 1 (track 0x80 = cyl 0 side 1).
+         * MGT image layout: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
          */
         static getSectorOffset(track, side, sector) {
             const physTrack = track & 0x7F;
             const physSide = (track & 0x80) ? 1 : side;
             return ((physTrack * 2 + physSide) * 10 + (sector - 1)) * 512;
+        }
+
+        /**
+         * Convert G+DOS track byte to image offset.
+         * Directory entries (firstTrack), sector maps, and chain pointers
+         * encode the track as: cylinder (bits 0-6), side (bit 7).
+         *   track 0-79 = cylinder 0-79 side 0
+         *   track 128-207 = cylinder 0-79 side 1
+         * Sectors are 1-10 (1-based).
+         * Image layout: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
+         */
+        static logicalTrackOffset(track, sector) {
+            const cyl = track & 0x7F;
+            const side = (track >> 7) & 1;
+            return ((cyl * 2 + side) * 10 + (sector - 1)) * 512;
         }
 
         /**
@@ -3771,7 +3788,10 @@ const VERSION = '0.6.4';
             const typeNames = {
                 0: 'Erased', 1: 'BASIC', 2: 'Num array', 3: 'Str array',
                 4: 'Code', 5: '48K Snap', 6: 'Microdrive', 7: 'SCREEN$',
-                8: 'Special', 9: '128K Snap', 10: 'Opentype', 11: 'Execute'
+                8: 'Special', 9: '128K Snap', 10: 'Opentype', 11: 'Execute',
+                // SAMDOS (SAM Coupé) types — compatible MGT disk format
+                16: 'BASIC', 17: 'Num array', 18: 'Str array',
+                19: 'Code', 20: 'SCREEN$'
             };
 
             for (let i = 0; i < 80; i++) {
@@ -3779,7 +3799,23 @@ const VERSION = '0.6.4';
                 if (offset + 256 > bytes.length) break;
 
                 const fileType = bytes[offset];
-                if (fileType === 0) continue;  // Empty/unused slot
+                if (fileType === 0) continue;  // Empty/erased slot
+                // Valid types: 1-11 (G+DOS), 16-20 (SAMDOS/SAM Coupé)
+                // Mixed disks exist (SAMDOS loader + G+DOS data files)
+                if (fileType > 20 || (fileType > 11 && fileType < 16)) continue;
+
+                // First sector location — validate before accepting
+                const firstTrack = bytes[offset + 13];
+                const firstSector = bytes[offset + 14];
+                if (firstSector < 1 || firstSector > 10) continue;  // Invalid sector (1-10 only)
+                const firstCyl = firstTrack & 0x7F;
+                if (firstCyl >= 80) continue;                        // Invalid cylinder (0-79 only)
+                // Directory occupies cylinders 0-1 (both sides); data never starts there
+                if (firstCyl < 2) continue;
+
+                // Sector count (big-endian at offsets 11-12)
+                const sectors = (bytes[offset + 11] << 8) | bytes[offset + 12];
+                if (sectors === 0) continue;  // Empty entry
 
                 // Read filename (10 bytes, space-padded)
                 let name = '';
@@ -3791,14 +3827,7 @@ const VERSION = '0.6.4';
                 }
                 name = name.trimEnd();
 
-                // Sector count (big-endian at offsets 11-12)
-                const sectors = (bytes[offset + 11] << 8) | bytes[offset + 12];
-
-                // First sector location
-                const firstTrack = bytes[offset + 13];
-                const firstSector = bytes[offset + 14];
-
-                // Sector address map: pairs of (track, sector) at offsets 15-209
+                // Sector address map (bitmap): bytes 15-209 (1560-bit bitmap)
                 const sectorMap = [];
                 for (let j = 0; j < sectors && j < 97; j++) {
                     const mapOffset = offset + 15 + j * 2;
@@ -3810,20 +3839,47 @@ const VERSION = '0.6.4';
                     }
                 }
 
-                // ZX tape type (offset 211)
-                const tapeType = bytes[offset + 211];
+                let tapeType, length, param1, param2, param3;
+                // Per-file SAMDOS detection: types 16-20 use SAMDOS metadata layout
+                const isSAMDOS = fileType >= 16;
 
-                // File data length (LSB, MSB at offsets 212-213)
-                const length = bytes[offset + 212] | (bytes[offset + 213] << 8);
+                if (isSAMDOS) {
+                    // SAMDOS metadata at bytes 236-244 of directory entry
+                    // Length: pages * 16384 + modulo (supports files > 64KB)
+                    const pages = bytes[offset + 239];
+                    const modLen = bytes[offset + 240] | (bytes[offset + 241] << 8);
+                    length = pages * 16384 + modLen;
 
-                // Offset 214-215: start address (CODE load addr, BASIC PROG sysvar)
-                const param1 = bytes[offset + 214] | (bytes[offset + 215] << 8);
+                    // Start address: page (byte 236 bits 0-4) + offset (bytes 237-238 LE)
+                    // Page offset uses REL PAGE FORM encoding (section bits + offset)
+                    const startPage = bytes[offset + 236] & 0x1F;
+                    const pageOffset = bytes[offset + 237] | (bytes[offset + 238] << 8);
+                    param1 = pageOffset; // Full REL PAGE FORM address for display
 
-                // Offset 216-217: type-specific (BASIC program body length, CODE = 32768)
-                const param2 = bytes[offset + 216] | (bytes[offset + 217] << 8);
+                    // Execution address / autostart (bytes 242-244)
+                    const execPage = bytes[offset + 242];
+                    const execOffset = bytes[offset + 243] | (bytes[offset + 244] << 8);
+                    param3 = (execPage === 0xFF) ? 0xFFFF : execOffset;
 
-                // Offset 218-219: autostart line (BASIC) or autostart address
-                const param3 = bytes[offset + 218] | (bytes[offset + 219] << 8);
+                    // SAMDOS type → equivalent tape type for compatibility
+                    tapeType = fileType - 16; // 16→0 BASIC, 17→1 NumArr, 18→2 StrArr, 19→3 Code
+                    param2 = 0;
+
+                    // For BASIC: program body length from FileTypeInfo (bytes 221-223)
+                    if (fileType === 16) {
+                        // 3-byte page-form triplet: byte 221 = pages, bytes 222-223 = offset
+                        const bPages = bytes[offset + 221];
+                        const bOff = bytes[offset + 222] | (bytes[offset + 223] << 8);
+                        param2 = bPages * 16384 + (bOff & 0x3FFF);
+                    }
+                } else {
+                    // G+DOS metadata at bytes 210-219
+                    tapeType = bytes[offset + 211];
+                    length = bytes[offset + 212] | (bytes[offset + 213] << 8);
+                    param1 = bytes[offset + 214] | (bytes[offset + 215] << 8);
+                    param2 = bytes[offset + 216] | (bytes[offset + 217] << 8);
+                    param3 = bytes[offset + 218] | (bytes[offset + 219] << 8);
+                }
 
                 const typeName = typeNames[fileType] || `Type ${fileType}`;
 
@@ -3839,7 +3895,8 @@ const VERSION = '0.6.4';
                     firstTrack,
                     firstSector,
                     sectorMap,
-                    autostart: (fileType === 1) ? param3 : null,
+                    autostart: (fileType === 1 || fileType === 16) ? param3 : null,
+                    isSAMDOS,
                     slotIndex: i
                 });
             }
@@ -3851,10 +3908,14 @@ const VERSION = '0.6.4';
          * Extract file data from MGT image by following sector chain.
          * Each sector stores 510 bytes of file data + 2-byte chain pointer
          * (track, sector of next sector) in the last 2 bytes.
+         * Track numbers use G+DOS encoding: cylinder in bits 0-6, side in bit 7
+         * (0-79 = side 0, 128-207 = side 1), matching directory and chain pointer format.
          * SPECIAL (type 8) files use contiguous 512-byte sectors without chain.
-         * Non-SPECIAL files have a 9-byte file header prepended to the data;
-         * this is stripped so the returned data is the payload only,
-         * trimmed to fileInfo.length.
+         * Non-SPECIAL files saved by G+DOS have a 9-byte file header prepended
+         * (type + length + params, mirroring the Spectrum tape header);
+         * some third-party utilities omit this header. The header is auto-detected
+         * by checking if byte 0 matches the expected tape type and bytes 1-2
+         * match the directory length — if valid, it is stripped.
          */
         static extractFile(data, fileInfo) {
             const bytes = new Uint8Array(data);
@@ -3868,7 +3929,8 @@ const VERSION = '0.6.4';
             let curSector = fileInfo.firstSector;
 
             for (let i = 0; i < fileInfo.sectors; i++) {
-                const offset = MGTLoader.getSectorOffset(curTrack, 0, curSector);
+                // firstTrack and chain pointers use G+DOS track encoding (cyl | side<<7)
+                const offset = MGTLoader.logicalTrackOffset(curTrack, curSector);
 
                 if (offset >= 0 && offset + sectorSize <= bytes.length) {
                     result.set(bytes.slice(offset, offset + dataPerSector), destPos);
@@ -3882,11 +3944,15 @@ const VERSION = '0.6.4';
                 destPos += dataPerSector;
 
                 if (isContig) {
-                    // Advance sequentially
+                    // Advance sequentially: sectors 1-10 side 0, then side 1, then next cylinder
                     curSector++;
                     if (curSector > 10) {
                         curSector = 1;
-                        curTrack++;
+                        if ((curTrack & 0x80) === 0) {
+                            curTrack |= 0x80; // switch to side 1 of same cylinder
+                        } else {
+                            curTrack = (curTrack & 0x7F) + 1; // next cylinder, side 0
+                        }
                     }
                 }
             }
@@ -3894,8 +3960,35 @@ const VERSION = '0.6.4';
             if (isContig) {
                 return result.slice(0, fileInfo.length);
             }
-            // Strip 9-byte file header, return payload trimmed to directory length
-            return result.slice(9, 9 + fileInfo.length);
+
+            // SAMDOS files: 9-byte header with SAM-specific format
+            // Byte 0: SAMDOS type (16-20), bytes 1-2: modulo length, byte 7: pages
+            if (fileInfo.isSAMDOS) {
+                if (result.length >= 9) {
+                    const hdrType = result[0];
+                    const hdrModLen = result[1] | (result[2] << 8);
+                    const hdrPages = result[7];
+                    const hdrLen = hdrPages * 16384 + hdrModLen;
+                    if (hdrType === fileInfo.type && hdrLen === fileInfo.length) {
+                        return result.slice(9, 9 + fileInfo.length);
+                    }
+                }
+                return result.slice(0, fileInfo.length);
+            }
+
+            // Detect 9-byte file header: GDOS type → Spectrum tape type mapping
+            // GDOS: 1=BASIC→0, 2=NumArr→1, 3=ChrArr→2, 4=Code→3, 7=SCREEN$→3
+            const gdosToTape = { 1: 0, 2: 1, 3: 2, 4: 3, 7: 3 };
+            const expectedTape = gdosToTape[fileInfo.type];
+            if (expectedTape !== undefined && result.length >= 9) {
+                const hdrType = result[0];
+                const hdrLen = result[1] | (result[2] << 8);
+                if (hdrType === expectedTape && hdrLen === fileInfo.length) {
+                    return result.slice(9, 9 + fileInfo.length);
+                }
+            }
+            // No valid header — return raw data trimmed to directory length
+            return result.slice(0, fileInfo.length);
         }
 
         /**
@@ -3913,7 +4006,8 @@ const VERSION = '0.6.4';
             const isContig = fileInfo.type === 8;
 
             for (let i = 0; i < fileInfo.sectors; i++) {
-                const offset = MGTLoader.getSectorOffset(curTrack, 0, curSector);
+                // firstTrack and chain pointers use G+DOS track encoding (cyl | side<<7)
+                const offset = MGTLoader.logicalTrackOffset(curTrack, curSector);
 
                 if (offset >= 0 && offset + sectorSize <= bytes.length) {
                     result.set(bytes.slice(offset, offset + sectorSize), destPos);
@@ -3929,7 +4023,11 @@ const VERSION = '0.6.4';
                     curSector++;
                     if (curSector > 10) {
                         curSector = 1;
-                        curTrack++;
+                        if ((curTrack & 0x80) === 0) {
+                            curTrack |= 0x80;
+                        } else {
+                            curTrack = (curTrack & 0x7F) + 1;
+                        }
                     }
                 }
             }
@@ -3944,11 +4042,11 @@ const VERSION = '0.6.4';
             // Reuse TRDLoader's TAP builder with mapped type info
             const mappedInfo = {
                 name: fileInfo.name.substring(0, 10),
-                type: fileInfo.type === 1 ? 'basic' :
-                      fileInfo.type === 4 ? 'code' :
-                      fileInfo.type === 7 ? 'code' :
-                      fileInfo.type === 2 ? 'data' :
-                      fileInfo.type === 3 ? 'data' : 'code',
+                type: fileInfo.type === 1 || fileInfo.type === 16 ? 'basic' :
+                      fileInfo.type === 4 || fileInfo.type === 19 ? 'code' :
+                      fileInfo.type === 7 || fileInfo.type === 20 ? 'code' :
+                      fileInfo.type === 2 || fileInfo.type === 17 ? 'data' :
+                      fileInfo.type === 3 || fileInfo.type === 18 ? 'data' : 'code',
                 start: fileInfo.startAddress,
                 length: fileInfo.length,
                 fullName: fileInfo.name
@@ -4120,14 +4218,12 @@ const VERSION = '0.6.4';
             return this.drives.some(d => d.diskData !== null);
         }
 
-        // Calculate sector offset in disk image
+        // Calculate sector offset in disk image from physical cylinder, side, sector.
+        // Used by WD1772 emulation (port read/write commands) where track = cylinder
+        // and side comes from the control register.
+        // MGT image layout: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
         getSectorOffset(track, side, sector) {
-            // G+DOS ROM uses logical track numbering (0-159):
-            //   logical 0 = cylinder 0 side 0, logical 1 = cylinder 0 side 1, etc.
-            // ROM never sets side bit in control register ($EF) — side is encoded in track number.
-            // MGT file stores tracks interleaved: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
-            // Logical track N maps to file offset N * sectorsPerTrack * bytesPerSector.
-            return (track * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
+            return ((track * 2 + side) * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
         }
 
         // Port read (port mapping per FUSE plusd.c)
@@ -4459,6 +4555,16 @@ const VERSION = '0.6.4';
         static get IMAGE_SIZE_NO_WP() { return 254 * 543; } // 137922
 
         /**
+         * Get number of sectors from data length.
+         * Supports oversized MDR images (multi-cartridge compilations).
+         * Standard cartridge: 254 sectors. Oversized: floor(length / 543).
+         */
+        static getSectorCount(data) {
+            const len = data.length || data.byteLength || 0;
+            return Math.floor(len / MDRLoader.SECTOR_SIZE);
+        }
+
+        /**
          * Check if data is an MDR file
          * Standard: 137923 bytes (254×543 + 1 write-protect flag)
          * Some images omit the write-protect byte: 137922 bytes
@@ -4501,31 +4607,36 @@ const VERSION = '0.6.4';
          */
         static listFiles(data) {
             const bytes = new Uint8Array(data);
-            // Collect all used sectors grouped by filename
+            const sectorCount = MDRLoader.getSectorCount(bytes);
+            // Collect all sectors grouped by filename
+            // Each sector is tagged as active (RECFLG != 0) or stale (RECFLG == 0)
             const fileMap = new Map();  // name → [{recnum, reclen, recflg, sectorIdx}]
 
-            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+            for (let i = 0; i < sectorCount; i++) {
                 const off = i * MDRLoader.SECTOR_SIZE;
                 const hdflag = bytes[off];
-                const recflg = bytes[off + 15];
 
-                // Skip free sectors (both header flag and record flag are 0)
-                if (hdflag === 0 && recflg === 0) continue;
-                // Must be a valid header block
+                // Skip sectors without a valid header
                 if ((hdflag & 0x01) !== 1) continue;
 
-                // Read record filename (10 bytes at offset 19)
+                // Validate RECNAM — all 10 bytes must be printable ASCII or trailing spaces
+                // Reject garbage sectors (e.g. format/init records with machine code in name field)
                 let recnam = '';
+                let validName = true;
                 for (let j = 0; j < 10; j++) {
                     const ch = bytes[off + 19 + j];
                     if (ch >= 0x20 && ch < 0x80) {
                         recnam += String.fromCharCode(ch);
+                    } else {
+                        validName = false;
+                        break;
                     }
                 }
+                if (!validName) continue;
                 recnam = recnam.trimEnd();
-
                 if (!recnam) continue;
 
+                const recflg = bytes[off + 15];
                 const recnum = bytes[off + 16];
                 const reclen = bytes[off + 17] | (bytes[off + 18] << 8);
 
@@ -4543,13 +4654,21 @@ const VERSION = '0.6.4';
             // Build file list
             const files = [];
             for (const [name, sectors] of fileMap) {
-                // Sort by record number
-                sectors.sort((a, b) => a.recnum - b.recnum);
+                // Separate active sectors (RECFLG != 0) from stale/erased ones (RECFLG == 0)
+                const activeSectors = sectors.filter(s => s.recflg !== 0);
+                const deleted = activeSectors.length === 0;
+
+                // Use active sectors for live files, all sectors for deleted files
+                const fileSectors = deleted ? sectors : activeSectors;
+
+                // Sort by record number; for duplicate recnums, prefer sectors with
+                // RECFLG bit 2 set (standard SAVE records) over padding/PRINT sectors
+                fileSectors.sort((a, b) => a.recnum - b.recnum || ((b.recflg & 0x04) - (a.recflg & 0x04)));
 
                 // Calculate total data length
                 let totalLen = 0;
-                for (let j = 0; j < sectors.length; j++) {
-                    const sec = sectors[j];
+                for (let j = 0; j < fileSectors.length; j++) {
+                    const sec = fileSectors[j];
                     if (sec.recflg & 0x02) {
                         // EOF sector — use actual reclen
                         totalLen += sec.reclen;
@@ -4558,18 +4677,23 @@ const VERSION = '0.6.4';
                     }
                 }
 
-                const firstSec = sectors[0];
-                const isPrint = (firstSec.recflg & 0x04) === 0;  // bit 2=0 means PRINT file
+                // Check if ANY active sector has bit 2 set (non-PRINT/SAVE type)
+                // Some MDR creation tools don't set bit 2 on all sectors
+                const isPrint = !fileSectors.some(s => (s.recflg & 0x04) !== 0);
 
                 files.push({
                     name,
                     length: totalLen,
-                    sectors: sectors.length,
-                    sectorIndices: sectors.map(s => s.sectorIdx),
+                    sectors: fileSectors.length,
+                    sectorIndices: fileSectors.map(s => s.sectorIdx),
                     isPrint,
-                    type: isPrint ? 'PRINT' : 'File'
+                    type: isPrint ? 'Data' : 'File',
+                    deleted
                 });
             }
+
+            // Active files first, deleted files at the end
+            files.sort((a, b) => (a.deleted ? 1 : 0) - (b.deleted ? 1 : 0));
 
             return files;
         }
@@ -4605,12 +4729,13 @@ const VERSION = '0.6.4';
          */
         static getDiskInfo(data) {
             const bytes = new Uint8Array(data);
+            const sectorCount = MDRLoader.getSectorCount(bytes);
             let cartridgeName = '';
             let usedSectors = 0;
             let freeSectors = 0;
 
             // Get cartridge name from first valid sector header
-            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+            for (let i = 0; i < sectorCount; i++) {
                 const off = i * MDRLoader.SECTOR_SIZE;
                 const hdflag = bytes[off];
                 if ((hdflag & 0x01) === 1) {
@@ -4628,19 +4753,25 @@ const VERSION = '0.6.4';
 
             const files = MDRLoader.listFiles(data);
 
-            // Count used sectors from actual file data
+            // Count used sectors from active (non-deleted) files only
+            let deletedCount = 0;
             for (const f of files) {
-                usedSectors += f.sectors;
+                if (f.deleted) {
+                    deletedCount++;
+                } else {
+                    usedSectors += f.sectors;
+                }
             }
-            freeSectors = MDRLoader.SECTOR_COUNT - usedSectors;
+            freeSectors = sectorCount - usedSectors;
             const writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] : 0;
 
             return {
                 cartridgeName,
-                totalSectors: MDRLoader.SECTOR_COUNT,
+                totalSectors: sectorCount,
                 usedSectors,
                 freeSectors,
-                fileCount: files.length,
+                fileCount: files.length - deletedCount,
+                deletedCount,
                 writeProtect: writeProtect !== 0,
                 totalSize: bytes.length
             };
@@ -4661,20 +4792,25 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Create a blank formatted MDR image (137923 bytes)
+         * Create a blank formatted MDR image
+         * @param {string} cartridgeName - cartridge name (max 10 chars)
+         * @param {number} sectorCount - number of sectors (default 254 = standard cartridge)
          */
-        static createBlankMDR(cartridgeName = 'BLANK') {
-            const image = new Uint8Array(MDRLoader.IMAGE_SIZE);
+        static createBlankMDR(cartridgeName = 'BLANK', sectorCount = MDRLoader.SECTOR_COUNT) {
+            const imageSize = sectorCount * MDRLoader.SECTOR_SIZE + 1;
+            const image = new Uint8Array(imageSize);
             image.fill(0);
 
             // Format each sector with proper header structure
             const paddedName = (cartridgeName + '          ').substring(0, 10);
-            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+            for (let i = 0; i < sectorCount; i++) {
                 const off = i * MDRLoader.SECTOR_SIZE;
                 // HDFLAG = 1 (valid header block)
                 image[off] = 0x01;
-                // HDNUMB = sector number (254 down to 1)
-                image[off + 1] = MDRLoader.SECTOR_COUNT - i;
+                // HDNUMB = sector number (wraps within 254-sector cartridge boundaries)
+                image[off + 1] = (sectorCount <= MDRLoader.SECTOR_COUNT)
+                    ? sectorCount - i
+                    : MDRLoader.SECTOR_COUNT - (i % MDRLoader.SECTOR_COUNT);
                 // HDNAME (10 bytes at offset 4)
                 for (let j = 0; j < 10; j++) {
                     image[off + 4 + j] = paddedName.charCodeAt(j);
@@ -4688,24 +4824,24 @@ const VERSION = '0.6.4';
                 image[off + 542] = MDRLoader.mdrChecksum(image, off + 30, 512);
             }
             // Write-protect flag (last byte): 0 = not write-protected
-            image[MDRLoader.IMAGE_SIZE - 1] = 0;
+            image[imageSize - 1] = 0;
             return image;
         }
 
         /**
          * Build MDR image from file list
          * files: [{name, data, isPrint}]
-         * Returns 137923-byte Uint8Array
+         * @param {number} sectorCount - total sectors (default 254 = standard cartridge)
          */
-        static buildMDR(files, cartridgeName = 'BLANK') {
-            const image = MDRLoader.createBlankMDR(cartridgeName);
+        static buildMDR(files, cartridgeName = 'BLANK', sectorCount = MDRLoader.SECTOR_COUNT) {
+            const image = MDRLoader.createBlankMDR(cartridgeName, sectorCount);
             let nextSector = 0;  // Next free sector to allocate
 
             for (const file of files) {
                 const fileData = new Uint8Array(file.data);
                 const numSectors = Math.ceil(fileData.length / MDRLoader.DATA_SIZE) || 1;
 
-                if (nextSector + numSectors > MDRLoader.SECTOR_COUNT) {
+                if (nextSector + numSectors > sectorCount) {
                     break;  // No more room
                 }
 
@@ -4748,7 +4884,7 @@ const VERSION = '0.6.4';
             }
 
             // Mark remaining sectors as free (HDFLAG=0, RECFLG=0)
-            for (let i = nextSector; i < MDRLoader.SECTOR_COUNT; i++) {
+            for (let i = nextSector; i < sectorCount; i++) {
                 const off = i * MDRLoader.SECTOR_SIZE;
                 // Keep sector number but clear HDFLAG to mark as free
                 image[off] = 0x00;

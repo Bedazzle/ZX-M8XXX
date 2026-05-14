@@ -534,6 +534,17 @@ export function initCodePath({
                 btnCpRecord.textContent = 'Record';
                 updateStatus('');
             }
+        },
+        getSlots() {
+            return slots.map(s => s ? [...s] : null);
+        },
+        setSlots(data) {
+            for (let i = 0; i < 3; i++) {
+                slots[i] = data[i] ? new Set(data[i]) : null;
+            }
+            updateSlotLabels();
+            diffResults = null;
+            cpResults.innerHTML = '';
         }
     };
 }

@@ -32,7 +32,8 @@ export function initProjectIO({
     applyRomsToEmulator,
     getWatches, setWatches, saveWatches, renderWatches,
     getUpdateGraphicsViewer,
-    getUpdateMouseStatus
+    getUpdateMouseStatus,
+    getCodePathAPI, getStructMapperAPI
 }) {
     // DOM elements discovered internally
     const machineSelect = document.getElementById('machineSelect');
@@ -251,6 +252,35 @@ export function initProjectIO({
             // Add poke manager state
             if (pokeManagerAPI.hasData()) {
                 project.pokes = pokeManagerAPI.getPokeData();
+            }
+
+            // Add auto-map data
+            const autoMapData = spectrum.getAutoMapData();
+            if (autoMapData.executed.size > 0 || autoMapData.read.size > 0 || autoMapData.written.size > 0) {
+                project.autoMap = {
+                    enabled: spectrum.isAutoMapEnabled(),
+                    executed: [...autoMapData.executed.entries()],
+                    read: [...autoMapData.read.entries()],
+                    written: [...autoMapData.written.entries()]
+                };
+            }
+
+            // Add code path slots
+            const codePathAPI = getCodePathAPI();
+            if (codePathAPI) {
+                const cpSlots = codePathAPI.getSlots();
+                if (cpSlots.some(s => s !== null)) {
+                    project.codePaths = cpSlots;
+                }
+            }
+
+            // Add struct mapper results
+            const structMapperAPI = getStructMapperAPI();
+            if (structMapperAPI) {
+                const smData = structMapperAPI.getResults();
+                if (smData) {
+                    project.structMapper = smData;
+                }
             }
 
             // Add assembler state (VFS and editor content)
@@ -821,6 +851,33 @@ export function initProjectIO({
             // Restore poke manager state
             if (project.pokes) {
                 try { pokeManagerAPI.loadPokeJSON(JSON.stringify(project.pokes)); } catch (e) { console.warn('Failed to restore pokes:', e); }
+            }
+
+            // Restore auto-map data
+            spectrum.clearAutoMap();
+            if (project.autoMap) {
+                spectrum.setAutoMapData({
+                    executed: new Map(project.autoMap.executed),
+                    read: new Map(project.autoMap.read),
+                    written: new Map(project.autoMap.written)
+                });
+                if (project.autoMap.enabled) {
+                    spectrum.setAutoMapEnabled(true);
+                    analysisAPI.setAutoMapEnabled(true);
+                }
+                analysisAPI.updateAutoMapStats();
+            }
+
+            // Restore code path slots
+            const codePathAPI = getCodePathAPI();
+            if (codePathAPI && project.codePaths) {
+                codePathAPI.setSlots(project.codePaths);
+            }
+
+            // Restore struct mapper results
+            const structMapperAPI = getStructMapperAPI();
+            if (structMapperAPI && project.structMapper) {
+                structMapperAPI.setResults(project.structMapper);
             }
 
             // Restore assembler state (VFS and editor content)

@@ -408,6 +408,9 @@ export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
             xrefRuntimeEnabled = enabled;
             chkXrefRuntime.checked = enabled;
         },
+        setAutoMapEnabled: (enabled) => {
+            chkAutoMap.checked = enabled;
+        },
         destroy() {
             clearInterval(autoMapStatsInterval);
         }
