@@ -896,6 +896,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             // is wrong for double-buffering because the back buffer has been cleared/redrawn
             // by then, causing flicker on the pre-swap scanlines.
             this.deferPaperRendering = this.previousScreenBankChangeCount > 2;
+            // Clear bank-switch catch-up tracking for new frame
+            if (this._bankSwitchRenderedLines) this._bankSwitchRenderedLines.clear();
+            this._catchUpNextY = 0;
 
             // Multicolor tracking: capture initial attribute values at frame start
             // This allows getAttrAt to return correct values for columns where writes
@@ -1069,8 +1072,17 @@ import { getMachineProfile, is128kCompat } from './machines.js';
 
         // Called when screen bank changes (for scroll17-style effects and double-buffering)
         setScreenBankAt(bank, tStates) {
-            const lastBank = this.screenBankChanges[this.screenBankChanges.length - 1].bank;
+            const lastChange = this.screenBankChanges[this.screenBankChanges.length - 1];
+            const lastBank = lastChange.bank;
             if (bank !== lastBank) {
+                // Render-before-switch: render paper lines using the OLD bank up to the
+                // current beam position, BEFORE applying the switch.
+                // This is the JSSpeccy3/FUSE approach: each scanline is rendered with the
+                // bank that was active when the ULA scanned it.
+                if (this.deferPaperRendering) {
+                    this._renderCatchUpPaper(lastBank, lastChange.tState, tStates);
+                }
+
                 this.screenBankChanges.push({tState: tStates, bank: bank});
 
                 // Re-capture attrInitial from the NEW screen bank.
@@ -1086,6 +1098,83 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 // Clear tracked attribute changes — they were recorded for writes
                 // to the old bank's attribute addresses and don't apply to the new bank.
                 this.attrChanges = {};
+            }
+        }
+
+        // Render paper for scanlines between prevTState and curTState using the given bank.
+        // Called before a bank switch so these lines use the OLD (correct) bank.
+        _renderCatchUpPaper(bank, prevTState, curTState) {
+            const screenRam = this.memory.getRamBank(bank);
+            if (!screenRam) return;
+
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const ulaplus = this.ulaplus;
+            const ulaPlusActive = ulaplus.enabled && ulaplus.paletteEnabled;
+            const totalWidth = this.TOTAL_WIDTH;
+            const flashActive = this.flashState;
+
+            // Start from last known position to avoid rescanning from 0 each call
+            const startY = this._catchUpNextY || 0;
+
+            // Find which paper lines fall in the (prevTState, curTState] range
+            for (let y = startY; y < 192; y++) {
+                const visY = this.BORDER_TOP + y;
+                const lineStartTstate = this.calculateLineStartTstate(visY);
+                const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
+
+                // A paper line uses this bank if its paperStart is AFTER prevTState
+                // and its ENTIRE paper area completes BEFORE curTState.
+                // If the switch happens mid-line (paperEnd > curTState), skip it —
+                // renderDeferredPaper handles per-column bank selection for such lines.
+                if (paperStartTstate > curTState) break;  // past the switch point
+                if (paperStartTstate <= prevTState) continue;  // before the previous switch
+                const paperEndTstate = paperStartTstate + 128;  // 256px / 2px per T = 128T
+                if (paperEndTstate > curTState) {
+                    // Switch is mid-line — leave for renderDeferredPaper (per-column handling).
+                    // Don't advance _catchUpNextY past this line since it's not rendered.
+                    continue;
+                }
+
+                // This line's entire paper fits before the switch — render with the old bank
+                if (!this._bankSwitchRenderedLines) this._bankSwitchRenderedLines = new Set();
+                this._bankSwitchRenderedLines.add(y);
+                this._catchUpNextY = y + 1;
+
+                const pixelAddr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
+                const attrAddr = 0x1800 + ((y >> 3) << 5);
+                const rowOffset = visY * totalWidth + this.BORDER_LEFT;
+
+                for (let col = 0; col < 32; col++) {
+                    const pixelByte = screenRam[pixelAddr + col];
+                    const attr = screenRam[attrAddr + col];
+
+                    let inkColor, paperColor;
+                    if (ulaPlusActive) {
+                        const clut = ((attr >> 6) & 0x03) << 4;
+                        inkColor = ulaplus.palette32[clut + (attr & 0x07)];
+                        paperColor = ulaplus.palette32[clut + 8 + ((attr >> 3) & 0x07)];
+                    } else {
+                        let ink = attr & 0x07;
+                        let paper = (attr >> 3) & 0x07;
+                        const bright = (attr & 0x40) ? 8 : 0;
+                        if ((attr & 0x80) && flashActive) {
+                            const tmp = ink; ink = paper; paper = tmp;
+                        }
+                        inkColor = pal32[ink + bright];
+                        paperColor = pal32[paper + bright];
+                    }
+
+                    const baseOffset = rowOffset + (col << 3);
+                    fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
+                    fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
+                    fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
+                    fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
+                    fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
+                    fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
+                    fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
+                    fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                }
             }
         }
 
@@ -1271,8 +1360,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         }
                     }
                 } else if (this.deferPaperRendering) {
-                    // Skip paper rendering - will be done at endFrame with all screen bank changes known
-                    // Just fill with placeholder (will be overwritten at endFrame)
+                    // Skip paper rendering if already handled by bank-switch catch-up,
+                    // or defer to endFrame for remaining lines
+                    // (catch-up renders are done in setScreenBankAt with correct bank)
                 } else {
                     // Render paper with current memory values
                     const pixelAddr = ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2);
@@ -1790,7 +1880,12 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 }
             }
 
+            const caughtUp = this._bankSwitchRenderedLines;
+
             for (let y = 0; y < 192; y++) {
+                // Skip lines already rendered by bank-switch catch-up
+                if (caughtUp && caughtUp.has(y)) continue;
+
                 const visY = this.BORDER_TOP + y;
                 const lineStartTstate = this.calculateLineStartTstate(visY);
                 const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);

@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ZX Spectrum Profile Game</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Consolas', 'Courier New', monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+h1 { color: #0ff; margin-bottom: 16px; font-size: 20px; }
+.panel { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 16px; margin-bottom: 12px; }
+label { display: block; margin-bottom: 4px; color: #a0c0e0; font-size: 13px; }
+input[type=file], input[type=number], textarea { background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460; padding: 6px 8px; border-radius: 4px; font-family: inherit; font-size: 13px; width: 100%; }
+input[type=number] { width: 120px; }
+textarea { height: 40px; resize: vertical; }
+button { background: #0f3460; color: #0ff; border: 1px solid #0ff; border-radius: 4px; padding: 8px 16px; font-family: inherit; font-size: 13px; cursor: pointer; margin-right: 8px; margin-top: 6px; }
+button:hover { background: #1a4f8a; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+.progress-bar { width: 100%; height: 18px; background: #0a0a1a; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+.progress-fill { height: 100%; background: #0ff; width: 0%; transition: width 0.1s; }
+#log { width: 100%; height: 200px; background: #0a0a1a; color: #8f8; border: 1px solid #0f3460; padding: 8px; font-size: 12px; overflow-y: auto; resize: vertical; white-space: pre-wrap; }
+canvas { display: none; }
+.status { color: #ff0; font-size: 13px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>ZX Spectrum Profiler</h1>
+
+<div class="panel">
+  <label for="snapshotFile">Snapshot or RZX file (.sna / .z80 / .szx / .rzx)</label>
+  <input type="file" id="snapshotFile" accept=".sna,.z80,.szx,.rzx">
+  <div class="status" id="snapshotStatus"></div>
+</div>
+
+<div class="panel">
+  <div class="row">
+    <div>
+      <label for="frameCount">Frames to profile</label>
+      <input type="number" id="frameCount" value="500" min="1" max="50000">
+    </div>
+  </div>
+  <div style="margin-top:8px">
+    <label for="keySequence">Key sequence (optional)</label>
+    <textarea id="keySequence" placeholder="SPACE, 200ms, q, w, a+b"></textarea>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="row">
+    <button id="btnProfile" disabled>Profile</button>
+    <button id="btnExportHeatmap" disabled>Export heatmap.tsv</button>
+    <button id="btnExportProfile" disabled>Export profile.json</button>
+    <button id="btnSaveSnapshot" disabled>Save snapshot .sna</button>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="status" id="profileStatus"></div>
+</div>
+
+<div class="panel">
+  <label>Log</label>
+  <div id="log"></div>
+</div>
+
+<canvas id="screen" width="352" height="296"></canvas>
+
+<script src="lib/pako.min.js"></script>
+<script type="module">
+import { Spectrum } from './core/spectrum.js';
+import { Disassembler } from './core/disasm.js';
+
+// ── DOM elements ──
+const snapshotFileInput = document.getElementById('snapshotFile');
+const snapshotStatus = document.getElementById('snapshotStatus');
+const frameCountInput = document.getElementById('frameCount');
+const keySequenceInput = document.getElementById('keySequence');
+const btnProfile = document.getElementById('btnProfile');
+const btnExportHeatmap = document.getElementById('btnExportHeatmap');
+const btnExportProfile = document.getElementById('btnExportProfile');
+const btnSaveSnapshot = document.getElementById('btnSaveSnapshot');
+const progressFill = document.getElementById('progressFill');
+const profileStatus = document.getElementById('profileStatus');
+const logEl = document.getElementById('log');
+
+// ── State ──
+let spectrum = null;
+let snapshotData = null;
+let snapshotFileName = '';
+let profilerResults = null;
+let autoMapData = null;
+let classifiedLabels = null;
+let hotspots = null;
+let isRzxLoaded = false;
+let rzxTotalFrames = 0;
+
+function log(msg) {
+    logEl.textContent += msg + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function hex16(n) {
+    return n.toString(16).toUpperCase().padStart(4, '0');
+}
+
+// ── Classification functions (from profiler-ui.js, pure logic) ──
+
+function classifyHotspot(hotspot, readByte) {
+    const start = hotspot.startAddr;
+    const end = hotspot.endAddr;
+    for (let a = start; a <= end; a++) {
+        const b0 = readByte(a);
+        const b1 = (a + 1 <= 0xFFFF) ? readByte(a + 1) : 0;
+        const b2 = (a + 2 <= 0xFFFF) ? readByte(a + 2) : 0;
+        const b3 = (a + 3 <= 0xFFFF) ? readByte(a + 3) : 0;
+        if (b0 === 0x76) return 'frame_sync';
+        if (b0 === 0x10) return 'delay_djnz';
+        if (b0 === 0xED && b1 === 0xB0) return 'block_ldir';
+        if (b0 === 0xED && b1 === 0xB8) return 'block_lddr';
+        if (b0 === 0xED && b1 === 0xA0) return 'block_copy';
+        if (b0 === 0xED && (b1 === 0xB2 || b1 === 0xB3)) return 'io_block';
+        if (b0 === 0xED && (b1 === 0xBA || b1 === 0xBB)) return 'io_block';
+        if (b0 === 0x0B && ((b1 === 0x78 && b2 === 0xB1) || (b1 === 0x79 && b2 === 0xB0)) && b3 === 0x20) return 'delay_bc';
+        if (b0 === 0xDB) return 'io_poll';
+        if (b0 === 0xED && b1 >= 0x40 && b1 <= 0x78 && (b1 & 1) === 0) return 'io_poll';
+        if (b0 === 0xD3) return 'io_output';
+        if (b0 === 0xED && b1 >= 0x41 && b1 <= 0x79 && (b1 & 1) === 1) return 'io_output';
+        if ((b0 & 0xCF) === 0xC1 || (b0 & 0xCF) === 0xC5) return 'stack_copy';
+        if (b0 === 0xE3) return 'stack_copy';
+    }
+    return 'hotspot';
+}
+
+function analyzeHotspots(results, readMemory) {
+    const tStatesPerPC = results.tStatesPerPC;
+    const totalTStates = results.totalTStates;
+    if (!tStatesPerPC || tStatesPerPC.size === 0) return [];
+
+    const entries = [];
+    for (const [key, tStates] of tStatesPerPC) {
+        const parts = key.split(':');
+        const addr = parseInt(parts[0], 10);
+        const page = parts.length > 1 ? parts[1] : null;
+        entries.push({ key, addr, page, tStates });
+    }
+
+    entries.sort((a, b) => {
+        if ((a.page || '') !== (b.page || '')) return (a.page || '') < (b.page || '') ? -1 : 1;
+        return a.addr - b.addr;
+    });
+
+    const clusters = [];
+    let cur = null;
+    for (const e of entries) {
+        if (cur && e.page === cur.page && e.addr <= cur.endAddr + 5) {
+            cur.entries.push(e);
+            cur.endAddr = e.addr;
+            cur.totalTStates += e.tStates;
+        } else {
+            if (cur) clusters.push(cur);
+            cur = { startAddr: e.addr, endAddr: e.addr, page: e.page,
+                    totalTStates: e.tStates, entries: [e] };
+        }
+    }
+    if (cur) clusters.push(cur);
+
+    const threshold = totalTStates * 0.01;
+    const hs = clusters.filter(c =>
+        c.totalTStates > threshold &&
+        (c.endAddr - c.startAddr) <= 32 &&
+        c.startAddr >= 0x4000
+    );
+
+    for (const h of hs) {
+        h.percentage = (h.totalTStates / totalTStates * 100).toFixed(1);
+        h.classification = classifyHotspot(h, readMemory);
+    }
+
+    hs.sort((a, b) => b.totalTStates - a.totalTStates);
+    return hs;
+}
+
+function generateProfilerLabels(results) {
+    const labels = [];
+    const usedNames = new Set();
+    const framesProfiled = results.framesProfiled;
+
+    function makeUniqueName(base) {
+        if (!usedNames.has(base)) { usedNames.add(base); return base; }
+        for (let i = 2; ; i++) {
+            const name = `${base}_${i}`;
+            if (!usedNames.has(name)) { usedNames.add(name); return name; }
+        }
+    }
+
+    function parseKey(key) {
+        const parts = key.split(':');
+        const addr = parseInt(parts[0], 10);
+        let page = null;
+        if (parts.length > 1) page = parts[1];
+        return { addr, page };
+    }
+
+    function hasPortMatch(portSet, mask, value) {
+        for (const p of portSet) {
+            if ((p & mask) === value) return true;
+        }
+        return false;
+    }
+
+    let mainLoopKey = null;
+    let mainLoopMaxCallees = 0;
+    for (const [key, stats] of results.subroutines) {
+        if (stats.entryAddr < 0x4000) continue;
+        const framePct = framesProfiled > 0 ? stats.framesCalled.size / framesProfiled : 0;
+        if (framePct > 0.9 && stats.callees.size > mainLoopMaxCallees) {
+            mainLoopMaxCallees = stats.callees.size;
+            mainLoopKey = key;
+        }
+    }
+
+    const im2HandlerAddr = results.im2 ? results.im2.handlerAddr : null;
+
+    for (const [key, stats] of results.subroutines) {
+        if (stats.entryAddr < 0x4000 && stats.entryAddr !== 0x0038 &&
+            stats.entryAddr !== im2HandlerAddr) continue;
+
+        const { addr, page } = parseKey(key);
+        const addrHex = hex16(addr);
+        let name = null;
+
+        if (stats.calledFromISR &&
+            (stats.entryAddr === 0x0038 || stats.entryAddr === im2HandlerAddr)) {
+            name = makeUniqueName(stats.entryAddr === 0x0038 ? 'isr_handler' : 'isr_handler_im2');
+        } else if (stats.calledFromISR && stats.entryAddr !== 0x0038 &&
+                   stats.entryAddr !== im2HandlerAddr) {
+            name = makeUniqueName('isr_routine');
+        } else if (key === mainLoopKey) {
+            name = makeUniqueName('main_loop');
+        } else if (stats.portsIn.size > 0 &&
+                   hasPortMatch(stats.portsIn, 0x01, 0x00) &&
+                   !stats.writesScreenBitmap && !stats.writesScreenAttr) {
+            name = makeUniqueName('read_keyboard');
+        } else if (stats.beeperOuts > 10) {
+            name = makeUniqueName('play_beep');
+        } else if (hasPortMatch(stats.portsOut, 0xC002, 0xC000) ||
+                   hasPortMatch(stats.portsOut, 0xC002, 0x8000)) {
+            if (stats.callCount === 1) name = makeUniqueName('ay_init');
+            else if (stats.callCount > 20) name = makeUniqueName('play_music');
+            else name = makeUniqueName('ay_write');
+        } else if (stats.writesScreenBitmap && !stats.writesScreenAttr) {
+            name = makeUniqueName('draw_sprite');
+        } else if (stats.writesScreenAttr && !stats.writesScreenBitmap) {
+            name = makeUniqueName('set_attrs');
+        } else if (stats.writesScreenBitmap && stats.writesScreenAttr) {
+            name = makeUniqueName('draw_screen');
+        } else if (hasPortMatch(stats.portsOut, 0x8002, 0x0000)) {
+            name = makeUniqueName('page_memory');
+        } else if (hasPortMatch(stats.portsIn, 0x00E3, 0x001F) ||
+                   hasPortMatch(stats.portsOut, 0x00E3, 0x001F) ||
+                   hasPortMatch(stats.portsIn, 0xF002, 0x2000) ||
+                   hasPortMatch(stats.portsOut, 0xF002, 0x3000)) {
+            if (hasPortMatch(stats.portsOut, 0x00FF, 0x007F) ||
+                hasPortMatch(stats.portsOut, 0xF002, 0x3000)) {
+                name = makeUniqueName('disk_write');
+            } else {
+                name = makeUniqueName('disk_read');
+            }
+        } else if (stats.callCount === 1 && stats.framesCalled.has(0)) {
+            name = makeUniqueName('init_' + addrHex);
+        } else if (stats.callees.size === 0 && stats.callCount > 10) {
+            name = makeUniqueName('util_' + addrHex);
+        }
+
+        if (name) {
+            labels.push({ address: addr, page: page, name: name });
+        }
+    }
+
+    if (results.im2) {
+        const vtAddr = results.im2.vectorTableAddr;
+        if (vtAddr >= 0x4000) {
+            labels.push({ address: vtAddr, page: null, name: makeUniqueName('im2_vector_table') });
+        }
+    }
+
+    return labels;
+}
+
+function generateHotspotLabels(hsList) {
+    const labels = [];
+    const usedNames = new Set();
+    for (const hs of hsList) {
+        if (hs.startAddr < 0x4000) continue;
+        const addrHex = hex16(hs.startAddr);
+        let name = `${hs.classification}_${addrHex}`;
+        if (usedNames.has(name)) {
+            for (let i = 2; ; i++) {
+                const n = `${name}_${i}`;
+                if (!usedNames.has(n)) { name = n; break; }
+            }
+        }
+        usedNames.add(name);
+        labels.push({ address: hs.startAddr, page: hs.page, name });
+    }
+    return labels;
+}
+
+// ── Key injection parsing ──
+
+function parseKeySequence(text) {
+    if (!text || !text.trim()) return [];
+    const schedule = [];
+    const tokens = text.split(',').map(t => t.trim()).filter(Boolean);
+    let frame = 0;
+    const HOLD_FRAMES = 5;
+
+    for (const token of tokens) {
+        // Delay: "200ms" → run 200/20 = 10 frames
+        const delayMatch = token.match(/^(\d+)\s*ms$/i);
+        if (delayMatch) {
+            frame += Math.round(parseInt(delayMatch[1], 10) / 20);
+            continue;
+        }
+
+        // Simultaneous keys: "a+b"
+        const keys = token.split('+').map(k => k.trim());
+        for (const key of keys) {
+            schedule.push({ frame, action: 'down', key: normalizeKey(key) });
+        }
+        for (const key of keys) {
+            schedule.push({ frame: frame + HOLD_FRAMES, action: 'up', key: normalizeKey(key) });
+        }
+        frame += HOLD_FRAMES + 1;
+    }
+    return schedule;
+}
+
+function normalizeKey(key) {
+    const upper = key.toUpperCase();
+    const map = {
+        'SPACE': ' ', 'ENTER': 'Enter', 'RETURN': 'Enter',
+        'SHIFT': 'Shift', 'CAPS': 'CapsLock',
+        'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
+    };
+    if (map[upper]) return map[upper];
+    if (key.length === 1) return key;
+    return key;
+}
+
+// ── Snapshot loading ──
+
+snapshotFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    snapshotFileName = file.name;
+    const buffer = await file.arrayBuffer();
+    snapshotData = new Uint8Array(buffer);
+    isRzxLoaded = false;
+    rzxTotalFrames = 0;
+
+    const canvas = document.getElementById('screen');
+    spectrum = new Spectrum(canvas);
+    await spectrum.loadRom('roms/48.rom');
+
+    const ext = file.name.toLowerCase().split('.').pop();
+    try {
+        if (ext === 'rzx') {
+            const rzxInfo = await spectrum.loadRZX(snapshotData);
+            isRzxLoaded = true;
+            rzxTotalFrames = rzxInfo.frames;
+            frameCountInput.value = rzxTotalFrames;
+            snapshotStatus.textContent = `Loaded RZX: ${file.name} (${spectrum.machineType}, ${rzxTotalFrames} frames)`;
+            log(`RZX loaded: ${file.name}, machine: ${spectrum.machineType}, ${rzxTotalFrames} frames`);
+            log(`  RZX input replay will be used instead of key sequence`);
+        } else if (ext === 'sna') {
+            spectrum.loadSnapshot(snapshotData);
+            snapshotStatus.textContent = `Loaded: ${file.name} (${spectrum.machineType})`;
+            log(`Snapshot loaded: ${file.name}, machine: ${spectrum.machineType}, PC=$${hex16(spectrum.cpu.pc)}`);
+        } else if (ext === 'z80') {
+            spectrum.loadZ80Snapshot(snapshotData);
+            snapshotStatus.textContent = `Loaded: ${file.name} (${spectrum.machineType})`;
+            log(`Snapshot loaded: ${file.name}, machine: ${spectrum.machineType}, PC=$${hex16(spectrum.cpu.pc)}`);
+        } else {
+            spectrum.loadAnySnapshot(snapshotData, file.name);
+            snapshotStatus.textContent = `Loaded: ${file.name} (${spectrum.machineType})`;
+            log(`Snapshot loaded: ${file.name}, machine: ${spectrum.machineType}, PC=$${hex16(spectrum.cpu.pc)}`);
+        }
+        btnProfile.disabled = false;
+        btnSaveSnapshot.disabled = false;
+    } catch (err) {
+        snapshotStatus.textContent = `Error: ${err.message}`;
+        log(`Error loading snapshot: ${err.message}`);
+    }
+});
+
+// ── Profiling ──
+
+btnProfile.addEventListener('click', async () => {
+    if (!spectrum) return;
+
+    const totalFrames = parseInt(frameCountInput.value, 10) || 500;
+    const keySchedule = isRzxLoaded ? [] : parseKeySequence(keySequenceInput.value);
+    const useRzx = isRzxLoaded;
+
+    btnProfile.disabled = true;
+    btnExportHeatmap.disabled = true;
+    btnExportProfile.disabled = true;
+    progressFill.style.width = '0%';
+    profileStatus.textContent = 'Profiling...';
+
+    log(`Starting profiling: ${totalFrames} frames` + (useRzx ? ' (RZX replay)' : ''));
+    if (keySchedule.length > 0) {
+        log(`Key schedule: ${keySchedule.length} events`);
+    }
+
+    // Enable auto-mapping for heatmap data
+    spectrum.setAutoMapEnabled(true);
+
+    // Capture results via onComplete callback — stopProfiling() does not
+    // return a value, and the profiler auto-stops when framesRemaining
+    // hits 0 inside runFrameHeadless(), so we must use the callback.
+    let capturedResults = null;
+    spectrum.profiler.onComplete = (results) => { capturedResults = results; };
+
+    // Start profiling
+    spectrum.startProfiling(totalFrames);
+
+    const YIELD_EVERY = 50;
+    let framesRan = 0;
+
+    for (let frame = 0; frame < totalFrames; frame++) {
+        // RZX: stop early if playback ended (all recorded frames consumed)
+        if (useRzx && !spectrum.rzxPlaying) {
+            log(`RZX playback ended at frame ${frame}`);
+            break;
+        }
+
+        // Process key events for this frame (ignored when using RZX)
+        for (const evt of keySchedule) {
+            if (evt.frame === frame) {
+                if (evt.action === 'down') {
+                    spectrum.ula.keyDown(evt.key);
+                } else {
+                    spectrum.ula.keyUp(evt.key);
+                }
+            }
+        }
+
+        spectrum.runFrameHeadless();
+        framesRan++;
+
+        // Yield to UI every N frames
+        if (frame % YIELD_EVERY === 0) {
+            const pct = ((frame + 1) / totalFrames * 100).toFixed(0);
+            progressFill.style.width = pct + '%';
+            profileStatus.textContent = `Frame ${frame + 1} / ${totalFrames}`;
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
+
+    progressFill.style.width = '100%';
+
+    // If profiler already auto-stopped via framesRemaining countdown,
+    // capturedResults is set. Otherwise force stop now.
+    if (!capturedResults) {
+        spectrum.stopProfiling();
+    }
+    profilerResults = capturedResults;
+    autoMapData = spectrum.getAutoMapData();
+
+    if (!profilerResults) {
+        log('Error: profiler returned no results');
+        profileStatus.textContent = 'Error: no profiler results';
+        btnProfile.disabled = false;
+        return;
+    }
+
+    // Run classification
+    const readMem = (addr) => spectrum.memory.read(addr);
+    classifiedLabels = generateProfilerLabels(profilerResults);
+    hotspots = analyzeHotspots(profilerResults, readMem);
+    const hotspotLabels = generateHotspotLabels(hotspots);
+
+    const subCount = profilerResults.subroutines.size;
+    log(`Profiling complete: ${profilerResults.framesProfiled} frames`);
+    log(`  Subroutines: ${subCount}`);
+    log(`  Classified labels: ${classifiedLabels.length}`);
+    log(`  Hotspots: ${hotspots.length}`);
+    log(`  Total T-states: ${profilerResults.totalTStates}`);
+
+    for (const lbl of classifiedLabels) {
+        log(`  Label: $${hex16(lbl.address)} = ${lbl.name}`);
+    }
+    for (const hs of hotspots) {
+        log(`  Hotspot: $${hex16(hs.startAddr)}-$${hex16(hs.endAddr)} ${hs.classification} (${hs.percentage}%)`);
+    }
+
+    profileStatus.textContent = `Done: ${subCount} subs, ${classifiedLabels.length} labels, ${hotspots.length} hotspots`;
+    btnProfile.disabled = false;
+    btnExportHeatmap.disabled = false;
+    btnExportProfile.disabled = false;
+});
+
+// ── Export heatmap.tsv ──
+
+btnExportHeatmap.addEventListener('click', () => {
+    if (!autoMapData) return;
+
+    const disasm = new Disassembler(spectrum.memory);
+    const allAddrs = new Set();
+
+    for (const key of autoMapData.executed.keys()) {
+        allAddrs.add(parseInt(key.split(':')[0], 10));
+    }
+    for (const key of autoMapData.read.keys()) {
+        allAddrs.add(parseInt(key.split(':')[0], 10));
+    }
+    for (const key of autoMapData.written.keys()) {
+        allAddrs.add(parseInt(key.split(':')[0], 10));
+    }
+
+    const sorted = Array.from(allAddrs).sort((a, b) => a - b);
+    const lines = ['Address\tMnemonic\tExecuted\tRead\tWritten'];
+
+    for (const addr of sorted) {
+        const key48 = String(addr);
+        const execCount = autoMapData.executed.get(key48)?.count || 0;
+        const readCount = autoMapData.read.get(key48)?.count || 0;
+        const writeCount = autoMapData.written.get(key48)?.count || 0;
+
+        let mnemonic = '';
+        if (execCount > 0 && addr >= 0x4000) {
+            try {
+                const info = disasm.disassemble(addr);
+                if (info && info.mnemonic) mnemonic = info.mnemonic;
+            } catch (e) { /* skip */ }
+        }
+
+        lines.push(`$${hex16(addr)}\t${mnemonic}\t${execCount}\t${readCount}\t${writeCount}`);
+    }
+
+    downloadFile('heatmap.tsv', lines.join('\n'));
+    log(`Exported heatmap.tsv: ${sorted.length} addresses`);
+});
+
+// ── Export profile.json ──
+
+btnExportProfile.addEventListener('click', () => {
+    if (!profilerResults) return;
+
+    const machineType = spectrum.machineType || '48k';
+
+    // Build subroutines dict
+    const subroutines = {};
+    for (const [key, stats] of profilerResults.subroutines) {
+        const addr = stats.entryAddr;
+        if (addr < 0x4000) continue;
+
+        const callers = [];
+        if (stats.callers) {
+            for (const ck of stats.callers) {
+                callers.push(String(parseInt(String(ck).split(':')[0], 10)));
+            }
+        }
+        const callees = [];
+        if (stats.callees) {
+            for (const ck of stats.callees) {
+                callees.push(String(parseInt(String(ck).split(':')[0], 10)));
+            }
+        }
+
+        const portsIn = [];
+        if (stats.portsIn) for (const p of stats.portsIn) portsIn.push(p);
+        const portsOut = [];
+        if (stats.portsOut) for (const p of stats.portsOut) portsOut.push(p);
+
+        // Find classification from classifiedLabels
+        let classification = '';
+        for (const lbl of classifiedLabels) {
+            if (lbl.address === addr) { classification = lbl.name.replace(/_[0-9A-F]{4}(_\d+)?$/, ''); break; }
+        }
+
+        const regInputs = [];
+        if (stats.regInputs) for (const r of stats.regInputs) regInputs.push(r);
+        const regOutputs = [];
+        if (stats.regOutputs) for (const r of stats.regOutputs) regOutputs.push(r);
+
+        subroutines[String(addr)] = {
+            entryAddr: addr,
+            entryAddrHex: hex16(addr),
+            callCount: stats.callCount || 0,
+            callers,
+            callees,
+            framesCalledCount: stats.framesCalled ? stats.framesCalled.size : 0,
+            firstFrame: stats.framesCalled ? Math.min(...stats.framesCalled) : 0,
+            lastFrame: stats.framesCalled ? Math.max(...stats.framesCalled) : 0,
+            writesScreenBitmap: stats.writesScreenBitmap || false,
+            writesScreenAttr: stats.writesScreenAttr || false,
+            calledFromISR: stats.calledFromISR || false,
+            portsIn,
+            portsOut,
+            beeperOuts: stats.beeperOuts || 0,
+            classification,
+            regInputs,
+            regOutputs,
+        };
+    }
+
+    // Build hotspots list
+    const hotspotList = (hotspots || []).map(hs => ({
+        startAddr: hs.startAddr,
+        startAddrHex: hex16(hs.startAddr),
+        endAddr: hs.endAddr,
+        totalTStates: hs.totalTStates,
+        percentage: hs.percentage,
+        classification: hs.classification,
+    }));
+
+    // Build tStatesPerPC
+    const tStatesPerPC = {};
+    for (const [key, ts] of profilerResults.tStatesPerPC) {
+        const addr = parseInt(key.split(':')[0], 10);
+        if (addr >= 0x4000) {
+            tStatesPerPC[String(addr)] = ts;
+        }
+    }
+
+    const profile = {
+        version: 1,
+        metadata: {
+            snapshotFile: snapshotFileName,
+            machineType,
+            framesProfiled: profilerResults.framesProfiled,
+            totalTStates: profilerResults.totalTStates,
+            timestamp: new Date().toISOString(),
+        },
+        subroutines,
+        hotspots: hotspotList,
+        tStatesPerPC,
+    };
+
+    downloadFile('profile.json', JSON.stringify(profile, null, 2));
+    log(`Exported profile.json: ${Object.keys(subroutines).length} subroutines, ${hotspotList.length} hotspots`);
+});
+
+// ── Save snapshot ──
+
+btnSaveSnapshot.addEventListener('click', () => {
+    if (!spectrum) return;
+    const snaData = spectrum.saveSnapshot('sna');
+    const baseName = snapshotFileName.replace(/\.[^.]+$/, '');
+    const blob = new Blob([snaData], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = baseName + '.sna';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    log(`Saved snapshot: ${baseName}.sna (${snaData.length} bytes)`);
+});
+
+// ── File download helper ──
+
+function downloadFile(filename, content) {
+    const blob = new Blob([content], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+</script>
+</body>
+</html>

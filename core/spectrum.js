@@ -535,20 +535,79 @@ import { Disassembler } from './disasm.js';
         // ========== Memory & Contention ==========
 
         setupContention() {
-            // Machines without contention (Pentagon, Pentagon 1024)
+            // Machines without contention (Pentagon, Pentagon 1024, Scorpion)
+            // Still need cycle-accurate write tracking for multicolor effects
             if (!this.profile.hasContention) {
                 this.contentionFunc = null;
-                this.cpu.contend = null;
                 this.cpu.ioContend = null;
                 this.contentionEnabled = false;
 
-                // Multicolor tracking for Pentagon (no contention, simple tStates)
+                // Track M-cycle position within instruction (same as contended machines,
+                // but without contention delays). This gives accurate write T-states for
+                // multicolor effects like Eye Ache.
+                let mcycleOffset = 0;
+                let isFirstAccess = true;
+
+                this.cpu.contend = () => {
+                    // No contention delays — just track M-cycle offset
+                    mcycleOffset += isFirstAccess ? 4 : 3;
+                    isFirstAccess = false;
+                };
+
+                this.cpu.internalCycles = (cycles) => {
+                    mcycleOffset += cycles;
+                };
+
+                this.cpu.contendInternal = (addr, tstates) => {
+                    // No contention delays — just track internal cycles
+                    mcycleOffset += tstates;
+                };
+
+                this.cpu.resetContend = () => {
+                    mcycleOffset = 0;
+                    isFirstAccess = true;
+                };
+
+                const originalExecute = this.cpu.execute.bind(this.cpu);
+                this.cpu.execute = () => {
+                    mcycleOffset = 0;
+                    isFirstAccess = true;
+                    return originalExecute();
+                };
+
+                const originalIncR = this.cpu.incR.bind(this.cpu);
+                this.cpu.incR = () => {
+                    if (mcycleOffset > 0) {
+                        isFirstAccess = true;  // Next fetch is M1 (prefix opcode)
+                    }
+                    return originalIncR();
+                };
+
+                const originalInterrupt = this.cpu.interrupt.bind(this.cpu);
+                this.cpu.interrupt = () => {
+                    mcycleOffset = 7;  // 7T acknowledge cycle before push
+                    isFirstAccess = false;
+                    return originalInterrupt();
+                };
+                const originalNmi = this.cpu.nmi.bind(this.cpu);
+                this.cpu.nmi = () => {
+                    mcycleOffset = 5;  // 5T acknowledge cycle before push
+                    isFirstAccess = false;
+                    return originalNmi();
+                };
+
+                // Multicolor tracking with accurate write timing
                 // Only track when displaying bank 5 — $5800 writes always go to bank 5,
                 // so when displaying bank 7 these writes affect the back buffer, not the display
-                this.ula.mcWriteAdjust = 5;
+                // The write timestamp uses mcycleOffset - 3: contend() has already added the 3T
+                // write cycle, but the effective point where the new value becomes visible to the
+                // ULA is at the START of the write cycle, not the end. This matches JSSpeccy3's
+                // model where updateFramebuffer() runs before t += 3 in writeMem().
+                this.ula.mcWriteAdjust = 0;
                 this.cpu.onMemWrite = (addr, val) => {
                     if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
-                        this.ula.setAttrAt(addr - SCREEN_ATTR, val, this.cpu.tStates);
+                        const writeT = this.cpu.tStates + mcycleOffset - 3;
+                        this.ula.setAttrAt(addr - SCREEN_ATTR, val, writeT);
                         this.ula.hadAttrChanges = true;
                     }
                 };
@@ -940,18 +999,6 @@ import { Disassembler } from './disasm.js';
                 return;
             }
 
-            // Pentagon: no contention, simple multicolor tracking
-            // Only track when displaying bank 5 — $5800 writes always target bank 5
-            this.cpu.contend = null;
-            this.cpu.ioContend = null;
-            this.contentionEnabled = false;
-            this.ula.mcWriteAdjust = 5;
-            this.cpu.onMemWrite = (addr, val) => {
-                if (addr >= SCREEN_ATTR && addr <= SCREEN_END && this.memory.screenBank === 5) {
-                    this.ula.setAttrAt(addr - SCREEN_ATTR, val, this.cpu.tStates);
-                    this.ula.hadAttrChanges = true;
-                }
-            };
         }
 
         // Contention check using precomputed delay table

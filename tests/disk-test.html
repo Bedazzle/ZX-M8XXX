@@ -1421,7 +1421,7 @@
         assert(multiFiles[0].name === 'FILE_A', 'multi: file A name');
         assert(multiFiles[1].name === 'FILE_B', 'multi: file B name');
         assert(multiFiles[2].name === 'FILE_C', 'multi: file C name');
-        assert(multiFiles[1].type === 'PRINT', 'file B: type = PRINT');
+        assert(multiFiles[1].type === 'Data', 'file B: type = Data');
 
         // Extract each
         const exA = MDRLoader.extractFile(mdr3, multiFiles[0]);

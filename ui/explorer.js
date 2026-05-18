@@ -91,7 +91,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         };
     }
 
-    // Sync preview panel height to match info output panel
+    // Sync preview panel height to match info output panel (single-screen path only)
     function syncPreviewHeight() {
         setTimeout(() => {
             const leftH = explorerInfoOutput.offsetHeight;
@@ -476,13 +476,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function explorerRenderDualScreen(screen5, screen7, activeScreen) {
-        // Render two screens side by side for 128K
-        explorerPreviewCanvas.width = 520;  // 256 + 8 gap + 256
-        explorerPreviewCanvas.height = SCREEN_HEIGHT;
+        // Render two screens stacked vertically for 128K
+        const gap = 8;
+        const totalHeight = SCREEN_HEIGHT + gap + SCREEN_HEIGHT;  // 192 + 8 + 192 = 392
+        const screen7Y = SCREEN_HEIGHT + gap;
+        explorerPreviewCanvas.width = SCREEN_WIDTH;   // 256
+        explorerPreviewCanvas.height = totalHeight;
         explorerPreviewContainer.classList.remove('hidden');
-        explorerPreviewLabel.textContent = `128K Screens (Bank 5 / Bank 7) - Active: ${activeScreen}`;
+        explorerPreviewLabel.textContent = `Bank 5 / Bank 7 \u2014 Active: ${activeScreen}`;
 
-        const imageData = explorerPreviewCtx.createImageData(520, SCREEN_HEIGHT);
+        const imageData = explorerPreviewCtx.createImageData(SCREEN_WIDTH, totalHeight);
         const pixels = imageData.data;
 
         // Fill with dark background
@@ -490,14 +493,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             pixels[i] = 32; pixels[i + 1] = 32; pixels[i + 2] = 48; pixels[i + 3] = 255;
         }
 
-        // Render screen 5 (left)
+        // Render screen 5 (top)
         if (screen5) {
-            explorerRenderSCRToImageData(pixels, 520, screen5, 0);
+            explorerRenderSCRToImageData(pixels, SCREEN_WIDTH, screen5, 0, 0);
         }
 
-        // Render screen 7 (right, offset by 264 pixels)
+        // Render screen 7 (bottom)
         if (screen7) {
-            explorerRenderSCRToImageData(pixels, 520, screen7, 264);
+            explorerRenderSCRToImageData(pixels, SCREEN_WIDTH, screen7, 0, screen7Y);
         }
 
         explorerPreviewCtx.putImageData(imageData, 0, 0);
@@ -508,11 +511,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (activeScreen === 5) {
             explorerPreviewCtx.strokeRect(1, 1, 254, 190);
         } else {
-            explorerPreviewCtx.strokeRect(265, 1, 254, 190);
+            explorerPreviewCtx.strokeRect(1, screen7Y + 1, 254, 190);
         }
+
+        // Apply 2x zoom (no syncPreviewHeight — dual screen sizes naturally)
+        explorerPreviewCanvas.style.width = (SCREEN_WIDTH * 2) + 'px';
+        explorerPreviewCanvas.style.height = (totalHeight * 2) + 'px';
+        explorerPreviewContainer.style.height = '';
     }
 
-    function explorerRenderSCRToImageData(pixels, canvasWidth, data, xOffset) {
+    function explorerRenderSCRToImageData(pixels, canvasWidth, data, xOffset, yBase) {
+        if (yBase === undefined) yBase = 0;
         const sections = [
             { bitmapAddr: 0, attrAddr: SCREEN_BITMAP_SIZE, yOffset: 0 },
             { bitmapAddr: 2048, attrAddr: SCREEN_BITMAP_SIZE + 256, yOffset: 64 },
@@ -538,7 +547,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         const paperRgb = palette[paper];
 
                         const x = col * 8 + xOffset;
-                        const y = yOffset + row * 8 + line;
+                        const y = yBase + yOffset + row * 8 + line;
 
                         for (let bit = 0; bit < 8; bit++) {
                             const isSet = (byte & (0x80 >> bit)) !== 0;
@@ -1851,30 +1860,56 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For Z80 files, extract and decompress screen
         if (explorerParsed && explorerParsed.type === 'z80') {
-            const screen = explorerExtractZ80Screen(explorerData, explorerParsed);
-            if (screen) {
-                explorerPreviewContainer.classList.remove('hidden');
-                explorerPreviewLabel.textContent = `Z80 v${explorerParsed.version} Screen`;
-                explorerRenderSCR(screen);
-                explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
-                explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
-                syncPreviewHeight();
-                return;
+            if (explorerParsed.is128) {
+                // 128K: show both screens (bank 5 = page 8, bank 7 = page 10)
+                const screen5 = explorerExtractZ80Screen(explorerData, explorerParsed, 8);
+                const screen7 = explorerExtractZ80Screen(explorerData, explorerParsed, 10);
+                const activeScreen = (explorerParsed.port7FFD & 0x08) ? 7 : 5;
+                if (screen5 || screen7) {
+                    explorerRenderDualScreen(screen5, screen7, activeScreen);
+                    return;
+                }
+            } else {
+                const screen = explorerExtractZ80Screen(explorerData, explorerParsed);
+                if (screen) {
+                    explorerPreviewContainer.classList.remove('hidden');
+                    explorerPreviewLabel.textContent = `Z80 v${explorerParsed.version} Screen`;
+                    explorerRenderSCR(screen);
+                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                    syncPreviewHeight();
+                    return;
+                }
             }
         }
 
         // For SZX files, extract screen from RAMP chunk
         if (explorerParsed && explorerParsed.type === 'szx') {
             try {
-                const screen = SZXLoader.extractScreen(explorerData);
-                if (screen) {
-                    explorerPreviewContainer.classList.remove('hidden');
-                    explorerPreviewLabel.textContent = `SZX v${explorerParsed.version} Screen`;
-                    explorerRenderSCR(screen);
-                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
-                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
-                    syncPreviewHeight();
-                    return;
+                if (explorerParsed.is128) {
+                    // 128K: show both screens (bank 5 and bank 7)
+                    const info = SZXLoader.parse(explorerData);
+                    const page5 = SZXLoader.extractRAMPage(explorerData, info, 5);
+                    const page7 = SZXLoader.extractRAMPage(explorerData, info, 7);
+                    const screen5 = page5 && page5.length >= SCREEN_SIZE ? page5.slice(0, SCREEN_SIZE) : null;
+                    const screen7 = page7 && page7.length >= SCREEN_SIZE ? page7.slice(0, SCREEN_SIZE) : null;
+                    const port7FFD = explorerParsed.registers.port7FFD || 0;
+                    const activeScreen = (port7FFD & 0x08) ? 7 : 5;
+                    if (screen5 || screen7) {
+                        explorerRenderDualScreen(screen5, screen7, activeScreen);
+                        return;
+                    }
+                } else {
+                    const screen = SZXLoader.extractScreen(explorerData);
+                    if (screen) {
+                        explorerPreviewContainer.classList.remove('hidden');
+                        explorerPreviewLabel.textContent = `SZX v${explorerParsed.version} Screen`;
+                        explorerRenderSCR(screen);
+                        explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+                        explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+                        syncPreviewHeight();
+                        return;
+                    }
                 }
             } catch (e) {
                 console.error('SZX screen extraction error:', e);
@@ -1884,15 +1919,55 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // For RZX files, extract screen from embedded snapshot
         if (explorerParsed && explorerParsed.type === 'rzx' && explorerParsed.snapshot) {
             try {
+                const ep = explorerParsed.embeddedParsed;
+
+                if (explorerParsed.snapshotType === 'sna' && ep && ep.is128) {
+                    // 128K SNA embedded in RZX: same extraction as standalone SNA
+                    const snapData = explorerParsed.snapshot;
+                    const port7FFD = ep.registers.port7FFD || 0;
+                    const activeScreen = (port7FFD & 0x08) ? 7 : 5;
+                    const pagedBank = port7FFD & 0x07;
+                    const screen5 = snapData.length >= 27 + SCREEN_SIZE
+                        ? snapData.slice(27, 27 + SCREEN_SIZE) : null;
+                    let screen7 = null;
+                    if (pagedBank === 7) {
+                        const bank7Offset = 27 + 32768;
+                        if (snapData.length >= bank7Offset + SCREEN_SIZE) {
+                            screen7 = snapData.slice(bank7Offset, bank7Offset + SCREEN_SIZE);
+                        }
+                    } else {
+                        const remainingBanks = [0, 1, 3, 4, 6, 7].filter(b => b !== pagedBank);
+                        const bank7Index = remainingBanks.indexOf(7);
+                        if (bank7Index >= 0) {
+                            const bank7Offset = 49183 + bank7Index * 16384;
+                            if (snapData.length >= bank7Offset + SCREEN_SIZE) {
+                                screen7 = snapData.slice(bank7Offset, bank7Offset + SCREEN_SIZE);
+                            }
+                        }
+                    }
+                    if (screen5 || screen7) {
+                        explorerRenderDualScreen(screen5, screen7, activeScreen);
+                        return;
+                    }
+                } else if (explorerParsed.snapshotType === 'z80' && ep && ep.is128) {
+                    // 128K Z80 embedded in RZX
+                    const screen5 = explorerExtractZ80Screen(explorerParsed.snapshot, ep, 8);
+                    const screen7 = explorerExtractZ80Screen(explorerParsed.snapshot, ep, 10);
+                    const activeScreen = (ep.port7FFD & 0x08) ? 7 : 5;
+                    if (screen5 || screen7) {
+                        explorerRenderDualScreen(screen5, screen7, activeScreen);
+                        return;
+                    }
+                }
+
+                // Fallback: single screen (48K or extraction failure)
                 let screen = null;
                 if (explorerParsed.snapshotType === 'sna') {
-                    // SNA: screen is at offset 27
                     if (explorerParsed.snapshot.length >= 27 + SCREEN_SIZE) {
                         screen = explorerParsed.snapshot.slice(27, 27 + SCREEN_SIZE);
                     }
-                } else if (explorerParsed.snapshotType === 'z80' && explorerParsed.embeddedParsed) {
-                    // Use Z80 extraction
-                    screen = explorerExtractZ80Screen(explorerParsed.snapshot, explorerParsed.embeddedParsed);
+                } else if (explorerParsed.snapshotType === 'z80' && ep) {
+                    screen = explorerExtractZ80Screen(explorerParsed.snapshot, ep);
                 }
 
                 if (screen) {
@@ -2019,9 +2094,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     // Extract screen from Z80 file (supports v1, v2, v3, compressed and uncompressed)
-    function explorerExtractZ80Screen(data, parsed) {
+    // Extract screen data from Z80 snapshot.
+    // targetPage: Z80 page number (8 = bank 5 / primary screen, 10 = bank 7 / shadow screen)
+    function explorerExtractZ80Screen(data, parsed, targetPage) {
+        if (targetPage === undefined) targetPage = 8;
         try {
             if (parsed.version === 1) {
+                // V1 is always 48K — only bank 5 (page 8) exists
+                if (targetPage !== 8) return null;
                 // V1: 30-byte header, then memory (possibly compressed)
                 if (parsed.compressed) {
                     // Find end marker (00 ED ED 00) and decompress
@@ -2048,12 +2128,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const extLen = data[30] | (data[31] << 8);
                 const headerEnd = 32 + extLen;
 
-                // Determine which page contains the screen
-                // Page 8 always contains the screen ($4000-$7FFF)
-                // For 48K: page 8 = $4000-$7FFF
-                // For 128K: pages 3-10 = RAM banks 0-7, so page 8 = bank 5 (screen)
-                const screenPage = 8;
-
                 // Parse pages
                 let offset = headerEnd;
                 while (offset < data.length - 3) {
@@ -2061,7 +2135,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     const pageNum = data[offset + 2];
                     offset += 3;
 
-                    if (pageNum === screenPage) {
+                    if (pageNum === targetPage) {
                         let pageData;
                         if (pageLen === 0xFFFF) {
                             // Uncompressed page

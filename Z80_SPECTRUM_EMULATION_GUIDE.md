@@ -596,13 +596,17 @@ The displayed bank is always a fully-drawn frame. The key constraint: by end-of-
 
 **2. Scroll17 / screen multiplexing**: Rapid bank alternation within a single frame (dozens to hundreds of switches). Combines pixel/attribute data from both banks to achieve effects impossible with a single screen, such as per-column independent scrolling.
 
+**3. Per-scanline bank switching with mid-frame writes** (e.g., Eye Ache demo): Alternates screen bank every scanline (~192 switches per frame) AND writes attribute data to both banks via $C000 mapping. Unlike scroll17, bank *contents* change mid-frame — deferred end-of-frame reading sees overwritten data.
+
 **Emulation pitfall — deferred vs scanline rendering:**
 
 Scanline rendering (reading screen RAM at each line's CPU execution time) handles double-buffering correctly: lines rendered before the swap show the old display bank (still intact), lines after show the new bank.
 
-Deferred rendering (reading all screen RAM at end-of-frame) is required for scroll17 (need all bank change timestamps to determine per-column bank selection). However, it **breaks double-buffering**: by end-of-frame the pre-swap bank has been cleared/redrawn, so reading it produces a blank or partially-drawn image — causing severe flicker.
+Deferred rendering (reading all screen RAM at end-of-frame) is required for scroll17 (need all bank change timestamps to determine per-column bank selection). However, it **breaks double-buffering**: by end-of-frame the pre-swap bank has been cleared/redrawn, so reading it produces a blank or partially-drawn image — causing severe flicker. It also **breaks Eye Ache-style effects** where bank contents are overwritten after the ULA has scanned them.
 
-**Solution:** Only defer paper rendering when the previous frame had many bank changes (>2 entries), indicating scroll17. Simple double-buffering (initial state + 1 swap = 2 entries) should use normal scanline rendering.
+**Solution — hybrid approach:**
+1. Only defer paper rendering when the previous frame had many bank changes (>2 entries). Simple double-buffering (initial state + 1 swap = 2 entries) uses normal scanline rendering.
+2. **Render-before-switch catch-up**: At each bank switch, render paper lines with the OLD bank before applying the switch (JSSpeccy3/FUSE approach). Only catch up lines whose entire paper area (128T) completes before the switch — lines where the switch is mid-line are left for deferred per-column rendering. This correctly handles both Eye Ache (one bank per scanline → all lines caught up) and scroll17 (mid-line switches → lines deferred for per-column bank selection).
 
 ---
 

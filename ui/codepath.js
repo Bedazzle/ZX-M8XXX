@@ -25,7 +25,7 @@ export function initCodePath({
     const chkCpSkipRom = document.getElementById('chkCpSkipRom');
     const btnCpExport = document.getElementById('btnCpExport');
     const btnCpClear = document.getElementById('btnCpClear');
-    const btnCpTrace = document.getElementById('btnCpTrace');
+    const chkCpTrace = document.getElementById('chkCpTrace');
     const chkCpMerge = document.getElementById('chkCpMerge');
     const cpStatus = document.getElementById('cpStatus');
     const cpResults = document.getElementById('cpResults');
@@ -122,16 +122,17 @@ export function initCodePath({
     // --- Tracing ---
 
     function startTracing() {
-        if (!slots[0]) {
-            showMessage('Baseline slot is empty — record it first.');
+        const slotIdx = parseInt(cpSlotSelect.value, 10);
+        if (!slots[slotIdx]) {
+            showMessage(`${slotNames[slotIdx]} slot is empty \u2014 record it first.`);
+            chkCpTrace.checked = false;
             return;
         }
         if (recording) stopRecordingInternal();
         const spectrum = getSpectrum();
-        spectrum.startCodePathTracing(slots[0]);
+        spectrum.startCodePathTracing(slots[slotIdx]);
         tracing = true;
-        btnCpTrace.classList.add('active');
-        updateStatus('Tracing...');
+        updateStatus(`Tracing ${slotNames[slotIdx]}...`);
     }
 
     function stopTracing() {
@@ -139,15 +140,15 @@ export function initCodePath({
         const spectrum = getSpectrum();
         spectrum.stopCodePathTracing();
         tracing = false;
-        btnCpTrace.classList.remove('active');
+        chkCpTrace.checked = false;
         updateStatus('');
     }
 
-    btnCpTrace.addEventListener('click', () => {
-        if (tracing) {
-            stopTracing();
-        } else {
+    chkCpTrace.addEventListener('change', () => {
+        if (chkCpTrace.checked) {
             startTracing();
+        } else {
+            stopTracing();
         }
     });
 

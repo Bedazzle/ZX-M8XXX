@@ -5644,10 +5644,11 @@ const VERSION = '0.6.4';
                     cpu.im = r[28];
                     // r[29-32] are T-states
                     cpu.tStates = r[29] | (r[30] << 8) | (r[31] << 16) | (r[32] << 24);
-                    // r[33] is halt state - but don't trust it if PC indicates interrupt execution
+                    // r[33] is halt state (chHalted) - use bit 0 only (Spectaculator writes 0x10)
+                    // Don't trust it if PC indicates interrupt execution
                     // PC=0x38 (IM1) or PC=0x66 (NMI) means CPU is executing handler, not halted
                     const pc = cpu.pc;
-                    if (r[33] && pc !== 0x0038 && pc !== 0x0066) {
+                    if ((r[33] & 1) && pc !== 0x0038 && pc !== 0x0066) {
                         cpu.halted = true;
                     } else {
                         cpu.halted = false;

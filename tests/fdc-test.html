@@ -1414,6 +1414,9 @@
             }
             cpmTrackDefs.push({ sectors: secs });
         }
+        // Put a non-empty dir entry on track 2 so probe2.nonEmpty > 0
+        // (detection requires at least one non-0xE5 entry to distinguish from blank tracks)
+        cpmTrackDefs[2].sectors[0].data[0] = 0x00; // user=0 (valid non-empty entry)
         // Make track 4 NOT look like a directory (put non-E5/non-user data)
         for (const sec of cpmTrackDefs[4].sectors) {
             sec.data.fill(0x55);

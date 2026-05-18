@@ -1284,6 +1284,8 @@ export function initAssemblerUI({
     if (asmEditor) {
         // Debounce timer for defines detection
         let definesUpdateTimer = null;
+        // Debounce timer for syntax highlighting (avoids lag on large files)
+        let highlightTimer = null;
 
         // Capture pre-edit baseline at the start of each typing burst
         asmEditor.addEventListener('beforeinput', () => {
@@ -1295,10 +1297,15 @@ export function initAssemblerUI({
         asmEditor.addEventListener('input', () => {
             asmUndoSchedule();
             assemblyDirty = true;
-            updateLineNumbers();
-            updateHighlight();
             syncEditorToVFS();
             updateProjectButtons();
+
+            // Debounced highlighting and line numbers (avoids lag on large files)
+            clearTimeout(highlightTimer);
+            highlightTimer = setTimeout(() => {
+                updateLineNumbers();
+                updateHighlight();
+            }, 80);
 
             // Debounced update of defines dropdown (only when editing main file)
             if (!currentOpenFile || currentOpenFile === currentProjectMainFile) {
@@ -2445,7 +2452,7 @@ export function initAssemblerUI({
                 return;
             }
 
-            // Multiple files (or forced ZIP): create uncompressed ZIP
+            // Multiple files (or forced ZIP): create deflate-compressed ZIP
             const zipParts = [];
             const centralDir = [];
             let offset = 0;
@@ -2456,7 +2463,7 @@ export function initAssemblerUI({
                     ? (file.content instanceof Uint8Array ? file.content : new Uint8Array(file.content))
                     : new TextEncoder().encode(file.content);
 
-                // CRC-32 calculation
+                // CRC-32 of uncompressed data
                 let crc = 0xFFFFFFFF;
                 for (const byte of contentBytes) {
                     crc ^= byte;
@@ -2466,17 +2473,24 @@ export function initAssemblerUI({
                 }
                 crc ^= 0xFFFFFFFF;
 
+                // Deflate compress (raw, no zlib header — ZIP method 8)
+                const compressed = pako.deflateRaw(contentBytes, { level: 6 });
+                // Use compressed only if it's smaller
+                const useDeflate = compressed.length < contentBytes.length;
+                const storedBytes = useDeflate ? compressed : contentBytes;
+                const method = useDeflate ? 8 : 0;
+
                 // Local file header
                 const localHeader = new Uint8Array(30 + nameBytes.length);
                 const lhView = new DataView(localHeader.buffer);
                 lhView.setUint32(0, 0x04034b50, true);  // Signature
                 lhView.setUint16(4, 20, true);          // Version needed
                 lhView.setUint16(6, 0, true);           // Flags
-                lhView.setUint16(8, 0, true);           // Compression (0=store)
+                lhView.setUint16(8, method, true);       // Compression
                 lhView.setUint16(10, 0, true);          // Mod time
                 lhView.setUint16(12, 0, true);          // Mod date
                 lhView.setUint32(14, crc >>> 0, true);  // CRC-32
-                lhView.setUint32(18, contentBytes.length, true);  // Compressed size
+                lhView.setUint32(18, storedBytes.length, true);   // Compressed size
                 lhView.setUint32(22, contentBytes.length, true);  // Uncompressed size
                 lhView.setUint16(26, nameBytes.length, true);     // Name length
                 lhView.setUint16(28, 0, true);          // Extra length
@@ -2489,11 +2503,11 @@ export function initAssemblerUI({
                 cdView.setUint16(4, 20, true);          // Version made by
                 cdView.setUint16(6, 20, true);          // Version needed
                 cdView.setUint16(8, 0, true);           // Flags
-                cdView.setUint16(10, 0, true);          // Compression
+                cdView.setUint16(10, method, true);      // Compression
                 cdView.setUint16(12, 0, true);          // Mod time
                 cdView.setUint16(14, 0, true);          // Mod date
                 cdView.setUint32(16, crc >>> 0, true);  // CRC-32
-                cdView.setUint32(20, contentBytes.length, true);  // Compressed
+                cdView.setUint32(20, storedBytes.length, true);   // Compressed
                 cdView.setUint32(24, contentBytes.length, true);  // Uncompressed
                 cdView.setUint16(28, nameBytes.length, true);     // Name length
                 cdView.setUint16(30, 0, true);          // Extra length
@@ -2505,9 +2519,9 @@ export function initAssemblerUI({
                 cdEntry.set(nameBytes, 46);
 
                 zipParts.push(localHeader);
-                zipParts.push(contentBytes);
+                zipParts.push(storedBytes);
                 centralDir.push(cdEntry);
-                offset += localHeader.length + contentBytes.length;
+                offset += localHeader.length + storedBytes.length;
             }
 
             // Central directory

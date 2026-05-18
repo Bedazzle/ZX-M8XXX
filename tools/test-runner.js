@@ -269,6 +269,14 @@ export class TestRunner {
         const startTime = performance.now();
         let totalFramesRun = 0;
 
+        // Suppress audio output during tests — disable sample generation entirely
+        // so no sound reaches speakers regardless of AudioContext state.
+        // Beeper/AY port writes still happen for timing accuracy, but processFrame()
+        // skips all sample generation when enabled=false.
+        const audio = this.spectrum.audio;
+        const audioWasEnabled = audio && audio.enabled;
+        if (audio) audio.enabled = false;
+
         try {
             // UI updates
             this.elements.btnRunSelected.disabled = true;
@@ -346,6 +354,11 @@ export class TestRunner {
             this.elements.btnPreview.disabled = false;
             this.elements.btnAbort.classList.add('hidden');
             this.elements.progressSection.classList.add('hidden');
+
+            // Restore audio output (re-enable only if it was enabled before tests)
+            if (audio && audioWasEnabled) {
+                audio.enabled = true;
+            }
 
             // Always update canvas size after tests (in case dimensions changed)
             if (typeof this._callbacks.updateCanvasSize === 'function') {

@@ -18,6 +18,16 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
 - MGT file listing shows full type names, start address in decimal+hex for Code/SCREEN$ files, autostart line (`LINE n`) for BASIC (read from directory offset 218-219). The 9-byte +D file header is stripped by `extractFile`, which also trims to `fileInfo.length`. Editor export and cross-format copy both use `mgtExtractCleanData(file)` to concatenate 510-byte data portions from raw 512-byte sectors (skipping 2-byte chain pointers at bytes 510-511), strip the 9-byte +D header, and trim to `file.length`.
 - Click handlers on file entries switch to appropriate sub-tab
 
+**Screen Preview:**
+- File Info tab shows a screen preview for snapshots and screen-sized data files
+- 48K snapshots (SNA, Z80 v1): single screen from bank 5 ($4000-$5AFF)
+- 128K snapshots (SNA, Z80 v2/v3, SZX): dual screen — bank 5 (primary) and bank 7 (shadow) stacked vertically with an 8px gap. Active screen (port $7FFD bit 3) highlighted with a green border. Z80 format uses page 8 (bank 5) and page 10 (bank 7). SZX extracts via `SZXLoader.extractRAMPage()` for pages 5 and 7.
+- RZX recordings: extracts from embedded SNA or Z80 snapshot, with dual screen for 128K
+- `explorerRenderDualScreen(screen5, screen7, activeScreen)`: renders both banks into a single 256×392 canvas at 2x zoom (512×784 CSS). Does NOT call `syncPreviewHeight()` — the preview container sizes naturally to fit the tall canvas.
+- `explorerRenderSCRToImageData(pixels, canvasWidth, data, xOffset, yBase)`: shared renderer with `yBase` offset for vertical stacking
+- `explorerExtractZ80Screen(data, parsed, targetPage)`: extracts screen from Z80 v1/v2/v3. `targetPage` defaults to 8 (bank 5); pass 10 for bank 7. V1 returns null for non-page-8.
+- TAP/TZX/disk formats: preview shown for blocks/files with screen-sized data (6912, 6144, 4096, 2048, 768 bytes)
+
 **Disk Map sub-tab (`explorerRenderDiskMap`):**
 - Visual sector-level disk structure for DSK, TRD, MGT, and OPD images
 - Two views: Grid (HTML div grid, sector-by-track with row/col labels) and Disk (Canvas radial with concentric cylinder rings)
@@ -231,7 +241,7 @@ Record and diff executed code paths to isolate event-specific handlers (collisio
 **Architecture** (`core/spectrum.js` + `ui/codepath.js`):
 - `spectrum.codePath` state: `{ enabled, executed, tracing, baselineSet, traceHit, traceAddr }` -- `executed` is a `Set<string>` of autoMapKeys during recording; `tracing`/`baselineSet` for trace-break mode
 - `startCodePathRecording()` / `stopCodePathRecording()` -- start/stop recording, return recorded Set
-- `startCodePathTracing(baselineSet)` / `stopCodePathTracing()` -- start/stop trace-break mode
+- `startCodePathTracing(slotSet)` / `stopCodePathTracing()` -- start/stop trace-break mode against any slot
 - `onCodePathHit` callback -- fired when trace detects divergence (addr passed as argument)
 - Hooks into `_cpuFetchCallback` alongside autoMap; `updateMemoryCallbacksFlag()` gates `cpu.onFetch` on `codePath.enabled || codePath.tracing`
 - Break in `runFrame()`: same stop/render/callback pattern as watchpoints -- checks `codePath.traceHit` flag
@@ -239,12 +249,12 @@ Record and diff executed code paths to isolate event-specific handlers (collisio
 **UI state** (`ui/codepath.js`):
 - `slots[3]` -- `[null, null, null]` for Baseline, Event A, Event B. Each slot holds a `Set<string>` of autoMapKeys or null
 - `recording` / `currentRecordSlot` -- active recording state
-- `tracing` -- true when trace-break mode active
+- `tracing` -- true when trace-break mode active; `chkCpTrace` checkbox toggles on/off
 - `diffResults` -- clustered block array after diff
 
 **Workflow**: Select slot -> Record -> run emulator -> Record (stop) -> select diff mode -> Diff -> view/export results.
 
-**Trace workflow**: Record Baseline -> click Trace -> run emulator -> emulator auto-breaks at first PC not in baseline -> message: "Code path diverged at $XXXX". Requires Baseline slot to be populated. Trace is cancelled on Clear, machine change, or reset.
+**Trace workflow**: Record a slot -> select it in the dropdown -> check Trace checkbox -> run emulator -> emulator auto-breaks at first PC not in the selected slot -> message: "Code path diverged at $XXXX". The Trace checkbox uses the currently selected slot (not hardcoded to Baseline). If the selected slot is empty, a message is shown and the checkbox is unchecked. Trace is cancelled on Clear, machine change, or reset.
 
 **Diff**: Set subtraction (`A - B` = keys in A not in B). Parse keys via `split(':')` for `{ addr, page }`. Skip ROM filter: `addr < 0x4000`. Intersection mode `(A ^ B) - Baseline`: computes `from ^ intersect` first, then subtracts -- isolates shared event handlers (e.g. common death routine across enemy types).
 

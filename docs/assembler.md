@@ -65,6 +65,31 @@ Shows real-time pass and line progress during assembly.
 - Assemble and Debug buttons disabled during assembly
 - Shared helpers: `prepareAssembly()` (VFS sync, defines), `processAssemblyResult()`, `processAssemblyError()` — used by both sync and async paths
 
+**Debug with SAVESNA** (`doDebug()` in `assembler-ui.js`):
+- When the assembled project contains a SAVESNA command, Debug initializes the CPU to the USR 0 machine state matching SNA output: IM 1, IFF1 enabled, SP=0x5D58, I=0x3F, IY=0x5C3A, IX=0xFF3C, BC=entryPoint
+- Without SAVESNA, Debug uses minimal state (interrupts disabled) for simple test programs
+
+## Undocumented Half-Index Registers
+
+The assembler supports undocumented Z80 half-index register operands: IXH, IXL, IYH, IYL. Aliases XH/HX, XL/LX, YH/HY, YL/LY are also accepted (normalized via `normalizeOperand()` in `instructions.js`).
+
+**Supported instructions** (`instructions2.js`, `instructions3.js`):
+- LD: `LD r, IXH` / `LD IXH, r` / `LD IXH, n` / `LD IXH, IXL` — all source/dest/immediate combinations
+- INC/DEC: `INC IXH` / `DEC IYL` etc.
+- ALU (ADD, ADC, SUB, SBC, AND, XOR, OR, CP): `ADD A, IXH` / `CP IXL` / `OR IYL` etc.
+
+**Encoding**: DD prefix for IX, FD prefix for IY. Register code 4 = high byte, 5 = low byte. Same opcode structure as standard 8-bit register operations with the IX/IY prefix prepended.
+
+## Syntax Highlighting (`assembler-ui.js`)
+
+The editor uses a transparent `<textarea>` overlay on a `<pre>` element containing highlighted HTML. The textarea captures input; the pre element shows colored tokens.
+
+- **`tokenizeAsmLine(line)`** — character-by-character state machine tokenizer. Recognizes: instructions, directives, registers, numbers (hex/bin/dec), strings, labels, comments, parentheses, operators. Efficient for individual lines.
+- **`highlightAsmCode(code)`** — splits source into lines, tokenizes each, wraps tokens in `<span class="asm-hl-*">` elements, returns HTML string.
+- **`updateHighlight()`** — sets `asmHighlight.innerHTML` to the highlighted HTML. Called directly from file open, undo/redo, paste, Tab key, search/replace, and other discrete operations for immediate visual feedback.
+- **Debounced input** — the `input` event handler debounces `updateHighlight()` and `updateLineNumbers()` with an 80ms timer. Rapid keystrokes coalesce into a single re-highlight after typing pauses. This prevents DOM thrashing on large files (e.g. hundreds of DEFB lines) which would otherwise cause visible lag in Firefox.
+- **`updateLineNumbers()`** — regenerates line number gutter text. Also debounced during typing, immediate for discrete operations.
+
 ## T-State Selection Popup
 
 Shows total T-state timing for selected Z80 instructions in the assembler editor.

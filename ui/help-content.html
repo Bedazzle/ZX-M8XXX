@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.14.13</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.14.16</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -173,6 +173,7 @@
                     <p>Shows all Z80 registers including the alternate set (AF', BC', DE', HL'). Flags are displayed as visual indicators: S, Z, H, P/V, N, C.</p>
                     <p><strong>О"T (Delta T-states)</strong>: Accumulated T-states since the last breakpoint fired. Useful for measuring cycle-exact timing between breakpoints. The counter accumulates through steps, runs, and all execution modes. Resets to 0 when any breakpoint fires (exec, memory, or port).</p>
                     <p><strong>Register Watch</strong>: Double-click a 16-bit register pair name (BC, DE, HL, IX, IY, SP, PC) to add its current value as a memory watch address. Useful for quickly inspecting the data structure a register points to.</p>
+                    <p><strong>Instruction History</strong>: Click the <strong>System</strong> heading to see the last 10 executed instructions. Each entry shows address, disassembled mnemonic, and the actual fetched bytes. The bytes are captured during execution, so self-modifying code is shown correctly. Click any row to navigate to that address in the disassembly.</p>
                     <h5>Configurable Panels</h5>
                     <p>Left and right debug panels can show different views:</p>
                     <ul>

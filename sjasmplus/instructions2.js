@@ -267,6 +267,14 @@ InstructionEncoder.encodeALU8 = function(op, operand, addr, syms) {
         return { bytes: [0x80 | (code << 3) | sr], size: 1, undefined: false };
     }
 
+    // Undocumented: ALU IXH/IXL/IYH/IYL
+    const undocAlu = /^I([XY])([HL])$/.exec(s);
+    if (undocAlu) {
+        const prefix = undocAlu[1] === 'X' ? 0xDD : 0xFD;
+        const r = undocAlu[2] === 'H' ? 4 : 5;
+        return { bytes: [prefix, 0x80 | (code << 3) | r], size: 2, undefined: false };
+    }
+
     // ALU (IX+d) / (IY+d)
     const idx = Z80Asm.parseIndexed(operand);
     if (idx) {

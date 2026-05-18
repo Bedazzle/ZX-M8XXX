@@ -303,6 +303,33 @@
             assertBytes(bytes('SLL A'), [0xCB, 0x37], 'SLL A (undocumented)');
             assertBytes(bytes('RLC (IX+5)'), [0xDD, 0xCB, 0x05, 0x06], 'RLC (IX+d)');
 
+            section('Undocumented Half-Index Registers');
+
+            // LD with half-index registers
+            assertBytes(bytes('LD A, IXH'), [0xDD, 0x7C], 'LD A, IXH');
+            assertBytes(bytes('LD A, IXL'), [0xDD, 0x7D], 'LD A, IXL');
+            assertBytes(bytes('LD IYH, E'), [0xFD, 0x63], 'LD IYH, E');
+            assertBytes(bytes('LD IXH, 42'), [0xDD, 0x26, 0x2A], 'LD IXH, n');
+            // Aliases
+            assertBytes(bytes('LD A, XH'), [0xDD, 0x7C], 'LD A, XH (alias)');
+            assertBytes(bytes('LD A, YL'), [0xFD, 0x7D], 'LD A, YL (alias)');
+            // INC/DEC
+            assertBytes(bytes('INC IXH'), [0xDD, 0x24], 'INC IXH');
+            assertBytes(bytes('DEC IXL'), [0xDD, 0x2D], 'DEC IXL');
+            assertBytes(bytes('INC IYH'), [0xFD, 0x24], 'INC IYH');
+            assertBytes(bytes('DEC IYL'), [0xFD, 0x2D], 'DEC IYL');
+            // ALU with half-index registers
+            assertBytes(bytes('ADD A, IXH'), [0xDD, 0x84], 'ADD A, IXH');
+            assertBytes(bytes('ADD A, IXL'), [0xDD, 0x85], 'ADD A, IXL');
+            assertBytes(bytes('ADC A, IYH'), [0xFD, 0x8C], 'ADC A, IYH');
+            assertBytes(bytes('SUB IYL'), [0xFD, 0x95], 'SUB IYL');
+            assertBytes(bytes('SBC A, IXH'), [0xDD, 0x9C], 'SBC A, IXH');
+            assertBytes(bytes('AND IXL'), [0xDD, 0xA5], 'AND IXL');
+            assertBytes(bytes('XOR IYH'), [0xFD, 0xAC], 'XOR IYH');
+            assertBytes(bytes('OR IYL'), [0xFD, 0xB5], 'OR IYL');
+            assertBytes(bytes('CP IXH'), [0xDD, 0xBC], 'CP IXH');
+            assertBytes(bytes('CP IXL'), [0xDD, 0xBD], 'CP IXL');
+
             section('Bit Instructions');
 
             assertBytes(bytes('BIT 0, A'), [0xCB, 0x47], 'BIT 0, A');

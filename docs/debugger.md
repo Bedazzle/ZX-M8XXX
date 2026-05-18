@@ -1,4 +1,4 @@
-# Debugger: Step Over, Trace History, Port I/O Log, Shadow Screen
+# Debugger: Step Over, Trace History, Port I/O Log, Shadow Screen, Instruction History
 
 ## Step Over (F8)
 
@@ -93,3 +93,17 @@ Displays an alternate screen view below the main canvas. Supports shadow bank di
 **Project save/load**: `project.settings.secondScreenMode` and `project.settings.secondScreenAddr` in `project-io.js`.
 
 **Visibility lifecycle**: `updateSecondScreenOptions()` + `updateSecondScreenVisibility()` called on dropdown change, machine change, and reset. SCR indicator hidden on 48K. Shadow screen container visible whenever mode is not 'none' (linear/spectrum work on 48K).
+
+## Instruction History Popup
+
+Displays the last 10 actually-executed instructions. Click the **System** heading in the register panel to open a popup showing each instruction's address, disassembled mnemonic, and captured hex bytes.
+
+**Zero extra memory reads**: Every byte already passes through `fetchByte()`. The CPU piggybacks on this — `execute()` saves the start PC and resets a byte counter, `fetchByte()` appends each fetched value to a small accumulator, and after execution the accumulated bytes are copied into a pre-allocated ring buffer. No object creation in the hot loop, zero GC pressure.
+
+**Captured bytes vs. current memory**: The popup disassembles from the captured bytes, not current memory. This correctly shows what was actually executed even with self-modifying code — the disassembler receives a minimal `{ read(addr) }` wrapper over the captured byte array.
+
+**Chained prefixes**: Sequences like `DD DD 21 01 02` are split into separate history entries — `DD` (redundant NOP) and `DD 21 01 02` (LD IX,nn). The `_splitChainPrefix()` helper in `executeDD()`/`executeFD()` flushes the prefix as its own entry and resets the accumulator for the real instruction.
+
+**Ring buffer** (`core/z80.js`): `cpu.instrHistory[0..9]` — pre-allocated entries `{ pc, bytes: Uint8Array(6), len }`. `cpu.instrHistoryIdx` is the write cursor. Cleared on `reset()`.
+
+**Popup** (`index.html`): `#pcHistoryPopup` positioned below `#btnPcHistory`. Click a row to navigate to that address via `navigateToAddress()`. Closes on click outside, Escape, or re-click on heading.

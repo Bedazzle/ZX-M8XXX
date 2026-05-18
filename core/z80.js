@@ -73,7 +73,19 @@ const VERSION = '0.6.5';
             this.onFetch = null;
             // Flag: true during fetchByte (distinguishes opcode fetch from data read)
             this.isFetching = false;
-            
+
+            // Instruction history ring buffer (last 10 executed instructions)
+            this.instrHistory = new Array(10);
+            for (let i = 0; i < 10; i++) {
+                this.instrHistory[i] = { pc: 0, bytes: new Uint8Array(6), len: 0 };
+            }
+            this.instrHistoryIdx = 0;
+
+            // Per-instruction byte accumulator (filled by fetchByte)
+            this._instrBytes = new Uint8Array(6);
+            this._instrByteCount = 0;
+            this._instrPC = 0;
+
             // Flag bits
             this.FLAG_C = 0x01;
             this.FLAG_N = 0x02;
@@ -122,8 +134,11 @@ const VERSION = '0.6.5';
             this.lastQ = 0;
             this.tStates = 0;
             this.instructionCount = 0;
+            // Clear instruction history
+            for (let i = 0; i < 10; i++) this.instrHistory[i].len = 0;
+            this.instrHistoryIdx = 0;
         }
-        
+
         // Register pair accessors
         get af() { return (this.a << 8) | this.f; }
         set af(v) { this.a = (v >> 8) & 0xff; this.f = v & 0xff; }
@@ -188,6 +203,7 @@ const VERSION = '0.6.5';
             this.isFetching = true;
             const val = this.readByte(this.pc);
             this.isFetching = false;
+            if (this._instrByteCount < 6) this._instrBytes[this._instrByteCount++] = val;
             this.pc = (this.pc + 1) & 0xffff;
             return val;
         }
@@ -517,6 +533,24 @@ const VERSION = '0.6.5';
             this.q = this.f;
         }
         
+        // Push accumulated instruction bytes into the ring buffer
+        _pushInstrHistory() {
+            const entry = this.instrHistory[this.instrHistoryIdx];
+            entry.pc = this._instrPC;
+            entry.len = this._instrByteCount;
+            for (let i = 0; i < this._instrByteCount; i++) entry.bytes[i] = this._instrBytes[i];
+            this.instrHistoryIdx = (this.instrHistoryIdx + 1) % 10;
+        }
+
+        // Split at chain boundary: last accumulated byte belongs to next instruction
+        _splitChainPrefix(chainByte) {
+            this._instrByteCount--;              // exclude chain byte from current entry
+            this._pushInstrHistory();            // push prefix (e.g. just [DD])
+            this._instrPC = (this.pc - 1) & 0xffff; // new instruction starts at the chain byte's address
+            this._instrByteCount = 1;            // chain byte is first byte of new instruction
+            this._instrBytes[0] = chainByte;
+        }
+
         // Execute single instruction
         execute() {
             this.incR();
@@ -530,8 +564,13 @@ const VERSION = '0.6.5';
                 this.iff1 = this.iff2 = true;
             }
 
+            this._instrPC = this.pc;
+            this._instrByteCount = 0;
+
             const opcode = this.fetchByte();
             this.executeMain(opcode);
+
+            this._pushInstrHistory();
         }
         
         // Execute single instruction and return cycles consumed
@@ -1111,16 +1150,19 @@ const VERSION = '0.6.5';
             while (opcode === 0xdd || opcode === 0xfd || opcode === 0xed) {
                 if (opcode === 0xdd) {
                     // Another DD prefix - current DD acts as 4T NOP
+                    this._splitChainPrefix(0xdd);
                     this.tStates += 4;
                     this.incR();
                     this.instructionCount++;  // Chained DD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xfd) {
                     // FD overrides DD - DD acts as 4T NOP, switch to IY
+                    this._splitChainPrefix(0xfd);
                     this.tStates += 4;
                     return this.executeFD();
                 } else if (opcode === 0xed) {
                     // ED overrides DD - DD acts as 4T NOP
+                    this._splitChainPrefix(0xed);
                     this.tStates += 4;
                     return this.executeED();
                 }
@@ -1145,16 +1187,19 @@ const VERSION = '0.6.5';
             while (opcode === 0xdd || opcode === 0xfd || opcode === 0xed) {
                 if (opcode === 0xfd) {
                     // Another FD prefix - current FD acts as 4T NOP
+                    this._splitChainPrefix(0xfd);
                     this.tStates += 4;
                     this.incR();
                     this.instructionCount++;  // Chained FD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xdd) {
                     // DD overrides FD - FD acts as 4T NOP, switch to IX
+                    this._splitChainPrefix(0xdd);
                     this.tStates += 4;
                     return this.executeDD();
                 } else if (opcode === 0xed) {
                     // ED overrides FD - FD acts as 4T NOP
+                    this._splitChainPrefix(0xed);
                     this.tStates += 4;
                     return this.executeED();
                 }

@@ -217,16 +217,35 @@
             "id": "echology",
             "name": "Echology",
             "category": "multicolor",
-            "file": "tests/snapshot_128k_echo.szx",
+            "file": "tests/snapshot_128k_echo.zip",
+            "zipEntry": "snapshot_128k_echo.szx",
             "earlyTimings": true,
             "palette": "default",
             "enabled": true,
             "author": "",
             "source": "",
             "steps": [
-                { "frames": 210, "screen": "tests/echology_211.png" }
+                { "frames": 212, "screen": "tests/echology_213.png" }
             ]
         },
+
+        {
+            "id": "eyeache",
+            "name": "Eye ache",
+            "category": "multicolor",
+            "file": "tests/EyeAche_128.zip",
+            "machine": "pentagon",			
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 110, "screen": "tests/eyeache_111.png" }
+            ]
+        },
+
+
 
         {
             "id": "eric",

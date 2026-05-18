@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.13</title>
+    <title>ZX-M8XXX v0.14.16</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -2174,6 +2174,7 @@
             margin: 0;
             padding-left: 20px;
         }
+        .info-section .info-port-heading { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-secondary); }
         .info-section code {
             background: var(--bg-tertiary);
             padding: 2px 4px;
@@ -3347,15 +3348,9 @@
             flex-direction: column;
             gap: 10px;
             padding: 10px;
-            height: calc(100vh - 200px);
+            height: calc(100vh - 160px);
             min-height: 500px;
-            max-height: 875px; /* portrait: +25% from base ~700px */
-            overflow: hidden;
-        }
-        @media (min-width: 1400px) {
-            .explorer-container {
-                max-height: 770px; /* landscape: +10% from base ~700px */
-            }
+            overflow: auto;
         }
         .explorer-controls {
             display: flex;
@@ -3425,13 +3420,11 @@
         }
         .explorer-content {
             flex: 1;
-            overflow: auto;
             display: flex;
             flex-direction: column;
         }
         .explorer-subtab-content {
             flex: 1;
-            overflow: auto;
         }
         .explorer-subtab-content.active {
             display: flex;
@@ -3496,7 +3489,6 @@
             display: flex;
             gap: 15px;
             flex: 1;
-            overflow: hidden;
         }
         .explorer-preview:not(.hidden) {
             display: flex;
@@ -3932,6 +3924,29 @@
             text-transform: uppercase;
             letter-spacing: 1px;
         }
+        .reg-group .clickable-heading { cursor: pointer; }
+        .reg-group .clickable-heading::after { content: '\1F4D2'; margin-left: 3px; font-size: 9px; opacity: 0.6; }
+        .reg-group .clickable-heading:hover { color: var(--accent); }
+        .reg-group .clickable-heading:hover::after { opacity: 1; }
+        .pc-history-popup {
+            position: fixed;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+            max-width: 400px;
+            z-index: 10000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            border: 1px solid var(--border-primary);
+        }
+        .pc-history-popup.hidden { display: none; }
+        .pc-history-popup .ph-header { color: var(--cyan); font-weight: bold; margin-bottom: 4px; border-bottom: 1px solid var(--border-primary); padding-bottom: 4px; }
+        .pc-history-popup .ph-instr { padding: 1px 0; cursor: pointer; white-space: nowrap; }
+        .pc-history-popup .ph-instr:hover { color: var(--accent); }
+        .pc-history-popup .ph-addr { color: var(--cyan); }
+        .pc-history-popup .ph-bytes { color: var(--text-secondary); margin-left: 8px; }
         .registers-grid {
             display: flex;
             flex-wrap: nowrap;
@@ -5395,7 +5410,6 @@
             margin-left: 2px;
         }
         #btnCpRecord.active { background: var(--accent); color: #fff; }
-        #btnCpTrace.active { background: var(--accent); color: #fff; }
         .cp-results { max-height: 200px; overflow-y: auto; margin-top: 5px; font-family: monospace; font-size: 11px; }
         .cp-block { margin: 4px 0; }
         .cp-block-header { color: var(--cyan); cursor: pointer; padding: 2px 4px; background: var(--bg-primary); border-radius: 2px; font-weight: bold; }
@@ -6669,7 +6683,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.13 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.16 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6691,6 +6705,7 @@
             </div>
             <div id="screenInfoPopup" class="screen-info-popup hidden"></div>
             <div id="xrefTooltip" class="xref-tooltip"></div>
+            <div id="pcHistoryPopup" class="pc-history-popup hidden"></div>
         </div>
 
         <div class="status">
@@ -6837,7 +6852,7 @@
                                 <div class="registers-grid" id="ixiyRegisters"></div>
                             </div>
                             <div class="reg-group">
-                                <h4>System</h4>
+                                <h4 id="btnPcHistory" class="clickable-heading" title="Show last 10 executed instructions">System</h4>
                                 <div class="registers-grid" id="indexRegisters"></div>
                                 <div class="registers-grid" id="statusRegisters"></div>
                                 <div class="flags-row">
@@ -7269,7 +7284,7 @@
                                 <button id="btnCpRecord" title="Start/stop recording executed PCs into selected slot">Record</button>
                                 <label class="search-option" title="Union new recording into existing slot data"><input type="checkbox" id="chkCpMerge"> Merge</label>
                                 <button id="btnCpClear" title="Clear all slots and results">Clear</button>
-                                <button id="btnCpTrace" title="Run and break when execution leaves the baseline code path">Trace</button>
+                                <label class="search-option"><input type="checkbox" id="chkCpTrace" title="Run and break when execution leaves the selected slot's code path"> Trace</label>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Diff:</span>
@@ -9105,6 +9120,81 @@ start:
                                 </tbody>
                             </table>
                         </div>
+
+                        <div class="info-section">
+                            <h4>Memory Banking Ports (128K+)</h4>
+                            <p>All 128K-class machines use port <strong>#7FFD</strong> for primary paging. Some machines add a second port for extended features. Bit 5 of #7FFD locks paging until reset (except Pentagon 1024 in 1MB mode).</p>
+
+                            <p class="info-port-heading"><strong>Port #7FFD &mdash; Primary Paging (128K / +2 / Pentagon / Scorpion)</strong></p>
+                            <p>Decode: <code>(port &amp; #8002) == 0</code> on 128K/+2/Pentagon; <code>(port &amp; #C002) == #4000</code> on +2A/+3/Scorpion (stricter).</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0-2</td><td>RAM bank at #C000 (0-7)</td></tr>
+                                    <tr><td>3</td><td>Screen bank: 0 = bank 5, 1 = bank 7</td></tr>
+                                    <tr><td>4</td><td>ROM bank low bit: 0 = ROM 0 (128K BASIC), 1 = ROM 1 (48K BASIC)</td></tr>
+                                    <tr><td>5</td><td>Paging lock &mdash; set to disable further paging until reset</td></tr>
+                                    <tr><td>6-7</td><td>Unused on 128K/+2. Pentagon 1024: bank bits 3-4. Ignored on Scorpion.</td></tr>
+                                </tbody>
+                            </table>
+
+                            <p class="info-port-heading"><strong>Port #1FFD &mdash; +2A/+3 Special Paging</strong></p>
+                            <p>Decode: <code>(port &amp; #F002) == #1000</code>. Controls special paging mode, ROM bank high bit, and +3 FDC motor.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>Special paging mode: 1 = all-RAM, 0 = normal</td></tr>
+                                    <tr><td>1-2</td><td>Special config (when bit 0 set): 0 = banks 0,1,2,3; 1 = 4,5,6,7; 2 = 4,5,6,3; 3 = 4,7,6,3</td></tr>
+                                    <tr><td>2</td><td>ROM bank high bit (when bit 0 clear). ROM = (bit2 &lt;&lt; 1) | 7FFD bit 4 &rarr; ROMs 0-3</td></tr>
+                                    <tr><td>3</td><td>+3 FDC motor: 1 = on</td></tr>
+                                </tbody>
+                            </table>
+                            <p>+2A/+3 ROMs: 0 = 128K Editor, 1 = 128K Syntax, 2 = +3DOS, 3 = 48K BASIC.</p>
+
+                            <p class="info-port-heading"><strong>Port #1FFD &mdash; Scorpion ZS 256 Extended Paging</strong></p>
+                            <p>Decode: <code>(port &amp; #F002) == #1000</code> (same as +2A). 256KB RAM (16 pages), 4 ROM banks.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>RAM page 0 over ROM at #0000-#3FFF</td></tr>
+                                    <tr><td>1</td><td>ROM 2 select: 1 = ROM 2 (Service Monitor). 0 = ROM 0/1 via 7FFD bit 4</td></tr>
+                                    <tr><td>4</td><td>RAM page high bit (+8). Page = (bit4 &gt;&gt; 1) | 7FFD bits 0-2 &rarr; pages 0-15</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Scorpion ROMs: 0 = 128K BASIC, 1 = 48K BASIC, 2 = Service Monitor, 3 = TR-DOS.</p>
+
+                            <p class="info-port-heading"><strong>Port #EFF7 &mdash; Pentagon 1024 Extended Memory</strong></p>
+                            <p>Decode: <code>(port &amp; #F008) == #E000</code>. Controls 1MB mode and RAM-over-ROM.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>2</td><td>0 = 1MB mode (bit 5 of #7FFD becomes bank bit 5). 1 = 128K compat mode</td></tr>
+                                    <tr><td>3</td><td>1 = RAM page 0 mapped at #0000-#3FFF instead of ROM</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Pentagon 1024: 64 RAM pages. In 1MB mode, page = 7FFD bits 0-2 + bits 6-7 (bank 3-4) + bit 5 (bank 5). Bit 5 of #7FFD does NOT lock paging in 1MB mode.</p>
+
+                            <p><strong>Memory Map (all 128K models):</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Address</th><th>Normal Mode</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#0000-#3FFF</td><td>ROM (switchable)</td></tr>
+                                    <tr><td>#4000-#7FFF</td><td>RAM bank 5 (screen memory)</td></tr>
+                                    <tr><td>#8000-#BFFF</td><td>RAM bank 2</td></tr>
+                                    <tr><td>#C000-#FFFF</td><td>RAM bank 0-7 (switchable via #7FFD bits 0-2)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
 
                     <!-- Timings Sub-tab -->
@@ -10062,7 +10152,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.13';
+        const APP_VERSION = '0.14.16';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10897,6 +10987,91 @@ start:
             }
         });
 
+        // Instruction history popup (click "System" heading)
+        {
+            const pcHistoryPopup = document.getElementById('pcHistoryPopup');
+            const btnPcHistory = document.getElementById('btnPcHistory');
+
+            function disassembleFromBytes(pc, bytes, len) {
+                const mem = { read(addr) { const idx = (addr - pc) & 0xffff; return idx < len ? bytes[idx] : 0; } };
+                const d = new Disassembler(mem);
+                return d.disassemble(pc);
+            }
+
+            function showPcHistory() {
+                if (!spectrum?.cpu) return;
+                const cpu = spectrum.cpu;
+                const entries = [];
+                for (let i = 0; i < 10; i++) {
+                    const idx = (cpu.instrHistoryIdx + i) % 10;
+                    const entry = cpu.instrHistory[idx];
+                    if (entry.len > 0) entries.push(entry);
+                }
+                if (entries.length === 0) {
+                    pcHistoryPopup.innerHTML = '<div class="ph-header">Instruction History</div><div class="ph-bytes">No instructions recorded</div>';
+                } else {
+                    let html = '<div class="ph-header">Instruction History (last ' + entries.length + ')</div>';
+                    for (const entry of entries) {
+                        const result = disassembleFromBytes(entry.pc, entry.bytes, entry.len);
+                        const addrStr = hex16(entry.pc);
+                        let bytesStr = '';
+                        for (let j = 0; j < entry.len; j++) {
+                            bytesStr += entry.bytes[j].toString(16).toUpperCase().padStart(2, '0') + ' ';
+                        }
+                        html += '<div class="ph-instr" data-addr="' + entry.pc + '">'
+                            + '<span class="ph-addr">' + addrStr + '</span> '
+                            + escapeHtml(result.mnemonic)
+                            + '<span class="ph-bytes">' + bytesStr.trim() + '</span>'
+                            + '</div>';
+                    }
+                    pcHistoryPopup.innerHTML = html;
+                }
+                // Position below the heading (account for UI zoom)
+                const rect = btnPcHistory.getBoundingClientRect();
+                const zoom = getUiScale() || 1;
+                pcHistoryPopup.style.left = (rect.left / zoom) + 'px';
+                pcHistoryPopup.style.top = ((rect.bottom + 4) / zoom) + 'px';
+                pcHistoryPopup.classList.remove('hidden');
+                // Clamp to viewport if overflowing right edge
+                const popupRect = pcHistoryPopup.getBoundingClientRect();
+                if (popupRect.right > window.innerWidth) {
+                    pcHistoryPopup.style.left = ((window.innerWidth - popupRect.width - 8) / zoom) + 'px';
+                }
+                // Click rows to navigate
+                pcHistoryPopup.querySelectorAll('.ph-instr').forEach(el => {
+                    el.addEventListener('click', () => {
+                        const addr = parseInt(el.dataset.addr, 10);
+                        navigateToAddress(addr);
+                        closePcHistory();
+                    });
+                });
+            }
+
+            function closePcHistory() {
+                pcHistoryPopup.classList.add('hidden');
+            }
+
+            btnPcHistory.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (pcHistoryPopup.classList.contains('hidden')) {
+                    showPcHistory();
+                } else {
+                    closePcHistory();
+                }
+            });
+
+            document.addEventListener('click', (e) => {
+                if (!pcHistoryPopup.classList.contains('hidden') && !pcHistoryPopup.contains(e.target) && e.target !== btnPcHistory) {
+                    closePcHistory();
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && !pcHistoryPopup.classList.contains('hidden')) {
+                    closePcHistory();
+                }
+            });
+        }
 
         // Explorer (extracted to explorer.js)
         const explorerAPI = initExplorer({
