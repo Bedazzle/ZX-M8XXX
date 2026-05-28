@@ -863,9 +863,9 @@ export function initProjectIO({
                 });
                 if (project.autoMap.enabled) {
                     spectrum.setAutoMapEnabled(true);
-                    analysisAPI.setAutoMapEnabled(true);
+                    if (analysisAPI) analysisAPI.setAutoMapEnabled(true);
                 }
-                analysisAPI.updateAutoMapStats();
+                if (analysisAPI) analysisAPI.updateAutoMapStats();
             }
 
             // Restore code path slots
