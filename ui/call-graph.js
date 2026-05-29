@@ -34,8 +34,11 @@ export function initCallGraph({ labelManager, goToAddress, showMessage }) {
         const nodes = new Map(); // key → { key, addr, page, name, callCount, level, x, y }
         const edges = [];        // { from: key, to: key, backEdge: bool }
 
+        const chkProfileROM = document.getElementById('chkProfileROM');
+        const includeRom = chkProfileROM ? chkProfileROM.checked : false;
+
         for (const [key, stats] of results.subroutines) {
-            if (stats.entryAddr < 0x4000) continue;
+            if (!includeRom && stats.entryAddr < 0x4000) continue;
             const label = getLabel(stats.entryAddr, stats.page);
             const name = label || `sub_${hex16(stats.entryAddr)}`;
             nodes.set(key, {
