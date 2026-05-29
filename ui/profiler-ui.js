@@ -59,11 +59,14 @@ export function initProfilerUI({
             return false;
         }
 
+        const chkProfileROM = document.getElementById('chkProfileROM');
+        const includeRom = chkProfileROM ? chkProfileROM.checked : false;
+
         // Find main loop candidate: called in >90% of frames with most callees
         let mainLoopKey = null;
         let mainLoopMaxCallees = 0;
         for (const [key, stats] of results.subroutines) {
-            if (stats.entryAddr < 0x4000) continue;
+            if (!includeRom && stats.entryAddr < 0x4000) continue;
             const framePct = framesProfiled > 0 ? stats.framesCalled.size / framesProfiled : 0;
             if (framePct > 0.9 && stats.callees.size > mainLoopMaxCallees) {
                 mainLoopMaxCallees = stats.callees.size;
@@ -76,7 +79,7 @@ export function initProfilerUI({
 
         for (const [key, stats] of results.subroutines) {
             // Skip ROM subroutines (except ISR handler at $0038 and IM 2 handler)
-            if (stats.entryAddr < 0x4000 && stats.entryAddr !== 0x0038 &&
+            if (!includeRom && stats.entryAddr < 0x4000 && stats.entryAddr !== 0x0038 &&
                 stats.entryAddr !== im2HandlerAddr) continue;
 
             const { addr, page } = parseKey(key);
@@ -260,10 +263,12 @@ export function initProfilerUI({
 
         // Filter: >1% of total T-states AND size ≤32 bytes AND not ROM
         const threshold = totalTStates * 0.01;
+        const chkProfileROM = document.getElementById('chkProfileROM');
+        const includeRom = chkProfileROM ? chkProfileROM.checked : false;
         const hotspots = clusters.filter(c =>
             c.totalTStates > threshold &&
             (c.endAddr - c.startAddr) <= 32 &&
-            c.startAddr >= 0x4000
+            (includeRom || c.startAddr >= 0x4000)
         );
 
         // Classify each hotspot
@@ -277,10 +282,12 @@ export function initProfilerUI({
     }
 
     function generateHotspotLabels(hotspots) {
+        const chkProfileROM = document.getElementById('chkProfileROM');
+        const includeRom = chkProfileROM ? chkProfileROM.checked : false;
         const labels = [];
         const usedNames = new Set();
         for (const hs of hotspots) {
-            if (hs.startAddr < 0x4000) continue;
+            if (!includeRom && hs.startAddr < 0x4000) continue;
             const addrHex = hex16(hs.startAddr);
             let name = `${hs.classification}_${addrHex}`;
             // Ensure unique
@@ -383,10 +390,13 @@ export function initProfilerUI({
         container.innerHTML = '';
         container.classList.remove('hidden');
 
+        const chkProfileROM = document.getElementById('chkProfileROM');
+        const includeRom = chkProfileROM ? chkProfileROM.checked : false;
+
         // Collect subroutines with signatures
         const subs = [];
         for (const [key, stats] of results.subroutines) {
-            if (stats.entryAddr < 0x4000) continue;
+            if (!includeRom && stats.entryAddr < 0x4000) continue;
             if ((!stats.regInputs || stats.regInputs.size === 0) &&
                 (!stats.regOutputs || stats.regOutputs.size === 0)) continue;
             const sig = formatRegSignature(stats);

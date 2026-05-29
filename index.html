@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -7168,10 +7168,11 @@
                                 <label class="search-option"><input type="checkbox" id="chkXrefRuntime"> Runtime</label>
                                 <span id="xrefStats" class="automap-stats"></span>
                             </div>
-                            <div class="tools-row">
+                             <div class="tools-row">
                                 <span class="search-label">Profile:</span>
                                 <button id="btnProfileRun" title="Run profiler and auto-label subroutines">Run</button>
                                 <input type="number" id="profileFrameCount" value="200" min="10" max="5000" style="width:50px" title="Number of frames to profile">
+                                <label class="search-option" title="Include ROM subroutines (< $4000)"><input type="checkbox" id="chkProfileROM"> ROM</label>
                                 <button id="btnProfileStop" title="Stop profiling early" disabled>Stop</button>
                                 <button id="btnCallGraph" title="Show call graph from profiler data" disabled>Graph</button>
                                 <span id="profileStatus" class="automap-stats"></span>
