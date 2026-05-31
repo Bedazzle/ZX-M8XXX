@@ -64,7 +64,7 @@
     </style>
 </head>
 <body>
-    <h1>Z80 Assembler Tests <span class="version">v0.6.2</span></h1>
+    <h1>Z80 Assembler Tests <span class="version">v0.7.0</span></h1>
     <div class="test-resources">
         <p><a href="system-test.html">System Tests</a> |
         <a href="fuse-test.html">FUSE CPU Tests</a> |
@@ -90,6 +90,7 @@
     <button id="runExpressions">Expressions</button>
     <button id="runMacros">Macros</button>
     <button id="runConditionals">Conditionals</button>
+    <button id="runAdvanced">Advanced</button>
     <button class="theme-btn" id="themeToggle" title="Toggle light/dark theme"></button>
 
     <div id="summary"></div>
@@ -284,6 +285,7 @@
 
             assertBytes(bytes('EX DE, HL'), [0xEB], 'EX DE, HL');
             assertBytes(bytes("EX AF, AF'"), [0x08], "EX AF, AF'");
+            assertBytes(bytes('EXA'), [0x08], 'EXA');
             assertBytes(bytes('EX (SP), HL'), [0xE3], 'EX (SP), HL');
             assertBytes(bytes('EX (SP), IX'), [0xDD, 0xE3], 'EX (SP), IX');
             assertBytes(bytes('EXX'), [0xD9], 'EXX');
@@ -479,6 +481,11 @@
             assertEqual(sym ? sym.value : null, 0x8000, 'Label without colon (standalone)');
 
             assertBytes(bytes('ORG $8000\nJP target\ntarget\nRET'), [0xC3, 0x03, 0x80, 0xC9], 'Label without colon (forward ref)');
+
+            result = asm('ORG $8000\n_xorv2 exa');
+            sym = result.symbols.find(s => s.name === '_xorv2');
+            assertEqual(sym ? sym.value : null, 0x8000, 'Label without colon (before EXA)');
+            assertBytes(bytes('ORG $8000\n_xorv2 exa'), [0x08], 'EXA with label on same line');
 
             section('Local Labels');
 
@@ -767,6 +774,219 @@
             assertBytes(result, [0x3E, 10], 'DEFINE with value (comma)');
         }
 
+        // ==================== ADVANCED TESTS ====================
+
+        async function runAdvancedTests() {
+            section('SAVEHOB Directive');
+
+            // Basic SAVEHOB produces a hobeta save command
+            let result = asm('ORG $8000\nDB 1,2,3,4,5\nSAVEHOB "test.hob", "myfile.C", $8000, 5');
+            assert(result.success, 'SAVEHOB assembles successfully');
+            let hobCmd = result.saveCommands ? result.saveCommands.find(c => c.type === 'hobeta') : null;
+            assert(hobCmd !== null, 'SAVEHOB creates hobeta save command');
+            if (hobCmd) {
+                assertEqual(hobCmd.innerName, 'myfile  ', 'SAVEHOB inner name padded to 8 chars');
+                assertEqual(hobCmd.extChar, 'C', 'SAVEHOB extension char');
+                assertEqual(hobCmd.startAddr, 0x8000, 'SAVEHOB start address');
+                assert(hobCmd.capturedData !== null && hobCmd.capturedData.length === 5, 'SAVEHOB captured 5 bytes');
+                if (hobCmd.capturedData) {
+                    assertEqual(hobCmd.capturedData[0], 1, 'SAVEHOB data byte 0');
+                    assertEqual(hobCmd.capturedData[4], 5, 'SAVEHOB data byte 4');
+                }
+            }
+
+            // SAVEHOB with different extension
+            result = asm('ORG $6000\nDB 0xFF\nSAVEHOB "out.hob", "prog.B", $6000, 1');
+            hobCmd = result.saveCommands ? result.saveCommands.find(c => c.type === 'hobeta') : null;
+            if (hobCmd) {
+                assertEqual(hobCmd.extChar, 'B', 'SAVEHOB extension B');
+            }
+
+            // SAVEHOB with # extension
+            result = asm('ORG $6000\nDB 0xFF\nSAVEHOB "out.hob", "data.#", $6000, 1');
+            hobCmd = result.saveCommands ? result.saveCommands.find(c => c.type === 'hobeta') : null;
+            if (hobCmd) {
+                assertEqual(hobCmd.extChar, '#', 'SAVEHOB extension #');
+            }
+
+            section('Macro Multi-Pass Convergence');
+
+            // Macros with local labels must converge across passes
+            result = asm(`
+                ORG $8000
+                MACRO COPYBLOCK count
+                    LD B, count
+.lp:                LD A, (HL)
+                    LD (DE), A
+                    INC HL
+                    INC DE
+                    DJNZ .lp
+                ENDM
+                COPYBLOCK 10
+                COPYBLOCK 20
+            `);
+            assert(result.success, 'Macro with local labels converges');
+            assert(result.output && result.output.length > 0, 'Macro with local labels produces output');
+
+            // Multiple macro calls with local labels should not cause convergence failure
+            result = asm(`
+                ORG $8000
+                MACRO WAIT n
+                    LD B, n
+.loop:              DJNZ .loop
+                ENDM
+                WAIT 5
+                WAIT 10
+                WAIT 15
+                WAIT 20
+            `);
+            assert(result.success, 'Multiple macro calls with local labels converge');
+
+            section('Local Labels After Operators');
+
+            // Local label used in expression after + operator
+            result = asm(`
+                ORG $8000
+parent:
+.offset: EQU 5
+                LD A, parent + .offset
+            `);
+            assert(result.success, 'Local label after + operator assembles');
+
+            // Local label after subtraction
+            result = asm(`
+                ORG $8000
+base:
+.size: EQU 10
+                LD HL, $8100 - .size
+            `);
+            assert(result.success, 'Local label after - operator assembles');
+
+            // Local label after multiplication
+            result = asm(`
+                ORG $8000
+tbl:
+.width: EQU 32
+                LD HL, 3 * .width
+            `);
+            assert(result.success, 'Local label after * operator assembles');
+            if (result.output) {
+                // 3 * 32 = 96 = 0x0060
+                assertBytes(result.output, [0x21, 0x60, 0x00], 'Local label after * gives correct value');
+            }
+
+            // Local label in complex expression with bitwise operators
+            result = asm(`
+                ORG $8000
+flags:
+.mask: EQU $F0
+                LD A, $FF & .mask
+            `);
+            assert(result.success, 'Local label after & operator assembles');
+            if (result.output) {
+                assertBytes(result.output, [0x3E, 0xF0], 'Local label after & gives correct value');
+            }
+
+            section('EQU Local Label Scoping');
+
+            // Local labels after EQU should scope under the EQU
+            result = asm(`
+                ORG $8000
+probs: EQU $9000
+.c: EQU 0
+.e: EQU 2
+                LD A, (probs + .c)
+                LD A, (probs + .e)
+            `);
+            assert(result.success, 'Local labels scope under EQU parent');
+
+            // Verify correct values
+            result = asm(`
+                ORG $8000
+config: EQU $C000
+.width: EQU 32
+.height: EQU 24
+                LD HL, config + .width
+                LD DE, config + .height
+            `);
+            assert(result.success, 'EQU scoped locals resolve correctly');
+            if (result.output) {
+                // config + .width = 0xC000 + 32 = 0xC020
+                assertEqual(result.output[1], 0x20, 'EQU local .width low byte');
+                assertEqual(result.output[2], 0xC0, 'EQU local .width high byte');
+                // config + .height = 0xC000 + 24 = 0xC018
+                assertEqual(result.output[4], 0x18, 'EQU local .height low byte');
+                assertEqual(result.output[5], 0xC0, 'EQU local .height high byte');
+            }
+
+            // EQU followed by label — local labels after regular label should NOT scope under EQU
+            result = asm(`
+                ORG $8000
+myequ: EQU 42
+routine:
+.local: NOP
+                JR .local
+            `);
+            assert(result.success, 'Local label after regular label scopes under routine, not EQU');
+
+            section('MODULE Compound Name Lookup');
+
+            // Simple MODULE with compound name lookup
+            result = asm(`
+                ORG $8000
+                MODULE mymod
+vars: EQU $9000
+.x: EQU 0
+.y: EQU 2
+                LD HL, vars + .x
+                LD DE, vars + .y
+                ENDMODULE
+            `);
+            assert(result.success, 'MODULE with EQU and local labels');
+
+            // Compound name resolution inside MODULE
+            result = asm(`
+                ORG $8000
+                MODULE upkr
+probs: EQU $C000
+.c: EQU 0
+.e: EQU 2
+                LD HL, probs + .c
+                LD DE, probs + .e
+                ; Also test dotted compound name
+                LD BC, probs.c
+                ENDMODULE
+            `);
+            assert(result.success, 'MODULE compound name probs.c resolves');
+
+            // Cross-module reference with @
+            result = asm(`
+                ORG $8000
+                MODULE mod1
+val: EQU 42
+                ENDMODULE
+                MODULE mod2
+                LD A, @mod1.val
+                ENDMODULE
+            `);
+            assert(result.success, 'Cross-module @ reference');
+            if (result.output) {
+                assertBytes(result.output, [0x3E, 42], 'Cross-module @ gives correct value');
+            }
+
+            // Nested module name resolution
+            result = asm(`
+                ORG $8000
+                MODULE outer
+                MODULE inner
+label: NOP
+                ENDMODULE
+                JP outer.inner.label
+                ENDMODULE
+            `);
+            assert(result.success, 'Nested MODULE name resolution');
+        }
+
         // ==================== RUN ALL ====================
 
         async function runAllTests() {
@@ -779,6 +999,7 @@
             await runExpressionTests();
             await runMacroTests();
             await runConditionalTests();
+            await runAdvancedTests();
 
             log('\n=== COMPLETE ===', 'section');
         }
@@ -791,6 +1012,7 @@
         document.getElementById('runExpressions').onclick = () => { clearLog(); runExpressionTests(); };
         document.getElementById('runMacros').onclick = () => { clearLog(); runMacroTests(); };
         document.getElementById('runConditionals').onclick = () => { clearLog(); runConditionalTests(); };
+        document.getElementById('runAdvanced').onclick = () => { clearLog(); runAdvancedTests(); };
 
         // Theme handling
         const themeBtn = document.getElementById('themeToggle');

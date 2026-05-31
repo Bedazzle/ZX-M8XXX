@@ -384,6 +384,30 @@ export const VFS = {
         }
     },
 
+    // Remove a single file
+    removeFile(path) {
+        const normalized = this.normalizePath(path);
+        if (normalized in this.files) {
+            delete this.files[normalized];
+            return true;
+        }
+        return false;
+    },
+
+    // Remove all files under a directory prefix
+    removeDirectory(dirPath) {
+        const normalized = this.normalizePath(dirPath);
+        const prefix = normalized.endsWith('/') ? normalized : normalized + '/';
+        let count = 0;
+        for (const path of Object.keys(this.files)) {
+            if (path.startsWith(prefix) || path === normalized) {
+                delete this.files[path];
+                count++;
+            }
+        }
+        return count;
+    },
+
     // Set base path for relative includes
     setBasePath(path) {
         this.basePath = this.normalizePath(path);

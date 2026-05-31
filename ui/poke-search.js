@@ -93,12 +93,19 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
     });
 
     btnPokeSearch.addEventListener('click', () => {
-        if (!readMemory || pokeSnapshots.length < 2) {
-            showMessage('Need at least 2 snapshots', 'error');
-            return;
-        }
-
         const mode = pokeSearchMode.value;
+
+        if (mode === 'abab') {
+            if (!readMemory || pokeSnapshots.length < 4) {
+                showMessage('Need at least 4 snapshots for A-B-A-B', 'error');
+                return;
+            }
+        } else {
+            if (!readMemory || pokeSnapshots.length < 2) {
+                showMessage('Need at least 2 snapshots', 'error');
+                return;
+            }
+        }
 
         // Always scan all RAM — snapshot history provides the narrowing
         const skipScreen = pokeSkipScreen.checked;
@@ -109,6 +116,28 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
 
         for (let addr = startAddr; addr < 0x10000; addr++) {
             if (pokeBlacklist && pokeBlacklist.has(addr)) continue;
+
+            if (mode === 'abab') {
+                // A-B-A-B pattern: even snaps must all equal snap[0],
+                // odd snaps must all equal snap[1], and snap[0] !== snap[1].
+                // More snapshots = stricter filtering.
+                const a = pokeSnapshots[0][addr];
+                const b = pokeSnapshots[1][addr];
+                if (a === b) { continue; }
+                let match = true;
+                for (let s = 2; s < pokeSnapshots.length; s++) {
+                    const expected = (s & 1) ? b : a;
+                    if (pokeSnapshots[s][addr] !== expected) { match = false; break; }
+                }
+                if (match) {
+                    const values = [];
+                    for (let s = 0; s < pokeSnapshots.length; s++) values.push(pokeSnapshots[s][addr]);
+                    newCandidates.add(addr);
+                    newHistory.set(addr, values);
+                }
+                continue;
+            }
+
             // Build value sequence from all snapshots
             const values = [];
             for (let s = 0; s < pokeSnapshots.length; s++) {
@@ -143,6 +172,35 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                 newCandidates.add(addr);
                 newHistory.set(addr, values);
             }
+        }
+
+        // A-B-A-B: strip contiguous runs of 4+ candidates (room buffers/tables)
+        if (mode === 'abab' && newCandidates.size > 0) {
+            const sorted = [...newCandidates].sort((a, b) => a - b);
+            const runStart = new Uint16Array(sorted.length);
+            // Mark run starts: walk sorted addresses, group consecutive runs
+            let rs = 0;
+            runStart[0] = 0;
+            for (let i = 1; i < sorted.length; i++) {
+                if (sorted[i] !== sorted[i - 1] + 1) rs = i;
+                runStart[i] = rs;
+            }
+            const minRun = 2;
+            const stripped = new Set();
+            for (let i = sorted.length - 1; i >= 0; i--) {
+                const runLen = i - runStart[i] + 1;
+                if (runLen >= minRun) {
+                    // Remove entire run
+                    for (let j = runStart[i]; j <= i; j++) {
+                        newHistory.delete(sorted[j]);
+                    }
+                    i = runStart[i]; // skip to start of run (loop will decrement)
+                } else {
+                    stripped.add(sorted[i]);
+                }
+            }
+            newCandidates.clear();
+            for (const a of stripped) newCandidates.add(a);
         }
 
         pokeCandidates = newCandidates;

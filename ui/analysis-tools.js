@@ -5,13 +5,15 @@ import { hex16 } from '../core/utils.js';
 
 export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
                                      regionManager, labelManager, xrefManager, subroutineManager,
-                                     getDisasmViewAddress, showMessage, updateDebugger }) {
+                                     getDisasmViewAddress, showMessage, updateDebugger,
+                                     getGenerateAssemblyOutput, downloadFile, appVersion }) {
 
     // DOM elements
     const chkAutoMap = document.getElementById('chkAutoMap');
     const btnAutoMapSnap = document.getElementById('btnAutoMapSnap');
     const btnAutoMapApply = document.getElementById('btnAutoMapApply');
     const btnAutoMapClear = document.getElementById('btnAutoMapClear');
+    const btnAutoMapExport = document.getElementById('btnAutoMapExport');
     const autoMapStats = document.getElementById('autoMapStats');
     const btnCfaRun = document.getElementById('btnCfaRun');
     const chkCfaSkipRom = document.getElementById('chkCfaSkipRom');
@@ -59,6 +61,87 @@ export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
         btnAutoMapSnap.style.background = '';  // Reset button style
         updateAutoMapStats();
         showMessage('Auto-map tracking cleared');
+    });
+
+    btnAutoMapExport.addEventListener('click', () => {
+        const spectrum = getSpectrum();
+        const autoMapData = spectrum.getAutoMapData();
+
+        if (autoMapData.executed.size === 0 && autoMapData.read.size === 0 && autoMapData.written.size === 0) {
+            showMessage('No auto-map data to export');
+            return;
+        }
+
+        // Collect all active addresses (resolve banked keys to 16-bit addresses)
+        const activeAddrs = new Set();
+        for (const key of autoMapData.executed.keys()) {
+            const addr = spectrum.parseAutoMapKey(key).addr;
+            if (addr >= 0 && addr < 65536) activeAddrs.add(addr);
+        }
+        for (const key of autoMapData.read.keys()) {
+            const addr = spectrum.parseAutoMapKey(key).addr;
+            if (addr >= 0 && addr < 65536) activeAddrs.add(addr);
+        }
+        for (const key of autoMapData.written.keys()) {
+            const addr = spectrum.parseAutoMapKey(key).addr;
+            if (addr >= 0 && addr < 65536) activeAddrs.add(addr);
+        }
+
+        // Include addresses from marked regions
+        for (const region of regionManager.getAll()) {
+            for (let a = region.start; a <= region.end; a++) activeAddrs.add(a);
+        }
+
+        // Filter screen memory, sort
+        const SCREEN_START = 0x4000, SCREEN_END = 0x5B00;
+        const sorted = Array.from(activeAddrs)
+            .filter(a => a < SCREEN_START || a >= SCREEN_END)
+            .sort((a, b) => a - b);
+
+        if (sorted.length === 0) {
+            showMessage('No exportable addresses (only screen memory mapped)');
+            return;
+        }
+
+        // Group into contiguous blocks (gap > 16 = new block)
+        const blocks = [];
+        let blockStart = sorted[0], blockEnd = sorted[0];
+        for (let i = 1; i < sorted.length; i++) {
+            if (sorted[i] > blockEnd + 16) {
+                blocks.push({ start: blockStart, end: blockEnd });
+                blockStart = sorted[i];
+            }
+            blockEnd = sorted[i];
+        }
+        blocks.push({ start: blockStart, end: blockEnd });
+
+        // Build header
+        const now = new Date();
+        const datetime = now.getFullYear() + '-' +
+            String(now.getMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0') + ':' +
+            String(now.getSeconds()).padStart(2, '0');
+
+        let output = '; Auto-Map disassembly exported from ZX-M8XXX v' + appVersion + '\n';
+        output += '; Date: ' + datetime + '\n';
+        output += '; Auto-Map data: ' + autoMapData.executed.size + ' executed, ' +
+                  autoMapData.read.size + ' read, ' + autoMapData.written.size + ' written\n';
+        output += '; Blocks: ' + blocks.length + ' contiguous regions\n\n';
+
+        // Generate disassembly for each block
+        const genAsm = getGenerateAssemblyOutput();
+        const options = { withOrg: true, withAddr: true, withBytes: false, withTstates: false, withHeader: false };
+        for (const block of blocks) {
+            output += genAsm(block.start, block.end, options);
+            output += '\n';
+        }
+
+        // Download
+        const filename = 'automap-' + datetime.replace(/[: ]/g, '-') + '.asm';
+        downloadFile(filename, output);
+        showMessage('Exported ' + blocks.length + ' block(s), ' + sorted.length + ' addresses');
     });
 
     btnAutoMapSnap.addEventListener('click', () => {

@@ -140,6 +140,19 @@ export function initRightDisasmView({
                 }
             }
 
+            if (addrInfo.isLong) {
+                classes.push('has-long-label');
+                return `${beforeHtml}<div class="${classes.join(' ')}" data-addr="${line.addr}">
+                    <div class="disasm-label-row">${addrInfo.labelHtml}</div>
+                    <span class="disasm-bp ${hasBp ? 'active' : hasDisabledBp ? 'disabled' : ''}" data-addr="${line.addr}">•</span>
+                    ${regionMarker}
+                    <span class="disasm-addr">${addrInfo.html}</span>
+                    <span class="disasm-bytes">${bytesStr}</span>
+                    ${timingHtml}
+                    <span class="disasm-mnemonic">${formatMnemonic(mnemonicWithLabels)}</span>${inlineHtml}
+                </div>${afterHtml}`;
+            }
+
             return `${beforeHtml}<div class="${classes.join(' ')}" data-addr="${line.addr}">
                 <span class="disasm-bp ${hasBp ? 'active' : hasDisabledBp ? 'disabled' : ''}" data-addr="${line.addr}">•</span>
                 ${regionMarker}

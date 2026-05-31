@@ -9,7 +9,7 @@ export function initMemContext({
     showMessage, updateDebugger, updateLabelsList,
     goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
     addWatch, addFreezeEditor,
-    getMemSelection, clearMemSelection,
+    getMemSelection, getAsciiSelection, clearMemSelection, clearAsciiSelection,
     getMemoryEditingAddr, finishCurrentEdit
 }) {
     const { showLabelDialog, showRegionDialog, closeLabelContextMenu } = dialogs;
@@ -188,21 +188,31 @@ export function initMemContext({
         closeLeftMemContextMenu();
         closeLabelContextMenu();
 
-        const byteEl = e.target.closest('.memory-byte') || e.target.closest('.memory-addr');
+        const byteEl = e.target.closest('.memory-byte') || e.target.closest('.memory-addr')
+            || e.target.closest('.memory-ascii > span[data-addr]');
         if (!byteEl || !byteEl.dataset.addr) return;
 
         const clickedAddr = parseInt(byteEl.dataset.addr, 10);
 
-        // Determine selection range
+        // Determine selection range (check both hex and ASCII selections)
         const sel = getMemSelection();
-        let hasSelection = sel.start !== null && sel.end !== null && sel.start !== sel.end;
+        const asciiSel = getAsciiSelection();
+        let hasSelection = false;
         let selStart, selEnd;
 
-        if (hasSelection) {
+        if (sel.start !== null && sel.end !== null && sel.start !== sel.end) {
             selStart = Math.min(sel.start, sel.end);
             selEnd = Math.max(sel.start, sel.end);
-            if (clickedAddr < selStart || clickedAddr > selEnd) {
-                hasSelection = false;
+            if (clickedAddr >= selStart && clickedAddr <= selEnd) {
+                hasSelection = true;
+            }
+        }
+
+        if (!hasSelection && asciiSel.start !== null && asciiSel.end !== null && asciiSel.start !== asciiSel.end) {
+            selStart = Math.min(asciiSel.start, asciiSel.end);
+            selEnd = Math.max(asciiSel.start, asciiSel.end);
+            if (clickedAddr >= selStart && clickedAddr <= selEnd) {
+                hasSelection = true;
             }
         }
 
@@ -238,6 +248,7 @@ export function initMemContext({
             const action = menuE.target.dataset.action;
             handleMenuAction(action, addr, endAddr, existingLabel);
             clearMemSelection();
+            clearAsciiSelection();
             closeMemContextMenu();
         });
     });
@@ -270,6 +281,8 @@ export function initMemContext({
         leftMemContextMenu.style.top = e.clientY + 'px';
         document.body.appendChild(leftMemContextMenu);
 
+        adjustMenuOverflow(leftMemContextMenu);
+
         leftMemContextMenu.addEventListener('click', (menuE) => {
             const action = menuE.target.dataset.action;
             handleMenuAction(action, addr, null, existingLabel);
@@ -291,6 +304,11 @@ export function initMemContext({
         if (sel.start !== null && !memoryView.contains(e.target) &&
             (!memContextMenu || !memContextMenu.contains(e.target))) {
             clearMemSelection();
+        }
+        // Clear ASCII selection when clicking outside memory view
+        if (!memoryView.contains(e.target) &&
+            (!memContextMenu || !memContextMenu.contains(e.target))) {
+            clearAsciiSelection();
         }
     });
 

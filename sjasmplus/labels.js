@@ -71,7 +71,7 @@ export const SymbolTable = {
         };
 
         // Update local prefix for non-local labels (. prefixed are local)
-        if (!name.startsWith('.') && type === 'label') {
+        if (!name.startsWith('.') && (type === 'label' || type === 'equ')) {
             this.localPrefix = fullName;
         }
 
@@ -313,6 +313,10 @@ export const EquTable = {
             line: line,
             file: file
         };
+        // Update local prefix so subsequent .local labels scope under this EQU
+        if (!name.startsWith('.')) {
+            SymbolTable.localPrefix = fullName;
+        }
     },
     
     getValue(name) {

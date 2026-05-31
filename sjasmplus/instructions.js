@@ -222,6 +222,7 @@ export const InstructionEncoder = {
 
         // Exchange
         'EX': function(ops, addr, syms) { return this.encodeEX(ops, addr, syms); },
+        'EXA': function() { return { bytes: [0x08], size: 1, undefined: false }; },
         'EXX': function(ops) { return { bytes: [0xD9], size: 1, undefined: false }; },
 
         // Rotates and shifts

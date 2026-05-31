@@ -396,7 +396,7 @@ export const Parser = {
             'INCLUDE', 'INCBIN', 'INSERT', 'INCHOB', 'INCTRD',
             // Output
             'OUTPUT', 'OUTEND',
-            'SAVEBIN', 'SAVESNA', 'SAVETAP', 'EMPTYTAP', 'SAVETRD', 'EMPTYTRD',
+            'SAVEBIN', 'SAVESNA', 'SAVETAP', 'EMPTYTAP', 'SAVETRD', 'EMPTYTRD', 'SAVEHOB',
             // Device
             'DEVICE', 'SLOT', 'PAGE', 'MMU',
             // Misc
@@ -438,7 +438,7 @@ export const Parser = {
             'LDI', 'LDIR', 'LDD', 'LDDR',
             'CPI', 'CPIR', 'CPD', 'CPDR',
             // Exchange
-            'EX', 'EXX',
+            'EX', 'EXA', 'EXX',
             // Undocumented
             'SLI', 'SWAP',
             // Next hardware (if supported)

@@ -823,30 +823,55 @@ export function initAssemblerUI({
             return nameA.localeCompare(nameB);
         });
 
+        let lastDir = null;
         for (const path of files) {
             const file = VFS.files[path];
             const name = path.split('/').pop();
-            const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/') + 1) : '';
+            const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
             const isBinary = file.binary;
             const isMain = path === currentProjectMainFile;
             const isOpen = openTabs.includes(path);
             const size = isBinary ? file.content.length : file.content.length;
+
+            // Insert directory header when directory changes
+            if (dir && dir !== lastDir) {
+                const dirItem = document.createElement('div');
+                dirItem.className = 'asm-files-list-dir';
+                dirItem.innerHTML = `
+                    <span class="file-icon">\u{1F4C1}</span>
+                    <span class="file-name">${dir}/</span>
+                    <span class="file-delete" title="Remove directory from project">\u00d7</span>
+                `;
+                const dirPath = dir;
+                dirItem.querySelector('.file-delete').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    removeVfsDirectory(dirPath);
+                });
+                asmFilesList.appendChild(dirItem);
+            }
+            lastDir = dir;
 
             const item = document.createElement('div');
             item.className = 'asm-files-list-item';
             if (isMain) item.classList.add('main');
             if (isBinary) item.classList.add('binary');
             if (isOpen) item.classList.add('open');
+            if (dir) item.classList.add('in-dir');
 
             const icon = isBinary ? '\u{1F4E6}' : (isMain ? '\u25B6' : '\u{1F4C4}');
             const sizeStr = size < 1024 ? `${size}b` : `${(size/1024).toFixed(1)}K`;
-            const dirHtml = dir ? `<span class="file-dir">${dir}</span>` : '';
 
             item.innerHTML = `
                 <span class="file-icon">${icon}</span>
-                <span class="file-name" title="${path}">${dirHtml}${name}</span>
+                <span class="file-name" title="${path}">${name}</span>
                 <span class="file-size">${sizeStr}</span>
+                <span class="file-delete" title="Remove from project">\u00d7</span>
             `;
+
+            item.querySelector('.file-delete').addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeVfsFile(path);
+            });
 
             item.addEventListener('click', () => {
                 openFileTab(path);
@@ -918,6 +943,75 @@ export function initAssemblerUI({
         }
 
         updateFileTabs();
+    }
+
+    // Remove a file from VFS and close its tab if open
+    function removeVfsFile(path) {
+        VFS.removeFile(path);
+
+        // Close tab if open
+        const idx = openTabs.indexOf(path);
+        if (idx !== -1) {
+            openTabs.splice(idx, 1);
+            delete fileModified[path];
+
+            if (currentOpenFile === path) {
+                if (openTabs.length > 0) {
+                    openFileTab(openTabs[Math.min(idx, openTabs.length - 1)]);
+                } else {
+                    currentOpenFile = null;
+                    asmEditor.value = '';
+                    asmEditor.disabled = false;
+                    updateLineNumbers();
+                    updateHighlight();
+                }
+            }
+        }
+
+        // Clear main file if it was removed
+        if (path === currentProjectMainFile) {
+            currentProjectMainFile = VFS.findMainFile();
+        }
+
+        updateFileTabs();
+        updateFilesList();
+        updateAsmButtons();
+    }
+
+    // Remove all files in a directory from VFS
+    function removeVfsDirectory(dirPath) {
+        const prefix = dirPath.endsWith('/') ? dirPath : dirPath + '/';
+        const toRemove = VFS.listFiles().filter(f => f.startsWith(prefix));
+        for (const path of toRemove) {
+            VFS.removeFile(path);
+            const idx = openTabs.indexOf(path);
+            if (idx !== -1) {
+                openTabs.splice(idx, 1);
+                delete fileModified[path];
+            }
+        }
+
+        // Switch editor if current file was in the removed directory
+        if (currentOpenFile && currentOpenFile.startsWith(prefix)) {
+            if (openTabs.length > 0) {
+                openFileTab(openTabs[openTabs.length - 1]);
+            } else {
+                currentOpenFile = null;
+                asmEditor.value = '';
+                asmEditor.disabled = false;
+                updateLineNumbers();
+                updateHighlight();
+            }
+        }
+
+        // Re-detect main file if it was in the removed directory
+        if (currentProjectMainFile && currentProjectMainFile.startsWith(prefix)) {
+            currentProjectMainFile = VFS.findMainFile();
+        }
+
+        updateFileTabs();
+        updateFilesList();
+        updateAsmButtons();
     }
 
     // Update file tabs display
@@ -2674,7 +2768,7 @@ export function initAssemblerUI({
     let assembledOrg = 0;
     let assembledOrgAddresses = [];  // All ORG addresses from assembly
     let assembledSaveCommands = [];  // SAVESNA/SAVETAP commands from assembly
-    let assembledEntryPoint = null;  // Entry point from ; @entry marker
+    let assembledEntryPoint = null;  // Entry point from ; @entry or ; @start marker
     let assembledSymbols = [];       // Symbols from last assembly {name, value, type}
     let assemblyDirty = true;        // True when source changed since last successful assembly
 
@@ -2954,7 +3048,7 @@ export function initAssemblerUI({
             // Parse ; @entry marker from source
             assembledEntryPoint = null;
             const sourceCode = hasProject && VFS.files[normalizedFilename] ? VFS.files[normalizedFilename].content : asmEditor.value;
-            const entryMatch = sourceCode.match(/^\s*;\s*@entry\s+(\S+)/im);
+            const entryMatch = sourceCode.match(/^\s*;\s*@(?:entry|start)\s+(\S+)/im);
             if (entryMatch) {
                 const entryValue = entryMatch[1];
                 const symbolEntry = result.symbols && result.symbols.find(s =>
@@ -3035,7 +3129,8 @@ export function initAssemblerUI({
                 // Show generated files list (grouped by filename)
                 const saveCommands = assembledSaveCommands.filter(c =>
                     c.type === 'bin' || c.type === 'sna' || c.type === 'tap' ||
-                    c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd'
+                    c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd' ||
+                    c.type === 'hobeta'
                 );
                 // Group by filename
                 const fileMap = new Map();
@@ -3360,7 +3455,7 @@ export function initAssemblerUI({
         // Then inject
         btnAsmInject.click();
 
-        // Determine entry point - priority: @entry > SAVESNA > single ORG > multiple ORGs (ask)
+        // Determine entry point - priority: @entry/@start > SAVESNA > single ORG > multiple ORGs (ask)
         let entryPoint = assembledOrg;
 
         if (assembledEntryPoint !== null) {
@@ -3493,7 +3588,8 @@ export function initAssemblerUI({
         btnAsmDownload.addEventListener('click', async () => {
             const saveCommands = assembledSaveCommands.filter(c =>
                 c.type === 'bin' || c.type === 'sna' || c.type === 'tap' ||
-                c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd'
+                c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd' ||
+                c.type === 'hobeta'
             );
 
             if (saveCommands.length === 0) {
@@ -3551,6 +3647,9 @@ export function initAssemblerUI({
                     // TRD file - not yet implemented
                     console.log('TRD export not yet implemented:', filename);
                     continue;
+                } else if (fileType === 'hobeta') {
+                    // Hobeta file - 17-byte header + raw data
+                    data = generateHobetaFile(firstCmd);
                 }
 
                 if (data && data.length > 0) {
@@ -3701,6 +3800,40 @@ export function initAssemblerUI({
         }
 
         return snaData;
+    }
+
+    // Generate Hobeta file: 17-byte header + raw data
+    function generateHobetaFile(cmd) {
+        if (!cmd.capturedData || cmd.capturedData.length === 0) return null;
+        const dataLen = cmd.capturedData.length;
+        const sectorLen = Math.ceil(dataLen / 256) * 256;
+        const hdr = new Uint8Array(17);
+        // Bytes 0-7: filename padded with spaces
+        const name = (cmd.innerName || '        ').substring(0, 8);
+        for (let i = 0; i < 8; i++) hdr[i] = name.charCodeAt(i);
+        // Byte 8: extension character
+        hdr[8] = (cmd.extChar || 'C').charCodeAt(0);
+        // Bytes 9-10: start address (LE)
+        const addr = cmd.startAddr || 0;
+        hdr[9] = addr & 0xFF;
+        hdr[10] = (addr >> 8) & 0xFF;
+        // Bytes 11-12: data length (LE)
+        hdr[11] = dataLen & 0xFF;
+        hdr[12] = (dataLen >> 8) & 0xFF;
+        // Bytes 13-14: full sector length (LE)
+        hdr[13] = sectorLen & 0xFF;
+        hdr[14] = (sectorLen >> 8) & 0xFF;
+        // Bytes 15-16: CRC (LE)
+        let sum = 0;
+        for (let i = 0; i < 15; i++) sum += hdr[i];
+        const crc = (257 * sum + 105) & 0xFFFF;
+        hdr[15] = crc & 0xFF;
+        hdr[16] = (crc >> 8) & 0xFF;
+        // Combine header + data
+        const result = new Uint8Array(17 + dataLen);
+        result.set(hdr, 0);
+        result.set(cmd.capturedData, 17);
+        return result;
     }
 
     // Generate TAP blocks for a single SAVETAP command (may include header + data blocks)

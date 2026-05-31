@@ -6,7 +6,7 @@ import {
 } from '../core/constants.js';
 import { hex8 } from '../core/utils.js';
 
-export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage }) {
+export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage, getRAMPage, getRamPages }) {
 
     // ========== Frame Export ==========
     const frameGrabState = {
@@ -33,7 +33,7 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         const scaOptionsRow = document.getElementById('scaOptionsRow');
         const scaCustomPatternRow = document.getElementById('scaCustomPatternRow');
 
-        if (format === 'scr' || format === 'sca') {
+        if (format === 'scr' || format === 'sca' || format === 'gigascr') {
             // SCR/SCA requires screen only (256x192)
             sizeRow.style.display = 'none';
             frameExportSize.value = 'screen';
@@ -281,13 +281,21 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         // Store as data URL (PNG) + memory snapshots for SCA export
         const attrs = getMemoryBlock(SCREEN_ATTR, SCREEN_ATTR_SIZE);
         const bitmap = getMemoryBlock(SCREEN_BITMAP, SCREEN_BITMAP_SIZE);
-        frameGrabState.frames.push({
+        const frameData = {
             dataUrl: tempCanvas.toDataURL('image/png'),
             width: sw,
             height: sh,
             attrs: new Uint8Array(attrs),
             bitmap: new Uint8Array(bitmap)
-        });
+        };
+
+        // For Gigascreen, capture both screen banks directly
+        if (frameExportFormat.value === 'gigascr' && getRamPages() > 1) {
+            frameData.bank5 = new Uint8Array(getRAMPage(5).subarray(0, SCREEN_SIZE));
+            frameData.bank7 = new Uint8Array(getRAMPage(7).subarray(0, SCREEN_SIZE));
+        }
+
+        frameGrabState.frames.push(frameData);
 
         updateFrameGrabStatus();
 
@@ -385,6 +393,8 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             exportFramesAsScr('bsc');
         } else if (format === 'sca') {
             exportFramesAsSca();
+        } else if (format === 'gigascr') {
+            exportFramesAsImg();
         } else {
             exportFramesAsGif();
         }
@@ -909,6 +919,60 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         frameGrabStatus.textContent = `Exported ${frameCount} ${ext.toUpperCase()} frames (${duration}s)`;
         frameGrabStatus.classList.remove('recording');
         showMessage(`Exported ${frameCount} frames to ${baseName}_${ext}.zip`);
+    }
+
+    function exportFramesAsImg() {
+        const frames = frameGrabState.frames;
+        const baseName = getExportBaseName();
+        const frameCount = frames.length;
+
+        // 48K fallback — no second screen bank
+        if (getRamPages() === 1) {
+            // Fall back to SCR export
+            exportFramesAsScr('scr');
+            showMessage('48K: no second screen bank — exported as SCR');
+            return;
+        }
+
+        const files = [];
+        for (let i = 0; i < frameCount; i++) {
+            const frame = frames[i];
+            const filename = `${baseName}_${String(i).padStart(4, '0')}.img`;
+            const data = new Uint8Array(SCREEN_SIZE * 2);
+            data.set(frame.bank5, 0);
+            data.set(frame.bank7, SCREEN_SIZE);
+            files.push({ name: filename, data });
+        }
+
+        // Single frame — save as single file
+        if (files.length === 1) {
+            const blob = new Blob([files[0].data], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = files[0].name;
+            a.click();
+            URL.revokeObjectURL(url);
+            frameGrabStatus.textContent = `Exported 1 Gigascreen frame (${SCREEN_SIZE * 2} bytes)`;
+            frameGrabStatus.classList.remove('recording');
+            showMessage(`Exported ${files[0].name}`);
+            return;
+        }
+
+        // Multiple frames — ZIP
+        const zipData = createZip(files);
+        const blob = new Blob([zipData], { type: 'application/zip' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${baseName}_img.zip`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        const duration = (frameCount / 50).toFixed(2);
+        frameGrabStatus.textContent = `Exported ${frameCount} Gigascreen frames (${duration}s)`;
+        frameGrabStatus.classList.remove('recording');
+        showMessage(`Exported ${frameCount} frames to ${baseName}_img.zip`);
     }
 
     // Detect if bitmap has a consistent 8-byte repeating pattern
