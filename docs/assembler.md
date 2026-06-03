@@ -65,9 +65,46 @@ Shows real-time pass and line progress during assembly.
 - Assemble and Debug buttons disabled during assembly
 - Shared helpers: `prepareAssembly()` (VFS sync, defines), `processAssemblyResult()`, `processAssemblyError()` — used by both sync and async paths
 
-**Debug with SAVESNA** (`doDebug()` in `assembler-ui.js`):
+**Source markers** — special comments in source file headers:
+- `; @main` — marks this file as the project entry point for assembly (checked in first 20 lines by `VFS.findMainFile()`)
+- `; @entry LABEL` or `; @start LABEL` — sets the debug entry point to the given label or address. Accepts a symbol name (resolved from assembled symbols), hex (`$1234` or `0x1234`), or decimal. Parsed from the main file by `processAssemblyResult()`
+- `; @define NAME=VALUE` or `; @define NAME` — defines assembler symbols before assembly (checked in first 30 lines by `VFS.getFileDefines()`, defaults to `1` if no value given)
+
+**Debug entry point priority** (`doDebug()` in `assembler-ui.js`):
+1. `; @entry` / `; @start` marker (highest priority)
+2. SAVESNA command start address
+3. Single ORG address (used directly)
+4. Multiple ORG addresses (shows "Select Entry Point" dialog)
+
+**Debug with SAVESNA**:
 - When the assembled project contains a SAVESNA command, Debug initializes the CPU to the USR 0 machine state matching SNA output: IM 1, IFF1 enabled, SP=0x5D58, I=0x3F, IY=0x5C3A, IX=0xFF3C, BC=entryPoint
 - Without SAVESNA, Debug uses minimal state (interrupts disabled) for simple test programs
+
+**Save directives** (`assembler.js`):
+- `SAVEBIN "file", start, length` — raw binary
+- `SAVESNA "file", startaddr` — SNA snapshot (48K or 128K with DEVICE)
+- `SAVETAP "file", ...` — TAP tape (BASIC/CODE/HEADLESS blocks)
+- `EMPTYTRD "file"` / `SAVETRD "file", "name", [type,] start, length` — TRD disk image
+- `EMPTYTAP "file"` — empty TAP file
+- `SAVEHOB "file", "name.X", start, length` — Hobeta file (17-byte header + data). TR-DOS name parsed as 8-char name + extension char (B/C/D/#). Complement of `INCHOB`.
+
+All SAVE directives capture data at the point of declaration (not end of assembly), push to `saveCommands[]`, and support `; md5: <hash>` comment verification.
+
+## File Management
+
+The Files dropdown (`updateFilesList()`) shows all VFS files grouped by directory with sort order: root files first, then directories alphabetically, files alphabetically within each directory.
+
+**Directory headers**: When files share a directory prefix, a `📁` header row is inserted before the group. Files within a directory are indented (`.in-dir` class). The directory prefix is not repeated on individual file rows.
+
+**File/directory removal**: Both file rows and directory headers show a red × button on hover (`.file-delete`, `opacity: 0` → `1` on row hover, red on button hover). Clicking removes the file or all files in the directory from the VFS, closes any open tabs for removed files, re-detects the main file if needed, and refreshes the file list, tabs, and button states.
+
+**VFS methods** (`sjasmplus/vfs.js`):
+- `removeFile(path)` — delete a single file by normalized path
+- `removeDirectory(dirPath)` — delete all files under a directory prefix
+
+**UI functions** (`ui/assembler-ui.js`):
+- `removeVfsFile(path)` — remove file from VFS, close its tab, update UI
+- `removeVfsDirectory(dirPath)` — remove all files in directory, close their tabs, update UI
 
 ## Undocumented Half-Index Registers
 

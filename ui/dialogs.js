@@ -261,14 +261,18 @@ export function initDialogs({
     const btnFoldCancel = document.getElementById('btnFoldCancel');
     let foldDialogStartAddr = null;
 
-    function showFoldDialog(startAddr) {
+    function showFoldDialog(startAddr, endAddr = null) {
         foldDialogStartAddr = startAddr;
         foldStartInput.value = hex16(startAddr);
-        foldEndInput.value = '';
+        foldEndInput.value = endAddr !== null ? hex16(endAddr) : '';
         foldNameInput.value = '';
 
         foldDialog.classList.remove('hidden');
-        foldEndInput.focus();
+        if (endAddr !== null) {
+            foldNameInput.focus();
+        } else {
+            foldEndInput.focus();
+        }
     }
 
     function closeFoldDialog() {

@@ -17,22 +17,27 @@ export function initAssemblyOutput({
         const withAddr = options.withAddr !== false;
         const withBytes = options.withBytes === true;
         const withTstates = options.withTstates === true;
+        const withHeader = options.withHeader !== false;
 
-        // Format current datetime
-        const now = new Date();
-        const datetime = now.getFullYear() + '-' +
-            String(now.getMonth() + 1).padStart(2, '0') + '-' +
-            String(now.getDate()).padStart(2, '0') + ' ' +
-            String(now.getHours()).padStart(2, '0') + ':' +
-            String(now.getMinutes()).padStart(2, '0') + ':' +
-            String(now.getSeconds()).padStart(2, '0');
+        let output = '';
 
-        let output = '; Disassembly exported from ZX-M8XXX v' + appVersion + '\n';
-        output += `; Date: ${datetime}\n`;
-        if (labelManager.currentFile) {
-            output += `; Source: ${labelManager.currentFile}\n`;
+        if (withHeader) {
+            // Format current datetime
+            const now = new Date();
+            const datetime = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + ' ' +
+                String(now.getHours()).padStart(2, '0') + ':' +
+                String(now.getMinutes()).padStart(2, '0') + ':' +
+                String(now.getSeconds()).padStart(2, '0');
+
+            output += '; Disassembly exported from ZX-M8XXX v' + appVersion + '\n';
+            output += `; Date: ${datetime}\n`;
+            if (labelManager.currentFile) {
+                output += `; Source: ${labelManager.currentFile}\n`;
+            }
+            output += `; Range: $${hex16(startAddr)} - $${hex16(endAddr)}\n\n`;
         }
-        output += `; Range: $${hex16(startAddr)} - $${hex16(endAddr)}\n\n`;
 
         if (withOrg) {
             output += `        ORG $${hex16(startAddr)}\n\n`;

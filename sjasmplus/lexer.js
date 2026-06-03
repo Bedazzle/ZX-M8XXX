@@ -499,7 +499,7 @@ export class Lexer {
             // Check if this could be a local label (at token boundary)
             // Look at previous character to determine context
             const prevChar = this.pos > 0 ? this.source[this.pos - 1] : '\n';
-            const isAtBoundary = /[\s,;:([\n]/.test(prevChar) || this.pos === 0;
+            const isAtBoundary = /[\s,;:([\n+\-*/%&|~<>=!^]/.test(prevChar) || this.pos === 0;
             
             if (isAtBoundary && /[a-zA-Z_]/.test(this.peek(1))) {
                 // Local label like .loop

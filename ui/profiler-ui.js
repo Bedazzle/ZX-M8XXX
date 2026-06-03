@@ -14,6 +14,7 @@ export function initProfilerUI({
     // DOM lookups
     const btnProfileRun = document.getElementById('btnProfileRun');
     const btnProfileStop = document.getElementById('btnProfileStop');
+    const btnProfileClear = document.getElementById('btnProfileClear');
     const profileFrameCount = document.getElementById('profileFrameCount');
     const profileStatus = document.getElementById('profileStatus');
 
@@ -538,6 +539,38 @@ export function initProfilerUI({
         const callGraphDialog = document.getElementById('callGraphDialog');
         if (callGraphDialog) callGraphDialog.classList.add('hidden');
     }
+
+    btnProfileClear.addEventListener('click', () => {
+        // Collect profiler-sourced labels
+        const profilerLabels = labelManager.getAll().filter(l => l.source === 'profiler');
+        const hasResults = profileStatus.textContent !== '';
+
+        if (profilerLabels.length === 0 && !hasResults) {
+            showMessage('Nothing to clear');
+            return;
+        }
+
+        // Remove profiler labels
+        labelManager.autoSaveEnabled = false;
+        for (const l of profilerLabels) {
+            labelManager.remove(l.address, l.page);
+        }
+        labelManager.autoSaveEnabled = true;
+        if (profilerLabels.length > 0) labelManager._autoSave();
+
+        // Remove IM 2 vector table region if profiler-created
+        const im2Region = regionManager.getAll().find(r =>
+            r.comment && r.comment.startsWith('IM 2 vector table')
+        );
+        if (im2Region) regionManager.remove(im2Region.start, im2Region.page);
+
+        // Clear results display and stop profiler if running
+        clearResults();
+
+        updateLabelsList();
+        updateDebugger();
+        showMessage(`Cleared ${profilerLabels.length} profiler label(s)`);
+    });
 
     return { clearResults };
 }

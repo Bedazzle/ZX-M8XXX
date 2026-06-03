@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.14.16</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.14.21</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -594,7 +594,7 @@
                         <tr><td>init_XXXX</td><td>Called once, in first frame</td></tr>
                         <tr><td>util_XXXX</td><td>Leaf routine called &gt;10 times</td></tr>
                     </table>
-                    <p style="font-size: 11px; color: var(--text-dim);">Profiler preserves user-named labels. Re-running replaces previous profiler labels. ROM subroutines are skipped (except ISR handlers). IM 2 detection: when the CPU uses interrupt mode 2, the profiler identifies the handler address and marks the vector table at I&times;256 as a data (DW) region.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">Profiler preserves user-named labels. Re-running replaces previous profiler labels. ROM subroutines are skipped (except ISR handlers). IM 2 detection: when the CPU uses interrupt mode 2, the profiler identifies the handler address and marks the vector table at I&times;256 as a data (DW) region. The <strong>Clear</strong> button removes all profiler-generated labels and the IM 2 vector table region, leaving user labels intact.</p>
                     <h5>Hotspot Detection</h5>
                     <p>The profiler also tracks T-state consumption per PC to identify tight loops and performance-critical code. After profiling, the top 10 hotspots are displayed with percentage of total T-states, address, classification, and size. Click a hotspot to navigate to it in the disassembly.</p>
                     <table>

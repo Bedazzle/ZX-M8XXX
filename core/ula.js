@@ -21,6 +21,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             this.debugMulticolor = false;  // Enable to log multicolor attribute changes
             this.debugPaperBoundary = false;  // Enable to log paper boundary (line 64) timing
             this.mcTimingOffset = 0;  // Multicolor lookup offset (console: spectrum.ula.mcTimingOffset = X)
+            this.pentagonAttrOffset = 0;  // Pentagon ULA attribute read offset in T-states (negative = read earlier)
             this.mcWriteAdjust = 5;   // Write time adjustment - ADDED to recorded tStates (try 5-8 for PUSH)
             this.mc128kOffset = 0;    // 128K-specific colTstate offset (console: spectrum.ula.mc128kOffset = X)
             this.SCREEN_WIDTH = 256;
@@ -1403,6 +1404,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                             ulaPal32 = ulaplus.palette32;
                         }
                         const machineOffset = is128kCompat(this.machineType) ? (this.mc128kOffset || 0) : 0;
+                        const prefetchOffset = (this.profile.ulaProfile === 'pentagon') ? (this.pentagonAttrOffset || 0) : 0;
 
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
@@ -1414,7 +1416,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                             const changes = attrChanges[attrOffset];
                             if (changes) {
                                 // Has changes - use full lookup
-                                const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                                const colTstate = paperStartTstate + (col * 4) + machineOffset + prefetchOffset;
                                 attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                                 for (const change of changes) {
                                     if (change.tState <= colTstate) {
@@ -1587,6 +1589,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 ulaPal32 = ulaplus.palette32;
             }
             const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
+            const paperStartTstate = lineStartTstate + (this.BORDER_LEFT / 2);
             const flashActive = this.flashState;
 
             if (!hasScreenBankChanges) {
@@ -1595,6 +1598,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                     // Multicolor path: read attributes at ULA scan time
                     // 128K-specific offset tuning (adjustable via console: spectrum.ula.mc128kOffset)
                     const machineOffset = is128kCompat(this.machineType) ? (this.mc128kOffset || 0) : 0;
+                    const prefetchOffset = (this.profile.ulaProfile === 'pentagon') ? (this.pentagonAttrOffset || 0) : 0;
                     const attrChanges = this.attrChanges;
                     const attrInitial = this.attrInitial;
 
@@ -1608,7 +1612,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         const changes = attrChanges[attrOffset];
                         if (changes) {
                             // Has changes - use full lookup
-                            const colTstate = paperStartTstate + (col * 4) + machineOffset;
+                            const colTstate = paperStartTstate + (col * 4) + machineOffset + prefetchOffset;
                             attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                             for (const change of changes) {
                                 if (change.tState <= colTstate) {
@@ -2447,6 +2451,12 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             this.lateTimings = !!late;
             // Recalculate LINE_TIMES_BASE with new timing mode
             this.calculateLineTimes();
+        }
+
+        // Set Pentagon attribute read offset in T-states
+        // Negative = ULA reads earlier (prefetch). 0 = default (matches Unreal/FUSE)
+        setPentagonAttrOffset(offset) {
+            this.pentagonAttrOffset = offset | 0;
         }
 
         // Diagnostic: dump all border changes with their line/pixel positions
