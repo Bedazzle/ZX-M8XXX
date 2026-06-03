@@ -175,22 +175,23 @@ export const Assembler = {
             this.output = [];
             this.outputStart = 0;
             this.macroDefinition = null;
+            this.macroCount = 0;
             this.reptState = null;
             this.includeStack = [];
             this.saveCommands = [];
             this.linesProcessed = 0;  // Global counter including macro expansions
             this.displayMessages = [];  // DISPLAY messages (only last pass is kept)
-            
+
             // Save previous pass temp labels for forward references
             // then clear for new collection
             SymbolTable.prevTempLabels = SymbolTable.tempLabels;
             SymbolTable.tempLabels = {};
             SymbolTable.tempDefOrder = 0;
             SymbolTable.tempRefOrder = 0;
-            
+
             // Reset local label prefix each pass
             SymbolTable.localPrefix = '';
-            
+
             // Reset preprocessor conditional state
             Preprocessor.ifStack = [];
             
@@ -287,6 +288,7 @@ export const Assembler = {
             this.output = [];
             this.outputStart = 0;
             this.macroDefinition = null;
+            this.macroCount = 0;
             this.reptState = null;
             this.includeStack = [];
             this.saveCommands = [];
@@ -810,6 +812,9 @@ export const Assembler = {
                 break;
             case 'SAVETRD':
                 this.dirSAVETRD(ops, line);
+                break;
+            case 'SAVEHOB':
+                this.dirSAVEHOB(ops, line);
                 break;
             default:
                 // Unknown directive - might be macro call
@@ -2161,6 +2166,70 @@ export const Assembler = {
             length: length,
             capturedData: capturedData,
             expectedMD5: this.getExpectedMD5(diskFilename, line.comment)
+        });
+    },
+
+    // SAVEHOB "filename", "trdosname", start, length
+    // trdosname format: "name.X" where X is extension character (B/C/D/#)
+    // Saves memory block as Hobeta file (.hobeta / .$c / .$b etc.)
+    dirSAVEHOB(ops, line) {
+        if (ops.length < 2) {
+            ErrorCollector.error('SAVEHOB requires filename and TR-DOS name', line.line, line.file);
+            return;
+        }
+
+        const filename = this.resolveFilename(ops[0], line);
+        const trdosName = this.resolveFilename(ops[1], line);
+
+        // Parse TR-DOS name: "name.X" → name (up to 8 chars) + extension char
+        let innerName = trdosName;
+        let extChar = 'C';
+        const dotPos = trdosName.lastIndexOf('.');
+        if (dotPos >= 0) {
+            innerName = trdosName.substring(0, dotPos);
+            extChar = trdosName.substring(dotPos + 1).charAt(0) || 'C';
+        }
+        innerName = (innerName + '        ').substring(0, 8);
+
+        let startAddr = this.outputStart;
+        let length = -1;
+
+        if (ops.length >= 3) {
+            const startVal = this.evaluate(ops[2], line);
+            if (!startVal.undefined) startAddr = startVal.value;
+        }
+
+        if (ops.length >= 4) {
+            const lengthVal = this.evaluate(ops[3], line);
+            if (!lengthVal.undefined) length = lengthVal.value;
+        }
+
+        // Capture data NOW - memory may be overwritten later by subsequent code
+        let capturedData = null;
+        const actualLength = length > 0 ? length :
+            (AsmMemory.device ? 0x10000 - startAddr : Math.max(0, this.output.length - (startAddr - this.outputStart)));
+        if (actualLength > 0) {
+            if (AsmMemory.device) {
+                capturedData = new Uint8Array(actualLength);
+                for (let i = 0; i < actualLength; i++) {
+                    capturedData[i] = AsmMemory.readByte(startAddr + i);
+                }
+            } else if (startAddr >= this.outputStart) {
+                const dataStart = startAddr - this.outputStart;
+                capturedData = new Uint8Array(this.output.slice(dataStart, dataStart + actualLength));
+            }
+        }
+
+        this.saveCommands.push({
+            type: 'hobeta',
+            filename: filename,
+            innerName: innerName,
+            extChar: extChar,
+            start: startAddr,
+            startAddr: startAddr,
+            length: length,
+            capturedData: capturedData,
+            expectedMD5: this.getExpectedMD5(filename, line.comment)
         });
     },
 

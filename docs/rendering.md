@@ -9,7 +9,8 @@ Audio output uses `AudioWorklet` when available (secure contexts: HTTPS or local
 - **`flushSamples()`**: Routes sample data to whichever output is active (postMessage for worklet, `_scriptWrite()` closure for ScriptProcessor).
 - **`processFrame()`**: Generates per-frame audio samples from beeper changes, tape audio, and AY chip state. Guard checks for either `workletNode` or `scriptNode`.
 - **Volume/mute**: Controlled via shared `gainNode` -- works identically on both paths.
-- **Late Timings**: ULA timing checkbox in Settings -> Machines (near Load ROMs button). Stored in localStorage key `zxm8_lateTiming`.
+- **Late Timings**: ULA timing checkbox in Settings -> Machines (near Load ROMs button). Applies 1T shift for warmed Ferranti ULA. Only affects 48K/128K/+2/+2A/+3 — Pentagon uses a non-Ferranti ULA with no early/late drift. Stored in localStorage key `zxm8_lateTiming`.
+- **Pentagon Attr Prefetch**: Checkbox in Settings -> Machines. When enabled, shifts the ULA attribute read point 5T earlier (`pentagonAttrOffset = -5`) for Pentagon/Pentagon 1024/Scorpion machines, matching the multicolor behavior of ZXMAK2, Spectaculator, and SpecEmu. Default (off) matches Unreal Speccy and FUSE. Stored in localStorage key `zxm8_pentagonPrefetch`. Fine-tunable via console: `spectrum.setPentagonAttrOffset(n)`.
 
 ## Scanline Rendering and Double-Buffer Design
 
@@ -50,3 +51,4 @@ Pentagon, Pentagon 1024, and Scorpion have no memory contention, but multicolor 
 - `cpu.internalCycles()` / `cpu.contendInternal()` track internal CPU cycles
 - `cpu.execute()`, `cpu.incR()`, `cpu.interrupt()`, `cpu.nmi()` are wrapped to reset/initialize `mcycleOffset` at instruction boundaries
 - **Write timestamp**: `cpu.tStates + mcycleOffset - 3` — the `-3` accounts for the write cycle's own 3T already counted by `contend()`. The ULA sees the new attribute value at the START of the write cycle, not the end. This matches JSSpeccy3's model where `updateFramebuffer()` runs before `t += 3` in `writeMem()`.
+- **Attribute read timing** (`ula.js`): For each column, the ULA compares the write timestamp against `colTstate = paperStartTstate + col*4 + prefetchOffset`. The `prefetchOffset` is `pentagonAttrOffset` (default 0) for Pentagon machines, 0 for others. When "Pentagon Attr Prefetch" is enabled, `prefetchOffset = -5`, modeling the real ULA's attribute prefetch where data is read before the corresponding pixels are output. The 5T offset accounts for: 3T paper start difference (ZXMAK2 `c_ulaFirstPaperTact=65` vs M8XXX's 68), 1T from M1 fetch cycle tracking (`incR` wrapper sets `isFirstAccess=true`), and 1T from the ULA prefetch itself.

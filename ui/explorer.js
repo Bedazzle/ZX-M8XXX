@@ -33,6 +33,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerHexLen = document.getElementById('explorerHexLen');
     const explorerHexSource = document.getElementById('explorerHexSource');
     const btnExplorerHex = document.getElementById('btnExplorerHex');
+    const explorerBankTools = document.getElementById('explorerBankTools');
+    const explorerBankAddrMode = document.getElementById('explorerBankAddrMode');
+    const btnExplorerExportBank = document.getElementById('btnExplorerExportBank');
+    const btnExplorerImportBank = document.getElementById('btnExplorerImportBank');
+    const btnExplorerSaveModified = document.getElementById('btnExplorerSaveModified');
+    const explorerBankStatus = document.getElementById('explorerBankStatus');
+    const explorerBankImportInput = document.getElementById('explorerBankImportInput');
     const explorerTextOutput = document.getElementById('explorerTextOutput');
     const explorerTextSource = document.getElementById('explorerTextSource');
     const explorerTextCodepage = document.getElementById('explorerTextCodepage');
@@ -55,6 +62,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     let explorerZipParentName = null; // Store parent ZIP name for drill-down
     let explorerBasicViewMode = 'code';  // 'code' or 'screen'
     let explorerBasicLines = null;       // Cached decoded lines for view toggle
+    let explorerBankCache = new Map();      // bankNum -> Uint8Array(16384)
+    let explorerBankDirty = new Set();      // bank numbers modified via import
+    let explorerBankAddressMode = 'bank';   // 'bank' or 'logical'
     const explorerBasicView = document.getElementById('explorerBasicView');
 
     // Preview canvas elements
@@ -62,6 +72,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerPreviewCanvas = document.getElementById('explorerPreviewCanvas');
     const explorerPreviewLabel = document.getElementById('explorerPreviewLabel');
     const explorerPreviewCtx = explorerPreviewCanvas.getContext('2d');
+    const explorerPreviewModes = document.getElementById('explorerPreviewModes');
+    let explorerPreviewMode = 'spectrum';
+    let explorerPreviewDataCache = null;
+    let explorerPreviewThirdsCache = 0;
+    let explorerPreviewFileNameCache = null;
 
     // Disk Map elements
     const diskmapGridContainer = document.getElementById('diskmapGridContainer');
@@ -102,10 +117,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     // Preview rendering functions
+    // Sizes that support Spectrum/Linear/Font mode toggle
+    const TOGGLEABLE_SIZES = { 2048: 1, 4096: 2, 6144: 3 }; // size -> thirds
+
     function explorerUpdatePreview(data, blockData = null, fileName = null) {
         if (!data) {
             explorerPreviewContainer.classList.add('hidden');
             explorerPreviewContainer.style.height = '';
+            explorerPreviewModes.classList.add('hidden');
             return;
         }
 
@@ -113,19 +132,30 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let previewType = null;
         let label = '';
 
+        // Check if this size supports mode toggle
+        const thirds = TOGGLEABLE_SIZES[len];
+        if (thirds !== undefined) {
+            // Cache data and reset mode for new data
+            explorerPreviewDataCache = data;
+            explorerPreviewThirdsCache = thirds;
+            explorerPreviewFileNameCache = fileName;
+            explorerPreviewMode = 'spectrum';
+            explorerPreviewModes.classList.remove('hidden');
+            for (const btn of explorerPreviewModes.querySelectorAll('.explorer-mode-btn')) {
+                btn.classList.toggle('active', btn.dataset.mode === 'spectrum');
+            }
+            explorerRenderPreviewMode(data, thirds, 'spectrum', fileName);
+            return;
+        }
+
+        // Non-toggleable sizes
+        explorerPreviewModes.classList.add('hidden');
+        explorerPreviewDataCache = null;
+
         // Detect preview type by size
         if (len === SCREEN_SIZE) {
             previewType = 'scr';
             label = 'Screen (6912 bytes)';
-        } else if (len === SCREEN_BITMAP_SIZE) {
-            previewType = 'mono_full';
-            label = 'Bitmap (6144 bytes)';
-        } else if (len === 4096) {
-            previewType = 'mono_2_3';
-            label = 'Bitmap 2/3 (4096 bytes)';
-        } else if (len === 2048) {
-            previewType = 'mono_1_3';
-            label = 'Bitmap 1/3 (2048 bytes)';
         } else if (len === 768) {
             previewType = 'font';
             label = 'Font / Attributes (768 bytes)';
@@ -159,15 +189,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'scr':
                 explorerRenderSCR(data);
                 break;
-            case 'mono_full':
-                explorerRenderMono(data, 3);
-                break;
-            case 'mono_2_3':
-                explorerRenderMono(data, 2);
-                break;
-            case 'mono_1_3':
-                explorerRenderMono(data, 1);
-                break;
             case 'font':
                 explorerRenderFont(data);
                 break;
@@ -188,6 +209,133 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         syncPreviewHeight();
     }
+
+    function explorerRenderPreviewMode(data, thirds, mode, fileName) {
+        const len = data.length;
+        const thirdLabels = { 1: '1/3', 2: '2/3', 3: '' };
+        const thirdSuffix = thirdLabels[thirds];
+        const charCount = len / 8;
+        const linearH = thirds * 64;
+        let label;
+
+        switch (mode) {
+            case 'spectrum':
+                label = `Bitmap ${thirdSuffix} (${len} bytes)`.replace('  ', ' ');
+                explorerRenderMono(data, thirds);
+                break;
+            case 'linear':
+                label = `Linear 256\u00d7${linearH} (${len} bytes)`;
+                explorerRenderLinear(data, 256, linearH);
+                break;
+            case 'font':
+                label = `Font ${charCount} chars (${len} bytes)`;
+                explorerRenderFontGrid(data, charCount);
+                break;
+        }
+
+        explorerPreviewContainer.classList.remove('hidden');
+        if (fileName) {
+            explorerPreviewLabel.innerHTML = `${escapeHtml(label)}<br><span style="color:var(--cyan)">${escapeHtml(fileName)}</span>`;
+        } else {
+            explorerPreviewLabel.textContent = label;
+        }
+
+        // Display at 2x zoom
+        explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+        explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+
+        syncPreviewHeight();
+    }
+
+    function explorerRenderLinear(data, width, height) {
+        explorerPreviewCanvas.width = width;
+        explorerPreviewCanvas.height = height;
+        const imageData = explorerPreviewCtx.createImageData(width, height);
+        const pixels = imageData.data;
+
+        // Fill with black
+        for (let i = 0; i < pixels.length; i += 4) {
+            pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 255;
+        }
+
+        const ink = [215, 215, 215];
+        const bytesPerRow = width / 8;
+
+        for (let y = 0; y < height; y++) {
+            for (let col = 0; col < bytesPerRow; col++) {
+                const byte = data[y * bytesPerRow + col];
+                const x = col * 8;
+                for (let bit = 0; bit < 8; bit++) {
+                    if ((byte & (0x80 >> bit)) !== 0) {
+                        const idx = ((y * width) + x + bit) * 4;
+                        pixels[idx] = ink[0];
+                        pixels[idx + 1] = ink[1];
+                        pixels[idx + 2] = ink[2];
+                    }
+                }
+            }
+        }
+
+        explorerPreviewCtx.putImageData(imageData, 0, 0);
+    }
+
+    function explorerRenderFontGrid(data, charCount) {
+        const cols = 32;
+        const rows = Math.ceil(charCount / cols);
+        const canvasW = cols * 8;
+        const canvasH = rows * 8;
+
+        explorerPreviewCanvas.width = canvasW;
+        explorerPreviewCanvas.height = canvasH;
+        const imageData = explorerPreviewCtx.createImageData(canvasW, canvasH);
+        const pixels = imageData.data;
+
+        // Fill with black
+        for (let i = 0; i < pixels.length; i += 4) {
+            pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 0; pixels[i + 3] = 255;
+        }
+
+        const ink = [215, 215, 215];
+
+        for (let charIdx = 0; charIdx < charCount; charIdx++) {
+            const gridX = charIdx % cols;
+            const gridY = Math.floor(charIdx / cols);
+            const charOffset = charIdx * 8;
+
+            for (let line = 0; line < 8; line++) {
+                const byte = data[charOffset + line];
+                if (byte === undefined) break;
+                const y = gridY * 8 + line;
+                const x = gridX * 8;
+
+                for (let bit = 0; bit < 8; bit++) {
+                    if ((byte & (0x80 >> bit)) !== 0) {
+                        const idx = ((y * canvasW) + x + bit) * 4;
+                        pixels[idx] = ink[0];
+                        pixels[idx + 1] = ink[1];
+                        pixels[idx + 2] = ink[2];
+                    }
+                }
+            }
+        }
+
+        explorerPreviewCtx.putImageData(imageData, 0, 0);
+    }
+
+    // Mode button click handler
+    explorerPreviewModes.addEventListener('click', (e) => {
+        const btn = e.target.closest('.explorer-mode-btn');
+        if (!btn || !explorerPreviewDataCache) return;
+
+        const mode = btn.dataset.mode;
+        if (mode === explorerPreviewMode) return;
+
+        explorerPreviewMode = mode;
+        for (const b of explorerPreviewModes.querySelectorAll('.explorer-mode-btn')) {
+            b.classList.toggle('active', b.dataset.mode === mode);
+        }
+        explorerRenderPreviewMode(explorerPreviewDataCache, explorerPreviewThirdsCache, mode, explorerPreviewFileNameCache);
+    });
 
     function explorerRenderSCR(data) {
         explorerPreviewCanvas.width = SCREEN_WIDTH;
@@ -612,7 +760,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             // Check if Edit tab is active with an editor-supported format
             const activeSubtab = document.querySelector('.explorer-subtab.active');
-            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'zip'];
+            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'zip', 'sna', 'z80', 'szx'];
             const keepEditTab = activeSubtab && activeSubtab.dataset.subtab === 'edit' && editorFormats.includes(ext);
 
             // Render File Info (suppress auto-switch when staying on Edit tab)
@@ -636,6 +784,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerBlocks = [];
         explorerZipFiles = [];
         explorerParsed = null;
+        explorerBankCache = new Map();
+        explorerBankDirty = new Set();
+        explorerBankAddressMode = 'bank';
+        if (btnExplorerSaveModified) btnExplorerSaveModified.style.display = 'none';
+        if (explorerBankStatus) explorerBankStatus.textContent = '';
+        if (explorerBankTools) explorerBankTools.style.display = 'none';
+        if (explorerBankAddrMode) explorerBankAddrMode.value = 'bank';
         // Reset active panel state for new file (only the panel that will receive the file)
         const targetPanel = getActivePanel();
         targetPanel.selection.clear();
@@ -706,7 +861,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu'];
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'sna', 'z80', 'szx'];
         if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
@@ -1570,7 +1725,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
@@ -1610,6 +1765,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return explorerParseSNA(explorerData);
                     case 'z80':
                         return explorerParseZ80(explorerData);
+                    case 'szx':
+                        return explorerParseSZX(explorerData);
+                    case 'rzx':
+                        return await explorerParseRZX(explorerData);
                     case 'trd':
                         return explorerParseTRD(explorerData);
                     case 'scl':
@@ -1803,107 +1962,30 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
         }
 
-        // For SNA, extract screen from memory
-        if (explorerParsed && explorerParsed.type === 'sna') {
-            // SNA memory layout: 27-byte header, then RAM starting at $4000
-            // Bank 5 (screen at $4000) is always first 16KB after header
-            const memOffset = 27;
-
-            if (explorerParsed.is128) {
-                // 128K SNA: show both screens (bank 5 and bank 7)
-                const port7FFD = explorerParsed.registers.port7FFD || 0;
-                const activeScreen = (port7FFD & 0x08) ? 7 : 5;
-                const pagedBank = port7FFD & 0x07;
-
-                // Bank 5 is always at offset 27 (first 16KB after header)
-                const screen5 = explorerData.slice(memOffset, memOffset + SCREEN_SIZE);
-
-                // Bank 7 location depends on which bank is paged at $C000
-                let screen7 = null;
-                if (pagedBank === 7) {
-                    // Bank 7 is paged in at $C000, so it's in the first 48KB
-                    // Offset: 27 (header) + 32768 ($C000 - $4000) = 32795
-                    const bank7Offset = 27 + 32768;
-                    screen7 = explorerData.slice(bank7Offset, bank7Offset + SCREEN_SIZE);
-                } else {
-                    // Bank 7 is in the remaining banks after offset 49183
-                    // Remaining banks are stored in order, excluding banks 2, 5, and pagedBank
-                    // Order: 0,1,3,4,6,7 minus pagedBank (if not 2,5,7)
-                    const remainingBanks = [0, 1, 3, 4, 6, 7].filter(b => b !== pagedBank);
-                    const bank7Index = remainingBanks.indexOf(7);
-                    if (bank7Index >= 0) {
-                        const bank7Offset = 49183 + bank7Index * 16384;
-                        if (explorerData.length >= bank7Offset + SCREEN_SIZE) {
-                            screen7 = explorerData.slice(bank7Offset, bank7Offset + SCREEN_SIZE);
-                        }
-                    }
-                }
-
-                // Render both screens side by side
-                explorerRenderDualScreen(screen5, screen7, activeScreen);
-                return;
-            } else {
-                // 48K SNA: screen is at offset 27
-                if (explorerData.length >= memOffset + SCREEN_SIZE) {
-                    const screen = explorerData.slice(memOffset, memOffset + SCREEN_SIZE);
-                    // Show preview with custom label for SNA
-                    explorerPreviewContainer.classList.remove('hidden');
-                    explorerPreviewLabel.textContent = '48K Screen';
-                    explorerRenderSCR(screen);
-                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
-                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
-                    syncPreviewHeight();
-                    return;
-                }
-            }
-        }
-
-        // For Z80 files, extract and decompress screen
-        if (explorerParsed && explorerParsed.type === 'z80') {
-            if (explorerParsed.is128) {
-                // 128K: show both screens (bank 5 = page 8, bank 7 = page 10)
-                const screen5 = explorerExtractZ80Screen(explorerData, explorerParsed, 8);
-                const screen7 = explorerExtractZ80Screen(explorerData, explorerParsed, 10);
-                const activeScreen = (explorerParsed.port7FFD & 0x08) ? 7 : 5;
-                if (screen5 || screen7) {
-                    explorerRenderDualScreen(screen5, screen7, activeScreen);
-                    return;
-                }
-            } else {
-                const screen = explorerExtractZ80Screen(explorerData, explorerParsed);
-                if (screen) {
-                    explorerPreviewContainer.classList.remove('hidden');
-                    explorerPreviewLabel.textContent = `Z80 v${explorerParsed.version} Screen`;
-                    explorerRenderSCR(screen);
-                    explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
-                    explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
-                    syncPreviewHeight();
-                    return;
-                }
-            }
-        }
-
-        // For SZX files, extract screen from RAMP chunk
-        if (explorerParsed && explorerParsed.type === 'szx') {
+        // For SNA/Z80/SZX, extract screen from bank cache (supports modified banks)
+        if (explorerParsed && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
             try {
+                const formatLabel = explorerParsed.type === 'sna' ? (explorerParsed.is128 ? '128K' : '48K')
+                    : explorerParsed.type === 'z80' ? `Z80 v${explorerParsed.version}`
+                    : `SZX v${explorerParsed.version}`;
+
                 if (explorerParsed.is128) {
-                    // 128K: show both screens (bank 5 and bank 7)
-                    const info = SZXLoader.parse(explorerData);
-                    const page5 = SZXLoader.extractRAMPage(explorerData, info, 5);
-                    const page7 = SZXLoader.extractRAMPage(explorerData, info, 7);
-                    const screen5 = page5 && page5.length >= SCREEN_SIZE ? page5.slice(0, SCREEN_SIZE) : null;
-                    const screen7 = page7 && page7.length >= SCREEN_SIZE ? page7.slice(0, SCREEN_SIZE) : null;
                     const port7FFD = explorerParsed.registers.port7FFD || 0;
                     const activeScreen = (port7FFD & 0x08) ? 7 : 5;
+                    const bank5 = explorerExtractBank(5);
+                    const bank7 = explorerExtractBank(7);
+                    const screen5 = bank5 && bank5.length >= SCREEN_SIZE ? bank5.slice(0, SCREEN_SIZE) : null;
+                    const screen7 = bank7 && bank7.length >= SCREEN_SIZE ? bank7.slice(0, SCREEN_SIZE) : null;
                     if (screen5 || screen7) {
                         explorerRenderDualScreen(screen5, screen7, activeScreen);
                         return;
                     }
                 } else {
-                    const screen = SZXLoader.extractScreen(explorerData);
-                    if (screen) {
+                    const bank5 = explorerExtractBank(5);
+                    if (bank5 && bank5.length >= SCREEN_SIZE) {
+                        const screen = bank5.slice(0, SCREEN_SIZE);
                         explorerPreviewContainer.classList.remove('hidden');
-                        explorerPreviewLabel.textContent = `SZX v${explorerParsed.version} Screen`;
+                        explorerPreviewLabel.textContent = `${formatLabel} Screen`;
                         explorerRenderSCR(screen);
                         explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
                         explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
@@ -1912,7 +1994,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     }
                 }
             } catch (e) {
-                console.error('SZX screen extraction error:', e);
+                console.error('Screen extraction error:', e);
             }
         }
 
@@ -2162,6 +2244,151 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             console.error('Z80 screen extraction error:', e);
         }
         return null;
+    }
+
+    // === Bank extraction for SNA/Z80/SZX snapshots ===
+
+    function explorerGetBankList() {
+        if (!explorerParsed) return [];
+        if (explorerParsed.is128) return [0, 1, 2, 3, 4, 5, 6, 7];
+        return [5, 2, 0];
+    }
+
+    function explorerGetBankLogicalAddr(bankNum) {
+        if (!explorerParsed) return 0;
+        const port7FFD = explorerParsed.registers.port7FFD || 0;
+        const pagedBank = port7FFD & 0x07;
+        if (explorerParsed.is128) {
+            if (bankNum === 5) return 0x4000;
+            if (bankNum === 2) return 0x8000;
+            if (bankNum === pagedBank) return 0xC000;
+            return 0x0000; // not currently mapped — bank-relative only
+        }
+        // 48K
+        if (bankNum === 5) return 0x4000;
+        if (bankNum === 2) return 0x8000;
+        if (bankNum === 0) return 0xC000;
+        return 0x0000;
+    }
+
+    function explorerExtractSNABank(bankNum) {
+        if (!explorerData || !explorerParsed || explorerParsed.type !== 'sna') return null;
+        const is128 = explorerParsed.is128;
+        if (!is128) {
+            // 48K: banks 5/2/0 at offsets 27, 27+16384, 27+32768
+            if (bankNum === 5) return explorerData.slice(27, 27 + 16384);
+            if (bankNum === 2) return explorerData.slice(27 + 16384, 27 + 32768);
+            if (bankNum === 0) return explorerData.slice(27 + 32768, 27 + 49152);
+            return null;
+        }
+        // 128K SNA
+        const port7FFD = explorerParsed.registers.port7FFD || 0;
+        const pagedBank = port7FFD & 0x07;
+        // Bank 5 always at offset 27
+        if (bankNum === 5) return explorerData.slice(27, 27 + 16384);
+        // Bank 2 always at offset 27+16384
+        if (bankNum === 2) return explorerData.slice(27 + 16384, 27 + 32768);
+        // Paged bank at offset 27+32768
+        if (bankNum === pagedBank) return explorerData.slice(27 + 32768, 27 + 49152);
+        // Remaining 5 banks at offset 49183
+        const remainingBanks = [0, 1, 3, 4, 6, 7].filter(b => b !== pagedBank);
+        const idx = remainingBanks.indexOf(bankNum);
+        if (idx < 0) return null;
+        const offset = 49183 + idx * 16384;
+        if (offset + 16384 > explorerData.length) return null;
+        return explorerData.slice(offset, offset + 16384);
+    }
+
+    function explorerExtractZ80Bank(bankNum) {
+        if (!explorerData || !explorerParsed || explorerParsed.type !== 'z80') return null;
+        if (explorerParsed.version === 1) {
+            // V1 is always 48K — single 48KB block, extract banks 5/2/0
+            let memory;
+            if (explorerParsed.compressed) {
+                let endMarker = explorerData.length;
+                for (let i = 30; i < explorerData.length - 3; i++) {
+                    if (explorerData[i] === 0x00 && explorerData[i + 1] === 0xED &&
+                        explorerData[i + 2] === 0xED && explorerData[i + 3] === 0x00) {
+                        endMarker = i;
+                        break;
+                    }
+                }
+                memory = explorerDecompressZ80(explorerData, 30, endMarker);
+            } else {
+                memory = explorerData.slice(30, 30 + 49152);
+            }
+            if (bankNum === 5) return memory.slice(0, 16384);
+            if (bankNum === 2) return memory.slice(16384, 32768);
+            if (bankNum === 0) return memory.slice(32768, 49152);
+            return null;
+        }
+        // V2/V3: find page in parsed pages list
+        let targetPageNum;
+        if (explorerParsed.is128) {
+            targetPageNum = bankNum + 3; // 128K: bank N = page N+3
+        } else {
+            // 48K page mapping: bank 5→page 8, bank 2→page 4, bank 0→page 5
+            const mapping = { 5: 8, 2: 4, 0: 5 };
+            targetPageNum = mapping[bankNum];
+            if (targetPageNum === undefined) return null;
+        }
+        const page = explorerParsed.pages.find(p => p.num === targetPageNum);
+        if (!page) return null;
+        const dataOffset = page.offset + 3; // skip 3-byte page header
+        if (page.compressed) {
+            return explorerDecompressZ80(explorerData, dataOffset, dataOffset + page.compLen);
+        }
+        return explorerData.slice(dataOffset, dataOffset + 16384);
+    }
+
+    function explorerExtractSZXBank(bankNum) {
+        if (!explorerData || !explorerParsed || explorerParsed.type !== 'szx') return null;
+        return SZXLoader.extractRAMPage(explorerData, { chunks: explorerParsed.chunks }, bankNum);
+    }
+
+    function explorerExtractBank(bankNum) {
+        if (explorerBankCache.has(bankNum)) return explorerBankCache.get(bankNum);
+        let data = null;
+        if (explorerParsed.type === 'sna') data = explorerExtractSNABank(bankNum);
+        else if (explorerParsed.type === 'z80') data = explorerExtractZ80Bank(bankNum);
+        else if (explorerParsed.type === 'szx') data = explorerExtractSZXBank(bankNum);
+        if (data) {
+            // Ensure it's a mutable copy in the cache
+            const copy = new Uint8Array(data.length);
+            copy.set(data);
+            explorerBankCache.set(bankNum, copy);
+            return copy;
+        }
+        return null;
+    }
+
+    function explorerReadSnapshotByte(addr) {
+        if (addr < 0x4000) return 0; // ROM area — not available in snapshot
+        let bankNum, offset;
+        if (addr < 0x8000) {
+            bankNum = 5; offset = addr - 0x4000;
+        } else if (addr < 0xC000) {
+            bankNum = 2; offset = addr - 0x8000;
+        } else {
+            const port7FFD = (explorerParsed.registers && explorerParsed.registers.port7FFD) || 0;
+            bankNum = explorerParsed.is128 ? (port7FFD & 0x07) : 0;
+            offset = addr - 0xC000;
+        }
+        const bank = explorerExtractBank(bankNum);
+        if (!bank || offset >= bank.length) return 0;
+        return bank[offset];
+    }
+
+    function explorerReadSnapshotWord(addr) {
+        return explorerReadSnapshotByte(addr) | (explorerReadSnapshotByte(addr + 1) << 8);
+    }
+
+    function explorerReadSnapshotBlock(addr, length) {
+        const result = new Uint8Array(length);
+        for (let i = 0; i < length; i++) {
+            result[i] = explorerReadSnapshotByte(addr + i);
+        }
+        return result;
     }
 
     function explorerRenderTAPInfo() {
@@ -5174,9 +5401,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
                 hexOpts.push(`<option value="${i}">${displayName} (${file.size} bytes)</option>`);
             }
-        } else if (explorerParsed.type === 'sna' || explorerParsed.type === 'z80') {
+        } else if (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx') {
+            basicOpts.push('<option value="snapshot-memory">Memory (BASIC)</option>');
+            basicSources.push('snapshot-memory');
             disasmOpts.push('<option value="memory">Full memory</option>');
             hexOpts.push('<option value="memory">Full memory</option>');
+            const bankList = explorerGetBankList();
+            for (const bankNum of bankList) {
+                const suffix = bankNum === 5 ? ' (screen)' : bankNum === 7 ? ' (shadow)' : '';
+                disasmOpts.push(`<option value="bank:${bankNum}">Bank ${bankNum}${suffix}</option>`);
+                hexOpts.push(`<option value="bank:${bankNum}">Bank ${bankNum}${suffix}</option>`);
+            }
         }
 
         explorerBasicSource.innerHTML = '<option value="">Select source...</option>' + basicOpts.join('');
@@ -5285,6 +5520,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
         } else if (source === 'memory') {
             explorerDisasmAddr.value = '4000';
+        } else if (source && source.startsWith('bank:')) {
+            const bankNum = parseInt(source.slice(5));
+            if (explorerBankAddressMode === 'logical') {
+                explorerDisasmAddr.value = hex16(explorerGetBankLogicalAddr(bankNum));
+            } else {
+                explorerDisasmAddr.value = '0000';
+            }
         }
 
         explorerRenderDisasm();
@@ -5298,8 +5540,26 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let data = null;
         let baseAddr = addr;
 
-        if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
-            data = explorerData.slice(explorerParsed.memoryOffset || 27);
+        if (source && source.startsWith('bank:') && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            const bankNum = parseInt(source.slice(5));
+            data = explorerExtractBank(bankNum);
+            if (explorerBankAddressMode === 'logical') {
+                baseAddr = explorerGetBankLogicalAddr(bankNum);
+            } else {
+                baseAddr = 0;
+            }
+        } else if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            // Reconstruct full 48K from decompressed banks
+            const port7FFD = explorerParsed.registers.port7FFD || 0;
+            const pagedBank = explorerParsed.is128 ? (port7FFD & 0x07) : 0;
+            const bank5 = explorerExtractBank(5);
+            const bank2 = explorerExtractBank(2);
+            const bankC = explorerExtractBank(explorerParsed.is128 ? pagedBank : 0);
+            const mem = new Uint8Array(49152);
+            if (bank5) mem.set(bank5, 0);
+            if (bank2) mem.set(bank2, 16384);
+            if (bankC) mem.set(bankC, 32768);
+            data = mem;
             baseAddr = SLOT1_START;
         } else if (source && explorerParsed.type === 'tap') {
             if (source.startsWith('data:')) {
@@ -5495,6 +5755,280 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerRenderHexDump();
     });
 
+    // Bank tools visibility: show when bank source selected, hide otherwise
+    explorerHexSource.addEventListener('change', () => {
+        const source = explorerHexSource.value;
+        if (source && source.startsWith('bank:')) {
+            explorerBankTools.style.display = '';
+            // Set address/length defaults for bank
+            const bankNum = parseInt(source.slice(5));
+            if (explorerBankAddressMode === 'logical') {
+                explorerHexAddr.value = hex16(explorerGetBankLogicalAddr(bankNum));
+            } else {
+                explorerHexAddr.value = '0000';
+            }
+            explorerHexLen.value = '16384';
+        } else {
+            explorerBankTools.style.display = 'none';
+        }
+    });
+
+    // Address mode toggle
+    explorerBankAddrMode.addEventListener('change', () => {
+        explorerBankAddressMode = explorerBankAddrMode.value;
+        const source = explorerHexSource.value;
+        if (source && source.startsWith('bank:')) {
+            const bankNum = parseInt(source.slice(5));
+            if (explorerBankAddressMode === 'logical') {
+                explorerHexAddr.value = hex16(explorerGetBankLogicalAddr(bankNum));
+            } else {
+                explorerHexAddr.value = '0000';
+            }
+            explorerRenderHexDump();
+        }
+    });
+
+    // Export bank as .bin
+    btnExplorerExportBank.addEventListener('click', () => {
+        const source = explorerHexSource.value;
+        if (!source || !source.startsWith('bank:')) return;
+        const bankNum = parseInt(source.slice(5));
+        const bankData = explorerExtractBank(bankNum);
+        if (!bankData) return;
+
+        const addr = parseInt(explorerHexAddr.value, 16) || 0;
+        const len = parseInt(explorerHexLen.value, 10) || 16384;
+        let startOffset, exportLen;
+        if (explorerBankAddressMode === 'logical') {
+            const logicalBase = explorerGetBankLogicalAddr(bankNum);
+            startOffset = Math.max(0, addr - logicalBase);
+        } else {
+            startOffset = addr;
+        }
+        exportLen = Math.min(len, bankData.length - startOffset);
+        if (exportLen <= 0) return;
+
+        const exportData = bankData.slice(startOffset, startOffset + exportLen);
+        const baseName = (explorerFileName.textContent || 'snapshot').replace(/\.[^.]+$/, '');
+        const addrSuffix = startOffset > 0 || exportLen < 16384 ? `_${hex16(addr)}` : '';
+        downloadFile(`${baseName}_bank${bankNum}${addrSuffix}.bin`, exportData);
+    });
+
+    // Import .bin into bank
+    btnExplorerImportBank.addEventListener('click', () => {
+        explorerBankImportInput.click();
+    });
+
+    explorerBankImportInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const source = explorerHexSource.value;
+        if (!source || !source.startsWith('bank:')) return;
+        const bankNum = parseInt(source.slice(5));
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            const imported = new Uint8Array(reader.result);
+            // Ensure bank is in cache
+            const bankData = explorerExtractBank(bankNum);
+            if (!bankData) return;
+
+            const addr = parseInt(explorerHexAddr.value, 16) || 0;
+            let writeOffset;
+            if (explorerBankAddressMode === 'logical') {
+                const logicalBase = explorerGetBankLogicalAddr(bankNum);
+                writeOffset = Math.max(0, addr - logicalBase);
+            } else {
+                writeOffset = addr;
+            }
+
+            const writeLen = Math.min(imported.length, 16384 - writeOffset);
+            bankData.set(imported.slice(0, writeLen), writeOffset);
+            explorerBankDirty.add(bankNum);
+
+            // Show save button and status
+            btnExplorerSaveModified.style.display = '';
+            const dirtyList = Array.from(explorerBankDirty).sort().join(', ');
+            explorerBankStatus.textContent = `Imported ${writeLen} bytes into bank ${bankNum}. Modified: ${dirtyList}`;
+
+            // Re-render hex dump
+            explorerRenderHexDump();
+
+            // Refresh preview if screen bank modified
+            if (bankNum === 5 || bankNum === 7) {
+                explorerUpdatePreviewForFile();
+            }
+        };
+        reader.readAsArrayBuffer(file);
+        explorerBankImportInput.value = '';
+    });
+
+    // Save Modified snapshot
+    btnExplorerSaveModified.addEventListener('click', () => {
+        if (!explorerParsed || !explorerData || explorerBankDirty.size === 0) return;
+        const baseName = (explorerFileName.textContent || 'snapshot').replace(/\.[^.]+$/, '');
+        const ext = explorerFileType || 'sna';
+
+        if (explorerParsed.type === 'sna') {
+            const result = new Uint8Array(explorerData.length);
+            result.set(explorerData);
+            const port7FFD = explorerParsed.registers.port7FFD || 0;
+            const pagedBank = port7FFD & 0x07;
+
+            for (const bankNum of explorerBankDirty) {
+                const bankData = explorerBankCache.get(bankNum);
+                if (!bankData) continue;
+                if (!explorerParsed.is128) {
+                    // 48K: banks 5/2/0
+                    if (bankNum === 5) result.set(bankData, 27);
+                    else if (bankNum === 2) result.set(bankData, 27 + 16384);
+                    else if (bankNum === 0) result.set(bankData, 27 + 32768);
+                } else {
+                    // 128K
+                    if (bankNum === 5) result.set(bankData, 27);
+                    else if (bankNum === 2) result.set(bankData, 27 + 16384);
+                    else if (bankNum === pagedBank) result.set(bankData, 27 + 32768);
+                    else {
+                        const remainingBanks = [0, 1, 3, 4, 6, 7].filter(b => b !== pagedBank);
+                        const idx = remainingBanks.indexOf(bankNum);
+                        if (idx >= 0) result.set(bankData, 49183 + idx * 16384);
+                    }
+                }
+            }
+            downloadFile(`${baseName}_modified.sna`, result);
+        } else if (explorerParsed.type === 'z80') {
+            // Rebuild Z80 as V3 uncompressed
+            const parsed = explorerParsed;
+            let headerLen;
+            if (parsed.version === 1) {
+                // Upgrade V1 to V3: 30-byte base + 54-byte extended header
+                headerLen = 30 + 2 + 54;
+                const header = new Uint8Array(headerLen);
+                // Copy original 30-byte header
+                header.set(explorerData.slice(0, 30));
+                // Set PC=0 in bytes 6-7 to indicate V2/V3
+                header[6] = 0; header[7] = 0;
+                // Clear V1 compression flag (bit 5 of byte 12)
+                header[12] = header[12] & ~0x20;
+                // Extended header length = 54
+                header[30] = 54; header[31] = 0;
+                // PC in extended header bytes 32-33
+                const origPC = explorerData[6] | (explorerData[7] << 8);
+                header[32] = origPC & 0xFF; header[33] = (origPC >> 8) & 0xFF;
+                // hwMode = 0 (48K)
+                header[34] = 0;
+
+                // Calculate total size: header + pages
+                const bankList = explorerGetBankList();
+                const totalSize = headerLen + bankList.length * (3 + 16384);
+                const result = new Uint8Array(totalSize);
+                result.set(header);
+                let offset = headerLen;
+                // 48K page mapping: bank 5→page 8, bank 2→page 4, bank 0→page 5
+                const pageMapping = { 5: 8, 2: 4, 0: 5 };
+                for (const bankNum of bankList) {
+                    const bankData = explorerExtractBank(bankNum);
+                    if (!bankData) continue;
+                    // Write uncompressed page: length=0xFFFF, pageNum
+                    result[offset] = 0xFF; result[offset + 1] = 0xFF;
+                    result[offset + 2] = pageMapping[bankNum] || (bankNum + 3);
+                    result.set(bankData.slice(0, 16384), offset + 3);
+                    offset += 3 + 16384;
+                }
+                downloadFile(`${baseName}_modified.z80`, result);
+            } else {
+                // V2/V3: copy header, rewrite all pages uncompressed
+                const extLen = explorerData[30] | (explorerData[31] << 8);
+                headerLen = 32 + extLen;
+                const header = new Uint8Array(headerLen);
+                header.set(explorerData.slice(0, headerLen));
+
+                const bankList = explorerGetBankList();
+                const totalSize = headerLen + bankList.length * (3 + 16384);
+                const result = new Uint8Array(totalSize);
+                result.set(header);
+                let offset = headerLen;
+                for (const bankNum of bankList) {
+                    const bankData = explorerExtractBank(bankNum);
+                    if (!bankData) continue;
+                    const pageNum = parsed.is128 ? (bankNum + 3) : ({ 5: 8, 2: 4, 0: 5 })[bankNum];
+                    if (pageNum === undefined) continue;
+                    result[offset] = 0xFF; result[offset + 1] = 0xFF;
+                    result[offset + 2] = pageNum;
+                    result.set(bankData.slice(0, 16384), offset + 3);
+                    offset += 3 + 16384;
+                }
+                downloadFile(`${baseName}_modified.z80`, result.slice(0, offset));
+            }
+        } else if (explorerParsed.type === 'szx') {
+            // Copy non-RAMP chunks, rebuild RAMP chunks with modified data
+            const bytes = new Uint8Array(explorerData);
+            const chunks = [];
+
+            // Copy 8-byte header
+            chunks.push(bytes.slice(0, 8));
+
+            // Copy all non-RAMP chunks from original
+            for (const chunk of explorerParsed.chunks) {
+                if (chunk.id !== 'RAMP') {
+                    // Chunk header is 8 bytes before chunk.offset
+                    const chunkStart = chunk.offset - 8;
+                    const chunkEnd = chunk.offset + chunk.size;
+                    if (chunkStart >= 8 && chunkEnd <= bytes.length) {
+                        chunks.push(bytes.slice(chunkStart, chunkEnd));
+                    }
+                }
+            }
+
+            // Write RAMP chunks for all banks
+            const bankList = explorerGetBankList();
+            for (const bankNum of bankList) {
+                const bankData = explorerExtractBank(bankNum);
+                if (!bankData) continue;
+
+                // Try compression
+                let compressed = null;
+                let useCompression = false;
+                if (typeof pako !== 'undefined') {
+                    try {
+                        compressed = pako.deflate(bankData);
+                        if (compressed.length < bankData.length - 100) {
+                            useCompression = true;
+                        }
+                    } catch (e) { /* fall back to uncompressed */ }
+                }
+
+                const pageBytes = useCompression ? compressed : bankData;
+                const rampData = new Uint8Array(3 + pageBytes.length);
+                rampData[0] = useCompression ? 1 : 0;
+                rampData[1] = 0;
+                rampData[2] = bankNum;
+                rampData.set(pageBytes, 3);
+
+                // Build chunk: 4-byte ID + 4-byte size + data
+                const chunkBuf = new Uint8Array(8 + rampData.length);
+                chunkBuf[0] = 0x52; chunkBuf[1] = 0x41; // "RA"
+                chunkBuf[2] = 0x4D; chunkBuf[3] = 0x50; // "MP"
+                chunkBuf[4] = rampData.length & 0xFF;
+                chunkBuf[5] = (rampData.length >> 8) & 0xFF;
+                chunkBuf[6] = (rampData.length >> 16) & 0xFF;
+                chunkBuf[7] = (rampData.length >> 24) & 0xFF;
+                chunkBuf.set(rampData, 8);
+                chunks.push(chunkBuf);
+            }
+
+            // Combine
+            const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+            const result = new Uint8Array(totalLen);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            downloadFile(`${baseName}_modified.szx`, result);
+        }
+    });
+
     function explorerRenderHexDump() {
         const addr = parseInt(explorerHexAddr.value, 16) || 0;
         const len = parseInt(explorerHexLen.value, 10) || 256;
@@ -5523,8 +6057,26 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     baseAddr = 0;
                 }
             }
-        } else if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
-            data = explorerData.slice(explorerParsed.memoryOffset || 27);
+        } else if (source && source.startsWith('bank:') && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            const bankNum = parseInt(source.slice(5));
+            data = explorerExtractBank(bankNum);
+            if (explorerBankAddressMode === 'logical') {
+                baseAddr = explorerGetBankLogicalAddr(bankNum);
+            } else {
+                baseAddr = 0;
+            }
+        } else if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            // Reconstruct full 48K from decompressed banks
+            const port7FFD = explorerParsed.registers.port7FFD || 0;
+            const pagedBank = explorerParsed.is128 ? (port7FFD & 0x07) : 0;
+            const bank5 = explorerExtractBank(5);
+            const bank2 = explorerExtractBank(2);
+            const bankC = explorerExtractBank(explorerParsed.is128 ? pagedBank : 0);
+            const mem = new Uint8Array(49152);
+            if (bank5) mem.set(bank5, 0);
+            if (bank2) mem.set(bank2, 16384);
+            if (bankC) mem.set(bankC, 32768);
+            data = mem;
             baseAddr = SLOT1_START;
         } else if (source && explorerParsed.type === 'tap') {
             const blockIdx = parseInt(source);
@@ -5633,8 +6185,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     });
 
     function explorerGetSourceData(source) {
-        if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80')) {
-            return explorerData.slice(explorerParsed.memoryOffset || 27);
+        if (source && source.startsWith('bank:') && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            const bankNum = parseInt(source.slice(5));
+            return explorerExtractBank(bankNum);
+        } else if (source === 'memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            const port7FFD = explorerParsed.registers.port7FFD || 0;
+            const pagedBank = explorerParsed.is128 ? (port7FFD & 0x07) : 0;
+            const bank5 = explorerExtractBank(5);
+            const bank2 = explorerExtractBank(2);
+            const bankC = explorerExtractBank(explorerParsed.is128 ? pagedBank : 0);
+            const mem = new Uint8Array(49152);
+            if (bank5) mem.set(bank5, 0);
+            if (bank2) mem.set(bank2, 16384);
+            if (bankC) mem.set(bankC, 32768);
+            return mem;
         } else if (source && explorerParsed.type === 'tap') {
             const blockIdx = parseInt(source);
             const block = explorerBlocks[blockIdx];
@@ -6262,6 +6826,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         let data = null;
+        let explorerBasicInfoHeader = '';
 
         if (explorerParsed.type === 'tap') {
             const blockIdx = parseInt(source);
@@ -6338,6 +6903,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     }
                 }
             }
+        } else if (source === 'snapshot-memory' && (explorerParsed.type === 'sna' || explorerParsed.type === 'z80' || explorerParsed.type === 'szx')) {
+            const prog = explorerReadSnapshotWord(0x5C53); // PROG sysvar
+            const vars = explorerReadSnapshotWord(0x5C4B); // VARS sysvar
+
+            if (prog < 0x4000 || prog >= 0xFFFF) {
+                explorerBasicOutput.innerHTML = '<div class="explorer-empty">PROG system variable points outside RAM (0x' + prog.toString(16).padStart(4, '0') + ')</div>';
+                return;
+            }
+
+            let basicLen = vars > prog ? vars - prog : 0;
+            if (basicLen === 0 || basicLen > 0xC000) {
+                basicLen = Math.min(0xFFFF - prog, 0xC000);
+            }
+
+            data = explorerReadSnapshotBlock(prog, basicLen);
+            explorerBasicInfoHeader = `<div style="font-size:10px;color:var(--text-secondary);margin-bottom:8px">` +
+                `PROG=${prog.toString(16).toUpperCase().padStart(4, '0')}h ` +
+                `VARS=${vars.toString(16).toUpperCase().padStart(4, '0')}h ` +
+                `(${basicLen} bytes)</div>`;
         }
 
         if (!data || data.length === 0) {
@@ -6356,9 +6940,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             explorerBasicLines = lines;
             explorerBasicViewMode = explorerBasicView ? explorerBasicView.value : 'code';
-            explorerBasicOutput.innerHTML = (explorerBasicViewMode === 'screen')
+            explorerBasicOutput.innerHTML = explorerBasicInfoHeader + ((explorerBasicViewMode === 'screen')
                 ? renderBasicScreenMode(lines)
-                : renderBasicCodeMode(lines);
+                : renderBasicCodeMode(lines));
 
         } catch (err) {
             explorerBasicOutput.innerHTML = `<div class="explorer-empty">Error decoding BASIC: ${err.message}</div>`;
@@ -6770,6 +7354,438 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         });
     }
 
+    // --- Snapshot editor (SNA/Z80/SZX) ---
+
+    function isSnapshotType(t) {
+        return t === 'sna' || t === 'z80' || t === 'szx';
+    }
+
+    function snapshotEditorBuildEntries(panel) {
+        const parsed = panel.parsedFile;
+        const data = panel.rawData;
+        const entries = [];
+
+        // Temporarily set globals for snapshot reading helpers
+        const savedParsed = explorerParsed;
+        const savedData = explorerData;
+        const savedCache = explorerBankCache;
+        explorerParsed = parsed;
+        explorerData = data;
+        explorerBankCache = new Map();
+
+        try {
+            // 1. BASIC program (if present)
+            const prog = explorerReadSnapshotWord(0x5C53);
+            const vars = explorerReadSnapshotWord(0x5C4B);
+            if (prog >= 0x4000 && prog < 0xFFFF && vars > prog) {
+                const basicLen = Math.min(vars - prog, 0xC000);
+                if (basicLen > 0) {
+                    entries.push({
+                        name: 'BASIC',
+                        ext: 'B',
+                        tapType: 0,
+                        addr: prog,
+                        length: basicLen,
+                        autostart: null,
+                        kind: 'basic',
+                        bankNum: null,
+                        data: explorerReadSnapshotBlock(prog, basicLen)
+                    });
+                }
+            }
+
+            // 2. Main screen (bank 5, first 6912 bytes)
+            const bank5 = explorerExtractBank(5);
+            if (bank5) {
+                entries.push({
+                    name: 'Screen',
+                    ext: 'C',
+                    tapType: 3,
+                    addr: 0x4000,
+                    length: 6912,
+                    autostart: null,
+                    kind: 'screen',
+                    bankNum: 5,
+                    data: bank5.slice(0, 6912)
+                });
+            }
+
+            // 3. Shadow screen (bank 7, 128K only)
+            if (parsed.is128) {
+                const bank7 = explorerExtractBank(7);
+                if (bank7) {
+                    entries.push({
+                        name: 'Shadow Screen',
+                        ext: 'C',
+                        tapType: 3,
+                        addr: 0x4000,
+                        length: 6912,
+                        autostart: null,
+                        kind: 'screen',
+                        bankNum: 7,
+                        data: bank7.slice(0, 6912)
+                    });
+                }
+            }
+
+            // 4. All RAM banks
+            const bankList = parsed.is128 ? [0, 1, 2, 3, 4, 5, 6, 7] : [5, 2, 0];
+            for (const bankNum of bankList) {
+                const bankData = explorerExtractBank(bankNum);
+                if (!bankData) continue;
+                const addr = bankNum === 5 ? 0x4000 : bankNum === 2 ? 0x8000 : 0xC000;
+                entries.push({
+                    name: `Bank ${bankNum}`,
+                    ext: 'C',
+                    tapType: 3,
+                    addr: addr,
+                    length: bankData.length,
+                    autostart: null,
+                    kind: 'bank',
+                    bankNum: bankNum,
+                    data: new Uint8Array(bankData)
+                });
+            }
+        } finally {
+            explorerParsed = savedParsed;
+            explorerData = savedData;
+            explorerBankCache = savedCache;
+        }
+
+        return entries;
+    }
+
+    function snapshotEditorRenderEntries(panel) {
+        const entries = panel.snapshotEntries || [];
+        if (entries.length === 0) {
+            panel.dom.fileList.innerHTML = '<span class="explorer-empty">No extractable data</span>';
+            panel.dom.statusSpan.textContent = '';
+            editorUpdateToolbar();
+            return;
+        }
+
+        let html = '<div class="editor-block-row snapshot-header-row" style="font-weight:bold;opacity:0.7;cursor:default">' +
+            '<span style="width:30px;display:inline-block">#</span>' +
+            '<span style="width:140px;display:inline-block">Name</span>' +
+            '<span style="width:60px;display:inline-block">Type</span>' +
+            '<span style="width:60px;display:inline-block">Address</span>' +
+            '<span style="display:inline-block">Size</span></div>';
+
+        for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            const selected = panel.selection.has(i) ? ' selected' : '';
+            const typeLabel = e.kind === 'basic' ? 'BASIC' : e.kind === 'screen' ? 'Screen' : 'CODE';
+            html += `<div class="editor-block-row snapshot-row${selected}" data-block-idx="${i}">` +
+                `<span style="width:30px;display:inline-block">${i + 1}</span>` +
+                `<span style="width:140px;display:inline-block">${e.name}</span>` +
+                `<span style="width:60px;display:inline-block">${typeLabel}</span>` +
+                `<span style="width:60px;display:inline-block">$${e.addr.toString(16).toUpperCase().padStart(4, '0')}</span>` +
+                `<span style="display:inline-block">${e.length}</span>` +
+                `</div>`;
+        }
+
+        panel.dom.fileList.innerHTML = html;
+        panel.dom.statusSpan.textContent = `${entries.length} entries`;
+        editorUpdateToolbar();
+    }
+
+    function snapshotEditorExtractSelection(panel, format) {
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        const baseName = (panel.fileName || 'extract').replace(/\.(sna|z80|szx)$/i, '');
+        const asHobeta = format === 'hobeta';
+
+        const files = [];
+        for (const idx of sorted) {
+            const entry = panel.snapshotEntries[idx];
+            if (!entry || !entry.data) continue;
+            const trimName = entry.name.replace(/\s+/g, '_');
+            if (asHobeta) {
+                files.push({
+                    name: trimName + '.' + trdExtToHobetaExt(entry.ext),
+                    data: buildHobeta({
+                        name: (entry.name + '        ').substring(0, 8),
+                        ext: entry.ext,
+                        startAddress: entry.addr,
+                        length: entry.data.length,
+                        data: entry.data
+                    })
+                });
+            } else {
+                const extMap = { basic: '.bas', screen: '.scr', bank: '.bin' };
+                files.push({
+                    name: trimName + (extMap[entry.kind] || '.bin'),
+                    data: entry.data
+                });
+            }
+        }
+        if (files.length === 0) return;
+        if (files.length === 1) {
+            downloadFile(files[0].name, files[0].data);
+            return;
+        }
+        const zipData = editorCreateZip(files);
+        downloadFile(baseName + '_extract.zip', zipData);
+    }
+
+    /** Write incoming data into a snapshot entry's bank. Returns error string or null. */
+    function snapshotEditorWriteEntry(panel, entryIdx, data) {
+        const entry = (panel.snapshotEntries || [])[entryIdx];
+        if (!entry) return 'No such entry';
+        if (data.length > entry.length) return `Data too large (${data.length} > ${entry.length})`;
+        if (!panel.snapshotBankCache) panel.snapshotBankCache = new Map();
+        if (!panel.snapshotDirty) panel.snapshotDirty = new Set();
+
+        if (entry.kind === 'basic') {
+            // BASIC: write directly into entry data
+            const newData = new Uint8Array(entry.length);
+            newData.set(data);
+            entry.data = newData;
+            // Also update in bank cache: BASIC lives in bank 5 (and possibly 2 or paged bank)
+            // For simplicity, rebuild the full bank from the original + BASIC overlay
+            const parsed = panel.parsedFile;
+            const savedParsed = explorerParsed;
+            const savedData = explorerData;
+            const savedCache = explorerBankCache;
+            explorerParsed = parsed;
+            explorerData = panel.rawData;
+            explorerBankCache = panel.snapshotBankCache;
+            try {
+                // Determine which bank(s) the BASIC occupies
+                const progAddr = entry.addr;
+                for (let i = 0; i < data.length; i++) {
+                    const addr = progAddr + i;
+                    if (addr < 0x4000 || addr >= 0x10000) continue;
+                    let bankNum, offset;
+                    if (addr < 0x8000) { bankNum = 5; offset = addr - 0x4000; }
+                    else if (addr < 0xC000) { bankNum = 2; offset = addr - 0x8000; }
+                    else {
+                        const port7FFD = (parsed.registers && parsed.registers.port7FFD) || 0;
+                        bankNum = parsed.is128 ? (port7FFD & 0x07) : 0;
+                        offset = addr - 0xC000;
+                    }
+                    let bank = panel.snapshotBankCache.get(bankNum);
+                    if (!bank) {
+                        bank = explorerExtractBank(bankNum);
+                        if (!bank) continue;
+                        bank = new Uint8Array(bank);
+                        panel.snapshotBankCache.set(bankNum, bank);
+                    }
+                    bank[offset] = data[i];
+                    panel.snapshotDirty.add(bankNum);
+                }
+            } finally {
+                explorerParsed = savedParsed;
+                explorerData = savedData;
+                explorerBankCache = savedCache;
+            }
+        } else if (entry.kind === 'screen') {
+            // Screen: first 6912 bytes of bank 5 or 7
+            const bankNum = entry.bankNum;
+            let bank = panel.snapshotBankCache.get(bankNum);
+            if (!bank) {
+                const savedParsed = explorerParsed;
+                const savedData = explorerData;
+                const savedCache = explorerBankCache;
+                explorerParsed = panel.parsedFile;
+                explorerData = panel.rawData;
+                explorerBankCache = panel.snapshotBankCache;
+                try { bank = explorerExtractBank(bankNum); } finally {
+                    explorerParsed = savedParsed;
+                    explorerData = savedData;
+                    explorerBankCache = savedCache;
+                }
+                if (!bank) return 'Cannot extract bank';
+                bank = new Uint8Array(bank);
+                panel.snapshotBankCache.set(bankNum, bank);
+            }
+            bank.set(data.slice(0, Math.min(data.length, 6912)), 0);
+            entry.data = bank.slice(0, 6912);
+            panel.snapshotDirty.add(bankNum);
+        } else if (entry.kind === 'bank') {
+            // Full bank replacement
+            const bankNum = entry.bankNum;
+            let bank = panel.snapshotBankCache.get(bankNum);
+            if (!bank) {
+                const savedParsed = explorerParsed;
+                const savedData = explorerData;
+                const savedCache = explorerBankCache;
+                explorerParsed = panel.parsedFile;
+                explorerData = panel.rawData;
+                explorerBankCache = panel.snapshotBankCache;
+                try { bank = explorerExtractBank(bankNum); } finally {
+                    explorerParsed = savedParsed;
+                    explorerData = savedData;
+                    explorerBankCache = savedCache;
+                }
+                if (!bank) return 'Cannot extract bank';
+                bank = new Uint8Array(bank);
+                panel.snapshotBankCache.set(bankNum, bank);
+            }
+            bank.set(data.slice(0, Math.min(data.length, 16384)), 0);
+            entry.data = new Uint8Array(bank);
+            panel.snapshotDirty.add(bankNum);
+        }
+        // Update screen entry if its bank was modified
+        if (entry.kind === 'bank' && (entry.bankNum === 5 || entry.bankNum === 7)) {
+            const screenName = entry.bankNum === 5 ? 'Screen' : 'Shadow Screen';
+            const screenEntry = (panel.snapshotEntries || []).find(e => e.kind === 'screen' && e.bankNum === entry.bankNum);
+            if (screenEntry) {
+                const bank = panel.snapshotBankCache.get(entry.bankNum);
+                if (bank) screenEntry.data = bank.slice(0, 6912);
+            }
+        }
+        return null;
+    }
+
+    /** Rebuild and download snapshot from modified bank data. */
+    function snapshotEditorSave(panel) {
+        if (!panel.snapshotDirty || panel.snapshotDirty.size === 0) return;
+        const parsed = panel.parsedFile;
+        const rawData = panel.rawData;
+        const baseName = (panel.fileName || 'snapshot').replace(/\.[^.]+$/, '');
+
+        // Build a bank cache that merges panel modifications with original data
+        const savedParsed = explorerParsed;
+        const savedData = explorerData;
+        const savedCache = explorerBankCache;
+        explorerParsed = parsed;
+        explorerData = rawData;
+        explorerBankCache = panel.snapshotBankCache || new Map();
+
+        try {
+            // Ensure all banks are in cache (extract unmodified ones from original)
+            const bankList = parsed.is128 ? [0, 1, 2, 3, 4, 5, 6, 7] : [5, 2, 0];
+            for (const bankNum of bankList) {
+                if (!explorerBankCache.has(bankNum)) {
+                    const bank = explorerExtractBank(bankNum);
+                    if (bank) explorerBankCache.set(bankNum, new Uint8Array(bank));
+                }
+            }
+
+            if (parsed.type === 'sna') {
+                const result = new Uint8Array(rawData.length);
+                result.set(rawData);
+                const port7FFD = (parsed.registers && parsed.registers.port7FFD) || 0;
+                const pagedBank = port7FFD & 0x07;
+                for (const bankNum of panel.snapshotDirty) {
+                    const bankData = explorerBankCache.get(bankNum);
+                    if (!bankData) continue;
+                    if (!parsed.is128) {
+                        if (bankNum === 5) result.set(bankData, 27);
+                        else if (bankNum === 2) result.set(bankData, 27 + 16384);
+                        else if (bankNum === 0) result.set(bankData, 27 + 32768);
+                    } else {
+                        if (bankNum === 5) result.set(bankData, 27);
+                        else if (bankNum === 2) result.set(bankData, 27 + 16384);
+                        else if (bankNum === pagedBank) result.set(bankData, 27 + 32768);
+                        else {
+                            const remainingBanks = [0, 1, 3, 4, 6, 7].filter(b => b !== pagedBank);
+                            const idx = remainingBanks.indexOf(bankNum);
+                            if (idx >= 0) result.set(bankData, 49183 + idx * 16384);
+                        }
+                    }
+                }
+                downloadFile(`${baseName}_modified.sna`, result);
+            } else if (parsed.type === 'z80') {
+                let headerLen;
+                if (parsed.version === 1) {
+                    headerLen = 30 + 2 + 54;
+                    const header = new Uint8Array(headerLen);
+                    header.set(rawData.slice(0, 30));
+                    header[6] = 0; header[7] = 0;
+                    header[12] = header[12] & ~0x20;
+                    header[30] = 54; header[31] = 0;
+                    const origPC = rawData[6] | (rawData[7] << 8);
+                    header[32] = origPC & 0xFF; header[33] = (origPC >> 8) & 0xFF;
+                    header[34] = 0;
+                    const totalSize = headerLen + bankList.length * (3 + 16384);
+                    const result = new Uint8Array(totalSize);
+                    result.set(header);
+                    let offset = headerLen;
+                    const pageMapping = { 5: 8, 2: 4, 0: 5 };
+                    for (const bankNum of bankList) {
+                        const bankData = explorerBankCache.get(bankNum);
+                        if (!bankData) continue;
+                        result[offset] = 0xFF; result[offset + 1] = 0xFF;
+                        result[offset + 2] = pageMapping[bankNum] || (bankNum + 3);
+                        result.set(bankData.slice(0, 16384), offset + 3);
+                        offset += 3 + 16384;
+                    }
+                    downloadFile(`${baseName}_modified.z80`, result);
+                } else {
+                    const extLen = rawData[30] | (rawData[31] << 8);
+                    headerLen = 32 + extLen;
+                    const header = new Uint8Array(headerLen);
+                    header.set(rawData.slice(0, headerLen));
+                    const totalSize = headerLen + bankList.length * (3 + 16384);
+                    const result = new Uint8Array(totalSize);
+                    result.set(header);
+                    let offset = headerLen;
+                    for (const bankNum of bankList) {
+                        const bankData = explorerBankCache.get(bankNum);
+                        if (!bankData) continue;
+                        const pageNum = parsed.is128 ? (bankNum + 3) : ({ 5: 8, 2: 4, 0: 5 })[bankNum];
+                        if (pageNum === undefined) continue;
+                        result[offset] = 0xFF; result[offset + 1] = 0xFF;
+                        result[offset + 2] = pageNum;
+                        result.set(bankData.slice(0, 16384), offset + 3);
+                        offset += 3 + 16384;
+                    }
+                    downloadFile(`${baseName}_modified.z80`, result.slice(0, offset));
+                }
+            } else if (parsed.type === 'szx') {
+                const bytes = new Uint8Array(rawData);
+                const chunks = [];
+                chunks.push(bytes.slice(0, 8));
+                for (const chunk of (parsed.chunks || [])) {
+                    if (chunk.id !== 'RAMP') {
+                        const chunkStart = chunk.offset - 8;
+                        const chunkEnd = chunk.offset + chunk.size;
+                        if (chunkStart >= 8 && chunkEnd <= bytes.length) {
+                            chunks.push(bytes.slice(chunkStart, chunkEnd));
+                        }
+                    }
+                }
+                for (const bankNum of bankList) {
+                    const bankData = explorerBankCache.get(bankNum);
+                    if (!bankData) continue;
+                    let compressed = null, useCompression = false;
+                    if (typeof pako !== 'undefined') {
+                        try {
+                            compressed = pako.deflate(bankData);
+                            if (compressed.length < bankData.length - 100) useCompression = true;
+                        } catch (e) { /* uncompressed */ }
+                    }
+                    const pageBytes = useCompression ? compressed : bankData;
+                    const rampData = new Uint8Array(3 + pageBytes.length);
+                    rampData[0] = useCompression ? 1 : 0;
+                    rampData[1] = 0;
+                    rampData[2] = bankNum;
+                    rampData.set(pageBytes, 3);
+                    const chunkBuf = new Uint8Array(8 + rampData.length);
+                    chunkBuf[0] = 0x52; chunkBuf[1] = 0x41;
+                    chunkBuf[2] = 0x4D; chunkBuf[3] = 0x50;
+                    chunkBuf[4] = rampData.length & 0xFF;
+                    chunkBuf[5] = (rampData.length >> 8) & 0xFF;
+                    chunkBuf[6] = (rampData.length >> 16) & 0xFF;
+                    chunkBuf[7] = (rampData.length >> 24) & 0xFF;
+                    chunkBuf.set(rampData, 8);
+                    chunks.push(chunkBuf);
+                }
+                const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+                const result = new Uint8Array(totalLen);
+                let offset = 0;
+                for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+                downloadFile(`${baseName}_modified.szx`, result);
+            }
+        } finally {
+            explorerParsed = savedParsed;
+            explorerData = savedData;
+            explorerBankCache = savedCache;
+        }
+    }
+
     // --- Shared toolbar visibility ---
 
     function editorUpdateToolbar() {
@@ -6780,30 +7796,31 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const isDsk = t === 'dsk';
         const isZip = t === 'zip';
         const isOpd = t === 'opd';
+        const isSnapshot = isSnapshotType(t);
         const hasSel = panel.selection.size > 0;
 
-        btnEditorSave.textContent = t ? `Save ${t.toUpperCase()}` : 'Save';
-        btnEditorSave.disabled = !t;
+        const snapModified = isSnapshot && panel.snapshotDirty && panel.snapshotDirty.size > 0;
+        btnEditorSave.textContent = t ? `Save ${t.toUpperCase()}${snapModified ? ' *' : ''}` : 'Save';
+        btnEditorSave.disabled = !t || (isSnapshot && !snapModified);
 
-
-        btnEditorMoveUp.style.display = (isTap || isTrd) && !isZip ? '' : 'none';
-        btnEditorMoveDown.style.display = (isTap || isTrd) && !isZip ? '' : 'none';
+        btnEditorMoveUp.style.display = (isTap || isTrd) && !isZip && !isSnapshot ? '' : 'none';
+        btnEditorMoveDown.style.display = (isTap || isTrd) && !isZip && !isSnapshot ? '' : 'none';
         btnEditorMoveUp.disabled = !hasSel;
         btnEditorMoveDown.disabled = !hasSel;
 
-        btnEditorMarkDel.style.display = isTrd ? '' : 'none';
+        btnEditorMarkDel.style.display = isTrd && !isSnapshot ? '' : 'none';
         btnEditorMarkDel.disabled = !hasSel;
 
-        btnEditorDel.disabled = !hasSel;
+        btnEditorDel.disabled = !hasSel || isSnapshot;
         btnEditorExtract.style.display = 'none';
         editorExtractDisk.style.display = '';
         editorExtractDisk.disabled = !hasSel;
         if (hasSel) editorExtractDisk.value = '';
 
-        editorLinkLabel.style.display = isTap ? '' : 'none';
+        editorLinkLabel.style.display = isTap && !isSnapshot ? '' : 'none';
 
-        btnEditorAddFile.disabled = isDsk && panel.parsedFile && panel.parsedFile.dskImage &&
-            !DSKLoader.getDiskSpec(panel.parsedFile.dskImage).valid && (panel.parsedFile.files || []).length === 0;
+        btnEditorAddFile.disabled = isSnapshot || (isDsk && panel.parsedFile && panel.parsedFile.dskImage &&
+            !DSKLoader.getDiskSpec(panel.parsedFile.dskImage).valid && (panel.parsedFile.files || []).length === 0);
 
         btnEditorCopy.disabled = !hasSel || !t;
         btnEditorCopy.innerHTML = activePanel === 'left' ? 'Copy &#9654;' : '&#9664; Copy';
@@ -6851,6 +7868,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         if (panel.fileType === 'zip') {
             zipEditorRenderFileList(panel);
+            return;
+        }
+        if (isSnapshotType(panel.fileType)) {
+            snapshotEditorRenderEntries(panel);
             return;
         }
         if (!panel.parsedFile || !isTapOrTzx(panel.parsedFile.type)) {
@@ -6964,6 +7985,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
+        if (isSnapshotType(panel.fileType)) return (panel.snapshotEntries || []).length;
         if (isDisk) return panel.diskFiles.length;
         if (isDsk) return (panel.parsedFile.files || []).length;
         if (isZip) return (panel.parsedFile.files || []).length;
@@ -6974,7 +7996,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
-        if (shiftKey && (isDisk || isDsk || isZip)) {
+        const isSnap = isSnapshotType(panel.fileType);
+        if (shiftKey && (isDisk || isDsk || isZip || isSnap)) {
             // Range selection: from last anchor to current idx
             const anchor = panel._selAnchor !== undefined ? panel._selAnchor : idx;
             const lo = Math.min(anchor, idx);
@@ -6982,7 +8005,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.selection = new Set();
             for (let i = lo; i <= hi; i++) panel.selection.add(i);
         } else if (ctrlKey) {
-            if (isDisk || isDsk || isZip) {
+            if (isDisk || isDsk || isZip || isSnap) {
                 if (panel.selection.has(idx)) {
                     panel.selection.delete(idx);
                 } else {
@@ -6998,7 +8021,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
             }
         } else {
-            if (isDisk || isDsk || isZip) {
+            if (isDisk || isDsk || isZip || isSnap) {
                 panel.selection = new Set([idx]);
             } else {
                 panel.selection = editorExpandPairs(panel, new Set([idx]));
@@ -9878,6 +10901,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             updatePanelHeader(panel);
             dskEditorRenderFileList(panel);
+        } else if (ext === 'sna' || ext === 'z80' || ext === 'szx') {
+            panel.fileType = ext;
+            panel.blocks = [];
+            if (!parsed) {
+                if (ext === 'sna') parsed = explorerParseSNA(data);
+                else if (ext === 'z80') parsed = explorerParseZ80(data);
+                else parsed = explorerParseSZX(data);
+            }
+            panel.parsedFile = parsed;
+            panel.snapshotEntries = snapshotEditorBuildEntries(panel);
+            updatePanelHeader(panel);
+            snapshotEditorRenderEntries(panel);
         } else if (ext === 'zip') {
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
@@ -10170,6 +11205,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     } catch (e) { /* invalid DSK */ }
                 }
             }
+        } else if (isSnapshotType(panel.fileType)) {
+            for (const idx of sorted) {
+                if (idx < 0 || !panel.snapshotEntries || idx >= panel.snapshotEntries.length) continue;
+                const e = panel.snapshotEntries[idx];
+                if (!e.data) continue;
+                result.push({
+                    name: e.name.replace(/\s+/g, '_'),
+                    ext: e.ext,
+                    type: e.tapType,
+                    addr: e.tapType === 3 ? e.addr : 0,
+                    autostart: e.autostart,
+                    rawData: new Uint8Array(e.data)
+                });
+            }
         }
         return result;
     }
@@ -10180,6 +11229,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             || (srcType === 'opd' && dstType === 'opd')) {
             return { ...srcFile };
         }
+        // Snapshot destination: raw data passthrough — matching is done in addConvertedFile
+        if (isSnapshotType(dstType)) return { ...srcFile };
         const f = { ...srcFile };
 
         if (dstType === 'trd' || dstType === 'scl') {
@@ -10223,7 +11274,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (isTapOrTzx(dstType)) {
             f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
             // Map ext to TAP type if not already set from source
-            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd') {
+            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd' || isSnapshotType(srcType)) {
                 f.type = f.ext === 'B' ? 0 : 3;
             } else if (srcType === 'dsk' && f.type === undefined) {
                 const el = (f.ext || '').toUpperCase();
@@ -10232,7 +11283,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (dstType === 'dsk') {
             f.name = (f.name + '        ').substring(0, 8).replace(/\s+$/, '') || 'untitled';
             // Map TR-DOS/MGT/MDR single-char extensions to +3DOS conventions
-            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd') {
+            if (srcType === 'trd' || srcType === 'scl' || srcType === 'mgt' || srcType === 'mdr' || srcType === 'opd' || isSnapshotType(srcType)) {
                 if (f.ext === 'B') f.ext = 'BAS';
                 else if (f.ext === 'C') f.ext = 'BIN';
                 else if (f.ext === 'D') f.ext = 'DAT';
@@ -10294,6 +11345,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const tapData = buildSingleFileTap(file);
             zipEditorAddFile(panel, tapData, (file.name || 'file') + '.tap');
             return null;
+        } else if (isSnapshotType(panel.fileType)) {
+            // Match to a selected entry in the destination, or by address+length
+            const entries = panel.snapshotEntries || [];
+            if (entries.length === 0) return 'No entries';
+            let targetIdx = -1;
+            // Use next unconsumed selected entry (set up by editorCopySelection)
+            if (panel._snapCopyTargets && panel._snapCopyIdx < panel._snapCopyTargets.length) {
+                targetIdx = panel._snapCopyTargets[panel._snapCopyIdx++];
+            } else {
+                // No selection — try address+length match
+                targetIdx = entries.findIndex(e =>
+                    e.addr === (file.addr || 0) && e.length === file.rawData.length);
+            }
+            if (targetIdx < 0 || targetIdx >= entries.length) return 'No matching entry';
+            return snapshotEditorWriteEntry(panel, targetIdx, file.rawData);
         }
         return 'Unknown format';
     }
@@ -10316,10 +11382,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 case 'opd': diskEditorNewOpd(dst); break;
                 case 'dsk': dskEditorNewDsk(dst); break;
                 case 'zip': zipEditorNewZip(dst); break;
+                case 'sna': case 'z80': case 'szx': editorNewTap(dst); break;
             }
         }
 
         const files = extractFilesFromPanel(src);
+
+        // For snapshot destinations, prepare selection-based target matching
+        if (isSnapshotType(dst.fileType)) {
+            dst._snapCopyTargets = [...dst.selection].sort((a, b) => a - b);
+            dst._snapCopyIdx = 0;
+        }
 
         let added = 0, errors = [];
         for (const f of files) {
@@ -10329,8 +11402,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             else added++;
         }
 
+        // Clean up snapshot copy state
+        delete dst._snapCopyTargets;
+        delete dst._snapCopyIdx;
+
         // Refresh destination rendering
-        if (dst.fileType === 'trd' || dst.fileType === 'scl') {
+        if (isSnapshotType(dst.fileType)) {
+            snapshotEditorRenderEntries(dst);
+        } else if (dst.fileType === 'trd' || dst.fileType === 'scl') {
             diskEditorRenderFileList(dst);
             diskEditorRefreshExplorer(dst);
         } else if (dst.fileType === 'mgt') {
@@ -10375,6 +11454,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
+        const isSnap = isSnapshotType(panel.fileType);
 
         // Handle OPD Apply button
         const opdApplyBtn = e.target.closest('[data-action="opd-apply"]');
@@ -10475,7 +11555,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
 
             const idx = parseInt(row.dataset.blockIdx);
-            const maxIdx = isDisk ? panel.diskFiles.length :
+            const maxIdx = isSnap ? (panel.snapshotEntries || []).length :
+                           isDisk ? panel.diskFiles.length :
                            isDsk ? (panel.parsedFile.files || []).length :
                            isZip ? (panel.parsedFile.files || []).length :
                            panel.blocks.length;
@@ -10484,8 +11565,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (panel.lastClickIdx === idx && now - panel.lastClickTime < 400) {
                 panel.lastClickIdx = -1;
                 panel.lastClickTime = 0;
-                if (isZip) {
-                    // ZIP rows don't have inline edit — just ignore double-click
+                if (isZip || isSnap) {
+                    // ZIP/snapshot rows don't have inline edit — just ignore double-click
                     return;
                 }
                 if (isDisk || isDsk) {
@@ -10705,6 +11786,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     btnEditorSave.addEventListener('click', () => {
         const panel = getActivePanel();
+        if (isSnapshotType(panel.fileType)) { snapshotEditorSave(panel); return; }
         if (panel.fileType === 'tap') editorSaveTap(panel);
         else if (panel.fileType === 'tzx') editorSaveTzx(panel);
         else if (panel.fileType === 'trd' || panel.fileType === 'scl') diskEditorSaveDisk(panel);
@@ -10731,6 +11813,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     btnEditorDel.addEventListener('click', () => {
         const panel = getActivePanel();
+        if (isSnapshotType(panel.fileType)) return;
         if (isTapOrTzx(panel.fileType)) editorDeleteSelection(panel);
         else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr') diskEditorDeleteSelection(panel);
         else if (panel.fileType === 'opd') opdEditorDeleteSelection(panel);
@@ -10753,6 +11836,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         else if (t === 'opd') opdEditorExtractSelection(panel, fmt);
         else if (t === 'dsk') dskEditorExtractFiles(panel, fmt);
         else if (t === 'zip') zipEditorExtractFiles(panel, fmt);
+        else if (isSnapshotType(t)) snapshotEditorExtractSelection(panel, fmt);
         editorExtractDisk.value = '';
     });
 

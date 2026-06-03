@@ -22,6 +22,11 @@ export function initMemoryView({
     let memSelectionEnd = null;
     let memIsSelecting = false;
 
+    // ASCII selection state
+    let asciiSelectionStart = null;
+    let asciiSelectionEnd = null;
+    let asciiIsSelecting = false;
+
     function updateMemoryView() {
         const spectrum = getSpectrum();
         const memorySnapshot = getMemorySnapshot();
@@ -86,19 +91,24 @@ export function initMemoryView({
 
             // ASCII representation
             html += '<span class="memory-ascii">';
+            const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
+            const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
             for (let i = 0; i < BYTES_PER_LINE; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const byte = spectrum.memory.read(addr);
                 const isPrintable = byte >= 32 && byte < 127;
-                const char = isPrintable ? String.fromCharCode(byte) : '.';
+                const char = isPrintable ? String.fromCharCode(byte) : byte === 0 ? '\u25A0' : '.';
                 const changed = memorySnapshot && memorySnapshot[addr] !== byte;
                 const asciiRegion = regionManager.get(addr);
-                let cls = isPrintable ? 'printable' : '';
+                let cls = isPrintable ? 'printable' : byte === 0 ? 'null-byte' : '';
                 if (changed) cls += ' changed';
                 if (asciiRegion && asciiRegion.type === REGION_TYPES.TEXT) {
                     cls += ' region-text';
                 }
-                html += `<span class="${cls.trim()}">${char}</span>`;
+                if (asciiSelectionStart !== null && addr >= asciiSelStart && addr <= asciiSelEnd) {
+                    cls += ' ascii-selected';
+                }
+                html += `<span class="${cls.trim()}" data-addr="${addr}">${char}</span>`;
             }
             html += '</span></div>';
         }
@@ -207,8 +217,59 @@ export function initMemoryView({
         });
     }
 
+    function clearAsciiSelection() {
+        asciiSelectionStart = null;
+        asciiSelectionEnd = null;
+        asciiIsSelecting = false;
+        memoryView.querySelectorAll('.memory-ascii > span.ascii-selected').forEach(el => {
+            el.classList.remove('ascii-selected');
+        });
+    }
+
+    function updateAsciiSelection() {
+        if (asciiSelectionStart === null) return;
+
+        const start = Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart);
+        const end = Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart);
+
+        memoryView.querySelectorAll('.memory-ascii > span[data-addr]').forEach(el => {
+            const addr = parseInt(el.dataset.addr, 10);
+            if (addr >= start && addr <= end) {
+                el.classList.add('ascii-selected');
+            } else {
+                el.classList.remove('ascii-selected');
+            }
+        });
+    }
+
+    function getAsciiSelectionText() {
+        if (asciiSelectionStart === null) return '';
+        const spectrum = getSpectrum();
+        const start = Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart);
+        const end = Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart);
+        let text = '';
+        for (let addr = start; addr <= end; addr++) {
+            const byte = spectrum.memory.read(addr & 0xffff);
+            text += (byte >= 32 && byte < 127) ? String.fromCharCode(byte) : byte === 0 ? '\u25A0' : '.';
+        }
+        return text;
+    }
+
     // Mouse event handlers
     memoryView.addEventListener('mousedown', (e) => {
+        // ASCII span mousedown
+        const asciiSpan = e.target.closest('.memory-ascii > span[data-addr]');
+        if (asciiSpan && e.button === 0) {
+            e.preventDefault();
+            clearMemSelection();
+            const addr = parseInt(asciiSpan.dataset.addr, 10);
+            asciiSelectionStart = addr;
+            asciiSelectionEnd = addr;
+            asciiIsSelecting = true;
+            updateAsciiSelection();
+            return;
+        }
+
         const byteEl = e.target.closest('.memory-byte');
         if (byteEl && !e.target.classList.contains('memory-edit-input')) {
             // Right-click: don't start selection, let context menu handle it
@@ -217,6 +278,7 @@ export function initMemoryView({
             // Left-click: start selection or edit on double-click
             if (e.button === 0) {
                 e.preventDefault();
+                clearAsciiSelection();
 
                 // Finish any active edit before starting a new interaction
                 if (memoryEditingAddr !== null) {
@@ -235,6 +297,16 @@ export function initMemoryView({
     });
 
     memoryView.addEventListener('mousemove', (e) => {
+        if (asciiIsSelecting) {
+            const asciiSpan = e.target.closest('.memory-ascii > span[data-addr]');
+            if (asciiSpan) {
+                const addr = parseInt(asciiSpan.dataset.addr, 10);
+                asciiSelectionEnd = addr;
+                updateAsciiSelection();
+            }
+            return;
+        }
+
         if (!memIsSelecting) return;
 
         const byteEl = e.target.closest('.memory-byte');
@@ -246,6 +318,9 @@ export function initMemoryView({
     });
 
     document.addEventListener('mouseup', (e) => {
+        if (asciiIsSelecting) {
+            asciiIsSelecting = false;
+        }
         if (memIsSelecting) {
             memIsSelecting = false;
             // If single click (no drag), treat as edit
@@ -255,6 +330,17 @@ export function initMemoryView({
                     clearMemSelection();
                     startByteEdit(byteEl);
                 }
+            }
+        }
+    });
+
+    // Ctrl+C to copy ASCII selection
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'c' && asciiSelectionStart !== null) {
+            const text = getAsciiSelectionText();
+            if (text) {
+                e.preventDefault();
+                navigator.clipboard.writeText(text);
             }
         }
     });
@@ -302,17 +388,22 @@ export function initMemoryView({
 
             // ASCII representation (styled like right panel)
             html += '<span class="memory-ascii">';
+            const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
+            const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
             for (let i = 0; i < BYTES_PER_LINE; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const byte = spectrum.memory.read(addr);
                 const isPrintable = byte >= 32 && byte < 127;
-                const char = isPrintable ? String.fromCharCode(byte) : '.';
+                const char = isPrintable ? String.fromCharCode(byte) : byte === 0 ? '\u25A0' : '.';
                 const asciiRegion = regionManager.get(addr);
-                let cls = isPrintable ? 'printable' : '';
+                let cls = isPrintable ? 'printable' : byte === 0 ? 'null-byte' : '';
                 if (asciiRegion && asciiRegion.type === REGION_TYPES.TEXT) {
                     cls += ' region-text';
                 }
-                html += `<span class="${cls.trim()}">${char}</span>`;
+                if (asciiSelectionStart !== null && addr >= asciiSelStart && addr <= asciiSelEnd) {
+                    cls += ' ascii-selected';
+                }
+                html += `<span class="${cls.trim()}" data-addr="${addr}">${char}</span>`;
             }
             html += '</span></div>';
         }
@@ -324,7 +415,9 @@ export function initMemoryView({
         updateMemoryView,
         updateLeftMemoryView,
         clearMemSelection,
+        clearAsciiSelection,
         getMemSelection: () => ({ start: memSelectionStart, end: memSelectionEnd }),
+        getAsciiSelection: () => ({ start: asciiSelectionStart, end: asciiSelectionEnd }),
         getMemoryEditingAddr: () => memoryEditingAddr,
         startByteEdit,
         finishCurrentEdit

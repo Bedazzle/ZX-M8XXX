@@ -107,3 +107,28 @@ Displays the last 10 actually-executed instructions. Click the **System** headin
 **Ring buffer** (`core/z80.js`): `cpu.instrHistory[0..9]` — pre-allocated entries `{ pc, bytes: Uint8Array(6), len }`. `cpu.instrHistoryIdx` is the write cursor. Cleared on `reset()`.
 
 **Popup** (`index.html`): `#pcHistoryPopup` positioned below `#btnPcHistory`. Click a row to navigate to that address via `navigateToAddress()`. Closes on click outside, Escape, or re-click on heading.
+
+## Pick Fold End Mode
+
+Interactive fold block creation without manual hex entry. Right-click a disasm line → **"Create fold block..."** activates picking mode.
+
+**UX flow**:
+1. Right-click a line → select "Create fold block..." from the context menu
+2. A cyan banner appears above the disasm view: `Click a line to set fold end (start: $XXXX)  [Cancel]`
+3. Both disasm panels show a crosshair cursor and cyan hover highlight on lines
+4. Click any disasm line in either panel to set the fold end address
+5. The fold dialog opens with start + end pre-filled, focus on the Name field
+6. End address field remains editable for manual adjustment
+7. ESC or the Cancel button exits picking mode without creating a fold
+
+**Auto-swap**: If the picked end address is before the start, the addresses are automatically swapped so the fold range is always ascending.
+
+**Implementation** (`ui/disasm-context.js`):
+- `pendingFoldStart` — module-level state; non-null when picking mode is active
+- `startFoldPick(addr)` — sets state, shows banner, adds `.fold-picking` class to both disasm views
+- `cancelFoldPick()` — clears state, hides banner, removes `.fold-picking`
+- `completeFoldPick(endAddr)` — saves start, cancels pick, swaps if needed, calls `showFoldDialog(start, end)`
+- Capture-phase click handler on both `disassemblyView` and `rightDisassemblyView` — fires before navigation handlers, calls `stopImmediatePropagation()` to eat the click
+- Capture-phase keydown handler on `document` — ESC cancels pick mode
+
+**CSS classes**: `.fold-pick-banner` (banner container), `.fold-picking` (applied to disasm views during pick mode — sets crosshair cursor and hover highlight on `.disasm-line`). Light theme override uses a darker tint for the hover highlight.

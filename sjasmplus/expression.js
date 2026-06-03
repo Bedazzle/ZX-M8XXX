@@ -424,6 +424,13 @@ export const ExpressionParser = {
                 }
             }
 
+            // Handle @ prefix (absolute reference - skip module prefix)
+            let isAbsolute = false;
+            if (name.startsWith('@') && name.length > 1) {
+                name = name.slice(1);
+                isAbsolute = true;
+            }
+
             // $$ - section start
             if (name === '$$') {
                 return { value: this.sectionStart, undefined: false };
@@ -450,6 +457,22 @@ export const ExpressionParser = {
                     return { value: sym.value, undefined: sym.undefined || false };
                 }
                 return { value: sym, undefined: false };
+            }
+
+            // Try with module prefix (e.g. "probs.c" → "upkr.probs.c" inside MODULE upkr)
+            if (!isAbsolute && typeof SymbolTable !== 'undefined' && SymbolTable.modules && SymbolTable.modules.length > 0) {
+                const modulePrefix = SymbolTable.getModulePrefix();
+                const moduleName = modulePrefix + name;
+                if (this.symbols && moduleName in this.symbols) {
+                    const sym = this.symbols[moduleName];
+                    if (SymbolTable.symbols && SymbolTable.symbols[moduleName]) {
+                        SymbolTable.symbols[moduleName].used = true;
+                    }
+                    if (typeof sym === 'object') {
+                        return { value: sym.value, undefined: sym.undefined || false };
+                    }
+                    return { value: sym, undefined: false };
+                }
             }
 
             // For local labels (starting with . only), try resolving with local prefix

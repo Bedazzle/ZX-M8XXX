@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.16</title>
+    <title>ZX-M8XXX v0.14.21</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -75,6 +75,7 @@
             background: #c0f0c0;
             color: #060;
         }
+        body.light-theme .fold-picking .disasm-line:hover { background: rgba(0,128,128,0.12); }
         /* Light theme operand colors */
         body.light-theme .disasm-reg {
             color: #996600;
@@ -90,6 +91,37 @@
         }
         body.light-theme .disasm-ptr {
             color: #666666;
+        }
+        /* Light theme memory dump overrides */
+        body.light-theme .memory-byte.selected {
+            background: #c0c8e8;
+            outline: 1px solid #5566bb;
+        }
+        body.light-theme .memory-byte.changed {
+            background: #f8d0d0;
+            color: #b02020;
+        }
+        body.light-theme .memory-byte.region-db {
+            color: #3344aa;
+        }
+        body.light-theme .memory-byte.region-dw {
+            color: #2266aa;
+        }
+        body.light-theme .memory-byte.region-text {
+            color: #998800;
+        }
+        body.light-theme .memory-byte.region-graphics {
+            color: #9930aa;
+        }
+        body.light-theme .memory-byte.region-smc {
+            color: #cc2020;
+        }
+        body.light-theme .memory-ascii .region-text {
+            color: #998800;
+        }
+        body.light-theme .memory-ascii > span.ascii-selected {
+            background: #c0c8e8;
+            color: #006666;
         }
 
         body {
@@ -1144,6 +1176,56 @@
         .asm-files-list-item .file-dir {
             color: var(--text-secondary);
             font-size: 11px;
+        }
+        .asm-files-list-item .file-delete {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1;
+            padding: 0 2px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .asm-files-list-item:hover .file-delete {
+            opacity: 1;
+        }
+        .asm-files-list-item .file-delete:hover,
+        .asm-files-list-dir .file-delete:hover {
+            color: #f55;
+        }
+        .asm-files-list-item.in-dir {
+            padding-left: 24px;
+        }
+        .asm-files-list-dir {
+            padding: 5px 10px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--bg-button);
+            background: var(--bg-secondary);
+        }
+        .asm-files-list-dir .file-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .asm-files-list-dir .file-icon {
+            width: 14px;
+            text-align: center;
+        }
+        .asm-files-list-dir .file-delete {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1;
+            padding: 0 2px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .asm-files-list-dir:hover .file-delete {
+            opacity: 1;
         }
         /* Search/Replace bar */
         .asm-search-bar {
@@ -3511,6 +3593,10 @@
             color: var(--text-secondary);
             text-transform: uppercase;
         }
+        .explorer-preview-modes { display: flex; gap: 2px; margin-top: 6px; }
+        .explorer-mode-btn { padding: 2px 10px; background: var(--bg-button); border: 1px solid var(--bg-button-border);
+            color: var(--text-primary); cursor: pointer; font-size: 11px; }
+        .explorer-mode-btn.active { background: var(--accent); color: #000; }
         @media (min-width: 1400px) {
             .explorer-output {
                 max-height: 650px; /* landscape */
@@ -4255,7 +4341,7 @@
             color: var(--text-secondary);
             margin-bottom: 3px;
         }
-        .label-dialog-row input {
+        .label-dialog-row input:not([type="checkbox"]) {
             width: 100%;
             padding: 6px 8px;
             background: var(--bg-primary);
@@ -4265,9 +4351,13 @@
             font-size: 12px;
             box-sizing: border-box;
         }
-        .label-dialog-row input:focus {
+        .label-dialog-row input:not([type="checkbox"]):focus {
             outline: none;
             border-color: var(--cyan);
+        }
+        .label-dialog-row label input[type="checkbox"] {
+            vertical-align: middle;
+            margin-right: 4px;
         }
         .label-dialog-row textarea {
             width: 100%;
@@ -4287,6 +4377,7 @@
         }
         .label-dialog-buttons button.danger {
             background: #633;
+            color: #eee;
         }
         .label-dialog-buttons button.danger:hover {
             background: #844;
@@ -4393,6 +4484,20 @@
             background: #2a3a4a;
             border-right: 3px solid var(--cyan);
         }
+        .fold-pick-banner {
+            background: var(--bg-button);
+            border: 1px solid var(--cyan);
+            border-radius: 3px;
+            padding: 4px 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+        }
+        .fold-pick-banner.hidden { display: none; }
+        .fold-pick-text { color: var(--cyan); }
+        .fold-picking .disasm-line { cursor: crosshair; }
+        .fold-picking .disasm-line:hover { background: rgba(78,205,196,0.15); }
         .disasm-line.current.target {
             background: #3a3a3a;
         }
@@ -5003,6 +5108,7 @@
             padding: 1px 0;
             white-space: nowrap;
             line-height: 18px;
+            user-select: none;
         }
         .memory-addr {
             color: var(--text-secondary);
@@ -5016,6 +5122,8 @@
         .memory-hex {
             display: flex;
             gap: 0;
+            width: 288px;
+            flex-shrink: 0;
             margin-right: 8px;
         }
         #leftMemoryView .memory-hex {
@@ -5078,6 +5186,15 @@
         .memory-ascii {
             color: var(--text-secondary);
             letter-spacing: 0;
+        }
+        .memory-ascii > span {
+            display: inline-block;
+            width: 1ch;
+            text-align: center;
+        }
+        .memory-ascii > span.ascii-selected {
+            background: #446;
+            color: var(--cyan);
         }
         .memory-ascii .printable {
             color: var(--cyan);
@@ -6683,7 +6800,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.16 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.21 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7142,6 +7259,7 @@
                                 <button id="btnAutoMapSnap" title="Capture current state for export (registers, memory)">Snap</button>
                                 <button id="btnAutoMapApply" title="Apply tracked regions">Apply</button>
                                 <button id="btnAutoMapClear" title="Clear tracking data">Clear</button>
+                                <button id="btnAutoMapExport" title="Export disassembly of auto-mapped regions">Export</button>
                                 <span id="autoMapStats" class="automap-stats"></span>
                                 <button id="btnClearRegions" title="Clear all marked regions">Clr Regions</button>
                                 <button id="btnMemoryMap" title="Show memory map visualization">Map</button>
@@ -7175,6 +7293,7 @@
                                 <label class="search-option" title="Include ROM subroutines (< $4000)"><input type="checkbox" id="chkProfileROM"> ROM</label>
                                 <button id="btnProfileStop" title="Stop profiling early" disabled>Stop</button>
                                 <button id="btnCallGraph" title="Show call graph from profiler data" disabled>Graph</button>
+                                <button id="btnProfileClear" title="Clear profiler labels and results">Clear</button>
                                 <span id="profileStatus" class="automap-stats"></span>
                             </div>
                             <div id="hotspotResults" class="hidden" style="margin-top:4px;max-height:180px;overflow-y:auto;font-size:11px;line-height:1.5"></div>
@@ -7192,6 +7311,7 @@
                                     <option value="increased">Increased</option>
                                     <option value="changed">Changed</option>
                                     <option value="unchanged">Unchanged</option>
+                                    <option value="abab">A-B-A-B</option>
                                 </select>
                                 <button id="btnPokeSearch" title="Search candidates">Search</button>
                                 <button id="btnPokeReset" title="Reset search">Reset</button>
@@ -7898,6 +8018,9 @@ start:
                     <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up." style="margin-top: 8px; display: inline-block;">
                         <input type="checkbox" id="chkLateTimings"> Late Timings
                     </label>
+                    <label class="checkbox-label" title="Pentagon ULA attribute prefetch (-5T). When enabled, matches ZXMAK2/Spectaculator/SpecEmu multicolor timing. Default (off) matches Unreal Speccy/FUSE." style="margin-top: 4px; display: inline-block;">
+                        <input type="checkbox" id="chkPentagonPrefetch"> Pentagon Attr Prefetch
+                    </label>
                     <div style="margin-top: 4px;">
                         <label class="checkbox-label" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom). Always enabled for Pentagon." style="display: inline-block;">
                             <input type="checkbox" id="chkBetaDisk"> Beta Disk (TR-DOS)
@@ -8200,6 +8323,11 @@ start:
                             </div>
                             <div id="explorerPreviewContainer" class="explorer-preview hidden">
                                 <canvas id="explorerPreviewCanvas" width="256" height="192"></canvas>
+                                <div id="explorerPreviewModes" class="explorer-preview-modes hidden">
+                                    <button class="explorer-mode-btn active" data-mode="spectrum">Spectrum</button>
+                                    <button class="explorer-mode-btn" data-mode="linear">Linear</button>
+                                    <button class="explorer-mode-btn" data-mode="font">Font</button>
+                                </div>
                                 <div id="explorerPreviewLabel" class="explorer-preview-label"></div>
                             </div>
                         </div>
@@ -8248,6 +8376,18 @@ start:
                             <span class="explorer-label">Length:</span>
                             <input type="number" id="explorerHexLen" value="256" min="16" max="65536" class="explorer-input len">
                             <button id="btnExplorerHex" class="explorer-btn">View</button>
+                        </div>
+                        <div id="explorerBankTools" class="explorer-controls" style="margin-bottom:10px;display:none">
+                            <span class="explorer-label">Addressing:</span>
+                            <select id="explorerBankAddrMode" class="explorer-select" style="min-width:100px">
+                                <option value="bank">Bank (0000-3FFF)</option>
+                                <option value="logical">Logical Z80</option>
+                            </select>
+                            <button id="btnExplorerExportBank" class="explorer-btn">Export .bin</button>
+                            <button id="btnExplorerImportBank" class="explorer-btn">Import .bin</button>
+                            <button id="btnExplorerSaveModified" class="explorer-btn" style="display:none">Save Modified</button>
+                            <span id="explorerBankStatus" style="font-size:10px;color:var(--text-secondary)"></span>
+                            <input type="file" id="explorerBankImportInput" accept=".bin,.dat,*" style="display:none">
                         </div>
                         <div id="explorerHexOutput" class="explorer-output">
                             <span class="explorer-empty">Select a source and click View</span>
@@ -8508,8 +8648,9 @@ start:
                             <option value="png">PNG</option>
                             <option value="scr">SCR</option>
                             <option value="gif">GIF (flash)</option>
+                            <option value="gigascr">Gigascreen</option>
                         </select>
-                        <label for="screenshotSize" style="min-width: auto; margin-left: 10px;">Size:</label>
+                        <span id="screenshotImageOptions"><label for="screenshotSize" style="min-width: auto; margin-left: 10px;">Size:</label>
                         <select id="screenshotSize">
                             <option value="screen">Screen only</option>
                             <option value="border">With border</option>
@@ -8520,7 +8661,7 @@ start:
                             <option value="2">x2</option>
                             <option value="3">x3</option>
                         </select>
-                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotOverlay"> Overlay</label>
+                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotOverlay"> Overlay</label></span>
                     </div>
                     <div class="settings-row">
                         <label style="min-width: auto;"><input type="checkbox" id="chkScreenshotBatch"> Batch</label>
@@ -8547,6 +8688,7 @@ start:
                             <option value="zip">ZIP (PNG sequence)</option>
                             <option value="gif">Animated GIF</option>
                             <option value="sca">SCA (animation)</option>
+                            <option value="gigascr">Gigascreen (.img)</option>
                         </select>
                         <label for="maxFrames" style="min-width: auto; margin-left: 10px; margin-right: -6px;">Max:</label>
                         <input type="number" id="maxFrames" value="0" min="0" style="width: 50px;">
@@ -10153,7 +10295,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.16';
+        const APP_VERSION = '0.14.21';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10816,7 +10958,7 @@ start:
             MEMORY_LINES, LEFT_MEMORY_LINES, BYTES_PER_LINE
         });
         const { updateMemoryView, updateLeftMemoryView,
-                clearMemSelection, startByteEdit, finishCurrentEdit } = memoryViewAPI;
+                clearMemSelection, clearAsciiSelection, startByteEdit, finishCurrentEdit } = memoryViewAPI;
 
         // Memory context menus initialized later (after initDialogs)
         
@@ -11194,7 +11336,10 @@ start:
             subroutineManager,
             getDisasmViewAddress: () => disasmViewAddress,
             showMessage,
-            updateDebugger
+            updateDebugger,
+            getGenerateAssemblyOutput: () => generateAssemblyOutput,
+            downloadFile,
+            appVersion: APP_VERSION
         });
         // ========== Runtime Behavior Profiler (extracted to ui/profiler-ui.js) ==========
         // Call Graph (extracted to ui/call-graph.js)
@@ -11357,7 +11502,9 @@ start:
             addWatch,
             addFreezeEditor: (addr, name) => pokeManagerAPI.addFreezeEditor(addr, name),
             getMemSelection: () => memoryViewAPI.getMemSelection(),
+            getAsciiSelection: () => memoryViewAPI.getAsciiSelection(),
             clearMemSelection,
+            clearAsciiSelection,
             getMemoryEditingAddr: () => memoryViewAPI.getMemoryEditingAddr(),
             finishCurrentEdit
         });
@@ -11598,7 +11745,19 @@ start:
             const baseName = getExportBaseName() || 'screenshot';
             const seq = String(autoCaptureSeqNum++).padStart(5, '0');
 
-            if (format === 'scr') {
+            if (format === 'gigascr') {
+                if (spectrum.memory.profile.ramPages === 1) {
+                    // 48K fallback — capture as SCR
+                    const data = new Uint8Array(6912);
+                    for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
+                    screenshotBatch.push({ name: `${baseName}_${seq}.scr`, data });
+                } else {
+                    const data = new Uint8Array(13824);
+                    data.set(spectrum.memory.ram[5].subarray(0, 6912), 0);
+                    data.set(spectrum.memory.ram[7].subarray(0, 6912), 6912);
+                    screenshotBatch.push({ name: `${baseName}_${seq}.img`, data });
+                }
+            } else if (format === 'scr') {
                 let data;
                 if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
                     data = new Uint8Array(6912 + 64);
@@ -11714,6 +11873,33 @@ start:
                         showMessage('GIF screenshot saved');
                     }
                 }, 20);
+            } else if (format === 'gigascr') {
+                // Gigascreen: two sequential SCR frames from banks 5 and 7 (13824 bytes, .img)
+                if (spectrum.memory.profile.ramPages === 1) {
+                    // 48K has no second screen bank — fall back to regular SCR
+                    const data = new Uint8Array(6912);
+                    for (let i = 0; i < 6912; i++) {
+                        data[i] = spectrum.memory.read(0x4000 + i);
+                    }
+                    const fn = `${baseName}_${timestamp}.scr`;
+                    if (batch) {
+                        captureToBuffer(fn, data);
+                    } else {
+                        downloadFile(fn, data);
+                    }
+                    showMessage('48K: no second screen bank — saved as SCR (6912 bytes)');
+                } else {
+                    const data = new Uint8Array(13824);
+                    data.set(spectrum.memory.ram[5].subarray(0, 6912), 0);
+                    data.set(spectrum.memory.ram[7].subarray(0, 6912), 6912);
+                    const fn = `${baseName}_${timestamp}.img`;
+                    if (batch) {
+                        captureToBuffer(fn, data);
+                    } else {
+                        downloadFile(fn, data);
+                    }
+                    showMessage('Gigascreen saved (13824 bytes)');
+                }
             } else {
                 // PNG
                 const tmpCanvas = captureScreenCanvas(size, zoom, includeOverlay);
@@ -11739,6 +11925,11 @@ start:
         });
 
         // Screenshot button settings: persist to localStorage
+        function updateScreenshotControls() {
+            const fmt = document.getElementById('screenshotFormat').value;
+            const isRaw = fmt === 'scr' || fmt === 'gigascr';
+            document.getElementById('screenshotImageOptions').style.display = isRaw ? 'none' : '';
+        }
         function saveScreenshotSettings() {
             storageSet('zxm8_screenshot', JSON.stringify({
                 format: document.getElementById('screenshotFormat').value,
@@ -11769,7 +11960,8 @@ start:
             }
         }
         loadScreenshotSettings();
-        document.getElementById('screenshotFormat').addEventListener('change', saveScreenshotSettings);
+        updateScreenshotControls();
+        document.getElementById('screenshotFormat').addEventListener('change', () => { saveScreenshotSettings(); updateScreenshotControls(); });
         document.getElementById('screenshotSize').addEventListener('change', saveScreenshotSettings);
         document.getElementById('screenshotZoom').addEventListener('change', saveScreenshotSettings);
         document.getElementById('chkScreenshotOverlay').addEventListener('change', saveScreenshotSettings);
@@ -12083,7 +12275,9 @@ start:
             stopEmulator: () => spectrum.stop(),
             setOnFrame: (cb) => { spectrum.onFrame = cb; },
             getAy: () => spectrum.ay,
-            showMessage
+            showMessage,
+            getRAMPage: (page) => spectrum.memory.ram[page],
+            getRamPages: () => spectrum.memory.profile.ramPages
         });
 
         // RZX Recording (extracted to ui/rzx-recorder.js)
@@ -12146,9 +12340,9 @@ start:
                 }
             }
 
-            binStart.addEventListener('input', () => syncBinFields('start'));
-            binLength.addEventListener('input', () => syncBinFields('length'));
-            binEnd.addEventListener('input', () => syncBinFields('end'));
+            binStart.addEventListener('change', () => syncBinFields('start'));
+            binLength.addEventListener('change', () => syncBinFields('length'));
+            binEnd.addEventListener('change', () => syncBinFields('end'));
 
             document.getElementById('btnBinExport').addEventListener('click', () => {
                 const start = parseBinHex(binStart);

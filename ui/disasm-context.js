@@ -30,6 +30,66 @@ export function initDisasmContext({
     const disassemblyView = document.getElementById('disassemblyView');
     const rightDisassemblyView = document.getElementById('rightDisassemblyView');
 
+    // ---- Fold pick mode ----
+    let pendingFoldStart = null;
+
+    const foldPickBanner = document.createElement('div');
+    foldPickBanner.className = 'fold-pick-banner hidden';
+    foldPickBanner.innerHTML = '<span class="fold-pick-text"></span>'
+        + '<button class="fold-pick-cancel">Cancel</button>';
+    disassemblyView.parentElement.insertBefore(foldPickBanner, disassemblyView);
+
+    function startFoldPick(addr) {
+        pendingFoldStart = addr;
+        foldPickBanner.querySelector('.fold-pick-text').textContent =
+            `Click a line to set fold end (start: $${hex16(addr)})`;
+        foldPickBanner.classList.remove('hidden');
+        disassemblyView.classList.add('fold-picking');
+        rightDisassemblyView.classList.add('fold-picking');
+    }
+
+    function cancelFoldPick() {
+        pendingFoldStart = null;
+        foldPickBanner.classList.add('hidden');
+        disassemblyView.classList.remove('fold-picking');
+        rightDisassemblyView.classList.remove('fold-picking');
+    }
+
+    function completeFoldPick(endAddr) {
+        let start = pendingFoldStart;
+        cancelFoldPick();
+        if (endAddr < start) {
+            const tmp = start;
+            start = endAddr;
+            endAddr = tmp;
+        }
+        showFoldDialog(start, endAddr);
+    }
+
+    foldPickBanner.querySelector('.fold-pick-cancel').addEventListener('click', cancelFoldPick);
+
+    // Capture-phase click on both panels — intercept before navigation handlers
+    function foldPickClickHandler(e) {
+        if (pendingFoldStart === null) return;
+        const line = e.target.closest('.disasm-line');
+        if (!line) return;
+        const addr = parseInt(line.dataset.addr, 10);
+        if (isNaN(addr)) return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        completeFoldPick(addr);
+    }
+    disassemblyView.addEventListener('click', foldPickClickHandler, true);
+    rightDisassemblyView.addEventListener('click', foldPickClickHandler, true);
+
+    // ESC cancels pick mode
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && pendingFoldStart !== null) {
+            e.stopImmediatePropagation();
+            cancelFoldPick();
+        }
+    }, true);
+
     // ---- XRef tooltip ----
     const xrefTooltip = document.getElementById('xrefTooltip');
     let xrefTooltipTimeout = null;
@@ -373,7 +433,7 @@ export function initDisasmContext({
             showMessage(`Subroutine mark removed at ${hex16(addr)}`);
             updateDebugger();
         } else if (action === 'add-fold') {
-            showFoldDialog(addr);
+            startFoldPick(addr);
         } else if (action === 'remove-fold') {
             const oldFold = foldManager.getUserFold(addr);
             if (oldFold) {
@@ -452,6 +512,15 @@ export function initDisasmContext({
         dialogs.labelContextMenu.style.left = e.clientX + 'px';
         dialogs.labelContextMenu.style.top = e.clientY + 'px';
         document.body.appendChild(dialogs.labelContextMenu);
+
+        // Adjust if menu overflows viewport
+        const menuRect = dialogs.labelContextMenu.getBoundingClientRect();
+        if (menuRect.bottom > window.innerHeight) {
+            dialogs.labelContextMenu.style.top = Math.max(0, window.innerHeight - menuRect.height) + 'px';
+        }
+        if (menuRect.right > window.innerWidth) {
+            dialogs.labelContextMenu.style.left = Math.max(0, window.innerWidth - menuRect.width) + 'px';
+        }
 
         adjustSubmenuOverflow(dialogs.labelContextMenu);
 

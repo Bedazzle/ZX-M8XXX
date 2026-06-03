@@ -27,6 +27,38 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
 - `explorerRenderSCRToImageData(pixels, canvasWidth, data, xOffset, yBase)`: shared renderer with `yBase` offset for vertical stacking
 - `explorerExtractZ80Screen(data, parsed, targetPage)`: extracts screen from Z80 v1/v2/v3. `targetPage` defaults to 8 (bank 5); pass 10 for bank 7. V1 returns null for non-page-8.
 - TAP/TZX/disk formats: preview shown for blocks/files with screen-sized data (6912, 6144, 4096, 2048, 768 bytes)
+- Rendering mode toggle for ambiguous sizes (2048, 4096, 6144 bytes): three buttons appear below the canvas — **Spectrum** (interleaved ZX screen layout), **Linear** (sequential scanlines, 256px wide), **Font** (8×8 glyph grid, 32 columns). Defaults to Spectrum; resets when a new file is selected. 768 bytes always renders as font (no toggle). 6912/9216/12288/18432 are unambiguous format-specific sizes (no toggle).
+
+**Bank Export/Import (Hex Dump sub-tab):**
+- Snapshot files (SNA, Z80, SZX) show per-bank sources in hex and disasm dropdowns: "Full memory" plus individual banks (0-7 for 128K, 5/2/0 for 48K). Bank 5 labeled "(screen)", bank 7 labeled "(shadow)".
+- Selecting a bank source shows the bank tools row: Addressing mode toggle, Export .bin, Import .bin, Save Modified buttons.
+- **Addressing modes**: Bank-relative (0000-3FFF) shows raw bank offsets. Logical Z80 shows the address where the bank is mapped in the Z80 address space (bank 5 → 4000, bank 2 → 8000, paged bank → C000).
+- **Export**: Downloads the selected bank (or a sub-range from address/length fields) as a `.bin` file. Filename includes bank number and optional address suffix.
+- **Import**: Loads a `.bin` file into the cached bank at the current address offset. Marks the bank as dirty. If bank 5 or 7 is modified, the screen preview updates immediately.
+- **Save Modified**: Rebuilds the full snapshot with all modified banks written back. SNA preserves the original header and bank layout (128K: paged bank at offset 27+32768, remaining 5 at 49183+). Z80 v1 files are upgraded to v3 with uncompressed pages. SZX rebuilds RAMP chunks with pako compression.
+- Bank data is cached on first access via `explorerExtractBank()`. Import modifies the cache in-place. Cache is cleared when a new file is loaded.
+- The "Full memory" source for Z80/SZX now reconstructs 48K from decompressed banks instead of showing raw compressed file bytes.
+
+**Edit Tab (dual-panel file editor):**
+- Two independent panels (left/right) for side-by-side file editing and cross-format copy
+- Supported container formats: TAP, TZX, TRD, SCL, MGT, IMG, MDR, DSK, OPD, OPU, ZIP, SNA, Z80, SZX
+- Each panel displays format-specific file/block lists with selection (click, Ctrl+click multi-select, Shift+click range select)
+- Toolbar: New (format dropdown), Save, Move Up/Down, Delete, Extract (bin/Hobeta dropdown), Copy (to other panel), Add File
+- **Editable containers** (TAP/TZX/TRD/SCL/MGT/MDR/DSK/OPD): add, remove, reorder, rename files; inline edit via double-click; save produces a new file
+- **ZIP containers**: transparent unwrap — single supported file auto-loads, multiple shows a picker dialog
+- **Snapshot containers** (SNA/Z80/SZX): virtual file list showing extractable entries:
+  - BASIC program (if PROG < VARS and PROG >= $4000, extracted from snapshot memory via system variables at $5C53/$5C4B)
+  - Screen — first 6912 bytes of bank 5 (bitmap + attributes)
+  - Shadow Screen — first 6912 bytes of bank 7 (128K only)
+  - RAM banks — all available banks (0-7 for 128K, 5/2/0 for 48K) as 16384-byte entries
+  - Bank addresses use logical Z80 mapping: bank 5 → $4000, bank 2 → $8000, all others → $C000
+  - Move/Delete/Add File disabled (fixed structure). Extract and Copy enabled.
+  - **Editing**: select target entry in snapshot panel, then Copy from other panel replaces that entry's data. Selection-based matching — first incoming file goes to first selected entry, etc. Falls back to address+length matching when no selection.
+  - **128K bank mapping**: the bank at $C000 is `port7FFD & 0x07`, not necessarily bank 0. `snapshotEditorWriteEntry()` and `snapshotEditorSave()` both respect this — SNA save writes paged bank at offset 27+32768, remaining banks at 49183+ in order [0,1,3,4,6,7] minus paged.
+  - **Save**: enabled when entries have been modified (button shows `Save SNA *`). Rebuilds the full snapshot: SNA preserves header and bank layout; Z80 v1 upgraded to v3 uncompressed; SZX rebuilds RAMP chunks with optional pako compression. Downloads as `filename_modified.sna/z80/szx`.
+  - Per-panel bank cache (`panel.snapshotBankCache`) and dirty set (`panel.snapshotDirty`) — left and right panels don't interfere with each other or with global explorer state.
+  - Screen entry auto-updates when its underlying bank (5 or 7) is replaced via bank entry write.
+- **Cross-format copy** (`editorCopySelection`): extracts files from source panel via `extractFilesFromPanel()`, converts via `convertFileForPanel()`, adds to destination via `addConvertedFile()`. Auto-creates empty destination if needed (snapshot source → TAP). Format conversion handles name truncation, extension mapping (single-char ↔ multi-char), type codes, and header construction per destination format.
 
 **Disk Map sub-tab (`explorerRenderDiskMap`):**
 - Visual sector-level disk structure for DSK, TRD, MGT, and OPD images
@@ -156,7 +188,9 @@ Snap-based memory scanner for finding game variables (lives, score, etc.). Locat
 
 **Workflow:** Snap -> play -> Snap -> play -> Snap -> Search. Each Search scans all RAM from scratch, building the value sequence from all stored snapshots. Every consecutive snap-to-snap pair is validated against the selected mode. No deduplication -- if a value didn't change between two snaps, modes like `-1` or `changed` will reject it.
 
-**Search modes:** `-1`/`+1` (exact step), `Decreased`/`Increased`, `Changed`, `Unchanged`. No `Equals` mode (removed -- incompatible with snap-based validation).
+**Search modes:** `-1`/`+1` (exact step), `Decreased`/`Increased`, `Changed`, `Unchanged`, `A-B-A-B`. No `Equals` mode (removed -- incompatible with snap-based validation).
+
+**A-B-A-B mode:** Finds memory locations that alternate between two values across snapshots. Requires at least 4 snapshots. Even-indexed snapshots (0, 2, 4, ...) must all have the same value, odd-indexed (1, 3, 5, ...) must all have the same value, and the two values must differ. Uses all available snapshots (more = stricter). Post-filter automatically strips contiguous runs of 2+ matching addresses to eliminate room layout / screen buffer data that also follows the A-B-A-B pattern. Typical workflow: alternate between two game states (e.g. two rooms), take 4-8 snapshots, search.
 
 **Value filter:** Post-search filter by exact current memory value. Checks `spectrum.memory.read(addr)` (matches displayed value). Reversible: clear input + click Filter restores pre-filter candidates. Re-filtering with a different value works from the original search results, not the filtered set.
 
@@ -172,7 +206,7 @@ Snap-based memory scanner for finding game variables (lives, score, etc.). Locat
 
 Auto-label subroutines by running the emulator and observing per-subroutine behavior. Located in Tools -> Analysis -> Profile row.
 
-**UI**: Run button, frame count input (10-5000, default 200), Stop button, status span. Progress shown during profiling.
+**UI**: Run button, frame count input (10-5000, default 200), Stop button, Graph button, Clear button, status span. Progress shown during profiling. Clear removes all profiler-generated labels (`source: 'profiler'`), the IM 2 vector table region, and resets the results display.
 
 **Architecture (`spectrum.js` + `index.html`):**
 - `spectrum.profiler` state object: `enabled`, `maxFrames`, `framesRemaining`, `startFrame`, `subroutines` Map, `onComplete` callback, `im2` (detected IM 2 info: handlerAddr, vectorTableAddr, iReg)
@@ -301,6 +335,8 @@ Runtime execution tracking that records every executed, read, and written addres
 - `clearAutoMap()` -- clears all tracking data
 
 **Project save/load**: `project.autoMap` stores `{ enabled, executed: [[key,count]], read: [[key,count]], written: [[key,count]] }`. On restore, the auto-map checkbox is synced and tracking is re-enabled if it was active.
+
+**Export**: The "Export" button downloads a `.asm` file containing sjasmplus-format disassembly of all auto-mapped regions. Addresses from `executed`, `read`, and `written` maps are merged with addresses from marked regions (`regionManager.getAll()`). Screen memory (0x4000–0x5AFF) is excluded. Addresses are sorted and grouped into contiguous blocks (gap > 16 bytes = new block). Each block is disassembled via `generateAssemblyOutput()` with ORG directives and address comments. The output file includes a header with version, timestamp, auto-map statistics, and block count.
 
 ## Signature Packs
 

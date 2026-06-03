@@ -285,9 +285,11 @@ export function initFileLoader({
             // Re-apply appropriate ROM after machine switch (and set romLoaded flag)
             const romReloaded = loadRomsForMachineType(spectrum, result.machineType);
 
-            // If ROM was reloaded after machine type change, start emulation
-            // (snapshot loaders try to start but fail if romLoaded was false)
-            if (romReloaded && !spectrum.running) {
+            // If ROM was reloaded after machine type change, restart only if
+            // the emulator was running before the load (snapshot loaders save
+            // wasRunning but their start() call fails when romLoaded is false
+            // during machine switch — this compensates for that case)
+            if (romReloaded && !spectrum.running && result.wasRunning) {
                 spectrum.start();
             }
 

@@ -4889,6 +4889,15 @@ import { Disassembler } from './disasm.js';
             this.setLateTimings(!early);
         }
 
+        // Set Pentagon attribute read offset in T-states
+        // Negative = ULA reads earlier (prefetch). 0 = default (matches Unreal/FUSE)
+        setPentagonAttrOffset(offset) {
+            this.pentagonAttrOffset = offset | 0;
+            if (this.ula) {
+                this.ula.setPentagonAttrOffset(offset);
+            }
+        }
+
         // Run until next interrupt
         runToInterrupt(maxCycles = 10000000) {
             if (this.running || !this.romLoaded) return false;
@@ -7165,6 +7174,7 @@ import { Disassembler } from './disasm.js';
 
                 const result = this.snapshotLoader.loadZ80(data, this.cpu, this.memory);
                 result.machineType = targetType;  // Add machine type to result for ROM reload
+                result.wasRunning = wasRunning;    // Preserve pre-load running state for caller
 
                 // Reset frame timing state to avoid stale state from previous program
                 this.frameStartOffset = 0;
@@ -7224,6 +7234,7 @@ import { Disassembler } from './disasm.js';
                 // Load SZX
                 const result = SZXLoader.load(data, this.cpu, this.memory, this.ula);
                 result.machineType = targetType;  // Add machine type to result for ROM reload
+                result.wasRunning = wasRunning;    // Preserve pre-load running state for caller
 
                 // Debug: verify ROM is correct (first byte at 0x38 should be F5 for 48K)
                 const romCheck = this.memory.read(0x38);
@@ -7287,6 +7298,7 @@ import { Disassembler } from './disasm.js';
             try {
                 const result = this.snapshotLoader.loadSNA(data, this.cpu, this.memory);
                 result.machineType = targetType; // Ensure correct type is returned
+                result.wasRunning = wasRunning;  // Preserve pre-load running state for caller
 
                 // Reset frame timing state to avoid stale state from previous program
                 this.frameStartOffset = 0;
@@ -7767,6 +7779,9 @@ import { Disassembler } from './disasm.js';
             // Restore ULA settings to new ULA
             if (this.lateTimings !== undefined) {
                 this.ula.setLateTimings(this.lateTimings);
+            }
+            if (this.pentagonAttrOffset !== undefined) {
+                this.ula.setPentagonAttrOffset(this.pentagonAttrOffset);
             }
             if (oldFullBorderMode) {
                 this.ula.setFullBorder(oldFullBorderMode);

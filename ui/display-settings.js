@@ -426,6 +426,20 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
     });
 
+    // ===== Pentagon attribute prefetch checkbox =====
+
+    const chkPentagonPrefetch = document.getElementById('chkPentagonPrefetch');
+    const savedPentagonPrefetch = storageGet('zxm8_pentagonPrefetch') === 'true';  // Default false
+    chkPentagonPrefetch.checked = savedPentagonPrefetch;
+    getSpectrum().setPentagonAttrOffset(savedPentagonPrefetch ? -5 : 0);
+
+    chkPentagonPrefetch.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.setPentagonAttrOffset(chkPentagonPrefetch.checked ? -5 : 0);
+        storageSet('zxm8_pentagonPrefetch', chkPentagonPrefetch.checked);
+        showMessage(chkPentagonPrefetch.checked ? 'Pentagon attr prefetch enabled' : 'Pentagon attr prefetch disabled');
+    });
+
     // ===== ULAplus handling =====
 
     // Initialize ULAplus palette grid (4 rows x 16 colors)
