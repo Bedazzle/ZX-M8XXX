@@ -52,7 +52,7 @@ export function initFileLoader({
     function updateMediaIndicator(fileName, type, driveIndex) {
         const spectrum = getSpectrum();
         const ext = fileName.split('.').pop().toLowerCase();
-        if (type === 'tape' || ext === 'tap' || ext === 'tzx') {
+        if (type === 'tape' || ext === 'tap' || ext === 'tzx' || ext === 'wav') {
             document.getElementById('tapeLed').title = fileName;
             document.getElementById('tapeInfo').style.display = 'inline-block';
         } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img') {
@@ -242,6 +242,8 @@ export function initFileLoader({
         } else if (result.blocks !== undefined) {
             // TAP/TZX file
             const isTzx = /\.tzx/i.test(fileName);
+            const isWav = /\.wav/i.test(fileName);
+            const formatName = isWav ? 'WAV' : isTzx ? 'TZX' : 'TAP';
             if (autoLoaderAPI.isAutoLoadEnabled()) {
                 // +3: eject FDC disks so the ROM Loader falls through to tape
                 if (spectrum.machineType === '+3' && spectrum.fdc) {
@@ -251,10 +253,10 @@ export function initFileLoader({
                     mediaCatalogAPI.clearDiskCatalog();
                     document.getElementById('diskInfo').style.display = 'none';
                 }
-                showMessage(`${isTzx ? 'TZX' : 'TAP'} loaded: ${result.blocks} blocks. Auto loading...`);
-                autoLoaderAPI.startAutoLoadTape(isTzx);
+                showMessage(`${formatName} loaded: ${result.blocks} block${result.blocks !== 1 ? 's' : ''}. Auto loading...`);
+                autoLoaderAPI.startAutoLoadTape(isTzx || isWav);
             } else {
-                showMessage(`${isTzx ? 'TZX' : 'TAP'} loaded: ${result.blocks} blocks. Type LOAD "" to load.`);
+                showMessage(`${formatName} loaded: ${result.blocks} block${result.blocks !== 1 ? 's' : ''}. Type LOAD "" to load.`);
             }
         } else if (result.frames !== undefined) {
             // RZX file - stop immediately and show debugger
@@ -559,7 +561,7 @@ export function initFileLoader({
                 }
                 spectrum.romLoaded = true;
                 showMessage('ROM loaded: ' + file.name);
-            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' || ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mdr' || ext === 'rzx') {
+            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' || ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mdr' || ext === 'rzx' || ext === 'wav') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
                     showMessage('Please load ROM files first', 'error');

@@ -102,7 +102,7 @@ const VERSION = '0.6.4';
 
             // Playback position within current block
             this.blockTstates = 0;      // T-states elapsed in current block
-            this.phase = 'idle';        // Current phase: idle, pilot, sync1, sync2, data, tail, pause, tone, pulses
+            this.phase = 'idle';        // Current phase: idle, pilot, sync1, sync2, data, tail, pause, tone, pulses, directRecording
             this.pilotCount = 0;        // Remaining pilot pulses
             this.byteIndex = 0;         // Current byte index in block data
             this.bitIndex = 0;          // Current bit index (7-0) in byte
@@ -244,6 +244,24 @@ const VERSION = '0.6.4';
                     this.pulseRemaining = block.pauseMs * TapePlayer.TSTATES_PER_MS;
                     this.earBit = false;
                     if (this.onBlockStart) this.onBlockStart(this.currentBlock, block);
+                    return;
+
+                case 'directRecording':
+                    this.phase = 'directRecording';
+                    this.byteIndex = 0;
+                    this.bitIndex = 7;
+                    this.pauseMs = block.pauseMs || 0;
+                    // Set earBit from first sample bit
+                    this.earBit = !!((block.data[0] >> 7) & 1);
+                    this.pulseRemaining = block.tStatesPerSample;
+                    if (this.onBlockStart) this.onBlockStart(this.currentBlock, block);
+                    return;
+
+                case 'cswRecording':
+                case 'generalizedData':
+                    // Unsupported block types - skip to next block
+                    this.currentBlock++;
+                    this.startBlock();
                     return;
 
                 case 'tone':
@@ -540,6 +558,46 @@ const VERSION = '0.6.4';
                     }
                     break;
 
+                case 'directRecording': {
+                    // Advance to next sample bit
+                    this.bitIndex--;
+                    const isLastByte = (this.byteIndex === block.data.length - 1);
+                    const minBit = isLastByte ? (8 - block.usedBits) : 0;
+
+                    if (this.bitIndex < minBit) {
+                        this.bitIndex = 7;
+                        this.byteIndex++;
+                        if (this.byteIndex >= block.data.length) {
+                            // All samples consumed
+                            if (this.onBlockEnd) this.onBlockEnd(this.currentBlock);
+                            if (this.pauseMs > 0) {
+                                this.phase = 'pause';
+                                this.pulseRemaining = this.pauseMs * TapePlayer.TSTATES_PER_MS;
+                                this.earBit = false;
+                            } else {
+                                this.currentBlock++;
+                                if (this.currentBlock >= this.blocks.length) {
+                                    this.phase = 'idle';
+                                    this.playing = false;
+                                    if (this.onTapeEnd) this.onTapeEnd();
+                                } else {
+                                    this.startBlock();
+                                }
+                            }
+                            return this.playing;
+                        }
+                    }
+
+                    // Set earBit from sample bit, record edge on level change
+                    const sampleBit = !!((block.data[this.byteIndex] >> this.bitIndex) & 1);
+                    if (sampleBit !== this.earBit) {
+                        this.earBit = sampleBit;
+                        this.recordEdge(edgeTstates);
+                    }
+                    this.pulseRemaining = block.tStatesPerSample;
+                    break;
+                }
+
                 case 'pause':
                     // Pause complete, start next block
                     this.currentBlock++;
@@ -600,9 +658,12 @@ const VERSION = '0.6.4';
             const blockBytes = block && block.data ? block.data.length : 0;
             let blockProgress = 0;
 
-            if (this.phase === 'data' && blockBytes > 0) {
-                // During data phase, show byte progress
+            if ((this.phase === 'data' || this.phase === 'directRecording') && blockBytes > 0) {
+                // During data/directRecording phase, show byte progress
                 blockProgress = Math.round((this.byteIndex / blockBytes) * 100);
+            } else if (this.phase === 'pulses' && block && block.pulses && block.pulses.length > 0) {
+                // During pulse sequence phase, show pulse progress
+                blockProgress = Math.round((this.currentPulseIndex / block.pulses.length) * 100);
             } else if (this.phase === 'pilot' || this.phase === 'sync1' || this.phase === 'sync2') {
                 // During pilot/sync, show 0%
                 blockProgress = 0;
@@ -901,12 +962,25 @@ const VERSION = '0.6.4';
         }
 
         /**
-         * Block 0x15 - Direct Recording (skip only, no playback)
+         * Block 0x15 - Direct Recording
          */
         parseDirectRecording(offset) {
             const data = this.data;
+            const tStatesPerSample = data[offset] | (data[offset + 1] << 8);
+            const pauseMs = data[offset + 2] | (data[offset + 3] << 8);
+            const usedBits = data[offset + 4] || 8;
             const dataLen = data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16);
-            return { length: 8 + dataLen };
+            return {
+                block: {
+                    type: 'directRecording',
+                    tStatesPerSample,
+                    pauseMs,
+                    usedBits,
+                    dataLength: dataLen,
+                    data: data.slice(offset + 8, offset + 8 + dataLen)
+                },
+                length: 8 + dataLen
+            };
         }
 
         /**
@@ -916,7 +990,10 @@ const VERSION = '0.6.4';
             const data = this.data;
             const blockLen = data[offset] | (data[offset + 1] << 8) |
                              (data[offset + 2] << 16) | (data[offset + 3] << 24);
-            return { length: 4 + blockLen };
+            return {
+                block: { type: 'cswRecording', dataLength: blockLen },
+                length: 4 + blockLen
+            };
         }
 
         /**
@@ -926,7 +1003,10 @@ const VERSION = '0.6.4';
             const data = this.data;
             const blockLen = data[offset] | (data[offset + 1] << 8) |
                              (data[offset + 2] << 16) | (data[offset + 3] << 24);
-            return { length: 4 + blockLen };
+            return {
+                block: { type: 'generalizedData', dataLength: blockLen },
+                length: 4 + blockLen
+            };
         }
 
         /**
@@ -1042,6 +1122,183 @@ const VERSION = '0.6.4';
         setCurrentBlock(n) { this.currentBlock = Math.max(0, Math.min(n, this.blocks.length)); }
     }
 
+    /**
+     * WAV file loader - converts PCM audio to edge-timed pulse sequence
+     */
+    export class WAVLoader {
+        static get VERSION() { return VERSION; }
+
+        static isWAV(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            if (bytes.length < 12) return false;
+            // RIFF....WAVE
+            return bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+                   bytes[8] === 0x57 && bytes[9] === 0x41 && bytes[10] === 0x56 && bytes[11] === 0x45;
+        }
+
+        load(data) {
+            // Ensure correct Uint8Array view (preserve offset/length for subarrays)
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            if (!WAVLoader.isWAV(bytes)) return false;
+
+            // Parse RIFF chunks - scan for 'fmt ' and 'data'
+            let fmtChunk = null;
+            let dataChunk = null;
+            let offset = 12; // skip RIFF header + WAVE
+
+            while (offset + 8 <= bytes.length) {
+                const chunkId = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+                const chunkSize = bytes[offset + 4] | (bytes[offset + 5] << 8) |
+                                  (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24);
+
+                if (chunkId === 'fmt ') {
+                    fmtChunk = { offset: offset + 8, size: chunkSize };
+                } else if (chunkId === 'data') {
+                    dataChunk = { offset: offset + 8, size: chunkSize };
+                }
+
+                offset += 8 + chunkSize;
+                // Chunks are word-aligned
+                if (chunkSize & 1) offset++;
+            }
+
+            if (!fmtChunk || !dataChunk) {
+                throw new Error('WAV: missing fmt or data chunk');
+            }
+
+            // Parse fmt chunk
+            const fmt = fmtChunk.offset;
+            const audioFormat = bytes[fmt] | (bytes[fmt + 1] << 8);
+            if (audioFormat !== 1) {
+                throw new Error('WAV: only PCM format supported (got ' + audioFormat + ')');
+            }
+            const channels = bytes[fmt + 2] | (bytes[fmt + 3] << 8);
+            const sampleRate = bytes[fmt + 4] | (bytes[fmt + 5] << 8) |
+                               (bytes[fmt + 6] << 16) | (bytes[fmt + 7] << 24);
+            const bitsPerSample = bytes[fmt + 14] | (bytes[fmt + 15] << 8);
+
+            if (bitsPerSample !== 8 && bitsPerSample !== 16) {
+                throw new Error('WAV: only 8-bit and 16-bit PCM supported (got ' + bitsPerSample + ')');
+            }
+
+            // Convert PCM to edge-timed pulse sequence for precise turbo loading.
+            // directRecording (1-bit packed) quantizes edges to sample boundaries (~79 T-states
+            // at 44100Hz), causing up to ±79 T-state jitter per edge — fatal for turbo loaders
+            // with ~200-300 T-state pulses. Instead, detect zero-crossings with linear
+            // interpolation for sub-sample precision, then store as pulse durations.
+            const bytesPerSample = bitsPerSample / 8;
+            const frameSize = bytesPerSample * channels;
+            const dataEnd = Math.min(dataChunk.offset + dataChunk.size, bytes.length);
+            const totalSamples = Math.floor((dataEnd - dataChunk.offset) / frameSize);
+
+            // Pass 1: find min/max for midpoint
+            let minSample = Infinity, maxSample = -Infinity;
+            let scanOffset = dataChunk.offset;
+            for (let i = 0; i < totalSamples; i++) {
+                let s;
+                if (bitsPerSample === 8) {
+                    s = bytes[scanOffset] - 128;
+                } else {
+                    s = (bytes[scanOffset] | (bytes[scanOffset + 1] << 8));
+                    if (s >= 0x8000) s -= 0x10000;
+                }
+                if (s < minSample) minSample = s;
+                if (s > maxSample) maxSample = s;
+                scanOffset += frameSize;
+            }
+
+            const midpoint = (minSample + maxSample) / 2;
+            const tStatesPerSampleFloat = 3500000 / sampleRate;
+            const duration = totalSamples / sampleRate;
+
+            // Pass 2: AC-coupled zero-crossing detection with linear interpolation.
+            // The ZX Spectrum EAR circuit has AC coupling (capacitor removes DC offset)
+            // followed by a Schmitt trigger. This means the effective threshold adapts
+            // to the signal's local DC level. We simulate this with a high-pass filter:
+            // ac_signal = raw_signal - low_pass(raw_signal), then detect zero crossings.
+            // Time constant ~5ms balances DC tracking vs preserving turbo pulses (~80µs).
+            const dcAlpha = 1.0 / (sampleRate * 0.005); // 5ms time constant
+
+            // Read first sample
+            let prevRaw;
+            if (bitsPerSample === 8) {
+                prevRaw = bytes[dataChunk.offset] - 128;
+            } else {
+                prevRaw = (bytes[dataChunk.offset] | (bytes[dataChunk.offset + 1] << 8));
+                if (prevRaw >= 0x8000) prevRaw -= 0x10000;
+            }
+            let dc = prevRaw; // Initialize DC estimate to first sample
+            let prevAC = prevRaw - dc; // AC-coupled value (0 at start)
+            const initialLevel = prevRaw > midpoint; // Use global midpoint for initial level only
+
+            const crossings = [];
+            let sampleOffset = dataChunk.offset + frameSize;
+            for (let i = 1; i < totalSamples; i++) {
+                let sample;
+                if (bitsPerSample === 8) {
+                    sample = bytes[sampleOffset] - 128;
+                } else {
+                    sample = (bytes[sampleOffset] | (bytes[sampleOffset + 1] << 8));
+                    if (sample >= 0x8000) sample -= 0x10000;
+                }
+
+                // Update DC estimate (exponential moving average)
+                dc += dcAlpha * (sample - dc);
+                // AC-coupled signal: remove DC component
+                const ac = sample - dc;
+
+                // Detect zero-crossing in AC-coupled signal
+                if ((prevAC <= 0 && ac > 0) || (prevAC > 0 && ac <= 0)) {
+                    // Linear interpolation for sub-sample crossing position
+                    const denom = ac - prevAC;
+                    const fraction = denom !== 0 ? (0 - prevAC) / denom : 0.5;
+                    crossings.push((i - 1) + fraction);
+                }
+
+                prevAC = ac;
+                sampleOffset += frameSize;
+            }
+
+            // Convert crossings to pulse durations (T-states)
+            const pulses = [];
+            let prevPos = 0;
+            for (const pos of crossings) {
+                const dur = Math.round((pos - prevPos) * tStatesPerSampleFloat);
+                if (dur > 0) pulses.push(dur);
+                prevPos = pos;
+            }
+            // Final pulse: from last crossing to end of WAV
+            const finalDur = Math.round((totalSamples - prevPos) * tStatesPerSampleFloat);
+            if (finalDur > 0) pulses.push(finalDur);
+
+            // Use 'pulses' block type — TapePlayer toggles earBit at each pulse boundary.
+            // The 'pulses' startBlock keeps earBit at its current level for pulses[0],
+            // so we prepend a minimal setup block to establish the correct initial level.
+            this.blocks = [];
+            // Set initial EAR level with a tone block of 1 pulse (immediate)
+            if (initialLevel) {
+                // Need earBit = true before pulses block starts.
+                // Tone block toggles earBit once, so if earBit starts false (default),
+                // after tone of 1 pulse earBit = true.
+                this.blocks.push({
+                    type: 'tone',
+                    pulseLength: 1,
+                    pulseCount: 1
+                });
+            }
+            this.blocks.push({
+                type: 'pulses',
+                pulses: pulses
+            });
+
+            this.metadata = { sampleRate, bitsPerSample, channels, duration, totalSamples };
+
+            return true;
+        }
+
+        getBlockCount() { return this.blocks ? this.blocks.length : 0; }
+    }
+
     export class SnapshotLoader {
         static get VERSION() { return VERSION; }
         
@@ -1063,6 +1320,7 @@ const VERSION = '0.6.4';
             if (ext === 'mgt' || ext === 'img') return 'mgt';
             if (ext === 'mdr') return 'mdr';
             if (ext === 'opd' || ext === 'opu') return 'opd';
+            if (ext === 'wav') return 'wav';
 
             const bytes = new Uint8Array(data);
 
@@ -1092,6 +1350,9 @@ const VERSION = '0.6.4';
 
             // Check for OPD format (Opus Discovery)
             if (OPDLoader.isOPD(data)) return 'opd';
+
+            // Check for WAV format (RIFF/WAVE audio)
+            if (WAVLoader.isWAV(data)) return 'wav';
 
             if (bytes.length === SNA_48K_SIZE || bytes.length === SNA_128K_SIZE || bytes.length === SNA_P1024_SIZE) return 'sna';
             if (bytes.length > 30 && (bytes[6] === 0 || bytes[6] === 0xff)) return 'z80';
@@ -2896,7 +3157,7 @@ const VERSION = '0.6.4';
                     name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
                     name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk') ||
                     name.endsWith('.mgt') || name.endsWith('.img') || name.endsWith('.mdr') ||
-                    name.endsWith('.opd') || name.endsWith('.opu')) {
+                    name.endsWith('.opd') || name.endsWith('.opu') || name.endsWith('.wav')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
                     else if (name.endsWith('.tzx')) type = 'tzx';
@@ -2909,6 +3170,7 @@ const VERSION = '0.6.4';
                     else if (name.endsWith('.mdr')) type = 'mdr';
                     else if (name.endsWith('.mgt') || name.endsWith('.img')) type = 'mgt';
                     else if (name.endsWith('.opd') || name.endsWith('.opu')) type = 'opd';
+                    else if (name.endsWith('.wav')) type = 'wav';
                     else type = 'tap';
 
                     spectrumFiles.push({

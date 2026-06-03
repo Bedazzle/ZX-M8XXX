@@ -57,9 +57,10 @@ export const Assembler = {
     },
 
     // Main assembly function for single file
-    assemble(source, filename = '<input>', cmdDefines = []) {
+    assemble(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
-        
+        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+
         // Apply command-line defines
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
@@ -75,8 +76,9 @@ export const Assembler = {
     },
 
     // Async single-file assembly with progress reporting
-    async assembleAsync(source, filename = '<input>', cmdDefines = []) {
+    async assembleAsync(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
+        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
@@ -86,7 +88,7 @@ export const Assembler = {
     },
 
     // Async multi-file project assembly with progress reporting
-    async assembleProjectAsync(mainFile, cmdDefines = []) {
+    async assembleProjectAsync(mainFile, cmdDefines = [], options = {}) {
         this.currentAddress = 0;
         this.physicalAddress = null;
         this.sectionStart = 0;
@@ -107,6 +109,7 @@ export const Assembler = {
         ErrorCollector.reset();
         AsmMemory.reset();
         Preprocessor.reset();
+        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
 
         cmdDefines = cmdDefines || [];
         for (const def of cmdDefines) {
@@ -122,7 +125,7 @@ export const Assembler = {
     },
 
     // Assembly function for multi-file project (files already in VFS)
-    assembleProject(mainFile, cmdDefines = []) {
+    assembleProject(mainFile, cmdDefines = [], options = {}) {
         // Don't reset VFS - files are already loaded
         this.currentAddress = 0;
         this.physicalAddress = null;
@@ -144,22 +147,23 @@ export const Assembler = {
         ErrorCollector.reset();
         AsmMemory.reset();
         Preprocessor.reset();
-        
+        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+
         // Apply command-line defines
         cmdDefines = cmdDefines || [];
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
-        
+
         // Get main file from VFS
         const file = VFS.getFile(mainFile);
         if (!file || file.error) {
             throw new AssemblerError(file ? file.error : `Main file not found: ${mainFile}`);
         }
-        
+
         // Parse main source
         this.lines = Parser.parse(file.content, file.path);
-        
+
         return this.runPasses();
     },
 
@@ -243,10 +247,10 @@ export const Assembler = {
             if (undefinedSyms.length === 0 && this.changed && this.pass > 5) {
                 ErrorCollector.error('Assembly failed to converge - possible circular dependency');
             }
-            
+
             lastUndefinedCount = undefinedSyms.length;
         }
-        
+
         if (this.pass > this.maxPasses) {
             ErrorCollector.error('Assembly did not converge within maximum passes');
         }
@@ -565,7 +569,25 @@ export const Assembler = {
 
         // Handle label (but not for EQU/DEFL/MACRO - those handle their own labels)
         if (line.label && dir !== 'EQU' && dir !== '=' && dir !== 'DEFL' && dir !== 'DEFINE' && dir !== 'UNDEFINE' && dir !== 'MACRO') {
-            this.defineLabel(line.label, line.line, line.file);
+            // Check if the "label" is actually a macro call — the parser can't distinguish
+            // macro names from labels when followed by a colon statement separator
+            // (e.g., "GET_BIT : jr nc,label" → parser sees GET_BIT as label, but it's a macro)
+            if (Preprocessor.isMacro(line.label)) {
+                this.macroCount++;
+                const expanded = Preprocessor.expandMacro(line.label, [], this.macroCount);
+                if (expanded) {
+                    for (const expandedLine of expanded) {
+                        const parsed = Parser.parse(expandedLine, line.file || '<macro>')[0];
+                        if (parsed) {
+                            parsed.file = line.file;
+                            parsed.line = line.line;
+                            this.processLine(parsed);
+                        }
+                    }
+                }
+            } else {
+                this.defineLabel(line.label, line.line, line.file);
+            }
         }
         
         // Handle directive
@@ -628,11 +650,11 @@ export const Assembler = {
             }
             return;
         }
-        
+
         // Regular label
         const oldValue = SymbolTable.getValue(label);
         SymbolTable.define(label, this.currentAddress, lineNum, file);
-        
+
         // Check if value changed (for multi-pass convergence)
         if (oldValue.value !== this.currentAddress) {
             this.changed = true;

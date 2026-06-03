@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.21</title>
+    <title>ZX-M8XXX v0.14.24</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -6800,7 +6800,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.21 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.24 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6878,7 +6878,7 @@
         <input type="file" id="romScorpionInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romTrdosInput" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPlusDRomInput" class="file-input" accept=".rom,.bin">
-        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.zxproj,.json">
+        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.wav,.zxproj,.json">
         </div><!-- emulator-section -->
 
         <!-- Tab Container -->
@@ -7595,6 +7595,7 @@
                         <button id="btnAsmImport" title="Import shared project from clipboard">Import</button>
                         <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
                         <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
+                        <label class="asm-option"><input type="checkbox" id="chkAsmCaseInsensitive"> Case insensitive</label>
                         <label class="asm-option"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
                         <label class="asm-option"><input type="checkbox" id="chkAsmShowCompiled"> Show compiled</label>
                         <label class="asm-option">Font:
@@ -10294,7 +10295,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.21';
+        const APP_VERSION = '0.14.24';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 

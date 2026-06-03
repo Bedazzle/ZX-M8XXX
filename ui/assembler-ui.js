@@ -43,6 +43,7 @@ export function initAssemblerUI({
     const asmProgressLabel = document.getElementById('asmProgressLabel');
     const asmProgressFill = document.getElementById('asmProgressFill');
     const asmProgressPct = document.getElementById('asmProgressPct');
+    const chkAsmCaseInsensitive = document.getElementById('chkAsmCaseInsensitive');
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
@@ -2061,6 +2062,14 @@ export function initAssemblerUI({
 
     updateProjectButtons();
 
+    // Case-insensitive labels option
+    if (chkAsmCaseInsensitive) {
+        chkAsmCaseInsensitive.checked = storageGet('zxm8_asmCaseInsensitive') === 'true';
+        chkAsmCaseInsensitive.addEventListener('change', () => {
+            storageSet('zxm8_asmCaseInsensitive', chkAsmCaseInsensitive.checked);
+        });
+    }
+
     // Font size controls for assembler editor
     const asmFontSizeSelect = document.getElementById('asmFontSize');
 
@@ -2986,12 +2995,16 @@ export function initAssemblerUI({
             }
         }
 
-        return { filename, normalizedFilename, hasProject, cmdDefines };
+        const asmOptions = {
+            caseInsensitive: chkAsmCaseInsensitive && chkAsmCaseInsensitive.checked
+        };
+
+        return { filename, normalizedFilename, hasProject, cmdDefines, asmOptions };
     }
 
     // Async assembly with progress reporting
     async function doAssembleAsync() {
-        const { filename, normalizedFilename, hasProject, cmdDefines } = prepareAssembly();
+        const { filename, normalizedFilename, hasProject, cmdDefines, asmOptions } = prepareAssembly();
 
         Assembler.progressCallback = (pass, linesDone, totalLines) => {
             const pct = totalLines > 0 ? Math.round(linesDone / totalLines * 100) : 0;
@@ -3003,10 +3016,10 @@ export function initAssemblerUI({
         try {
             let result;
             if (hasProject && VFS.files[normalizedFilename]) {
-                result = await Assembler.assembleProjectAsync(normalizedFilename, cmdDefines);
+                result = await Assembler.assembleProjectAsync(normalizedFilename, cmdDefines, asmOptions);
             } else {
                 const code = asmEditor.value;
-                result = await Assembler.assembleAsync(code, filename, cmdDefines);
+                result = await Assembler.assembleAsync(code, filename, cmdDefines, asmOptions);
             }
             processAssemblyResult(result, normalizedFilename, hasProject);
         } catch (e) {
@@ -3017,18 +3030,18 @@ export function initAssemblerUI({
     }
 
     function doAssemble() {
-        const { filename, normalizedFilename, hasProject, cmdDefines } = prepareAssembly();
+        const { filename, normalizedFilename, hasProject, cmdDefines, asmOptions } = prepareAssembly();
 
         // Use sjasmplus-js assembler
         try {
             let result;
             if (hasProject && VFS.files[normalizedFilename]) {
                 // Multi-file project - use assembleProject to preserve VFS
-                result = Assembler.assembleProject(normalizedFilename, cmdDefines);
+                result = Assembler.assembleProject(normalizedFilename, cmdDefines, asmOptions);
             } else {
                 // Single file mode - use assemble
                 const code = asmEditor.value;
-                result = Assembler.assemble(code, filename, cmdDefines);
+                result = Assembler.assemble(code, filename, cmdDefines, asmOptions);
             }
 
             processAssemblyResult(result, normalizedFilename, hasProject);

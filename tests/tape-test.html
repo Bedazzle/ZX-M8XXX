@@ -88,11 +88,12 @@
         <button onclick="runAYBasicTests()">AY Basic</button>
         <button onclick="runAYSoundTests()">AY Sound</button>
         <button onclick="runAYPSGTests()">AY PSG Export</button>
+        <button onclick="runWAVIntegrationTests()">WAV Integration</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, TapePlayer, TZXLoader } from '../core/loaders.js';
+    import { TapeLoader, TapePlayer, TZXLoader, WAVLoader } from '../core/loaders.js';
     import { AY } from '../core/ay.js';
 
     const logEl = document.getElementById('log');
@@ -1414,6 +1415,186 @@
     }
 
     // ═══════════════════════════════════════════════════════
+    // WAV → TapePlayer Integration Tests
+    // ═══════════════════════════════════════════════════════
+
+    // Helper: build minimal WAV file for integration tests
+    function buildWAV(sampleRate, bitsPerSample, channels, samples) {
+        const bytesPerSample = bitsPerSample / 8;
+        const frameSize = bytesPerSample * channels;
+        const numSamples = samples.length;
+        const dataSize = numSamples * frameSize;
+        const fmtSize = 16;
+        const totalSize = 12 + 8 + fmtSize + 8 + dataSize;
+        const wav = new Uint8Array(totalSize);
+        let pos = 0;
+
+        // RIFF header
+        wav[pos++] = 0x52; wav[pos++] = 0x49; wav[pos++] = 0x46; wav[pos++] = 0x46;
+        const fileSize = totalSize - 8;
+        wav[pos++] = fileSize & 0xFF; wav[pos++] = (fileSize >> 8) & 0xFF;
+        wav[pos++] = (fileSize >> 16) & 0xFF; wav[pos++] = (fileSize >> 24) & 0xFF;
+        wav[pos++] = 0x57; wav[pos++] = 0x41; wav[pos++] = 0x56; wav[pos++] = 0x45;
+
+        // fmt chunk
+        wav[pos++] = 0x66; wav[pos++] = 0x6D; wav[pos++] = 0x74; wav[pos++] = 0x20;
+        wav[pos++] = fmtSize & 0xFF; wav[pos++] = (fmtSize >> 8) & 0xFF; wav[pos++] = 0; wav[pos++] = 0;
+        wav[pos++] = 1; wav[pos++] = 0; // PCM
+        wav[pos++] = channels & 0xFF; wav[pos++] = (channels >> 8) & 0xFF;
+        wav[pos++] = sampleRate & 0xFF; wav[pos++] = (sampleRate >> 8) & 0xFF;
+        wav[pos++] = (sampleRate >> 16) & 0xFF; wav[pos++] = (sampleRate >> 24) & 0xFF;
+        const byteRate = sampleRate * frameSize;
+        wav[pos++] = byteRate & 0xFF; wav[pos++] = (byteRate >> 8) & 0xFF;
+        wav[pos++] = (byteRate >> 16) & 0xFF; wav[pos++] = (byteRate >> 24) & 0xFF;
+        wav[pos++] = frameSize & 0xFF; wav[pos++] = (frameSize >> 8) & 0xFF;
+        wav[pos++] = bitsPerSample & 0xFF; wav[pos++] = (bitsPerSample >> 8) & 0xFF;
+
+        // data chunk
+        wav[pos++] = 0x64; wav[pos++] = 0x61; wav[pos++] = 0x74; wav[pos++] = 0x61;
+        wav[pos++] = dataSize & 0xFF; wav[pos++] = (dataSize >> 8) & 0xFF;
+        wav[pos++] = (dataSize >> 16) & 0xFF; wav[pos++] = (dataSize >> 24) & 0xFF;
+
+        for (let i = 0; i < numSamples; i++) {
+            for (let ch = 0; ch < channels; ch++) {
+                if (bitsPerSample === 8) {
+                    wav[pos++] = samples[i];
+                } else {
+                    const s = samples[i];
+                    wav[pos++] = s & 0xFF;
+                    wav[pos++] = (s >> 8) & 0xFF;
+                }
+            }
+        }
+        return wav;
+    }
+
+    function runWAVIntegrationTests() {
+        section('WAV → TapePlayer - Load and play');
+
+        {
+            // Build a simple square wave WAV
+            const sq = new Uint8Array(80);
+            for (let i = 0; i < 80; i++) {
+                sq[i] = (Math.floor(i / 4) % 2 === 0) ? 255 : 0;
+            }
+            const wav = buildWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const player = new TapePlayer();
+            player.loadBlocks(loader.blocks);
+            assert(player.blocks.length === loader.blocks.length, 'WAV→Player: all blocks loaded');
+
+            player.play();
+            assert(player.playing === true, 'WAV→Player: playing');
+        }
+
+        section('WAV → TapePlayer - Pulses produce ear toggles');
+
+        {
+            // Square wave at 44100Hz: 10 samples high, 10 low, repeated
+            const sq = new Uint8Array(200);
+            for (let i = 0; i < 200; i++) {
+                sq[i] = (Math.floor(i / 10) % 2 === 0) ? 255 : 0;
+            }
+            const wav = buildWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const player = new TapePlayer();
+            player.loadBlocks(loader.blocks);
+            player.play();
+
+            // Count ear toggles during playback
+            let toggleCount = 0;
+            let prevEar = player.earBit;
+            const totalT = 200 * Math.round(3500000 / 44100) + 1000;
+            for (let t = 0; t < totalT && player.playing; t += 10) {
+                player.update(10);
+                if (player.earBit !== prevEar) {
+                    toggleCount++;
+                    prevEar = player.earBit;
+                }
+            }
+            assert(toggleCount >= 5, 'WAV playback produces ear toggles',
+                `got ${toggleCount} toggles`);
+        }
+
+        section('WAV → TapePlayer - Playback completes');
+
+        {
+            const sq = new Uint8Array(40);
+            for (let i = 0; i < 40; i++) sq[i] = (i < 20) ? 255 : 0;
+            const wav = buildWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const player = new TapePlayer();
+            player.loadBlocks(loader.blocks);
+            player.play();
+
+            // Advance well past expected duration
+            let maxIter = 100000;
+            while (player.playing && maxIter-- > 0) {
+                player.update(1000);
+            }
+            assert(!player.playing, 'WAV playback completes');
+        }
+
+        section('WAV → TapePlayer - Callbacks fire');
+
+        {
+            const sq = new Uint8Array(20);
+            for (let i = 0; i < 20; i++) sq[i] = (i < 10) ? 255 : 0;
+            const wav = buildWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const player = new TapePlayer();
+            let blockStarted = false, tapeEnded = false;
+            player.onBlockStart = () => { blockStarted = true; };
+            player.onTapeEnd = () => { tapeEnded = true; };
+            player.loadBlocks(loader.blocks);
+            player.play();
+
+            let maxIter = 100000;
+            while (player.playing && maxIter-- > 0) {
+                player.update(1000);
+            }
+            assert(blockStarted, 'WAV: onBlockStart called');
+            assert(tapeEnded || !player.playing, 'WAV: tape finishes');
+        }
+
+        section('WAV → TapePlayer - getPosition reports pulses phase');
+
+        {
+            const sq = new Uint8Array(100);
+            for (let i = 0; i < 100; i++) {
+                sq[i] = (Math.floor(i / 5) % 2 === 0) ? 255 : 0;
+            }
+            const wav = buildWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const player = new TapePlayer();
+            player.loadBlocks(loader.blocks);
+            player.play();
+
+            // Skip past any initial tone block
+            while (player.phase === 'tone' && player.playing) player.update(10);
+
+            if (player.playing) {
+                const pos = player.getPosition();
+                assert(pos.phase === 'pulses', 'getPosition phase = pulses during WAV playback',
+                    `got: ${pos.phase}`);
+                assert(pos.playing === true, 'getPosition playing = true');
+            }
+        }
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Run All
     // ═══════════════════════════════════════════════════════
     function runAll() {
@@ -1429,6 +1610,7 @@
         runAYBasicTests();
         runAYSoundTests();
         runAYPSGTests();
+        runWAVIntegrationTests();
 
         log(`\nDone. ${passed} passed, ${failed} failed.`, failed > 0 ? 'fail' : 'pass');
         updateSummary();
@@ -1443,6 +1625,7 @@
     window.runAYBasicTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYBasicTests(); };
     window.runAYSoundTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYSoundTests(); };
     window.runAYPSGTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYPSGTests(); };
+    window.runWAVIntegrationTests = () => { passed=0; failed=0; logEl.innerHTML=''; runWAVIntegrationTests(); updateSummary(); };
 
     // Auto-run
     runAll();

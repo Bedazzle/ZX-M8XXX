@@ -12,7 +12,8 @@ export const SymbolTable = {
     tempLabelCounters: {}, // For generating unique temp label references
     tempDefOrder: 0,       // Global counter for temp label definition order
     tempRefOrder: 0,       // Current reference point in definition order
-    
+    caseInsensitive: false, // When true, all label names are lowercased
+
     reset() {
         this.symbols = {};
         this.modules = [];
@@ -22,6 +23,7 @@ export const SymbolTable = {
         this.tempLabelCounters = {};
         this.tempDefOrder = 0;
         this.tempRefOrder = 0;
+        this.caseInsensitive = false;
     },
 
     // Get current module prefix
@@ -31,6 +33,9 @@ export const SymbolTable = {
 
     // Get full name with module prefix
     getFullName(name) {
+        if (this.caseInsensitive) {
+            name = name.toLowerCase();
+        }
         // Absolute reference (starts with @)
         if (name.startsWith('@') && name.length > 1 && !/^\d/.test(name[1])) {
             return name.slice(1);
@@ -135,7 +140,7 @@ export const SymbolTable = {
 
     // Enter a module
     enterModule(name) {
-        this.modules.push(name);
+        this.modules.push(this.caseInsensitive ? name.toLowerCase() : name);
     },
 
     // Exit a module

@@ -248,6 +248,11 @@
             assertBytes(bytes('INC IX'), [0xDD, 0x23], 'INC IX');
             assertBytes(bytes('DEC (IX+3)'), [0xDD, 0x35, 0x03], 'DEC (IX+d)');
 
+            // Multi-operand INC/DEC (sjasmplus extension)
+            assertBytes(bytes('INC E,DE,E,DE'), [0x1C, 0x13, 0x1C, 0x13], 'INC E,DE,E,DE (multi-op)');
+            assertBytes(bytes('DEC B,BC'), [0x05, 0x0B], 'DEC B,BC (multi-op)');
+            assertBytes(bytes('INC A,IX'), [0x3C, 0xDD, 0x23], 'INC A,IX (multi-op mixed)');
+
             section('Jump Instructions');
 
             assertBytes(bytes('JP $8000'), [0xC3, 0x00, 0x80], 'JP nn');
@@ -280,6 +285,13 @@
             assertBytes(bytes('POP HL'), [0xE1], 'POP HL');
             assertBytes(bytes('PUSH IX'), [0xDD, 0xE5], 'PUSH IX');
             assertBytes(bytes('POP IY'), [0xFD, 0xE1], 'POP IY');
+
+            // Multi-register PUSH/POP (sjasmplus extension)
+            assertBytes(bytes('PUSH HL,AF'), [0xE5, 0xF5], 'PUSH HL,AF (multi-reg)');
+            assertBytes(bytes('PUSH BC,DE,HL,AF'), [0xC5, 0xD5, 0xE5, 0xF5], 'PUSH BC,DE,HL,AF (multi-reg)');
+            assertBytes(bytes('POP AF,HL,DE,BC'), [0xF1, 0xE1, 0xD1, 0xC1], 'POP AF,HL,DE,BC (multi-reg)');
+            assertBytes(bytes('PUSH IX,IY'), [0xDD, 0xE5, 0xFD, 0xE5], 'PUSH IX,IY (multi-reg)');
+            assertBytes(bytes('PUSH HL,IX,AF'), [0xE5, 0xDD, 0xE5, 0xF5], 'PUSH HL,IX,AF (multi-reg mixed)');
 
             section('Exchange Instructions');
 
@@ -841,6 +853,99 @@
                 WAIT 20
             `);
             assert(result.success, 'Multiple macro calls with local labels converge');
+
+            section('Colon as Statement Separator');
+
+            // Instruction followed by colon should be statement separator, not label
+            // "exa : ld a,b" = EX AF,AF' then LD A,B (not label "exa" + LD A,B)
+            result = asm(`
+                ORG $8000
+                exa : ld a,b
+            `);
+            assert(result.success, 'EXA colon as statement separator assembles');
+            if (result.output) {
+                assertBytes(result.output, [0x08, 0x78], 'EXA : LD A,B = 08 78');
+            }
+
+            // Multiple statement separators with instructions
+            // "exa : ld a,b : exa" = EX AF,AF' + LD A,B + EX AF,AF'
+            result = asm(`
+                ORG $8000
+                exa : ld a,b : exa
+            `);
+            assert(result.success, 'Multiple colon separators with instructions');
+            if (result.output) {
+                assertBytes(result.output, [0x08, 0x78, 0x08], 'EXA : LD A,B : EXA = 08 78 08');
+            }
+
+            // NOP as instruction, not label, when followed by colon
+            result = asm(`
+                ORG $8000
+                nop : ret
+            `);
+            assert(result.success, 'NOP colon as statement separator');
+            if (result.output) {
+                assertBytes(result.output, [0x00, 0xC9], 'NOP : RET = 00 C9');
+            }
+
+            // Column-1 identifier with colon is still a label (even if instruction name)
+            result = asm(`
+                ORG $8000
+nop:
+                ret
+            `);
+            assert(result.success, 'Column-1 NOP colon is label');
+            let nopSym = result.symbols ? result.symbols.find(s => s.name === 'nop') : null;
+            assert(nopSym !== null, 'Column-1 NOP: defined as label');
+
+            section('Macro Call with Colon Separator');
+
+            // Macro name followed by colon should be macro call + statement separator
+            // "GET_BIT : jr nc,somewhere" = expand GET_BIT macro, then JR NC
+            result = asm(`
+                ORG $8000
+                MACRO GET_BIT
+                    call $9000
+                ENDM
+target:
+                GET_BIT : jr nc,target
+            `);
+            assert(result.success, 'Macro call with colon separator assembles');
+            if (result.output) {
+                // GET_BIT expands to CALL $9000 (3 bytes: CD 00 90)
+                // then JR NC,target — target is at $8000, JR is at $8003, offset = -5 = $FB
+                assertBytes(result.output, [0xCD, 0x00, 0x90, 0x30, 0xFB], 'Macro : JR NC,target correct bytes');
+            }
+
+            // Macro call with colon, then another macro call
+            result = asm(`
+                ORG $8000
+                MACRO INC2
+                    inc a
+                    inc a
+                ENDM
+                INC2 : INC2
+            `);
+            assert(result.success, 'Macro : Macro separator assembles');
+            if (result.output) {
+                assertBytes(result.output, [0x3C, 0x3C, 0x3C, 0x3C], 'INC2 : INC2 = 4x INC A');
+            }
+
+            // Macro with local labels + colon separator must converge
+            result = asm(`
+                ORG $8000
+                MACRO GETBIT
+                    sla c
+                    jr nz,.done
+                    call $9000
+.done:
+                ENDM
+start:
+                GETBIT : jr nc,start
+                GETBIT : jr nc,start
+                ret
+            `);
+            assert(result.success, 'Macro+locals with colon separator converges');
 
             section('Local Labels After Operators');
 

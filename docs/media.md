@@ -1,4 +1,4 @@
-# Media: Auto Load, Tape Loading, Media Catalog, Multi-Drive Support
+# Media: Auto Load, Tape Loading, WAV Loading, Media Catalog, Multi-Drive Support
 
 ## Auto Load
 
@@ -10,6 +10,7 @@ Automatic load-and-run for tape and disk files. Controlled via checkbox in Setti
 - **TRD/SCL**: Boot into TR-DOS automatically via `spectrum.bootTrdos()` (only if Beta Disk is available on current machine). SCL files are converted to TRD format before loading.
 - **DSK** (+3): Insert into uPD765 FDC, reset + press Enter at Amstrad menu to select "Loader" (ROM auto-detects disk and boots). Uses CP/M-style directory listing.
 - **Pure turbo TZX** (no standard blocks): Switches to real-time mode, starts tape playback after Enter
+- **WAV**: Treated like pure turbo TZX — flash load is disabled, real-time tape playback starts after `LOAD ""` Enter
 
 **Disk auto-load requirements:** Beta Disk must be available (Pentagon mode, or Beta Disk enabled in settings with TR-DOS ROM loaded). If not available, disk is inserted but only a message is shown -- no automatic machine switch.
 
@@ -57,6 +58,32 @@ Two tape systems work together for TZX files with mixed standard + turbo blocks:
 
 **Critical guard -- PC >= 0x4000:**
 The auto-start ONLY triggers when `this.cpu.pc >= 0x4000`. This prevents false triggers from ROM keyboard scanning (ISR at ~0x0038 -> 0x028E reads port 0xFE for all 8 half-rows). Without this check, the turbo pilot starts during an interrupt BEFORE the custom loader runs, and short pilots expire before the loader can sync. On stock ROMs (48K, 128K, Pentagon 128), custom loaders reside in RAM (PC >= 0x4000). Note: some modified ROMs contain turbo loaders in ROM space, but these are out of scope for the supported machine types.
+
+## WAV Tape Loading
+
+WAV audio files can be loaded as tape input. PCM audio is converted to pulse sequences for real-time EAR-bit playback via the TapePlayer.
+
+**WAVLoader (`core/loaders.js`):**
+- `static isWAV(data)` -- checks RIFF/WAVE magic bytes
+- `load(data)` -- parses RIFF chunks (scans for `fmt ` and `data`), validates PCM format (audioFormat=1)
+- Supports 8-bit unsigned and 16-bit signed samples, mono and stereo (left channel only for stereo)
+- Stores metadata: sampleRate, bitsPerSample, channels, duration, totalSamples
+
+**AC-coupled zero-crossing conversion:**
+The real ZX Spectrum EAR circuit has a capacitor that AC-couples the tape signal before the comparator, removing DC offset. WAVLoader simulates this:
+1. **Pass 1**: Scans all samples to find min/max range for initial midpoint
+2. **Pass 2**: Applies a high-pass filter (exponential moving average, 5ms time constant: `dcAlpha = 1 / (sampleRate * 0.005)`) to track DC offset locally. The AC-coupled signal = raw sample minus DC estimate
+3. **Zero-crossing detection**: Finds sign changes in the AC-coupled signal with linear interpolation for sub-sample precision edge timing
+4. **Pulse generation**: Converts crossing positions to T-state durations between EAR level toggles (`tStatesPerSample = 3500000 / sampleRate`)
+
+The AC coupling is essential for WAV files where the DC offset varies between standard and turbo sections (e.g. asymmetric signals with range [-122, 73]). A global midpoint threshold would place crossings at wrong positions for one section or the other.
+
+**Output format**: A `pulses` block (array of T-state durations between level toggles). If the initial signal level is high, a 1-T-state tone block is prepended to set the correct initial EAR state.
+
+**Integration (`spectrum.js`):**
+- `loadWAV()` loads blocks into `tapePlayer` only (no flash load — WAV is always real-time playback)
+- Sets `_turboBlockPending = true` for auto-start when the loader reads port 0xFE
+- Auto-load treats WAV like pure turbo TZX (types `LOAD ""`, starts real-time playback)
 
 ## Media Catalog
 

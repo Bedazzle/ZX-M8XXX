@@ -25,7 +25,7 @@ import { Memory } from './memory.js';
 import { ULA } from './ula.js';
 import { AY } from './ay.js';
 import {
-    TapeLoader, TapePlayer, TZXLoader, SnapshotLoader,
+    TapeLoader, TapePlayer, TZXLoader, WAVLoader, SnapshotLoader,
     TapeTrapHandler, TRDOSTrapHandler, BetaDisk,
     ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader,
     MGTLoader, PlusDDisk, MDRLoader, Microdrive
@@ -7119,6 +7119,7 @@ import { Disassembler } from './disasm.js';
                 case 'szx': return this.loadSZXSnapshot(data);
                 case 'tap': return this.loadTape(data, fileName);  // Store TAP with name
                 case 'tzx': return this.loadTZX(data, fileName);  // Store TZX with name
+                case 'wav': return this.loadWAV(data, fileName);  // Store WAV with name
                 case 'dsk':
                     return this.loadDSKImage(data, fileName, driveIndex);
                 case 'trd':
@@ -7473,6 +7474,42 @@ import { Disassembler } from './disasm.js';
             };
         }
 
+        loadWAV(data, storeName = null) {
+            this._turboBlockPending = false;
+
+            const wavLoader = new WAVLoader();
+            if (!wavLoader.load(data)) {
+                throw new Error('Failed to parse WAV file');
+            }
+
+            // WAV provides directRecording blocks — load into TapePlayer
+            this.tapePlayer.loadBlocks(wavLoader.blocks);
+
+            // No ROM trap for WAV — direct recording only, must use real-time playback
+            this.tapeLoader.blocks = [];
+            this.tapeLoader.currentBlock = 0;
+            this.tapeTrap.setTape(null);
+
+            // Reset debug counters
+            this._floatBusLogCount = 0;
+            this._intDebugCount = 0;
+            this._floatBusLogActive = false;
+
+            // Store original WAV data for project save
+            if (storeName) {
+                this.loadedTape = {
+                    type: 'wav',
+                    data: new Uint8Array(data),
+                    name: storeName
+                };
+            }
+
+            return {
+                blocks: wavLoader.getBlockCount(),
+                metadata: wavLoader.metadata
+            };
+        }
+
         // ========== Media Management ==========
 
         getLoadedMedia() {
@@ -7521,6 +7558,8 @@ import { Disassembler } from './disasm.js';
                         this.tapePlayer.loadFromTapeLoader(this.tapeLoader);
                     } else if (media.tape.type === 'tzx') {
                         this.loadTZX(media.tape.data.buffer, null);
+                    } else if (media.tape.type === 'wav') {
+                        this.loadWAV(media.tape.data.buffer, null);
                     }
                 }
                 // Restore Beta Disk drives

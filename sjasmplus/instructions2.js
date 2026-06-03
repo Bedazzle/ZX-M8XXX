@@ -292,53 +292,67 @@ InstructionEncoder.encodeALU8 = function(op, operand, addr, syms) {
 
 // INC/DEC encoder
 InstructionEncoder.encodeINCDEC = function(op, ops, addr, syms) {
-    if (ops.length !== 1) {
-        ErrorCollector.error(`${op} requires 1 operand`);
+    if (ops.length < 1) {
+        ErrorCollector.error(`${op} requires at least 1 operand`);
     }
 
     const isINC = op === 'INC';
-    const operand = ops[0].toUpperCase();
+    const allBytes = [];
+    let hasUndefined = false;
 
-    // INC/DEC r (8-bit)
-    if (Z80Asm.isR8(operand)) {
-        const r = Z80Asm.getR8(operand);
-        const base = isINC ? 0x04 : 0x05;
-        return { bytes: [base | (r << 3)], size: 1, undefined: false };
+    // sjasmplus multi-operand: INC E,DE,E,DE = INC E : INC DE : INC E : INC DE
+    for (let i = 0; i < ops.length; i++) {
+        const operand = ops[i].toUpperCase();
+
+        // INC/DEC r (8-bit)
+        if (Z80Asm.isR8(operand)) {
+            const r = Z80Asm.getR8(operand);
+            const base = isINC ? 0x04 : 0x05;
+            allBytes.push(base | (r << 3));
+            continue;
+        }
+
+        // INC/DEC rp (16-bit)
+        if (Z80Asm.isR16(operand)) {
+            const rp = Z80Asm.getR16(operand);
+            const base = isINC ? 0x03 : 0x0B;
+            allBytes.push(base | (rp << 4));
+            continue;
+        }
+
+        // INC/DEC IX/IY
+        if (operand === 'IX' || operand === 'IY') {
+            const prefix = operand === 'IX' ? 0xDD : 0xFD;
+            const base = isINC ? 0x23 : 0x2B;
+            allBytes.push(prefix, base);
+            continue;
+        }
+
+        // INC/DEC (IX+d) / (IY+d)
+        const idx = Z80Asm.parseIndexed(ops[i]);
+        if (idx) {
+            const prefix = idx.reg === 'IX' ? 0xDD : 0xFD;
+            const offset = this.evalExpr(idx.offset, syms, addr);
+            const disp = Z80Asm.checkByte(offset.value, true);
+            const base = isINC ? 0x34 : 0x35;
+            allBytes.push(prefix, base, disp);
+            if (offset.undefined) hasUndefined = true;
+            continue;
+        }
+
+        // Undocumented: INC/DEC IXH/IXL/IYH/IYL
+        const undoc = /^I([XY])([HL])$/.exec(operand);
+        if (undoc) {
+            const prefix = undoc[1] === 'X' ? 0xDD : 0xFD;
+            const r = undoc[2] === 'H' ? 4 : 5;
+            const base = isINC ? 0x04 : 0x05;
+            allBytes.push(prefix, base | (r << 3));
+            continue;
+        }
+
+        ErrorCollector.error(`Invalid ${op} operand: ${ops[i]}`);
     }
 
-    // INC/DEC rp (16-bit)
-    if (Z80Asm.isR16(operand)) {
-        const rp = Z80Asm.getR16(operand);
-        const base = isINC ? 0x03 : 0x0B;
-        return { bytes: [base | (rp << 4)], size: 1, undefined: false };
-    }
-
-    // INC/DEC IX/IY
-    if (operand === 'IX' || operand === 'IY') {
-        const prefix = operand === 'IX' ? 0xDD : 0xFD;
-        const base = isINC ? 0x23 : 0x2B;
-        return { bytes: [prefix, base], size: 2, undefined: false };
-    }
-
-    // INC/DEC (IX+d) / (IY+d)
-    const idx = Z80Asm.parseIndexed(ops[0]);
-    if (idx) {
-        const prefix = idx.reg === 'IX' ? 0xDD : 0xFD;
-        const offset = this.evalExpr(idx.offset, syms, addr);
-        const disp = Z80Asm.checkByte(offset.value, true);
-        const base = isINC ? 0x34 : 0x35;
-        return { bytes: [prefix, base, disp], size: 3, undefined: offset.undefined };
-    }
-
-    // Undocumented: INC/DEC IXH/IXL/IYH/IYL
-    const undoc = /^I([XY])([HL])$/.exec(operand);
-    if (undoc) {
-        const prefix = undoc[1] === 'X' ? 0xDD : 0xFD;
-        const r = undoc[2] === 'H' ? 4 : 5;
-        const base = isINC ? 0x04 : 0x05;
-        return { bytes: [prefix, base | (r << 3)], size: 2, undefined: false };
-    }
-
-    ErrorCollector.error(`Invalid ${op} operand: ${ops[0]}`);
+    return { bytes: allBytes, size: allBytes.length, undefined: hasUndefined };
 };
 

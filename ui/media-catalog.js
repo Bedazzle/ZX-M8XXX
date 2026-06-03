@@ -82,6 +82,9 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const num = String(index + 1).padStart(2, ' ');
         if (block.type === 'pause') return `${num}  Pause ${block.pauseMs || 0}ms`;
         if (block.type === 'stop') return `${num}  Stop Tape`;
+        if (block.type === 'directRecording') return `${num}  Direct Recording (${block.dataLength} bytes)`;
+        if (block.type === 'cswRecording') return `${num}  CSW Recording (${block.dataLength} bytes)`;
+        if (block.type === 'generalizedData') return `${num}  Generalized Data (${block.dataLength} bytes)`;
         if (block.type !== 'data') return `${num}  ${block.type}`;
         const isTurbo = block.pilotPulse && Math.abs(block.pilotPulse - TAPE_STD_PILOT_PULSE) >= TAPE_TURBO_TOLERANCE;
         const prefix = isTurbo ? 'Turbo' : 'Std';
@@ -444,10 +447,10 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const spectrum = getSpectrum();
         const pos = spectrum.getTapePosition();
         if (pos.totalBlocks > 0) {
-            const status = pos.playing ? (pos.phase === 'pilot' ? 'PILOT' : pos.phase === 'data' ? 'DATA' : pos.phase.toUpperCase()) : 'STOPPED';
+            const status = pos.playing ? (pos.phase === 'pilot' ? 'PILOT' : pos.phase === 'data' ? 'DATA' : pos.phase === 'directRecording' ? 'DIRECT' : pos.phase === 'pulses' ? 'PULSES' : pos.phase.toUpperCase()) : 'STOPPED';
             tapePositionEl.textContent = `Block ${pos.block + 1}/${pos.totalBlocks} ${status}`;
             if (tapeProgressEl) {
-                if (pos.playing && pos.phase === 'data') {
+                if (pos.playing && (pos.phase === 'data' || pos.phase === 'directRecording' || pos.phase === 'pulses')) {
                     tapeProgressEl.textContent = `${pos.blockProgress}%`;
                 } else if (pos.playing) {
                     tapeProgressEl.textContent = 'SYNC';

@@ -122,9 +122,18 @@ export const Parser = {
                     this.pos = identPos;
                     putBack = true;
                 }
-                // Check if followed by colon (label)
-                else if (this.match(TokenType.COLON)) {
-                    result.label = ident.value;
+                // Check if followed by colon (label or statement separator)
+                else if (this.check(TokenType.COLON)) {
+                    // If not at line start and identifier is a known instruction,
+                    // the colon is a statement separator, not a label terminator
+                    // (e.g., "exa : ld a,b" = EX AF,AF' then LD A,B)
+                    if (!isAtLineStart && this.isInstruction(ident.value)) {
+                        this.pos = identPos;  // Put back identifier to parse as instruction
+                        putBack = true;
+                    } else {
+                        this.advance();  // Consume the colon
+                        result.label = ident.value;
+                    }
                 }
                 // Check for compound label like ALIEN.1: or LABEL.FIELD:
                 // Pattern: IDENTIFIER DOT (NUMBER|IDENTIFIER) COLON

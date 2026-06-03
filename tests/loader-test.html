@@ -90,11 +90,12 @@
         <button onclick="runOPDTests()">OPD</button>
         <button onclick="runDSKTests()">DSK</button>
         <button onclick="runSZXTests()">SZX</button>
+        <button onclick="runWAVTests()">WAV</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, SZXLoader, ZipLoader, RZXLoader } from '../core/loaders.js';
+    import { TapeLoader, TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, SZXLoader, ZipLoader, RZXLoader, WAVLoader } from '../core/loaders.js';
     import { DSKLoader, DSKImage } from '../core/fdc.js';
 
     const TEST_VERSION = '0.9.12';
@@ -249,6 +250,69 @@
         return mgt;
     }
 
+    // ============ Helper: build minimal WAV file ============
+    function buildTestWAV(sampleRate, bitsPerSample, channels, samples) {
+        // samples: Uint8Array for 8-bit, Int16Array for 16-bit (mono channel values)
+        // For stereo, samples still contains mono values — we duplicate to left+right
+        const bytesPerSample = bitsPerSample / 8;
+        const frameSize = bytesPerSample * channels;
+        const numSamples = samples.length;
+        const dataSize = numSamples * frameSize;
+        const fmtSize = 16;
+        // RIFF header(12) + fmt chunk(8+16) + data chunk header(8) + data
+        const totalSize = 12 + 8 + fmtSize + 8 + dataSize;
+        const wav = new Uint8Array(totalSize);
+        let pos = 0;
+
+        // RIFF header
+        wav[pos++] = 0x52; wav[pos++] = 0x49; wav[pos++] = 0x46; wav[pos++] = 0x46; // "RIFF"
+        const fileSize = totalSize - 8;
+        wav[pos++] = fileSize & 0xFF; wav[pos++] = (fileSize >> 8) & 0xFF;
+        wav[pos++] = (fileSize >> 16) & 0xFF; wav[pos++] = (fileSize >> 24) & 0xFF;
+        wav[pos++] = 0x57; wav[pos++] = 0x41; wav[pos++] = 0x56; wav[pos++] = 0x45; // "WAVE"
+
+        // fmt chunk
+        wav[pos++] = 0x66; wav[pos++] = 0x6D; wav[pos++] = 0x74; wav[pos++] = 0x20; // "fmt "
+        wav[pos++] = fmtSize & 0xFF; wav[pos++] = (fmtSize >> 8) & 0xFF;
+        wav[pos++] = 0; wav[pos++] = 0;
+        // audioFormat = 1 (PCM)
+        wav[pos++] = 1; wav[pos++] = 0;
+        // channels
+        wav[pos++] = channels & 0xFF; wav[pos++] = (channels >> 8) & 0xFF;
+        // sampleRate
+        wav[pos++] = sampleRate & 0xFF; wav[pos++] = (sampleRate >> 8) & 0xFF;
+        wav[pos++] = (sampleRate >> 16) & 0xFF; wav[pos++] = (sampleRate >> 24) & 0xFF;
+        // byteRate
+        const byteRate = sampleRate * frameSize;
+        wav[pos++] = byteRate & 0xFF; wav[pos++] = (byteRate >> 8) & 0xFF;
+        wav[pos++] = (byteRate >> 16) & 0xFF; wav[pos++] = (byteRate >> 24) & 0xFF;
+        // blockAlign
+        wav[pos++] = frameSize & 0xFF; wav[pos++] = (frameSize >> 8) & 0xFF;
+        // bitsPerSample
+        wav[pos++] = bitsPerSample & 0xFF; wav[pos++] = (bitsPerSample >> 8) & 0xFF;
+
+        // data chunk
+        wav[pos++] = 0x64; wav[pos++] = 0x61; wav[pos++] = 0x74; wav[pos++] = 0x61; // "data"
+        wav[pos++] = dataSize & 0xFF; wav[pos++] = (dataSize >> 8) & 0xFF;
+        wav[pos++] = (dataSize >> 16) & 0xFF; wav[pos++] = (dataSize >> 24) & 0xFF;
+
+        // Sample data
+        for (let i = 0; i < numSamples; i++) {
+            for (let ch = 0; ch < channels; ch++) {
+                if (bitsPerSample === 8) {
+                    wav[pos++] = samples[i]; // 8-bit unsigned
+                } else {
+                    // 16-bit signed little-endian
+                    const s = samples[i];
+                    wav[pos++] = s & 0xFF;
+                    wav[pos++] = (s >> 8) & 0xFF;
+                }
+            }
+        }
+
+        return wav;
+    }
+
     // ==================== FORMAT DETECTION TESTS ====================
 
     function runFormatDetection() {
@@ -369,6 +433,31 @@
             const bad = new Uint8Array(16);
             bad.fill(0);
             assert(SZXLoader.isSZX(bad) === false, 'wrong signature rejected');
+        }
+
+        section('Format Detection - WAV');
+
+        {
+            const wav = buildTestWAV(44100, 8, 1, new Uint8Array([128, 255, 128, 0]));
+            assert(WAVLoader.isWAV(wav) === true, 'valid WAV detected');
+        }
+        {
+            assert(WAVLoader.isWAV(new Uint8Array(5)) === false, 'too small rejected');
+        }
+        {
+            assert(WAVLoader.isWAV(new Uint8Array(20)) === false, 'zeroed data rejected');
+        }
+        {
+            // Valid RIFF but wrong format (not WAVE)
+            const bad = new Uint8Array(12);
+            bad[0] = 0x52; bad[1] = 0x49; bad[2] = 0x46; bad[3] = 0x46; // "RIFF"
+            bad[8] = 0x41; bad[9] = 0x56; bad[10] = 0x49; bad[11] = 0x20; // "AVI "
+            assert(WAVLoader.isWAV(bad) === false, 'RIFF AVI rejected');
+        }
+        {
+            // ArrayBuffer input (not Uint8Array)
+            const wav = buildTestWAV(44100, 8, 1, new Uint8Array([128]));
+            assert(WAVLoader.isWAV(wav.buffer) === true, 'ArrayBuffer input accepted');
         }
 
         section('Format Detection - ZIP');
@@ -1217,6 +1306,252 @@
         }
     }
 
+    // ==================== WAV TESTS ====================
+
+    function runWAVTests() {
+        section('WAV - 8-bit mono basic parse');
+
+        {
+            // 8-bit unsigned: 128=silence, 255=max positive, 0=max negative
+            // Simple square wave: 4 high, 4 low → one full cycle
+            const samples = new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0]);
+            const wav = buildTestWAV(44100, 8, 1, samples);
+            const loader = new WAVLoader();
+            const result = loader.load(wav);
+            assert(result === true, '8-bit mono WAV loads successfully');
+            assert(loader.metadata.sampleRate === 44100, 'sampleRate = 44100');
+            assert(loader.metadata.bitsPerSample === 8, 'bitsPerSample = 8');
+            assert(loader.metadata.channels === 1, 'channels = 1');
+            assert(loader.metadata.totalSamples === 16, 'totalSamples = 16');
+        }
+
+        section('WAV - 16-bit mono parse');
+
+        {
+            // 16-bit signed: 0=silence, 32767=max positive, -32768=max negative
+            // Build a square wave as Int16Array then convert for buildTestWAV
+            const rawSamples = new Int16Array([32767, 32767, 32767, 32767, -32768, -32768, -32768, -32768]);
+            const wav = buildTestWAV(48000, 16, 1, rawSamples);
+            const loader = new WAVLoader();
+            const result = loader.load(wav);
+            assert(result === true, '16-bit mono WAV loads successfully');
+            assert(loader.metadata.sampleRate === 48000, 'sampleRate = 48000');
+            assert(loader.metadata.bitsPerSample === 16, 'bitsPerSample = 16');
+            assert(loader.metadata.channels === 1, 'channels = 1');
+            assert(loader.metadata.totalSamples === 8, 'totalSamples = 8');
+        }
+
+        section('WAV - Stereo parse (left channel only)');
+
+        {
+            // Stereo: left channel has signal, right is silent
+            const samples = new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255]);
+            const wav = buildTestWAV(22050, 8, 2, samples);
+            const loader = new WAVLoader();
+            const result = loader.load(wav);
+            assert(result === true, '8-bit stereo WAV loads successfully');
+            assert(loader.metadata.channels === 2, 'channels = 2');
+            assert(loader.metadata.totalSamples === 8, 'totalSamples = 8');
+        }
+
+        section('WAV - Block output structure');
+
+        {
+            // Square wave → should produce a 'pulses' block
+            const samples = new Uint8Array([255, 255, 0, 0, 255, 255, 0, 0]);
+            const wav = buildTestWAV(44100, 8, 1, samples);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            assert(loader.blocks.length >= 1, 'at least 1 block');
+            const lastBlock = loader.blocks[loader.blocks.length - 1];
+            assert(lastBlock.type === 'pulses', 'last block type = pulses');
+            assert(Array.isArray(lastBlock.pulses), 'pulses is an array');
+            assert(lastBlock.pulses.length > 0, 'pulses array not empty');
+        }
+
+        section('WAV - Pulse durations are T-state values');
+
+        {
+            // At 44100Hz, tStatesPerSample = 3500000/44100 ≈ 79.37
+            // A crossing at sample 4 → ~4 * 79.37 ≈ 317 T-states from start
+            const samples = new Uint8Array([255, 255, 255, 255, 0, 0, 0, 0]);
+            const wav = buildTestWAV(44100, 8, 1, samples);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const lastBlock = loader.blocks[loader.blocks.length - 1];
+            // All pulse durations should be positive integers
+            let allPositive = true;
+            for (const p of lastBlock.pulses) {
+                if (p <= 0 || !Number.isInteger(p)) { allPositive = false; break; }
+            }
+            assert(allPositive, 'all pulses are positive integers');
+
+            // First pulse should be roughly 4 * 79.37 ≈ 317 T-states
+            // (AC coupling may shift slightly, so allow ±50 margin)
+            const tStatesPerSample = 3500000 / 44100;
+            assert(lastBlock.pulses[0] > 2 * tStatesPerSample &&
+                   lastBlock.pulses[0] < 6 * tStatesPerSample,
+                'first pulse duration in expected range',
+                `got: ${lastBlock.pulses[0]}, expected ~${Math.round(4 * tStatesPerSample)}`);
+        }
+
+        section('WAV - Initial level sets tone block');
+
+        {
+            // Signal starts high (255) → needs a tone block to set earBit=true
+            const samplesHigh = new Uint8Array([255, 255, 0, 0, 255, 255]);
+            const wavHigh = buildTestWAV(44100, 8, 1, samplesHigh);
+            const loaderHigh = new WAVLoader();
+            loaderHigh.load(wavHigh);
+
+            // Should have a tone block prepended
+            assert(loaderHigh.blocks.length === 2, 'high start: 2 blocks (tone + pulses)');
+            assert(loaderHigh.blocks[0].type === 'tone', 'high start: first block = tone');
+            assert(loaderHigh.blocks[0].pulseLength === 1, 'tone pulseLength = 1');
+            assert(loaderHigh.blocks[0].pulseCount === 1, 'tone pulseCount = 1');
+            assert(loaderHigh.blocks[1].type === 'pulses', 'high start: second block = pulses');
+
+            // Signal starts low (0) → no tone block needed
+            const samplesLow = new Uint8Array([0, 0, 255, 255, 0, 0]);
+            const wavLow = buildTestWAV(44100, 8, 1, samplesLow);
+            const loaderLow = new WAVLoader();
+            loaderLow.load(wavLow);
+
+            assert(loaderLow.blocks.length === 1, 'low start: 1 block (pulses only)');
+            assert(loaderLow.blocks[0].type === 'pulses', 'low start: only block = pulses');
+        }
+
+        section('WAV - getBlockCount');
+
+        {
+            const samples = new Uint8Array([255, 0, 255, 0]);
+            const wav = buildTestWAV(44100, 8, 1, samples);
+            const loader = new WAVLoader();
+            loader.load(wav);
+            assert(loader.getBlockCount() === loader.blocks.length,
+                'getBlockCount matches blocks.length');
+
+            const empty = new WAVLoader();
+            assert(empty.getBlockCount() === 0, 'getBlockCount = 0 before load');
+        }
+
+        section('WAV - Non-PCM format rejected');
+
+        {
+            // Build WAV with audioFormat = 3 (IEEE float)
+            const wav = buildTestWAV(44100, 8, 1, new Uint8Array([128, 128]));
+            // Patch audioFormat field: fmt chunk starts at offset 12+8=20, audioFormat at 20
+            wav[20] = 3; wav[21] = 0;
+            const loader = new WAVLoader();
+            let threw = false;
+            try { loader.load(wav); } catch (e) { threw = true; }
+            assert(threw, 'non-PCM format throws error');
+        }
+
+        section('WAV - Invalid data rejected');
+
+        {
+            const loader = new WAVLoader();
+            assert(loader.load(new Uint8Array([1, 2, 3])) === false, 'random bytes rejected');
+            assert(loader.load(new Uint8Array(0)) === false, 'empty data rejected');
+        }
+
+        section('WAV - Missing chunks rejected');
+
+        {
+            // RIFF+WAVE header only, no fmt or data chunks
+            const minimal = new Uint8Array(12);
+            minimal[0] = 0x52; minimal[1] = 0x49; minimal[2] = 0x46; minimal[3] = 0x46;
+            minimal[4] = 4; // file size (4 bytes for WAVE)
+            minimal[8] = 0x57; minimal[9] = 0x41; minimal[10] = 0x56; minimal[11] = 0x45;
+            const loader = new WAVLoader();
+            let threw = false;
+            try { loader.load(minimal); } catch (e) { threw = true; }
+            assert(threw, 'WAV without fmt/data chunks throws');
+        }
+
+        section('WAV - AC coupling handles DC offset');
+
+        {
+            // Signal with heavy DC bias (all samples shifted up)
+            // 8-bit: silence=128. This signal sits at 200±55 instead of 128±128
+            // Without AC coupling, midpoint=(145,255)/2=200, transitions would be wrong
+            // With AC coupling, local DC is tracked and crossings are found correctly
+            const biased = new Uint8Array(40);
+            for (let i = 0; i < 40; i++) {
+                biased[i] = i % 8 < 4 ? 255 : 145; // square wave with DC bias
+            }
+            const wav = buildTestWAV(44100, 8, 1, biased);
+            const loader = new WAVLoader();
+            const result = loader.load(wav);
+            assert(result === true, 'DC-biased WAV loads successfully');
+
+            const lastBlock = loader.blocks[loader.blocks.length - 1];
+            assert(lastBlock.type === 'pulses', 'DC-biased: produces pulses block');
+            // Should detect crossings within the biased signal
+            assert(lastBlock.pulses.length >= 4, 'DC-biased: finds crossings despite offset',
+                `got ${lastBlock.pulses.length} pulses`);
+        }
+
+        section('WAV - Zero-crossing count for known waveform');
+
+        {
+            // Clean square wave: 10 cycles of 4-high + 4-low at 44100Hz
+            // Each cycle has exactly 2 crossings (high→low and low→high)
+            // 10 cycles → ~20 crossings → ~21 pulses (including initial and final)
+            const numCycles = 10;
+            const samplesPerHalf = 4;
+            const totalLen = numCycles * samplesPerHalf * 2;
+            const sq = new Uint8Array(totalLen);
+            for (let i = 0; i < totalLen; i++) {
+                sq[i] = (Math.floor(i / samplesPerHalf) % 2 === 0) ? 255 : 0;
+            }
+            const wav = buildTestWAV(44100, 8, 1, sq);
+            const loader = new WAVLoader();
+            loader.load(wav);
+
+            const lastBlock = loader.blocks[loader.blocks.length - 1];
+            // With AC coupling stabilized, should get close to 20 crossings = 21 pulses
+            // Allow some margin for AC coupling adaptation at start
+            assert(lastBlock.pulses.length >= 15, 'square wave: enough crossings detected',
+                `got ${lastBlock.pulses.length} pulses, expected ~21`);
+            assert(lastBlock.pulses.length <= 25, 'square wave: not too many crossings',
+                `got ${lastBlock.pulses.length} pulses`);
+        }
+
+        section('WAV - Different sample rates');
+
+        {
+            // 22050Hz → tStatesPerSample ≈ 158.73
+            const samples = new Uint8Array([255, 255, 0, 0, 255, 255, 0, 0]);
+            const wav = buildTestWAV(22050, 8, 1, samples);
+            const loader = new WAVLoader();
+            loader.load(wav);
+            assert(loader.metadata.sampleRate === 22050, 'sampleRate = 22050');
+
+            const lastBlock = loader.blocks[loader.blocks.length - 1];
+            // At 22050Hz, pulses should be roughly double the 44100Hz values
+            const tStatesPerSample = 3500000 / 22050;
+            assert(lastBlock.pulses[0] > tStatesPerSample, '22050Hz: pulse > 1 sample duration');
+        }
+
+        section('WAV - Metadata duration calculation');
+
+        {
+            // 100 samples at 10000 Hz = 0.01 seconds
+            const samples = new Uint8Array(100);
+            for (let i = 0; i < 100; i++) samples[i] = i % 2 === 0 ? 255 : 0;
+            const wav = buildTestWAV(10000, 8, 1, samples);
+            const loader = new WAVLoader();
+            loader.load(wav);
+            assert(Math.abs(loader.metadata.duration - 0.01) < 0.001,
+                'duration correct for 100 samples at 10000Hz',
+                `got: ${loader.metadata.duration}`);
+        }
+    }
+
     // ==================== RUN ALL ====================
 
     async function runAll() {
@@ -1237,6 +1572,7 @@
         runOPDTests();
         runDSKTests();
         runSZXTests();
+        runWAVTests();
 
         log('');
         log(`Completed: ${new Date().toLocaleTimeString()}`, 'info');
@@ -1254,6 +1590,7 @@
     window.runOPDTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runOPDTests(); };
     window.runDSKTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runDSKTests(); };
     window.runSZXTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runSZXTests(); };
+    window.runWAVTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runWAVTests(); };
 
     // Auto-run
     runAll();

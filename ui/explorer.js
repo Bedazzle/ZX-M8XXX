@@ -1047,8 +1047,33 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 case 0x11: // Turbo speed data block
                     {
-                        blockLen = 18 + (data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16));
-                        blockInfo.dataLength = blockLen - 18;
+                        const dataLen = data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16);
+                        blockLen = 18 + dataLen;
+                        blockInfo.dataLength = dataLen;
+                        blockInfo.pause = data[offset + 13] | (data[offset + 14] << 8);
+
+                        // Parse inner data to detect standard tape headers/data
+                        const blockData = data.slice(offset + 18, offset + 18 + dataLen);
+                        blockInfo.data = blockData;
+                        if (dataLen === 19 && blockData[0] === 0) {
+                            const type = blockData[1];
+                            const name = String.fromCharCode(...blockData.slice(2, 12)).replace(/\x00/g, ' ').trim();
+                            const len = blockData[12] | (blockData[13] << 8);
+                            const param1 = blockData[14] | (blockData[15] << 8);
+                            const param2 = blockData[16] | (blockData[17] << 8);
+                            const typeNames = ['Program', 'Number array', 'Character array', 'Bytes'];
+                            blockInfo.headerType = typeNames[type] || 'Unknown';
+                            blockInfo.headerTypeId = type;
+                            blockInfo.fileName = name;
+                            blockInfo.fileLength = len;
+                            if (type === 0) {
+                                blockInfo.autostart = param1 < 32768 ? param1 : null;
+                                blockInfo.varsOffset = param2;
+                            }
+                            if (type === 3) blockInfo.startAddress = param1;
+                        } else if (blockData.length > 0 && blockData[0] === 0xFF) {
+                            blockInfo.dataBlock = true;
+                        }
                     }
                     break;
 
@@ -1071,7 +1096,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     break;
 
                 case 0x15: // Direct recording
-                    blockLen = 8 + (data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16));
+                    {
+                        const drDataLen = data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16);
+                        blockLen = 8 + drDataLen;
+                        blockInfo.dataLength = drDataLen;
+                        blockInfo.tStatesPerSample = data[offset] | (data[offset + 1] << 8);
+                        blockInfo.pause = data[offset + 2] | (data[offset + 3] << 8);
+                        blockInfo.lastBits = data[offset + 4];
+                    }
                     break;
 
                 case 0x18: // CSW recording
@@ -2470,7 +2502,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             html += `<div class="${blockClass}" data-block-index="${i}">`;
             html += `<div class="explorer-block-header">${i + 1}: ${block.name}</div>`;
-            html += `<div class="explorer-block-meta">Offset: ${block.offset} | ID: $${hex8(block.id)} | Length: ${block.length} bytes</div>`;
+            let displayLen = block.dataLength !== undefined ? block.dataLength : block.length;
+            if ((block.id === 0x10 || block.id === 0x11) && (block.headerType || block.dataBlock)) displayLen -= 2;
+            html += `<div class="explorer-block-meta">Offset: ${block.offset} | ID: $${hex8(block.id)} | Length: ${displayLen} bytes</div>`;
 
             // Block-specific details
             let details = '';
@@ -2481,7 +2515,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         const tzxPreviewIcon = !tzxPreviewable ? '' : block.fileLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
                         details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
-                        details += `<span class="label">Data length:</span> ${block.fileLength} bytes${tzxPreviewIcon}`;
+                        details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
+                        details += `<span class="label">File length:</span> ${block.fileLength} bytes${tzxPreviewIcon}`;
                         if (block.autostart !== undefined && block.autostart !== null) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
@@ -2489,7 +2524,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                             details += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
                         }
                     } else if (block.dataBlock) {
-                        details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                        details = `<span class="label">Data length:</span> ${block.dataLength - 2} bytes`;
                     } else {
                         details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
                     }
@@ -2497,7 +2532,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     break;
 
                 case 0x11: // Turbo speed data
-                    details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                    if (block.headerType) {
+                        const tzxPreviewable11 = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.fileLength);
+                        const tzxPreviewIcon11 = !tzxPreviewable11 ? '' : block.fileLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
+                        details = `<span class="label">Type:</span> ${block.headerType}<br>`;
+                        details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
+                        details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
+                        details += `<span class="label">File length:</span> ${block.fileLength} bytes${tzxPreviewIcon11}`;
+                        if (block.autostart !== undefined && block.autostart !== null) {
+                            details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
+                        }
+                        if (block.startAddress !== undefined) {
+                            details += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
+                        }
+                    } else if (block.dataBlock) {
+                        details = `<span class="label">Data length:</span> ${block.dataLength - 2} bytes`;
+                    } else {
+                        details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                    }
+                    if (block.pause) details += `<br><span class="label">Pause:</span> ${block.pause} ms`;
                     break;
 
                 case 0x12: // Pure tone
@@ -2507,6 +2560,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 case 0x14: // Pure data
                     details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                    break;
+
+                case 0x15: // Direct recording
+                    details = `<span class="label">Data length:</span> ${block.dataLength} bytes`;
+                    details += `<br><span class="label">T-states/sample:</span> ${block.tStatesPerSample}`;
+                    details += `<br><span class="label">Last byte bits:</span> ${block.lastBits}`;
+                    if (block.pause) details += `<br><span class="label">Pause:</span> ${block.pause} ms`;
                     break;
 
                 case 0x20: // Pause/stop
@@ -7844,7 +7904,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (panel !== editorPanels.left) return;
         explorerParsed = panel.parsedFile;
         explorerData = panel.rawData;
-        explorerBlocks = panel.blocks;
+        // For TZX files, the File Info tab uses the original parsed blocks from explorerParseTZX
+        // (which have .id, .name, .offset, .length), not the editor's panel.blocks
+        // (which have .tzxId, .typeName, .blockType, .dataLength for editing purposes)
+        if (panel.parsedFile && panel.parsedFile._tzxInfoBlocks) {
+            explorerBlocks = panel.parsedFile._tzxInfoBlocks;
+        } else {
+            explorerBlocks = panel.blocks;
+        }
         const editActive = document.querySelector('.explorer-subtab.active');
         explorerUpdateSourceSelectors(!(editActive && editActive.dataset.subtab === 'edit'));
     }
@@ -10850,8 +10917,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (ext === 'tzx') {
             panel.fileType = 'tzx';
             panel.blocks = [];
+            const tzxInfoBlocks = parsed ? parsed.blocks : null;
             panel.parsedFile = parsed ? { ...parsed, blocks: panel.blocks, nonStandardBlocks: [] }
                                       : { type: 'tzx', blocks: panel.blocks, nonStandardBlocks: [], size: data.length };
+            if (tzxInfoBlocks) panel.parsedFile._tzxInfoBlocks = tzxInfoBlocks;
             editorImportTzxData(panel, data);
             updatePanelHeader(panel);
             editorRenderBlockList(panel);

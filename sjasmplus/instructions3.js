@@ -146,28 +146,30 @@ InstructionEncoder.encodeRST = function(ops, addr, syms) {
 
 // PUSH/POP encoder
 InstructionEncoder.encodePUSHPOP = function(op, ops, addr, syms) {
-    if (ops.length !== 1) {
-        ErrorCollector.error(`${op} requires 1 operand`);
+    if (ops.length < 1) {
+        ErrorCollector.error(`${op} requires at least 1 operand`);
     }
-    
-    const reg = ops[0].toUpperCase();
+
     const isPush = op === 'PUSH';
     const base = isPush ? 0xC5 : 0xC1;
-    
-    // PUSH/POP qq (BC, DE, HL, AF)
     const r16af = { BC: 0, DE: 1, HL: 2, AF: 3 };
-    if (reg in r16af) {
-        return { bytes: [base | (r16af[reg] << 4)], size: 1, undefined: false };
+    const allBytes = [];
+
+    // sjasmplus multi-register: PUSH HL,AF = PUSH HL : PUSH AF
+    for (let i = 0; i < ops.length; i++) {
+        const reg = ops[i].toUpperCase();
+        if (reg in r16af) {
+            allBytes.push(base | (r16af[reg] << 4));
+        } else if (reg === 'IX' || reg === 'IY') {
+            const prefix = reg === 'IX' ? 0xDD : 0xFD;
+            const code = isPush ? 0xE5 : 0xE1;
+            allBytes.push(prefix, code);
+        } else {
+            ErrorCollector.error(`Invalid ${op} operand: ${ops[i]}`);
+        }
     }
-    
-    // PUSH/POP IX/IY
-    if (reg === 'IX' || reg === 'IY') {
-        const prefix = reg === 'IX' ? 0xDD : 0xFD;
-        const code = isPush ? 0xE5 : 0xE1;
-        return { bytes: [prefix, code], size: 2, undefined: false };
-    }
-    
-    ErrorCollector.error(`Invalid ${op} operand: ${ops[0]}`);
+
+    return { bytes: allBytes, size: allBytes.length, undefined: false };
 };
 
 // EX encoder

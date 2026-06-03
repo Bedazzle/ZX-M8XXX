@@ -142,8 +142,8 @@ export class Lexer {
         let value = 0;
         let str = '';
 
-        // Check for hex prefixes: $, #, 0x
-        if (this.peek() === '$' || this.peek() === '#') {
+        // Check for hex prefixes: $, #, &, 0x
+        if (this.peek() === '$' || this.peek() === '#' || this.peek() === '&') {
             this.advance();
             str = this.readHexDigits();
             if (str.length === 0) {
@@ -543,6 +543,9 @@ export class Lexer {
         }
 
         if (ch === '&') {
+            if (/[0-9a-fA-F]/.test(this.peek(1))) {
+                return this.readNumber();
+            }
             this.advance();
             if (this.peek() === '&') { this.advance(); return new Token(TokenType.AND, '&&', startLine, startCol); }
             return new Token(TokenType.AMPERSAND, '&', startLine, startCol);

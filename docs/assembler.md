@@ -65,6 +65,11 @@ Shows real-time pass and line progress during assembly.
 - Assemble and Debug buttons disabled during assembly
 - Shared helpers: `prepareAssembly()` (VFS sync, defines), `processAssemblyResult()`, `processAssemblyError()` — used by both sync and async paths
 
+**Assembler options** (toolbar checkboxes, persisted to localStorage):
+- **Case insensitive** (`chkAsmCaseInsensitive`, key `zxm8_asmCaseInsensitive`) — when checked, all label names are lowercased during define/lookup so `PlayerHPMAX` and `PlayerHPMax` resolve to the same symbol. Implemented via `SymbolTable.caseInsensitive` flag applied in `getFullName()` before any prefix/module processing. Passed as `options.caseInsensitive` to all four assembly entry points.
+- **Unused labels** (`chkAsmUnusedLabels`) — show warnings for defined but unreferenced labels
+- **Show compiled** (`chkAsmShowCompiled`) — show hex dump of assembled output
+
 **Source markers** — special comments in source file headers:
 - `; @main` — marks this file as the project entry point for assembly (checked in first 20 lines by `VFS.findMainFile()`)
 - `; @entry LABEL` or `; @start LABEL` — sets the debug entry point to the given label or address. Accepts a symbol name (resolved from assembled symbols), hex (`$1234` or `0x1234`), or decimal. Parsed from the main file by `processAssemblyResult()`
@@ -116,6 +121,22 @@ The assembler supports undocumented Z80 half-index register operands: IXH, IXL, 
 - ALU (ADD, ADC, SUB, SBC, AND, XOR, OR, CP): `ADD A, IXH` / `CP IXL` / `OR IYL` etc.
 
 **Encoding**: DD prefix for IX, FD prefix for IY. Register code 4 = high byte, 5 = low byte. Same opcode structure as standard 8-bit register operations with the IX/IY prefix prepended.
+
+## sjasmplus Instruction Extensions
+
+**Multi-register PUSH/POP** (`instructions3.js`):
+- `PUSH HL,AF` = `PUSH HL : PUSH AF` — each register pair encoded as a separate instruction
+- `POP AF,HL,DE,BC` — pops in listed order
+- Supports BC, DE, HL, AF, IX, IY in any combination and count
+
+**Multi-operand INC/DEC** (`instructions2.js`):
+- `INC E,DE,E,DE` = `INC E : INC DE : INC E : INC DE` — each operand encoded as a separate instruction
+- Supports all operand types: 8-bit registers, 16-bit pairs, IX/IY, (IX+d)/(IY+d), undocumented IXH/IXL/IYH/IYL
+
+**Colon as statement separator** (`parser.js`, `assembler.js`):
+- `:` after an indented known instruction name is a statement separator, not a label terminator: `exa : ld a,b` = `EX AF,AF'` then `LD A,B`
+- `:` after a column-1 identifier is always a label terminator (even if the name matches an instruction)
+- Macro names followed by `:` are expanded as macros: `GET_BIT : jr nc,label` = expand `GET_BIT` macro, then `JR NC,label`
 
 ## Syntax Highlighting (`assembler-ui.js`)
 
