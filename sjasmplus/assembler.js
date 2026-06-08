@@ -185,6 +185,7 @@ export const Assembler = {
             this.saveCommands = [];
             this.linesProcessed = 0;  // Global counter including macro expansions
             this.displayMessages = [];  // DISPLAY messages (only last pass is kept)
+            ErrorCollector.warnings = [];  // Only keep warnings from the final pass
 
             // Save previous pass temp labels for forward references
             // then clear for new collection
@@ -298,6 +299,7 @@ export const Assembler = {
             this.saveCommands = [];
             this.linesProcessed = 0;
             this.displayMessages = [];
+            ErrorCollector.warnings = [];  // Only keep warnings from the final pass
 
             SymbolTable.prevTempLabels = SymbolTable.tempLabels;
             SymbolTable.tempLabels = {};
@@ -398,7 +400,12 @@ export const Assembler = {
         if (this.progressCallback && this.linesProcessed % 5000 === 0) {
             this.progressCallback(this.pass, this.linesProcessed, null);
         }
-        
+
+        // Always update error location — Parser.parse() inside INCLUDE/macro/REPT
+        // resets ErrorCollector, so we must restore from the parsed line info
+        ErrorCollector.currentLine = line.line;
+        ErrorCollector.currentFile = line.file;
+
         const dir = line.directive;
         
         // Handle macro definition collection
@@ -512,6 +519,10 @@ export const Assembler = {
                     // Check for default value in operands[1] (e.g., "0001000" after comma)
                     if (line.operands.length > 1) {
                         let defStr = line.operands[1];
+                        // Strip outer braces if present: {"text"} → "text"
+                        if (defStr.startsWith('{') && defStr.endsWith('}')) {
+                            defStr = defStr.slice(1, -1).trim();
+                        }
                         // Remove quotes if present
                         if ((defStr.startsWith('"') && defStr.endsWith('"')) ||
                             (defStr.startsWith("'") && defStr.endsWith("'"))) {
@@ -572,7 +583,11 @@ export const Assembler = {
             // Check if the "label" is actually a macro call — the parser can't distinguish
             // macro names from labels when followed by a colon statement separator
             // (e.g., "GET_BIT : jr nc,label" → parser sees GET_BIT as label, but it's a macro)
-            if (Preprocessor.isMacro(line.label)) {
+            // Only do this when there's also an instruction/directive after the "label" —
+            // if the line is label-only, the colon is a label terminator, not a statement
+            // separator, so it's always a real label definition (even if a macro with the
+            // same name exists — isMacro is case-insensitive, labels are case-sensitive).
+            if (Preprocessor.isMacro(line.label) && (line.instruction || line.directive)) {
                 this.macroCount++;
                 const expanded = Preprocessor.expandMacro(line.label, [], this.macroCount);
                 if (expanded) {
@@ -2288,10 +2303,16 @@ export const Assembler = {
         // Check if this is a struct instantiation
         const structDef = Preprocessor.getSTRUCT(macroName);
         if (structDef) {
+            // Handle brace-enclosed values: MYSTRUCT { val1, val2, val3 }
+            let ops = line.operands;
+            if (ops.length === 1 && ops[0].startsWith('{') && ops[0].endsWith('}')) {
+                const inner = ops[0].slice(1, -1).trim();
+                ops = inner ? inner.split(',').map(s => s.trim()) : [];
+            }
             // Emit bytes for struct fields with provided values or defaults
             for (let i = 0; i < structDef.fields.length; i++) {
                 const field = structDef.fields[i];
-                let operand = i < line.operands.length ? line.operands[i] : null;
+                let operand = i < ops.length ? ops[i] : null;
                 
                 // Check if operand is empty (just comma separator)
                 const isEmpty = !operand || operand.trim() === '';
@@ -2438,6 +2459,11 @@ export const Assembler = {
     // Evaluate an expression
     // Evaluate an expression
     evaluate(expr, line) {
+        // Strip outer braces — sjasmplus uses {expr} for struct field defaults
+        if (expr.startsWith('{') && expr.endsWith('}')) {
+            expr = expr.slice(1, -1).trim();
+        }
+
         // Handle temp labels
         const tempMatch = /^(\d+)([BF])$/i.exec(expr);
         if (tempMatch) {
@@ -2447,7 +2473,7 @@ export const Assembler = {
             }
             return { value: 0, undefined: true };
         }
-        
+
         return parseExpression(expr, SymbolTable.toObject(), this.currentAddress, this.sectionStart);
     }
 };

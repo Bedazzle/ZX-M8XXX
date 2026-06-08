@@ -6,7 +6,7 @@ import {
 } from '../core/constants.js';
 import { hex8 } from '../core/utils.js';
 
-export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage, getRAMPage, getRamPages }) {
+export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage, getRAMPage, getRamPages, getActiveScreenData }) {
 
     // ========== Frame Export ==========
     const frameGrabState = {
@@ -14,6 +14,18 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         frames: [],
         wasRunning: false,
         startTime: 0
+    };
+
+    // ========== Loop Detection ==========
+    const loopDetectState = {
+        active: false,
+        wasRunning: false,
+        hashes: [],
+        confirmedLoops: [],
+        startTime: 0,
+        maxLoops: 3,
+        repeats: 3,
+        lastLoopFrame: 0       // frame index when last loop was confirmed
     };
     const frameGrabStatus = document.getElementById('frameGrabStatus');
     const btnFrameGrabStart = document.getElementById('btnFrameGrabStart');
@@ -23,6 +35,12 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
     const frameExportSize = document.getElementById('frameExportSize');
     const spriteRegionRow = document.getElementById('spriteRegionRow');
     const sizeRow = document.getElementById('sizeRow');
+
+    // Loop detection element refs
+    const btnLoopDetect = document.getElementById('btnLoopDetect');
+    const loopResultsContainer = document.getElementById('loopResultsContainer');
+    const loopSkipDups = document.getElementById('loopSkipDups');
+    const loopSkipDupsLabel = document.getElementById('loopSkipDupsLabel');
 
     // Track last sprite mode for value conversion
     let lastSpriteMode = null;
@@ -329,6 +347,7 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         btnFrameGrabStart.disabled = true;
         btnFrameGrabStop.disabled = false;
         btnFrameGrabCancel.disabled = false;
+        btnLoopDetect.disabled = true;
         frameExportFormat.disabled = true;
         frameExportSize.disabled = true;
         document.getElementById('spriteX').disabled = true;
@@ -354,6 +373,7 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         btnFrameGrabStart.disabled = false;
         btnFrameGrabStop.disabled = true;
         btnFrameGrabCancel.disabled = true;
+        btnLoopDetect.disabled = false;
         frameExportFormat.disabled = false;
         frameExportSize.disabled = false;
         document.getElementById('spriteX').disabled = false;
@@ -584,6 +604,621 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
         }
         return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    // ========== Loop Detection Algorithm ==========
+
+    // Fuzzy mismatch budget: games without HALT have non-integer animation
+    // periods (e.g. ~11.7 frames), causing occasional frame shifts.
+    // Allow up to 10% mismatches to handle this.
+    function maxMismatches(length) {
+        return length < 4 ? 0 : Math.max(1, Math.floor(length * 0.1));
+    }
+
+    function validateLoop(hashes, period, startFrame, repeats) {
+        const totalFrames = period * repeats;
+        if (startFrame + totalFrames > hashes.length) return false;
+        // Reject static screen (all hashes within one cycle identical)
+        let allSame = true;
+        for (let i = 1; i < period; i++) {
+            if (hashes[startFrame + i] !== hashes[startFrame]) { allSame = false; break; }
+        }
+        if (allSame) return false;
+        // Verify cycles match with fuzzy tolerance for non-integer animation periods
+        const maxMM = maxMismatches(period);
+        for (let cycle = 1; cycle < repeats; cycle++) {
+            let mismatches = 0;
+            for (let i = 0; i < period; i++) {
+                if (hashes[startFrame + i] !== hashes[startFrame + cycle * period + i]) {
+                    mismatches++;
+                    if (mismatches > maxMM) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    function detectLoopAtCurrentFrame(hashes, confirmedLoops, repeats) {
+        const N = hashes.length - 1;
+        const currentHash = hashes[N];
+        const maxSearch = Math.min(N, 2000);
+        for (let M = N - 2; M >= N - maxSearch && M >= 0; M--) {
+            if (hashes[M] !== currentHash) continue;
+            const period = N - M;
+            if (period === 1) continue;
+            // Near-multiple check: suppress if period ≈ k × confirmed period.
+            // Allow 1 frame of drift per sub-cycle (non-integer animation periods
+            // cause accumulated frame shift proportional to the number of cycles).
+            let dominated = false;
+            for (const cl of confirmedLoops) {
+                const k = Math.round(period / cl.period);
+                if (k >= 1 && Math.abs(period - k * cl.period) <= k) {
+                    dominated = true; break;
+                }
+            }
+            if (dominated) continue;
+            const startFrame = N - period * repeats + 1;
+            if (startFrame < 0) continue;
+            if (validateLoop(hashes, period, startFrame, repeats)) {
+                return { period, startFrame };
+            }
+        }
+        return null;
+    }
+
+    // Post-processing: merge jitter-variant states that represent the same visual.
+    // Uses natural gap in pairwise distances: small distances = jitter, large = real differences.
+    // After merging, remaps hashes and re-detects loops on the cleaned sequence.
+    function mergeCloseStates() {
+        const states = loopDetectKnownStates;
+        const n = states.length;
+        if (n <= 2) return false;   // 2 or fewer = nothing ambiguous to merge
+
+        // Compute all pairwise cell distances using cell hashes
+        const pairDists = [];
+        for (let i = 0; i < n; i++) {
+            for (let j = i + 1; j < n; j++) {
+                pairDists.push({
+                    i, j,
+                    dist: countCellDiffsFromHashes(states[i].cellHashes, states[j].cellHashes)
+                });
+            }
+        }
+        pairDists.sort((a, b) => a.dist - b.dist);
+
+        // Find largest gap (ratio) between consecutive sorted distances.
+        // Distances below the gap = jitter within same state.
+        // Distances above = genuinely different states.
+        let bestGapIdx = -1;
+        let bestGapRatio = 0;
+        for (let k = 0; k < pairDists.length - 1; k++) {
+            const lo = pairDists[k].dist;
+            const hi = pairDists[k + 1].dist;
+            if (lo === 0) continue;
+            const ratio = hi / lo;
+            if (ratio > bestGapRatio) {
+                bestGapRatio = ratio;
+                bestGapIdx = k;
+            }
+        }
+
+        // Only merge if there's a clear separation (at least 3× gap)
+        if (bestGapIdx < 0 || bestGapRatio < 3) return false;
+
+        const mergeThreshold = pairDists[bestGapIdx].dist;
+
+        // Union-find to group close states
+        const parent = Array.from({ length: n }, (_, i) => i);
+        function find(x) { return parent[x] === x ? x : (parent[x] = find(parent[x])); }
+        function union(a, b) { parent[find(a)] = find(b); }
+
+        for (const { i, j, dist } of pairDists) {
+            if (dist <= mergeThreshold) union(i, j);
+        }
+
+        // Check if any merging actually happened
+        const groups = new Set();
+        for (let i = 0; i < n; i++) groups.add(find(i));
+        if (groups.size >= n) return false;
+
+        // Build hash remap: every state's hash → its root state's hash
+        const hashMap = new Map();
+        for (let i = 0; i < n; i++) {
+            hashMap.set(states[i].hash, states[find(i)].hash);
+        }
+
+        // Remap all hashes in the recorded sequence
+        const hashes = loopDetectState.hashes;
+        for (let i = 0; i < hashes.length; i++) {
+            const mapped = hashMap.get(hashes[i]);
+            if (mapped !== undefined) hashes[i] = mapped;
+        }
+
+
+        return true;
+    }
+
+    // Re-detect loops on the (possibly merged) hash sequence from scratch.
+    function redetectLoops() {
+        const confirmedLoops = [];
+        const hashes = loopDetectState.hashes;
+        const repeats = loopDetectState.repeats;
+        const maxLoops = loopDetectState.maxLoops;
+
+        for (let N = repeats * 2; N < hashes.length && confirmedLoops.length < maxLoops; N++) {
+            const currentHash = hashes[N];
+            const maxSearch = Math.min(N, 2000);
+            for (let M = N - 2; M >= N - maxSearch && M >= 0; M--) {
+                if (hashes[M] !== currentHash) continue;
+                const period = N - M;
+                if (period === 1) continue;
+                let dominated = false;
+                for (const cl of confirmedLoops) {
+                    const k = Math.round(period / cl.period);
+                    if (k >= 1 && Math.abs(period - k * cl.period) <= k) {
+                        dominated = true; break;
+                    }
+                }
+                if (dominated) continue;
+                const startFrame = N - period * repeats + 1;
+                if (startFrame < 0) continue;
+                if (validateLoop(hashes, period, startFrame, repeats)) {
+                    confirmedLoops.push({ period, startFrame });
+                    break;
+                }
+            }
+        }
+
+        loopDetectState.confirmedLoops = confirmedLoops;
+    }
+
+    let loopDetectPrevPixels = null;       // Previous frame canvas pixels for jitter detection
+    let loopDetectPrevCellHashes = null;   // Previous frame cell hashes (768 uint32) for fast jitter check
+    let loopDetectKnownStates = [];        // Array of { hash, pixels, bitmap, attrs, cellHashes } for stable state IDs
+    let loopDetectCanvas = null;
+    let loopDetectCtx = null;
+    let loopDetectFrameCounter = 0;        // For throttled DOM updates
+
+    // Capture rendered canvas pixels into a reusable canvas.
+    // Returns the pixel data (Uint8ClampedArray).
+    function captureCanvasPixels() {
+        if (!loopDetectCanvas) {
+            loopDetectCanvas = document.createElement('canvas');
+            loopDetectCanvas.width = SCREEN_WIDTH;
+            loopDetectCanvas.height = SCREEN_HEIGHT;
+            loopDetectCtx = loopDetectCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const dims = getDimensions();
+        loopDetectCtx.drawImage(getScreenCanvas(), dims.borderLeft, dims.borderTop,
+            SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+        return loopDetectCtx.getImageData(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT).data;
+    }
+
+    // Capture a data URL from the current screen canvas (called only at state registration).
+    function captureCanvasDataUrl() {
+        // Use the same offscreen canvas that captureCanvasPixels uses
+        // (it was just drawn to in captureCanvasPixels, so it has the current frame)
+        return loopDetectCanvas.toDataURL('image/png');
+    }
+
+    // Count how many 8x8 character cells differ between two RGBA pixel arrays.
+    // Screen is 256x192 = 32x24 cells. Returns 0..768.
+    function countCellDifferences(pixels1, pixels2) {
+        const COLS = 32, ROWS = 24, CELL = 8;
+        const stride = SCREEN_WIDTH * 4;
+        let diffCount = 0;
+        for (let row = 0; row < ROWS; row++) {
+            for (let col = 0; col < COLS; col++) {
+                let cellDiffers = false;
+                const baseY = row * CELL;
+                const baseX = col * CELL * 4;
+                for (let y = 0; y < CELL && !cellDiffers; y++) {
+                    const rowOff = (baseY + y) * stride + baseX;
+                    for (let x = 0; x < CELL * 4; x += 4) {
+                        const off = rowOff + x;
+                        if (pixels1[off] !== pixels2[off] ||
+                            pixels1[off + 1] !== pixels2[off + 1] ||
+                            pixels1[off + 2] !== pixels2[off + 2]) {
+                            cellDiffers = true;
+                            break;
+                        }
+                    }
+                }
+                if (cellDiffers) diffCount++;
+            }
+        }
+        return diffCount;
+    }
+
+    // Pre-compute a hash per 8x8 cell (768 uint32 values).
+    // Comparing cell hashes is 768 int comparisons (3KB) vs 196KB pixel scan.
+    function computeCellHashes(pixels) {
+        const COLS = 32, ROWS = 24, CELL = 8;
+        const stride = SCREEN_WIDTH * 4;
+        const result = new Uint32Array(COLS * ROWS);
+        for (let row = 0; row < ROWS; row++) {
+            for (let col = 0; col < COLS; col++) {
+                let h = 0x811c9dc5;  // FNV-1a offset basis
+                const baseY = row * CELL;
+                const baseX = col * CELL * 4;
+                for (let y = 0; y < CELL; y++) {
+                    const rowOff = (baseY + y) * stride + baseX;
+                    for (let x = 0; x < CELL * 4; x += 4) {
+                        const off = rowOff + x;
+                        h ^= pixels[off];     h = Math.imul(h, 0x01000193);
+                        h ^= pixels[off + 1]; h = Math.imul(h, 0x01000193);
+                        h ^= pixels[off + 2]; h = Math.imul(h, 0x01000193);
+                    }
+                }
+                result[row * COLS + col] = h >>> 0;
+            }
+        }
+        return result;
+    }
+
+    // Count cell differences using pre-computed cell hashes (768 int comparisons)
+    function countCellDiffsFromHashes(cellHashes1, cellHashes2) {
+        let diff = 0;
+        for (let i = 0; i < 768; i++) {
+            if (cellHashes1[i] !== cellHashes2[i]) diff++;
+        }
+        return diff;
+    }
+
+    // State matching thresholds (cell-level comparison, 768 cells total):
+    const FRAME_JITTER_THRESHOLD = 2;   // consecutive frame jitter (1-2 cells) → same state as prev
+    const STATE_MATCH_THRESHOLD = 4;    // absolute match against known states
+
+    function captureLoopFrame() {
+        if (!loopDetectState.active) return;
+
+        const hashes = loopDetectState.hashes;
+        let hash;
+
+        // Capture canvas pixels and compute cell hashes
+        const currentPixels = captureCanvasPixels();
+        const currentCellHashes = computeCellHashes(currentPixels);
+
+        // Stage 1: compare with previous frame — small jitter = same state
+        if (loopDetectPrevCellHashes !== null && hashes.length > 0) {
+            const jitterDist = countCellDiffsFromHashes(currentCellHashes, loopDetectPrevCellHashes);
+            if (jitterDist <= FRAME_JITTER_THRESHOLD) {
+                hash = hashes[hashes.length - 1];
+                loopDetectPrevPixels = currentPixels;
+                loopDetectPrevCellHashes = currentCellHashes;
+                hashes.push(hash);
+                detectAndUpdate();
+                return;
+            }
+        }
+
+        // Stage 2: compare with known states using cell hashes (768 int comparisons each)
+        if (loopDetectKnownStates.length > 0) {
+            let bestHash = null;
+            let bestDist = Infinity;
+            for (const state of loopDetectKnownStates) {
+                const dist = countCellDiffsFromHashes(currentCellHashes, state.cellHashes);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestHash = state.hash;
+                }
+            }
+            if (bestDist <= STATE_MATCH_THRESHOLD) {
+                hash = bestHash;
+            } else {
+                hash = registerNewState(currentPixels, currentCellHashes);
+            }
+        } else {
+            hash = registerNewState(currentPixels, currentCellHashes);
+        }
+
+        loopDetectPrevPixels = currentPixels;
+        loopDetectPrevCellHashes = currentCellHashes;
+        hashes.push(hash);
+        detectAndUpdate();
+
+        function detectAndUpdate() {
+            const result = detectLoopAtCurrentFrame(
+                hashes, loopDetectState.confirmedLoops, loopDetectState.repeats
+            );
+            if (result) {
+                loopDetectState.confirmedLoops.push(result);
+                loopDetectState.lastLoopFrame = hashes.length;
+            }
+
+            // Throttle DOM update to every 10 frames
+            loopDetectFrameCounter++;
+            if (loopDetectFrameCounter % 10 === 0) {
+                const frameCount = hashes.length;
+                const loopsFound = loopDetectState.confirmedLoops.length;
+                const stateCount = loopDetectKnownStates.length;
+                frameGrabStatus.textContent = `Detecting... ${frameCount} frames, ${stateCount} states, ${loopsFound}/${loopDetectState.maxLoops} loops`;
+                frameGrabStatus.classList.add('recording');
+            }
+
+            const frameCount = hashes.length;
+            const loopsFound = loopDetectState.confirmedLoops.length;
+            const framesSinceLastLoop = frameCount - loopDetectState.lastLoopFrame;
+            if (loopsFound >= loopDetectState.maxLoops || frameCount >= 5000 ||
+                (loopsFound > 0 && framesSinceLastLoop >= 500)) {
+                stopLoopDetection();
+            }
+        }
+    }
+
+    function registerNewState(currentPixels, cellHashes) {
+        const screenView = getActiveScreenData();
+        const screenData = new Uint8Array(screenView);
+        const hash = crc32(currentPixels);
+        const dataUrl = captureCanvasDataUrl();
+        loopDetectKnownStates.push({
+            hash,
+            pixels: new Uint8ClampedArray(currentPixels),
+            cellHashes: new Uint32Array(cellHashes),
+            bitmap: new Uint8Array(screenData.subarray(0, SCREEN_BITMAP_SIZE)),
+            attrs: new Uint8Array(screenData.subarray(SCREEN_BITMAP_SIZE, SCREEN_SIZE)),
+            _dataUrl: dataUrl
+        });
+
+        return hash;
+    }
+
+    function startLoopDetection() {
+        loopDetectState.repeats = 3;
+        loopDetectState.maxLoops = 3;
+        loopDetectState.wasRunning = isRunning();
+        loopDetectState.active = true;
+        loopDetectState.hashes = [];
+        loopDetectState.confirmedLoops = [];
+        loopDetectState.startTime = Date.now();
+        loopDetectPrevPixels = null;
+        loopDetectPrevCellHashes = null;
+        loopDetectKnownStates = [];
+        loopDetectFrameCounter = 0;
+
+        // Hide previous results
+        loopResultsContainer.style.display = 'none';
+        loopResultsContainer.innerHTML = '';
+        loopSkipDupsLabel.style.display = 'none';
+
+        setOnFrame(() => {
+            captureLoopFrame();
+        });
+
+        if (!loopDetectState.wasRunning) {
+            startEmulator();
+        }
+
+        btnLoopDetect.textContent = 'Stop';
+        btnFrameGrabStart.disabled = true;
+        btnFrameGrabStop.disabled = true;
+        btnFrameGrabCancel.disabled = true;
+        frameGrabStatus.textContent = 'Detecting... 0 frames';
+        frameGrabStatus.classList.add('recording');
+        showMessage('Loop detection started...');
+    }
+
+    function stopLoopDetection() {
+        loopDetectState.active = false;
+        setOnFrame(null);
+
+        if (!loopDetectState.wasRunning) {
+            stopEmulator();
+        }
+
+        btnLoopDetect.textContent = 'Detect Loop';
+        btnFrameGrabStart.disabled = false;
+        btnFrameGrabStop.disabled = true;
+        btnFrameGrabCancel.disabled = true;
+        frameGrabStatus.classList.remove('recording');
+
+        // Post-processing: merge jitter-variant states, re-detect if needed
+        if (mergeCloseStates()) {
+            redetectLoops();
+        }
+
+        const loops = loopDetectState.confirmedLoops;
+        if (loops.length === 0) {
+            frameGrabStatus.textContent = `No loops found (${loopDetectState.hashes.length} frames scanned)`;
+            showMessage('No animation loops detected');
+            discardLoopData();
+            return;
+        }
+
+        frameGrabStatus.textContent = `Found ${loops.length} loop(s) in ${loopDetectState.hashes.length} frames`;
+        showMessage(`Detected ${loops.length} animation loop(s)`);
+        displayLoopResults();
+    }
+
+    let selectedLoop = null;
+
+    function displayLoopResults() {
+        const loops = loopDetectState.confirmedLoops.slice().sort((a, b) => a.period - b.period);
+        loopResultsContainer.innerHTML = '';
+        loopResultsContainer.style.display = 'block';
+        selectedLoop = null;
+
+        const btnDiscard = document.createElement('button');
+        btnDiscard.className = 'frame-grab-btn';
+        btnDiscard.textContent = 'Discard';
+        btnDiscard.style.marginTop = '6px';
+        btnDiscard.title = 'Discard loop detection results';
+        btnDiscard.addEventListener('click', () => {
+            discardLoopData();
+            frameGrabStatus.textContent = 'Results discarded';
+        });
+
+        // Build loop list
+        const list = document.createElement('div');
+        list.className = 'loop-results-list';
+
+        loops.forEach((loop) => {
+            const duration = (loop.period / 50).toFixed(2);
+            const item = document.createElement('div');
+            item.className = 'loop-result-item';
+            item.innerHTML = `<span class="loop-result-badge">${loop.period} frames</span>` +
+                `<span style="font-size: 11px;">${duration}s cycle</span>`;
+            item.addEventListener('click', () => {
+                list.querySelectorAll('.loop-result-item').forEach(el => el.classList.remove('selected'));
+                item.classList.add('selected');
+                selectedLoop = loop;
+            });
+            list.appendChild(item);
+        });
+
+        loopResultsContainer.appendChild(list);
+        loopResultsContainer.appendChild(btnDiscard);
+        loopSkipDupsLabel.style.display = '';
+
+        // Auto-select first (shortest) loop
+        if (loops.length > 0) {
+            selectedLoop = loops[0];
+            list.firstChild.classList.add('selected');
+        }
+    }
+
+    // Build a hash→state lookup from known states
+    function getStateByHash(hash) {
+        for (const state of loopDetectKnownStates) {
+            if (state.hash === hash) return state;
+        }
+        return null;
+    }
+
+    // Return the dataUrl captured at state registration time.
+    function stateToDataUrl(state) {
+        return state._dataUrl;
+    }
+
+    // Build export frame objects from hashes + known states for one cycle.
+    // If skipDups is true:
+    //   Phase 1: merge consecutive identical hashes into runs
+    //   Phase 2: merge visually-similar consecutive runs (jitter/transition artifacts)
+    //            using adaptive gap detection on inter-run cell distances
+    function buildExportFrames(hashes, startFrame, period, skipDups) {
+        // Phase 1: build runs (consecutive identical hashes merged)
+        const runs = [];
+        for (let i = 0; i < period; i++) {
+            const hash = hashes[startFrame + i];
+            const state = getStateByHash(hash);
+            if (!state) continue;
+            if (skipDups && runs.length > 0 && runs[runs.length - 1].hash === hash) {
+                runs[runs.length - 1].count++;
+            } else {
+                runs.push({ state, hash, count: 1 });
+            }
+        }
+
+        // Phase 2: merge visually-similar consecutive runs (only when skipDups)
+        if (skipDups && runs.length > 2) {
+            // Compute cell distances between consecutive runs using cell hashes
+            const dists = [];
+            for (let j = 0; j < runs.length - 1; j++) {
+                dists.push(countCellDiffsFromHashes(runs[j].state.cellHashes, runs[j + 1].state.cellHashes));
+            }
+            // Find natural gap in sorted distances: small = jitter, large = real transition
+            const sorted = [...dists].sort((a, b) => a - b);
+            let mergeThreshold = -1;
+            for (let k = 0; k < sorted.length - 1; k++) {
+                if (sorted[k] === 0) continue;
+                if (sorted[k + 1] / sorted[k] >= 3) {
+                    mergeThreshold = sorted[k];
+                    break;
+                }
+            }
+            // Merge consecutive runs within threshold
+            if (mergeThreshold >= 0) {
+                const merged = [runs[0]];
+                for (let j = 1; j < runs.length; j++) {
+                    const dist = countCellDiffsFromHashes(runs[j].state.cellHashes, merged[merged.length - 1].state.cellHashes);
+                    if (dist <= mergeThreshold) {
+                        merged[merged.length - 1].count += runs[j].count;
+                    } else {
+                        merged.push(runs[j]);
+                    }
+                }
+                runs.length = 0;
+                runs.push(...merged);
+
+            }
+        }
+
+
+        return runs.map(r => ({
+            dataUrl: stateToDataUrl(r.state),
+            width: SCREEN_WIDTH,
+            height: SCREEN_HEIGHT,
+            bitmap: r.state.bitmap,
+            attrs: r.state.attrs,
+            delay: r.count * 2  // centiseconds at 50fps
+        }));
+    }
+
+    function exportLoop(loop, format) {
+        const exportFrames = buildExportFrames(
+            loopDetectState.hashes, loop.startFrame, loop.period,
+            loopSkipDups.checked
+        );
+        if (exportFrames.length === 0) {
+            showMessage('Loop frames no longer available', 'error');
+            return;
+        }
+
+        // Temporarily place into frameGrabState for existing export functions
+        const savedFrames = frameGrabState.frames;
+        frameGrabState.frames = exportFrames;
+
+        // Force screen-only size mode for export
+        const savedSize = frameExportSize.value;
+        frameExportSize.value = 'screen';
+
+        const restore = () => {
+            frameGrabState.frames = savedFrames;
+            frameExportSize.value = savedSize;
+        };
+
+        if (format === 'gif') {
+            exportFramesAsGif().then(restore);
+        } else if (format === 'zip') {
+            exportFramesAsZip().then(restore);
+        } else if (format === 'scr') {
+            exportFramesAsScr('scr').then(restore);
+        }
+    }
+
+    function discardLoopData() {
+        loopDetectState.hashes = [];
+        loopDetectState.confirmedLoops = [];
+        loopDetectPrevPixels = null;
+        loopDetectPrevCellHashes = null;
+        loopDetectKnownStates = [];
+        loopDetectFrameCounter = 0;
+        selectedLoop = null;
+        loopResultsContainer.style.display = 'none';
+        loopResultsContainer.innerHTML = '';
+        loopSkipDupsLabel.style.display = 'none';
+    }
+
+    btnLoopDetect.addEventListener('click', () => {
+        if (loopDetectState.active) {
+            stopLoopDetection();
+        } else {
+            // Don't start if frame grab is active
+            if (frameGrabState.active) {
+                showMessage('Stop frame recording first', 'error');
+                return;
+            }
+            startLoopDetection();
+        }
+    });
+
+    // Called by the main Export button — returns true if a loop was exported
+    function exportSelectedLoop() {
+        if (!selectedLoop) return false;
+        const fmt = frameExportFormat.value;
+        const formatMap = { png: 'zip', gif: 'gif', zip: 'zip', scr: 'scr', bsc: 'scr', sca: 'sca', gigascr: 'scr' };
+        exportLoop(selectedLoop, formatMap[fmt] || 'gif');
+        return true;
     }
 
     // ZX Spectrum standard palette (RGB values)
@@ -1256,7 +1891,8 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
             tempCtx.drawImage(img, 0, 0);
             const imageData = tempCtx.getImageData(0, 0, width, height);
 
-            gif.addFrame(imageData.data, 2); // 2 = 20ms delay (50fps)
+            const delay = frames[i].delay || 2; // per-frame delay or 20ms default (50fps)
+            gif.addFrame(imageData.data, delay);
 
             if (i % 10 === 0) {
                 frameGrabStatus.textContent = `Encoding GIF: ${Math.round(i / frames.length * 100)}%`;
@@ -1563,5 +2199,5 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
     btnPsgStop.addEventListener('click', () => stopPsgRecording(false));
     btnPsgCancel.addEventListener('click', () => stopPsgRecording(true));
 
-    return { getExportBaseName, GifEncoder, createZip };
+    return { getExportBaseName, GifEncoder, createZip, exportSelectedLoop };
 }

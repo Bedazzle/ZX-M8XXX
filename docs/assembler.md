@@ -136,7 +136,8 @@ The assembler supports undocumented Z80 half-index register operands: IXH, IXL, 
 **Colon as statement separator** (`parser.js`, `assembler.js`):
 - `:` after an indented known instruction name is a statement separator, not a label terminator: `exa : ld a,b` = `EX AF,AF'` then `LD A,B`
 - `:` after a column-1 identifier is always a label terminator (even if the name matches an instruction)
-- Macro names followed by `:` are expanded as macros: `GET_BIT : jr nc,label` = expand `GET_BIT` macro, then `JR NC,label`
+- Macro names followed by `:` then an instruction/directive are expanded as macros: `GET_BIT : jr nc,label` = expand `GET_BIT` macro, then `JR NC,label`
+- Label-only lines always define a label, even if the name matches a macro (case-insensitive): `wait_key_down:` defines a label even when a `WAIT_KEY_DOWN` macro exists
 
 ## Syntax Highlighting (`assembler-ui.js`)
 

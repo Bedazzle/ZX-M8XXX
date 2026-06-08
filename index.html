@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.24</title>
+    <title>ZX-M8XXX v0.14.26</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -2857,7 +2857,39 @@
         .frame-grab-status.recording {
             color: var(--accent);
         }
-
+        .loop-results-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-top: 6px;
+        }
+        .loop-result-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-secondary);
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .loop-result-item:hover {
+            border-color: var(--accent);
+        }
+        .loop-result-item.selected {
+            border-color: var(--accent);
+            background: var(--bg-tertiary);
+        }
+        .loop-result-badge {
+            background: var(--accent);
+            color: var(--bg-primary);
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 10px;
+            white-space: nowrap;
+        }
         /* Calculator (right panel) */
         .calc-wrapper {
             display: flex;
@@ -6800,7 +6832,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.24 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.26 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -8735,8 +8767,11 @@ start:
                         <button id="btnFrameGrabStart" class="frame-grab-btn">Start</button>
                         <button id="btnFrameGrabStop" class="frame-grab-btn" disabled>Stop</button>
                         <button id="btnFrameGrabCancel" class="frame-grab-btn" disabled>Cancel</button>
+                        <button id="btnLoopDetect" class="frame-grab-btn" title="Detect repeating animation cycles by comparing rendered frames">Detect Loop</button>
                     </div>
                     <div class="frame-grab-status" id="frameGrabStatus"></div>
+                    <div id="loopResultsContainer" style="display: none;"></div>
+                    <label style="display: none; font-size: 11px; margin-top: 4px; cursor: pointer;" id="loopSkipDupsLabel"><input type="checkbox" id="loopSkipDups" checked> Skip identical frames</label>
                     <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
                     <div class="settings-row" style="margin-bottom: 4px;">
                         <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">AY Capture (PSG)</span>
@@ -10296,7 +10331,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.24';
+        const APP_VERSION = '0.14.26';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -11550,6 +11585,7 @@ start:
         });
 
         document.getElementById('btnScreenshot').addEventListener('click', () => {
+            if (exportSelectedLoop()) return;
             const format = document.getElementById('frameExportFormat').value;
             const baseName = getExportBaseName() || 'screenshot';
             const timestamp = Date.now();
@@ -12260,7 +12296,7 @@ start:
             }));
 
         // Frame Export & PSG Recording (extracted to ui/frame-export.js)
-        const { getExportBaseName, GifEncoder, createZip } = initFrameExport({
+        const { getExportBaseName, GifEncoder, createZip, exportSelectedLoop } = initFrameExport({
             getScreenCanvas: () => canvas,
             getDimensions: () => spectrum.ula.getDimensions(),
             getUlaPlusState: () => ({
@@ -12278,7 +12314,13 @@ start:
             getAy: () => spectrum.ay,
             showMessage,
             getRAMPage: (page) => spectrum.memory.ram[page],
-            getRamPages: () => spectrum.memory.profile.ramPages
+            getRamPages: () => spectrum.memory.profile.ramPages,
+            getActiveScreenData: () => {
+                if (spectrum.memory.profile.ramPages <= 1) {
+                    return spectrum.memory.getBlock(0x4000, 6912);
+                }
+                return spectrum.memory.ram[spectrum.memory.screenBank || 5].subarray(0, 6912);
+            }
         });
 
         // RZX Recording (extracted to ui/rzx-recorder.js)

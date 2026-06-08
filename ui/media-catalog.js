@@ -90,7 +90,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const prefix = isTurbo ? 'Turbo' : 'Std';
         const size = block.data ? block.data.length : block.length || 0;
         // Decode standard header
-        if (!isTurbo && block.flag === TAPE_STD_FLAG && block.data && block.data.length >= TAPE_HDR_MIN_LENGTH) {
+        if (!isTurbo && block.flag === TAPE_STD_FLAG && block.data && block.data.length >= TAPE_HDR_MIN_LENGTH && block.data.length <= 19) {
             const d = block.data;
             const hdrType = d[1];
             let name = '';

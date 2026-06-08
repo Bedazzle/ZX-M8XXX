@@ -36,6 +36,8 @@ export const TokenType = {
     RPAREN: 'RPAREN',               // )
     LBRACKET: 'LBRACKET',           // [
     RBRACKET: 'RBRACKET',           // ]
+    LBRACE: 'LBRACE',               // {
+    RBRACE: 'RBRACE',               // }
     COMMA: 'COMMA',                 // ,
     COLON: 'COLON',                 // :
     DOT: 'DOT',                     // .
@@ -569,6 +571,8 @@ export class Lexer {
             ')': TokenType.RPAREN,
             '[': TokenType.LBRACKET,
             ']': TokenType.RBRACKET,
+            '{': TokenType.LBRACE,
+            '}': TokenType.RBRACE,
             ',': TokenType.COMMA,
             ':': TokenType.COLON,
             '?': TokenType.QUESTION,

@@ -1248,7 +1248,7 @@ const VERSION = '0.6.4';
                 const ac = sample - dc;
 
                 // Detect zero-crossing in AC-coupled signal
-                if ((prevAC <= 0 && ac > 0) || (prevAC > 0 && ac <= 0)) {
+                if ((prevAC < 0 && ac >= 0) || (prevAC >= 0 && ac < 0)) {
                     // Linear interpolation for sub-sample crossing position
                     const denom = ac - prevAC;
                     const fraction = denom !== 0 ? (0 - prevAC) / denom : 0.5;
@@ -1845,7 +1845,11 @@ const VERSION = '0.6.4';
             if (!this.enabled) return false;
             const pc = this.cpu.pc;
             // LD-BYTES entry points in 48K ROM / 128K ROM1
-            if (pc === 0x056c || pc === 0x0556) {
+            // 0x0556 / 0x056C: standard entry — flag in A, carry in F
+            // 0x0569: mid-routine entry used by custom loaders that do their own
+            //         preamble (border color, EAR sampling) then CALL 0569h —
+            //         flag in A' and carry in F' (caller already did EX AF,AF')
+            if (pc === 0x056c || pc === 0x0556 || pc === 0x0569) {
                 // In 128K mode, only trap when ROM 1 (48K BASIC) is active
                 // ROM 0 is the 128K editor which has different code at these addresses
                 if (this.memory.profile.ramPages > 1) {
@@ -1865,12 +1869,12 @@ const VERSION = '0.6.4';
                     this.returnFromTrap();
                     return true;
                 }
-                return this.handleLoadTrap();
+                return this.handleLoadTrap(pc === 0x0569);
             }
             return false;
         }
 
-        handleLoadTrap() {
+        handleLoadTrap(midEntry = false) {
             const block = this.tapeLoader.getNextBlock();
             if (!block) {
                 // All blocks consumed - return with error (carry clear)
@@ -1878,12 +1882,14 @@ const VERSION = '0.6.4';
                 this.returnFromTrap();
                 return true;
             }
-            
+
             const dest = this.cpu.ix;
             const length = this.cpu.de;
-            const expectedFlag = this.cpu.a;
-            const isLoad = (this.cpu.f & 0x01) !== 0;
-            
+            // At 0x0569 mid-entry, the caller already did EX AF,AF' so flag/carry
+            // are in the shadow registers; at standard entry they're in A/F
+            const expectedFlag = midEntry ? this.cpu.a_ : this.cpu.a;
+            const isLoad = midEntry ? (this.cpu.f_ & 0x01) !== 0 : (this.cpu.f & 0x01) !== 0;
+
             if (block.flag !== expectedFlag) {
                 this.cpu.f &= ~0x01;
                 this.returnFromTrap();

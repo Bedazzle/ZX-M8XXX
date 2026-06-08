@@ -14,8 +14,7 @@ export const Parser = {
     // Parse source into array of parsed lines
     parse(source, filename = '<input>') {
         this.filename = filename;
-        ErrorCollector.reset();
-        
+
         // Handle null/undefined source
         if (!source) {
             return [];
@@ -310,19 +309,22 @@ export const Parser = {
     parseOperand() {
         const tokens = [];
         let parenDepth = 0;
+        let braceDepth = 0;
 
         while (!this.isAtEnd()) {
             const token = this.peek();
-            
+
             // End of operand
             if (token.type === TokenType.NEWLINE) break;
-            if (token.type === TokenType.COMMA && parenDepth === 0) break;
-            // Colon can be statement separator (but not inside parens or after first token if it's a label)
-            if (token.type === TokenType.COLON && parenDepth === 0) break;
+            if (token.type === TokenType.COMMA && parenDepth === 0 && braceDepth === 0) break;
+            // Colon can be statement separator (but not inside parens/braces)
+            if (token.type === TokenType.COLON && parenDepth === 0 && braceDepth === 0) break;
 
-            // Track parentheses
+            // Track parentheses and braces
             if (token.type === TokenType.LPAREN) parenDepth++;
             if (token.type === TokenType.RPAREN) parenDepth--;
+            if (token.type === TokenType.LBRACE) braceDepth++;
+            if (token.type === TokenType.RBRACE) braceDepth--;
 
             tokens.push(this.advance());
         }
@@ -374,6 +376,12 @@ export const Parser = {
         }
         // Space between identifier and string (e.g., DEFINE name "value")
         if (prev.type === TokenType.IDENTIFIER && curr.type === TokenType.STRING) {
+            return true;
+        }
+        // Space around tokens that double as number prefixes (& # $ %) to prevent
+        // re-tokenization ambiguity: "240&15" would parse &15 as hex, not AND 15
+        const ambiguousOps = [TokenType.AMPERSAND, TokenType.HASH, TokenType.DOLLAR, TokenType.PERCENT];
+        if (ambiguousOps.includes(curr.type) || ambiguousOps.includes(prev.type)) {
             return true;
         }
         return false;

@@ -89,11 +89,12 @@
         <button onclick="runAYSoundTests()">AY Sound</button>
         <button onclick="runAYPSGTests()">AY PSG Export</button>
         <button onclick="runWAVIntegrationTests()">WAV Integration</button>
+        <button onclick="runTapeTrapTests()">Tape Trap</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, TapePlayer, TZXLoader, WAVLoader } from '../core/loaders.js';
+    import { TapeLoader, TapePlayer, TZXLoader, WAVLoader, TapeTrapHandler } from '../core/loaders.js';
     import { AY } from '../core/ay.js';
 
     const logEl = document.getElementById('log');
@@ -1595,6 +1596,231 @@
     }
 
     // ═══════════════════════════════════════════════════════
+    // TapeTrapHandler Tests
+    // ═══════════════════════════════════════════════════════
+
+    function makeMockCpu() {
+        return {
+            pc: 0, sp: 0xFFF0, a: 0, f: 0, ix: 0x8000, de: 0,
+            a_: 0, f_: 0, tStates: 0
+        };
+    }
+
+    function makeMockMemory(ramPages = 1) {
+        const ram = new Uint8Array(65536);
+        // Pre-fill stack area with a return address (0x1234)
+        ram[0xFFF0] = 0x34;
+        ram[0xFFF1] = 0x12;
+        return {
+            profile: { ramPages, basicRomBank: 1 },
+            currentRomBank: 1,
+            trdosActive: false,
+            read(addr) { return ram[addr & 0xFFFF]; },
+            write(addr, val) { ram[addr & 0xFFFF] = val; },
+            _ram: ram
+        };
+    }
+
+    function runTapeTrapTests() {
+        section('TapeTrapHandler - Construction');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory();
+            const trap = new TapeTrapHandler(cpu, mem);
+            assert(trap.enabled === true, 'Trap enabled by default');
+            assert(trap.onBlockLoaded === null, 'onBlockLoaded initially null');
+        }
+
+        section('TapeTrapHandler - checkTrap at standard entry 0x0556');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1); // 48K — no ROM bank check
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            // Build TAP with one standard header + data
+            const hdrData = new Uint8Array(17).fill(0x20);
+            hdrData[0] = 0; // Program type
+            const hdr = makeTAPBlock(0x00, hdrData);
+            const body = makeTAPBlock(0xFF, new Uint8Array([1, 2, 3, 4]));
+            const tap = buildTAP([hdr, body]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            cpu.pc = 0x0556;
+            cpu.a = 0x00;  // expected flag
+            cpu.f = 0x01;  // carry = LOAD
+            cpu.ix = 0x8000;
+            cpu.de = 17;
+            const result = trap.checkTrap();
+            assert(result === true, 'Trap fires at 0x0556');
+            assert((cpu.f & 0x01) !== 0, 'Carry set on success');
+            assert(cpu.pc === 0x1234, 'PC set to return address from stack');
+        }
+
+        section('TapeTrapHandler - checkTrap at mid-entry 0x0569');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            // Build TAP with a custom-flag block (like Bloodstone)
+            const body = makeTAPBlock(0x01, new Uint8Array([10, 20, 30]));
+            const tap = buildTAP([body]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            cpu.pc = 0x0569;
+            cpu.a = 0x99;     // A has garbage (EAR sample) at mid-entry
+            cpu.f = 0x00;     // F has garbage at mid-entry
+            cpu.a_ = 0x01;    // shadow A = expected flag
+            cpu.f_ = 0x01;    // shadow F carry = LOAD
+            cpu.ix = 0x8000;
+            cpu.de = 3;
+            const result = trap.checkTrap();
+            assert(result === true, 'Trap fires at 0x0569');
+            assert((cpu.f & 0x01) !== 0, 'Carry set on success');
+            // Verify data was loaded into memory
+            assert(mem._ram[0x8000] === 10, 'First byte loaded at dest');
+            assert(mem._ram[0x8001] === 20, 'Second byte loaded');
+            assert(mem._ram[0x8002] === 30, 'Third byte loaded');
+        }
+
+        section('TapeTrapHandler - 0x0569 reads flag from shadow A');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            const body = makeTAPBlock(0x03, new Uint8Array([5, 6]));
+            const tap = buildTAP([body]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            cpu.pc = 0x0569;
+            cpu.a = 0x03;     // A happens to match but should be ignored
+            cpu.a_ = 0xFF;    // shadow A = wrong flag
+            cpu.f_ = 0x01;    // carry = LOAD
+            cpu.ix = 0x8000;
+            cpu.de = 2;
+            // Reset stack
+            mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+            cpu.sp = 0xFFF0;
+            const result = trap.checkTrap();
+            assert(result === true, 'Trap fires');
+            assert((cpu.f & 0x01) === 0, 'Carry clear — flag mismatch (shadow A used, not A)');
+        }
+
+        section('TapeTrapHandler - 0x0556 reads flag from A (not shadow)');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            const body = makeTAPBlock(0x03, new Uint8Array([5, 6]));
+            const tap = buildTAP([body]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            cpu.pc = 0x0556;
+            cpu.a = 0x03;     // A = correct flag
+            cpu.a_ = 0xFF;    // shadow = wrong, should be ignored at 0x0556
+            cpu.f = 0x01;     // carry = LOAD
+            cpu.ix = 0x8000;
+            cpu.de = 2;
+            const result = trap.checkTrap();
+            assert(result === true, 'Trap fires');
+            assert((cpu.f & 0x01) !== 0, 'Carry set — flag matches (A used, not shadow)');
+        }
+
+        section('TapeTrapHandler - flag mismatch consumes block');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            const b1 = makeTAPBlock(0x01, new Uint8Array([10]));
+            const b2 = makeTAPBlock(0x02, new Uint8Array([20]));
+            const tap = buildTAP([b1, b2]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            // First call: flag mismatch — block consumed
+            cpu.pc = 0x0556; cpu.a = 0xFF; cpu.f = 0x01; cpu.sp = 0xFFF0;
+            mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+            trap.checkTrap();
+            assert((cpu.f & 0x01) === 0, 'First block: flag mismatch → error');
+            assert(tl.getCurrentBlock() === 1, 'First block consumed (pointer at 1)');
+
+            // Second call: flag matches
+            cpu.pc = 0x0556; cpu.a = 0x02; cpu.f = 0x01; cpu.sp = 0xFFF0;
+            mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+            cpu.ix = 0x8000; cpu.de = 1;
+            trap.checkTrap();
+            assert((cpu.f & 0x01) !== 0, 'Second block: flag matches → success');
+            assert(mem._ram[0x8000] === 20, 'Second block data loaded');
+        }
+
+        section('TapeTrapHandler - onBlockLoaded callback');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            const b1 = makeTAPBlock(0xFF, new Uint8Array([1]));
+            const b2 = makeTAPBlock(0x01, new Uint8Array([2]));
+            const tap = buildTAP([b1, b2]);
+            tl.load(tap);
+            trap.setTape(tl);
+
+            let cbIndex = -1;
+            trap.onBlockLoaded = (idx) => { cbIndex = idx; };
+
+            // Load first block via standard entry
+            cpu.pc = 0x0556; cpu.a = 0xFF; cpu.f = 0x01; cpu.sp = 0xFFF0;
+            mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+            cpu.ix = 0x8000; cpu.de = 1;
+            trap.checkTrap();
+            assert(cbIndex === 0, 'onBlockLoaded called with index 0');
+
+            // Load second block via mid-entry
+            cpu.pc = 0x0569; cpu.a_ = 0x01; cpu.f_ = 0x01; cpu.sp = 0xFFF0;
+            mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+            cpu.ix = 0x9000; cpu.de = 1;
+            trap.checkTrap();
+            assert(cbIndex === 1, 'onBlockLoaded called with index 1 via mid-entry');
+        }
+
+        section('TapeTrapHandler - disabled trap does not fire');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(1);
+            const trap = new TapeTrapHandler(cpu, mem);
+            trap.setEnabled(false);
+            cpu.pc = 0x0556;
+            assert(trap.checkTrap() === false, 'Disabled trap returns false at 0x0556');
+            cpu.pc = 0x0569;
+            assert(trap.checkTrap() === false, 'Disabled trap returns false at 0x0569');
+        }
+
+        section('TapeTrapHandler - 128K ROM bank check at 0x0569');
+        {
+            const cpu = makeMockCpu();
+            const mem = makeMockMemory(8); // 128K
+            mem.currentRomBank = 0; // ROM 0 (editor), not BASIC
+            const trap = new TapeTrapHandler(cpu, mem);
+            const tl = new TapeLoader();
+            const b = makeTAPBlock(0x01, new Uint8Array([1]));
+            tl.load(buildTAP([b]));
+            trap.setTape(tl);
+
+            cpu.pc = 0x0569;
+            assert(trap.checkTrap() === false, 'Wrong ROM bank → trap does not fire at 0x0569');
+        }
+
+        updateSummary();
+    }
+
+    // ═══════════════════════════════════════════════════════
     // Run All
     // ═══════════════════════════════════════════════════════
     function runAll() {
@@ -1611,6 +1837,7 @@
         runAYSoundTests();
         runAYPSGTests();
         runWAVIntegrationTests();
+        runTapeTrapTests();
 
         log(`\nDone. ${passed} passed, ${failed} failed.`, failed > 0 ? 'fail' : 'pass');
         updateSummary();
@@ -1626,6 +1853,7 @@
     window.runAYSoundTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYSoundTests(); };
     window.runAYPSGTests = () => { passed=0; failed=0; logEl.innerHTML=''; runAYPSGTests(); };
     window.runWAVIntegrationTests = () => { passed=0; failed=0; logEl.innerHTML=''; runWAVIntegrationTests(); updateSummary(); };
+    window.runTapeTrapTests = () => { passed=0; failed=0; logEl.innerHTML=''; runTapeTrapTests(); updateSummary(); };
 
     // Auto-run
     runAll();

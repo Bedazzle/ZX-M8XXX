@@ -77,3 +77,29 @@ The camera button below the canvas (hotkey: **F3**) captures a screenshot using 
 **`getExportBaseName()`**: Reads `lastLoadedFile` element text (set by `handleLoadResult()` for any file type -- SNA, Z80, TAP, TRD, etc.), strips file extension. Returns `'frame'` if no file loaded. Defined in `ui/frame-export.js`.
 
 **`GifEncoder`** and **`createZip`**: Defined in `ui/frame-export.js` inside `initFrameExport()` closure. Exposed via return value: `return { getExportBaseName, GifEncoder, createZip }`. Destructured in `index.html`.
+
+## Animation Loop Detection
+
+Automatically detects repeating animation cycles in running programs. Located in the Frame Export panel ("Detect Loop" button).
+
+**Algorithm** (`ui/frame-export.js`):
+
+1. Each frame: capture 256x192 canvas pixels via offscreen canvas (`willReadFrequently: true`), compute 768 FNV-1a cell hashes (one per 8x8 character cell).
+2. **Stage 1 (jitter filter)**: Compare current cell hashes with previous frame. If ≤2 cells differ (`FRAME_JITTER_THRESHOLD`), treat as same state -- reuse previous hash. Handles sub-pixel rendering jitter.
+3. **Stage 2 (state matching)**: Compare current cell hashes against all known states. If closest match ≤4 cells (`STATE_MATCH_THRESHOLD`), assign that state's hash. Otherwise register as new state (CRC32 of full pixel data, capture `dataUrl` via `toDataURL`).
+4. Append state hash to `loopDetectState.hashes[]` sequence. Run `detectLoopAtCurrentFrame()`: backward search up to 2000 frames for a hash match, then `validateLoop()` checks the candidate period repeats for `repeats` (default 3) full cycles with fuzzy tolerance (10% mismatch budget via `maxMismatches()`).
+5. Near-multiple suppression: skip periods that are ≈k× an already-confirmed period (allows 1 frame drift per sub-cycle).
+6. Auto-stops after `maxLoops` (default 3) confirmed loops, 5000 frames safety cap, or 500 frames with no new loop after the last confirmation.
+
+**Post-processing** (`stopLoopDetection`): `mergeCloseStates()` computes pairwise cell hash distances between all known states, finds a natural gap (≥3× ratio), union-find merges states below the gap threshold, remaps the hash sequence. `redetectLoops()` re-runs detection on the cleaned sequence.
+
+**Export** (`buildExportFrames`):
+- Phase 1: Consecutive identical hashes merged into runs (with frame counts for timing).
+- Phase 2 (when "Skip identical" checked): Adaptive gap detection on inter-run cell hash distances merges visually-similar consecutive runs.
+- `exportLoop()` temporarily places loop frames into `frameGrabState.frames` and calls existing export functions (GIF/ZIP/SCR).
+
+**Performance**: Cell hash caching avoids repeated 196KB pixel scans -- Stage 1/2 comparisons are 768 integer comparisons (3KB) each. DOM status updates throttled to every 10 frames.
+
+**State**: `loopDetectState` (hashes, confirmedLoops, maxLoops, repeats), `loopDetectKnownStates[]` (hash, pixels, cellHashes, bitmap, attrs, _dataUrl), `loopDetectPrevPixels`, `loopDetectPrevCellHashes`.
+
+**UI elements**: `btnLoopDetect`, `loopResultsContainer`, `loopSkipDups`, `loopSkipDupsLabel`. Results display sorted by period (shortest first), auto-selects shortest. Export uses main format selector (GIF/ZIP/SCR). "Discard" button frees all captured data.

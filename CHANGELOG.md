@@ -2,6 +2,15 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.14.26
+- **Flash Load Custom Loader Trap (CALL 0569h)**: Added `0x0569` as a flash load trap address for custom loaders that enter the ROM's LD_BYTES routine mid-way. Many games (e.g. Bloodstone) do their own preamble (bank switching, border color, EAR sampling, `EX AF,AF'`) and then `CALL 0569h` instead of the standard `CALL 0556h`. At this entry point, the flag byte and carry flag are in the shadow registers A'/F', which the trap now reads correctly. Previously these blocks were not intercepted, causing the game to hang waiting for tape data.
+- **Media Catalog Header Detection Fix**: Fixed `describeTapeBlock()` falsely identifying large data blocks with flag byte `$00` as headers. A standard header is exactly 19 bytes; blocks with flag `$00` but different lengths (e.g. 20511-byte data blocks) are now correctly shown as data blocks instead of displaying garbage header names.
+
+## v0.14.25
+- **Optional ROM Profiling** (PR #9 by alfishe): Added "ROM" checkbox to the profiler toolbar. When checked, ROM subroutines (addresses below $4000) are included in profiler results, call graph visualization, hotspot detection, and label generation. Previously ROM addresses were always excluded.
+- **Project Load Null Guard Fix** (PR #8 by alfishe): Fixed "analysisAPI.setAutoMapEnabled is not a function" error when loading projects containing auto-map data. Added null guards for `analysisAPI` calls during project restore in `project-io.js`.
+- **Assembler Label/Macro Case Collision Fix**: Fixed labels with the same name as a macro (case-insensitive) being expanded as macro calls instead of defined as labels. For example, a project defining both `wait_key_down:` (label) and `MACRO WAIT_KEY_DOWN` would fail with "Undefined symbol: wait_key_down" because `isMacro()` is case-insensitive and matched the label name to the macro. Label-only lines now always define a label; macro expansion via colon separator only triggers when followed by an instruction or directive (e.g., `GET_BIT : jr nc,label`).
+
 ## v0.14.24
 - **Assembler Case-Insensitive Labels**: Added a "Case insensitive" checkbox to the assembler toolbar. When enabled, all label names are lowercased during define and lookup so that `PlayerHPMAX` and `PlayerHPMax` resolve to the same symbol. Useful for assembling sources with inconsistent label casing. Implemented via `SymbolTable.caseInsensitive` flag in `getFullName()`, covering all symbol operations including module-scoped and local labels. Setting persisted to localStorage.
 

@@ -97,25 +97,13 @@ export const Z80Asm = {
         return args;
     },
 
-    // Sign extend 8-bit to check range
+    // Truncate to 8-bit (standard assembler behavior — silently takes low byte)
     checkByte(value, signed = false) {
-        if (signed) {
-            if (value < -128 || value > 127) {
-                ErrorCollector.warn(`Value ${value} out of signed byte range`);
-            }
-        } else {
-            if (value < -128 || value > 255) {
-                ErrorCollector.warn(`Value ${value} out of byte range`);
-            }
-        }
         return value & 0xFF;
     },
 
-    // Check 16-bit value range
+    // Truncate to 16-bit (standard assembler behavior — silently takes low word)
     checkWord(value) {
-        if (value < -32768 || value > 65535) {
-            ErrorCollector.warn(`Value ${value} out of word range`);
-        }
         return value & 0xFFFF;
     },
 

@@ -947,6 +947,50 @@ start:
             `);
             assert(result.success, 'Macro+locals with colon separator converges');
 
+            // Label with same name as macro (case-insensitive) must define label, not expand macro
+            // Bards-tale pattern: lowercase label "wait_key_down:" + uppercase macro "WAIT_KEY_DOWN"
+            result = asm(`
+                ORG $8000
+                MACRO WAIT_KEY_DOWN
+                    rst $10
+                    db $23
+                ENDM
+wait_key_down:
+                call $9000
+                jr nc, wait_key_down
+                ret
+other:
+                WAIT_KEY_DOWN
+                jp wait_key_down
+            `);
+            assert(result.success, 'Label with same name as macro (case-insensitive) assembles');
+            if (result.output) {
+                // wait_key_down: at $8000
+                // call $9000 = CD 00 90
+                // jr nc, wait_key_down = 30 FB (-5)
+                // ret = C9
+                // WAIT_KEY_DOWN macro = rst $10 (D7) + db $23 (23)
+                // jp wait_key_down = C3 00 80
+                assertBytes(result.output, [0xCD, 0x00, 0x90, 0x30, 0xFB, 0xC9, 0xD7, 0x23, 0xC3, 0x00, 0x80],
+                    'Label coexists with same-name macro');
+            }
+
+            // Label-only line matching macro name must define label
+            result = asm(`
+                ORG $8000
+                MACRO MY_LABEL
+                    nop
+                ENDM
+MY_LABEL:
+                ret
+                dw MY_LABEL
+            `);
+            assert(result.success, 'Label-only line matching macro name defines label');
+            if (result.output) {
+                // MY_LABEL: at $8000, ret = C9, dw $8000 = 00 80
+                assertBytes(result.output, [0xC9, 0x00, 0x80], 'Label-only line value is address, not macro expansion');
+            }
+
             section('Local Labels After Operators');
 
             // Local label used in expression after + operator
