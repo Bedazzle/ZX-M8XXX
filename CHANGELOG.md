@@ -2,6 +2,12 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.14.28
+- **Palette Editing**: Click any color swatch in the standard 16-color palette or ULA+ 64-color palette grid to open the browser's native color picker. Standard palette edits switch the dropdown to "Custom (edited)" and auto-save to localStorage. ULA+ edits snap the chosen color to the nearest valid GRB 332 value. Added Reset button to restore the current preset palette. Added Save/Load/Delete controls for named palettes — saves both standard and ULA+ palette types to localStorage. Custom palette persists across page reloads and machine changes.
+
+## v0.14.27
+- **Animation Loop Detection**: Added "Detect Loop" button in the Frame Export panel that automatically detects repeating animation cycles. Captures canvas pixels each frame, assigns states via two-stage matching (consecutive-frame jitter filter + known-state matching using cell-level comparison), builds a hash sequence, and searches for repeating periods with fuzzy validation. Supports configurable repeat count and max loops. Detected loops can be exported as GIF, ZIP, or SCR. Includes post-processing state merge and "Skip identical" mode with adaptive gap-based frame deduplication.
+
 ## v0.14.26
 - **Flash Load Custom Loader Trap (CALL 0569h)**: Added `0x0569` as a flash load trap address for custom loaders that enter the ROM's LD_BYTES routine mid-way. Many games (e.g. Bloodstone) do their own preamble (bank switching, border color, EAR sampling, `EX AF,AF'`) and then `CALL 0569h` instead of the standard `CALL 0556h`. At this entry point, the flag byte and carry flag are in the shadow registers A'/F', which the trap now reads correctly. Previously these blocks were not intercepted, causing the game to hang waiting for tape data.
 - **Media Catalog Header Detection Fix**: Fixed `describeTapeBlock()` falsely identifying large data blocks with flag byte `$00` as headers. A standard header is exactly 19 bytes; blocks with flag `$00` but different lengths (e.g. 20511-byte data blocks) are now correctly shown as data blocks instead of displaying garbage header names.

@@ -514,6 +514,13 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
 
     // ===== Palette handling =====
 
+    const paletteColorPicker = document.getElementById('paletteColorPicker');
+    const btnResetPalette = document.getElementById('btnResetPalette');
+    const btnSavePalette = document.getElementById('btnSavePalette');
+    const savedPaletteSelect = document.getElementById('savedPaletteSelect');
+    const btnLoadSavedPalette = document.getElementById('btnLoadSavedPalette');
+    const btnDeleteSavedPalette = document.getElementById('btnDeleteSavedPalette');
+
     async function loadPalettes() {
         try {
             const response = await fetch('data/palettes.json');
@@ -529,10 +536,19 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
                 paletteSelect.appendChild(option);
             });
 
+            // Add "Custom (edited)" option
+            const customOption = document.createElement('option');
+            customOption.value = 'custom';
+            customOption.textContent = 'Custom (edited)';
+            paletteSelect.appendChild(customOption);
+
             // Apply saved palette or default
             const savedPalette = storageGet('zxm8_palette', 'default');
             paletteSelect.value = savedPalette;
             applyPalette(savedPalette);
+
+            // Populate saved palettes dropdown
+            refreshSavedPalettesDropdown();
         } catch (e) {
             console.error('Failed to load palettes:', e);
         }
@@ -542,15 +558,35 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         if (!loadedPalettes) return;
         const spectrum = getSpectrum();
 
-        const palette = loadedPalettes.find(p => p.id === paletteId);
-        if (!palette) return;
-
-        // Sync dropdown
-        paletteSelect.value = paletteId;
+        let colors;
+        if (paletteId === 'custom') {
+            // Load custom palette from localStorage
+            const saved = storageGet('zxm8_customPalette');
+            if (saved) {
+                try {
+                    colors = JSON.parse(saved);
+                } catch (e) {
+                    // Fallback to default if corrupt
+                    colors = null;
+                }
+            }
+            if (!colors) {
+                // No custom palette stored — fall back to default
+                const defaultPalette = loadedPalettes.find(p => p.id === 'default');
+                if (defaultPalette) colors = defaultPalette.colors;
+                else return;
+            }
+            paletteSelect.value = 'custom';
+        } else {
+            const palette = loadedPalettes.find(p => p.id === paletteId);
+            if (!palette) return;
+            colors = palette.colors;
+            paletteSelect.value = paletteId;
+        }
 
         // Update ULA palette
         if (spectrum.ula) {
-            spectrum.ula.palette = palette.colors.map(hex => {
+            spectrum.ula.palette = colors.map(hex => {
                 const r = parseInt(hex.slice(1, 3), 16);
                 const g = parseInt(hex.slice(3, 5), 16);
                 const b = parseInt(hex.slice(5, 7), 16);
@@ -561,7 +597,18 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         }
 
         // Update preview
-        updatePalettePreview(palette.colors);
+        updatePalettePreview(colors);
+    }
+
+    function getCurrentPaletteColors() {
+        const ula = getSpectrum().ula;
+        if (!ula) return null;
+        return ula.palette.map(c => {
+            const r = c[0].toString(16).padStart(2, '0');
+            const g = c[1].toString(16).padStart(2, '0');
+            const b = c[2].toString(16).padStart(2, '0');
+            return '#' + r + g + b;
+        });
     }
 
     function updatePalettePreview(colors) {
@@ -581,6 +628,222 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         applyPalette(paletteSelect.value);
         storageSet('zxm8_palette', paletteSelect.value);
         showMessage(`Palette: ${paletteSelect.options[paletteSelect.selectedIndex].text}`);
+    });
+
+    // ===== Standard palette click-to-edit =====
+
+    palettePreview.addEventListener('click', (e) => {
+        const cell = e.target.closest('.palette-color');
+        if (!cell) return;
+
+        const index = parseInt(cell.dataset.index);
+        const isBright = cell.dataset.bright === 'true';
+        const colorIndex = isBright ? index + 8 : index;
+
+        // Read current color from ULA palette
+        const ula = getSpectrum().ula;
+        if (!ula) return;
+        const c = ula.palette[colorIndex];
+        const hex = '#' + c[0].toString(16).padStart(2, '0') +
+                          c[1].toString(16).padStart(2, '0') +
+                          c[2].toString(16).padStart(2, '0');
+
+        paletteColorPicker.value = hex;
+        paletteColorPicker.dataset.editingMode = 'standard';
+        paletteColorPicker.dataset.colorIndex = colorIndex;
+        paletteColorPicker.click();
+    });
+
+    // ===== ULA+ palette click-to-edit =====
+
+    function rgbToGrb332(r, g, b) {
+        const r3 = Math.round(r * 7 / 255);
+        const g3 = Math.round(g * 7 / 255);
+        const b2 = Math.round(b * 3 / 255);
+        return (g3 << 5) | (r3 << 2) | b2;
+    }
+
+    ulaplusPaletteGrid.addEventListener('click', (e) => {
+        const cell = e.target.closest('.ulaplus-palette-cell');
+        if (!cell) return;
+
+        const ula = getSpectrum().ula;
+        if (!ula.ulaplus.enabled || !ula.ulaplus.paletteEnabled) {
+            showMessage('ULA+ palette not active', 'warning');
+            return;
+        }
+
+        const index = parseInt(cell.dataset.index);
+        const grb = ula.ulaplus.palette[index];
+
+        // Convert GRB 332 to RGB hex for picker
+        const g3 = (grb >> 5) & 0x07;
+        const r3 = (grb >> 2) & 0x07;
+        const b2 = grb & 0x03;
+        const r = (r3 << 5) | (r3 << 2) | (r3 >> 1);
+        const g = (g3 << 5) | (g3 << 2) | (g3 >> 1);
+        const b = (b2 << 6) | (b2 << 4) | (b2 << 2) | b2;
+        const hex = '#' + r.toString(16).padStart(2, '0') +
+                          g.toString(16).padStart(2, '0') +
+                          b.toString(16).padStart(2, '0');
+
+        paletteColorPicker.value = hex;
+        paletteColorPicker.dataset.editingMode = 'ulaplus';
+        paletteColorPicker.dataset.colorIndex = index;
+        paletteColorPicker.click();
+    });
+
+    // ===== Color picker handler (shared) =====
+
+    paletteColorPicker.addEventListener('input', () => {
+        const hex = paletteColorPicker.value;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        const mode = paletteColorPicker.dataset.editingMode;
+        const colorIndex = parseInt(paletteColorPicker.dataset.colorIndex);
+        const spectrum = getSpectrum();
+
+        if (mode === 'standard') {
+            spectrum.ula.palette[colorIndex] = [r, g, b, 255];
+            spectrum.ula.updatePalette32();
+            spectrum.redraw();
+
+            // Switch dropdown to "Custom (edited)"
+            paletteSelect.value = 'custom';
+            storageSet('zxm8_palette', 'custom');
+
+            // Save custom palette to localStorage
+            const colors = getCurrentPaletteColors();
+            storageSet('zxm8_customPalette', JSON.stringify(colors));
+
+            // Update preview
+            updatePalettePreview(colors);
+        } else if (mode === 'ulaplus') {
+            // Snap to GRB 332
+            const grb = rgbToGrb332(r, g, b);
+            spectrum.ula.ulaplus.palette[colorIndex] = grb;
+            spectrum.ula.updateULAplusPalette32();
+            spectrum.redraw();
+            updateULAplusPalettePreview();
+        }
+    });
+
+    // ===== Reset palette button =====
+
+    btnResetPalette.addEventListener('click', () => {
+        const currentId = paletteSelect.value;
+        if (currentId === 'custom') {
+            applyPalette('default');
+            storageSet('zxm8_palette', 'default');
+            showMessage('Palette reset to Default');
+        } else {
+            applyPalette(currentId);
+            showMessage('Palette reset');
+        }
+    });
+
+    // ===== Saved palettes (save/load/delete) =====
+
+    function getSavedPalettes() {
+        const raw = storageGet('zxm8_savedPalettes');
+        if (!raw) return [];
+        try { return JSON.parse(raw); } catch (e) { return []; }
+    }
+
+    function setSavedPalettes(palettes) {
+        storageSet('zxm8_savedPalettes', JSON.stringify(palettes));
+    }
+
+    function refreshSavedPalettesDropdown() {
+        const palettes = getSavedPalettes();
+        savedPaletteSelect.innerHTML = '';
+        if (palettes.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '(no saved palettes)';
+            savedPaletteSelect.appendChild(opt);
+        } else {
+            palettes.forEach((p, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = p.name + (p.type === 'ulaplus' ? ' [ULA+]' : '');
+                savedPaletteSelect.appendChild(opt);
+            });
+        }
+    }
+
+    btnSavePalette.addEventListener('click', () => {
+        const name = prompt('Save palette as:');
+        if (!name || !name.trim()) return;
+
+        const spectrum = getSpectrum();
+        const palettes = getSavedPalettes();
+        const ula = spectrum.ula;
+
+        // Determine if saving standard or ULA+ palette
+        if (ula.ulaplus.enabled && ula.ulaplus.paletteEnabled) {
+            // Save ULA+ palette
+            palettes.push({
+                name: name.trim(),
+                type: 'ulaplus',
+                colors: Array.from(ula.ulaplus.palette)
+            });
+        } else {
+            // Save standard palette
+            palettes.push({
+                name: name.trim(),
+                type: 'standard',
+                colors: getCurrentPaletteColors()
+            });
+        }
+
+        setSavedPalettes(palettes);
+        refreshSavedPalettesDropdown();
+        savedPaletteSelect.value = palettes.length - 1;
+        showMessage(`Palette "${name.trim()}" saved`);
+    });
+
+    btnLoadSavedPalette.addEventListener('click', () => {
+        const palettes = getSavedPalettes();
+        const idx = parseInt(savedPaletteSelect.value);
+        if (isNaN(idx) || !palettes[idx]) return;
+
+        const saved = palettes[idx];
+        const spectrum = getSpectrum();
+
+        if (saved.type === 'ulaplus') {
+            if (!spectrum.ula.ulaplus.enabled || !spectrum.ula.ulaplus.paletteEnabled) {
+                showMessage('Enable ULA+ palette first', 'warning');
+                return;
+            }
+            for (let i = 0; i < saved.colors.length && i < 64; i++) {
+                spectrum.ula.ulaplus.palette[i] = saved.colors[i];
+            }
+            spectrum.ula.updateULAplusPalette32();
+            spectrum.redraw();
+            updateULAplusPalettePreview();
+            showMessage(`ULA+ palette "${saved.name}" loaded`);
+        } else {
+            // Standard palette — apply as custom
+            storageSet('zxm8_customPalette', JSON.stringify(saved.colors));
+            paletteSelect.value = 'custom';
+            storageSet('zxm8_palette', 'custom');
+            applyPalette('custom');
+            showMessage(`Palette "${saved.name}" loaded`);
+        }
+    });
+
+    btnDeleteSavedPalette.addEventListener('click', () => {
+        const palettes = getSavedPalettes();
+        const idx = parseInt(savedPaletteSelect.value);
+        if (isNaN(idx) || !palettes[idx]) return;
+
+        const name = palettes[idx].name;
+        palettes.splice(idx, 1);
+        setSavedPalettes(palettes);
+        refreshSavedPalettesDropdown();
+        showMessage(`Palette "${name}" deleted`);
     });
 
     // Load palettes on startup

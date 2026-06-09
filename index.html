@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.26</title>
+    <title>ZX-M8XXX v0.14.27</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -2794,6 +2794,11 @@
             font-weight: bold;
             color: #000;
             text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
+            cursor: pointer;
+        }
+        .palette-color:hover {
+            outline: 2px solid var(--accent);
+            outline-offset: -1px;
         }
         .palette-color::after {
             content: attr(data-index);
@@ -2814,6 +2819,11 @@
             width: 18px;
             height: 18px;
             border: 1px solid var(--border-secondary);
+            cursor: pointer;
+        }
+        .ulaplus-palette-cell:hover {
+            outline: 2px solid var(--accent);
+            outline-offset: -1px;
         }
         .frame-export-controls {
             gap: 5px;
@@ -6832,7 +6842,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.26 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.27 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7753,11 +7763,13 @@ start:
                             <button id="zoom5" class="zoom-btn" title="Zoom 5x">x5</button>
                         </span>
                     </div>
+                    <input type="color" id="paletteColorPicker" style="position: absolute; visibility: hidden; width: 0; height: 0;">
                     <div class="settings-row">
                         <label for="paletteSelect">Color Palette:</label>
                         <select id="paletteSelect">
                             <option value="default">Default</option>
                         </select>
+                        <button id="btnResetPalette" style="margin-left: 6px; padding: 2px 8px; font-size: 11px;" title="Reset palette to current preset">Reset</button>
                         <span style="margin-left: 15px;">
                             <label for="fullscreenMode">Fullscreen:</label>
                             <select id="fullscreenMode" title="Fullscreen aspect ratio mode">
@@ -7801,6 +7813,14 @@ start:
                             <span class="palette-color" data-index="6" data-bright="true"></span>
                             <span class="palette-color" data-index="7" data-bright="true"></span>
                         </div>
+                    </div>
+                    <div class="settings-row" style="margin-top: 4px; font-size: 11px;">
+                        <button id="btnSavePalette" style="padding: 2px 8px; font-size: 11px;" title="Save current palette with a name">Save</button>
+                        <select id="savedPaletteSelect" style="margin-left: 6px; font-size: 11px;" title="Saved palettes">
+                            <option value="">(no saved palettes)</option>
+                        </select>
+                        <button id="btnLoadSavedPalette" style="margin-left: 4px; padding: 2px 8px; font-size: 11px;" title="Load selected saved palette">Load</button>
+                        <button id="btnDeleteSavedPalette" style="margin-left: 4px; padding: 2px 8px; font-size: 11px;" title="Delete selected saved palette">Delete</button>
                     </div>
                     <div class="settings-row" style="margin-top: 10px;">
                         <label class="checkbox-label" title="Enable ULAplus extended palette support (64 colors)">
@@ -10331,7 +10351,7 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.26';
+        const APP_VERSION = '0.14.27';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
