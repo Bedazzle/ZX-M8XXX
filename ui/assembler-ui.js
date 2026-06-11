@@ -54,6 +54,7 @@ export function initAssemblerUI({
     const asmMainFileLabel = document.getElementById('asmMainFileLabel');
     const asmFilesDropdown = document.querySelector('.asm-files-dropdown');
     const btnAsmFiles = document.getElementById('btnAsmFiles');
+    const asmProjectMenu = document.getElementById('asmProjectMenu');
     const asmFilesList = document.getElementById('asmFilesList');
     const fileSelectorDialog = document.getElementById('fileSelectorDialog');
     const fileSelectorBody = document.getElementById('fileSelectorBody');
@@ -328,30 +329,62 @@ export function initAssemblerUI({
         return null;
     }
 
+    /** Parse a literal repeat count (decimal, $hex, #hex, 0xhex, hexh). NaN if not a literal. */
+    function parseRepeatCount(s) {
+        if (!s) return NaN;
+        s = s.trim();
+        if (/^\d+$/.test(s)) return parseInt(s, 10);
+        if (/^[$#][0-9a-f]+$/i.test(s)) return parseInt(s.slice(1), 16);
+        if (/^0x[0-9a-f]+$/i.test(s)) return parseInt(s, 16);
+        if (/^[0-9a-f]+h$/i.test(s)) return parseInt(s.slice(0, -1), 16);
+        return NaN;
+    }
+
     /**
      * Compute total T-states for an array of source lines.
-     * Returns { totalMin, totalMax, instrCount, failCount }.
+     * DUP/REPT...EDUP/ENDR blocks multiply their body by the repeat count
+     * (nested blocks multiply); a non-literal count is treated as 1 and
+     * flagged approximate. Returns { totalMin, totalMax, instrCount, failCount }.
      */
     function computeTstatesForLines(lines) {
         let totalMin = 0, totalMax = 0, instrCount = 0, failCount = 0;
+        const repeatStack = [];
+        let mult = 1;
         for (const line of lines) {
+            const code = line.replace(/;.*$/, '').trim();
+            const tokens = code.split(/\s+/);
+            let dir = (tokens[0] || '').toUpperCase();
+            let argIdx = 1;
+            if (dir.endsWith(':')) { dir = (tokens[1] || '').toUpperCase(); argIdx = 2; }
+            if (dir === 'DUP' || dir === 'REPT') {
+                let count = parseRepeatCount(tokens[argIdx]);
+                if (isNaN(count) || count < 0) { count = 1; failCount++; }
+                repeatStack.push(count);
+                mult *= count;
+                continue;
+            }
+            if (dir === 'EDUP' || dir === 'ENDR') {
+                repeatStack.pop();
+                mult = repeatStack.reduce((a, b) => a * b, 1);
+                continue;
+            }
             const normalized = normalizeMnemonic(line);
             if (normalized === null) continue; // directive, comment, label, empty
             const timing = lookupTiming(normalized);
             if (timing === null) {
                 failCount++;
-                instrCount++;
+                instrCount += mult;
                 continue;
             }
-            instrCount++;
+            instrCount += mult;
             if (timing.includes('/')) {
                 const [max, min] = timing.split('/').map(Number);
-                totalMax += max;
-                totalMin += min;
+                totalMax += max * mult;
+                totalMin += min * mult;
             } else {
                 const t = Number(timing);
-                totalMax += t;
-                totalMin += t;
+                totalMax += t * mult;
+                totalMin += t * mult;
             }
         }
         return { totalMin, totalMax, instrCount, failCount };
@@ -772,18 +805,14 @@ export function initAssemblerUI({
     function updateProjectButtons() {
         const fileCount = Object.keys(VFS.files).length;
         const hasFiles = fileCount > 0;
-        const hasMultipleFiles = fileCount > 1;
         const hasContent = asmEditor && asmEditor.value.trim().length > 0;
 
+        // Export/Share are menu items: gray out when there is nothing to export
         if (btnAsmExport) {
-            btnAsmExport.style.display = (hasFiles || hasContent) ? 'inline-block' : 'none';
+            btnAsmExport.disabled = !(hasFiles || hasContent);
         }
         if (btnAsmShare) {
-            btnAsmShare.style.display = (hasFiles || hasContent) ? 'inline-block' : 'none';
-        }
-        // Files button: always visible, disabled when 0 or 1 file
-        if (btnAsmFiles) {
-            btnAsmFiles.disabled = !hasMultipleFiles;
+            btnAsmShare.disabled = !(hasFiles || hasContent);
         }
         if (asmMainFileLabel) {
             if (currentProjectMainFile && hasFiles) {
@@ -876,7 +905,7 @@ export function initAssemblerUI({
 
             item.addEventListener('click', () => {
                 openFileTab(path);
-                asmFilesList.classList.remove('show');
+                asmProjectMenu.classList.remove('show');
             });
 
             asmFilesList.appendChild(item);
@@ -2070,6 +2099,14 @@ export function initAssemblerUI({
         });
     }
 
+    // Export as ZIP option
+    if (chkAsmExportZip) {
+        chkAsmExportZip.checked = storageGet('zxm8_asmExportZip') === 'true';
+        chkAsmExportZip.addEventListener('change', () => {
+            storageSet('zxm8_asmExportZip', chkAsmExportZip.checked);
+        });
+    }
+
     // Font size controls for assembler editor
     const asmFontSizeSelect = document.getElementById('asmFontSize');
 
@@ -2115,6 +2152,155 @@ export function initAssemblerUI({
                 updateAsmFontSize(asmFontSize - 1);
             }
         });
+    }
+
+    // ---- Assembler options popover (⚙) ----
+
+    const btnAsmViewOpts = document.getElementById('btnAsmViewOpts');
+    const asmViewOptsPopover = document.getElementById('asmViewOptsPopover');
+    if (btnAsmViewOpts && asmViewOptsPopover) {
+        btnAsmViewOpts.addEventListener('click', (e) => {
+            e.stopPropagation();
+            asmViewOptsPopover.classList.toggle('hidden');
+        });
+        document.addEventListener('click', (e) => {
+            if (!asmViewOptsPopover.classList.contains('hidden') &&
+                !asmViewOptsPopover.contains(e.target) && e.target !== btnAsmViewOpts) {
+                asmViewOptsPopover.classList.add('hidden');
+            }
+        });
+    }
+
+    // ========== Split editor pane ==========
+    // Second editor pane (Notepad++-style split): edits a different VFS file, or
+    // mirrors the main editor live when both panes show the same file/buffer.
+    // Advanced features (search, undo history, T-state popup) stay in the main pane.
+
+    const btnAsmSplit = document.getElementById('btnAsmSplit');
+    const asmPane2 = document.getElementById('asmPane2');
+    const asmPaneSplitter = document.getElementById('asmPaneSplitter');
+    const asmEditor2 = document.getElementById('asmEditor2');
+    const asmHighlight2 = document.getElementById('asmHighlight2');
+    const asmLineNumbers2 = document.getElementById('asmLineNumbers2');
+    const asmPane2File = document.getElementById('asmPane2File');
+    const asmPane2Header = document.getElementById('asmPane2Header');
+    const btnAsmPane2Close = document.getElementById('btnAsmPane2Close');
+    let pane2Path = null;  // null = mirror the main editor buffer
+
+    function pane2IsMirror() {
+        return pane2Path === null || pane2Path === currentOpenFile;
+    }
+
+    function pane2Render() {
+        asmHighlight2.innerHTML = highlightAsmCode(asmEditor2.value) + '\u200B';
+        asmEditor2.classList.add('highlighting');  // make the textarea text transparent, like the main editor
+        const count = asmEditor2.value.split('\n').length;
+        asmLineNumbers2.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
+    }
+
+    function pane2FillFileList() {
+        const files = VFS.listFiles().filter(p => !VFS.files[p].binary);
+        // Only rebuild when the file set changed — in Firefox, clicking an option
+        // fires mousedown on the select, and rebuilding mid-click would reset the
+        // choice to the first option.
+        const sig = files.join('\n');
+        if (asmPane2File.dataset.sig === sig) return;
+        asmPane2File.dataset.sig = sig;
+        asmPane2File.innerHTML = files.length
+            ? files.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')
+            : '<option value="">(editor buffer)</option>';
+        if (pane2Path && VFS.files[pane2Path]) asmPane2File.value = pane2Path;
+    }
+
+    function pane2LoadFile(path) {
+        pane2Path = (path && VFS.files[path]) ? path : null;
+        asmEditor2.value = pane2IsMirror()
+            ? asmEditor.value
+            : VFS.files[pane2Path].content;
+        pane2Render();
+        if (pane2Path && asmPane2File.value !== pane2Path) asmPane2File.value = pane2Path;
+        storageSet('zxm8_asmPane2File', pane2Path || '');
+    }
+
+    function pane2SetVisible(on) {
+        asmPane2.classList.toggle('hidden', !on);
+        asmPane2Header.classList.toggle('hidden', !on);
+        asmPaneSplitter.classList.toggle('hidden', !on);
+        btnAsmSplit.classList.toggle('active', on);
+        storageSet('zxm8_asmSplit', on);
+    }
+
+    function pane2Open() {
+        syncEditorToVFS();
+        const files = VFS.listFiles().filter(p => !VFS.files[p].binary);
+        const saved = storageGet('zxm8_asmPane2File');
+        const path = (saved && VFS.files[saved] && !VFS.files[saved].binary)
+            ? saved
+            : (currentOpenFile || files[0] || null);
+        pane2FillFileList();
+        pane2LoadFile(path);
+        pane2SetVisible(true);
+    }
+
+    if (btnAsmSplit && asmPane2) {
+        btnAsmSplit.addEventListener('click', () => {
+            if (asmPane2.classList.contains('hidden')) pane2Open();
+            else pane2SetVisible(false);
+        });
+        btnAsmPane2Close.addEventListener('click', () => pane2SetVisible(false));
+
+        // Rebuild the file list when the dropdown is opened — the VFS may have changed
+        asmPane2File.addEventListener('mousedown', pane2FillFileList);
+        asmPane2File.addEventListener('change', () => pane2LoadFile(asmPane2File.value));
+
+        // Edits in the split pane: write to the VFS, or mirror into the main
+        // editor when both panes show the same file (or the unsaved buffer)
+        asmEditor2.addEventListener('input', () => {
+            if (pane2Path && !VFS.files[pane2Path]) pane2Path = null;  // file was removed
+            if (pane2IsMirror()) {
+                asmEditor.value = asmEditor2.value;
+                updateHighlight();
+                updateLineNumbers();
+                if (currentOpenFile) fileModified[currentOpenFile] = true;
+            } else {
+                VFS.files[pane2Path].content = asmEditor2.value;
+                fileModified[pane2Path] = true;
+            }
+            updateFileTabs();
+            assemblyDirty = true;
+            pane2Render();
+        });
+
+        // Edits in the main editor mirror into the split pane for the same file
+        asmEditor.addEventListener('input', () => {
+            if (asmPane2.classList.contains('hidden')) return;
+            if (pane2IsMirror()) {
+                asmEditor2.value = asmEditor.value;
+                pane2Render();
+            }
+        });
+
+        asmEditor2.addEventListener('scroll', () => {
+            asmHighlight2.scrollTop = asmEditor2.scrollTop;
+            asmHighlight2.scrollLeft = asmEditor2.scrollLeft;
+            asmLineNumbers2.scrollTop = asmEditor2.scrollTop;
+        });
+
+        // Tab inserts spaces, like the main editor
+        asmEditor2.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const s = asmEditor2.selectionStart;
+                asmEditor2.value = asmEditor2.value.slice(0, s) + '    ' + asmEditor2.value.slice(asmEditor2.selectionEnd);
+                asmEditor2.selectionStart = asmEditor2.selectionEnd = s + 4;
+                asmEditor2.dispatchEvent(new Event('input'));
+            }
+        });
+
+        // Restore split state after init completes
+        if (storageGet('zxm8_asmSplit') === 'true') {
+            setTimeout(pane2Open, 0);
+        }
     }
 
     // ========== Share / Import ==========
@@ -2434,7 +2620,7 @@ export function initAssemblerUI({
         btnAsmNew.addEventListener('click', () => {
             // Prompt for filename
             const defaultName = `file${Object.keys(VFS.files).length + 1}.asm`;
-            const filename = prompt('Enter filename:', defaultName);
+            const filename = prompt('Enter filename (use / for subdirectory):', defaultName);
             if (!filename) return;
 
             // Ensure it has an extension
@@ -2475,18 +2661,25 @@ export function initAssemblerUI({
         });
     }
 
-    // Files dropdown handler
+    // Project dropdown handler (actions + file list)
     if (btnAsmFiles) {
         btnAsmFiles.addEventListener('click', (e) => {
             e.stopPropagation();
             updateFilesList();
-            asmFilesList.classList.toggle('show');
+            asmProjectMenu.classList.toggle('show');
+        });
+
+        // Action items close the menu when clicked
+        asmProjectMenu.querySelectorAll('.asm-menu-item').forEach(item => {
+            item.addEventListener('click', () => {
+                asmProjectMenu.classList.remove('show');
+            });
         });
 
         // Close dropdown when clicking outside
         document.addEventListener('click', (e) => {
-            if (asmFilesList && !asmFilesDropdown.contains(e.target)) {
-                asmFilesList.classList.remove('show');
+            if (asmProjectMenu && !asmFilesDropdown.contains(e.target)) {
+                asmProjectMenu.classList.remove('show');
             }
         });
     }

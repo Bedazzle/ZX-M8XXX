@@ -1,5 +1,7 @@
 // test-runner.js — Automated test runner for screen comparison tests
 
+import { escapeHtml } from '../core/utils.js';
+
 export class TestRunner {
     constructor(spectrum) {
         this.spectrum = spectrum;
@@ -144,9 +146,9 @@ export class TestRunner {
             if (!isVisible) tr.style.display = 'none';
             tr.innerHTML = `
                 <td class="tests-col-check"><input type="checkbox" class="test-checkbox" ${isEnabled ? 'checked' : 'disabled'}></td>
-                <td class="tests-col-name">${this.escapeHtml(test.name)}</td>
+                <td class="tests-col-name">${escapeHtml(test.name)}</td>
                 <td class="tests-col-machine">${test.machine || '48k'}</td>
-                <td class="tests-col-file">${this.escapeHtml(test.file)}</td>
+                <td class="tests-col-file">${escapeHtml(test.file)}</td>
                 <td class="tests-col-result tests-result-pending">${isEnabled ? '-' : 'disabled'}</td>
                 <td class="tests-col-details">-</td>
             `;
@@ -205,12 +207,6 @@ export class TestRunner {
                 tab.innerHTML = `${tab.textContent.split('(')[0].trim()} <span class="count">(${count})</span>`;
             }
         });
-    }
-
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
     }
 
     toggleSelectAll(checked) {

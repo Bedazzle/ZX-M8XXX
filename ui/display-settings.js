@@ -600,15 +600,17 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         updatePalettePreview(colors);
     }
 
+    // CSS color string for <input type="color"> (lowercase #rrggbb)
+    function rgbToHex(r, g, b) {
+        return '#' + r.toString(16).padStart(2, '0') +
+                     g.toString(16).padStart(2, '0') +
+                     b.toString(16).padStart(2, '0');
+    }
+
     function getCurrentPaletteColors() {
         const ula = getSpectrum().ula;
         if (!ula) return null;
-        return ula.palette.map(c => {
-            const r = c[0].toString(16).padStart(2, '0');
-            const g = c[1].toString(16).padStart(2, '0');
-            const b = c[2].toString(16).padStart(2, '0');
-            return '#' + r + g + b;
-        });
+        return ula.palette.map(c => rgbToHex(c[0], c[1], c[2]));
     }
 
     function updatePalettePreview(colors) {
@@ -644,9 +646,7 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         const ula = getSpectrum().ula;
         if (!ula) return;
         const c = ula.palette[colorIndex];
-        const hex = '#' + c[0].toString(16).padStart(2, '0') +
-                          c[1].toString(16).padStart(2, '0') +
-                          c[2].toString(16).padStart(2, '0');
+        const hex = rgbToHex(c[0], c[1], c[2]);
 
         paletteColorPicker.value = hex;
         paletteColorPicker.dataset.editingMode = 'standard';
@@ -683,9 +683,7 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         const r = (r3 << 5) | (r3 << 2) | (r3 >> 1);
         const g = (g3 << 5) | (g3 << 2) | (g3 >> 1);
         const b = (b2 << 6) | (b2 << 4) | (b2 << 2) | b2;
-        const hex = '#' + r.toString(16).padStart(2, '0') +
-                          g.toString(16).padStart(2, '0') +
-                          b.toString(16).padStart(2, '0');
+        const hex = rgbToHex(r, g, b);
 
         paletteColorPicker.value = hex;
         paletteColorPicker.dataset.editingMode = 'ulaplus';
@@ -858,7 +856,11 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     // Restore (default true for all)
     if (chkFlowBreakSpacing) chkFlowBreakSpacing.checked = storageGet('zxm8_flowBreakSpacing') !== 'false';
     if (chkShowPCCursor) chkShowPCCursor.checked = storageGet('zxm8_showPCCursor') !== 'false';
-    if (chkFollowPC) chkFollowPC.checked = storageGet('zxm8_followPC') !== 'false';
+    if (chkFollowPC) {
+        chkFollowPC.checked = storageGet('zxm8_followPC') !== 'false';
+        // Notify listeners (disasm toolbar disables Go/PC/address while following)
+        chkFollowPC.dispatchEvent(new Event('change'));
+    }
 
     // Persist on change
     if (chkFlowBreakSpacing) chkFlowBreakSpacing.addEventListener('change', () => {
@@ -881,16 +883,6 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             if (val > 0) {
                 storageSet('zxm8_stepOverLimit', val.toString());
             }
-        });
-    }
-
-    // ===== Assembler export settings =====
-
-    const chkAsmExportZip = document.getElementById('chkAsmExportZip');
-    if (chkAsmExportZip) {
-        chkAsmExportZip.checked = storageGet('zxm8_asmExportZip') === 'true';
-        chkAsmExportZip.addEventListener('change', () => {
-            storageSet('zxm8_asmExportZip', chkAsmExportZip.checked);
         });
     }
 

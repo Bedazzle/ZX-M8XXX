@@ -54,31 +54,34 @@ This document describes the technical requirements for cycle-accurate emulation 
 
 ### 1.3 Line Structure (T-states within line)
 
+Each scanline follows the CRT beam order: non-visible (horizontal retrace) → left border → paper → right border. Two pixels are output per T-state in visible regions.
+
 **48K (224 T-states/line):**
 ```
-[0-127]   Paper area (128 T = 256 pixels)
-[128-151] Right border (24 T = 48 pixels)
-[152-175] H-blank (24 T)
-[176-199] H-sync (24 T)
-[200-223] Left border (24 T = 48 pixels)
+[0-47]    Non-visible (48 T)
+[48-71]   Left border (24 T = 48 pixels)
+[72-199]  Paper area (128 T = 256 pixels)
+[200-223] Right border (24 T = 48 pixels)
 ```
-Note: Line structure varies by reference. Some count left border first.
 
 **128K (228 T-states/line):**
 ```
-[0-23]    Left border (24 T = 48 pixels)
-[24-151]  Paper area (128 T = 256 pixels)
-[152-175] Right border (24 T = 48 pixels)
-[176-227] H-retrace (52 T)
+[0-51]    Non-visible (52 T)
+[52-75]   Left border (24 T = 48 pixels)
+[76-203]  Paper area (128 T = 256 pixels)
+[204-227] Right border (24 T = 48 pixels)
 ```
 
 **Pentagon (224 T-states/line):**
 ```
-[0-31]    H-blank (32 T)
+[0-31]    Non-visible (32 T)
 [32-67]   Left border (36 T = 72 pixels)
 [68-195]  Paper area (128 T = 256 pixels)
 [196-223] Right border (28 T = 56 pixels)
 ```
+Pentagon has asymmetric borders (72px left, 56px right) unlike the symmetric 48px/48px on Sinclair models.
+
+**Non-visible region:** Encompasses horizontal blanking and sync. No pixels are output; border color changes during this period are invisible. The exact split between front porch, sync pulse, and back porch is irrelevant for emulation — only the total non-visible duration matters.
 
 ---
 

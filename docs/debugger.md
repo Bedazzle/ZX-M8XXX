@@ -1,4 +1,34 @@
-# Debugger: Step Over, Trace History, Port I/O Log, Shadow Screen, Instruction History
+# Debugger: Layout Splitters, T-State Selection, Step Over, Trace History, Port I/O Log, Shadow Screen, Instruction History
+
+## Layout Splitters
+
+Four drag bars, all wired via `initSplitter()` in `ui/tab-system.js` (drag sets a CSS variable, persists to localStorage, double-click resets; `axis: 'x'` for horizontal; saved values are re-clamped at load):
+
+- **`#debugColSplitter`** (between the left panel and the right column) sets `--left-panel-w`, the width of `.disasm-panel` (base rule + landscape `!important` override; fallback 480px). Clamped 400–900px (the minimum keeps the toolbar on one line), key `zxm8_leftPanelWidth`.
+- **`#debugColSplitterRight`** (right edge of the right column) sets `--right-panel-w`, the right column's landscape width (fallback 600px). Clamped 520–1100px, key `zxm8_rightPanelWidth`. Hidden in portrait, where the right column auto-fills the remaining row width.
+
+In landscape, the sub-panel (`.panel-tabs` max-width) and the row splitter width both follow `calc(--left-panel-w + --right-panel-w + 36px)`, so the layout's right edge tracks the width bars. The registers row wraps (`flex-wrap: wrap`) in all modes, so a narrowed right column stacks the register boxes instead of overflowing.
+
+**Adaptive hex width**: the memory views compute bytes per line (8/16/32, so line addresses stay round) from the view's width at each render (`calcBytesPerLine()` in `ui/memory-view.js`; hex cells are 18px, the ASCII char width is measured once). Each view has its own value, exposed as `getRightBytesPerLine()`/`getLeftBytesPerLine()` and used by the ▲▼ paging buttons, wheel scroll, and keyboard navigation (`keyboard-shortcuts.js` receives the getters via DI).
+- **`#debugRowSplitter`** (between the main debug row and the sub-panel tabs) sets `--debug-row-h`, the height of `.disasm-panel` and `.right-column`. Both layout modes use it (fallbacks: 740px landscape, 720px portrait); the views inside are `flex: 1` with `overflow: hidden`, so they clip the fixed render line counts (`DISASM_LINES` 48 etc.) — no JS re-render involved. Clamped 300–1400px, key `zxm8_debugRowHeight`.
+- **`#panelSplitter`** (below the sub-panel tabs — Breakpoints, Labels, Watches, Analysis, Search, Code Path, Struct, BASIC, Trace, Pokes) sets `--subpanel-list-h`, which caps the scrollable lists in those tabs (`.breakpoint-list`, `.labels-list`, `.watches-list`, `#panel-trace .trace-list`, `.poke-list` — each falls back to its original default when unset). Clamped 40–800px, key `zxm8_subpanelHeight`. Lists with inline max-heights (e.g. the port filter list) are unaffected.
+
+## T-State Selection (disasm panels)
+
+Drag the mouse across disassembly lines in either panel to sum instruction timings (`initTstateSelection()` in `ui/disasm-navigation.js`, wired to both `#disassemblyView` and `#rightDisassemblyView`; timings from `disasm.getTiming(bytes)`).
+
+**Rules** (popup shown at mouseup):
+- Linear code: `N instructions = M T-states`.
+- Flow control mid-selection (JP/JR/CALL/RET/RST/DJNZ/HALT or any conditional timing): refused — execution may leave before reaching the summed lines.
+- Last line is special — execution leaving the selection there is fine:
+  - unconditional JP/JR/RET: exact sum;
+  - conditional branch (JR cc/JP cc/RET cc/DJNZ): shows both totals, branch taken / not taken;
+  - branch whose literal target (decoded from bytes: relative for JR/DJNZ, absolute for JP) lands back inside the selection: refused (iteration count unknown);
+  - CALL/RST: refused — execution returns after a subroutine of unknown duration, so the call overhead alone would mislead;
+  - HALT and block repeats (LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR): refused.
+- Data lines (`data-line` class): refused.
+
+**Implementation notes**: the selection is anchored by *addresses*, not elements, and a `MutationObserver` on the view re-applies the `.tsel` highlight after every re-render — the disasm view re-renders frequently (even paused), which would otherwise wipe the selection mid-drag. The click event following a drag is swallowed once (capture phase) so it doesn't set a run-to-cursor target. Any click outside, wheel, or keypress dismisses the selection and popup (`.disasm-tsel-popup`, fixed-position, `pointer-events: none`).
 
 ## Step Over (F8)
 
@@ -9,7 +39,7 @@ Step Over executes the current instruction and stops at the next one, but treats
 - **Block repeats** (LDIR, LDDR, CPIR, CPDR, INIR, INDR, OTIR, OTDR) — runs until PC reaches the instruction after the 2-byte ED xx
 - **DJNZ** — runs the entire loop until B=0 and PC passes the 2-byte DJNZ
 
-CALL, RST, and DJNZ use a configurable T-state limit (Settings → Display → "Step Over T-state limit", default 80000 ≈ one frame). This prevents infinite hangs when a CALL never returns, a DJNZ loop exits early via JP/JR, or execution diverges unexpectedly. Block repeats (LDIR, LDDR, etc.) always run to completion (fixed 10M limit) since they are bounded by BC and guaranteed to terminate.
+CALL, RST, and DJNZ use a configurable T-state limit (disasm toolbar ⚙ popover → "Step Over limit", input `stepOverMaxTstates`, default 80000 ≈ one frame; persistence handled in `display-settings.js`). This prevents infinite hangs when a CALL never returns, a DJNZ loop exits early via JP/JR, or execution diverges unexpectedly. Block repeats (LDIR, LDDR, etc.) always run to completion (fixed 10M limit) since they are bounded by BC and guaranteed to terminate.
 
 **DJNZ smart analysis** (`_isDjnzLoopSafe`): Before applying the T-state limit, the loop body (from the branch target to the DJNZ address) is statically analyzed. If the body contains only B-preserving, non-branching instructions, the loop is guaranteed to terminate (B decrements to 0 each iteration), so the limit is bypassed (uses 10M instead). The analysis flags these as unsafe:
 - Flow control: JP, JR, CALL, RST, RET, RETI, RETN, JP (HL/IX/IY), nested DJNZ, HALT

@@ -467,20 +467,3 @@ export const Parser = {
     }
 };
 
-// Line types for clearer identification
-export const LineType = {
-    INSTRUCTION: 'instruction',
-    DIRECTIVE: 'directive',
-    LABEL_ONLY: 'label_only',
-    EMPTY: 'empty'
-};
-
-// Get line type
-export function getLineType(parsed) {
-    if (!parsed) return LineType.EMPTY;
-    if (parsed.instruction) return LineType.INSTRUCTION;
-    if (parsed.directive) return LineType.DIRECTIVE;
-    if (parsed.label) return LineType.LABEL_ONLY;
-    return LineType.EMPTY;
-}
-

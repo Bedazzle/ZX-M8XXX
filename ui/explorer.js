@@ -5,7 +5,8 @@ import {
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
-import { MGTLoader, MDRLoader, OPDLoader } from '../core/loaders.js';
+import { MGTLoader, MDRLoader, OPDLoader, sclChecksum } from '../core/loaders.js';
+import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 function isFlowBreak(mnemonic) {
     const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
     return mn.startsWith('JP') || mn.startsWith('JR') ||
@@ -62,6 +63,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     let explorerZipParentName = null; // Store parent ZIP name for drill-down
     let explorerBasicViewMode = 'code';  // 'code' or 'screen'
     let explorerBasicLines = null;       // Cached decoded lines for view toggle
+    let explorerBasicRawData = null;     // Cached raw BASIC binary for copy
     let explorerBankCache = new Map();      // bankNum -> Uint8Array(16384)
     let explorerBankDirty = new Set();      // bank numbers modified via import
     let explorerBankAddressMode = 'bank';   // 'bank' or 'logical'
@@ -1963,11 +1965,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (explorerParsed && explorerParsed.type === 'tzx') {
             for (let bi = 0; bi < explorerBlocks.length; bi++) {
                 const block = explorerBlocks[bi];
-                // Check standard speed data blocks (0x10)
-                if (block.id === 0x10 && block.dataLength) {
-                    // Data starts at offset + 1 (block ID) + 4 (pause + length)
-                    const dataStart = block.offset + 1 + 4;
-                    const blockData = explorerData.slice(dataStart, dataStart + block.dataLength);
+                // Check standard/turbo speed data blocks (0x10/0x11)
+                if ((block.id === 0x10 || block.id === 0x11) && block.data && block.data.length > 0) {
+                    const blockData = block.data;
                     // Check for data block with screen-sized content
                     if (blockData.length > 0 && blockData[0] === 0xFF) {
                         const contentLen = blockData.length - 2; // subtract flag and checksum
@@ -3188,7 +3188,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // Scan for $80 $AA marker after the BASIC program
         for (let i = 0; i < fileData.length - 3; i++) {
             if (fileData[i] === 0x80 && fileData[i + 1] === 0xAA) {
-                return fileData[i + 2] | (fileData[i + 3] << 8);
+                const line = fileData[i + 2] | (fileData[i + 3] << 8);
+                return line < 32768 ? line : -1;  // >= 32768 = no autostart
             }
         }
         return -1;
@@ -5161,7 +5162,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
             if (block.dataBlock) {
                 explorerHexSource.value = idx.toString();
-            } else if (idx + 1 < explorerBlocks.length && explorerBlocks[idx + 1].id === 0x10 && explorerBlocks[idx + 1].dataBlock) {
+            } else if (idx + 1 < explorerBlocks.length && (explorerBlocks[idx + 1].id === 0x10 || explorerBlocks[idx + 1].id === 0x11) && explorerBlocks[idx + 1].dataBlock) {
                 explorerHexSource.value = (idx + 1).toString();
             }
             explorerHexLen.value = Math.min(block.dataLength || block.length, 65536);
@@ -5350,10 +5351,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
             }
         } else if (explorerParsed.type === 'tzx') {
-            // TZX standard speed blocks (0x10) — same structure as TAP
+            // TZX standard speed (0x10) and turbo speed (0x11) blocks — same inner structure as TAP
             for (let i = 0; i < explorerBlocks.length; i++) {
                 const block = explorerBlocks[i];
-                if (block.id === 0x10 && block.headerTypeId === 0) {
+                if ((block.id === 0x10 || block.id === 0x11) && block.headerTypeId === 0) {
                     // Program header — BASIC source
                     basicOpts.push(`<option value="${i}">Block ${i + 1}: ${block.fileName}</option>`);
                     basicSources.push(i.toString());
@@ -5361,17 +5362,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             for (let i = 0; i < explorerBlocks.length; i++) {
                 const block = explorerBlocks[i];
-                if (block.id === 0x10 && block.headerTypeId === 3) {
+                if ((block.id === 0x10 || block.id === 0x11) && block.headerTypeId === 3) {
                     // Bytes header — disasm source
                     disasmOpts.push(`<option value="${i}">Block ${i + 1}: ${block.fileName} @ ${hex16(block.startAddress)}</option>`);
                 }
             }
             for (let i = 0; i < explorerBlocks.length; i++) {
                 const block = explorerBlocks[i];
-                if (block.id === 0x10 && block.dataBlock) {
+                if ((block.id === 0x10 || block.id === 0x11) && block.dataBlock) {
                     // Data block — disasm + hex source
                     const prevBlock = i > 0 ? explorerBlocks[i - 1] : null;
-                    const name = prevBlock && prevBlock.id === 0x10 && prevBlock.headerType ? prevBlock.fileName : `Block ${i + 1}`;
+                    const name = prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.headerType ? prevBlock.fileName : `Block ${i + 1}`;
                     const addr = prevBlock && prevBlock.startAddress !== undefined ? ` @ ${hex16(prevBlock.startAddress)}` : '';
                     if (!prevBlock || prevBlock.headerTypeId !== 3) {
                         disasmOpts.push(`<option value="data:${i}">${name} data${addr} (${block.dataLength} bytes)</option>`);
@@ -5380,9 +5381,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             for (let i = 0; i < explorerBlocks.length; i++) {
                 const block = explorerBlocks[i];
-                if (block.id === 0x10 && block.dataBlock) {
+                if ((block.id === 0x10 || block.id === 0x11) && block.dataBlock) {
                     const prevBlock = i > 0 ? explorerBlocks[i - 1] : null;
-                    const name = prevBlock && prevBlock.id === 0x10 && prevBlock.headerType ? prevBlock.fileName : `Block ${i + 1}`;
+                    const name = prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.headerType ? prevBlock.fileName : `Block ${i + 1}`;
                     hexOpts.push(`<option value="${i}">${name} (${block.dataLength} bytes)</option>`);
                 }
             }
@@ -5476,6 +5477,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         explorerBasicSource.innerHTML = '<option value="">Select source...</option>' + basicOpts.join('');
         explorerBasicLines = null; // Invalidate cached decode when source list changes
+        explorerBasicRawData = null;
         explorerDisasmSource.innerHTML = '<option value="">Select source...</option>' + disasmOpts.join('');
         explorerHexSource.innerHTML = '<option value="">Whole file</option>' + hexOpts.join('');
         explorerTextSource.innerHTML = '<option value="">Whole file</option>' + hexOpts.join('');
@@ -5536,7 +5538,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (source.startsWith('data:')) {
                 const blockIdx = parseInt(source.slice(5));
                 const prevBlock = blockIdx > 0 ? explorerBlocks[blockIdx - 1] : null;
-                if (prevBlock && prevBlock.id === 0x10 && prevBlock.startAddress !== undefined) {
+                if (prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.startAddress !== undefined) {
                     explorerDisasmAddr.value = hex16(prevBlock.startAddress);
                 }
             } else {
@@ -5648,10 +5650,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (source.startsWith('data:')) {
                 const blockIdx = parseInt(source.slice(5));
                 const dataBlock = explorerBlocks[blockIdx];
-                if (dataBlock && dataBlock.id === 0x10 && dataBlock.dataBlock && dataBlock.data) {
+                if (dataBlock && (dataBlock.id === 0x10 || dataBlock.id === 0x11) && dataBlock.dataBlock && dataBlock.data) {
                     data = dataBlock.data.slice(1, -1);
                     const prevBlock = blockIdx > 0 ? explorerBlocks[blockIdx - 1] : null;
-                    if (prevBlock && prevBlock.id === 0x10 && prevBlock.startAddress !== undefined) {
+                    if (prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.startAddress !== undefined) {
                         baseAddr = prevBlock.startAddress;
                     } else {
                         baseAddr = 0;
@@ -5660,7 +5662,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             } else {
                 const blockIdx = parseInt(source);
                 const headerBlock = explorerBlocks[blockIdx];
-                if (headerBlock && headerBlock.id === 0x10 && headerBlock.headerTypeId === 3 && blockIdx + 1 < explorerBlocks.length) {
+                if (headerBlock && (headerBlock.id === 0x10 || headerBlock.id === 0x11) && headerBlock.headerTypeId === 3 && blockIdx + 1 < explorerBlocks.length) {
                     const dataBlock = explorerBlocks[blockIdx + 1];
                     if (dataBlock && dataBlock.data) {
                         data = dataBlock.data.slice(1, -1);
@@ -6148,7 +6150,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (source && explorerParsed.type === 'tzx') {
             const blockIdx = parseInt(source);
             const block = explorerBlocks[blockIdx];
-            if (block && block.id === 0x10 && block.data) {
+            if (block && (block.id === 0x10 || block.id === 0x11) && block.data) {
                 data = block.data.slice(1, -1);
                 baseAddr = 0;
             }
@@ -6266,7 +6268,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (source && explorerParsed.type === 'tzx') {
             const blockIdx = parseInt(source);
             const block = explorerBlocks[blockIdx];
-            if (block && block.id === 0x10 && block.data && block.data.length > 2) return block.data.slice(1, -1);
+            if (block && (block.id === 0x10 || block.id === 0x11) && block.data && block.data.length > 2) return block.data.slice(1, -1);
         } else if (source && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl' || explorerParsed.type === 'mgt' || explorerParsed.type === 'mdr')) {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
@@ -6375,420 +6377,34 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         '\u2588', // 0x8F █ full block
     ];
 
-    // BASIC Decoder for Explorer
-    const ExplorerBasicDecoder = (() => {
-        // ZX Spectrum BASIC tokens (0xA3-0xFF)
-        const TOKENS = {
-            0xA3: ['SPECTRUM', true, true], 0xA4: ['PLAY', true, true],
-            0xA5: ['RND', true, false], 0xA6: ['INKEY$', true, false],
-            0xA7: ['PI', true, false], 0xA8: ['FN', true, false],
-            0xA9: ['POINT', true, false], 0xAA: ['SCREEN$', true, false],
-            0xAB: ['ATTR', true, false], 0xAC: ['AT', true, true],
-            0xAD: ['TAB', true, true], 0xAE: ['VAL$', true, false],
-            0xAF: ['CODE', true, true], 0xB0: ['VAL', true, true],
-            0xB1: ['LEN', true, false], 0xB2: ['SIN', true, false],
-            0xB3: ['COS', true, false], 0xB4: ['TAN', true, false],
-            0xB5: ['ASN', true, false], 0xB6: ['ACS', true, false],
-            0xB7: ['ATN', true, false], 0xB8: ['LN', true, false],
-            0xB9: ['EXP', true, false], 0xBA: ['INT', true, false],
-            0xBB: ['SQR', true, false], 0xBC: ['SGN', true, false],
-            0xBD: ['ABS', true, false], 0xBE: ['PEEK', true, false],
-            0xBF: ['IN', true, true], 0xC0: ['USR', true, true],
-            0xC1: ['STR$', true, false], 0xC2: ['CHR$', true, false],
-            0xC3: ['NOT', true, true], 0xC4: ['BIN', true, true],
-            0xC5: ['OR', true, true], 0xC6: ['AND', true, true],
-            0xC7: ['<=', false, false], 0xC8: ['>=', false, false],
-            0xC9: ['<>', false, false], 0xCA: ['LINE', true, true],
-            0xCB: ['THEN', true, true], 0xCC: ['TO', true, true],
-            0xCD: ['STEP', true, true], 0xCE: ['DEF FN', true, true],
-            0xCF: ['CAT', true, true], 0xD0: ['FORMAT', true, true],
-            0xD1: ['MOVE', true, true], 0xD2: ['ERASE', true, true],
-            0xD3: ['OPEN #', true, false], 0xD4: ['CLOSE #', true, false],
-            0xD5: ['MERGE', true, true], 0xD6: ['VERIFY', true, true],
-            0xD7: ['BEEP', true, true], 0xD8: ['CIRCLE', true, true],
-            0xD9: ['INK', true, true], 0xDA: ['PAPER', true, true],
-            0xDB: ['FLASH', true, true], 0xDC: ['BRIGHT', true, true],
-            0xDD: ['INVERSE', true, true], 0xDE: ['OVER', true, true],
-            0xDF: ['OUT', true, true], 0xE0: ['LPRINT', true, true],
-            0xE1: ['LLIST', true, true], 0xE2: ['STOP', true, false],
-            0xE3: ['READ', true, true], 0xE4: ['DATA', true, true],
-            0xE5: ['RESTORE', true, true], 0xE6: ['NEW', true, false],
-            0xE7: ['BORDER', true, true], 0xE8: ['CONTINUE', true, false],
-            0xE9: ['DIM', true, true], 0xEA: ['REM', true, true],
-            0xEB: ['FOR', true, true], 0xEC: ['GO TO', true, true],
-            0xED: ['GO SUB', true, true], 0xEE: ['INPUT', true, true],
-            0xEF: ['LOAD', true, true], 0xF0: ['LIST', true, true],
-            0xF1: ['LET', true, true], 0xF2: ['PAUSE', true, true],
-            0xF3: ['NEXT', true, true], 0xF4: ['POKE', true, true],
-            0xF5: ['PRINT', true, true], 0xF6: ['PLOT', true, true],
-            0xF7: ['RUN', true, true], 0xF8: ['SAVE', true, true],
-            0xF9: ['RANDOMIZE', true, true], 0xFA: ['IF', true, true],
-            0xFB: ['CLS', true, false], 0xFC: ['DRAW', true, true],
-            0xFD: ['CLEAR', true, true], 0xFE: ['RETURN', true, false],
-            0xFF: ['COPY', true, false]
-        };
-
-        const CONTROL_CODES = {
-            0x10: 'INK', 0x11: 'PAPER', 0x12: 'FLASH',
-            0x13: 'BRIGHT', 0x14: 'INVERSE', 0x15: 'OVER',
-            0x16: 'AT', 0x17: 'TAB'
-        };
-
-        function parseFloat5(bytes) {
-            if (bytes.length < 5) return null;
-            const exp = bytes[0];
-            if (exp === 0) {
-                if (bytes[1] === 0x00 && bytes[4] === 0x00) {
-                    return bytes[2] | (bytes[3] << 8);
-                }
-                if (bytes[1] === 0xFF && bytes[4] === 0x00) {
-                    const val = bytes[2] | (bytes[3] << 8);
-                    return val > 32767 ? val - 65536 : -val;
-                }
-                return 0;
-            }
-            const sign = (bytes[1] & 0x80) ? -1 : 1;
-            const mantissa = (((bytes[1] | 0x80) << 24) | (bytes[2] << 16) | (bytes[3] << 8) | bytes[4]) >>> 0;
-            return sign * (mantissa / 0x100000000) * Math.pow(2, exp - 128);
-        }
-
-        function formatNumber(n) {
-            if (n === null || n === undefined) return '?';
-            if (Number.isInteger(n)) return n.toString();
-            return parseFloat(n.toPrecision(10)).toString();
-        }
-
-        function decode(data) {
-            const lines = [];
-            let offset = 0;
-
-            while (offset < data.length - 4) {
-                const lineNum = (data[offset] << 8) | data[offset + 1];
-                let lineLen = data[offset + 2] | (data[offset + 3] << 8);
-
-                if (lineLen === 0) {
-                    break;
-                }
-
-                // Stop at variables area: ZX BASIC line numbers are 0-9999.
-                // Variable type markers have bit 6 or 7 set, producing
-                // lineNum >= 16384 (0x4000) when read as a BE line number.
-                if (lineNum >= 16384) {
-                    break;
-                }
-
-                const availableLen = data.length - offset - 4;
-                if (lineLen > availableLen) {
-                    lineLen = availableLen;
-                }
-
-                if (lineLen === 0) {
-                    break;
-                }
-
-                // Scan for 0x0D terminator to find the display end.
-                // REM lines with embedded machine code may contain 0x0D bytes;
-                // always advance by lineLen but only display up to the first 0x0D.
-                // If 0x0D is found beyond lineLen (e.g. +D disk saves with incorrect
-                // length), use that as the actual line boundary.
-                let displayLen = lineLen;
-                let advanceLen = lineLen;
-                const searchEnd = Math.min(offset + 4 + lineLen + 32, data.length);
-                for (let scan = offset + 4; scan < searchEnd; scan++) {
-                    if (data[scan] === 0x0D) {
-                        const foundLen = scan - offset - 4 + 1; // include the 0x0D
-                        if (foundLen <= lineLen) {
-                            // 0x0D within lineLen: trust lineLen for advance, display up to 0x0D
-                            displayLen = foundLen;
-                        } else {
-                            // 0x0D beyond lineLen: +D fix, use found position for both
-                            displayLen = foundLen;
-                            advanceLen = foundLen;
-                        }
-                        break;
-                    }
-                }
-
-                const lineData = data.slice(offset + 4, offset + 4 + displayLen);
-                const decoded = decodeLine(lineData);
-
-                lines.push({
-                    number: lineNum,
-                    offset: offset,
-                    text: decoded.text,
-                    tokens: decoded.tokens,
-                    obfuscations: decoded.obfuscations
-                });
-
-                offset += 4 + advanceLen;
-            }
-            return lines;
-        }
-
-        function decodeLine(data) {
-            let text = '';
-            let tokens = [];
-            let obfuscations = [];
-            let i = 0;
-            let inString = false;
-            let inREM = false;
-            let lastWasSpace = false;
-            let asciiBeforeFP = '';
-            let asciiStartPos = -1;
-            let asciiTokenStart = -1;
-
-            function addText(str, spaceBefore = false, spaceAfter = false) {
-                let addedSpaceBefore = false, addedSpaceAfter = false;
-                if (spaceBefore && text.length > 0 && !lastWasSpace && !text.endsWith(' ')) {
-                    // Match ZX ROM LIST: add leading space only after alphanumeric, $, or :
-                    const prev = text[text.length - 1];
-                    if (/[A-Za-z0-9$:]/.test(prev)) {
-                        text += ' ';
-                        addedSpaceBefore = true;
-                    }
-                }
-                text += str;
-                lastWasSpace = str.endsWith(' ') || spaceAfter;
-                if (spaceAfter && !str.endsWith(' ')) {
-                    text += ' ';
-                    addedSpaceAfter = true;
-                    lastWasSpace = true;
-                }
-                return { addedSpaceBefore, addedSpaceAfter };
-            }
-
-            while (i < data.length) {
-                const byte = data[i];
-
-                if (byte === 0x0D) break;
-
-                if (inREM) {
-                    if (byte >= 0x20 && byte < 0x80) {
-                        text += String.fromCharCode(byte);
-                        tokens.push({ type: 'text', value: String.fromCharCode(byte) });
-                    } else if (byte === 0x0E) {
-                        i += 5;
-                    } else if (TOKENS[byte]) {
-                        const [keyword, spaceBefore, spaceAfter] = TOKENS[byte];
-                        if (spaceBefore && text.length > 0 && !text.endsWith(' ')) {
-                            text += ' ';
-                            tokens.push({ type: 'space' });
-                        }
-                        text += keyword;
-                        tokens.push({ type: 'keyword', value: keyword });
-                        if (spaceAfter) {
-                            text += ' ';
-                            tokens.push({ type: 'space' });
-                        }
-                    } else {
-                        text += `[${hex8(byte)}]`;
-                        tokens.push({ type: 'hex', value: hex8(byte) });
-                    }
-                    i++;
-                    continue;
-                }
-
-                if (byte === 0x0E && !inString) {
-                    const fpBytes = [];
-                    for (let j = 0; j < 5 && i + 1 + j < data.length; j++) {
-                        fpBytes.push(data[i + 1 + j]);
-                    }
-                    const fpValue = parseFloat5(fpBytes);
-                    const fpFormatted = formatNumber(fpValue);
-                    let isObfuscated = false;
-                    let asciiDisplay = asciiBeforeFP.trim();
-
-                    if (asciiDisplay !== '') {
-                        let asciiNum = parseFloat(asciiDisplay);
-                        if (asciiDisplay.startsWith('.')) asciiNum = parseFloat('0' + asciiDisplay);
-                        if (isNaN(asciiNum)) {
-                            isObfuscated = true;
-                        } else {
-                            const valuesMatch = Math.abs(Math.abs(asciiNum) - Math.abs(fpValue)) < 0.0001 ||
-                                               Math.abs(asciiNum - fpValue) < 0.0001;
-                            if (!valuesMatch) isObfuscated = true;
-                        }
-                    } else {
-                        isObfuscated = true;
-                        asciiDisplay = '(hidden)';
-                    }
-
-                    if (isObfuscated) {
-                        obfuscations.push({ ascii: asciiDisplay, actual: fpValue });
-                        if (asciiStartPos >= 0 && asciiStartPos < text.length) {
-                            text = text.substring(0, asciiStartPos);
-                        }
-                        if (asciiTokenStart >= 0 && asciiTokenStart < tokens.length) {
-                            tokens.length = asciiTokenStart;
-                        }
-                        text += `{{${fpFormatted}}}`;
-                        tokens.push({ type: 'number', value: `{{${fpFormatted}}}` });
-                    }
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                    i += 6;
-                    continue;
-                }
-
-                const isNumberChar = (byte >= 0x30 && byte <= 0x39) || byte === 0x2E ||
-                                     byte === 0x2B || byte === 0x2D || byte === 0x45 || byte === 0x65;
-                if (!inString && isNumberChar) {
-                    if (asciiStartPos < 0) {
-                        asciiStartPos = text.length;
-                        asciiTokenStart = tokens.length;
-                    }
-                    asciiBeforeFP += String.fromCharCode(byte);
-                } else if (!inString && byte !== 0x0E) {
-                    if (byte !== 0x20 || asciiBeforeFP === '') {
-                        asciiBeforeFP = '';
-                        asciiStartPos = -1;
-                        asciiTokenStart = -1;
-                    } else if (byte === 0x20 && asciiBeforeFP !== '') {
-                        asciiBeforeFP += ' ';
-                    }
-                }
-
-                if (byte === 0x22) {
-                    inString = !inString;
-                    text += '"';
-                    tokens.push({ type: 'string_delim' });
-                    lastWasSpace = false;
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                    i++;
-                    continue;
-                }
-
-                if (inString) {
-                    if (byte >= 0x20 && byte < 0x80) {
-                        text += String.fromCharCode(byte);
-                        tokens.push({ type: 'string_char', value: String.fromCharCode(byte) });
-                    } else if (byte >= 0x80 && byte <= 0x8F) {
-                        text += `[BLK]`;
-                        tokens.push({ type: 'block', byte });
-                    } else if (byte >= 0x90 && byte <= 0xA2) {
-                        text += `[UDG-${String.fromCharCode(65 + byte - 0x90)}]`;
-                        tokens.push({ type: 'udg', letter: String.fromCharCode(65 + byte - 0x90) });
-                    } else if (CONTROL_CODES[byte]) {
-                        const params = [];
-                        if (byte >= 0x16) {
-                            i++;
-                            if (i < data.length) params.push(data[i]);
-                            i++;
-                            if (i < data.length) params.push(data[i]);
-                        } else {
-                            i++;
-                            if (i < data.length) params.push(data[i]);
-                        }
-                        text += '{' + CONTROL_CODES[byte] + ' ' + params.join(',') + '}';
-                        tokens.push({ type: 'control', name: CONTROL_CODES[byte], params });
-                    } else if (TOKENS[byte]) {
-                        const [keyword] = TOKENS[byte];
-                        text += keyword;
-                        tokens.push({ type: 'string_char', value: keyword });
-                    } else {
-                        text += `[${hex8(byte)}]`;
-                        tokens.push({ type: 'hex', value: hex8(byte) });
-                    }
-                    i++;
-                    continue;
-                }
-
-                if (CONTROL_CODES[byte]) {
-                    const params = [];
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                    if (byte >= 0x16) {
-                        i++;
-                        if (i < data.length) params.push(data[i]);
-                        i++;
-                        if (i < data.length) params.push(data[i]);
-                    } else {
-                        i++;
-                        if (i < data.length) params.push(data[i]);
-                    }
-                    // Build text representation
-                    const ctrlText = '{' + CONTROL_CODES[byte] + ' ' + params.join(',') + '}';
-                    const ctrlSpaces = addText(ctrlText, true, false);
-                    if (ctrlSpaces.addedSpaceBefore) tokens.push({ type: 'space' });
-                    tokens.push({ type: 'control', name: CONTROL_CODES[byte], params });
-                    i++;
-                    continue;
-                }
-
-                if (TOKENS[byte]) {
-                    const [keyword, spaceBefore, spaceAfter] = TOKENS[byte];
-                    const kwSpaces = addText(keyword, spaceBefore, spaceAfter);
-                    if (kwSpaces.addedSpaceBefore) tokens.push({ type: 'space' });
-                    tokens.push({ type: 'keyword', value: keyword });
-                    if (kwSpaces.addedSpaceAfter) tokens.push({ type: 'space' });
-                    if (byte === 0xEA) inREM = true;
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                    i++;
-                    continue;
-                }
-
-                if (byte === 0x3A) {
-                    text += ':';
-                    tokens.push({ type: 'colon' });
-                    lastWasSpace = false;
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                    i++;
-                    continue;
-                }
-
-                if (byte >= 0x20 && byte < 0x80) {
-                    text += String.fromCharCode(byte);
-                    if (byte === 0x20) {
-                        tokens.push({ type: 'space' });
-                    } else {
-                        tokens.push({ type: 'text', value: String.fromCharCode(byte) });
-                    }
-                    lastWasSpace = (byte === 0x20);
-                } else if (byte >= 0x90 && byte <= 0xA2) {
-                    text += `[UDG-${String.fromCharCode(65 + byte - 0x90)}]`;
-                    tokens.push({ type: 'udg', letter: String.fromCharCode(65 + byte - 0x90) });
-                    lastWasSpace = false;
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                } else if (byte >= 0x80 && byte <= 0x8F) {
-                    text += `[BLK]`;
-                    tokens.push({ type: 'block', byte });
-                    lastWasSpace = false;
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                } else if (byte < 0x20 && byte !== 0x0E) {
-                    if (byte === 0x06) {
-                        text += ',';
-                        tokens.push({ type: 'text', value: ',' });
-                    }
-                    asciiBeforeFP = '';
-                    asciiStartPos = -1;
-                    asciiTokenStart = -1;
-                }
-                i++;
-            }
-            return { text: text.trim(), tokens, obfuscations };
-        }
-
-        return { decode, parseFloat5, TOKENS };
-    })();
-
     // BASIC view button handler
     const btnExplorerBasic = document.getElementById('btnExplorerBasic');
     if (btnExplorerBasic) {
         btnExplorerBasic.addEventListener('click', () => {
             explorerBasicLines = null; // Force re-decode
             explorerRenderBASIC();
+        });
+    }
+
+    // BASIC copy button handler
+    const btnExplorerBasicCopy = document.getElementById('btnExplorerBasicCopy');
+    const chkExplorerBasicAsListed = document.getElementById('chkExplorerBasicAsListed');
+    if (btnExplorerBasicCopy) {
+        btnExplorerBasicCopy.addEventListener('click', () => {
+            if (!explorerBasicRawData) {
+                return; // Nothing decoded yet
+            }
+            const asListed = chkExplorerBasicAsListed && chkExplorerBasicAsListed.checked;
+            const lines = decodeBasicProgram(explorerBasicRawData, { deobfuscate: !asListed });
+            if (lines.length === 0) return;
+            // Format: strip {{}} markers from deobfuscated text
+            const text = lines.map(l => l.number + ' ' + l.text.replace(/\{\{|\}\}/g, '')).join('\n');
+            navigator.clipboard.writeText(text).then(() => {
+                // Brief visual feedback
+                const orig = btnExplorerBasicCopy.textContent;
+                btnExplorerBasicCopy.textContent = 'Copied!';
+                setTimeout(() => { btnExplorerBasicCopy.textContent = orig; }, 1000);
+            }).catch(() => {});
         });
     }
 
@@ -6902,9 +6518,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (explorerParsed.type === 'tzx') {
             const blockIdx = parseInt(source);
             const headerBlock = explorerBlocks[blockIdx];
-            if (headerBlock && headerBlock.id === 0x10 && headerBlock.headerTypeId === 0 && blockIdx + 1 < explorerBlocks.length) {
+            if (headerBlock && (headerBlock.id === 0x10 || headerBlock.id === 0x11) && headerBlock.headerTypeId === 0 && blockIdx + 1 < explorerBlocks.length) {
                 const dataBlock = explorerBlocks[blockIdx + 1];
-                if (dataBlock && dataBlock.id === 0x10 && dataBlock.data) {
+                if (dataBlock && (dataBlock.id === 0x10 || dataBlock.id === 0x11) && dataBlock.data) {
                     data = dataBlock.data.slice(1, -1);
                     // Trim to program body length (varsOffset) to exclude variables area
                     if (data && headerBlock.varsOffset > 0 && headerBlock.varsOffset < data.length) {
@@ -6979,8 +6595,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             data = explorerReadSnapshotBlock(prog, basicLen);
             explorerBasicInfoHeader = `<div style="font-size:10px;color:var(--text-secondary);margin-bottom:8px">` +
-                `PROG=${prog.toString(16).toUpperCase().padStart(4, '0')}h ` +
-                `VARS=${vars.toString(16).toUpperCase().padStart(4, '0')}h ` +
+                `PROG=${hex16(prog)}h ` +
+                `VARS=${hex16(vars)}h ` +
                 `(${basicLen} bytes)</div>`;
         }
 
@@ -6990,11 +6606,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         try {
-            const lines = ExplorerBasicDecoder.decode(data);
+            explorerBasicRawData = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const lines = decodeBasicProgram(data);
 
             if (lines.length === 0) {
                 const hexBytes = Array.from(data.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
                 explorerBasicOutput.innerHTML = `<div class="explorer-empty">No BASIC lines found<br><span style="font-size:10px;color:var(--text-secondary)">First 16 bytes: ${hexBytes}</span></div>`;
+                explorerBasicRawData = null;
                 return;
             }
 
@@ -7014,7 +6632,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         html = html.replace(/"([^"]*)"/g, '<span class="explorer-basic-string">"$1"</span>');
 
-        const keywords = Object.values(ExplorerBasicDecoder.TOKENS).map(t => t[0]).sort((a, b) => b.length - a.length);
+        const keywords = Object.values(BASIC_TOKENS).map(t => t[0]).sort((a, b) => b.length - a.length);
         for (const kw of keywords) {
             const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const regex = new RegExp('\\b(' + escaped + ')\\b', 'g');
@@ -7539,7 +7157,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 `<span style="width:30px;display:inline-block">${i + 1}</span>` +
                 `<span style="width:140px;display:inline-block">${e.name}</span>` +
                 `<span style="width:60px;display:inline-block">${typeLabel}</span>` +
-                `<span style="width:60px;display:inline-block">$${e.addr.toString(16).toUpperCase().padStart(4, '0')}</span>` +
+                `<span style="width:60px;display:inline-block">$${hex16(e.addr)}</span>` +
                 `<span style="display:inline-block">${e.length}</span>` +
                 `</div>`;
         }
@@ -8327,7 +7945,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         syncPanelToExplorer(panel);
     }
 
-    function editorAddFileBlocks(panel, fileData, name, type, startAddr, autostart, varLetter, pause) {
+    function editorAddFileBlocks(panel, fileData, name, type, startAddr, autostart, varLetter, pause, varsOffset) {
         const header = new Uint8Array(19);
         header[0] = 0x00;
         header[1] = type;
@@ -8351,7 +7969,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         header[14] = param1 & 0xFF;
         header[15] = (param1 >> 8) & 0xFF;
-        let param2 = (type === 0) ? fileData.length : 0x8000;
+        // BASIC: param2 = vars offset (program length without variables)
+        let param2 = (type === 0) ? (varsOffset != null ? Math.min(varsOffset, fileData.length) : fileData.length) : 0x8000;
         header[16] = param2 & 0xFF;
         header[17] = (param2 >> 8) & 0xFF;
         editorRecalcChecksum(header);
@@ -8659,7 +8278,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 if (blockEnd > tzxData.length) blockEnd = tzxData.length;
                 const rawBytes = new Uint8Array(tzxData.slice(blockStart + 1, blockEnd)); // without ID byte
-                const typeName = TZX_BLOCK_NAMES[id] || `Unknown ($${id.toString(16).toUpperCase().padStart(2, '0')})`;
+                const typeName = TZX_BLOCK_NAMES[id] || `Unknown ($${hex8(id)})`;
 
                 panel.blocks.push({
                     blockType: 'nonstandard',
@@ -9051,22 +8670,51 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         syncPanelToExplorer(panel);
     }
 
-    function diskEditorAddFile(panel, data, name, ext, addr) {
-        const length = data.length;
-        const sectors = Math.ceil(length / 256);
+    // basicInfo (optional, BASIC 'B' files): { autostart, varsOffset } from the source format
+    function diskEditorAddFile(panel, data, name, ext, addr, basicInfo = null) {
+        let fileData = data;
+        let startField = addr;        // Dir entry bytes 9-10
+        let lengthField = data.length; // Dir entry bytes 11-12
+
+        if (ext === 'B') {
+            // TR-DOS BASIC layout (per TR-DOS SAVE): file data = program+variables,
+            // then 0x80 end marker, 0xAA, and the autostart line as LE16 (0x8000 = none).
+            // Dir entry bytes 9-10 = program+variables length (excluding the trailer),
+            // bytes 11-12 = variables offset (program length without variables).
+            // Writing the addr here instead (as before) made TR-DOS load an empty program.
+            let progVars = data;
+            if (progVars.length > 0 && progVars[progVars.length - 1] === 0x80) {
+                progVars = progVars.slice(0, progVars.length - 1); // 0x80 re-added below
+            }
+            const line = (basicInfo && basicInfo.autostart != null &&
+                          basicInfo.autostart >= 0 && basicInfo.autostart < 32768)
+                ? basicInfo.autostart : 0x8000;
+            fileData = new Uint8Array(progVars.length + 4);
+            fileData.set(progVars, 0);
+            fileData[progVars.length] = 0x80;
+            fileData[progVars.length + 1] = 0xAA;
+            fileData[progVars.length + 2] = line & 0xFF;
+            fileData[progVars.length + 3] = (line >> 8) & 0xFF;
+            startField = progVars.length;
+            lengthField = (basicInfo && basicInfo.varsOffset != null)
+                ? Math.min(basicInfo.varsOffset, progVars.length)
+                : progVars.length;
+        }
+
+        const sectors = Math.ceil(fileData.length / 256);
         if (sectors > 255) return 'File too large (max 255 sectors / 65,280 bytes)';
         if (panel.diskFiles.length >= 128) return 'Directory full (max 128 files)';
         if (diskEditorTotalSectors(panel) + sectors > 2544) return 'Disk full (not enough free sectors)';
 
         const paddedData = new Uint8Array(sectors * 256);
-        paddedData.set(data);
+        paddedData.set(fileData);
         const paddedName = (name + '        ').substring(0, 8);
 
         panel.diskFiles.push({
             name: paddedName,
             ext: ext,
-            startAddress: addr,
-            length: length,
+            startAddress: startField,
+            length: lengthField,
             sectors: sectors,
             data: paddedData,
             deleted: false
@@ -9195,7 +8843,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let totalDataSize = 0;
         for (const f of activeFiles) totalDataSize += f.sectors * 256;
         const headerSize = 9 + activeFiles.length * 14;
-        const scl = new Uint8Array(headerSize + totalDataSize);
+        const scl = new Uint8Array(headerSize + totalDataSize + 4);
 
         const sig = 'SINCLAIR';
         for (let i = 0; i < 8; i++) scl[i] = sig.charCodeAt(i);
@@ -9219,6 +8867,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             scl.set(f.data.subarray(0, f.sectors * 256), offset);
             offset += f.sectors * 256;
         }
+
+        // Trailing 32-bit little-endian checksum over all preceding bytes
+        const sum = sclChecksum(scl, offset);
+        scl[offset] = sum & 0xFF;
+        scl[offset + 1] = (sum >> 8) & 0xFF;
+        scl[offset + 2] = (sum >> 16) & 0xFF;
+        scl[offset + 3] = (sum >>> 24) & 0xFF;
 
         return scl;
     }
@@ -9260,7 +8915,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (extSelect) {
             file.ext = extSelect.value;
         }
-        if (addrInput) {
+        // For BASIC ('B') files bytes 9-10 hold the program+vars length,
+        // not a start address — don't let the addr field clobber it
+        if (addrInput && file.ext !== 'B') {
             file.startAddress = parseInt(addrInput.value, 16) || 0;
         }
 
@@ -9410,8 +9067,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         syncPanelToExplorer(panel);
     }
 
-    function diskEditorAddMgtFile(panel, data, name, mgtType, addr, autostart) {
+    function diskEditorAddMgtFile(panel, data, name, mgtType, addr, autostart, varsOffset) {
         const length = data.length;
+        // BASIC: dir bytes 214-215 hold the PROG system variable (standard 23755),
+        // bytes 216-217 the program body length (vars offset)
+        const isBASICType = mgtType === 1 || mgtType === 16;
+        if (isBASICType && !addr) addr = 23755;
         const sectors = Math.ceil(length / 512);
         if (sectors > 195) return 'File too large (max 195 sectors / 99,840 bytes)';
         if (panel.diskFiles.length >= 80) return 'Directory full (max 80 files)';
@@ -9437,7 +9098,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             sectors: sectors,
             data: paddedData,
             autostart: autostart != null ? autostart : null,
-            bodyLength: null,
+            bodyLength: (isBASICType && varsOffset != null) ? Math.min(varsOffset, length) : null,
             deleted: false
         });
         return null;
@@ -9886,7 +9547,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.diskLabel = info.diskLabel || '';
     }
 
-    function diskEditorAddOpdFile(panel, data, name, type, startAddr, autostart) {
+    function diskEditorAddOpdFile(panel, data, name, type, startAddr, autostart, varsOffset) {
         const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
         const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
         const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
@@ -9899,6 +9560,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             sectors: Math.ceil((data.length + OPDLoader.FILE_HEADER_SIZE) / 256),
             startAddr: startAddr || 0,
             autostart: autostart || 0,
+            progLength: (type === 0 && varsOffset != null) ? Math.min(varsOffset, data.length) : null,
             data: new Uint8Array(data),
             deleted: false
         });
@@ -9915,6 +9577,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             length: f.data.length,
             startAddr: f.startAddr || 0,
             autostart: f.autostart || 0,
+            progLength: f.progLength ?? null,
             data: f.data
         }));
         const newImage = OPDLoader.buildOPD(files, panel.diskLabel || '', sides, panel.rawData);
@@ -10234,7 +9897,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         dskEditorRenderFileList(panel);
     }
 
-    function dskEditorAddFile(panel, data, name, ext, type, addr, autostart) {
+    function dskEditorAddFile(panel, data, name, ext, type, addr, autostart, varsOffset) {
         if (!panel.parsedFile || !panel.parsedFile.dskImage) return 'No DSK image loaded';
         const dskImage = panel.parsedFile.dskImage;
         const spec = DSKLoader.getDiskSpec(dskImage);
@@ -10260,9 +9923,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 header[2] = (auto >> 8) & 0xFF;
                 header[3] = data.length & 0xFF;
                 header[4] = (data.length >> 8) & 0xFF;
-                // basLen = program body length (assume same as dataLen for new files)
-                header[5] = data.length & 0xFF;
-                header[6] = (data.length >> 8) & 0xFF;
+                // basLen = program body length without variables (vars offset)
+                const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
+                header[5] = basLen & 0xFF;
+                header[6] = (basLen >> 8) & 0xFF;
             } else {
                 header[1] = data.length & 0xFF;
                 header[2] = (data.length >> 8) & 0xFF;
@@ -10286,11 +9950,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             header[13] = (totalLen >> 16) & 0xFF;
             header[14] = (totalLen >> 24) & 0xFF;
             header[15] = type & 0xFF;
+            // +3DOS header data (tape-style): +16/17 = length, +18/19 = param1
+            // (load address for CODE, autostart for BASIC), +20/21 = param2
+            // (vars offset for BASIC). The CODE fields were previously swapped
+            // (address in 16-17, length in 18-19) — files misloaded on a real +3.
             if (type === 3) {
-                header[16] = addr & 0xFF;
-                header[17] = (addr >> 8) & 0xFF;
-                header[18] = data.length & 0xFF;
-                header[19] = (data.length >> 8) & 0xFF;
+                header[16] = data.length & 0xFF;
+                header[17] = (data.length >> 8) & 0xFF;
+                header[18] = addr & 0xFF;
+                header[19] = (addr >> 8) & 0xFF;
             } else if (type === 0) {
                 header[16] = data.length & 0xFF;
                 header[17] = (data.length >> 8) & 0xFF;
@@ -10298,6 +9966,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     (parseInt(autostart) & 0xFFFF) : 0x8000;
                 header[18] = auto & 0xFF;
                 header[19] = (auto >> 8) & 0xFF;
+                const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
+                header[20] = basLen & 0xFF;
+                header[21] = (basLen >> 8) & 0xFF;
             }
             let hdrSum = 0;
             for (let i = 0; i < 127; i++) hdrSum = (hdrSum + header[i]) & 0xFF;
@@ -11026,6 +10697,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         type: block.headerType,
                         addr: block.headerType === 3 ? (block.startAddress || 0) : 0,
                         autostart: block.headerType === 0 ? block.autostart : null,
+                        varsOffset: block.headerType === 0 ? (block.varsOffset ?? null) : null,
                         rawData: rawData
                     });
                     processed.add(idx);
@@ -11048,14 +10720,33 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (idx < 0 || idx >= panel.diskFiles.length) continue;
                 const f = panel.diskFiles[idx];
                 const isBASIC = f.ext === 'B';
-                result.push({
-                    name: f.name.replace(/\s+$/, ''),
-                    ext: f.ext,
-                    type: isBASIC ? 0 : 3,
-                    addr: isBASIC ? 0 : (f.startAddress || 0),
-                    autostart: null, // TR-DOS doesn't store autostart; it's embedded in BASIC data
-                    rawData: f.data.slice(0, f.length)
-                });
+                if (isBASIC) {
+                    // TR-DOS BASIC: dir bytes 9-10 (startAddress field) = program+vars
+                    // total, bytes 11-12 (length field) = vars offset. Autostart is
+                    // embedded after the 0x80 marker. Extract the full program+vars
+                    // (previously only the program-only part was copied, losing vars).
+                    const total = (f.startAddress >= f.length && f.startAddress <= f.sectors * 256)
+                        ? f.startAddress : f.length;
+                    const line = trdGetBasicAutostart(f);
+                    result.push({
+                        name: f.name.replace(/\s+$/, ''),
+                        ext: f.ext,
+                        type: 0,
+                        addr: 0,
+                        autostart: (line >= 0 && line < 32768) ? line : null,
+                        varsOffset: Math.min(f.length, total),
+                        rawData: f.data.slice(0, total)
+                    });
+                } else {
+                    result.push({
+                        name: f.name.replace(/\s+$/, ''),
+                        ext: f.ext,
+                        type: 3,
+                        addr: f.startAddress || 0,
+                        autostart: null,
+                        rawData: f.data.slice(0, f.length)
+                    });
+                }
             }
         } else if (panel.fileType === 'mgt') {
             for (const idx of sorted) {
@@ -11068,6 +10759,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     type: isBASIC ? 0 : 3,
                     addr: isBASIC ? 0 : (f.startAddress || 0),
                     autostart: f.autostart,
+                    varsOffset: isBASIC ? (f.bodyLength ?? null) : null,
                     rawData: mgtExtractCleanData(f)
                 });
             }
@@ -11077,14 +10769,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const f = panel.diskFiles[idx];
                 // MDR file data includes a 9-byte Spectrum header; strip it for cross-format copy
                 let rawData = f.data.slice(0, f.length);
-                let type = 3, addr = 0, autostart = null;
+                let type = 3, addr = 0, autostart = null, varsOffset = null;
                 if (!f.isPrint && rawData.length >= 9) {
                     const hdrType = rawData[0];
                     const hdrStart = rawData[3] | (rawData[4] << 8);
+                    const hdrProgLen = rawData[5] | (rawData[6] << 8);
                     const hdrAutorun = rawData[7] | (rawData[8] << 8);
                     type = hdrType;
                     if (hdrType === 3) addr = hdrStart;
-                    if (hdrType === 0) autostart = hdrAutorun >= 0x8000 ? null : hdrAutorun;
+                    if (hdrType === 0) {
+                        autostart = hdrAutorun >= 0x8000 ? null : hdrAutorun;
+                        varsOffset = hdrProgLen > 0 ? hdrProgLen : null;
+                    }
                     rawData = rawData.slice(9);
                 }
                 result.push({
@@ -11093,6 +10789,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     type,
                     addr,
                     autostart,
+                    varsOffset,
                     rawData
                 });
             }
@@ -11107,6 +10804,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     type: isBASIC ? 0 : (f.type >= 0 ? f.type : 3),
                     addr: isBASIC ? 0 : (f.startAddr || 0),
                     autostart: f.autostart,
+                    varsOffset: isBASIC ? (f.progLength ?? null) : null,
                     rawData: f.data.slice(0, f.length)
                 });
             }
@@ -11127,6 +10825,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     type: hdr ? file.plus3Type : 3,
                     addr: file.loadAddress || 0,
                     autostart: file.autostart,
+                    varsOffset: file.plus3Type === 0 ? (file.varsOffset ?? null) : null,
                     rawData: fileData
                 });
             }
@@ -11155,6 +10854,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                                 type: block.headerType,
                                 addr: block.headerType === 3 ? (block.startAddress || 0) : 0,
                                 autostart: block.headerType === 0 ? block.autostart : null,
+                                varsOffset: block.headerType === 0 ? (block.varsOffset ?? null) : null,
                                 rawData: rawData
                             });
                             i++; // skip data block
@@ -11368,15 +11068,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function addConvertedFile(panel, file) {
         if (isTapOrTzx(panel.fileType)) {
-            editorAddFileBlocks(panel, file.rawData, file.name, file.type, file.addr, file.autostart, null);
+            editorAddFileBlocks(panel, file.rawData, file.name, file.type, file.addr, file.autostart, null, undefined, file.varsOffset);
             return null;
         } else if (panel.fileType === 'trd' || panel.fileType === 'scl') {
-            return diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr);
+            return diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr,
+                { autostart: file.autostart, varsOffset: file.varsOffset });
         } else if (panel.fileType === 'mgt') {
             // Map ext to MGT type: B→1(BASIC), C→4(CODE), D→2(Num Array)
             const mgtTypeMap = { 'B': 1, 'C': 4, 'D': 2, '#': 10 };
             const mgtType = mgtTypeMap[file.ext] || (file.type === 0 ? 1 : 4);
-            return diskEditorAddMgtFile(panel, file.rawData, file.name, mgtType, file.addr || 0, file.autostart);
+            return diskEditorAddMgtFile(panel, file.rawData, file.name, mgtType, file.addr || 0, file.autostart, file.varsOffset);
         } else if (panel.fileType === 'mdr') {
             const isPrint = file.ext === 'P';
             // MDR files need a 9-byte Spectrum header prepended to the data
@@ -11393,9 +11094,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 hdr[3] = addr & 0xFF;
                 hdr[4] = (addr >> 8) & 0xFF;
                 if (ftype === 0) {
-                    // BASIC: bytes 5-6 = program length (same as data length), 7-8 = autostart line
-                    hdr[5] = file.rawData.length & 0xFF;
-                    hdr[6] = (file.rawData.length >> 8) & 0xFF;
+                    // BASIC: bytes 5-6 = program length without variables (vars offset), 7-8 = autostart line
+                    const progLen = (file.varsOffset != null)
+                        ? Math.min(file.varsOffset, file.rawData.length) : file.rawData.length;
+                    hdr[5] = progLen & 0xFF;
+                    hdr[6] = (progLen >> 8) & 0xFF;
                     const auto = (file.autostart != null && file.autostart >= 0) ? file.autostart : 0x8000;
                     hdr[7] = auto & 0xFF;
                     hdr[8] = (auto >> 8) & 0xFF;
@@ -11406,9 +11109,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             return diskEditorAddMdrFile(panel, mdrData, file.name, isPrint);
         } else if (panel.fileType === 'opd') {
-            return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart);
+            return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart, file.varsOffset);
         } else if (panel.fileType === 'dsk') {
-            return dskEditorAddFile(panel, file.rawData, file.name, file.ext || '', file.type, file.addr, file.autostart);
+            return dskEditorAddFile(panel, file.rawData, file.name, file.ext || '', file.type, file.addr, file.autostart, file.varsOffset);
         } else if (panel.fileType === 'zip') {
             // Build a minimal TAP containing this single file and add as ZIP entry
             const tapData = buildSingleFileTap(file);

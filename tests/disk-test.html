@@ -288,6 +288,8 @@
         assert(data[s9 + 0xE2] === 1, 'free track = 1');
         assert(data[s9 + 0xE3] === 0x16, 'disk type = 0x16');
         assert(data[s9 + 0xE4] === 0, 'file count = 0');
+        const blankFree = data[s9 + 0xE5] | (data[s9 + 0xE6] << 8);
+        assert(blankFree === 2544, 'free sectors = 2544 (2560 - 16 system)');
         assert(data[s9 + 0xE7] === 0x10, 'TR-DOS ID = 0x10');
         // Label
         const label = String.fromCharCode(...data.slice(s9 + 0xF5, s9 + 0xF5 + 8));
@@ -333,6 +335,58 @@
         const name = String.fromCharCode(...trd.slice(0, 5));
         assert(name === 'HELLO', 'file name in directory');
         assert(trd[8] === 0x43, 'file type = 0x43');
+
+        section('BetaDisk - trdToScl round-trip');
+
+        const bdRT = new BetaDisk();
+        const dataA = new Uint8Array(300);
+        for (let i = 0; i < 300; i++) dataA[i] = i & 0xFF;
+        const dataB = new Uint8Array(100);
+        for (let i = 0; i < 100; i++) dataB[i] = 0x55;
+        const sclIn = buildSCL([
+            { name: 'FILEA', type: 0x43, start: 0x8000, data: dataA, sectors: 2 },
+            { name: 'FILEB', type: 0x42, start: 0x0A, data: dataB, sectors: 1 }
+        ]);
+        bdRT.loadDisk(sclIn, 'scl', 0);
+        const sclOut = bdRT.trdToScl(bdRT.drives[0].diskData);
+
+        assert(String.fromCharCode(...sclOut.slice(0, 8)) === 'SINCLAIR', 'output has SCL signature');
+        assert(sclOut[8] === 2, 'output file count = 2');
+        assert(String.fromCharCode(...sclOut.slice(9, 14)) === 'FILEA', 'file A name preserved');
+        assert(sclOut[9 + 8] === 0x43, 'file A type preserved');
+        assert(sclOut[9 + 13] === 2, 'file A sector count preserved');
+        assert(String.fromCharCode(...sclOut.slice(23, 28)) === 'FILEB', 'file B name preserved');
+        // Data starts after signature(8) + count(1) + 2 headers(28)
+        assert(sclOut[37] === 0x00 && sclOut[37 + 255] === 0xFF, 'file A data preserved');
+        assert(sclOut[37 + 512] === 0x55, 'file B data preserved');
+        // Trailing 4-byte checksum: 32-bit sum of all preceding bytes
+        const chkOff = sclOut.length - 4;
+        let expectSum = 0;
+        for (let i = 0; i < chkOff; i++) expectSum = (expectSum + sclOut[i]) >>> 0;
+        const gotSum = (sclOut[chkOff] | (sclOut[chkOff + 1] << 8) | (sclOut[chkOff + 2] << 16) | (sclOut[chkOff + 3] << 24)) >>> 0;
+        assert(gotSum === expectSum, 'trailing checksum valid');
+        // Round-trip back through sclToTrd gives identical directory
+        const trdAgain = bdRT.sclToTrd(sclOut);
+        const trdOrig = bdRT.drives[0].diskData;
+        let dirSame = true;
+        for (let i = 0; i < 32; i++) { if (trdAgain[i] !== trdOrig[i]) { dirSame = false; break; } }
+        assert(dirSame, 'sclToTrd(trdToScl(x)) directory matches');
+
+        section('BetaDisk - trdToScl skips deleted files');
+
+        const trdDel = new Uint8Array(trdOrig);
+        trdDel[0] = 0x01;  // TR-DOS erase: mark first entry deleted
+        const sclDel = bdRT.trdToScl(trdDel);
+        assert(sclDel[8] === 1, 'deleted file excluded from count');
+        assert(String.fromCharCode(...sclDel.slice(9, 14)) === 'FILEB', 'remaining file is FILEB');
+        assert(sclDel[9 + 13] === 1, 'remaining file sector count = 1');
+        // FILEB data follows directly after the single header
+        assert(sclDel[23] === 0x55, 'remaining file data correct');
+
+        const trdEnd = new Uint8Array(trdOrig);
+        trdEnd[0] = 0x00;  // End-of-directory marker on first entry
+        const sclEnd = bdRT.trdToScl(trdEnd);
+        assert(sclEnd[8] === 0, 'end marker stops directory scan');
 
         section('BetaDisk - getSectorOffset');
 
@@ -511,6 +565,9 @@
         }
         assert(bd.writing === false, 'write complete: writing = false');
         assert(bd.intrq === true, 'write complete: intrq set');
+        // TR-DOS validates the final status with AND 7Fh — any leftover bit
+        // (e.g. DRQ) reads as a failed write and produces "Disc error"
+        assert((bd.read(0x1F) & 0x7F) === 0, 'write complete: status clean (TR-DOS AND 7Fh check)');
 
         // Verify written data
         const offset = bd.getSectorOffset(1, 0, 1);
@@ -563,6 +620,13 @@
         const mw2 = bd.getSectorOffset(2, 0, 2);
         assert(disk[mw1] === 0xAA, 'multi-write: sector 1 data = 0xAA');
         assert(disk[mw2] === 0xBB, 'multi-write: sector 2 data = 0xBB');
+
+        // Complete the multi-sector write (sectors 3-16), then check final status
+        for (let s = 3; s <= 16; s++) {
+            for (let i = 0; i < 256; i++) bd.write(0x7F, 0xCC);
+        }
+        assert(bd.writing === false, 'multi-write complete: writing = false');
+        assert((bd.read(0x1F) & 0x7F) === 0, 'multi-write complete: status clean');
 
         section('BetaDisk - System register / INTRQ');
 

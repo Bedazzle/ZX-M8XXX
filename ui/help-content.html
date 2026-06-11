@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.14.27</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.15.3</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -181,8 +181,11 @@
                         <li>Left panel: Disasm or Memory</li>
                         <li>Right panel: Memory, Disasm, or Calculator</li>
                         <li>Step controls (Step Into, Step Over, etc.) appear in disasm panels</li>
-                        <li><strong>Step Over</strong> (F8) treats CALL, RST, DJNZ, and block repeats (LDIR, etc.) as atomic &mdash; runs until execution returns past them. For DJNZ, the loop body is statically analyzed: if it contains no branches or B-modifying instructions, the loop runs to completion; otherwise a configurable T-state limit applies (Settings &rarr; Display, default 80K). The limit also applies to CALL/RST. If the limit is reached, a red warning appears near the current PC line</li>
+                        <li><strong>Step Over</strong> (F8) treats CALL, RST, DJNZ, and block repeats (LDIR, etc.) as atomic &mdash; runs until execution returns past them. For DJNZ, the loop body is statically analyzed: if it contains no branches or B-modifying instructions, the loop runs to completion; otherwise a configurable T-state limit applies (disasm toolbar &rarr; ⚙ &rarr; "Step Over limit", default 80K). The limit also applies to CALL/RST. If the limit is reached, a red warning appears near the current PC line</li>
                         <li>Search controls appear in both panels (see Pattern Search below)</li>
+                        <li>Four drag bars resize the debug layout: the vertical bars beside the panels change the left and right panel widths (the right one in landscape mode); the bar between the panels and the sub-panel changes the panel height; the bar below the sub-panel (Breakpoints, Labels, Watches, etc.) resizes its lists. Double-click a bar to reset</li>
+                        <li>Memory views adapt bytes per line (8/16/32) to the panel width &mdash; widen the panel for 32-byte lines</li>
+                        <li>The last active tabs (main, debug sub-panel, Settings/Utils sub-tabs) are remembered across reloads</li>
                         <li>Bookmarks show panel type: рџ”Ќ disasm, рџ“¦ memory</li>
                     </ul>
                     <h5>Programmer Calculator</h5>
@@ -204,6 +207,9 @@
                         <li>Hover over addresses to see cross-references</li>
                         <li>Subroutine separators (IDA-style) for marked routines</li>
                         <li>Syntax coloring: <span style="color:#daa520">registers</span>, <span style="color:#00aa00">numbers</span>, <span style="color:#cc66cc">chars</span></li>
+                        <li><strong>&#9881; View options</strong> menu in the toolbar: Show T-states, Follow PC (Shift+F6; while on, manual navigation is disabled), Comment on each step, AY sound on step, Flow break spacing, Show PC cursor, Step Over limit (max T-states for Step Over, default 80000)</li>
+                        <li><strong>Export</strong> dropdown in the toolbar: <strong>Visible</strong> saves the on-screen disassembly as .asm; <strong>Range...</strong> opens a dialog to export an address range with options (ORG line, addresses, bytes, T-states)</li>
+                        <li><strong>T-state selection</strong>: drag the mouse across instruction lines to sum their T-states (popup shows the total). A jump on the <em>last</em> line is fine: unconditional JR/JP/RET sum exactly, conditional branches show both totals (taken / not taken). CALL/RST (the subroutine's duration is unknown), mid-selection branches, loops back into the selection, HALT, block repeats, and data lines can't be summed exactly &mdash; the popup says why</li>
                     </ul>
                     <h5>Pattern Search</h5>
                     <p>Both disasm and memory panels have an inline search bar:</p>
@@ -310,7 +316,7 @@
                     <ul>
                         <li>Right-click address in disassembly &rarr; "Add Label"</li>
                         <li>Or use the Labels panel "Add" button</li>
-                        <li><strong>Profile</strong> (Tools &rarr; Analysis) &mdash; auto-generate labels from runtime behavior (see Tools section)</li>
+                        <li><strong>Profile</strong> (Analysis tab) &mdash; auto-generate labels from runtime behavior (see Tools section)</li>
                     </ul>
                     <h5>Display Modes</h5>
                     <ul>
@@ -468,7 +474,7 @@
                         <li>Run the program</li>
                         <li>Changed bytes are highlighted in the dump</li>
                     </ol>
-                    <p style="font-size: 11px; color: var(--text-dim);">POKE Search, Write Monitor, and Text Scanner are in the Tools tab &mdash; see the Tools section.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">POKE Search, Write Monitor, and Text Scanner are in the Search tab &mdash; see the Tools section.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-graphics">
                     <h4>Graphics Viewer</h4>
@@ -518,7 +524,7 @@
                         <tr><td><strong>Graphics</strong></td><td>Sprite/tile graphics</td></tr>
                         <tr><td><strong>SMC</strong></td><td>Self-modifying code</td></tr>
                     </table>
-                    <p style="font-size: 11px; color: var(--text-dim);">Auto-Map and Code-Flow Analysis are in the Tools tab &mdash; see the Tools section.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">Auto-Map and Code-Flow Analysis are in the Analysis tab &mdash; see the Tools section.</p>
                     <h5>Memory Map Dialog</h5>
                     <p>Visual 256x256 map of entire 64KB memory. Click to navigate, colors indicate region types.</p>
                     <h5>Heatmap Export</h5>
@@ -532,15 +538,16 @@
                         <li>Graphics regions exported as DB with width/height metadata</li>
                         <li>Includes labels and CPU state in header</li>
                         <li><strong>Addr+Bytes</strong> option adds address and hex bytes as comments</li>
+                        <li><strong>Dedup loops</strong> option detects unrolled loops (identical instruction sequences) and outputs them as REPT blocks</li>
                         <li>Screen memory ($4000-$5AFF) exported as INCBIN directive</li>
                     </ul>
                 </div>
                 <div class="fullhelp-section hidden" id="help-tools">
                     <h4>Tools</h4>
-                    <p>Located in the Debug &rarr; Tools tab. Two groups: Analysis and Search.</p>
+                    <p>The analysis tools live in dedicated Debug sub-panel tabs: <strong>Analysis</strong> (Auto-Map, Code-Flow, XRefs, Profiler), <strong>Search</strong> (POKE search, Text scan, memory monitors), <strong>Code Path</strong>, <strong>Struct</strong>, and <strong>BASIC</strong>.</p>
                     <h5 style="color: var(--text-dim); border-bottom: 1px solid var(--text-dim); padding-bottom: 3px;">Analysis</h5>
                     <h5>Auto-Map</h5>
-                    <p>Tools &rarr; Analysis &rarr; <strong>Auto-Map</strong>. Automatically detect memory regions during execution:</p>
+                    <p>Analysis tab &rarr; <strong>Auto-Map</strong>. Automatically detect memory regions during execution:</p>
                     <ul>
                         <li><strong>Track</strong> &mdash; enable/disable tracking. While enabled, executed addresses are marked as Code, read addresses as Data, and code that gets overwritten as SMC. Live stats show E(xecuted)/R(ead)/W(ritten) counts.</li>
                         <li><strong>Snap</strong> &mdash; capture current CPU state and full memory for ASM export. If the emulator is running, the snap is taken at the next frame boundary. Green = captured, yellow = pending.</li>
@@ -550,7 +557,7 @@
                         <li><strong>Map</strong> &mdash; open the Memory Map dialog (see below).</li>
                     </ul>
                     <h5>Code-Flow Analysis</h5>
-                    <p>Tools &rarr; Analysis &rarr; <strong>Flow</strong>. Static analysis that traces all reachable code paths from entry points without running the emulator:</p>
+                    <p>Analysis tab &rarr; <strong>Flow</strong>. Static analysis that traces all reachable code paths from entry points without running the emulator:</p>
                     <ul>
                         <li>Entry points: current PC, all labeled addresses, all known subroutines, ISR handler at $0038 (optional), plus custom hex addresses (comma-separated)</li>
                         <li><strong>Skip ROM</strong> &mdash; exclude addresses 0000-3FFF from analysis</li>
@@ -576,7 +583,7 @@
                         <li><span style="color:#ffff80">LD</span> - data references</li>
                     </ul>
                     <h5>Profiler</h5>
-                    <p>Tools &rarr; Analysis &rarr; <strong>Profile</strong>. Runs the emulator for N frames and classifies subroutines by their behavior:</p>
+                    <p>Analysis tab &rarr; <strong>Profile</strong>. Runs the emulator for N frames and classifies subroutines by their behavior:</p>
                     <table>
                         <tr><th>Label</th><th>Detection</th></tr>
                         <tr><td>isr_handler</td><td>IM 1 interrupt handler at $0038</td></tr>
@@ -739,7 +746,7 @@
                     <p>After tracking, results show a value distribution histogram &mdash; each unique value with its count and a visual bar. Summary includes unique values, min, max, and mode. Useful for understanding subroutine inputs (track A at a subroutine entry) or game state ranges (track a coordinate register in a movement loop).</p>
                     <p>Hooks into the CPU fetch callback &mdash; one comparison per instruction fetch (negligible overhead when auto-map is already active). Maximum 10,000 samples.</p>
                     <h5>Text Scanner</h5>
-                    <p>Tools &rarr; Search &rarr; <strong>Text</strong>. Scans memory for ASCII text strings. Detects both null-terminated and bit-7-terminated strings (last character has bit 7 set).</p>
+                    <p>Search tab &rarr; <strong>Text</strong>. Scans memory for ASCII text strings. Detects both null-terminated and bit-7-terminated strings (last character has bit 7 set).</p>
                     <ul>
                         <li><strong>All strings</strong> &mdash; find all text strings of at least <em>min</em> length</li>
                         <li><strong>Dictionary</strong> &mdash; find only strings containing known ZX Spectrum keywords (SCORE, LIVES, GAME OVER, etc.). Dictionary matches are highlighted.</li>
@@ -805,6 +812,8 @@
                         <tr><td><strong>OPD/OPU</strong></td><td>Opus Discovery disk image (40 tracks, 18 sectors/track, 256 bytes/sector; requires opus.rom)</td></tr>
                     </table>
                     <p><strong>DSK Write Persistence:</strong> Games on the +3 can save to disk. All FDC writes (sector writes, Format Track) are preserved in-memory and included in project saves. Use <strong>Save &rarr; DSK</strong> to download the current disk image with all modifications (EDSK format).</p>
+                    <p><strong>TRD/SCL Write Persistence:</strong> TR-DOS writes (SAVE, COPY, etc.) modify the in-memory Beta Disk image. Use <strong>Save &rarr; TRD/SCL</strong> to download the disk in the drive selected under Settings &rarr; Disk, with all modifications. Disks loaded from <code>.scl</code> are saved back in SCL format (deleted files are excluded, as TR-DOS erase corrupts their names); disks loaded from <code>.trd</code> save as TRD.</p>
+                    <p><strong>Disk system selector:</strong> The <strong>System</strong> dropdown on Settings &rarr; Disk lists every active disk system (TR-DOS, +3DOS, +D, Microdrive) and controls what the other controls target: <strong>Blank Disk</strong> creates a blank disk in that system's format (the button label shows it &mdash; Blank TRD, Blank DSK, Blank MGT, Blank MDR), <strong>Target drive</strong> lists that system's drives, and system-specific rows (like TR-DOS boot injection) appear only for their system.</p>
                     <h5>Disk Systems Usage</h5>
                     <p><strong>Beta Disk / TR-DOS</strong> (TRD, SCL) &mdash; Pentagon/Scorpion: always on. For 48K/128K/+2: enable in Settings &rarr; Machines (requires trdos.rom).</p>
                     <ul>
@@ -838,7 +847,7 @@
                     </ul>
                     <p style="font-size: 11px; color: var(--text-dim);">See <code>readme_disk_systems.txt</code> for a full command reference.</p>
                     <h5>Boot File Injection</h5>
-                    <p>Automatically add a boot loader to TRD disk images via Settings в†’ Media в†’ Boot File:</p>
+                    <p>Automatically add a boot loader to TRD disk images via Settings в†' Disk в†' Boot File:</p>
                     <ol>
                         <li>Click <strong>Select...</strong> to choose a boot file source (TRD or Hobeta)</li>
                         <li>Select the injection mode from the dropdown</li>
@@ -946,19 +955,22 @@
                         <tr><td><strong>Shift+F3</strong></td><td>Find Previous</td></tr>
                         <tr><td><strong>Escape</strong></td><td>Close search bar</td></tr>
                     </table>
-                    <h5>Toolbar Buttons</h5>
+                    <h5>Toolbar</h5>
                     <ul>
-                        <li><strong>Files в–ј</strong> - Browse project files (disabled when в‰¤1 file)</li>
+                        <li><strong>Project ▼</strong> - Project menu: file actions on top, project file list below (click a file to open it in a tab)</li>
                         <li><strong>Assemble</strong> - Compile the assembly code (F9)</li>
-                        <li><strong>Inject</strong> - Write assembled bytes to emulator memory</li>
                         <li><strong>Debug</strong> (Ctrl+F9) - Inject code, set PC to entry point, switch to debugger. Entry point priority: <code>; @entry</code> marker &gt; SAVESNA address &gt; single ORG &gt; prompt if multiple ORGs. Also injects assembler labels into the debugger (visible in disassembly, Calls panel, etc.); internal labels prefixed with <code>__</code> are skipped. Old assembler labels are cleared on each Debug run and replaced with current symbols; user-defined labels are preserved</li>
-                        <li><strong>Clear</strong> - Clear editor and reset project</li>
-                        <li><strong>New</strong> - Add a new file to the project</li>
-                        <li><strong>Load</strong> - Load .asm file or .zip project</li>
-                        <li><strong>Export</strong> - Save source files as ZIP</li>
-                        <li><strong>Share</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
-                        <li><strong>Import</strong> - Import a shared project from clipboard. Paste the <code>===M8XXX-ASM-BEGIN===...===M8XXX-ASM-END===</code> string and click Import. A preview shows the files and machine/hardware settings that will be applied. Uncheck "Apply machine &amp; hardware settings" to import only the source files without changing the emulator configuration</li>
                         <li><strong>Download</strong> - Download generated output files (.bin, .sna, .tap). If multiple files, downloads as ZIP archive</li>
+                    </ul>
+                    <h5>Project Menu</h5>
+                    <ul>
+                        <li><strong>New file</strong> - Add a new file to the project. A path like <code>gfx/sprites.asm</code> creates it inside a subdirectory</li>
+                        <li><strong>Load…</strong> - Load .asm file or .zip project</li>
+                        <li><strong>Import from clipboard</strong> - Import a shared project. Paste the <code>===M8XXX-ASM-BEGIN===...===M8XXX-ASM-END===</code> string and click Import. A preview shows the files and machine/hardware settings that will be applied. Uncheck "Apply machine &amp; hardware settings" to import only the source files without changing the emulator configuration</li>
+                        <li><strong>Export…</strong> - Save source files as ZIP</li>
+                        <li><strong>Share to clipboard</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
+                        <li><strong>Inject into memory</strong> - Write assembled bytes to emulator memory without starting the debugger</li>
+                        <li><strong>Clear all</strong> - Clear editor and reset project</li>
                     </ul>
                     <h5>Drag & Drop</h5>
                     <ul>
@@ -995,10 +1007,23 @@ start:  ...</pre>
                         <li>Results show filename, line number, and matching text</li>
                         <li>Click any result to jump to that file and line</li>
                     </ul>
-                    <h5>Output Options</h5>
+                    <h5>Options (⚙)</h5>
+                    <p>The gear button in the toolbar holds assembler options:</p>
                     <ul>
+                        <li><strong>Case insensitive</strong> - Treat label names case-insensitively</li>
                         <li><strong>Unused labels</strong> - Show labels that are defined but never referenced</li>
                         <li><strong>Show compiled</strong> - Include hex dump of assembled bytes</li>
+                        <li><strong>Export as ZIP</strong> - Always export source as ZIP, even for a single file (default: single file saved as plain text; multi-file projects always export as ZIP)</li>
+                        <li><strong>Font</strong> - Editor font size (also Ctrl+Plus / Ctrl+Minus)</li>
+                    </ul>
+                    <p>The drag bar above the Output pane resizes it (taking space from the editor); the bar below the Output resizes the whole assembler area &mdash; useful on tall monitors. Double-click a bar to reset.</p>
+                    <h5>Split Editor (&#9707;)</h5>
+                    <p>The &#9707; toolbar button splits the editor into two panes, Notepad++-style:</p>
+                    <ul>
+                        <li>The right pane has its own file dropdown &mdash; edit two project files side by side</li>
+                        <li>Selecting the same file (or having no project files) mirrors content live between panes &mdash; edit one file in two places</li>
+                        <li>Drag the bar between the panes to resize; the split state is remembered</li>
+                        <li>Search, undo history, and the T-state popup work in the left (main) pane</li>
                     </ul>
                     <h5>Command-Line Defines</h5>
                     <p>Use the <strong>Defines</strong> input field to pass defines for conditional assembly:</p>
@@ -1271,7 +1296,7 @@ start:  ...</pre>
                         <li>Disassembly shows blank lines after JP, JR, CALL, RET, RST, DJNZ, HALT</li>
                         <li>Copy-friendly output format (text copies correctly to clipboard)</li>
                         <li>ROM routine labels shown in disassembly</li>
-                        <li>Double-click tape blocks or disk files in Settings &rarr; Media catalog to open in Explorer</li>
+                        <li>Double-click tape blocks or disk files in Settings &rarr; Tape/Disk catalog to open in Explorer</li>
                     </ul>
                     <h5>Dual-Panel Editor (Edit tab)</h5>
                     <p>The Edit tab uses a two-panel layout inspired by orthodox file managers (Norton Commander, Total Commander). Each panel independently holds a file in any supported format &mdash; TAP, TZX, TRD, SCL, MGT, DSK, or OPD. The toolbar between the panels adapts to the active panel's format.</p>

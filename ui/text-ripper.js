@@ -7,6 +7,8 @@
 // can navigate back/forward between grabbed screens. Each page has its own region;
 // new pages copy the region from the last capture.
 
+import { hex16 } from '../core/utils.js';
+
 export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFile }) {
 
     // ========== DOM refs ==========
@@ -1607,7 +1609,7 @@ export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFi
 
     function openExtractDialog(address, bank) {
         if (address !== undefined) {
-            extractAddrInput.value = address.toString(16).toUpperCase().padStart(4, '0');
+            extractAddrInput.value = hex16(address);
         }
         if (bank !== undefined && bank >= 0) {
             extractBankInput.value = bank;
@@ -1754,7 +1756,7 @@ export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFi
         const targetCs = session.charsets.find(c => c.id === targetId);
         const csName = targetCs ? ` → ${targetCs.name}` : '';
         const bankNote = bank >= 0 ? ` (bank ${bank})` : '';
-        showMessage(`Extracted ${added} glyphs from $${address.toString(16).toUpperCase().padStart(4, '0')}${bankNote}${csName}`);
+        showMessage(`Extracted ${added} glyphs from $${hex16(address)}${bankNote}${csName}`);
     });
 
     // Load ROM Font — shortcut: $3D00, 96 chars, sequential, Spectrum ASCII map

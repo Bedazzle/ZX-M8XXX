@@ -1,6 +1,6 @@
 // Step controls — left and right panel step/run button handlers
 
-import { hex16 } from '../core/utils.js';
+import { hex16, storageGet, storageSet } from '../core/utils.js';
 
 export function initStepControls({
     getSpectrum, traceManager, commentManager,
@@ -34,6 +34,21 @@ export function initStepControls({
     // State
     let runToTarget = null;
     let rightRunToTarget = null;
+
+    const chkAyDebugStep = document.getElementById('chkAyDebugStep');
+    if (chkAyDebugStep) {
+        chkAyDebugStep.checked = storageGet('zxm8_ay_debug_step') === 'true';
+        chkAyDebugStep.addEventListener('change', () => {
+            storageSet('zxm8_ay_debug_step', chkAyDebugStep.checked);
+        });
+    }
+
+    function playAyIfEnabled() {
+        if (chkAyDebugStep && chkAyDebugStep.checked) {
+            const spectrum = getSpectrum();
+            if (spectrum.audio) spectrum.audio.playAyBurst();
+        }
+    }
 
     // Show a temporary red warning popup near the current PC line in disasm
     function showDisasmWarning(text) {
@@ -97,6 +112,7 @@ export function initStepControls({
         traceManager.goToLive();
         setTraceViewAddress(null);
         spectrum.stepInto();
+        playAyIfEnabled();
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -115,6 +131,7 @@ export function initStepControls({
             const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
             showDisasmWarning(`T-state limit reached${detail}`);
         }
+        playAyIfEnabled();
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -134,6 +151,7 @@ export function initStepControls({
         } else {
             showMessage('Target not reached (max cycles)', 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -148,6 +166,7 @@ export function initStepControls({
         } else {
             showMessage('Interrupt not reached (max cycles)', 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -162,6 +181,7 @@ export function initStepControls({
         } else {
             showMessage('RET not reached (max cycles)', 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -180,6 +200,7 @@ export function initStepControls({
         if (chkAutoComment.checked) {
             commentManager.set(spectrum.cpu.pc, { before: '--------------------' });
         }
+        playAyIfEnabled();
         showMessage(`Executed ${executed} T-states`);
         updateDebugger();
         updateStatus();
@@ -202,6 +223,7 @@ export function initStepControls({
         traceManager.goToLive();
         setTraceViewAddress(null);
         spectrum.stepInto();
+        playAyIfEnabled();
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -220,6 +242,7 @@ export function initStepControls({
             const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
             showDisasmWarning(`T-state limit reached${detail}`);
         }
+        playAyIfEnabled();
         openDebuggerPanel();
         updateDebugger();
         updateStatus();
@@ -239,6 +262,7 @@ export function initStepControls({
         } else {
             showMessage(`Target ${hex16(rightRunToTarget)} not reached (max cycles)`, 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -253,6 +277,7 @@ export function initStepControls({
         } else {
             showMessage('Interrupt not reached (max cycles)', 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -267,6 +292,7 @@ export function initStepControls({
         } else {
             showMessage('RET not reached (max cycles)', 'error');
         }
+        playAyIfEnabled();
         updateDebugger();
         updateStatus();
     });
@@ -284,6 +310,7 @@ export function initStepControls({
         if (chkAutoComment.checked) {
             commentManager.set(spectrum.cpu.pc, { before: '--------------------' });
         }
+        playAyIfEnabled();
         showMessage(`Executed ${executed} T-states`);
         updateDebugger();
         updateStatus();

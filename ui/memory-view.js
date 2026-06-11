@@ -27,6 +27,31 @@ export function initMemoryView({
     let asciiSelectionEnd = null;
     let asciiIsSelecting = false;
 
+    // Bytes per line adapt to the view width (8/16/32 so line addresses stay round).
+    // Hex cells are 18px wide (.memory-byte); the ASCII char width is measured once.
+    let rightBytesPerLine = BYTES_PER_LINE;
+    let leftBytesPerLine = BYTES_PER_LINE;
+    let asciiCharWidth = 0;
+
+    function calcBytesPerLine(view, fixedExtra, current) {
+        if (!view.clientWidth) return current;  // hidden view: keep last value
+        if (!asciiCharWidth) {
+            const probe = document.createElement('span');
+            probe.className = 'memory-ascii';
+            probe.style.position = 'absolute';
+            probe.style.visibility = 'hidden';
+            probe.innerHTML = '<span>0</span><span>0</span><span>0</span><span>0</span>';
+            view.appendChild(probe);
+            asciiCharWidth = probe.getBoundingClientRect().width / 4 || 7;
+            probe.remove();
+        }
+        const avail = view.clientWidth - 36 - fixedExtra;  // minus address column + margins
+        const perByte = 18 + asciiCharWidth;
+        if (avail >= 32 * perByte) return 32;
+        if (avail >= 16 * perByte) return 16;
+        return 8;
+    }
+
     function updateMemoryView() {
         const spectrum = getSpectrum();
         const memorySnapshot = getMemorySnapshot();
@@ -34,16 +59,17 @@ export function initMemoryView({
         const memoryViewAddress = getMemoryViewAddress();
         if (!spectrum.memory || memoryEditingAddr !== null) return;
 
+        rightBytesPerLine = calcBytesPerLine(memoryView, 20, rightBytesPerLine);
         let html = '';
         for (let line = 0; line < MEMORY_LINES; line++) {
-            const lineAddr = (memoryViewAddress + line * BYTES_PER_LINE) & 0xffff;
+            const lineAddr = (memoryViewAddress + line * rightBytesPerLine) & 0xffff;
 
             // Address
             html += `<div class="memory-line"><span class="memory-addr" data-addr="${lineAddr}">${hex16(lineAddr)}</span>`;
 
             // Hex bytes
             html += '<span class="memory-hex">';
-            for (let i = 0; i < BYTES_PER_LINE; i++) {
+            for (let i = 0; i < rightBytesPerLine; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const byte = spectrum.memory.read(addr);
                 const changed = memorySnapshot && memorySnapshot[addr] !== byte;
@@ -93,7 +119,7 @@ export function initMemoryView({
             html += '<span class="memory-ascii">';
             const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
             const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            for (let i = 0; i < BYTES_PER_LINE; i++) {
+            for (let i = 0; i < rightBytesPerLine; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const byte = spectrum.memory.read(addr);
                 const isPrintable = byte >= 32 && byte < 127;
@@ -352,7 +378,7 @@ export function initMemoryView({
         const memoryViewAddress = getMemoryViewAddress();
         // Scroll by 3 lines per wheel tick
         const scrollLines = e.deltaY > 0 ? 3 : -3;
-        goToMemoryAddress(memoryViewAddress + scrollLines * BYTES_PER_LINE);
+        goToMemoryAddress(memoryViewAddress + scrollLines * rightBytesPerLine);
     }, { passive: false });
 
     // Left panel memory view
@@ -364,16 +390,17 @@ export function initMemoryView({
             return;
         }
 
+        leftBytesPerLine = calcBytesPerLine(leftMemoryView, 26, leftBytesPerLine);
         let html = '';
         for (let line = 0; line < LEFT_MEMORY_LINES; line++) {
-            const lineAddr = (leftMemoryViewAddress + line * BYTES_PER_LINE) & 0xffff;
+            const lineAddr = (leftMemoryViewAddress + line * leftBytesPerLine) & 0xffff;
 
             // Address
             html += `<div class="memory-line"><span class="memory-addr" data-addr="${lineAddr}">${hex16(lineAddr)}</span>`;
 
             // Hex bytes
             html += '<span class="memory-hex">';
-            for (let i = 0; i < BYTES_PER_LINE; i++) {
+            for (let i = 0; i < leftBytesPerLine; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const val = spectrum.memory.read(addr);
                 let cls = 'memory-byte';
@@ -390,7 +417,7 @@ export function initMemoryView({
             html += '<span class="memory-ascii">';
             const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
             const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            for (let i = 0; i < BYTES_PER_LINE; i++) {
+            for (let i = 0; i < leftBytesPerLine; i++) {
                 const addr = (lineAddr + i) & 0xffff;
                 const byte = spectrum.memory.read(addr);
                 const isPrintable = byte >= 32 && byte < 127;
@@ -414,6 +441,8 @@ export function initMemoryView({
     return {
         updateMemoryView,
         updateLeftMemoryView,
+        getRightBytesPerLine: () => rightBytesPerLine,
+        getLeftBytesPerLine: () => leftBytesPerLine,
         clearMemSelection,
         clearAsciiSelection,
         getMemSelection: () => ({ start: memSelectionStart, end: memSelectionEnd }),

@@ -5,7 +5,7 @@ import { TokenType, Lexer } from './lexer.js';
 import { ErrorCollector } from './errors.js';
 import { SymbolTable } from './labels.js';
 
-export const ExpressionParser = {
+const ExpressionParser = {
     tokens: [],
     pos: 0,
     symbols: null,      // Symbol table for label resolution

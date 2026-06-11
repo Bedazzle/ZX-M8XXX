@@ -1,5 +1,7 @@
 // file-loader.js — File loading, drag-drop, ZIP selection, media indicators (extracted from index.html)
 import { hex16 } from '../core/utils.js';
+import { MDRLoader } from '../core/loaders.js';
+import { DSKLoader } from '../core/fdc.js';
 
 export function initFileLoader({
     getSpectrum,
@@ -86,19 +88,89 @@ export function initFileLoader({
         }
     }
 
-    // Show/hide drive selector based on current machine type
-    function updateDriveSelector() {
+    // All disk systems currently available on this machine, in hardware order:
+    // +3 has the FDC built in; Beta Disk is built into Pentagon/Scorpion (or
+    // enabled with trdos.rom); +D and IF1 are optional interfaces (mutually
+    // exclusive with each other, but either can coexist with Beta Disk).
+    function getAvailableDiskSystems() {
         const spectrum = getSpectrum();
-        const sel = document.getElementById('driveSelectorSelect');
-        if (spectrum.machineType === '+3') {
-            // FDC: only 2 drives
-            sel.options[2].style.display = 'none';
-            sel.options[3].style.display = 'none';
-            if (sel.selectedIndex > 1) sel.selectedIndex = 0;
-        } else {
-            sel.options[2].style.display = '';
-            sel.options[3].style.display = '';
+        const systems = [];
+        if (spectrum.fdc) {
+            systems.push({ id: 'dsk', name: '+3DOS', blankLabel: 'Blank DSK', drives: 2 });
         }
+        if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom())) {
+            systems.push({ id: 'trd', name: 'TR-DOS', blankLabel: 'Blank TRD', drives: 4 });
+        }
+        if (spectrum.plusDEnabled && spectrum.memory.hasPlusDRom()) {
+            systems.push({ id: 'mgt', name: '+D', blankLabel: 'Blank MGT', drives: 2 });
+        }
+        if (spectrum.if1Enabled && spectrum.memory.hasIF1Rom()) {
+            systems.push({ id: 'mdr', name: 'Microdrive', blankLabel: 'Blank MDR', drives: 4, numbered: true });
+        }
+        return systems;
+    }
+
+    // The system the Blank Disk button and Target drive act on. When several
+    // are active, the user picks via the system dropdown; the choice sticks
+    // until that system goes away.
+    let selectedDiskSystemId = null;
+
+    function getActiveDiskSystem() {
+        const systems = getAvailableDiskSystems();
+        if (systems.length === 0) return null;
+        return systems.find(s => s.id === selectedDiskSystemId) || systems[0];
+    }
+
+    // Update system dropdown, drive selector, Blank Disk button, and
+    // system-specific control rows to match the chosen disk system
+    function updateDriveSelector() {
+        const systems = getAvailableDiskSystems();
+        const sys = getActiveDiskSystem();
+
+        // System dropdown: lists all active disk systems
+        const sysSel = document.getElementById('diskSystemSelect');
+        if (sysSel) {
+            const sig = systems.map(s => s.id).join(',');
+            if (sysSel.dataset.sig !== sig) {
+                sysSel.dataset.sig = sig;
+                sysSel.innerHTML = '';
+                for (const s of systems) {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.name;
+                    sysSel.appendChild(opt);
+                }
+            }
+            if (sys) sysSel.value = sys.id;
+        }
+
+        const sel = document.getElementById('driveSelectorSelect');
+        const drives = sys ? sys.drives : 4;
+        for (let i = 0; i < 4; i++) {
+            sel.options[i].style.display = i < drives ? '' : 'none';
+            // Microdrives are numbered 1-8, other systems use letters A-D
+            sel.options[i].textContent = (sys && sys.numbered)
+                ? (i + 1) + ':'
+                : String.fromCharCode(65 + i) + ':';
+        }
+        if (sel.selectedIndex >= drives) sel.selectedIndex = 0;
+
+        const blankBtn = document.getElementById('btnBlankDisk');
+        if (blankBtn) {
+            blankBtn.textContent = '\u{1F4BE} ' + (sys ? sys.blankLabel : 'Blank Disk');
+            blankBtn.title = sys
+                ? `Insert blank formatted ${sys.name} ${sys.id === 'mdr' ? 'cartridge' : 'disk'} into the selected drive`
+                : 'No disk interface active — enable Beta Disk, +D, or Interface 1 in Settings → Machines';
+        }
+
+        // Row is useful whenever an interface is active (Blank/Load Disk targeting),
+        // not just once a disk is already inserted
+        const row = document.getElementById('driveSelector');
+        if (row) row.style.display = systems.length > 0 ? '' : 'none';
+
+        // System-specific controls: boot file injection applies to TR-DOS only
+        const bootRow = document.getElementById('trdosBootRow');
+        if (bootRow) bootRow.style.display = (sys && sys.id === 'trd') ? '' : 'none';
     }
 
     // Get currently selected drive index from the UI drive selector
@@ -138,6 +210,8 @@ export function initFileLoader({
             // Update tape position display and catalog
             mediaCatalogAPI.updateTapePosition();
             mediaCatalogAPI.buildTapeCatalog();
+            mediaCatalogAPI.updateTapeSlotTabs();
+            mediaCatalogAPI.updateRecordingStatus();
         }
 
         // Load labels, regions, comments, and xrefs for this file
@@ -304,9 +378,11 @@ export function initFileLoader({
     }
 
     // Show file selection modal (ZIP or disk image)
-    async function showZipSelection(result, fileName) {
+    async function showZipSelection(result, fileName, options) {
         const spectrum = getSpectrum();
         const displayAPI = getDisplayAPI();
+        const filterTypes = options && options.filterTypes;
+        const onLoaded = options && options.onLoaded;
 
         pendingZipResult = { result, fileName };
         zipFileList.innerHTML = '';
@@ -337,15 +413,21 @@ export function initFileLoader({
             const hasTrdosRom = spectrum.memory.hasTrdosRom && spectrum.memory.hasTrdosRom();
             const betaDiskAvailable = spectrum.profile.betaDiskDefault || spectrum.betaDiskEnabled;
             btnBootTrdos.style.display = (betaDiskAvailable && hasTrdosRom) ? 'inline-block' : 'none';
+        } else if (filterTypes) {
+            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'].includes(t));
+            modalTitle.textContent = isDiskFilter ? 'Select Disk to Insert' : 'Select Tape to Insert';
+            modalDesc.textContent = isDiskFilter ? 'The archive contains multiple disk images:' : 'The archive contains multiple tape files:';
+            btnBootTrdos.style.display = 'none';
         } else {
             modalTitle.textContent = 'Select File to Load';
             modalDesc.textContent = 'The archive contains multiple files. Select one to load:';
             btnBootTrdos.style.display = 'none';
         }
 
-        // Create sorted list with original indices
+        // Create sorted list with original indices, optionally filtered by type
         const sortedFiles = result.files
             .map((file, index) => ({ file, index: isDisk ? file.index : index }))
+            .filter(({ file }) => !filterTypes || filterTypes.includes(file.type))
             .sort((a, b) => a.file.name.localeCompare(b.file.name));
 
         sortedFiles.forEach(({ file, index }) => {
@@ -421,7 +503,11 @@ export function initFileLoader({
                         displayAPI.applyPalette(savedPaletteId);
                     }
 
-                    handleLoadResult(loadResult, file.name);
+                    if (onLoaded) {
+                        onLoaded(loadResult, file.name);
+                    } else {
+                        handleLoadResult(loadResult, file.name);
+                    }
                 } catch (e) {
                     showMessage('Failed to load: ' + e.message, 'error');
                 }
@@ -590,27 +676,230 @@ export function initFileLoader({
         }
     });
 
-    // Blank disk button
+    // Load tape button — insert a tape file into the active slot without reset/auto-load
+    const loadTapeFileInput = document.getElementById('loadTapeFile');
+    document.getElementById('btnLoadTape').addEventListener('click', () => {
+        loadTapeFileInput.click();
+    });
+    function handleTapeInserted(result, fileName) {
+        if (result.blocks !== undefined) {
+            const ext = fileName.split('.').pop().toLowerCase();
+            const formatName = ext === 'wav' ? 'WAV' : ext === 'tzx' ? 'TZX' : 'TAP';
+            updateMediaIndicator(fileName, 'tape');
+            const mcAPI = getMediaCatalogAPI();
+            mcAPI.updateTapePosition();
+            mcAPI.buildTapeCatalog();
+            mcAPI.updateTapeSlotTabs();
+            mcAPI.updateRecordingStatus();
+            showMessage(`${formatName} inserted: ${result.blocks} block${result.blocks !== 1 ? 's' : ''}`);
+            return true;
+        }
+        return false;
+    }
+
+    loadTapeFileInput.addEventListener('change', async () => {
+        const file = loadTapeFileInput.files[0];
+        loadTapeFileInput.value = '';
+        if (!file) return;
+        const spectrum = getSpectrum();
+        try {
+            const result = await spectrum.loadFile(file);
+            if (result.needsSelection) {
+                // ZIP with multiple files — filter to tape types, let user pick
+                const tapeTypes = ['tap', 'tzx', 'wav'];
+                const tapeFiles = result.files
+                    .map((f, i) => ({ ...f, _idx: i }))
+                    .filter(f => tapeTypes.includes(f.type));
+                if (tapeFiles.length === 0) {
+                    showMessage('No tape files found in ZIP', 'error');
+                } else if (tapeFiles.length === 1) {
+                    const loadResult = spectrum.loadFromZipSelection(result, tapeFiles[0]._idx);
+                    if (!handleTapeInserted(loadResult, tapeFiles[0].name)) {
+                        showMessage('Failed to load tape from ZIP', 'error');
+                    }
+                } else {
+                    // Show simple selection for multiple tapes
+                    showZipSelection(result, file.name, {
+                        filterTypes: tapeTypes,
+                        onLoaded: (loadResult, entryName) => handleTapeInserted(loadResult, entryName)
+                    });
+                }
+            } else if (!handleTapeInserted(result, file.name)) {
+                showMessage('Not a tape file', 'error');
+            }
+        } catch (e) {
+            showMessage('Failed to load: ' + e.message, 'error');
+        }
+    });
+
+    // Blank tape button
+    document.getElementById('btnBlankTape').addEventListener('click', () => {
+        const spectrum = getSpectrum();
+        const slot = spectrum.getActiveTapeSlot();
+        // Mark slot as having a blank tape (no data, just a name)
+        spectrum.loadedTapes[slot] = { type: 'blank', data: null, name: '[blank tape]' };
+        spectrum.tapeSlotStates[slot] = null;
+        spectrum.tapeRecordings[slot] = [];
+        spectrum.micRecordings[slot] = [];
+        // Clear tapeLoader/tapePlayer (nothing to play)
+        spectrum.tapeLoader.blocks = [];
+        spectrum.tapeLoader.currentBlock = 0;
+        spectrum.tapePlayer.blocks = [];
+        spectrum.tapePlayer.currentBlock = 0;
+        updateMediaIndicator('[blank tape]', 'tape');
+        showMessage(`Blank tape inserted in slot ${slot + 1}`);
+        const mcAPI = getMediaCatalogAPI();
+        mcAPI.buildTapeCatalog();
+        mcAPI.updateTapeSlotTabs();
+        mcAPI.updateRecordingStatus();
+    });
+
+    // Blank disk button — creates a blank disk for the active disk system
     document.getElementById('btnBlankDisk').addEventListener('click', () => {
         const spectrum = getSpectrum();
-        if (!spectrum.betaDisk) {
-            showMessage('Beta Disk not available', 'error');
+        const sys = getActiveDiskSystem();
+        if (!sys) {
+            showMessage('No disk interface active — enable Beta Disk, +D, or Interface 1 in Settings → Machines', 'error');
             return;
         }
         const driveIndex = getSelectedDriveIndex();
-        spectrum.betaDisk.createBlankDisk('BLANK', driveIndex);
-        // Update per-drive media state
-        spectrum.loadedBetaDisks[driveIndex] = { data: spectrum.betaDisk.drives[driveIndex].diskData, name: '[blank]' };
-        spectrum.loadedBetaDiskFiles[driveIndex] = [];
-        const driveLetter = String.fromCharCode(65 + driveIndex);
-        // Show disk name and activity indicators
-        updateMediaIndicator('[blank]', 'disk', driveIndex);
-        diskActivityEl.style.display = 'inline-block';
-        diskStatusEl.textContent = 'ready';
-        diskLedEl.style.color = '';
-        showMessage(`Blank formatted disk inserted in drive ${driveLetter}:`);
-        getMediaCatalogAPI().clearDiskCatalog(driveIndex);
+
+        if (sys.id === 'trd') {
+            spectrum.betaDisk.createBlankDisk('BLANK', driveIndex);
+            // Update per-drive media state
+            spectrum.loadedBetaDisks[driveIndex] = { data: spectrum.betaDisk.drives[driveIndex].diskData, name: '[blank]' };
+            spectrum.loadedBetaDiskFiles[driveIndex] = [];
+            const driveLetter = String.fromCharCode(65 + driveIndex);
+            // Show disk name and activity indicators
+            updateMediaIndicator('[blank]', 'disk', driveIndex);
+            diskActivityEl.style.display = 'inline-block';
+            diskStatusEl.textContent = 'ready';
+            diskLedEl.style.color = '';
+            showMessage(`Blank TR-DOS disk inserted in drive ${driveLetter}:`);
+            getMediaCatalogAPI().clearDiskCatalog(driveIndex);
+            return;
+        }
+
+        // +3DOS / +D / Microdrive: build a blank image and insert it through the
+        // normal load path so per-drive state, indicators, and catalog update uniformly
+        let result;
+        if (sys.id === 'dsk') {
+            const dskImage = DSKLoader.createBlankDSK('p3-ss40');
+            result = spectrum.loadDSKImage(dskImage.toBuffer(), '[blank]', driveIndex & 0x01);
+        } else if (sys.id === 'mgt') {
+            // Blank MGT: all-zero directory = all slots unused
+            result = spectrum.loadMGTImage(new Uint8Array(819200), '[blank]', driveIndex & 0x01);
+        } else if (sys.id === 'mdr') {
+            result = spectrum.loadMDRImage(MDRLoader.createBlankMDR('BLANK'), '[blank]', driveIndex & 0x07);
+        }
+        if (result) handleDiskOnlyInserted(result, '[blank]');
     });
+
+    // Load disk button — insert a disk image into selected drive without reset/auto-load
+    const loadDiskFileInput = document.getElementById('loadDiskFile');
+    document.getElementById('btnLoadDisk').addEventListener('click', () => {
+        loadDiskFileInput.click();
+    });
+
+    function handleDiskOnlyInserted(result, fileName) {
+        if (!result.diskInserted) return false;
+        const spectrum = getSpectrum();
+
+        // Check machine compatibility
+        if (result.needsMachineSwitch) {
+            if (result.isDSK) {
+                showMessage('DSK disks require +3 machine.', 'error');
+            } else if (result.diskType === 'mgt') {
+                showMessage('MGT disks require +D interface. Enable in Settings.', 'error');
+            } else if (result.diskType === 'mdr') {
+                showMessage('MDR cartridges require Interface 1. Enable in Settings.', 'error');
+            } else {
+                if (!romData['trdos.rom']) {
+                    showMessage('TR-DOS ROM required for disk images. Load trdos.rom first.', 'error');
+                } else {
+                    showMessage('Enable Beta Disk in Settings, or switch to Pentagon/Scorpion.', 'error');
+                }
+            }
+            return true; // consumed the result (even though it failed)
+        }
+
+        const drv = result._driveIndex || 0;
+        const ctrl = result.isDSK ? 'fdc' : result.diskType === 'mdr' ? 'if1' : result.diskType === 'mgt' ? 'plusd' : 'beta';
+        updateMediaIndicator(fileName, 'disk', drv);
+
+        // Show disk activity indicators for Beta Disk
+        if (ctrl === 'beta') {
+            diskActivityEl.style.display = 'inline-block';
+            diskStatusEl.textContent = 'ready';
+            diskLedEl.style.color = '';
+        }
+
+        const mcAPI = getMediaCatalogAPI();
+        mcAPI.buildDiskCatalog(drv, ctrl);
+
+        // Build message
+        const typeStr = (result.diskType || 'disk').toUpperCase();
+        if (result.isDSK) {
+            const letter = String.fromCharCode(65 + drv);
+            showMessage(`DSK inserted in ${letter}: ${result.diskName} (${result.fileCount} files)`);
+        } else if (result.diskType === 'mgt') {
+            const letter = String.fromCharCode(65 + drv);
+            showMessage(`MGT inserted in +D ${letter}: ${result.diskName} (${result.fileCount} files)`);
+        } else if (result.diskType === 'mdr') {
+            showMessage(`Cartridge inserted in Microdrive ${drv + 1}: ${result.diskName} (${result.fileCount} files)`);
+        } else {
+            const letter = String.fromCharCode(65 + drv);
+            showMessage(`${typeStr} inserted in ${letter}: ${result.diskName} (${result.fileCount} files)`);
+        }
+        return true;
+    }
+
+    loadDiskFileInput.addEventListener('change', async () => {
+        const file = loadDiskFileInput.files[0];
+        loadDiskFileInput.value = '';
+        if (!file) return;
+        const spectrum = getSpectrum();
+        try {
+            const driveIndex = getSelectedDriveIndex();
+            const result = await spectrum.loadFile(file, driveIndex);
+            if (result.needsSelection) {
+                // ZIP with multiple files — filter to disk types, let user pick
+                const diskTypes = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'];
+                const diskFiles = result.files
+                    .map((f, i) => ({ ...f, _idx: i }))
+                    .filter(f => diskTypes.includes(f.type));
+                if (diskFiles.length === 0) {
+                    showMessage('No disk images found in ZIP', 'error');
+                } else if (diskFiles.length === 1) {
+                    const loadResult = spectrum.loadFromZipSelection(result, diskFiles[0]._idx);
+                    if (!handleDiskOnlyInserted(loadResult, diskFiles[0].name)) {
+                        showMessage('Failed to load disk from ZIP', 'error');
+                    }
+                } else {
+                    showZipSelection(result, file.name, {
+                        filterTypes: diskTypes,
+                        onLoaded: (loadResult, entryName) => handleDiskOnlyInserted(loadResult, entryName)
+                    });
+                }
+            } else if (!handleDiskOnlyInserted(result, file.name)) {
+                showMessage('Not a disk image', 'error');
+            }
+        } catch (e) {
+            showMessage('Failed to load: ' + e.message, 'error');
+        }
+    });
+
+    // System dropdown choice drives Blank Disk + Target drive
+    const diskSystemSelectEl = document.getElementById('diskSystemSelect');
+    if (diskSystemSelectEl) {
+        diskSystemSelectEl.addEventListener('change', () => {
+            selectedDiskSystemId = diskSystemSelectEl.value;
+            updateDriveSelector();
+        });
+    }
+
+    // Initial sync of drive selector label + Blank Disk button with active system
+    updateDriveSelector();
 
     return {
         handleLoadResult,

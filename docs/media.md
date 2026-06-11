@@ -1,8 +1,8 @@
-# Media: Auto Load, Tape Loading, WAV Loading, Media Catalog, Multi-Drive Support
+# Media: Auto Load, Tape Loading, WAV Loading, Media Catalog, Multi-Drive Support, Multi-Tape, Tape SAVE, MIC Recording
 
 ## Auto Load
 
-Automatic load-and-run for tape and disk files. Controlled via checkbox in Settings -> Media.
+Automatic load-and-run for tape and disk files. Controlled via checkbox in Settings -> Tape, mirrored on Settings -> Disk (`chkAutoLoadDisk`, two-way synced with `chkAutoLoad` in `auto-loader.js`; project restore dispatches `change` to keep them aligned).
 
 **Behavior by format:**
 - **TAP/TZX**: Reset machine -> type `LOAD ""` (128K: press `1` for Sinclair BASIC menu; +2/+2A: press Enter for Amstrad "Tape Loader") -> flash load handles standard blocks
@@ -29,7 +29,7 @@ Automatic load-and-run for tape and disk files. Controlled via checkbox in Setti
 - Does NOT manually construct system variables -- the ROM handles everything
 - Disk state (betaDisk) is preserved across the reset
 
-**Boot file injection** (Settings -> Media -> Boot File):
+**Boot file injection** (Settings -> Disk -> Boot File):
 - Modes: "No change", "Add boot" (only if no boot exists), "Replace boot"
 - User selects a source TRD or Hobeta file containing the boot file to inject
 - Applied via `spectrum.onBeforeTrdLoad` callback in `loadDiskImage()`
@@ -87,14 +87,28 @@ The AC coupling is essential for WAV files where the DC offset varies between st
 
 ## Media Catalog
 
-Settings -> Media shows a tabbed catalog at the bottom of the Media panel:
-- **Tape tab**: Appears when a TZX/TAP is loaded. Lists all blocks with type labels (Standard, Turbo, Pure Tone, etc.), block sizes, current playback position. Highlights active block during playback. Click a block to jump to it.
-- **Disk tab**: Appears when a TRD/SCL/DSK/MGT/MDR/OPD disk is loaded. Shows disk header (label, file count, free space) and file listing. TRD: name, extension, start address, size, sectors (boot file in cyan). DSK: CP/M-style name, extension, size. MGT: name, type name, address, size. MDR: name, length, sectors, type. OPD: name, length.
-- **Drive sub-tabs**: Dynamically generated per drive that has a disk. When only one disk controller is active, uses simple labels (`A:`, `B:`, `1:`, etc.). When multiple controllers have disks loaded simultaneously, uses prefixed labels (`3DOS:A`, `TRD:A`, `MGT:A`, `MDR:1`, `Opus:A`, etc.) to distinguish controllers. Clicking a tab shows only that controller's catalog for the selected drive.
-- **Drive selector**: Dropdown in Settings -> Media to choose target drive (A-D for Beta Disk, A-B for FDC) when loading disk images
-- Tabs appear/disappear dynamically as media is loaded or cleared
-- Auto-selects the tab for newly loaded media
-- Container hidden when no media is loaded; hidden on machine reset
+Tape and disk catalogs are on separate Settings sub-tabs (Tape and Disk).
+
+**Tape catalog** (Settings -> Tape):
+- Appears when a TZX/TAP is loaded or a blank tape is inserted
+- Lists all blocks with type labels (Standard, Turbo, Pure Tone, etc.), block sizes, current playback position
+- Highlights active block during playback; click a block to jump to it
+- Slot tabs (1/2) when multi-tape is in use
+- Actions row: Eject, Export, Clear Rec buttons
+
+**Disk catalog** (Settings -> Disk):
+- Appears when a TRD/SCL/DSK/MGT/MDR/OPD disk is loaded
+- Shows disk header (label, file count, free space) and file listing
+- TRD: name, extension, start address, size, sectors (boot file in cyan). DSK: CP/M-style name, extension, size. MGT: name, type name, address, size. MDR: name, length, sectors, type. OPD: name, length.
+- **Drive sub-tabs**: Dynamically generated per drive that has a disk. When only one disk controller is active, uses simple labels (`A:`, `B:`, `1:`, etc.). When multiple controllers have disks loaded simultaneously, uses prefixed labels (`3DOS:A`, `TRD:A`, `MGT:A`, `MDR:1`, `Opus:A`, etc.) to distinguish controllers.
+- **Drive selector**: Dropdown to choose target drive (A-D for Beta Disk, A-B for FDC) when loading/creating disk images
+- **Load Disk...**: Opens file picker for disk images (TRD/SCL/DSK/MGT/IMG/MDR/OPD/ZIP), inserts into selected drive without reset/auto-boot
+- **Blank Disk**: Creates a blank formatted disk in the selected drive for the *active disk system* — button label shows the format (Blank TRD / Blank DSK / Blank MGT / Blank MDR). `getAvailableDiskSystems()` (`file-loader.js`) lists active systems in hardware order (+3 FDC → DSK, Beta Disk built-in or enabled+trdos.rom → TRD, +D → MGT, IF1 → MDR); `getActiveDiskSystem()` returns the user-selected one (or the first). Error with guidance if none active
+- **System dropdown** (`#diskSystemSelect`): always lists all active disk systems (Beta Disk can coexist with +D or IF1); selects which system Blank Disk, Target drive, and system-specific rows act on. Selection sticks until that system is disabled
+- **Target drive**: options adjust per system — 4 lettered drives for TR-DOS, 2 for +3DOS/+D, numbered 1:-4: for Microdrives. The row is visible whenever ≥1 disk interface is active. Refresh triggers: interface toggles and manual ROM loads (`onDiskSystemsChanged` callback in `input-settings.js`), and `loadRomsForMachineType()` (`rom-selector.js`) — the latter matters because peripheral ROMs auto-load asynchronously at startup, so e.g. Microdrive only becomes available once if1.rom arrives
+- **System-specific rows**: `#trdosBootRow` (boot file injection) is shown only when the selected system is TR-DOS
+
+Double-click a tape block or disk file to open the full image in Explorer for analysis.
 
 ## Multi-Drive Support
 
@@ -109,6 +123,9 @@ Supports multiple simultaneous drives and tape+disk coexistence.
 - `loadDisk(data, type, driveIndex = 0)` -- loads into specific drive
 - `ejectDisk(driveIndex)` / `hasDisk(driveIndex)` / `hasAnyDisk()` -- per-drive queries
 - `createBlankDisk(label, driveIndex = 0)` -- creates blank disk in specific drive
+- `sclToTrd(sclData)` / `trdToScl(trdData)` -- SCL↔TRD conversion. SCL disks are converted to TRD on insert; Save → TRD/SCL (toolbar) downloads the disk in the drive selected under Settings → Disk, converting back to SCL for disks loaded from `.scl`. `trdToScl` skips deleted directory entries (first byte 0x01 — TR-DOS erase corrupts the name's first character) and stops at the end marker (0x00); output includes the trailing 4-byte SCL checksum (32-bit LE sum)
+- Write Sector completion clears DRQ along with BUSY in the WD1793 status — TR-DOS validates the final status with `AND 7Fh`, so a leftover DRQ reads as a failed write ("Disc error")
+- Blank/converted disks stamp 2544 free sectors in the info sector (2560 total − 16 for the directory track)
 - **Instant-completion model**: Sector data is loaded into a buffer immediately when a Read/Write Sector command is issued. Bytes are transferred one at a time via port $7F reads/writes. No timing simulation.
 - **Lost Data simulation**: On real WD1793, data bytes arrive at disk rotation speed. If the CPU polls the system register ($FF) without reading port $7F, bytes are "lost" and INTRQ fires after all bytes pass. Tracked via `_sysReadsSinceData` counter -- after 2+ consecutive $FF reads without a $7F read, the sector auto-completes. Counter resets on port $7F reads and on new commands. This handles TR-DOS routines that issue Read Sector and only poll for INTRQ.
 - **Read Address ($C0)**: Returns physical head position (`headTrack`), not the track register value
@@ -127,7 +144,8 @@ Supports multiple simultaneous drives and tape+disk coexistence.
 - Instant-completion model: Each port $E7 access reads/writes one byte at headPos and advances
 
 **Tape + Disk coexistence (`spectrum.js`):**
-- `this.loadedTape` -- tape state (independent of disks)
+- `this.loadedTapes[0..1]` -- 2-slot tape state (independent of disks)
+- `this.activeTapeSlot` -- currently active tape slot (0 or 1)
 - `this.loadedBetaDisks[0..3]` -- per-drive Beta Disk state `{ data, name }`
 - `this.loadedFDCDisks[0..1]` -- per-drive FDC state `{ data, name }`
 - `this.loadedBetaDiskFiles[0..3]` -- per-drive Beta Disk file listings for catalog display
@@ -136,7 +154,7 @@ Supports multiple simultaneous drives and tape+disk coexistence.
 - Loading tape no longer ejects disk and vice versa
 - `this.loadedOpusDisks[0..1]` -- per-drive Opus Discovery state `{ data, name }`
 - `this.loadedOpusDiskFiles[0..1]` -- per-drive Opus Discovery file listings for catalog display
-- `getLoadedMedia()` returns structured `{ tape, betaDisks, fdcDisks, plusDDisks, opusDisks, tapeBlock }`
+- `getLoadedMedia()` returns structured `{ tape, tapes, activeTapeSlot, tapeSlotStates, tapeRecordings, betaDisks, fdcDisks, plusDDisks, opusDisks, tapeBlock }`
 - `setLoadedMedia(media)` handles both new multi-drive format and legacy single-media format
 - `clearTape()` / `clearDisk(driveIndex, type)` -- selective clearing (`type`: `'fdc'`, `'beta'`, `'plusd'`, or `'opus'`)
 - `loadFile(file, driveIndex)` / `loadDiskImage(..., driveIndex)` / `loadDSKImage(..., driveIndex)` -- drive parameter
@@ -153,5 +171,102 @@ Supports multiple simultaneous drives and tape+disk coexistence.
 
 **Project save/load (`index.html`):**
 - `mediaVersion: 2` format saves tape + per-drive Beta Disk + per-drive FDC disk + per-drive +D disk + per-drive Opus disk
-- Backward compatible: loads old single-media format (`project.media.data`) via legacy path in `setLoadedMedia()`
+- Multi-tape state (`tapes`, `activeTapeSlot`, `tapeSlotStates`, `tapeRecordings`) saved alongside legacy `tape` field
+- Backward compatible: loads old single-media format (`project.media.data`) via legacy path in `setLoadedMedia()`; single `media.tape` migrated to `loadedTapes[0]`
 - Auto-load only triggers when loading into drive A (index 0)
+
+## Multi-Tape Support
+
+2 tape slots for multi-tape games. Controlled via slot tabs (1/2) in Media Catalog bar.
+
+**Data structures (`spectrum.js`):**
+- `this.loadedTapes[0..1]` -- per-slot `{ type, data, name }` (same format as old `loadedTape`)
+- `this.activeTapeSlot` -- 0 or 1
+- `this.tapeSlotStates[0..1]` -- per-slot `{ loaderBlock, playerBlock }` preserving tape position
+- `this.tapeRecordings[0..1]` -- per-slot arrays of saved TAP block Uint8Arrays
+
+**Slot switching (`setActiveTapeSlot(slot)`):**
+1. Stops tape playback
+2. Saves current position (tapeLoader block + tapePlayer block) to `tapeSlotStates[currentSlot]`
+3. Sets `activeTapeSlot = slot`
+4. Reloads tape data into tapeLoader/tapePlayer/tapeTrap from `loadedTapes[slot]`
+5. Restores position from `tapeSlotStates[slot]` if available
+
+**Limitations:**
+- Phase within a block is lost on slot switch (restarts from block start)
+- Recording buffers survive slot switches (each slot has independent recordings)
+
+**UI (`media-catalog.js`):**
+- Slot tabs appear in media catalog bar when any tape is loaded
+- Active slot tab highlighted; empty slots shown at 40% opacity
+- Switching slot rebuilds tape catalog, updates position display, updates recording status
+
+## Tape SAVE
+
+Traps the ROM `SA_BYTES` routine at 0x04C2 to capture SAVE data and build TAP blocks for export.
+
+**TapeSaveTrapHandler (`core/loaders.js`):**
+- Checks PC=0x04C2, correct ROM bank (BASIC ROM via `profile.basicRomBank`), TR-DOS not active
+- Reads flag from A register (0x00=header, 0xFF=data), start from IX, length from DE
+- Reads data bytes from memory, computes XOR checksum (flag + all data)
+- Builds TAP block: `[length_lo][length_hi][flag][data...][checksum]`
+- Calls `onBlockSaved(tapBlock, flag)` callback
+- Simulates register state as if SA_BYTES ran to completion: IX advanced past data, DE set to 0xFFFF (counter underflow after parity byte), carry set for success
+- Pops return address from stack and jumps to it (same as load trap) — works for both CALL SA_BYTES (header) and JP SA_BYTES (data) entry patterns
+
+**Integration (`spectrum.js`):**
+- `this.tapeSaveTrap` created in constructor, enabled alongside tape traps
+- Default `onBlockSaved` appends to `this.tapeRecordings[activeTapeSlot]`
+- Checked in both fast and debug execution loops (after load trap, before TR-DOS trap)
+- Override callback in `index.html` adds UI feedback (recording count, status message)
+
+**Recording export:**
+- `getTapeRecording(slot)` -- returns `{ data: Uint8Array, ext: 'tap'|'tzx' }` or null
+  - TAP format when only ROM-trapped blocks exist (pure standard saves)
+  - TZX format when MIC-recorded blocks are present (combines both sources via `buildTZX()`)
+- `clearTapeRecording(slot)` -- clears both TAP and MIC recording buffers for slot
+- `getTapeRecordingBlockCount(slot)` -- returns total saved blocks (ROM trap + MIC)
+
+**UI (`media-catalog.js`):**
+- Actions row appears below tape catalog: "Eject", recording count, "Export", "Clear Rec"
+- "Eject" visible when tape present in active slot; "Export"/"Clear Rec" visible when recordings exist
+- "Export" downloads recording as TAP or TZX depending on content
+- "Clear Rec" clears recording buffer and removes block listing for active slot
+- Status message shown on each saved block ("Saved Header block (19 bytes)", etc.)
+- Tape tab auto-appears when first recording is captured, even without a loaded tape
+- "Blank Tape" button inserts an empty tape into the active slot — shows tape catalog with "blank tape" and hint "Recording is automatic — just press any key when prompted"
+- "Load Tape..." button opens a file picker (TAP/TZX/WAV/ZIP) and inserts the selected tape into the active slot without resetting the machine or triggering auto-load — useful for tape copiers, multi-tape games, and mid-session tape swaps. ZIP files are filtered to tape types only; single-tape ZIPs load directly, multi-tape ZIPs show a selection dialog.
+- "Load Disk..." button (on Disk tab) opens a file picker (TRD/SCL/DSK/MGT/IMG/MDR/OPD/ZIP) and inserts the disk image into the selected drive without resetting the machine or triggering auto-load/boot. Supports all disk systems: Beta Disk (TRD/SCL), +3 FDC (DSK), +D/DISCiPLE (MGT/IMG), Interface 1 Microdrive (MDR), Opus Discovery (OPD). ZIP files are filtered to disk types only. Machine compatibility is validated — error messages guide the user if the required interface is not enabled.
+- Recorded blocks listed in catalog for blank tapes (header/data descriptions parsed from TAP blocks, MIC blocks shown with pulse count)
+
+## MIC Recording
+
+Captures custom save routines that bypass the ROM by writing directly to port 0xFE bit 3 (MIC output). Records pulse timings and exports as TZX Direct Recording blocks.
+
+**MicRecorder (`core/loaders.js`):**
+- Monitors port 0xFE bit 3 (MIC) transitions via `writeMic(micBit, cpuTStates)`
+- Records pulse durations (T-states between level changes) into `currentPulses[]`
+- Auto-detects block boundaries via silence detection: 50 frames (~1s) without a MIC transition finalizes the current block
+- Minimum pulse threshold (100 pulses) filters out noise/beeper writes
+- `onFrameEnd(cpuTStates)` called every frame to track silence duration
+- `onBlockRecorded(block)` callback fires when a block is finalized
+- Each block stores `{ pulses: number[], initialLevel: 0|1 }`
+
+**Pulse-to-TZX conversion (`core/loaders.js`):**
+- `pulsesToDirectRecording(block)` converts pulse arrays to TZX block 0x15 (Direct Recording)
+- Sample rate: 79 T-states per sample (~44.3 kHz at 3.5 MHz)
+- Pulse durations converted to sample counts, packed into bitstream
+- Initial level set from `block.initialLevel`
+
+**`buildTZX(tapBlocks, micBlocks)` (`core/loaders.js`):**
+- Combines ROM-trapped TAP blocks (as TZX block 0x10, Standard Speed Data) and MIC pulse blocks (as TZX block 0x15, Direct Recording) into a single valid TZX file
+- Header: `ZXTape!\x1A` + version 1.20
+
+**Integration (`spectrum.js`):**
+- `this.micRecorder` created in constructor with `tstatesPerFrame` from machine timing
+- `this.micRecordings[0..1]` -- per-slot arrays of recorded MIC blocks
+- Port 0xFE writes feed `micRecorder.writeMic((val >> 3) & 1, cpuTStates)`
+- Frame end calls `micRecorder.onFrameEnd(cpuTStates)` in both normal and headless loops
+- Default `onBlockRecorded` appends to `micRecordings[activeTapeSlot]`
+- Override callback in `index.html` adds UI feedback ("MIC: Recorded block (N pulses)")
+- `micRecorder.reset()` called on machine type change; `setTstatesPerFrame()` updates timing

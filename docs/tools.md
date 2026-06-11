@@ -1,6 +1,6 @@
 # Tools: Explorer, Game Mapper, POKEs, Profiler, Hotspot, Code Path, Struct Mapper, Auto-Map, Signature Packs, Memory Map
 
-## Explorer (Tools -> Explorer)
+## Explorer (Utils -> Explorer)
 
 File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, MGT, IMG, DSK, OPD, MDR, ZIP, and raw graphics files.
 
@@ -45,6 +45,8 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
 - Each panel displays format-specific file/block lists with selection (click, Ctrl+click multi-select, Shift+click range select)
 - Toolbar: New (format dropdown), Save, Move Up/Down, Delete, Extract (bin/Hobeta dropdown), Copy (to other panel), Add File
 - **Editable containers** (TAP/TZX/TRD/SCL/MGT/MDR/DSK/OPD): add, remove, reorder, rename files; inline edit via double-click; save produces a new file
+- **TR-DOS BASIC conventions** (cross-format copy to/from TRD/SCL): directory entry bytes 9-10 = program+variables length, bytes 11-12 = variables offset (NOT a start address — writing one there makes TR-DOS load an empty program); file data carries the in-band autostart trailer `0x80 0xAA line_lo line_hi` after the program+vars (line ≥ 32768 = no autostart). Copies map TAP header param1 (autostart) ↔ trailer and param2 (vars offset) ↔ bytes 11-12 in both directions
+- **BASIC vars offset across systems**: the "program length without variables" value flows through all cross-format copies — TRD/SCL dir bytes 11-12, MGT dir bytes 216-217 (PROG field defaults to 23755), MDR Spectrum-header bytes 5-6, OPD header param2 (`progLength` from `OPDLoader.listFiles`), +3DOS header bytes 20-21, TOS basLen. +3DOS CODE headers: bytes 16-17 = length, 18-19 = load address (per spec; matches the parser in `fdc.js`)
 - **ZIP containers**: transparent unwrap — single supported file auto-loads, multiple shows a picker dialog
 - **Snapshot containers** (SNA/Z80/SZX): virtual file list showing extractable entries:
   - BASIC program (if PROG < VARS and PROG >= $4000, extracted from snapshot memory via system variables at $5C53/$5C4B)
@@ -84,7 +86,7 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
 - DSK editor TOS support: `dskEditorAddFile()` creates TOS headers instead of +3DOS when writing to TOS disks, applies sector skew via `_logicalToSectorId()`, and writes TOS-format directory entries (part/tail/sizeHi/sizeLo)
 - ZIP handling: Single supported file auto-drills on open. Supported formats for drill-in: TAP, TZX, SNA, Z80, TRD, SCL, MGT, IMG, MDR, OPD, OPU, DSK, RZX. ZIPs containing no supported files show a yellow warning with the unsupported extension names. Clickable entries highlighted; unsupported entries dimmed (opacity 0.5)
 
-## Game Mapper (Tools -> Mapper)
+## Game Mapper (Utils -> Mapper)
 
 Screen capture and room stitching tool for building navigable game maps. Captures game screen regions, arranges them on a 2D grid with floor layers, supports blending, save/load as JSON, and PNG export.
 
@@ -176,7 +178,7 @@ Manages named pokes (multi-address byte patches) and memory value editors. Locat
 
 ## POKE Search
 
-Snap-based memory scanner for finding game variables (lives, score, etc.). Located in Tools -> Search panel.
+Snap-based memory scanner for finding game variables (lives, score, etc.). Located in the debug Search tab.
 
 **Architecture (`index.html`):**
 - `pokeSnapshots[]` -- array of full 64K `Uint8Array` snapshots, one per Snap click
@@ -204,7 +206,7 @@ Snap-based memory scanner for finding game variables (lives, score, etc.). Locat
 
 ## Runtime Behavior Profiler
 
-Auto-label subroutines by running the emulator and observing per-subroutine behavior. Located in Tools -> Analysis -> Profile row.
+Auto-label subroutines by running the emulator and observing per-subroutine behavior. Located in the debug Analysis tab -> Profile row.
 
 **UI**: Run button, frame count input (10-5000, default 200), Stop button, Graph button, Clear button, status span. Progress shown during profiling. Clear removes all profiler-generated labels (`source: 'profiler'`), the IM 2 vector table region, and resets the results display.
 
@@ -270,7 +272,7 @@ Profiler enhancement that tracks per-PC T-state consumption during profiling to 
 
 ## Code Path Tool
 
-Record and diff executed code paths to isolate event-specific handlers (collision, damage per monster type). Located in Tools tab -> "code path" card.
+Record and diff executed code paths to isolate event-specific handlers (collision, damage per monster type). Located in the debug Code Path tab.
 
 **Architecture** (`core/spectrum.js` + `ui/codepath.js`):
 - `spectrum.codePath` state: `{ enabled, executed, tracing, baselineSet, traceHit, traceAddr }` -- `executed` is a `Set<string>` of autoMapKeys during recording; `tracing`/`baselineSet` for trace-break mode
@@ -308,7 +310,7 @@ Record and diff executed code paths to isolate event-specific handlers (collisio
 
 ## Struct Mapper
 
-Monitor reads/writes at offsets from a base register (IX/IY) or fixed address to reverse-engineer data structures. Located in Tools -> Trace -> "Struct Mapper" card.
+Monitor reads/writes at offsets from a base register (IX/IY) or fixed address to reverse-engineer data structures. Located in the debug Struct tab.
 
 **Architecture** (`core/spectrum.js` + `ui/struct-mapper.js`):
 - `spectrum.structMapper` state: `{ enabled, baseAddr, baseReg, maxOffset, fields }` -- `fields` is a `Map<offset, { reads: Map<pc,count>, writes: Map<pc,count> }>`
@@ -325,7 +327,7 @@ Monitor reads/writes at offsets from a base register (IX/IY) or fixed address to
 
 ## Auto-Map Tracking
 
-Runtime execution tracking that records every executed, read, and written address. Located in Tools -> Analysis -> "Auto-map" checkbox.
+Runtime execution tracking that records every executed, read, and written address. Located in the debug Analysis tab -> "Auto-Map" row.
 
 **Architecture** (`core/spectrum.js` + `ui/analysis-tools.js`):
 - `spectrum.autoMap` state: `{ enabled, executed: Map, read: Map, written: Map, currentFetchAddrs: Set }`
@@ -428,7 +430,7 @@ Visual 512x512 bitmap of the 64KB address space. Two view modes (Regions / Heatm
 - Proportional bar
 - Address info box (hover details: address, value, type/counts, label)
 - Title ("Memory Map (64KB)")
-- Export ASM button + Addr+Bytes checkbox
+- Export ASM button + Addr+Bytes and Dedup loops checkboxes — placed below the map canvas, not in the sidebar (Dedup loops moved here from Utils → Export; detects unrolled loops and emits REPT blocks)
 
 **Scale bar** (`.memmap-scale`): Shows ROM bank and current RAM bank labels below the canvas. Hidden in 128K bank view.
 
@@ -451,3 +453,78 @@ Visual 512x512 bitmap of the 64KB address space. Two view modes (Regions / Heatm
 - Sorted by length descending
 - TSV format: `Start\tEnd\tLength\tPage` with `$XXXX` hex addresses; Page column empty for fixed memory, bank number for paged ranges
 - Downloads as `free-addresses.txt`
+
+## BASIC Copy/Paste (debug BASIC tab)
+
+Copy and Paste buttons for ZX Spectrum BASIC programs, plus an Explorer Copy button.
+
+### Architecture
+
+**Shared module** (`core/basic-tokens.js`):
+- `BASIC_TOKENS` — token table (0xA3–0xFF): `[keyword, spaceBefore, spaceAfter]`
+- `CONTROL_CODES` — control code table (0x10–0x17)
+- `parseFloat5(bytes)` — decode Sinclair 5-byte FP → JS number
+- `encodeFloat5(n)` — encode JS number → 5-byte FP (integer shortform for -65535..65535, full mantissa/exponent otherwise)
+- `decodeBasicProgram(data, options)` — Uint8Array → `[{ number, text, tokens, obfuscations }]`. `options.deobfuscate` (default `true`): when true, replaces obfuscated ASCII digits with `{{real_value}}`; when false, keeps original ASCII
+- `buildTokenLookup()` — reverse lookup sorted longest-first, with `GOTO`/`GOSUB` alternate spellings
+- `tokenizeLine(text, lookup)` — single line text → tokenized bytes with 0x0D terminator. Handles REM (literal after token), quoted strings (literal), keyword matching (longest-first, boundary-checked), numbers (ASCII digits + 0x0E + FP encoding)
+- `parseBasicText(text)` — multi-line text → `[{ number, text }]`, sorted by line number (1–9999)
+- `buildBasicProgram(lines, lookup)` — parsed lines → complete binary (line headers + tokenized content)
+
+**UI module** (`ui/basic-editor.js`): init-function pattern with DI (`getSpectrum`, `readMemory`, `writePoke`, `isRunning`, `stopEmulator`, `showMessage`, `updateDebugger`).
+
+**Explorer integration** (`ui/explorer.js`): caches raw BASIC data (`explorerBasicRawData`) for re-decoding with different options on copy.
+
+### Copy Flow (BASIC tab)
+
+1. Reads `PROG` (0x5C53) and `VARS` (0x5C4B) system variables
+2. Validates PROG ≥ 0x4000 and VARS > PROG
+3. Reads bytes from PROG to VARS
+4. Calls `decodeBasicProgram(data, { deobfuscate })` — deobfuscate depends on "As listed" checkbox
+5. Strips `{{`/`}}` markers, formats as `"10 PRINT \"HELLO\"\n20 GOTO 10"`
+6. Writes to clipboard via `navigator.clipboard.writeText()`
+
+### Paste Flow (BASIC tab)
+
+1. Opens paste dialog (pre-fills from clipboard if available)
+2. User pastes/types BASIC text, clicks Confirm
+3. `parseBasicText()` validates line numbers (1–9999), sorts by number
+4. Auto-pauses emulator if running
+5. `buildBasicProgram()` produces binary
+6. Checks size fits: `PROG + totalSize < RAMTOP` (0x5CB2)
+7. Writes binary to memory at PROG via `writePoke()`
+8. Updates system variables:
+   - `VARS` (0x5C4B) = PROG + programLen
+   - `E_LINE` (0x5C59) = VARS + 1 (after 0x80 end-of-vars marker)
+   - `CH_ADD` (0x5C5B) = E_LINE
+   - `WORKSP` (0x5C61) = E_LINE + 2 (after 0x0D + 0x80 edit line)
+   - `STKBOT` (0x5C63) = WORKSP
+   - `STKEND` (0x5C65) = WORKSP
+9. Writes end markers: 0x80 at VARS, 0x0D + 0x80 at E_LINE
+
+### Explorer Copy (Explorer -> BASIC tab)
+
+Copy button next to the Decode button. Re-decodes cached `explorerBasicRawData` with chosen deobfuscation mode and copies formatted text to clipboard.
+
+### "As listed" Option
+
+Both the BASIC tab and Explorer have an "As listed" checkbox:
+- **Unchecked** (default): deobfuscated — obfuscated numbers replaced with real FP values
+- **Checked**: as listed — shows original ASCII digits as the Spectrum's `LIST` would display them
+
+### Line Binary Format
+
+```
+[lineNum_hi] [lineNum_lo] [contentLen_lo] [contentLen_hi] [tokenized content...] [0x0D]
+```
+
+### Tokenizer Strategy
+
+1. Build reverse lookup: keyword text (uppercase) → token byte, sorted longest-first
+2. For each line, scan left-to-right:
+   - After REM token: everything is literal bytes
+   - Inside quotes: literal bytes
+   - Keyword match: uppercase remaining text, try each keyword longest-first, require non-alpha boundary before and after match
+   - Number: write ASCII digits, then append 0x0E + `encodeFloat5(parsedValue)`
+   - Other chars (0x20–0x7F): write directly
+3. Append 0x0D terminator

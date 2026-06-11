@@ -20,53 +20,39 @@ const TRD_LABEL_OFFSET       = 0xF5;
 const TRD_LABEL_LENGTH       = 8;
 const TRD_MIN_IMAGE_SIZE     = 0x8E7;
 
-export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector, openInExplorer }) {
+export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector, openInExplorer, downloadFile }) {
     const chkFlashLoad = document.getElementById('chkFlashLoad');
     const tapeLoadModeEl = document.getElementById('tapeLoadMode');
     const tapePositionEl = document.getElementById('tapePosition');
     const tapeProgressEl = document.getElementById('tapeProgress');
     const tapeCatalogEl = document.getElementById('tapeCatalog');
     const diskCatalogEl = document.getElementById('diskCatalog');
-    const mediaCatalogContainer = document.getElementById('mediaCatalogContainer');
-    const mediaCatalogTapeBtn = document.getElementById('mediaCatalogTapeBtn');
-    const mediaCatalogDiskBtn = document.getElementById('mediaCatalogDiskBtn');
+    const tapeCatalogBarEl = document.getElementById('tapeCatalogBar');
+    const diskCatalogBarEl = document.getElementById('diskCatalogBar');
+    const tapeActionsRowEl = document.getElementById('tapeActionsRow');
 
     // Track which drive + controller is displayed in the disk catalog
     let diskCatalogDrive = 0;
     let diskCatalogController = null;  // 'fdc'|'beta'|null
 
-    function selectCatalogTab(which) {
-        const isTape = which === 'tape';
-        mediaCatalogTapeBtn.classList.toggle('active', isTape);
-        mediaCatalogDiskBtn.classList.toggle('active', !isTape);
-        tapeCatalogEl.style.display = isTape ? 'block' : 'none';
-        diskCatalogEl.style.display = !isTape ? 'block' : 'none';
-    }
-
-    function updateCatalogTabs(activate) {
+    function updateCatalogTabs() {
         const spectrum = getSpectrum();
-        const hasTape = tapeCatalogEl.children.length > 0;
+        const hasRecordings = spectrum.getTapeRecordingBlockCount() > 0;
+        const hasTape = tapeCatalogEl.children.length > 0 ||
+            (spectrum.loadedTapes && spectrum.loadedTapes.some(t => t !== null)) ||
+            hasRecordings;
         const hasDisk = diskCatalogEl.children.length > 0 ||
             (spectrum.loadedBetaDiskFiles && spectrum.loadedBetaDiskFiles.some(f => f && f.length > 0)) ||
             (spectrum.loadedFDCDiskFiles && spectrum.loadedFDCDiskFiles.some(f => f && f.length > 0)) ||
             (spectrum.loadedPlusDDiskFiles && spectrum.loadedPlusDDiskFiles.some(f => f && f.length > 0)) ||
             (spectrum.loadedIF1CartridgeFiles && spectrum.loadedIF1CartridgeFiles.some(f => f && f.length > 0)) ||
             [0, 1, 2, 3].some(i => hasDiskInDrive(i));
-        mediaCatalogTapeBtn.style.display = hasTape ? '' : 'none';
-        mediaCatalogDiskBtn.style.display = hasDisk ? '' : 'none';
-        if (!hasTape && !hasDisk) {
-            mediaCatalogContainer.style.display = 'none';
-            return;
-        }
-        mediaCatalogContainer.style.display = 'block';
-        if (activate === 'tape' && hasTape) selectCatalogTab('tape');
-        else if (activate === 'disk' && hasDisk) selectCatalogTab('disk');
-        else if (hasTape && !hasDisk) selectCatalogTab('tape');
-        else if (hasDisk && !hasTape) selectCatalogTab('disk');
+        // Tape catalog: show/hide
+        tapeCatalogEl.style.display = hasTape ? 'block' : 'none';
+        updateTapeActionsRow();
+        // Disk catalog: show/hide
+        diskCatalogEl.style.display = hasDisk ? 'block' : 'none';
     }
-
-    mediaCatalogTapeBtn.addEventListener('click', () => selectCatalogTab('tape'));
-    mediaCatalogDiskBtn.addEventListener('click', () => selectCatalogTab('disk'));
 
     // Drive sub-tab click handlers
     document.getElementById('diskDriveTabs').addEventListener('click', (e) => {
@@ -105,12 +91,80 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         return `${num}  ${prefix} Data (${size} bytes)`;
     }
 
+    function describeRecordedTapBlock(tapBlock, index) {
+        // TAP block format: [len_lo][len_hi][flag][data...][checksum]
+        const num = String(index + 1).padStart(2, ' ');
+        if (!tapBlock || tapBlock.length < 4) return `${num}  ? (${tapBlock ? tapBlock.length : 0} bytes)`;
+        const flag = tapBlock[2];
+        const dataLen = tapBlock.length - 4; // minus len(2) + flag(1) + checksum(1)
+        if (flag === 0x00 && dataLen >= 17 && dataLen <= 17) {
+            // Standard header: type, name(10), len, param1, param2
+            const hdrType = tapBlock[3];
+            let name = '';
+            for (let i = 4; i < 14; i++) name += String.fromCharCode(tapBlock[i] & 0x7f);
+            name = name.trimEnd();
+            if (hdrType === TAPE_HDR_TYPE_PROGRAM) return `${num}  Header: Program "${name}"`;
+            if (hdrType === TAPE_HDR_TYPE_BYTES) return `${num}  Header: Bytes "${name}"`;
+            if (hdrType === TAPE_HDR_TYPE_NUM_ARR) return `${num}  Header: Num Array "${name}"`;
+            if (hdrType === TAPE_HDR_TYPE_CHR_ARR) return `${num}  Header: Char Array "${name}"`;
+            return `${num}  Header: "${name}"`;
+        }
+        return `${num}  Data (${dataLen} bytes)`;
+    }
+
     function buildTapeCatalog() {
         const spectrum = getSpectrum();
         const blocks = spectrum.tapePlayer.blocks;
         tapeCatalogEl.innerHTML = '';
         if (!blocks || blocks.length === 0) {
-            updateCatalogTabs(null);
+            // Keep catalog visible if another slot has a tape or recordings exist
+            const anyTape = spectrum.loadedTapes && spectrum.loadedTapes.some(t => t !== null);
+            const hasRecordings = spectrum.getTapeRecordingBlockCount() > 0;
+            if (anyTape || hasRecordings) {
+                const slot = spectrum.getActiveTapeSlot();
+                const currentTape = spectrum.loadedTapes && spectrum.loadedTapes[slot];
+                const isBlank = currentTape && currentTape.type === 'blank';
+                const row = document.createElement('div');
+                row.style.cssText = 'padding: 4px 6px; color: var(--text-dim); font-style: italic;';
+                if (isBlank) {
+                    row.textContent = `Slot ${slot + 1} \u2014 blank tape`;
+                    tapeCatalogEl.appendChild(row);
+                    // List recorded blocks if any
+                    const tapBlocks = spectrum.tapeRecordings[slot];
+                    const micBlocks = spectrum.micRecordings[slot];
+                    if ((tapBlocks && tapBlocks.length > 0) || (micBlocks && micBlocks.length > 0)) {
+                        let idx = 0;
+                        if (tapBlocks) {
+                            for (const blk of tapBlocks) {
+                                const r = document.createElement('div');
+                                r.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan);';
+                                r.textContent = describeRecordedTapBlock(blk, idx++);
+                                tapeCatalogEl.appendChild(r);
+                            }
+                        }
+                        if (micBlocks) {
+                            for (const blk of micBlocks) {
+                                const r = document.createElement('div');
+                                r.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan);';
+                                r.textContent = `${String(++idx).padStart(2, ' ')}  MIC Recording (${blk.pulses.length} pulses)`;
+                                tapeCatalogEl.appendChild(r);
+                            }
+                        }
+                    } else {
+                        const hint = document.createElement('div');
+                        hint.style.cssText = 'padding: 2px 6px; color: var(--text-dim); font-size: 10px;';
+                        hint.textContent = 'Recording is automatic \u2014 just press any key when prompted';
+                        tapeCatalogEl.appendChild(hint);
+                    }
+                    updateCatalogTabs();
+                    return;
+                }
+                row.textContent = `Slot ${slot + 1} \u2014 no tape loaded`;
+                tapeCatalogEl.appendChild(row);
+                updateCatalogTabs();
+            } else {
+                updateCatalogTabs();
+            }
             return;
         }
         for (let i = 0; i < blocks.length; i++) {
@@ -126,7 +180,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             });
             if (openInExplorer) {
                 row.addEventListener('dblclick', () => {
-                    const tape = getSpectrum().loadedTape;
+                    const sp = getSpectrum();
+                    const tape = sp.loadedTapes[sp.getActiveTapeSlot()];
                     if (tape && tape.data) {
                         openInExplorer(tape.data, tape.name || ('tape.' + (tape.type || 'tap')));
                     }
@@ -136,7 +191,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             tapeCatalogEl.appendChild(row);
         }
         updateTapeCatalogHighlight();
-        updateCatalogTabs('tape');
+        updateCatalogTabs();
     }
 
     function updateTapeCatalogHighlight() {
@@ -320,7 +375,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 if (hasDiskInDrive(i)) { anyDisk = true; break; }
             }
             updateDiskDriveTabs();
-            updateCatalogTabs(anyDisk ? 'disk' : null);
+            updateCatalogTabs();
             return;
         }
 
@@ -338,7 +393,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         }
 
         updateDiskDriveTabs();
-        updateCatalogTabs('disk');
+        updateCatalogTabs();
     }
 
     function clearDiskCatalog(driveIndex) {
@@ -361,7 +416,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             if (hasDiskInDrive(i)) { anyDisk = true; break; }
         }
         if (!anyDisk) {
-            updateCatalogTabs(null);
+            updateCatalogTabs();
         }
     }
 
@@ -434,13 +489,11 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             tabsEl.appendChild(btn);
         }
         tabsEl.style.display = tabs.length > 0 ? 'inline' : 'none';
+        if (diskCatalogBarEl) diskCatalogBarEl.style.display = tabs.length > 1 ? '' : 'none';
 
-        const drvSelEl = document.getElementById('driveSelector');
-        const hasBetaDisk = spectrum.betaDisk && spectrum.betaDisk.hasAnyDisk();
-        const hasFDCDisk = spectrum.fdc && spectrum.fdc.hasDisk();
-        const hasPlusDDisk = spectrum.plusD && spectrum.plusD.hasAnyDisk();
-        drvSelEl.style.display = (hasBetaDisk || hasFDCDisk || hasPlusDDisk) ? '' : 'none';
-        if (drvSelEl.style.display !== 'none') updateDriveSelector();
+        // Row visibility, system dropdown, drive options, and the Blank Disk
+        // button label are all owned by updateDriveSelector (file-loader.js)
+        updateDriveSelector();
     }
 
     function updateTapePosition() {
@@ -548,6 +601,120 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         }
     }, 200);
 
+    // --- Tape eject ---
+    const btnTapeEject = document.getElementById('btnTapeEject');
+    if (btnTapeEject) {
+        btnTapeEject.addEventListener('click', () => {
+            const spectrum = getSpectrum();
+            const slot = spectrum.getActiveTapeSlot();
+            if (!spectrum.loadedTapes[slot]) return;
+            spectrum.tapePlayer.stop();
+            spectrum.loadedTapes[slot] = null;
+            spectrum.tapeSlotStates[slot] = null;
+            spectrum.tapeRecordings[slot] = [];
+            spectrum.micRecordings[slot] = [];
+            spectrum.tapeLoader.blocks = [];
+            spectrum.tapeLoader.currentBlock = 0;
+            spectrum.tapePlayer.blocks = [];
+            spectrum.tapePlayer.currentBlock = 0;
+            spectrum.tapeTrap.setTape(null);
+            showMessage(`Tape ejected from slot ${slot + 1}`);
+            buildTapeCatalog();
+            updateTapeSlotTabs();
+            updateTapePosition();
+            updateRecordingStatus();
+        });
+    }
+
+    // --- Tape slot tabs ---
+    const tapeSlotTabsEl = document.getElementById('tapeSlotTabs');
+
+    if (tapeSlotTabsEl) {
+        tapeSlotTabsEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('.tape-slot-tab');
+            if (!btn) return;
+            const slot = parseInt(btn.dataset.slot, 10);
+            getSpectrum().setActiveTapeSlot(slot);
+            updateTapeSlotTabs();
+            buildTapeCatalog();
+            updateTapePosition();
+            updateRecordingStatus();
+        });
+    }
+
+    function updateTapeSlotTabs() {
+        const spectrum = getSpectrum();
+        const tapes = spectrum.loadedTapes;
+        const active = spectrum.getActiveTapeSlot();
+        // Show slot tabs bar when any tape loaded
+        const show = tapes && tapes.some(t => t !== null);
+        if (tapeCatalogBarEl) tapeCatalogBarEl.style.display = show ? '' : 'none';
+        if (!tapeSlotTabsEl) return;
+        const tabs = tapeSlotTabsEl.querySelectorAll('.tape-slot-tab');
+        tabs.forEach((tab, i) => {
+            tab.classList.toggle('active', i === active);
+            tab.style.opacity = tapes[i] ? '1' : '0.4';
+            tab.title = tapes[i] ? tapes[i].name : 'Empty slot ' + (i + 1);
+        });
+    }
+
+    // --- Recording UI ---
+    const btnTapeExport = document.getElementById('btnTapeExport');
+    const btnTapeClearRec = document.getElementById('btnTapeClearRec');
+    const tapeRecCountEl = document.getElementById('tapeRecordingCount');
+
+    function updateTapeActionsRow() {
+        if (!tapeActionsRowEl) return;
+        const sp = getSpectrum();
+        const slot = sp.getActiveTapeSlot();
+        const hasTape = sp.loadedTapes && sp.loadedTapes[slot] !== null;
+        const count = sp.getTapeRecordingBlockCount();
+        // Show row when tape present or recordings exist
+        tapeActionsRowEl.style.display = (hasTape || count > 0) ? 'flex' : 'none';
+        // Eject visible when tape present
+        if (btnTapeEject) btnTapeEject.style.display = hasTape ? '' : 'none';
+        // Export/Clear visible when recordings exist
+        if (btnTapeExport) btnTapeExport.style.display = count > 0 ? '' : 'none';
+        if (btnTapeClearRec) btnTapeClearRec.style.display = count > 0 ? '' : 'none';
+    }
+
+    function updateRecordingStatus() {
+        const sp = getSpectrum();
+        const count = sp.getTapeRecordingBlockCount();
+        if (tapeRecCountEl) tapeRecCountEl.textContent = count > 0 ? `${count} block${count !== 1 ? 's' : ''} recorded` : '';
+        // Update actions row visibility
+        updateTapeActionsRow();
+        // Rebuild catalog when recordings exist (to show new blocks for blank tapes etc.)
+        if (count > 0) {
+            const slot = sp.getActiveTapeSlot();
+            const currentTape = sp.loadedTapes && sp.loadedTapes[slot];
+            if (currentTape && currentTape.type === 'blank') {
+                buildTapeCatalog();
+            }
+        }
+    }
+
+    if (btnTapeExport) {
+        btnTapeExport.addEventListener('click', () => {
+            const sp = getSpectrum();
+            const rec = sp.getTapeRecording();
+            if (!rec) { showMessage('No recorded data'); return; }
+            const tape = sp.loadedTapes[sp.getActiveTapeSlot()];
+            const base = (tape && tape.name) ? tape.name.replace(/\.(tap|tzx|wav)$/i, '') : 'recorded';
+            if (downloadFile) downloadFile(base + '_saved.' + rec.ext, rec.data);
+            showMessage(`Exported ${sp.getTapeRecordingBlockCount()} blocks as ${rec.ext.toUpperCase()}`);
+        });
+    }
+
+    if (btnTapeClearRec) {
+        btnTapeClearRec.addEventListener('click', () => {
+            getSpectrum().clearTapeRecording();
+            showMessage('Recording cleared');
+            updateRecordingStatus();
+            buildTapeCatalog();
+        });
+    }
+
     return {
         buildTapeCatalog,
         buildDiskCatalog,
@@ -556,6 +723,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         updateCatalogTabs,
         hasDiskInDrive,
         updateDiskDriveTabs,
+        updateTapeSlotTabs,
+        updateRecordingStatus,
         destroy() { clearInterval(tapePositionInterval); }
     };
 }

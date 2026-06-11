@@ -1,7 +1,7 @@
 // Machine Selector — machine dropdown & settings checkboxes (init-function pattern, DI)
 import { storageGet, storageSet } from '../core/utils.js';
 
-export function initMachineSelector({ MACHINE_PROFILES, getMachineTypes, DEFAULT_VISIBLE_MACHINES }) {
+export function initMachineSelector({ MACHINE_PROFILES, getMachineTypes, DEFAULT_VISIBLE_MACHINES, getLoadRomForMachineById, getGetRomFileName }) {
     const machineSelect = document.getElementById('machineSelect');
 
     function getVisibleMachines() {
@@ -62,9 +62,12 @@ export function initMachineSelector({ MACHINE_PROFILES, getMachineTypes, DEFAULT
             groupDiv.appendChild(groupLabel);
 
             for (const p of machines) {
+                const row = document.createElement('div');
+                row.style.cssText = 'display: flex; align-items: center; margin-left: 8px; margin-bottom: 2px; gap: 6px;';
+
                 const label = document.createElement('label');
                 label.className = 'checkbox-label';
-                label.style.cssText = 'display: block; margin-left: 8px; margin-bottom: 2px;';
+                label.style.cssText = 'white-space: nowrap;';
                 const cb = document.createElement('input');
                 cb.type = 'checkbox';
                 cb.checked = visible.includes(p.id);
@@ -99,9 +102,55 @@ export function initMachineSelector({ MACHINE_PROFILES, getMachineTypes, DEFAULT
                 });
                 label.appendChild(cb);
                 label.appendChild(document.createTextNode(' ' + p.name));
-                groupDiv.appendChild(label);
+                row.appendChild(label);
+
+                // Load ROM button
+                const loadBtn = document.createElement('button');
+                loadBtn.className = 'control-btn';
+                loadBtn.textContent = 'Load ROM';
+                loadBtn.title = 'Load ROM file for ' + p.name + ' (' + (p.romSize / 1024) + 'KB)';
+                loadBtn.style.cssText = 'font-size: 10px; padding: 1px 5px;';
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.accept = '.rom,.bin';
+                fileInput.style.display = 'none';
+                loadBtn.addEventListener('click', () => fileInput.click());
+                fileInput.addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        file.arrayBuffer().then(data => {
+                            const loadRom = getLoadRomForMachineById();
+                            if (loadRom && loadRom(p.id, data, file.name)) {
+                                updateRomFileNames();
+                            }
+                        });
+                    }
+                    fileInput.value = '';
+                });
+                row.appendChild(loadBtn);
+                row.appendChild(fileInput);
+
+                // ROM filename display
+                const fnSpan = document.createElement('span');
+                fnSpan.style.cssText = 'color: var(--cyan); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+                fnSpan.dataset.romMachineId = p.id;
+                row.appendChild(fnSpan);
+
+                groupDiv.appendChild(row);
             }
             container.appendChild(groupDiv);
+        }
+    }
+
+    function updateRomFileNames() {
+        const getRomFileName = getGetRomFileName();
+        if (!getRomFileName) return;
+        const spans = document.querySelectorAll('[data-rom-machine-id]');
+        for (const span of spans) {
+            const machineId = span.dataset.romMachineId;
+            const name = getRomFileName(machineId);
+            span.textContent = name || '';
+            span.title = name || '';
         }
     }
 
@@ -109,5 +158,5 @@ export function initMachineSelector({ MACHINE_PROFILES, getMachineTypes, DEFAULT
     populateMachineDropdown();
     buildMachineCheckboxes();
 
-    return { populateMachineDropdown, getVisibleMachines };
+    return { populateMachineDropdown, getVisibleMachines, updateRomFileNames };
 }

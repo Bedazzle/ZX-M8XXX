@@ -7,8 +7,11 @@ export function initInputSettings({
     romData,
     showMessage,
     initGamepad,
-    initBootManager
+    initBootManager,
+    onDiskSystemsChanged
 }) {
+    // Notify the disk tab when an interface toggle changes the available systems
+    const notifyDiskSystems = () => { if (onDiskSystemsChanged) onDiskSystemsChanged(); };
     const canvas = getCanvas();
 
     // DOM elements
@@ -205,6 +208,7 @@ export function initInputSettings({
         }
         spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
+        notifyDiskSystems();
         showMessage(chkBetaDisk.checked ?
             'Beta Disk interface enabled' :
             'Beta Disk interface disabled');
@@ -258,6 +262,7 @@ export function initInputSettings({
         }
         spectrum.updateBetaDiskPagingFlag();
         updatePlusDStatus();
+        notifyDiskSystems();
         showMessage(chkPlusD.checked ?
             '+D interface enabled (MGT disks)' :
             '+D interface disabled');
@@ -279,6 +284,7 @@ export function initInputSettings({
             const spectrum = getSpectrum();
             spectrum.memory.loadPlusDRom(data);
             updatePlusDStatus();
+            notifyDiskSystems();
             showMessage('+D ROM loaded (' + data.length + ' bytes)');
         };
         reader.readAsArrayBuffer(file);
@@ -334,6 +340,7 @@ export function initInputSettings({
         }
         spectrum.updateBetaDiskPagingFlag();
         updateIF1Status();
+        notifyDiskSystems();
         showMessage(chkIF1.checked ?
             'Interface 1 enabled (Microdrive)' :
             'Interface 1 disabled');
@@ -355,6 +362,7 @@ export function initInputSettings({
             const spectrum = getSpectrum();
             spectrum.memory.loadIF1Rom(data);
             updateIF1Status();
+            notifyDiskSystems();
             showMessage('Interface 1 ROM loaded (' + data.length + ' bytes)');
         };
         reader.readAsArrayBuffer(file);

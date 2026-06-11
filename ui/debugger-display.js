@@ -33,6 +33,8 @@ export function initDebuggerDisplay({
     const regRItem = document.getElementById('regRItem');
     const pagesGroup = document.getElementById('pagesGroup');
     const pagesInfo = document.getElementById('pagesInfo');
+    const ayGroup = document.getElementById('ayGroup');
+    const ayRegsView = document.getElementById('ayRegsView');
     const disassemblyView = document.getElementById('disassemblyView');
     const chkFollowPC = document.getElementById('chkFollowPC');
     const chkFlowBreakSpacing = document.getElementById('chkFlowBreakSpacing');
@@ -145,6 +147,21 @@ export function initDebuggerDisplay({
                 (paging.pagingDisabled ? createRegisterItem('Lock', '1', canEdit ? 'paginglock' : null, 1) : '');
         } else {
             pagesGroup.style.display = 'none';
+        }
+
+        // AY registers (two columns: R0-R6 | R7-R13)
+        if (spectrum.ay && (spectrum.ayEnabled || spectrum.ay48kEnabled)) {
+            ayGroup.style.display = '';
+            const r = spectrum.ay.registers;
+            let text = '';
+            for (let i = 0; i < 7; i++) {
+                const j = i + 7;
+                const rn = j < 10 ? 'R' + j + ' ' : 'R' + j;
+                text += 'R' + i + ' ' + hex8(r[i]) + '  ' + rn + ' ' + hex8(r[j]) + '\n';
+            }
+            ayRegsView.textContent = text;
+        } else {
+            ayGroup.style.display = 'none';
         }
 
         // Disassembly view

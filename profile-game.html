@@ -67,6 +67,7 @@ canvas { display: none; }
 <script type="module">
 import { Spectrum } from './core/spectrum.js';
 import { Disassembler } from './core/disasm.js';
+import { hex16 } from './core/utils.js';
 
 // ── DOM elements ──
 const snapshotFileInput = document.getElementById('snapshotFile');
@@ -95,10 +96,6 @@ let rzxTotalFrames = 0;
 function log(msg) {
     logEl.textContent += msg + '\n';
     logEl.scrollTop = logEl.scrollHeight;
-}
-
-function hex16(n) {
-    return n.toString(16).toUpperCase().padStart(4, '0');
 }
 
 // ── Classification functions (from profiler-ui.js, pure logic) ──
@@ -359,6 +356,7 @@ snapshotFileInput.addEventListener('change', async (e) => {
     rzxTotalFrames = 0;
 
     const canvas = document.getElementById('screen');
+    if (spectrum) spectrum.destroy();
     spectrum = new Spectrum(canvas);
     await spectrum.loadRom('roms/48.rom');
 

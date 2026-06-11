@@ -646,7 +646,9 @@ export function initProjectIO({
                     spectrum.tapeAudioEnabled = project.settings.tapeAudioEnabled;
                 }
                 if (project.settings.autoLoad !== undefined) {
-                    document.getElementById('chkAutoLoad').checked = project.settings.autoLoad;
+                    const chkAutoLoad = document.getElementById('chkAutoLoad');
+                    chkAutoLoad.checked = project.settings.autoLoad;
+                    chkAutoLoad.dispatchEvent(new Event('change'));  // sync Disk tab mirror
                 }
                 if (project.settings.cfaSkipRom !== undefined) document.getElementById('chkCfaSkipRom').checked = project.settings.cfaSkipRom;
                 if (project.settings.cfaISR !== undefined) document.getElementById('chkCfaISR').checked = project.settings.cfaISR;
@@ -819,6 +821,8 @@ export function initProjectIO({
                     }
 
                     mediaCatalogAPI.buildTapeCatalog();
+                    mediaCatalogAPI.updateTapeSlotTabs();
+                    mediaCatalogAPI.updateRecordingStatus();
                 } catch (e) {
                     console.warn('Failed to restore media (v2):', e);
                 }
@@ -843,6 +847,8 @@ export function initProjectIO({
                     }
                     // Rebuild tape catalog
                     mediaCatalogAPI.buildTapeCatalog();
+                    mediaCatalogAPI.updateTapeSlotTabs();
+                    mediaCatalogAPI.updateRecordingStatus();
                 } catch (e) {
                     console.warn('Failed to restore media:', e);
                 }

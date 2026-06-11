@@ -34,5 +34,5 @@ export function initLayoutHelpers() {
                mn === 'HALT';
     }
 
-    return { isLandscapeMode, isDebuggerVisible, checkLandscapeMode, isFlowBreak };
+    return { isDebuggerVisible, isFlowBreak };
 }

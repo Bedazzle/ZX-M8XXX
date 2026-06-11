@@ -38,7 +38,7 @@ Instant state save/restore using browser localStorage.
 
 ## Binary Export/Import
 
-Export memory ranges to `.bin` files or import `.bin` files into memory. Located in Tools -> Export/Import tab, "Binary" section. Uses `memory.getBlock()`/`memory.setBlock()` which route through `read()`/`write()` per byte, so the current banking state (128K page, TR-DOS, +2A special paging, etc.) is automatically respected.
+Export memory ranges to `.bin` files or import `.bin` files into memory. Located in Utils -> Export/Import tab, "Binary" section. Uses `memory.getBlock()`/`memory.setBlock()` which route through `read()`/`write()` per byte, so the current banking state (128K page, TR-DOS, +2A special paging, etc.) is automatically respected.
 
 **Export**: Start address (hex) + Length (hex) + End address (hex). Start + Length and Start + End are mutually synced -- editing Length updates End and vice versa. Editing Start re-syncs the dependent field. End is clamped to never fall below Start. Downloads as `{baseName}_{startAddr}.bin` via `downloadFile()`.
 
@@ -46,7 +46,7 @@ Export memory ranges to `.bin` files or import `.bin` files into memory. Located
 
 **Validation**: End >= Start enforced on commit. Length clamped to minimum 1 and maximum `0x10000 - start`. Export also validates before download. Field sync uses `change` events (fires on blur/Enter) so the user can freely type without mid-edit reformatting.
 
-**Compare** (Tools -> Compare tab): "Memory vs Binary" mode compares a loaded binary file against current emulator memory at a specified start address. Uses `memory.read()` per byte so banking is respected. File is shown as "File A", emulator memory as "Memory". Truncates comparison if file would overflow past $FFFF (with warning).
+**Compare** (Utils -> Compare tab): "Memory vs Binary" mode compares a loaded binary file against current emulator memory at a specified start address. Uses `memory.read()` per byte so banking is respected. File is shown as "File A", emulator memory as "Memory". Truncates comparison if file would overflow past $FFFF (with warning).
 
 ## Screenshot Button
 

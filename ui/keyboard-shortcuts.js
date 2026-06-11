@@ -23,11 +23,13 @@ export function initKeyboardShortcuts({
     updateBookmarkButtons,
     showTraceEntry, updateTraceStatus, updateTraceList,
     setZoom, getCurrentZoom,
-    DISASM_LINES, BYTES_PER_LINE, MEMORY_LINES, LEFT_MEMORY_LINES
+    DISASM_LINES, MEMORY_LINES, LEFT_MEMORY_LINES,
+    getRightBytesPerLine, getLeftBytesPerLine
 }) {
     // DOM elements discovered internally
     const disasmAddressInput = document.getElementById('disasmAddress');
     const disasmBookmarksBar = document.getElementById('disasmBookmarks');
+
     const memoryBookmarksBar = document.getElementById('memoryBookmarks');
 
     // Track which panel the mouse is over for PgUp/PgDn dispatch
@@ -195,10 +197,10 @@ export function initKeyboardShortcuts({
             } else if (panelType === 'memdump') {
                 if (target === 'left') {
                     const lines = down ? LEFT_MEMORY_LINES : -LEFT_MEMORY_LINES;
-                    goToLeftMemoryAddress(getLeftMemoryViewAddress() + lines * BYTES_PER_LINE);
+                    goToLeftMemoryAddress(getLeftMemoryViewAddress() + lines * getLeftBytesPerLine());
                 } else {
                     const lines = down ? MEMORY_LINES : -MEMORY_LINES;
-                    goToMemoryAddress(getMemoryViewAddress() + lines * BYTES_PER_LINE);
+                    goToMemoryAddress(getMemoryViewAddress() + lines * getRightBytesPerLine());
                 }
             }
             return;
@@ -250,10 +252,11 @@ export function initKeyboardShortcuts({
                         if (addr !== null) goToRightDisasmAddress(addr + delta);
                     }
                 } else if (panelType === 'memdump') {
-                    const delta = down ? BYTES_PER_LINE : -BYTES_PER_LINE;
                     if (target === 'left') {
+                        const delta = down ? getLeftBytesPerLine() : -getLeftBytesPerLine();
                         goToLeftMemoryAddress(getLeftMemoryViewAddress() + delta);
                     } else {
+                        const delta = down ? getRightBytesPerLine() : -getRightBytesPerLine();
                         goToMemoryAddress(getMemoryViewAddress() + delta);
                     }
                 }
@@ -503,66 +506,22 @@ export function initKeyboardShortcuts({
             }
             return;
         }
-        // F7 - Step Into
+        // F7 - Step Into (delegate to button handler to avoid duplication)
         if (e.code === 'F7' || e.key === 'F7') {
             e.preventDefault();
-            if (!spectrum.romLoaded) return;
-            if (spectrum.isRunning()) {
-                spectrum.stop();
-                updateStatus();
-            }
-            traceManager.goToLive();
-            setTraceViewAddress(null);
-            spectrum.stepInto();
-            openDebuggerPanel();
-            updateDebugger();
-            updateStatus();
+            document.getElementById('btnStepInto')?.click();
             return;
         }
-        // F8 - Step Over
+        // F8 - Step Over (delegate to button handler to avoid duplication)
         if (e.code === 'F8' || e.key === 'F8') {
             e.preventDefault();
-            if (!spectrum.romLoaded) return;
-            if (spectrum.isRunning()) {
-                spectrum.stop();
-                updateStatus();
-            }
-            traceManager.goToLive();
-            setTraceViewAddress(null);
-            const limit = getStepOverLimit();
-            const result = spectrum.stepOver(limit);
-            if (result.skipped && !result.reached) {
-                const detail = result.isDJNZ ? ` (B=${spectrum.cpu.b})` : '';
-                showDisasmWarning(`T-state limit reached${detail}`);
-            }
-            openDebuggerPanel();
-            updateDebugger();
-            updateStatus();
+            document.getElementById('btnStepOver')?.click();
             return;
         }
-        // F4 - Run to Cursor
+        // F4 - Run to Cursor (delegate to button handler to avoid duplication)
         if (e.key === 'F4') {
             e.preventDefault();
-            if (!spectrum.romLoaded) return;
-            const runToTarget = getRunToTarget();
-            if (runToTarget === null) {
-                showMessage('Click a disassembly line first', 'error');
-                return;
-            }
-            if (spectrum.isRunning()) {
-                spectrum.stop();
-            }
-            traceManager.goToLive();
-            setTraceViewAddress(null);
-            const reached = spectrum.runToAddress(runToTarget);
-            if (reached) {
-                showMessage(`Reached ${hex16(runToTarget)}`);
-            } else {
-                showMessage('Target not reached', 'error');
-            }
-            openDebuggerPanel();
-            updateDebugger();
-            updateStatus();
+            document.getElementById('btnRunTo')?.click();
             return;
         }
         // F9 - Toggle Breakpoint at PC (skip when assembler tab is active — F9/Ctrl+F9 handled there)

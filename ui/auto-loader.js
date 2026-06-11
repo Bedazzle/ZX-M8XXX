@@ -14,6 +14,19 @@ export function initAutoLoader({ getSpectrum }) {
     let autoLoadTimers = [];
     let autoLoadActive = false;
 
+    // The Disk tab mirrors the Auto Load checkbox; keep both in sync.
+    // project-io dispatches 'change' on chkAutoLoad when restoring projects.
+    const chkAutoLoadDisk = document.getElementById('chkAutoLoadDisk');
+    if (chkAutoLoadDisk) {
+        chkAutoLoadDisk.checked = chkAutoLoad.checked;
+        chkAutoLoadDisk.addEventListener('change', () => {
+            chkAutoLoad.checked = chkAutoLoadDisk.checked;
+        });
+        chkAutoLoad.addEventListener('change', () => {
+            chkAutoLoadDisk.checked = chkAutoLoad.checked;
+        });
+    }
+
     function cancelAutoLoad() {
         const spectrum = getSpectrum();
         for (const id of autoLoadTimers) clearTimeout(id);

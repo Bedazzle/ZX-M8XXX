@@ -65,10 +65,24 @@ Shows real-time pass and line progress during assembly.
 - Assemble and Debug buttons disabled during assembly
 - Shared helpers: `prepareAssembly()` (VFS sync, defines), `processAssemblyResult()`, `processAssemblyError()` — used by both sync and async paths
 
-**Assembler options** (toolbar checkboxes, persisted to localStorage):
+**Assembler options** (⚙ gear popover in the toolbar, persisted to localStorage):
 - **Case insensitive** (`chkAsmCaseInsensitive`, key `zxm8_asmCaseInsensitive`) — when checked, all label names are lowercased during define/lookup so `PlayerHPMAX` and `PlayerHPMax` resolve to the same symbol. Implemented via `SymbolTable.caseInsensitive` flag applied in `getFullName()` before any prefix/module processing. Passed as `options.caseInsensitive` to all four assembly entry points.
 - **Unused labels** (`chkAsmUnusedLabels`) — show warnings for defined but unreferenced labels
 - **Show compiled** (`chkAsmShowCompiled`) — show hex dump of assembled output
+- **Export as ZIP** (`chkAsmExportZip`, key `zxm8_asmExportZip`) — force ZIP export for single files (multi-file projects always export as ZIP); moved here from Settings → Display
+- **Font** (`asmFontSize`, key `zxm8_asmFontSize`) — editor font size, also adjustable with Ctrl+Plus/Ctrl+Minus
+
+The popover (`btnAsmViewOpts` / `asmViewOptsPopover`) follows the same pattern as the disassembly view options gear: toggle on click, close on outside click. Element ids are unchanged, so all existing handlers and persistence work as before.
+
+**Output splitter**: a drag bar (`#asmOutputSplitter`, wired via `initSplitter()` in `ui/tab-system.js` with inverted drag — the bar sits above the pane) resizes the Output pane via `--asm-output-h` (default behavior: auto height up to 200px). Clamped 60–500px, key `zxm8_asmOutputHeight`, double-click resets.
+
+**Area height splitter**: a drag bar at the bottom of `.assembler-container` (`#asmHeightSplitter`) resizes the whole assembler area via `--asm-container-h` (default: `calc(100vh - 200px)` capped at 900px). Clamped 500–2000px, key `zxm8_asmContainerHeight`. Use it to grow editor and output together on tall monitors; the upper bar apportions the space between them.
+
+**Split editor pane** (◫ toolbar button, `btnAsmSplit`): a second editor pane (`asmEditor2`/`asmHighlight2`/`asmLineNumbers2` inside `#asmPane2`) with its own file dropdown (`asmPane2File`, rebuilt from the VFS on open — guarded by a file-list signature in `dataset.sig`, because Firefox fires `mousedown` on the select when an option is clicked and an unconditional rebuild would reset the choice). The dropdown lives in `#asmPane2Header` inside the file-tabs row (`.asm-tabs-row`, same `--asm-pane2-w` flex basis so it aligns above the pane) — keeping it out of the editor area means both panes' line rows start at the same height. Two modes, decided by `pane2IsMirror()`:
+- **Different file**: edits write straight to `VFS.files[path].content` on input (the main editor's `syncEditorToVFS()` flow is untouched) and mark the file modified.
+- **Same file / unsaved buffer** (`pane2Path === currentOpenFile` or `null`): the panes mirror each other's content on every input, both directions — same file, two scroll positions.
+
+The pane reuses `highlightAsmCode()` and the `.asm-textarea`/`.asm-highlight` classes (so font-size Ctrl+/− applies); Tab inserts 4 spaces. Search/replace, custom undo, autocomplete, and the T-state popup work only in the main pane. Width via `--asm-pane2-w` (`#asmPaneSplitter`, inverted-x, 240–1200px, key `zxm8_asmPane2Width`); split state and file persist (`zxm8_asmSplit`, `zxm8_asmPane2File`) and are restored at startup.
 
 **Source markers** — special comments in source file headers:
 - `; @main` — marks this file as the project entry point for assembly (checked in first 20 lines by `VFS.findMainFile()`)
@@ -97,7 +111,9 @@ All SAVE directives capture data at the point of declaration (not end of assembl
 
 ## File Management
 
-The Files dropdown (`updateFilesList()`) shows all VFS files grouped by directory with sort order: root files first, then directories alphabetically, files alphabetically within each directory.
+The toolbar keeps only the build loop (Assemble, Debug, Download); all project actions live in the **Project ▼** menu (`btnAsmFiles` / `asmProjectMenu`): New file, Load…, Import from clipboard, Export…, Share to clipboard, Inject into memory, Clear all — followed by the project file list. Export/Share gray out (`disabled`) when there is nothing to export, Inject until something is assembled; the menu button itself is always enabled. Action ids are unchanged (`btnAsmNew`, `btnAsmLoad`, `btnAsmImport`, `btnAsmExport`, `btnAsmShare`, `btnAsmInject`, `btnAsmClear`), so handlers and external references still work.
+
+The file list section (`updateFilesList()`, container `asmFilesList` inside the menu) shows all VFS files grouped by directory with sort order: root files first, then directories alphabetically, files alphabetically within each directory.
 
 **Directory headers**: When files share a directory prefix, a `📁` header row is inserted before the group. Files within a directory are indented (`.in-dir` class). The directory prefix is not repeated on individual file rows.
 
@@ -164,7 +180,7 @@ Shows total T-state timing for selected Z80 instructions in the assembler editor
 - `tstateMap` -- lookup Map built from `z80Opcodes` data: uppercase mnemonic pattern -> T-state string
 - `normalizeMnemonic(line)` -- converts source line to canonical opcode table pattern (strips labels, normalizes registers/numbers, handles conditions)
 - `lookupTstates(pattern)` -- lookup with fallback: exact match -> `nn` substitution -> `n` substitution -> `(nn)` substitution -> generic register -> `(HL)` fallback
-- `computeTstatesForLines(lines)` -- totals min/max T-states, counts instructions and failures
+- `computeTstatesForLines(lines)` -- totals min/max T-states, counts instructions and failures. `DUP`/`REPT`...`EDUP`/`ENDR` blocks multiply their body by the repeat count (nested blocks multiply; `parseRepeatCount()` accepts decimal, `$`/`#`/`0x` hex, and `h`-suffix literals — a non-literal count is treated as ×1 and flags the total approximate `~`)
 - `showTstatePopup()` -- computes and positions popup; only when `asmEditor` is focused and has selection
 - `positionTstatePopupFromTextarea()` -- positions relative to selection end using computed line height and character width
 - `scheduleTstateUpdate()` -- 1500ms debounce timer; cancelled by any user interaction

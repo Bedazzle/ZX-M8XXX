@@ -1,19 +1,99 @@
 // Pure data managers — extracted from index.html
 import { storageGet, storageSet } from '../core/utils.js';
 
-export class LabelManager {
+// Shared per-file localStorage persistence. Subclasses provide:
+//   _serialize()        — JSON-ready value of the store (an array)
+//   _deserialize(arr)   — load parsed entries into the store (additive)
+//   _clearData()        — reset the store (without autosaving)
+export class PersistentManager {
+    constructor(storagePrefix, dataName) {
+        this._storagePrefix = storagePrefix;
+        this._dataName = dataName;
+        this.currentFile = null;
+        this.autoSaveEnabled = true;
+    }
+
+    // Set current file (for auto-save key)
+    setCurrentFile(filename) {
+        this.currentFile = filename;
+        this._autoLoad();
+    }
+
+    _storageKey() {
+        if (!this.currentFile) return null;
+        return `zxm8_${this._storagePrefix}_${this.currentFile.toLowerCase()}`;
+    }
+
+    _autoSave() {
+        const key = this._storageKey();
+        if (!key) return;
+        storageSet(key, JSON.stringify(this._serialize()));
+    }
+
+    _autoLoad() {
+        this._clearData();
+        const key = this._storageKey();
+        if (!key) return;
+
+        const data = storageGet(key);
+        if (data) {
+            try {
+                this._deserialize(JSON.parse(data));
+            } catch (e) {
+                console.warn(`Failed to load ${this._dataName}:`, e);
+            }
+        }
+    }
+
+    clear() {
+        this._clearData();
+        if (this.autoSaveEnabled) this._autoSave();
+    }
+
+    exportJSON() {
+        return JSON.stringify(this._serialize(), null, 2);
+    }
+
+    importJSON(jsonStr, merge = false) {
+        try {
+            const arr = JSON.parse(jsonStr);
+            if (!merge) this._clearData();
+            this._deserialize(arr);
+            if (this.autoSaveEnabled) this._autoSave();
+            return arr.length;
+        } catch (e) {
+            console.error(`Failed to import ${this._dataName}:`, e);
+            return -1;
+        }
+    }
+}
+
+export class LabelManager extends PersistentManager {
     constructor() {
+        super('labels', 'labels');
         this.labels = new Map();  // key = "page:address", value = label object
         this.romLabels = new Map(); // ROM labels loaded from file
         this.showRomLabels = true;
-        this.currentFile = null;
-        this.autoSaveEnabled = true;
     }
 
     // Generate key for label lookup
     _key(address, page = null) {
         const pageStr = page === null ? 'g' : page.toString();
         return `${pageStr}:${address.toString(16).padStart(4, '0')}`;
+    }
+
+    _serialize() {
+        return Array.from(this.labels.values());
+    }
+
+    _deserialize(arr) {
+        for (const label of arr) {
+            this.labels.set(this._key(label.address, label.page), label);
+        }
+    }
+
+    _clearData() {
+        this.labels.clear();
     }
 
     // Add or update a label
@@ -81,72 +161,6 @@ export class LabelManager {
         return result.sort((a, b) => a.address - b.address);
     }
 
-    // Clear all labels
-    clear() {
-        this.labels.clear();
-        if (this.autoSaveEnabled) this._autoSave();
-    }
-
-    // Set current file (for auto-save key)
-    setCurrentFile(filename) {
-        this.currentFile = filename;
-        this._autoLoad();
-    }
-
-    // Get storage key for current file
-    _storageKey() {
-        if (!this.currentFile) return null;
-        return `zxm8_labels_${this.currentFile.toLowerCase()}`;
-    }
-
-    // Auto-save to localStorage
-    _autoSave() {
-        const key = this._storageKey();
-        if (!key) return;
-        const data = JSON.stringify(Array.from(this.labels.values()));
-        storageSet(key, data);
-    }
-
-    // Auto-load from localStorage
-    _autoLoad() {
-        this.labels.clear();
-        const key = this._storageKey();
-        if (!key) return;
-
-        const data = storageGet(key);
-        if (data) {
-            try {
-                const arr = JSON.parse(data);
-                for (const label of arr) {
-                    this.labels.set(this._key(label.address, label.page), label);
-                }
-            } catch (e) {
-                console.warn('Failed to load labels:', e);
-            }
-        }
-    }
-
-    // Export labels to JSON string
-    exportJSON() {
-        return JSON.stringify(Array.from(this.labels.values()), null, 2);
-    }
-
-    // Import labels from JSON string
-    importJSON(jsonStr, merge = false) {
-        try {
-            const arr = JSON.parse(jsonStr);
-            if (!merge) this.labels.clear();
-            for (const label of arr) {
-                this.labels.set(this._key(label.address, label.page), label);
-            }
-            if (this.autoSaveEnabled) this._autoSave();
-            return arr.length;
-        } catch (e) {
-            console.error('Failed to import labels:', e);
-            return -1;
-        }
-    }
-
     // Load ROM labels from JSON string
     loadRomLabels(jsonStr) {
         try {
@@ -186,11 +200,25 @@ export const REGION_TYPES = {
     SMC: 'smc'      // Self-modifying code
 };
 
-export class RegionManager {
+export class RegionManager extends PersistentManager {
     constructor() {
+        super('regions', 'regions');
         this.regions = [];  // Array of {start, end, type, page, comment}
-        this.currentFile = null;
-        this.autoSaveEnabled = true;
+    }
+
+    _serialize() {
+        return this.regions;
+    }
+
+    _deserialize(arr) {
+        for (const r of arr) {
+            this.regions.push(r);
+        }
+        this.regions.sort((a, b) => a.start - b.start);
+    }
+
+    _clearData() {
+        this.regions = [];
     }
 
     // Check if a range overlaps with existing regions
@@ -279,76 +307,31 @@ export class RegionManager {
         if (pageFilter === undefined) return [...this.regions];
         return this.regions.filter(r => r.page === pageFilter || r.page === null);
     }
-
-    // Clear all regions
-    clear() {
-        this.regions = [];
-        if (this.autoSaveEnabled) this._autoSave();
-    }
-
-    // Set current file (for auto-save key)
-    setCurrentFile(filename) {
-        this.currentFile = filename;
-        this._autoLoad();
-    }
-
-    // Get storage key for current file
-    _storageKey() {
-        if (!this.currentFile) return null;
-        return `zxm8_regions_${this.currentFile.toLowerCase()}`;
-    }
-
-    // Auto-save to localStorage
-    _autoSave() {
-        const key = this._storageKey();
-        if (!key) return;
-        storageSet(key, JSON.stringify(this.regions));
-    }
-
-    // Auto-load from localStorage
-    _autoLoad() {
-        this.regions = [];
-        const key = this._storageKey();
-        if (!key) return;
-
-        const data = storageGet(key);
-        if (data) {
-            try {
-                this.regions = JSON.parse(data);
-            } catch (e) {
-                console.warn('Failed to load regions:', e);
-            }
-        }
-    }
-
-    // Export to JSON
-    exportJSON() {
-        return JSON.stringify(this.regions, null, 2);
-    }
-
-    // Import from JSON
-    importJSON(jsonStr, merge = false) {
-        try {
-            const arr = JSON.parse(jsonStr);
-            if (!merge) this.regions = [];
-            for (const r of arr) {
-                this.regions.push(r);
-            }
-            this.regions.sort((a, b) => a.start - b.start);
-            if (this.autoSaveEnabled) this._autoSave();
-            return arr.length;
-        } catch (e) {
-            console.error('Failed to import regions:', e);
-            return -1;
-        }
-    }
 }
 
-export class CommentManager {
+export class CommentManager extends PersistentManager {
     constructor() {
+        super('comments', 'comments');
         this.comments = new Map();  // Map<address, {before, inline, after, separator}>
-        this.currentFile = null;
-        this.autoSaveEnabled = true;
+    }
+
+    _serialize() {
+        return this.getAll();
+    }
+
+    _deserialize(arr) {
+        for (const c of arr) {
+            this.comments.set(c.address, {
+                before: c.before || '',
+                inline: c.inline || '',
+                after: c.after || '',
+                separator: c.separator || false
+            });
+        }
+    }
+
+    _clearData() {
+        this.comments.clear();
     }
 
     // Add or update comment at address
@@ -392,76 +375,6 @@ export class CommentManager {
         }
         return result.sort((a, b) => a.address - b.address);
     }
-
-    // Clear all comments
-    clear() {
-        this.comments.clear();
-        if (this.autoSaveEnabled) this._autoSave();
-    }
-
-    // Set current file for auto-save
-    setCurrentFile(filename) {
-        this.currentFile = filename;
-        this._autoLoad();
-    }
-
-    _storageKey() {
-        if (!this.currentFile) return null;
-        return `zxm8_comments_${this.currentFile.toLowerCase()}`;
-    }
-
-    _autoSave() {
-        const key = this._storageKey();
-        if (!key) return;
-        storageSet(key, JSON.stringify(this.getAll()));
-    }
-
-    _autoLoad() {
-        this.comments.clear();
-        const key = this._storageKey();
-        if (!key) return;
-
-        const data = storageGet(key);
-        if (data) {
-            try {
-                const arr = JSON.parse(data);
-                for (const c of arr) {
-                    this.comments.set(c.address, {
-                        before: c.before || '',
-                        inline: c.inline || '',
-                        after: c.after || '',
-                        separator: c.separator || false
-                    });
-                }
-            } catch (e) {
-                console.warn('Failed to load comments:', e);
-            }
-        }
-    }
-
-    exportJSON() {
-        return JSON.stringify(this.getAll(), null, 2);
-    }
-
-    importJSON(jsonStr, merge = false) {
-        try {
-            const arr = JSON.parse(jsonStr);
-            if (!merge) this.comments.clear();
-            for (const c of arr) {
-                this.comments.set(c.address, {
-                    before: c.before || '',
-                    inline: c.inline || '',
-                    after: c.after || '',
-                    separator: c.separator || false
-                });
-            }
-            if (this.autoSaveEnabled) this._autoSave();
-            return arr.length;
-        } catch (e) {
-            console.error('Failed to import comments:', e);
-            return -1;
-        }
-    }
 }
 
 // Stores custom display formats for operands (hex/dec/bin/char)
@@ -472,11 +385,24 @@ export const OPERAND_FORMATS = {
     CHAR: 'char'
 };
 
-export class OperandFormatManager {
+export class OperandFormatManager extends PersistentManager {
     constructor() {
+        super('opformats', 'operand formats');
         this.formats = new Map();  // Map<address, format>
-        this.currentFile = null;
-        this.autoSaveEnabled = true;
+    }
+
+    _serialize() {
+        return this.getAll();
+    }
+
+    _deserialize(arr) {
+        for (const f of arr) {
+            this.formats.set(f.address, f.format);
+        }
+    }
+
+    _clearData() {
+        this.formats.clear();
     }
 
     // Set format for operand at instruction address
@@ -513,12 +439,6 @@ export class OperandFormatManager {
         return result.sort((a, b) => a.address - b.address);
     }
 
-    // Clear all formats
-    clear() {
-        this.formats.clear();
-        if (this.autoSaveEnabled) this._autoSave();
-    }
-
     // Format a value according to format type
     formatValue(value, format, is16bit = false) {
         const val = is16bit ? (value & 0xffff) : (value & 0xff);
@@ -539,41 +459,6 @@ export class OperandFormatManager {
             case OPERAND_FORMATS.HEX:
             default:
                 return val.toString(16).toUpperCase().padStart(is16bit ? 4 : 2, '0') + 'h';
-        }
-    }
-
-    // Set current file for auto-save
-    setCurrentFile(filename) {
-        this.currentFile = filename;
-        this._autoLoad();
-    }
-
-    _storageKey() {
-        if (!this.currentFile) return null;
-        return `zxm8_opformats_${this.currentFile.toLowerCase()}`;
-    }
-
-    _autoSave() {
-        const key = this._storageKey();
-        if (!key) return;
-        storageSet(key, JSON.stringify(this.getAll()));
-    }
-
-    _autoLoad() {
-        this.formats.clear();
-        const key = this._storageKey();
-        if (!key) return;
-
-        const data = storageGet(key);
-        if (data) {
-            try {
-                const arr = JSON.parse(data);
-                for (const f of arr) {
-                    this.formats.set(f.address, f.format);
-                }
-            } catch (e) {
-                console.warn('Failed to load operand formats:', e);
-            }
         }
     }
 }

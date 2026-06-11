@@ -854,13 +854,8 @@ export const Assembler = {
                 this.dirSAVEHOB(ops, line);
                 break;
             default:
-                // Unknown directive - might be macro call
-                if (this.tryMacroCall(line)) {
-                    break;
-                }
-                if (!line.directive.startsWith('.')) {
-                    // ErrorCollector.warn(`Unknown directive: ${dir}`, line.line, line.file);
-                }
+                // Unknown directive - might be macro call; otherwise silently ignored
+                this.tryMacroCall(line);
                 break;
         }
     },
@@ -1007,24 +1002,24 @@ export const Assembler = {
         delete EquTable.values[fullName];
     },
 
+    // Returns the contents of a double-quoted string or multi-char single-quoted
+    // string operand, or null if the operand is not a string (single-char 'A'
+    // literals stay expressions, matching sjasmplus)
+    asQuotedString(op) {
+        if (op.startsWith('"') && op.endsWith('"')) return op.slice(1, -1);
+        if (op.startsWith("'") && op.endsWith("'") && op.length > 2) return op.slice(1, -1);
+        return null;
+    },
+
     // DB/DEFB directive
     dirDB(ops, line) {
         for (const op of ops) {
-            // Check if double-quoted string
-            if (op.startsWith('"') && op.endsWith('"')) {
-                const str = op.slice(1, -1);
+            const str = this.asQuotedString(op);
+            if (str !== null) {
                 for (let i = 0; i < str.length; i++) {
                     this.emit(str.charCodeAt(i));
                 }
-            }
-            // Check if single-quoted string (for multi-char strings like 'HELLO')
-            else if (op.startsWith("'") && op.endsWith("'") && op.length > 2) {
-                const str = op.slice(1, -1);
-                for (let i = 0; i < str.length; i++) {
-                    this.emit(str.charCodeAt(i));
-                }
-            }
-            else {
+            } else {
                 const val = this.evaluate(op, line);
                 this.emit(Z80Asm.checkByte(val.value));
             }
@@ -1066,35 +1061,21 @@ export const Assembler = {
     dirDC(ops, line) {
         for (let opIdx = 0; opIdx < ops.length; opIdx++) {
             const op = ops[opIdx];
-            // Handle string (double-quoted)
-            if (op.startsWith('"') && op.endsWith('"')) {
-                const str = op.slice(1, -1);
+            const isLastOp = opIdx === ops.length - 1;
+            const str = this.asQuotedString(op);
+            if (str !== null) {
                 for (let i = 0; i < str.length; i++) {
                     let byte = str.charCodeAt(i);
-                    // Set high bit on last character if this is the last string operand
-                    if (i === str.length - 1 && opIdx === ops.length - 1) {
+                    // Set high bit on last character of the last operand
+                    if (isLastOp && i === str.length - 1) {
                         byte |= 0x80;
                     }
                     this.emit(byte);
                 }
-            }
-            // Handle single-quoted string
-            else if (op.startsWith("'") && op.endsWith("'") && op.length > 2) {
-                const str = op.slice(1, -1);
-                for (let i = 0; i < str.length; i++) {
-                    let byte = str.charCodeAt(i);
-                    // Set high bit on last character if this is the last string operand
-                    if (i === str.length - 1 && opIdx === ops.length - 1) {
-                        byte |= 0x80;
-                    }
-                    this.emit(byte);
-                }
-            }
-            else {
+            } else {
                 const val = this.evaluate(op, line);
                 let byte = Z80Asm.checkByte(val.value);
-                // Set high bit on last byte operand
-                if (opIdx === ops.length - 1) {
+                if (isLastOp) {
                     byte |= 0x80;
                 }
                 this.emit(byte);

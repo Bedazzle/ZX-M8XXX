@@ -1,6 +1,6 @@
 // rom-selector.js — ROM selector modal, auto-load, validation, drag & drop (extracted from index.html)
 
-export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status }) {
+export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status, getUpdateRomFileNames, getUpdateDriveSelector }) {
     function showMessage(text, type) { getShowMessage()(text, type); }
     const romData = {};    // { 'filename': ArrayBuffer, ... }
 
@@ -174,6 +174,8 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         }
 
         btnStartEmulator.disabled = !romData['48.rom'];
+        const updateRomFileNames = getUpdateRomFileNames && getUpdateRomFileNames();
+        if (typeof updateRomFileNames === 'function') updateRomFileNames();
     }
 
     async function loadRomFile(data, type) {
@@ -223,6 +225,11 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // must return true for _plusDPagingEnabled/_if1PagingEnabled to be set
         spec.updateBetaDiskPagingFlag();
         spec.romLoaded = true;
+        // Peripheral ROM availability may have changed — refresh the Disk tab
+        // system selector (e.g. if1.rom arriving via async auto-load makes
+        // Microdrive appear in the System dropdown)
+        const updateDriveSelector = getUpdateDriveSelector && getUpdateDriveSelector();
+        if (updateDriveSelector) updateDriveSelector();
         return true;
     }
 
@@ -383,6 +390,8 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
             if (file) {
                 const data = await file.arrayBuffer();
                 await loadRomFile(data, type);
+                const romFile = ROM_TYPE_TO_FILE[type];
+                if (romFile) romFileNames[romFile] = file.name;
                 showMessage(label + ' loaded');
                 if (type === 'trdos') {
                     const updateBetaDiskStatus = getUpdateBetaDiskStatus();
@@ -472,6 +481,37 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         showRomModal();
     });
 
+    // Track loaded ROM filenames per romFile key (e.g. '48.rom' → 'diag48.rom')
+    const romFileNames = {};
+
+    function loadRomForMachineById(machineId, data, filename) {
+        const profile = getMachineProfile(machineId);
+        if (!profile) return false;
+        const size = data.byteLength;
+        if (size !== profile.romSize) {
+            showMessage('ROM size mismatch — expected ' + (profile.romSize / 1024) + 'KB for ' + profile.name + ', got ' + (size / 1024) + 'KB', 'error');
+            return false;
+        }
+        romData[profile.romFile] = data;
+        romFileNames[profile.romFile] = filename;
+        // Apply to the running emulator if this is the current machine
+        const spectrum = getSpectrum();
+        if (spectrum.machineType === machineId) {
+            applyRomsToEmulator();
+        }
+        updateRomStatus();
+        showMessage(profile.name + ' ROM loaded: ' + filename);
+        return true;
+    }
+
+    function getRomFileName(machineId) {
+        const profile = getMachineProfile(machineId);
+        if (!profile) return null;
+        if (romFileNames[profile.romFile]) return romFileNames[profile.romFile];
+        if (romData[profile.romFile]) return profile.romFile;
+        return null;
+    }
+
     return {
         romData,
         loadRomsForMachineType,
@@ -481,6 +521,8 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         loadRomFile,
         updateRomStatus,
         showRomModal,
-        isRomModalVisible
+        isRomModalVisible,
+        loadRomForMachineById,
+        getRomFileName
     };
 }

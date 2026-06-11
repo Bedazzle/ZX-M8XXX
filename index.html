@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.14.27</title>
+    <title>ZX-M8XXX v0.15.3</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -178,17 +178,23 @@
                 flex-wrap: nowrap;
             }
             .panel-tabs {
-                max-width: 1090px;
+                max-width: calc(var(--left-panel-w, 480px) + var(--right-panel-w, 600px) + 36px);
             }
             .disasm-panel {
-                height: 740px !important;
-                flex: 0 0 480px !important;
+                height: var(--debug-row-h, 740px) !important;
+                flex: 0 0 var(--left-panel-w, 480px) !important;
             }
             .right-column {
-                height: 740px !important;
-                flex: 0 0 600px !important;
+                height: var(--debug-row-h, 740px) !important;
+                flex: 0 0 var(--right-panel-w, 600px) !important;
                 display: flex;
                 flex-direction: column;
+            }
+            /* Match the row splitter to the panels' total width:
+               left + right + 2 vertical bars (6px) + 3 flex gaps (8px) */
+            #debugRowSplitter {
+                width: calc(var(--left-panel-w, 480px) + var(--right-panel-w, 600px) + 36px);
+                max-width: 100%;
             }
             .memory-section.memory-panel {
                 margin-top: 3px !important;
@@ -208,10 +214,10 @@
                 overflow: hidden !important;
             }
             .breakpoint-list {
-                max-height: 60px !important;
+                max-height: var(--subpanel-list-h, 60px) !important;
             }
             .labels-list {
-                max-height: 80px !important;
+                max-height: var(--subpanel-list-h, 80px) !important;
             }
             .memory-search {
                 border-top: none !important;
@@ -240,7 +246,7 @@
                 align-items: flex-start !important;
             }
             .disasm-panel {
-                height: 720px !important;
+                height: var(--debug-row-h, 720px) !important;
                 display: flex !important;
                 flex-direction: column !important;
             }
@@ -256,9 +262,13 @@
                 flex: 0 0 auto !important;
             }
             .right-column {
-                height: 720px !important;
+                height: var(--debug-row-h, 720px) !important;
                 display: flex !important;
                 flex-direction: column !important;
+            }
+            /* Portrait: right column auto-fills the remaining width — no width bar */
+            #debugColSplitterRight {
+                display: none;
             }
             .memory-section.memory-panel {
                 flex: 1 !important;
@@ -275,6 +285,14 @@
             .memory-section.memory-panel .debugger-controls,
             .memory-section.memory-panel .memory-search {
                 flex: 0 0 auto !important;
+            }
+            .registers-row {
+                flex-wrap: wrap !important;
+            }
+            .screen-container {
+                width: fit-content !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
             }
         }
 
@@ -468,7 +486,7 @@
             transition: background 0.2s;
         }
         button:hover { background: var(--bg-button-hover); }
-        button:disabled { background: var(--bg-secondary); cursor: not-allowed; opacity: 0.5; }
+        button:disabled { background: var(--bg-button); cursor: not-allowed; opacity: 0.45; }
         button.primary { background: var(--accent); }
         button.primary:hover { background: var(--accent-hover); }
         #btnRun { width: 90px; text-align: center; }
@@ -730,9 +748,9 @@
         .assembler-container {
             display: flex;
             flex-direction: column;
-            height: calc(100vh - 200px);
+            height: var(--asm-container-h, calc(100vh - 200px));
             min-height: 500px;
-            max-height: 900px;
+            max-height: var(--asm-container-h, 900px);
         }
         .assembler-header {
             display: flex;
@@ -747,6 +765,7 @@
             display: flex;
             gap: 8px;
             align-items: center;
+            flex: 1;
         }
         .assembler-controls button {
             padding: 4px 10px;
@@ -924,8 +943,9 @@
             flex-direction: column;
             background: var(--bg-primary);
             border-radius: 4px;
-            min-height: 90px;
-            max-height: 200px;
+            min-height: 60px;
+            height: var(--asm-output-h, auto);
+            max-height: var(--asm-output-h, 200px);
         }
         .asm-output-header {
             padding: 4px 10px;
@@ -1133,6 +1153,30 @@
         }
         .asm-files-list.show {
             display: block;
+        }
+        /* Project ▼ menu: action items above the file list */
+        .asm-files-list .asm-menu-item {
+            display: block;
+            width: 100%;
+            text-align: left;
+            background: none;
+            border: none;
+            border-radius: 0;
+            color: var(--text-primary);
+            font-size: 12px;
+            padding: 6px 10px;
+            cursor: pointer;
+        }
+        .asm-files-list .asm-menu-item:hover:not(:disabled) {
+            background: var(--bg-button);
+        }
+        .asm-files-list .asm-menu-item:disabled {
+            color: var(--text-secondary);
+            opacity: 0.5;
+            cursor: default;
+        }
+        #asmFilesList:not(:empty) {
+            border-top: 1px solid var(--bg-button);
         }
         .asm-files-list-item {
             padding: 6px 10px;
@@ -1445,6 +1489,48 @@
             display: flex;
             flex: 1;
             min-height: 0;
+        }
+        /* Split editor panes */
+        .asm-pane {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+        }
+        .asm-pane-second {
+            flex: 0 0 var(--asm-pane2-w, 50%);
+            border-left: 1px solid var(--bg-button);
+        }
+        /* Split-pane header lives in the tabs row, aligned above the second pane,
+           so both panes' line rows start at the same height */
+        .asm-tabs-row {
+            display: flex;
+        }
+        .asm-tabs-row .asm-file-tabs {
+            flex: 1;
+            min-width: 0;
+        }
+        .asm-pane2-header {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            flex: 0 0 var(--asm-pane2-w, 50%);
+            margin-left: auto;  /* stay above the right pane even when the tabs block is hidden (no files) */
+            padding: 2px 4px;
+            background: var(--bg-button);
+        }
+        .asm-pane2-header select {
+            flex: 1;
+            min-width: 0;
+            font-size: 11px;
+            padding: 2px 4px;
+        }
+        .asm-pane2-header button {
+            padding: 1px 8px;
+            font-size: 12px;
+        }
+        #btnAsmSplit.active {
+            background: var(--accent);
+            color: #fff;
         }
         .asm-main-label {
             font-size: 10px;
@@ -4028,7 +4114,7 @@
         .registers-row {
             display: flex;
             gap: 4px;
-            flex-wrap: nowrap;
+            flex-wrap: wrap;
             margin-bottom: 4px;
             justify-content: flex-start;
         }
@@ -4471,8 +4557,8 @@
             min-width: 0;
         }
         .disasm-panel {
-            flex: 0 0 480px;
-            width: 480px;
+            flex: 0 0 var(--left-panel-w, 480px);
+            width: var(--left-panel-w, 480px);
             height: 740px;
             background: var(--bg-secondary);
             border: 1px solid var(--bg-button);
@@ -4492,6 +4578,8 @@
         .tools-row .search-label {
             color: var(--text-secondary);
             font-size: 11px;
+            min-width: 64px;
+            text-align: right;
         }
         .disasm-line {
             display: flex;
@@ -4681,6 +4769,7 @@
             font-size: 10px;
         }
         .tstates-input {
+            margin-left: 10px;
             width: 55px;
             padding: 4px 6px;
             font-size: 11px;
@@ -4842,7 +4931,7 @@
             font-size: 10px;
         }
         .breakpoint-list {
-            max-height: 80px;
+            max-height: var(--subpanel-list-h, 80px);
             overflow-y: auto;
             scrollbar-width: thin;
         }
@@ -5018,7 +5107,7 @@
             color: var(--accent);
         }
         .labels-list {
-            max-height: 100px;
+            max-height: var(--subpanel-list-h, 100px);
             overflow-y: auto;
         }
         .label-item.rom-label {
@@ -5098,6 +5187,73 @@
             padding: 4px 10px;
             font-size: 11px;
         }
+        .memory-controls select {
+            padding: 4px 6px;
+            font-size: 11px;
+        }
+        /* Panel toolbars: controls sit next to the panel-type select instead of
+           the right edge. In the left disasm view, Export + ⚙ stay pinned right. */
+        .left-disasm-controls,
+        .left-memdump-controls,
+        .right-memdump-controls,
+        .right-disasm-controls {
+            flex: 1;
+            margin-left: 4px;
+        }
+        .left-disasm-controls #disasmExportSelect {
+            margin-left: auto;
+        }
+        /* T-state selection (drag across disasm lines) */
+        .disasm-line.tsel {
+            background: var(--bg-button);
+        }
+        .disassembly-view.tselecting {
+            user-select: none;
+            cursor: ns-resize;
+        }
+        .disasm-tsel-popup {
+            position: fixed;
+            z-index: 3000;
+            background: var(--bg-secondary);
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-family: monospace;
+            color: var(--text-primary);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        /* Disasm view options popover (⚙) */
+        .disasm-opts-wrap { position: relative; display: inline-block; }
+        .disasm-opts-popover {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            z-index: 200;
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-button);
+            border-radius: 6px;
+            padding: 8px 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            white-space: nowrap;
+        }
+        .disasm-opts-popover label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-primary);
+            padding: 3px 0;
+            cursor: pointer;
+        }
+        .disasm-opts-popover .opts-hint {
+            color: var(--text-secondary);
+            font-size: 10px;
+            margin-left: auto;
+            padding-left: 12px;
+        }
         .memory-option {
             margin-left: 5px;
             font-size: 11px;
@@ -5164,7 +5320,6 @@
         .memory-hex {
             display: flex;
             gap: 0;
-            width: 288px;
             flex-shrink: 0;
             margin-right: 8px;
         }
@@ -5350,6 +5505,35 @@
             min-width: 0;
             overflow: hidden;
         }
+        /* Drag bar below the sub-panel: resizes the panel lists via --subpanel-list-h */
+        .panel-splitter {
+            height: 6px;
+            margin-top: 4px;
+            border-radius: 3px;
+            cursor: ns-resize;
+            background: var(--bg-button);
+            opacity: 0.4;
+        }
+        .panel-splitter:hover,
+        .panel-splitter.dragging {
+            opacity: 1;
+            background: var(--accent);
+        }
+        /* Vertical drag bar between the left disasm panel and the right column */
+        .panel-vsplitter {
+            flex: 0 0 6px;
+            width: 6px;
+            align-self: stretch;
+            border-radius: 3px;
+            cursor: ew-resize;
+            background: var(--bg-button);
+            opacity: 0.4;
+        }
+        .panel-vsplitter:hover,
+        .panel-vsplitter.dragging {
+            opacity: 1;
+            background: var(--accent);
+        }
         .panel-tab-bar {
             display: flex;
             gap: 2px;
@@ -5412,6 +5596,16 @@
         .tools-row select {
             font-size: 11px;
             padding: 2px 4px;
+        }
+        .tools-row input[type="number"],
+        .tools-row input[type="text"] {
+            font-size: 11px;
+            font-family: monospace;
+            padding: 2px 4px;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 3px;
+            color: var(--text-primary);
         }
         .tools-group {
             background: var(--bg-tertiary);
@@ -5613,10 +5807,20 @@
             font-size: 11px;
             padding: 2px 4px;
         }
+        .trace-row input[type="number"],
+        .trace-row input[type="text"] {
+            font-size: 11px;
+            font-family: monospace;
+            padding: 2px 4px;
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-button);
+            border-radius: 3px;
+            color: var(--text-primary);
+        }
         /* Trace List */
         #panel-trace .trace-list {
             display: block;
-            max-height: calc(100% - 100px);
+            max-height: var(--subpanel-list-h, none);
             min-height: 80px;
         }
         .trace-list {
@@ -5703,12 +5907,12 @@
             display: flex; align-items: flex-start; gap: 6px;
             margin-left: auto; white-space: nowrap;
         }
-        .poke-game-label { flex: 1; color: var(--text-secondary); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+        .poke-game-label { flex: 1; color: var(--text-secondary); font-style: italic; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
         .poke-columns { display: flex; gap: 8px; }
         .poke-col-editors { min-width: 0; }
         .poke-col-pokes { flex: 1; min-width: 0; }
         .poke-toggle-all { padding: 2px 4px; border-bottom: 1px solid var(--bg-button); }
-        .poke-list { }
+        .poke-list { max-height: var(--subpanel-list-h, none); overflow-y: auto; }
         .poke-entry {
             display: flex; align-items: center; gap: 4px;
             padding: 2px 4px; font-size: 11px; font-family: monospace;
@@ -5766,8 +5970,9 @@
             border: 1px solid var(--bg-button); border-radius: 3px;
             padding: 3px 4px;
         }
-        .poke-add-form button {
-            font-size: 14px; padding: 2px 10px; cursor: pointer;
+        .poke-add-form button,
+        .poke-col-buttons button {
+            font-size: 11px; padding: 4px 10px; cursor: pointer;
             border-radius: 3px;
         }
         .poke-remove {
@@ -5805,7 +6010,7 @@
         .watches-list {
             font-family: monospace;
             font-size: 11px;
-            max-height: 150px;
+            max-height: var(--subpanel-list-h, 150px);
             overflow-y: auto;
         }
         .watch-entry {
@@ -6029,7 +6234,6 @@
         .memmap-canvas-container {
             position: relative;
             width: 512px;
-            height: 512px;
             flex-shrink: 0;
         }
         #memmapCanvas {
@@ -6839,10 +7043,11 @@
                 <option value="z80">Z80</option>
                 <option value="szx">SZX</option>
                 <option value="dsk">DSK</option>
+                <option value="trd">TRD/SCL</option>
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.14.27 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.3 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -6944,18 +7149,30 @@
                                 <option value="memdump">Memory</option>
                             </select>
                             <div class="memory-controls left-disasm-controls">
-                                <input type="text" id="disasmAddress" placeholder="0000" maxlength="4" value="">
-                                <button id="btnDisasmGo" title="Go to address">Go</button>
+                                <input type="text" id="disasmAddress" placeholder="0000" maxlength="4" value="" title="Address (hex) — press Enter to go">
                                 <button id="btnDisasmPC" title="Go to current PC">PC</button>
                                 <button id="btnDisasmPgUp" title="Navigate Back (Alt+Left)">◀</button>
                                 <button id="btnDisasmPgDn" title="Navigate Forward (Alt+Right)">▶</button>
-                                <label class="disasm-option" title="Show T-states for each instruction"><input type="checkbox" id="chkShowTstates">T-states</label>
-                                <button id="btnDisasmExport" title="Export visible disassembly">Export</button>
-                                <button id="btnDisasmExportRange" title="Export address range">Export...</button>
+                                <select id="disasmExportSelect" title="Export disassembly">
+                                    <option value="" disabled selected hidden>Export</option>
+                                    <option value="visible">Visible</option>
+                                    <option value="range">Range...</option>
+                                </select>
+                                <span class="disasm-opts-wrap">
+                                    <button id="btnDisasmViewOpts" title="View options">⚙</button>
+                                    <div id="disasmViewOptsPopover" class="disasm-opts-popover hidden">
+                                        <label title="Show T-states for each instruction"><input type="checkbox" id="chkShowTstates"> Show T-states</label>
+                                        <label title="Auto-scroll disassembly to the current PC — disables manual navigation"><input type="checkbox" id="chkFollowPC" checked> Follow PC <span class="opts-hint">Shift+F6</span></label>
+                                        <label title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> Comment on each step</label>
+                                        <label title="Play AY sound when stepping through code"><input type="checkbox" id="chkAyDebugStep"> AY sound on step</label>
+                                        <label title="Add spacing after flow control instructions (JP, JR, RET, DJNZ)"><input type="checkbox" id="chkFlowBreakSpacing" checked> Flow break spacing</label>
+                                        <label title="Highlight current PC line while running (always shown when paused)"><input type="checkbox" id="chkShowPCCursor" checked> Show PC cursor</label>
+                                        <label title="Maximum T-states for Step Over (CALL/RST/DJNZ) before stopping">Step Over limit: <input type="text" id="stepOverMaxTstates" value="80000" style="width: 70px; font-family: monospace; font-size: 11px;" maxlength="10"></label>
+                                    </div>
+                                </span>
                             </div>
                             <div class="memory-controls left-memdump-controls" style="display:none">
-                                <input type="text" id="leftMemAddress" placeholder="0000" maxlength="4" value="0000">
-                                <button id="btnLeftMemGo" title="Go to address">Go</button>
+                                <input type="text" id="leftMemAddress" placeholder="0000" maxlength="4" value="0000" title="Address (hex) — press Enter to go">
                                 <button id="btnLeftMemPC" title="Go to PC">PC</button>
                                 <button id="btnLeftMemSP" title="Go to SP">SP</button>
                                 <button id="btnLeftMemHL" title="Go to HL">HL</button>
@@ -6999,9 +7216,9 @@
                             <button id="btnRunToRet" title="Run to RET">To RET</button>
                             <input type="text" id="tstatesInput" class="tstates-input" placeholder="T" maxlength="8" value="1000" title="Number of T-states to run">
                             <button id="btnRunTstates" title="Run specified T-states">Tstates</button>
-                            <label style="margin-left: 8px; font-size: 11px;" title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> comm</label>
                         </div>
                     </div>
+                    <div id="debugColSplitter" class="panel-vsplitter" title="Drag to resize the left panel width, double-click to reset"></div>
                     <div class="right-column">
                         <div class="registers-row">
                             <div class="reg-group">
@@ -7035,6 +7252,10 @@
                                     <h4>Pages</h4>
                                     <div class="registers-grid vertical" id="pagesInfo"></div>
                                 </div>
+                                <div class="reg-group" id="ayGroup" style="display: none;">
+                                    <h4>AY</h4>
+                                    <div id="ayRegsView" style="font-size: 11px; line-height: 1.4; white-space: pre; font-family: var(--font-mono, monospace);"></div>
+                                </div>
                             </div>
                         </div>
                         <div class="memory-section memory-panel" id="rightPanel">
@@ -7045,8 +7266,7 @@
                                     <option value="calc">Calculator</option>
                                 </select>
                                 <div class="memory-controls right-memdump-controls">
-                                    <input type="text" id="memoryAddress" placeholder="0000" maxlength="4" value="0000">
-                                    <button id="btnMemoryGo" title="Go to address">Go</button>
+                                    <input type="text" id="memoryAddress" placeholder="0000" maxlength="4" value="0000" title="Address (hex) — press Enter to go">
                                     <button id="btnMemoryPC" title="Go to PC">PC</button>
                                     <button id="btnMemorySP" title="Go to SP">SP</button>
                                     <button id="btnMemoryHL" title="Go to HL">HL</button>
@@ -7057,8 +7277,7 @@
                                     <label class="memory-option" title="Allow editing ROM area"><input type="checkbox" id="chkRomEdit">Edit ROM</label>
                                 </div>
                                 <div class="memory-controls right-disasm-controls" style="display:none">
-                                    <input type="text" id="rightDisasmAddress" placeholder="0000" maxlength="4" value="">
-                                    <button id="btnRightDisasmGo" title="Go to address">Go</button>
+                                    <input type="text" id="rightDisasmAddress" placeholder="0000" maxlength="4" value="" title="Address (hex) — press Enter to go">
                                     <button id="btnRightDisasmPC" title="Go to current PC">PC</button>
                                     <button id="btnRightDisasmPgUp" title="Navigate Back">◀</button>
                                     <button id="btnRightDisasmPgDn" title="Navigate Forward">▶</button>
@@ -7212,13 +7431,19 @@
                             </div>
                         </div>
                     </div>
+                    <div id="debugColSplitterRight" class="panel-vsplitter" title="Drag to resize the right panel width, double-click to reset"></div>
                 </div>
+                <div id="debugRowSplitter" class="panel-splitter" title="Drag to resize the disasm/memory panels, double-click to reset"></div>
                 <div class="panel-tabs">
                     <div class="panel-tab-bar">
                         <button class="panel-tab-btn active" data-panel="breakpoints" title="Breakpoints (exec, memory, port)">Breakpoints</button>
                         <button class="panel-tab-btn" data-panel="labels" title="Address labels">Labels</button>
                         <button class="panel-tab-btn" data-panel="watches" title="Memory watches">Watches</button>
-                        <button class="panel-tab-btn" data-panel="tools" title="POKE search, Auto-Map, XRefs, Text scan">Tools</button>
+                        <button class="panel-tab-btn" data-panel="analysis" title="Auto-Map, Code-Flow analysis, XRefs, Profiler">Analysis</button>
+                        <button class="panel-tab-btn" data-panel="search" title="POKE search, text scan, memory monitors">Search</button>
+                        <button class="panel-tab-btn" data-panel="codepath" title="Code path recording and diff">Code Path</button>
+                        <button class="panel-tab-btn" data-panel="struct" title="Struct field access mapper">Struct</button>
+                        <button class="panel-tab-btn" data-panel="basic" title="BASIC program copy/paste">BASIC</button>
                         <button class="panel-tab-btn" data-panel="trace" title="Execution trace history">Trace</button>
                         <button class="panel-tab-btn" data-panel="pokes" title="POKE manager">Pokes</button>
                     </div>
@@ -7290,24 +7515,23 @@
                         </div>
                         <div class="watches-list" id="watchesList"></div>
                     </div>
-                    <!-- Tools Panel -->
-                    <div class="panel-tab-content" id="panel-tools">
-                        <div class="tools-panel-row">
-                        <div class="tools-group">
-                            <div class="tools-group-label">analysis</div>
+                    <!-- Analysis Panel -->
+                    <div class="panel-tab-content" id="panel-analysis">
                             <div class="tools-row">
                                 <span class="search-label">Auto-Map:</span>
                                 <label class="search-option"><input type="checkbox" id="chkAutoMap"> Track</label>
                                 <button id="btnAutoMapSnap" title="Capture current state for export (registers, memory)">Snap</button>
                                 <button id="btnAutoMapApply" title="Apply tracked regions">Apply</button>
-                                <button id="btnAutoMapClear" title="Clear tracking data">Clear</button>
                                 <button id="btnAutoMapExport" title="Export disassembly of auto-mapped regions">Export</button>
-                                <span id="autoMapStats" class="automap-stats"></span>
-                                <button id="btnClearRegions" title="Clear all marked regions">Clr Regions</button>
                                 <button id="btnMemoryMap" title="Show memory map visualization">Map</button>
+                                <button id="btnAutoMapClear" title="Clear tracking data">Clear</button>
+                                <button id="btnClearRegions" title="Clear all marked regions">Clr Regions</button>
+                                <span id="autoMapStats" class="automap-stats"></span>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Analyze:</span>
+                                <input type="text" id="cfaExtraEntries" placeholder="Extra entries (hex, comma-sep)"
+                                       style="width:160px" title="Additional entry point addresses, e.g. 8000,9000">
                                 <button id="btnCfaRun" title="Static code-flow analysis from entry points">Flow</button>
                                 <label class="search-option" title="Skip ROM area (0000-3FFF)">
                                     <input type="checkbox" id="chkCfaSkipRom" checked> Skip ROM
@@ -7315,8 +7539,6 @@
                                 <label class="search-option" title="Include ISR handler at $0038">
                                     <input type="checkbox" id="chkCfaISR" checked> ISR
                                 </label>
-                                <input type="text" id="cfaExtraEntries" placeholder="Extra entries (hex, comma-sep)"
-                                       style="width:160px" title="Additional entry point addresses, e.g. 8000,9000">
                                 <button id="btnCfaClear" title="Clear code-flow analysis results">Clear</button>
                                 <span id="cfaStatus" class="automap-stats"></span>
                             </div>
@@ -7324,14 +7546,14 @@
                                 <span class="search-label">XRefs:</span>
                                 <button id="btnXrefScan" title="Scan visible range for cross-references">Scan</button>
                                 <button id="btnXrefScanAll" title="Scan full 64KB memory">Scan All</button>
-                                <button id="btnXrefClear" title="Clear all cross-references">Clear</button>
                                 <label class="search-option"><input type="checkbox" id="chkXrefRuntime"> Runtime</label>
+                                <button id="btnXrefClear" title="Clear all cross-references">Clear</button>
                                 <span id="xrefStats" class="automap-stats"></span>
                             </div>
                              <div class="tools-row">
                                 <span class="search-label">Profile:</span>
-                                <button id="btnProfileRun" title="Run profiler and auto-label subroutines">Run</button>
                                 <input type="number" id="profileFrameCount" value="200" min="10" max="5000" style="width:50px" title="Number of frames to profile">
+                                <button id="btnProfileRun" title="Run profiler and auto-label subroutines">Run</button>
                                 <label class="search-option" title="Include ROM subroutines (< $4000)"><input type="checkbox" id="chkProfileROM"> ROM</label>
                                 <button id="btnProfileStop" title="Stop profiling early" disabled>Stop</button>
                                 <button id="btnCallGraph" title="Show call graph from profiler data" disabled>Graph</button>
@@ -7340,7 +7562,10 @@
                             </div>
                             <div id="hotspotResults" class="hidden" style="margin-top:4px;max-height:180px;overflow-y:auto;font-size:11px;line-height:1.5"></div>
                             <div id="sigResults" class="hidden" style="margin-top:4px;max-height:180px;overflow-y:auto;font-size:11px;line-height:1.5"></div>
-                        </div>
+                    </div>
+                    <!-- Search Panel -->
+                    <div class="panel-tab-content" id="panel-search">
+                        <div class="tools-panel-row">
                         <div class="tools-group">
                             <div class="tools-group-label">search</div>
                             <div class="tools-row">
@@ -7365,6 +7590,36 @@
                                 <span id="pokeStatus" class="poke-status"></span>
                                 <div class="poke-results" id="pokeResults"></div>
                             </div>
+                            <div class="tools-row">
+                                <span class="search-label">Text:</span>
+                                <button id="btnTextScan" title="Scan memory for text strings">Scan</button>
+                                <select id="textScanMode" title="Scan mode">
+                                    <option value="all">All strings</option>
+                                    <option value="dict">Dictionary</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                                <input type="text" id="textScanCustom" placeholder="Search text..." style="width:80px;display:none">
+                                <label class="search-option" title="Minimum string length"><input type="number" id="textScanMinLen" value="4" min="2" max="20" style="width:35px"> min</label>
+                                <label class="search-option" title="Include ROM area (0000-3FFF)"><input type="checkbox" id="textScanROM"> ROM</label>
+                                <label class="search-option" title="Scan all 128K RAM banks"><input type="checkbox" id="textScanAllBanks"> All banks</label>
+                                <select id="textScanMax" title="Max results to show">
+                                    <option value="10">10</option>
+                                    <option value="25">25</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="0">All</option>
+                                </select>
+                                <span id="textScanStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="tools-row" id="textScanPagination" style="display:none">
+                                <button id="textScanPrev" title="Previous page">&lt;</button>
+                                <span id="textScanPage">Page 1/1</span>
+                                <button id="textScanNext" title="Next page">&gt;</button>
+                            </div>
+                            <div class="text-scan-results" id="textScanResults"></div>
+                        </div>
+                        <div class="tools-group">
+                            <div class="tools-group-label">monitors</div>
                             <div class="tools-row">
                                 <span class="search-label">Write mon:</span>
                                 <input type="text" id="writeMonAddr" placeholder="addr" maxlength="6" style="width:50px" title="Hex address to monitor for writes">
@@ -7407,36 +7662,11 @@
                                 <span id="rtStatus" class="poke-status"></span>
                                 <div id="rtResults" class="write-mon-results" style="max-height:150px"></div>
                             </div>
-                            <div class="tools-row">
-                                <span class="search-label">Text:</span>
-                                <button id="btnTextScan" title="Scan memory for text strings">Scan</button>
-                                <select id="textScanMode" title="Scan mode">
-                                    <option value="all">All strings</option>
-                                    <option value="dict">Dictionary</option>
-                                    <option value="custom">Custom</option>
-                                </select>
-                                <input type="text" id="textScanCustom" placeholder="Search text..." style="width:80px;display:none">
-                                <label class="search-option" title="Minimum string length"><input type="number" id="textScanMinLen" value="4" min="2" max="20" style="width:35px"> min</label>
-                                <label class="search-option" title="Include ROM area (0000-3FFF)"><input type="checkbox" id="textScanROM"> ROM</label>
-                                <label class="search-option" title="Scan all 128K RAM banks"><input type="checkbox" id="textScanAllBanks"> All banks</label>
-                                <select id="textScanMax" title="Max results to show">
-                                    <option value="10">10</option>
-                                    <option value="25">25</option>
-                                    <option value="50">50</option>
-                                    <option value="100">100</option>
-                                    <option value="0">All</option>
-                                </select>
-                                <span id="textScanStatus" class="automap-stats"></span>
-                            </div>
-                            <div class="tools-row" id="textScanPagination" style="display:none">
-                                <button id="textScanPrev" title="Previous page">&lt;</button>
-                                <span id="textScanPage">Page 1/1</span>
-                                <button id="textScanNext" title="Next page">&gt;</button>
-                            </div>
-                            <div class="text-scan-results" id="textScanResults"></div>
                         </div>
-                        <div class="tools-group">
-                            <div class="tools-group-label">code path</div>
+                        </div>
+                    </div>
+                    <!-- Code Path Panel -->
+                    <div class="panel-tab-content" id="panel-codepath">
                             <div class="tools-row">
                                 <span class="search-label">Slot:</span>
                                 <select id="cpSlotSelect" style="width:130px">
@@ -7446,8 +7676,8 @@
                                 </select>
                                 <button id="btnCpRecord" title="Start/stop recording executed PCs into selected slot">Record</button>
                                 <label class="search-option" title="Union new recording into existing slot data"><input type="checkbox" id="chkCpMerge"> Merge</label>
-                                <button id="btnCpClear" title="Clear all slots and results">Clear</button>
                                 <label class="search-option"><input type="checkbox" id="chkCpTrace" title="Run and break when execution leaves the selected slot's code path"> Trace</label>
+                                <button id="btnCpClear" title="Clear all slots and results">Clear</button>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Diff:</span>
@@ -7468,24 +7698,24 @@
                             <div class="tools-row">
                                 <span class="search-label">Filter:</span>
                                 <input type="text" id="cpFilterText" placeholder="mnemonic (A|B)" maxlength="40"
-                                    style="width:100px;font-size:11px;padding:2px 4px;font-family:monospace"
+                                    style="width:100px"
                                     title="Filter blocks by mnemonic (pipe-separated, e.g. DEC|SUB|SBC)">
                                 <button id="btnCpFilter" title="Apply filter">Apply</button>
                                 <button id="btnCpFilterWrites" title="Preset: DEC|SUB|SBC|CP" style="font-size:10px;padding:2px 4px">Writes</button>
                                 <button id="btnCpFilterBranch" title="Preset: conditional branches" style="font-size:10px;padding:2px 4px">Branch</button>
                                 <input type="text" id="cpFilterFrom" placeholder="from" maxlength="4"
-                                    style="width:36px;font-size:11px;padding:2px 4px;font-family:monospace;margin-left:6px"
+                                    style="width:36px;margin-left:6px"
                                     title="Start address (hex)">
                                 <span style="color:var(--text-secondary);font-size:11px">&ndash;</span>
                                 <input type="text" id="cpFilterTo" placeholder="to" maxlength="4"
-                                    style="width:36px;font-size:11px;padding:2px 4px;font-family:monospace"
+                                    style="width:36px"
                                     title="End address (hex)">
                                 <span id="cpFilterStatus" class="automap-stats"></span>
                             </div>
                             <div class="cp-results" id="cpResults"></div>
-                        </div>
-                        <div class="tools-group">
-                            <div class="tools-group-label">struct mapper</div>
+                    </div>
+                    <!-- Struct Mapper Panel -->
+                    <div class="panel-tab-content" id="panel-struct">
                             <div class="tools-row">
                                 <span class="search-label">Base:</span>
                                 <select id="smBaseReg" style="width:50px" title="Dynamic base register or fixed address">
@@ -7502,8 +7732,14 @@
                                 <span id="smStatus" class="poke-status"></span>
                             </div>
                             <div id="smResults" class="write-mon-results" style="max-height:180px"></div>
-                        </div>
-                        </div>
+                    </div>
+                    <!-- BASIC Panel -->
+                    <div class="panel-tab-content" id="panel-basic">
+                            <div class="tools-row">
+                                <button id="btnBasicCopy" title="Copy BASIC program to clipboard">Copy</button>
+                                <button id="btnBasicPaste" title="Paste BASIC program from clipboard">Paste</button>
+                                <label class="search-option" title="Copy original ASCII digits instead of deobfuscated values"><input type="checkbox" id="chkBasicAsListed"> As listed</label>
+                            </div>
                     </div>
                     <!-- Trace Panel -->
                     <div class="panel-tab-content" id="panel-trace">
@@ -7613,6 +7849,7 @@
                             </div>
                         </div>
                     </div>
+                    <div id="panelSplitter" class="panel-splitter" title="Drag to resize panel lists, double-click to reset"></div>
                 </div>
             </div><!-- debugger-panel -->
         </div><!-- debugger-container -->
@@ -7624,47 +7861,65 @@
                 <div class="assembler-header">
                     <div class="assembler-controls">
                         <div class="asm-files-dropdown">
-                            <button id="btnAsmFiles" title="Browse project files" disabled>Files ▼</button>
-                            <div class="asm-files-list" id="asmFilesList"></div>
+                            <button id="btnAsmFiles" title="Project actions and files">Project ▼</button>
+                            <div class="asm-files-list" id="asmProjectMenu">
+                                <div class="asm-menu-actions">
+                                    <button class="asm-menu-item" id="btnAsmNew" title="Create new file">New file</button>
+                                    <button class="asm-menu-item" id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load…</button>
+                                    <button class="asm-menu-item" id="btnAsmImport" title="Import shared project from clipboard">Import from clipboard</button>
+                                    <button class="asm-menu-item" id="btnAsmExport" title="Export source files (plain text or ZIP)">Export…</button>
+                                    <button class="asm-menu-item" id="btnAsmShare" title="Copy project to clipboard for sharing">Share to clipboard</button>
+                                    <button class="asm-menu-item" id="btnAsmInject" title="Inject assembled code to memory without starting the debugger" disabled>Inject into memory</button>
+                                    <button class="asm-menu-item" id="btnAsmClear" title="Clear all files and assembled output">Clear all</button>
+                                </div>
+                                <div id="asmFilesList"></div>
+                            </div>
                         </div>
                         <button id="btnAsmAssemble" title="Assemble code (F9)" disabled>Assemble</button>
-                        <button id="btnAsmInject" title="Inject assembled code to memory" disabled>Inject</button>
                         <button id="btnAsmDebug" title="Inject code and start debugging at entry point (Ctrl+F9)" disabled>Debug</button>
-                        <button id="btnAsmClear" title="Clear all">Clear</button>
-                        <button id="btnAsmNew" title="Create new file">New</button>
-                        <button id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load</button>
-                        <button id="btnAsmExport" title="Export source files (plain text or ZIP)" style="display:none">Export</button>
-                        <button id="btnAsmShare" title="Copy project to clipboard for sharing" style="display:none">Share</button>
-                        <button id="btnAsmImport" title="Import shared project from clipboard">Import</button>
                         <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
                         <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
-                        <label class="asm-option"><input type="checkbox" id="chkAsmCaseInsensitive"> Case insensitive</label>
-                        <label class="asm-option"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
-                        <label class="asm-option"><input type="checkbox" id="chkAsmShowCompiled"> Show compiled</label>
-                        <label class="asm-option">Font:
-                            <select id="asmFontSize" title="Editor font size" style="width: 45px; padding: 2px;">
-                                <option value="8">8</option>
-                                <option value="9">9</option>
-                                <option value="10">10</option>
-                                <option value="11">11</option>
-                                <option value="12" selected>12</option>
-                                <option value="13">13</option>
-                                <option value="14">14</option>
-                                <option value="16">16</option>
-                                <option value="18">18</option>
-                                <option value="20">20</option>
-                                <option value="22">22</option>
-                                <option value="24">24</option>
-                            </select>
-                        </label>
                         <label class="asm-option asm-defines-label" title="Command-line defines for IFDEF/IFNDEF (e.g., DEBUG,VERSION=5)">Defines: <input type="text" id="asmDefines" placeholder="NAME,NAME=value" spellcheck="false"></label>
                         <select id="asmDetectedDefines" multiple size="1" title="Defines from @define markers in source (click to toggle)" style="display:none"></select>
                         <span id="asmMainFileLabel" class="asm-main-label" style="display:none" title="Click to change main file"></span>
+                        <button id="btnAsmSplit" style="margin-left: auto;" title="Split editor: edit two files (or the same file) side by side">◫</button>
+                        <span class="disasm-opts-wrap">
+                            <button id="btnAsmViewOpts" title="Assembler options">⚙</button>
+                            <div id="asmViewOptsPopover" class="disasm-opts-popover hidden">
+                                <label title="Treat labels and instructions case-insensitively"><input type="checkbox" id="chkAsmCaseInsensitive"> Case insensitive</label>
+                                <label title="Report unused labels after assembly"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
+                                <label title="Show compiled bytes next to source lines"><input type="checkbox" id="chkAsmShowCompiled"> Show compiled</label>
+                                <label title="Always export source as ZIP, even for a single file (default: single file saved as plain text)"><input type="checkbox" id="chkAsmExportZip"> Export as ZIP</label>
+                                <label title="Editor font size">Font:
+                                    <select id="asmFontSize" style="width: 45px; padding: 2px;">
+                                        <option value="8">8</option>
+                                        <option value="9">9</option>
+                                        <option value="10">10</option>
+                                        <option value="11">11</option>
+                                        <option value="12" selected>12</option>
+                                        <option value="13">13</option>
+                                        <option value="14">14</option>
+                                        <option value="16">16</option>
+                                        <option value="18">18</option>
+                                        <option value="20">20</option>
+                                        <option value="22">22</option>
+                                        <option value="24">24</option>
+                                    </select>
+                                    <span class="opts-hint">Ctrl +/−</span>
+                                </label>
+                            </div>
+                        </span>
                     </div>
                 </div>
                 <div class="assembler-body">
                     <div class="asm-editor-container">
-                        <div class="asm-file-tabs" id="asmFileTabs"></div>
+                        <div class="asm-tabs-row">
+                            <div class="asm-file-tabs" id="asmFileTabs"></div>
+                            <div class="asm-pane2-header hidden" id="asmPane2Header">
+                                <select id="asmPane2File" title="File shown in the split pane"></select>
+                                <button id="btnAsmPane2Close" title="Close split view">×</button>
+                            </div>
+                        </div>
                         <div class="asm-search-bar" id="asmSearchBar" style="display:none">
                             <div class="asm-search-row">
                                 <input type="text" id="asmSearchInput" placeholder="Find (Ctrl+F)" spellcheck="false">
@@ -7683,10 +7938,11 @@
                             <div class="asm-search-results" id="asmSearchResults" style="display:none"></div>
                         </div>
                         <div class="asm-editor-area">
-                            <div class="asm-line-numbers" id="asmLineNumbers"></div>
-                            <div class="asm-editor-wrap">
-                                <pre class="asm-highlight" id="asmHighlight"></pre>
-                                <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Random border stripes
+                            <div class="asm-pane">
+                                <div class="asm-line-numbers" id="asmLineNumbers"></div>
+                                <div class="asm-editor-wrap">
+                                    <pre class="asm-highlight" id="asmHighlight"></pre>
+                                    <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Random border stripes
 ; @main
 ; @entry start
 
@@ -7699,10 +7955,20 @@ start:
         JR start
 
         SAVESNA &quot;stripes.sna&quot;, start ; md5: 7b3f9a1e4c6d2f08e5a1b9c3d7f0e2a4"></textarea>
-                                <div id="asmTstatePopup" class="asm-tstate-popup" style="display:none"></div>
+                                    <div id="asmTstatePopup" class="asm-tstate-popup" style="display:none"></div>
+                                </div>
+                            </div>
+                            <div id="asmPaneSplitter" class="panel-vsplitter hidden" title="Drag to resize the split pane, double-click to reset"></div>
+                            <div class="asm-pane asm-pane-second hidden" id="asmPane2">
+                                <div class="asm-line-numbers" id="asmLineNumbers2"></div>
+                                <div class="asm-editor-wrap">
+                                    <pre class="asm-highlight" id="asmHighlight2"></pre>
+                                    <textarea id="asmEditor2" class="asm-textarea" spellcheck="false"></textarea>
+                                </div>
                             </div>
                         </div>
                     </div>
+                    <div id="asmOutputSplitter" class="panel-splitter" style="margin-top: 0;" title="Drag to resize the output pane, double-click to reset"></div>
                     <div class="asm-output-container">
                         <div class="asm-output-header">Output</div>
                         <div id="asmProgress" class="asm-progress hidden">
@@ -7713,6 +7979,7 @@ start:
                         <div class="asm-output" id="asmOutput"><span class="asm-hint">Press Assemble to compile</span></div>
                     </div>
                 </div>
+                <div id="asmHeightSplitter" class="panel-splitter" title="Drag to resize the assembler area height, double-click to reset"></div>
             </div>
         </div><!-- tab-assembler -->
 
@@ -7721,7 +7988,8 @@ start:
             <div class="settings-subtab-bar">
                 <button class="settings-subtab-btn active" data-settingstab="display">Display</button>
                 <button class="settings-subtab-btn" data-settingstab="input">Input</button>
-                <button class="settings-subtab-btn" data-settingstab="media">Media</button>
+                <button class="settings-subtab-btn" data-settingstab="tape">Tape</button>
+                <button class="settings-subtab-btn" data-settingstab="disk">Disk</button>
                 <button class="settings-subtab-btn" data-settingstab="audio">Audio</button>
                 <button class="settings-subtab-btn" data-settingstab="machines">Machines</button>
                 <button class="settings-subtab-btn" data-settingstab="signatures">Signatures</button>
@@ -7849,30 +8117,6 @@ start:
                     </div>
                 </div>
             </div>
-                <div class="settings-row" style="margin-top: 10px;">
-                    <label class="checkbox-label" title="Add spacing after flow control instructions (JP, JR, RET, DJNZ)">
-                        <input type="checkbox" id="chkFlowBreakSpacing" checked> Flow break spacing
-                    </label>
-                    <label class="checkbox-label" style="margin-left: 15px;" title="Highlight current PC line while running (always shown when paused)">
-                        <input type="checkbox" id="chkShowPCCursor" checked> Show PC cursor
-                    </label>
-                    <label class="checkbox-label" style="margin-left: 15px;" title="Auto-scroll disassembly to follow PC (Shift+F6)">
-                        <input type="checkbox" id="chkFollowPC" checked> Follow PC
-                    </label>
-                </div>
-                <div class="settings-row" style="margin-top: 10px;">
-                    <label class="checkbox-label" title="Always export assembler source as ZIP even for single file (default: single file saved as plain text)">
-                        <input type="checkbox" id="chkAsmExportZip"> Assembler: export as ZIP
-                    </label>
-                </div>
-                <div class="settings-row" style="margin-top: 10px;">
-                    <label title="Maximum T-states for Step Over (CALL/RST/DJNZ) before stopping">
-                        Step Over T-state limit:
-                        <input type="text" id="stepOverMaxTstates" value="80000"
-                            style="width: 70px; font-family: monospace; font-size: 11px;"
-                            maxlength="10">
-                    </label>
-                </div>
             </div><!-- settings-display -->
 
             <!-- Input Sub-tab -->
@@ -7966,13 +8210,16 @@ start:
             </div>
             </div><!-- settings-input -->
 
-            <!-- Media Sub-tab -->
-            <div class="settings-subtab-content" id="settings-media">
+            <!-- Tape Sub-tab -->
+            <div class="settings-subtab-content" id="settings-tape">
             <div class="settings-tab-content">
                 <div class="settings-section">
                     <div class="settings-row">
                         <label style="min-width: 80px;">Last File:</label>
                         <span id="lastLoadedFile" style="color: var(--cyan); font-size: 11px;">—</span>
+                        <label class="checkbox-label" title="Automatically type LOAD &quot;&quot; for tape files, boot TR-DOS for disk images" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAutoLoad" checked> Auto Load
+                        </label>
                     </div>
                     <div class="settings-row">
                         <label class="checkbox-label" title="Flash load = instant (trap), unchecked = real-time with border stripes and sound">
@@ -7982,9 +8229,6 @@ start:
                         <label class="checkbox-label" title="Enable tape loading sounds (real-time mode)" style="margin-left: 15px;">
                             <input type="checkbox" id="chkTapeAudio" checked> Tape Sound
                         </label>
-                        <label class="checkbox-label" title="Automatically type LOAD &quot;&quot; for tape files, boot TR-DOS for disk images" style="margin-left: 15px;">
-                            <input type="checkbox" id="chkAutoLoad" checked> Auto Load
-                        </label>
                     </div>
                     <div class="settings-row">
                         <button id="btnTapePlay" class="control-btn" title="Play tape (real-time mode)">▶ Play</button>
@@ -7993,10 +8237,54 @@ start:
                         <span id="tapePosition" style="margin-left: 10px; color: var(--cyan); font-size: 11px;"></span>
                     </div>
                     <div class="settings-row">
-                        <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk">💾 Blank Disk</button>
+                        <button id="btnLoadTape" class="control-btn" title="Load tape file into active slot (no reset)">📼 Load Tape...</button>
+                        <button id="btnBlankTape" class="control-btn" style="margin-left: 8px;" title="Insert blank tape for recording">📼 Blank Tape</button>
+                        <input type="file" id="loadTapeFile" accept=".tap,.tzx,.wav,.zip" style="display: none;">
                     </div>
-                    <div class="settings-row" style="margin-top: 10px;">
-                        <select id="bootTrdMode" style="width: 120px;" title="How to handle boot file when loading TRD images">
+                    <div id="tapeCatalogContainer" style="margin-top: 6px;">
+                        <div class="media-catalog-bar" id="tapeCatalogBar" style="display: none;">
+                            <span id="tapeSlotTabs" style="margin-left: 4px;">
+                                <button class="media-catalog-btn tape-slot-tab" data-slot="0" style="min-width: 18px; padding: 1px 4px;">1</button>
+                                <button class="media-catalog-btn tape-slot-tab" data-slot="1" style="min-width: 18px; padding: 1px 4px;">2</button>
+                            </span>
+                        </div>
+                        <div id="tapeCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
+                        <div id="tapeActionsRow" style="display: none; align-items: center; padding: 4px 6px; gap: 8px;">
+                            <button id="btnTapeEject" class="control-btn" title="Eject tape from active slot">Eject</button>
+                            <span id="tapeRecordingCount" style="color: var(--cyan); font-size: 11px; margin-left: 4px;"></span>
+                            <button id="btnTapeExport" class="control-btn" title="Export recorded blocks (TAP or TZX)" style="display: none;">Export</button>
+                            <button id="btnTapeClearRec" class="control-btn" title="Clear recorded blocks" style="display: none;">Clear Rec</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-tape -->
+
+            <!-- Disk Sub-tab -->
+            <div class="settings-subtab-content" id="settings-disk">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row" id="driveSelector" style="display: none; margin-bottom: 16px;">
+                        <label style="min-width: 0;">System:</label>
+                        <select id="diskSystemSelect" style="flex: 0 0 auto; width: auto;" title="Disk system that Blank Disk, Target drive, and system-specific controls act on"></select>
+                        <label id="driveSelectorLabel" style="min-width: 0; margin-left: 10px;">Target drive:</label>
+                        <select id="driveSelectorSelect" style="flex: 0 0 auto; width: auto;">
+                            <option value="0">A:</option>
+                            <option value="1">B:</option>
+                            <option value="2">C:</option>
+                            <option value="3">D:</option>
+                        </select>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnLoadDisk" class="control-btn" title="Load disk image into selected drive (no reset)">💾 Load Disk...</button>
+                        <button id="btnBlankDisk" class="control-btn" style="margin-left: 8px;" title="Insert blank formatted disk">💾 Blank Disk</button>
+                        <label class="checkbox-label" title="Automatically boot disk images on load (same setting as Auto Load on the Tape tab)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAutoLoadDisk" checked> Auto Load
+                        </label>
+                        <input type="file" id="loadDiskFile" accept=".trd,.scl,.dsk,.mgt,.img,.mdr,.opd,.zip" style="display: none;">
+                    </div>
+                    <div class="settings-row" id="trdosBootRow">
+                        <select id="bootTrdMode" style="flex: 0 0 auto; width: auto;" title="How to handle boot file when loading TRD images">
                             <option value="none">No change</option>
                             <option value="add">Add boot</option>
                             <option value="replace">Replace boot</option>
@@ -8007,29 +8295,17 @@ start:
                         <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 6px;">No boot file selected</span>
                         <input type="file" id="bootTrdFile" accept=".trd,.$c,.$b,.$d,.$#,.hobeta" style="display: none;">
                     </div>
-                    <div class="settings-row" id="driveSelector" style="display: none;">
-                        <label>Target drive:</label>
-                        <select id="driveSelectorSelect" style="margin-left: 4px; font-size: 11px;">
-                            <option value="0">A:</option>
-                            <option value="1">B:</option>
-                            <option value="2">C:</option>
-                            <option value="3">D:</option>
-                        </select>
-                    </div>
-                    <div id="mediaCatalogContainer" style="display: none; margin-top: 6px;">
-                        <div class="media-catalog-bar" id="mediaCatalogBar">
-                            <button class="media-catalog-btn" id="mediaCatalogTapeBtn" data-catalog="tape" style="display: none;">Tape</button>
-                            <button class="media-catalog-btn" id="mediaCatalogDiskBtn" data-catalog="disk" style="display: none;">Disk</button>
-                            <span id="diskDriveTabs" style="display: none; margin-left: 4px;">
+                    <div id="diskCatalogContainer" style="margin-top: 6px;">
+                        <div class="media-catalog-bar" id="diskCatalogBar" style="display: none;">
+                            <span id="diskDriveTabs" style="margin-left: 4px;">
                                 <!-- Drive tabs are dynamically generated by updateDiskDriveTabs() -->
                             </span>
                         </div>
-                        <div id="tapeCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
                         <div id="diskCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
                     </div>
                 </div>
             </div>
-            </div><!-- settings-media -->
+            </div><!-- settings-disk -->
 
             <!-- Audio Sub-tab -->
             <div class="settings-subtab-content" id="settings-audio">
@@ -8067,7 +8343,6 @@ start:
                 <div class="settings-section">
                     <div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Choose which machines appear in the toolbar dropdown:</div>
                     <div id="machineCheckboxes"></div>
-                    <button id="btnSettingsLoadRoms" style="margin-top: 8px;">Load ROMs...</button>
                     <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up." style="margin-top: 8px; display: inline-block;">
                         <input type="checkbox" id="chkLateTimings"> Late Timings
                     </label>
@@ -8101,6 +8376,7 @@ start:
                     <div style="margin-top: 4px;">
                         <button id="btnLoadIF1Rom" title="Load Interface 1 ROM file (if1.rom)" style="font-size: 11px; padding: 2px 10px;">Load IF1 ROM</button>
                     </div>
+                    <button id="btnSettingsLoadRoms" style="margin-top: 10px; font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
                 </div>
             </div>
             </div><!-- settings-machines -->
@@ -8397,6 +8673,8 @@ start:
                                 <option value="screen">Screen</option>
                             </select>
                             <button id="btnExplorerBasic" class="explorer-btn">Decode</button>
+                            <button id="btnExplorerBasicCopy" class="explorer-btn" title="Copy decoded BASIC to clipboard">Copy</button>
+                            <label class="search-option" title="Copy original ASCII digits instead of deobfuscated values"><input type="checkbox" id="chkExplorerBasicAsListed"> As listed</label>
                         </div>
                         <div id="explorerBasicOutput" class="explorer-output">
                             <span class="explorer-empty">Select a BASIC program and click Decode</span>
@@ -8836,12 +9114,6 @@ start:
                         <input type="file" id="binLoadFile" accept=".bin,.dat,*" style="display: none;">
                     </div>
                     <div class="frame-grab-status" id="binStatus"></div>
-                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
-                    <div class="settings-row">
-                        <label class="checkbox-label" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks when exporting ASM from Memory Map">
-                            <input type="checkbox" id="chkExportDedupLoops" checked> Dedup ASM loops
-                        </label>
-                    </div>
                 </div>
             </div>
             </div><!-- tools-export -->
@@ -9947,6 +10219,15 @@ start:
                 <div class="memmap-canvas-container">
                     <canvas id="memmapCanvas" width="512" height="512"></canvas>
                     <div class="memmap-tooltip" id="memmapTooltip"></div>
+                    <div style="margin-top:6px;display:flex;align-items:center;gap:10px">
+                        <button id="btnExportAsm" title="Export disassembly as sjasmplus-compatible ASM file">Export ASM</button>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer" title="Include address and bytes as comments (e.g. LD A,$00 ; 8000: 3E 00)">
+                            <input type="checkbox" id="chkExportAddrBytes"> Addr+Bytes
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks">
+                            <input type="checkbox" id="chkExportDedupLoops" checked> Dedup loops
+                        </label>
+                    </div>
                 </div>
                 <div class="memmap-sidebar">
                     <div class="memmap-view-toggle" style="margin-bottom:8px">
@@ -9989,12 +10270,6 @@ start:
                     <div class="memmap-bar" id="memmapBar"></div>
                     <div class="memmap-addr-info" id="memmapAddrInfo">Hover over map to see details<br>Click to navigate</div>
                     <h3 class="memmap-title">Memory Map (64KB)</h3>
-                    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
-                        <button id="btnExportAsm" title="Export disassembly as sjasmplus-compatible ASM file">Export ASM</button>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer" title="Include address and bytes as comments (e.g. LD A,$00 ; 8000: 3E 00)">
-                            <input type="checkbox" id="chkExportAddrBytes"> Addr+Bytes
-                        </label>
-                    </div>
                 </div>
             </div>
         </div>
@@ -10107,6 +10382,23 @@ start:
                 <button id="btnCommentSave">Save</button>
                 <button id="btnCommentDelete" class="danger">Delete</button>
                 <button id="btnCommentCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- BASIC Paste Dialog -->
+    <div class="label-dialog hidden" id="basicPasteDialog">
+        <div class="label-dialog-content" style="width: 480px;">
+            <h4>Paste BASIC Program</h4>
+            <div class="label-dialog-row">
+                <textarea id="basicPasteText" rows="12" placeholder="10 PRINT &quot;HELLO&quot;&#10;20 GOTO 10" style="font-family:monospace;font-size:12px;width:100%;box-sizing:border-box"></textarea>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+                This replaces the current BASIC program. Emulator will be paused.
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnBasicPasteConfirm">Confirm</button>
+                <button id="btnBasicPasteCancel">Cancel</button>
             </div>
         </div>
     </div>
@@ -10351,7 +10643,8 @@ start:
     import { initDisasmNavigation } from './ui/disasm-navigation.js';
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
-        const APP_VERSION = '0.14.27';
+    import { initBasicEditor } from './ui/basic-editor.js';
+        const APP_VERSION = '0.15.3';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -10452,10 +10745,6 @@ start:
 
         const undoManager = new UndoManager();
         undoManager.onChange = () => {
-            const btnUndo = document.getElementById('btnUndo');
-            const btnRedo = document.getElementById('btnRedo');
-            if (btnUndo) btnUndo.disabled = !undoManager.canUndo;
-            if (btnRedo) btnRedo.disabled = !undoManager.canRedo;
             if (undoManager.lastAction) {
                 updateDebugger();
                 showMessage(`${undoManager.lastAction.type === 'undo' ? 'Undo' : 'Redo'}: ${undoManager.lastAction.description}`);
@@ -10480,7 +10769,7 @@ start:
         });
 
         // ROM Selector (extracted to ui/rom-selector.js)
-        const { romData, loadRomsForMachineType, applyRomsToEmulator, initializeEmulator, tryLoadRomsFromDirectory, loadRomFile, updateRomStatus, showRomModal, isRomModalVisible } = initRomSelector({
+        const { romData, loadRomsForMachineType, applyRomsToEmulator, initializeEmulator, tryLoadRomsFromDirectory, loadRomFile, updateRomStatus, showRomModal, isRomModalVisible, loadRomForMachineById, getRomFileName } = initRomSelector({
             getSpectrum: () => spectrum,
             getShowMessage: () => showMessage,
             labelManager,
@@ -10489,7 +10778,9 @@ start:
             getDisplayAPI: () => displayAPI,
             getUpdateBetaDiskStatus: () => updateBetaDiskStatus,
             getUpdatePlusDStatus: () => updatePlusDStatus,
-            getUpdateIF1Status: () => updateIF1Status
+            getUpdateIF1Status: () => updateIF1Status,
+            getUpdateRomFileNames: () => updateRomFileNames,
+            getUpdateDriveSelector: () => updateDriveSelector
         });
 
         // UI Elements
@@ -10517,8 +10808,10 @@ start:
         let handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex;
 
         // Machine Dropdown & Settings (extracted to ui/machine-selector.js)
-        const { populateMachineDropdown } = initMachineSelector({
-            MACHINE_PROFILES, getMachineTypes, DEFAULT_VISIBLE_MACHINES
+        const { populateMachineDropdown, updateRomFileNames } = initMachineSelector({
+            MACHINE_PROFILES, getMachineTypes, DEFAULT_VISIBLE_MACHINES,
+            getLoadRomForMachineById: () => loadRomForMachineById,
+            getGetRomFileName: () => getRomFileName
         });
 
         // Status display (extracted to ui/status-display.js)
@@ -10674,7 +10967,7 @@ start:
                 }
                 secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
                 document.getElementById('secondScreenLabel').textContent =
-                    'Spectrum @ $' + baseAddr.toString(16).toUpperCase().padStart(4, '0');
+                    'Spectrum @ $' + hex16(baseAddr);
 
             } else if (secondScreenMode === 'linear') {
                 // Linear row-sequential layout from custom address, white-on-black
@@ -10697,7 +10990,7 @@ start:
                 }
                 secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
                 document.getElementById('secondScreenLabel').textContent =
-                    'Linear @ $' + baseAddr.toString(16).toUpperCase().padStart(4, '0');
+                    'Linear @ $' + hex16(baseAddr);
             }
         }
 
@@ -10766,7 +11059,7 @@ start:
             const parsed = parseInt(savedAddr, 16);
             if (!isNaN(parsed)) {
                 secondScreenCustomAddr = parsed & 0xFFFF;
-                secondScreenAddrInput.value = secondScreenCustomAddr.toString(16).toUpperCase().padStart(4, '0');
+                secondScreenAddrInput.value = hex16(secondScreenCustomAddr);
             }
         }
         secondScreenSelect.value = secondScreenMode;
@@ -10783,7 +11076,7 @@ start:
             const parsed = parseInt(secondScreenAddrInput.value, 16);
             if (!isNaN(parsed)) {
                 secondScreenCustomAddr = parsed & 0xFFFF;
-                secondScreenAddrInput.value = secondScreenCustomAddr.toString(16).toUpperCase().padStart(4, '0');
+                secondScreenAddrInput.value = hex16(secondScreenCustomAddr);
                 storageSet('zxm8_secondScreenAddr', secondScreenAddrInput.value);
                 if (secondScreenMode === 'linear' || secondScreenMode === 'spectrum') renderSecondScreen();
             }
@@ -10862,7 +11155,6 @@ start:
 
         // Memory View UI elements
         const memoryAddressInput = document.getElementById('memoryAddress');
-        const btnMemoryGo = document.getElementById('btnMemoryGo');
         const btnMemoryPC = document.getElementById('btnMemoryPC');
         const btnMemorySP = document.getElementById('btnMemorySP');
         const btnMemoryHL = document.getElementById('btnMemoryHL');
@@ -10927,7 +11219,7 @@ start:
         let disasm = null;
 
         // Layout helpers (extracted to ui/layout-helpers.js)
-        const { isLandscapeMode, isDebuggerVisible, checkLandscapeMode, isFlowBreak } = initLayoutHelpers();
+        const { isDebuggerVisible, isFlowBreak } = initLayoutHelpers();
 
         // Disassembly generator (extracted to ui/disasm-generator.js)
         const { disassembleWithRegions, disassembleWithFolding } = initDisasmGenerator({
@@ -11014,14 +11306,10 @@ start:
             MEMORY_LINES, LEFT_MEMORY_LINES, BYTES_PER_LINE
         });
         const { updateMemoryView, updateLeftMemoryView,
+                getRightBytesPerLine, getLeftBytesPerLine,
                 clearMemSelection, clearAsciiSelection, startByteEdit, finishCurrentEdit } = memoryViewAPI;
 
         // Memory context menus initialized later (after initDialogs)
-        
-        btnMemoryGo.addEventListener('click', () => {
-            const addr = parseInt(memoryAddressInput.value, 16);
-            if (!isNaN(addr)) goToMemoryAddress(addr);
-        });
         
         memoryAddressInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
@@ -11043,11 +11331,11 @@ start:
         });
         
         btnMemoryPgUp.addEventListener('click', () => {
-            goToMemoryAddress(memoryViewAddress - MEMORY_LINES * BYTES_PER_LINE);
+            goToMemoryAddress(memoryViewAddress - MEMORY_LINES * getRightBytesPerLine());
         });
-        
+
         btnMemoryPgDn.addEventListener('click', () => {
-            goToMemoryAddress(memoryViewAddress + MEMORY_LINES * BYTES_PER_LINE);
+            goToMemoryAddress(memoryViewAddress + MEMORY_LINES * getRightBytesPerLine());
         });
 
         // Right panel disassembly view (extracted to ui/right-disasm-view.js)
@@ -11102,10 +11390,6 @@ start:
         });
 
         // Left panel memory controls
-        document.getElementById('btnLeftMemGo')?.addEventListener('click', () => {
-            const addr = parseInt(leftMemAddressInput.value, 16);
-            if (!isNaN(addr)) goToLeftMemoryAddress(addr);
-        });
         leftMemAddressInput?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 const addr = parseInt(leftMemAddressInput.value, 16);
@@ -11122,10 +11406,10 @@ start:
             if (spectrum.cpu) goToLeftMemoryAddress(spectrum.cpu.hl);
         });
         document.getElementById('btnLeftMemPgUp')?.addEventListener('click', () => {
-            goToLeftMemoryAddress(leftMemoryViewAddress - LEFT_MEMORY_LINES * BYTES_PER_LINE);
+            goToLeftMemoryAddress(leftMemoryViewAddress - LEFT_MEMORY_LINES * getLeftBytesPerLine());
         });
         document.getElementById('btnLeftMemPgDn')?.addEventListener('click', () => {
-            goToLeftMemoryAddress(leftMemoryViewAddress + LEFT_MEMORY_LINES * BYTES_PER_LINE);
+            goToLeftMemoryAddress(leftMemoryViewAddress + LEFT_MEMORY_LINES * getLeftBytesPerLine());
         });
 
         // Scroll wheel for left memory view
@@ -11133,7 +11417,7 @@ start:
             if (leftPanelType !== 'memdump') return;
             e.preventDefault();
             const scrollLines = e.deltaY > 0 ? 3 : -3;
-            goToLeftMemoryAddress(leftMemoryViewAddress + scrollLines * BYTES_PER_LINE);
+            goToLeftMemoryAddress(leftMemoryViewAddress + scrollLines * getLeftBytesPerLine());
         }, { passive: false });
 
         // Bookmarks (extracted to ui/bookmarks.js)
@@ -11215,7 +11499,7 @@ start:
                         const addrStr = hex16(entry.pc);
                         let bytesStr = '';
                         for (let j = 0; j < entry.len; j++) {
-                            bytesStr += entry.bytes[j].toString(16).toUpperCase().padStart(2, '0') + ' ';
+                            bytesStr += hex8(entry.bytes[j]) + ' ';
                         }
                         html += '<div class="ph-instr" data-addr="' + entry.pc + '">'
                             + '<span class="ph-addr">' + addrStr + '</span> '
@@ -11346,6 +11630,17 @@ start:
             labelManager,
             goToAddress,
             showMessage
+        });
+
+        // BASIC Copy/Paste (extracted to ui/basic-editor.js)
+        initBasicEditor({
+            getSpectrum: () => spectrum,
+            readMemory,
+            writePoke: (addr, val) => spectrum.poke(addr, val),
+            isRunning: () => spectrum.isRunning(),
+            stopEmulator: () => spectrum.stop(),
+            showMessage,
+            updateDebugger
         });
 
         // Memory Search (extracted to memory-search.js)
@@ -11599,6 +11894,8 @@ start:
             document.getElementById('diskInfo').style.display = 'none';
             mediaCatalogAPI.clearDiskCatalog();
             mediaCatalogAPI.buildTapeCatalog();
+            mediaCatalogAPI.updateTapeSlotTabs();
+            mediaCatalogAPI.updateRecordingStatus();
             updateSecondScreenOptions();
             updateSecondScreenVisibility();
             showMessage('Machine reset');
@@ -12089,6 +12386,33 @@ start:
                 } catch (err) {
                     showMessage('Failed to save DSK: ' + err.message, 'error');
                 }
+            } else if (action === 'trd') {
+                try {
+                    if (!spectrum.betaDisk) {
+                        showMessage('No Beta Disk interface', 'error');
+                        return;
+                    }
+                    // Use the drive selected in Settings → Disk
+                    const driveIdx = getSelectedDriveIndex ? getSelectedDriveIndex() : 0;
+                    if (!spectrum.betaDisk.drives[driveIdx].diskData) {
+                        showMessage(`No disk in drive ${String.fromCharCode(65 + driveIdx)} (select drive in Settings → Disk)`, 'error');
+                        return;
+                    }
+                    // Live image (TRD format, includes all TR-DOS writes)
+                    const trdData = spectrum.betaDisk.drives[driveIdx].diskData;
+                    const loaded = spectrum.loadedBetaDisks[driveIdx];
+                    let name = (loaded && loaded.name) || 'disk.trd';
+                    // Keep the original format: disks loaded from .scl save back as SCL
+                    const asScl = name.toLowerCase().endsWith('.scl');
+                    const data = asScl ? spectrum.betaDisk.trdToScl(trdData) : trdData;
+                    if (!asScl && !name.toLowerCase().endsWith('.trd')) {
+                        name = name.replace(/[\[\]]/g, '') + '.trd';
+                    }
+                    downloadFile(name, data);
+                    showMessage(`${asScl ? 'SCL' : 'TRD'} saved (drive ${String.fromCharCode(65 + driveIdx)})`);
+                } catch (err) {
+                    showMessage('Failed to save disk: ' + err.message, 'error');
+                }
             } else {
                 // Save snapshot (sna, z80, szx)
                 try {
@@ -12188,7 +12512,8 @@ start:
                 romData,
                 showMessage,
                 initGamepad,
-                initBootManager
+                initBootManager,
+                onDiskSystemsChanged: () => { if (updateDriveSelector) updateDriveSelector(); }
             });
 
         // Autofire (extracted to ui/autofire.js)
@@ -12204,6 +12529,7 @@ start:
         const mediaCatalogAPI = initMediaCatalog({
             getSpectrum: () => spectrum,
             showMessage,
+            downloadFile,
             updateDriveSelector: (...args) => updateDriveSelector(...args),
             openInExplorer: async (data, filename) => {
                 await explorerAPI.loadData(data, filename);
@@ -12214,6 +12540,21 @@ start:
                 document.querySelector('.tools-subtab-btn[data-toolstab="explorer"]').click();
             }
         });
+
+        // Tape SAVE trap — update recording UI on each saved block
+        spectrum.tapeSaveTrap.onBlockSaved = (tapBlock, flag) => {
+            spectrum.tapeRecordings[spectrum.activeTapeSlot].push(tapBlock);
+            mediaCatalogAPI.updateRecordingStatus();
+            const type = flag === 0x00 ? 'Header' : 'Data';
+            showMessage(`Saved ${type} block (${tapBlock.length - 2} bytes)`);
+        };
+
+        // MIC recorder — update recording UI on each completed block
+        spectrum.micRecorder.onBlockRecorded = (block) => {
+            spectrum.micRecordings[spectrum.activeTapeSlot].push(block);
+            mediaCatalogAPI.updateRecordingStatus();
+            showMessage(`MIC: Recorded block (${block.pulses.length} pulses)`);
+        };
 
         // Auto-Loader (extracted to ui/auto-loader.js)
         const autoLoaderAPI = initAutoLoader({ getSpectrum: () => spectrum });
@@ -12366,10 +12707,6 @@ start:
                 return isNaN(v) ? -1 : v;
             }
 
-            function formatHex4(v) {
-                return v.toString(16).toUpperCase().padStart(4, '0');
-            }
-
             function syncBinFields(source) {
                 const start = parseBinHex(binStart);
                 if (start < 0 || start > 0xFFFF) return;
@@ -12378,23 +12715,23 @@ start:
                     if (len < 0) return;
                     if (len < 1) len = 1;
                     if (start + len > 0x10000) len = 0x10000 - start;
-                    binLength.value = formatHex4(len);
-                    binEnd.value = formatHex4(start + len - 1);
+                    binLength.value = hex16(len);
+                    binEnd.value = hex16(start + len - 1);
                     lastEditedField = 'length';
                 } else if (source === 'end') {
                     let end = parseBinHex(binEnd);
                     if (end < 0) return;
                     if (end < start) end = start;
                     if (end > 0xFFFF) end = 0xFFFF;
-                    binEnd.value = formatHex4(end);
-                    binLength.value = formatHex4(end - start + 1);
+                    binEnd.value = hex16(end);
+                    binLength.value = hex16(end - start + 1);
                     lastEditedField = 'end';
                 } else if (source === 'start') {
                     if (lastEditedField === 'end') {
                         // Clamp end if it fell below new start
                         let end = parseBinHex(binEnd);
                         if (end >= 0 && end < start) {
-                            binEnd.value = formatHex4(start);
+                            binEnd.value = hex16(start);
                         }
                         syncBinFields('end');
                     } else {
@@ -12429,9 +12766,9 @@ start:
                 }
                 const data = spectrum.memory.getBlock(start, len);
                 const baseName = getExportBaseName();
-                const addrSuffix = '_' + start.toString(16).toUpperCase().padStart(4, '0');
+                const addrSuffix = '_' + hex16(start);
                 downloadFile(baseName + addrSuffix + '.bin', data);
-                binStatus.textContent = 'Exported ' + len + ' bytes from $' + start.toString(16).toUpperCase().padStart(4, '0');
+                binStatus.textContent = 'Exported ' + len + ' bytes from $' + hex16(start);
             });
 
             const binLoadFile = document.getElementById('binLoadFile');
@@ -12456,7 +12793,7 @@ start:
                     }
                     spectrum.memory.setBlock(start, data);
                     spectrum.renderToScreen();
-                    binStatus.textContent = 'Loaded ' + data.length + ' bytes at $' + start.toString(16).toUpperCase().padStart(4, '0');
+                    binStatus.textContent = 'Loaded ' + data.length + ' bytes at $' + hex16(start);
                     updateDebugger();
                 };
                 reader.readAsArrayBuffer(file);
@@ -12510,7 +12847,8 @@ start:
             updateBookmarkButtons,
             showTraceEntry, updateTraceStatus, updateTraceList,
             setZoom, getCurrentZoom,
-            DISASM_LINES, BYTES_PER_LINE, MEMORY_LINES, LEFT_MEMORY_LINES
+            DISASM_LINES, MEMORY_LINES, LEFT_MEMORY_LINES,
+            getRightBytesPerLine, getLeftBytesPerLine
         });
 
         // Initial black screen

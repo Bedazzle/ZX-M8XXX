@@ -4,6 +4,8 @@
 import { InstructionEncoder, Z80Asm } from './instructions.js';
 import { ErrorCollector } from './errors.js';
 
+const ALU_CODES = { ADD: 0, ADC: 1, SUB: 2, SBC: 3, AND: 4, XOR: 5, OR: 6, CP: 7 };
+
 // Add LD encoder to InstructionEncoder
 InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
     // Uppercase for pattern matching only - preserve original for expression evaluation
@@ -196,8 +198,7 @@ InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
 
 // ALU operations encoder
 InstructionEncoder.encodeALU = function(op, ops, addr, syms) {
-    const aluCodes = { ADD: 0, ADC: 1, SUB: 2, SBC: 3, AND: 4, XOR: 5, OR: 6, CP: 7 };
-    const code = aluCodes[op];
+    const code = ALU_CODES[op];
 
     // ADD/ADC/SBC can have 16-bit forms
     if ((op === 'ADD' || op === 'ADC' || op === 'SBC') && ops.length === 2) {
@@ -257,8 +258,7 @@ InstructionEncoder.encodeALU = function(op, ops, addr, syms) {
 
 // 8-bit ALU helper
 InstructionEncoder.encodeALU8 = function(op, operand, addr, syms) {
-    const aluCodes = { ADD: 0, ADC: 1, SUB: 2, SBC: 3, AND: 4, XOR: 5, OR: 6, CP: 7 };
-    const code = aluCodes[op];
+    const code = ALU_CODES[op];
     const s = operand.toUpperCase();
 
     // ALU r

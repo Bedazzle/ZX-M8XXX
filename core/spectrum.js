@@ -15,7 +15,7 @@ import {
     DECODE_FDC_MSR, DECODE_FDC_DATA,
     DECODE_AY_MASK, DECODE_AY_REG, DECODE_AY_DATA,
     DECODE_P1024_MASK, DECODE_P1024_VAL,
-    IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL, IF1_PORT_NET,
+    IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL,
     IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR,
     PLUSD_PAGE_IN_RST8, PLUSD_PAGE_IN_KEYNEXT, PLUSD_PAGE_IN_NMI, PLUSD_PAGE_IN_KEYSCAN
 } from './constants.js';
@@ -26,7 +26,8 @@ import { ULA } from './ula.js';
 import { AY } from './ay.js';
 import {
     TapeLoader, TapePlayer, TZXLoader, WAVLoader, SnapshotLoader,
-    TapeTrapHandler, TRDOSTrapHandler, BetaDisk,
+    TapeTrapHandler, TapeSaveTrapHandler, MicRecorder, buildTZX,
+    TRDOSTrapHandler, BetaDisk,
     ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader,
     MGTLoader, PlusDDisk, MDRLoader, Microdrive
 } from './loaders.js';
@@ -61,6 +62,15 @@ import { Disassembler } from './disasm.js';
             this._lastTapeUpdate = 0;  // T-state of last tape update (for accurate EAR timing)
             this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, null);
             this.tapeTrap.setEnabled(this.tapeTrapsEnabled);
+            this.tapeSaveTrap = new TapeSaveTrapHandler(this.cpu, this.memory);
+            this.tapeSaveTrap.setEnabled(this.tapeTrapsEnabled);
+            this.tapeSaveTrap.onBlockSaved = (tapBlock, flag) => {
+                this.tapeRecordings[this.activeTapeSlot].push(tapBlock);
+            };
+            this.micRecorder = new MicRecorder(0);  // tstatesPerFrame set after this.timing init
+            this.micRecorder.onBlockRecorded = (block) => {
+                this.micRecordings[this.activeTapeSlot].push(block);
+            };
             this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
             this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
@@ -90,6 +100,7 @@ import { Disassembler } from './disasm.js';
             this.cpu.portWrite = this.portWrite.bind(this);
             
             this.timing = this.ula.getTiming();
+            this.micRecorder.setTstatesPerFrame(this.timing.tstatesPerFrame);
             this.frameInterval = null;
             this.running = false;
             this.lastFrameTime = 0;
@@ -186,8 +197,12 @@ import { Disassembler } from './disasm.js';
             this.traceMemOpsLimit = 8; // Max memory ops to record per instruction
             this.haltTraced = false; // Track if current HALT state has been traced
 
-            // Media storage for project save/load — separate tape and per-drive disk state
-            this.loadedTape = null;          // { type: 'tap'|'tzx', data: Uint8Array, name: string }
+            // Media storage for project save/load — multi-tape slots and per-drive disk state
+            this.loadedTapes = [null, null];        // Per-slot { type, data, name }
+            this.activeTapeSlot = 0;
+            this.tapeSlotStates = [null, null];     // Per-slot { loaderBlock, playerBlock }
+            this.tapeRecordings = [[], []];         // Per-slot arrays of TAP block Uint8Arrays
+            this.micRecordings = [[], []];          // Per-slot arrays of MIC-recorded { pulses, initialLevel }
             this.loadedBetaDisks = [null, null, null, null];  // Per-drive { data: Uint8Array, name: string }
             this.loadedFDCDisks = [null, null];               // Per-drive { data: Uint8Array, name: string }
             this.loadedBetaDiskFiles = [null, null, null, null];  // Per-drive file listings for Beta Disk
@@ -714,9 +729,6 @@ import { Disassembler } from './disasm.js';
                 // For internal T-states (not memory accesses), apply contention if address is contended
                 // This is critical for accurate timing of DJNZ loops and other instructions with internal cycles
                 // Set spectrum.internalContentionDisabled = true to disable for testing
-                this.internalContentionCalls = 0;
-                this.internalContentionDelay = 0;
-                this.internalNonContendedCalls = 0;  // Track calls with non-contended addresses
                 this.internalContentionDisabled = false;  // Enable internal contention (needed for ULA48)
                 this.cpu.contendInternal = (addr, tstates) => {
                     if (this.internalContentionDisabled) {
@@ -724,7 +736,6 @@ import { Disassembler } from './disasm.js';
                         return;
                     }
                     if (addr >= SLOT1_START && addr < SLOT2_START) {
-                        this.internalContentionCalls++;
                         let totalDelay = 0;
                         // Swan/Fuse style: CheckContention; Inc(TStates) for each cycle
                         // Each check happens at current position, then 1T is added
@@ -740,10 +751,7 @@ import { Disassembler } from './disasm.js';
                             }
                             this.cpu.tStates += totalDelay;
                             this.accumulatedContention += totalDelay;
-                            this.internalContentionDelay += totalDelay;
                         }
-                    } else {
-                        this.internalNonContendedCalls++;
                     }
                     // Update mcycleOffset to account for internal cycles
                     mcycleOffset += tstates;
@@ -855,9 +863,6 @@ import { Disassembler } from './disasm.js';
 
                 // +2A/+3: NO internal cycle contention (FUSE: contend_delay_no_mreq = none)
                 // The Amstrad gate array only contends on MREQ, not on internal cycles
-                this.internalContentionCalls = 0;
-                this.internalContentionDelay = 0;
-                this.internalNonContendedCalls = 0;
                 this.internalContentionDisabled = false;
                 this.cpu.contendInternal = (addr, tstates) => {
                     mcycleOffset += tstates;
@@ -954,9 +959,6 @@ import { Disassembler } from './disasm.js';
                     return originalNmi();
                 };
 
-                this.internalContentionCalls = 0;
-                this.internalContentionDelay = 0;
-                this.internalNonContendedCalls = 0;
                 this.internalContentionDisabled = false;
                 this.cpu.contendInternal = (addr, tstates) => {
                     if (this.internalContentionDisabled) {
@@ -964,7 +966,6 @@ import { Disassembler } from './disasm.js';
                         return;
                     }
                     if (isContendedAddr(addr)) {
-                        this.internalContentionCalls++;
                         let totalDelay = 0;
                         let currentT = this.cpu.tStates + mcycleOffset;
                         for (let i = 0; i < tstates; i++) {
@@ -975,10 +976,7 @@ import { Disassembler } from './disasm.js';
                         if (totalDelay > 0) {
                             this.cpu.tStates += totalDelay;
                             this.accumulatedContention += totalDelay;
-                            this.internalContentionDelay += totalDelay;
                         }
-                    } else {
-                        this.internalNonContendedCalls++;
                     }
                     mcycleOffset += tstates;
                 };
@@ -1153,26 +1151,6 @@ import { Disassembler } from './disasm.js';
         setContention(enabled) {
             this.contentionEnabled = enabled;
             // Per-line contention is handled in the run loop based on contentionEnabled flag
-        }
-
-        // Dump contention statistics to console
-        dumpContentionStats() {
-            console.log('=== Contention Statistics ===');
-            console.log(`Contention enabled: ${this.contentionEnabled}`);
-            console.log(`Internal contention calls (contended addr): ${this.internalContentionCalls || 0}`);
-            console.log(`Internal contention total delay: ${this.internalContentionDelay || 0} T-states`);
-            console.log(`Internal non-contended calls: ${this.internalNonContendedCalls || 0}`);
-            console.log(`Accumulated contention this frame: ${this.accumulatedContention || 0}`);
-            console.log(`contendInternal callback set: ${!!this.cpu.contendInternal}`);
-            console.log(`contend callback set: ${!!this.cpu.contend}`);
-        }
-
-        // Reset contention statistics
-        resetContentionStats() {
-            this.internalContentionCalls = 0;
-            this.internalContentionDelay = 0;
-            this.internalNonContendedCalls = 0;
-            this.accumulatedContention = 0;
         }
 
         // ========== Display Settings ==========
@@ -1671,6 +1649,9 @@ import { Disassembler } from './disasm.js';
                     this.beeperChanges.push({ tStates: frameT, level: newBeeperLevel });
                 }
 
+                // Track MIC output (bit 3) for tape save recording
+                this.micRecorder.writeMic((val >> 3) & 1, this.cpu.tStates);
+
                 // Don't return - port $7FFC triggers BOTH ULA AND paging for scroll17 effect
             }
             if (if1Active && (lowByte & 0x01) === 1 && ((lowByte & IF1_PORT_MASK) === IF1_PORT_DATA ||
@@ -1944,6 +1925,7 @@ import { Disassembler } from './disasm.js';
                     return;
                 }
                 if (tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
+                if (tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
                 if (tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
@@ -2333,6 +2315,7 @@ import { Disassembler } from './disasm.js';
 
             this.frameCount++;
             this.totalFrames++;
+            this.micRecorder.onFrameEnd(this.cpu.tStates);
             if (this.onFrame) this.onFrame(this.frameCount);
 
             // Profiler: count down frames
@@ -2551,6 +2534,7 @@ import { Disassembler } from './disasm.js';
                 if (this._plusDPagingEnabled) this.updatePlusDPaging();
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
+                if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
@@ -2712,6 +2696,7 @@ import { Disassembler } from './disasm.js';
 
             this.frameCount++;
             this.totalFrames++;
+            this.micRecorder.onFrameEnd(this.cpu.tStates);
 
             // Profiler: count down frames (headless path)
             if (this.profiler.enabled) {
@@ -3695,7 +3680,22 @@ import { Disassembler } from './disasm.js';
             }
             // Keep keyboard handlers registered - user may type while paused
         }
-        
+
+        // Release document-level listeners and audio so a discarded instance can be GC'd.
+        // Call before dropping the reference (e.g. when creating a replacement instance).
+        destroy() {
+            this.stop();
+            if (this.keyboardHandlersRegistered) {
+                document.removeEventListener('keydown', this.boundKeyDown);
+                document.removeEventListener('keyup', this.boundKeyUp);
+                this.keyboardHandlersRegistered = false;
+            }
+            if (this.audio) {
+                this.audio.stop();
+                this.audio = null;
+            }
+        }
+
         setSpeed(speed) {
             const wasHighSpeed = this.speed > 200;
             this.speed = speed;
@@ -4208,7 +4208,7 @@ import { Disassembler } from './disasm.js';
                 this.watchpointHit = true;
                 this.lastWatchpoint = {
                     addr: bp.addrA, type: 'comparison',
-                    message: `Compare: ($${bp.addrA.toString(16).toUpperCase().padStart(4,'0')})=${a} ${bp.op} ($${bp.addrB.toString(16).toUpperCase().padStart(4,'0')})=${b}`
+                    message: `Compare: ($${hex16(bp.addrA)})=${a} ${bp.op} ($${hex16(bp.addrB)})=${b}`
                 };
             }
         }
@@ -7348,11 +7348,13 @@ import { Disassembler } from './disasm.js';
 
             // Store original TAP data for project save (if not from disk conversion)
             if (storeName) {
-                this.loadedTape = {
+                this.loadedTapes[this.activeTapeSlot] = {
                     type: 'tap',
                     data: new Uint8Array(data),
                     name: storeName
                 };
+                this.tapeSlotStates[this.activeTapeSlot] = null;
+                this.tapeRecordings[this.activeTapeSlot] = [];
             }
 
             return { blocks: this.tapeLoader.getBlockCount() };
@@ -7461,11 +7463,13 @@ import { Disassembler } from './disasm.js';
 
             // Store original TZX data for project save
             if (storeName) {
-                this.loadedTape = {
+                this.loadedTapes[this.activeTapeSlot] = {
                     type: 'tzx',
                     data: new Uint8Array(data),
                     name: storeName
                 };
+                this.tapeSlotStates[this.activeTapeSlot] = null;
+                this.tapeRecordings[this.activeTapeSlot] = [];
             }
 
             return {
@@ -7497,11 +7501,13 @@ import { Disassembler } from './disasm.js';
 
             // Store original WAV data for project save
             if (storeName) {
-                this.loadedTape = {
+                this.loadedTapes[this.activeTapeSlot] = {
                     type: 'wav',
                     data: new Uint8Array(data),
                     name: storeName
                 };
+                this.tapeSlotStates[this.activeTapeSlot] = null;
+                this.tapeRecordings[this.activeTapeSlot] = [];
             }
 
             return {
@@ -7536,7 +7542,12 @@ import { Disassembler } from './disasm.js';
                 return entry;
             });
             return {
-                tape: this.loadedTape,
+                tape: this.loadedTapes[this.activeTapeSlot],
+                tapes: this.loadedTapes,
+                activeTapeSlot: this.activeTapeSlot,
+                tapeSlotStates: this.tapeSlotStates,
+                tapeRecordings: this.tapeRecordings,
+                micRecordings: this.micRecordings,
                 betaDisks: this.loadedBetaDisks,
                 fdcDisks: fdcDisks,
                 plusDDisks: this.loadedPlusDDisks,
@@ -7550,16 +7561,31 @@ import { Disassembler } from './disasm.js';
 
             // New multi-drive format (mediaVersion 2)
             if (media.tape !== undefined) {
-                if (media.tape && media.tape.data) {
-                    this.loadedTape = media.tape;
-                    if (media.tape.type === 'tap') {
-                        this.tapeLoader.load(media.tape.data.buffer);
+                // Restore multi-tape state if available
+                if (media.tapes) {
+                    this.loadedTapes = media.tapes;
+                    this.activeTapeSlot = media.activeTapeSlot || 0;
+                    this.tapeSlotStates = media.tapeSlotStates || [null, null];
+                    this.tapeRecordings = media.tapeRecordings || [[], []];
+                    this.micRecordings = media.micRecordings || [[], []];
+                } else if (media.tape) {
+                    // Legacy: single tape → slot 0
+                    this.loadedTapes = [media.tape ? { ...media.tape } : null, null];
+                    this.activeTapeSlot = 0;
+                    this.tapeSlotStates = [null, null];
+                    this.tapeRecordings = [[], []];
+                }
+                // Load the active slot's tape into the engine
+                const activeTape = this.loadedTapes[this.activeTapeSlot];
+                if (activeTape && activeTape.data) {
+                    if (activeTape.type === 'tap') {
+                        this.tapeLoader.load(activeTape.data.buffer);
                         this.tapeTrap.setTape(this.tapeLoader);
                         this.tapePlayer.loadFromTapeLoader(this.tapeLoader);
-                    } else if (media.tape.type === 'tzx') {
-                        this.loadTZX(media.tape.data.buffer, null);
-                    } else if (media.tape.type === 'wav') {
-                        this.loadWAV(media.tape.data.buffer, null);
+                    } else if (activeTape.type === 'tzx') {
+                        this.loadTZX(activeTape.data.buffer, null);
+                    } else if (activeTape.type === 'wav') {
+                        this.loadWAV(activeTape.data.buffer, null);
                     }
                 }
                 // Restore Beta Disk drives
@@ -7620,12 +7646,18 @@ import { Disassembler } from './disasm.js';
             } else if (media.data) {
                 // Legacy single-media format (backward compat with old projects)
                 if (media.type === 'tap') {
-                    this.loadedTape = media;
+                    this.loadedTapes = [media, null];
+                    this.activeTapeSlot = 0;
+                    this.tapeSlotStates = [null, null];
+                    this.tapeRecordings = [[], []];
                     this.tapeLoader.load(media.data.buffer);
                     this.tapeTrap.setTape(this.tapeLoader);
                     this.tapePlayer.loadFromTapeLoader(this.tapeLoader);
                 } else if (media.type === 'tzx') {
-                    this.loadedTape = media;
+                    this.loadedTapes = [media, null];
+                    this.activeTapeSlot = 0;
+                    this.tapeSlotStates = [null, null];
+                    this.tapeRecordings = [[], []];
                     this.loadTZX(media.data.buffer, null);
                 } else if (media.type === 'trd') {
                     this.loadedBetaDisks[0] = media;
@@ -7646,7 +7678,10 @@ import { Disassembler } from './disasm.js';
         }
 
         clearLoadedMedia() {
-            this.loadedTape = null;
+            this.loadedTapes = [null, null];
+            this.activeTapeSlot = 0;
+            this.tapeSlotStates = [null, null];
+            this.tapeRecordings = [[], []];
             this.loadedBetaDisks = [null, null, null, null];
             this.loadedFDCDisks = [null, null];
             this.loadedPlusDDisks = [null, null];
@@ -7658,7 +7693,81 @@ import { Disassembler } from './disasm.js';
         }
 
         clearTape() {
-            this.loadedTape = null;
+            this.loadedTapes = [null, null];
+            this.activeTapeSlot = 0;
+            this.tapeSlotStates = [null, null];
+            this.tapeRecordings = [[], []];
+        }
+
+        // --- Tape slot switching ---
+        getActiveTapeSlot() { return this.activeTapeSlot; }
+
+        setActiveTapeSlot(slot) {
+            slot = slot & 1;
+            if (slot === this.activeTapeSlot) return;
+            this.tapePlayer.stop();
+            // Save current slot state
+            this.tapeSlotStates[this.activeTapeSlot] = {
+                loaderBlock: this.tapeLoader.getCurrentBlock(),
+                playerBlock: this.tapePlayer.currentBlock
+            };
+            this.activeTapeSlot = slot;
+            this._loadActiveTapeSlot();
+        }
+
+        _loadActiveTapeSlot() {
+            const tape = this.loadedTapes[this.activeTapeSlot];
+            const saved = this.tapeSlotStates[this.activeTapeSlot];
+            if (!tape || !tape.data) {
+                this.tapeLoader.blocks = [];
+                this.tapeLoader.currentBlock = 0;
+                this.tapePlayer.blocks = [];
+                this.tapePlayer.currentBlock = 0;
+                this.tapeTrap.setTape(null);
+                return;
+            }
+            // Re-load tape data into engine (storeName=null to avoid overwriting loadedTapes)
+            if (tape.type === 'tap') this.loadTape(tape.data.buffer || tape.data, null);
+            else if (tape.type === 'tzx') this.loadTZX(tape.data.buffer || tape.data, null);
+            else if (tape.type === 'wav') this.loadWAV(tape.data.buffer || tape.data, null);
+            // Restore position
+            if (saved) {
+                this.tapeLoader.setCurrentBlock(saved.loaderBlock);
+                this.tapePlayer.setBlock(saved.playerBlock);
+            }
+        }
+
+        // --- Recording export ---
+        getTapeRecording(slot) {
+            const idx = (slot !== undefined ? slot : this.activeTapeSlot) & 1;
+            const tapBlocks = this.tapeRecordings[idx];
+            const micBlocks = this.micRecordings[idx];
+            const hasTap = tapBlocks && tapBlocks.length > 0;
+            const hasMic = micBlocks && micBlocks.length > 0;
+            if (!hasTap && !hasMic) return null;
+            // MIC data present → export as TZX (supports both standard + custom blocks)
+            if (hasMic) {
+                return { data: buildTZX(tapBlocks || [], micBlocks), ext: 'tzx' };
+            }
+            // TAP only → export as TAP
+            let total = 0;
+            for (const b of tapBlocks) total += b.length;
+            const tap = new Uint8Array(total);
+            let off = 0;
+            for (const b of tapBlocks) { tap.set(b, off); off += b.length; }
+            return { data: tap, ext: 'tap' };
+        }
+
+        clearTapeRecording(slot) {
+            const idx = (slot !== undefined ? slot : this.activeTapeSlot) & 1;
+            this.tapeRecordings[idx] = [];
+            this.micRecordings[idx] = [];
+            this.micRecorder.clear();
+        }
+
+        getTapeRecordingBlockCount(slot) {
+            const idx = (slot !== undefined ? slot : this.activeTapeSlot) & 1;
+            return this.tapeRecordings[idx].length + this.micRecordings[idx].length;
         }
 
         clearDisk(driveIndex, type) {
@@ -7814,6 +7923,8 @@ import { Disassembler } from './disasm.js';
             this.cpu.portWrite = this.portWrite.bind(this);
             this.setupContention();  // Setup contention for new machine type
             this.timing = this.ula.getTiming();
+            this.micRecorder.setTstatesPerFrame(this.timing.tstatesPerFrame);
+            this.micRecorder.reset();
 
             // Restore ULA settings to new ULA
             if (this.lateTimings !== undefined) {
@@ -9210,6 +9321,40 @@ import { Disassembler } from './disasm.js';
 
             // Flush remaining samples at end of frame
             this.flushSamples();
+        }
+
+        /**
+         * Play a short burst of AY sound from current register state.
+         * Used during debug stepping to hear AY output.
+         * @param {number} durationMs - Duration in milliseconds (default 20)
+         */
+        playAyBurst(durationMs = 40) {
+            if (!this.ay || !this.enabled || (!this.workletNode && !this.scriptNode)) return;
+            // Resume audio context if suspended (browser autoplay policy)
+            if (this.context && this.context.state === 'suspended') {
+                this.context.resume();
+            }
+            const samples = Math.floor(this.sampleRate * durationMs / 1000);
+            const ayStepsPerSample = this.cyclesPerSample * this.ayPerCpu;
+            // Save AY state so we don't advance it permanently
+            const savedState = this.ay.exportState();
+            // Clear stale accumulator from previous processFrame
+            this.ay.sampleAccumulator[0] = 0;
+            this.ay.sampleAccumulator[1] = 0;
+            this.ay.sampleCount = 0;
+            for (let i = 0; i < samples; i++) {
+                this.ay.stepMultiple(Math.round(ayStepsPerSample));
+                const [left, right] = this.ay.getAveragedSample();
+                this.sendBufferL[this.sendBufferPos] = Math.max(-1, Math.min(1, left));
+                this.sendBufferR[this.sendBufferPos] = Math.max(-1, Math.min(1, right));
+                this.sendBufferPos++;
+                if (this.sendBufferPos >= this.sendBufferSize) {
+                    this.flushSamples();
+                }
+            }
+            this.flushSamples();
+            // Restore AY state
+            this.ay.importState(savedState);
         }
 
         /**

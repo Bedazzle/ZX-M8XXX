@@ -22,13 +22,12 @@ export function initDisasmNavigation({
     // DOM elements
     const disasmAddressInput = document.getElementById('disasmAddress');
     const disassemblyView = document.getElementById('disassemblyView');
-    const btnDisasmGo = document.getElementById('btnDisasmGo');
     const btnDisasmPC = document.getElementById('btnDisasmPC');
     const btnDisasmPgUp = document.getElementById('btnDisasmPgUp');
     const btnDisasmPgDn = document.getElementById('btnDisasmPgDn');
-    const btnDisasmExport = document.getElementById('btnDisasmExport');
-    const btnDisasmExportRange = document.getElementById('btnDisasmExportRange');
+    const disasmExportSelect = document.getElementById('disasmExportSelect');
     const chkShowTstates = document.getElementById('chkShowTstates');
+    const chkFollowPC = document.getElementById('chkFollowPC');
     const labelDisplayMode = document.getElementById('labelDisplayMode');
     const labelSourceFilter = document.getElementById('labelSourceFilter');
 
@@ -59,11 +58,6 @@ export function initDisasmNavigation({
         updateDebugger();
     }
 
-    btnDisasmGo.addEventListener('click', () => {
-        const addr = parseInt(disasmAddressInput.value, 16);
-        if (!isNaN(addr)) goToDisasmAddr(addr);
-    });
-
     disasmAddressInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             const addr = parseInt(disasmAddressInput.value, 16);
@@ -78,13 +72,15 @@ export function initDisasmNavigation({
     });
 
     // Keyboard shortcuts for navigation (Alt+Left/Right)
+    // preventDefault even while Follow PC blocks navigation — otherwise the
+    // browser's own Alt+Left/Right history navigation would leave the page
     document.addEventListener('keydown', (e) => {
         if (e.altKey && e.key === 'ArrowLeft') {
             e.preventDefault();
-            navBack();
+            if (!chkFollowPC.checked) navBack();
         } else if (e.altKey && e.key === 'ArrowRight') {
             e.preventDefault();
-            navForward();
+            if (!chkFollowPC.checked) navForward();
         }
     });
 
@@ -92,9 +88,37 @@ export function initDisasmNavigation({
     btnDisasmPgDn.addEventListener('click', () => navForward());
     updateNavButtons();  // Initialize disabled state
 
+    // While Follow PC is on, manual address navigation has no effect — disable it
+    function updateFollowPCControls() {
+        const follow = chkFollowPC.checked;
+        disasmAddressInput.disabled = follow;
+        btnDisasmPC.disabled = follow;
+        updateNavButtons();  // ◀ ▶ also factor in Follow PC
+    }
+    chkFollowPC.addEventListener('change', updateFollowPCControls);
+    updateFollowPCControls();
+
+    // ---- View options popover (⚙) ----
+
+    const btnViewOpts = document.getElementById('btnDisasmViewOpts');
+    const viewOptsPopover = document.getElementById('disasmViewOptsPopover');
+    btnViewOpts.addEventListener('click', (e) => {
+        e.stopPropagation();
+        viewOptsPopover.classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+        if (!viewOptsPopover.classList.contains('hidden') &&
+            !viewOptsPopover.contains(e.target) && e.target !== btnViewOpts) {
+            viewOptsPopover.classList.add('hidden');
+        }
+    });
+    // Re-render immediately on display option changes (persistence lives in display-settings.js)
+    document.getElementById('chkFlowBreakSpacing')?.addEventListener('change', () => updateDebugger());
+    document.getElementById('chkShowPCCursor')?.addEventListener('change', () => updateDebugger());
+
     // ---- Export visible ----
 
-    btnDisasmExport.addEventListener('click', () => {
+    function exportVisible() {
         const disasm = getDisasm();
         if (!disasm) return;
         const spectrum = getSpectrum();
@@ -115,11 +139,11 @@ export function initDisasmNavigation({
 
         downloadFile(`disasm_${hex16(startAddr)}_${hex16(endAddr)}.asm`, output);
         showMessage(`Exported ${hex16(startAddr)}-${hex16(endAddr)}`);
-    });
+    }
 
     // ---- Export range dialog ----
 
-    btnDisasmExportRange.addEventListener('click', () => {
+    function openExportRangeDialog() {
         const spectrum = getSpectrum();
         let startAddr = getDisasmViewAddress();
         if (startAddr === null && spectrum.cpu) {
@@ -132,6 +156,17 @@ export function initDisasmNavigation({
         exportDisasmDialog.classList.remove('hidden');
         exportStartAddr.focus();
         exportStartAddr.select();
+    }
+
+    // Export dropdown: placeholder stays selected, actions dispatch on change
+    disasmExportSelect.addEventListener('change', () => {
+        const action = disasmExportSelect.value;
+        disasmExportSelect.selectedIndex = 0; // Reset to "Export" placeholder
+        if (action === 'visible') {
+            exportVisible();
+        } else if (action === 'range') {
+            openExportRangeDialog();
+        }
     });
 
     btnExportCancel.addEventListener('click', () => {
@@ -173,6 +208,7 @@ export function initDisasmNavigation({
 
     disassemblyView.addEventListener('wheel', (e) => {
         e.preventDefault();
+        if (chkFollowPC.checked) return;  // View tracks PC — scrolling has no effect
         const disasm = getDisasm();
         if (!disasm) return;
         const spectrum = getSpectrum();
@@ -287,12 +323,182 @@ export function initDisasmNavigation({
         }
     });
 
+    // ---- T-state selection: drag across disasm lines to sum instruction timings ----
+
+    const tselPopup = document.createElement('div');
+    tselPopup.className = 'disasm-tsel-popup hidden';
+    document.body.appendChild(tselPopup);
+
+    function tselIsFlow(mn) {
+        return mn.startsWith('JP') || mn.startsWith('JR') || mn.startsWith('CALL') ||
+               mn.startsWith('RET') || mn.startsWith('DJNZ') || mn.startsWith('RST') ||
+               mn === 'HALT';
+    }
+
+    function initTstateSelection(viewEl) {
+        let startAddr = null;            // drag anchor
+        let selA = null, selB = null;    // current selection endpoints (addresses)
+        let selLines = [];
+
+        function lineRange(addrA, addrB) {
+            const lines = Array.from(viewEl.querySelectorAll('.disasm-line'));
+            let i1 = lines.findIndex(l => parseInt(l.dataset.addr) === addrA);
+            let i2 = lines.findIndex(l => parseInt(l.dataset.addr) === addrB);
+            if (i1 < 0 || i2 < 0) return [];
+            if (i1 > i2) [i1, i2] = [i2, i1];
+            return lines.slice(i1, i2 + 1);
+        }
+
+        function applySel() {
+            selLines.forEach(l => l.classList.remove('tsel'));
+            selLines = selA !== null ? lineRange(selA, selB) : [];
+            selLines.forEach(l => l.classList.add('tsel'));
+        }
+
+        function clearSel() {
+            selA = selB = null;
+            applySel();
+            tselPopup.classList.add('hidden');
+        }
+
+        // The view re-renders frequently (even while paused) and replaces all line
+        // elements; restore the selection highlight from the addresses each time.
+        new MutationObserver(() => {
+            if (selA !== null) applySel();
+        }).observe(viewEl, { childList: true });
+
+        // Literal branch target of JR/JR cc/DJNZ/JP/JP cc, or null
+        function branchTarget(addr, bytes) {
+            const op = bytes[0];
+            if (op === 0x18 || op === 0x10 || (op & 0xE7) === 0x20) {  // JR, DJNZ, JR cc
+                if (bytes.length < 2) return null;
+                return (addr + 2 + ((bytes[1] << 24) >> 24)) & 0xffff;
+            }
+            if (op === 0xC3 || (op & 0xC7) === 0xC2) {  // JP nn, JP cc,nn
+                if (bytes.length < 3) return null;
+                return bytes[1] | (bytes[2] << 8);
+            }
+            return null;
+        }
+
+        const BLOCK_REPEATS = new Set(['LDIR', 'LDDR', 'CPIR', 'CPDR', 'INIR', 'INDR', 'OTIR', 'OTDR']);
+
+        function showResult(e) {
+            const disasm = getDisasm();
+            if (!disasm || selLines.length < 2) return;
+            let total = 0;
+            let dual = null;   // [taken, not taken] totals for a conditional last instruction
+            let msg = null;
+            let bad = false;
+            const firstAddr = parseInt(selLines[0].dataset.addr);
+            const lastIdx = selLines.length - 1;
+            const lastAddr = parseInt(selLines[lastIdx].dataset.addr);
+            for (let i = 0; i < selLines.length; i++) {
+                const l = selLines[i];
+                const addr = parseInt(l.dataset.addr);
+                if (isNaN(addr) || l.classList.contains('data-line')) { bad = true; break; }
+                const instr = disasm.disassemble(addr);
+                const timing = disasm.getTiming(instr.bytes);
+                const mn = (instr.mnemonic || '').toUpperCase();
+                const op = mn.split(/[\s,]+/)[0];
+                if (timing === '?') { bad = true; break; }
+                if (i < lastIdx) {
+                    // Mid-selection: any flow control or conditional timing aborts
+                    if (timing.includes('/') || tselIsFlow(mn)) {
+                        msg = `${op} in selection — exact T-states depend on the execution path`;
+                        break;
+                    }
+                    total += parseInt(timing);
+                    continue;
+                }
+                // Last line: execution simply leaving the selection is fine (JP/JR/RET),
+                // but CALL/RST return after a subroutine of unknown duration
+                if (op === 'HALT' || BLOCK_REPEATS.has(op)) {
+                    msg = `${op} at the end — repeat count unknown, cannot sum exactly`;
+                    break;
+                }
+                if (op === 'CALL' || op === 'RST') {
+                    msg = `${op} at the end — subroutine duration unknown, cannot sum exactly`;
+                    break;
+                }
+                const target = branchTarget(addr, instr.bytes);
+                if (target !== null && target >= firstAddr && target <= lastAddr) {
+                    msg = `${op} loops back into the selection — T-states depend on the iteration count`;
+                    break;
+                }
+                if (timing.includes('/')) {
+                    const [tTaken, tNot] = timing.split('/').map(Number);
+                    dual = [total + tTaken, total + tNot];
+                } else {
+                    total += parseInt(timing);
+                }
+            }
+            tselPopup.textContent = bad
+                ? 'Selection contains data — cannot sum T-states'
+                : msg ? msg
+                : dual
+                    ? `${selLines.length} instructions = ${dual[0]} / ${dual[1]} T-states (branch taken / not taken)`
+                    : `${selLines.length} instructions = ${total} T-states`;
+            tselPopup.classList.remove('hidden');
+            tselPopup.style.left = Math.max(4, Math.min(e.clientX + 12, window.innerWidth - 380)) + 'px';
+            tselPopup.style.top = Math.min(e.clientY + 14, window.innerHeight - 40) + 'px';
+        }
+
+        viewEl.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            clearSel();
+            const line = e.target.closest('.disasm-line');
+            startAddr = line ? parseInt(line.dataset.addr) : null;
+            if (isNaN(startAddr)) startAddr = null;
+        });
+
+        viewEl.addEventListener('mousemove', (e) => {
+            if (startAddr === null) return;
+            if (!(e.buttons & 1)) { startAddr = null; return; }
+            const line = e.target.closest('.disasm-line');
+            if (!line) return;
+            const endAddr = parseInt(line.dataset.addr);
+            if (isNaN(endAddr)) return;
+            if (endAddr === startAddr && selA === null) return;  // not a drag yet
+            selA = startAddr;
+            selB = endAddr;
+            applySel();
+            viewEl.classList.add('tselecting');
+            e.preventDefault();
+        });
+
+        document.addEventListener('mouseup', (e) => {
+            viewEl.classList.remove('tselecting');
+            if (startAddr === null) return;
+            const dragged = selLines.length >= 2;
+            startAddr = null;
+            if (!dragged) return;
+            // Swallow the click that follows the drag — it would set a run-to target
+            document.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                ev.preventDefault();
+            }, { capture: true, once: true });
+            showResult(e);
+        });
+
+        // Any interaction elsewhere dismisses the selection/popup
+        document.addEventListener('mousedown', (e) => {
+            if (!viewEl.contains(e.target)) clearSel();
+        });
+        document.addEventListener('wheel', () => {
+            if (!tselPopup.classList.contains('hidden')) clearSel();
+        }, { passive: true });
+        document.addEventListener('keydown', () => {
+            if (!tselPopup.classList.contains('hidden')) clearSel();
+        });
+    }
+
+    const disassemblyViewEl = document.getElementById('disassemblyView');
+    if (disassemblyViewEl) initTstateSelection(disassemblyViewEl);
+    if (rightDisassemblyView) initTstateSelection(rightDisassemblyView);
+
     // ---- Right panel disasm controls ----
 
-    document.getElementById('btnRightDisasmGo')?.addEventListener('click', () => {
-        const addr = parseInt(rightDisasmAddressInput.value, 16);
-        if (!isNaN(addr)) goToRightDisasmAddress(addr);
-    });
     rightDisasmAddressInput?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             const addr = parseInt(rightDisasmAddressInput.value, 16);

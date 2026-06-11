@@ -69,11 +69,13 @@ export function initNavHistory({ goToAddressNoHistory }) {
     }
 
     function updateNavButtons() {
-        // Left panel buttons
+        // Left panel buttons — also disabled while Follow PC is on
+        // (manual navigation has no effect when the view tracks PC)
+        const followPC = !!document.getElementById('chkFollowPC')?.checked;
         const btnLeftBack = document.getElementById('btnDisasmPgUp');
         const btnLeftFwd = document.getElementById('btnDisasmPgDn');
-        if (btnLeftBack) btnLeftBack.disabled = leftNavHistoryIndex <= 0;
-        if (btnLeftFwd) btnLeftFwd.disabled = leftNavHistoryIndex >= leftNavHistory.length - 1;
+        if (btnLeftBack) btnLeftBack.disabled = followPC || leftNavHistoryIndex <= 0;
+        if (btnLeftFwd) btnLeftFwd.disabled = followPC || leftNavHistoryIndex >= leftNavHistory.length - 1;
 
         // Right panel buttons
         const btnRightBack = document.getElementById('btnRightDisasmPgUp');

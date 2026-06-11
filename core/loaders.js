@@ -14,6 +14,20 @@ import {
 
 const VERSION = '0.6.4';
 
+// XOR checksum over data[0..length-1], seeded with `seed` (tape flag byte or 0)
+export function xorChecksum(data, seed = 0, length = data.length) {
+    let checksum = seed;
+    for (let i = 0; i < length; i++) checksum ^= data[i];
+    return checksum;
+}
+
+// SCL trailing checksum: 32-bit sum of all bytes before the checksum itself
+export function sclChecksum(data, length = data.length) {
+    let sum = 0;
+    for (let i = 0; i < length; i++) sum = (sum + data[i]) >>> 0;
+    return sum;
+}
+
     export class TapeLoader {
         static get VERSION() { return VERSION; }
         
@@ -1896,9 +1910,7 @@ const VERSION = '0.6.4';
                 return true;
             }
             
-            let checksum = 0;
-            for (let i = 0; i < block.data.length; i++) checksum ^= block.data[i];
-            if (checksum !== 0) {
+            if (xorChecksum(block.data) !== 0) {
                 this.cpu.f &= ~0x01;
                 this.returnFromTrap();
                 return true;
@@ -1933,6 +1945,275 @@ const VERSION = '0.6.4';
         
         setTape(tapeLoader) { this.tapeLoader = tapeLoader; }
         setEnabled(enabled) { this.enabled = enabled; }
+    }
+
+    /**
+     * Tape SAVE trap handler - intercepts SA_BYTES ROM call (0x04C2)
+     * Captures saved data and builds TAP blocks for export
+     */
+    export class TapeSaveTrapHandler {
+        static get VERSION() { return VERSION; }
+
+        constructor(cpu, memory) {
+            this.cpu = cpu;
+            this.memory = memory;
+            this.enabled = true;
+            this.onBlockSaved = null;  // Callback(tapBlock, flag)
+        }
+
+        checkTrap() {
+            if (!this.enabled) return false;
+            if (this.cpu.pc !== 0x04C2) return false;
+
+            // In 128K mode, only trap in BASIC ROM
+            if (this.memory.profile.ramPages > 1) {
+                if (this.memory.currentRomBank !== this.memory.profile.basicRomBank) return false;
+            }
+            // Don't trap under TR-DOS
+            if (this.memory.trdosActive) return false;
+
+            // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
+            // to distinguish LOAD (carry set) from VERIFY (carry clear), SA_BYTES is
+            // only called for SAVE operations. The ROM's header save does XOR A before
+            // CALL SA_BYTES, which clears carry — but it's still a real save.
+
+            return this.handleSaveTrap();
+        }
+
+        handleSaveTrap() {
+            const flag = this.cpu.a;        // 0x00=header, 0xFF=data
+            const start = this.cpu.ix;
+            const length = this.cpu.de;
+
+            // Read data from memory
+            const data = new Uint8Array(length);
+            for (let i = 0; i < length; i++) {
+                data[i] = this.memory.read((start + i) & 0xFFFF);
+            }
+
+            // Compute checksum (XOR of flag + all data bytes)
+            const checksum = xorChecksum(data, flag, length);
+
+            // Build TAP block: [length_lo][length_hi][flag][data...][checksum]
+            const blockLen = length + 2;  // flag + data + checksum
+            const tapBlock = new Uint8Array(blockLen + 2);
+            tapBlock[0] = blockLen & 0xFF;
+            tapBlock[1] = (blockLen >> 8) & 0xFF;
+            tapBlock[2] = flag;
+            tapBlock.set(data, 3);
+            tapBlock[blockLen + 1] = checksum;
+
+            if (this.onBlockSaved) this.onBlockSaved(tapBlock, flag);
+
+            // Simulate register state as if SA_BYTES ran to completion.
+            // SA_BYTES does INC DE / DEC IX at entry (to include flag byte),
+            // then loops through all bytes. On exit: IX advanced past data,
+            // DE = 0xFFFF (counter underflows from 0 to -1 after parity byte).
+            this.cpu.ix = (start + length) & 0xFFFF;
+            this.cpu.de = 0xFFFF;
+            this.cpu.f |= 0x01;  // carry set = success
+
+            // Pop return address from stack (same as load trap).
+            // SA_BYTES is entered via CALL (header) or JP (data); in both cases
+            // the correct return address is on the stack at this point.
+            const retAddr = this.memory.read(this.cpu.sp) | (this.memory.read(this.cpu.sp + 1) << 8);
+            this.cpu.sp = (this.cpu.sp + 2) & 0xFFFF;
+            this.cpu.pc = retAddr;
+            return true;
+        }
+
+        setEnabled(enabled) { this.enabled = enabled; }
+    }
+
+    /**
+     * MIC bit recorder — captures port 0xFE bit 3 (MIC output) pulse timings
+     * for games that use custom save routines bypassing the ROM.
+     * Produces TZX Direct Recording blocks.
+     */
+    export class MicRecorder {
+        constructor(tstatesPerFrame) {
+            this.tstatesPerFrame = tstatesPerFrame;
+            this.enabled = true;
+            this.lastMicBit = 0;
+            this.lastChangeAbsT = 0;
+            this.totalFrames = 0;
+            this.currentPulses = [];    // Pulse durations for current block
+            this.initialLevel = 0;      // MIC level at start of current block
+            this.inBlock = false;
+            this.blocks = [];           // Completed { pulses, initialLevel } blocks
+            this.silenceFrames = 50;    // ~1 second at 50fps = end of block
+            this.minPulses = 100;       // Minimum pulses to consider a valid block (skip noise)
+            this.onBlockRecorded = null;
+        }
+
+        _absT(cpuTStates) {
+            return this.totalFrames * this.tstatesPerFrame + cpuTStates;
+        }
+
+        writeMic(micBit, cpuTStates) {
+            if (!this.enabled) return;
+            micBit = micBit & 1;
+            if (micBit === this.lastMicBit) return;
+
+            const absT = this._absT(cpuTStates);
+
+            if (!this.inBlock) {
+                // First transition after silence — start recording
+                this.inBlock = true;
+                this.initialLevel = micBit;  // Level after this transition
+                this.currentPulses = [];
+            } else {
+                this.currentPulses.push(absT - this.lastChangeAbsT);
+            }
+
+            this.lastMicBit = micBit;
+            this.lastChangeAbsT = absT;
+        }
+
+        onFrameEnd(cpuTStates) {
+            this.totalFrames++;
+            if (!this.inBlock) return;
+            const absT = this._absT(cpuTStates);
+            const silenceT = absT - this.lastChangeAbsT;
+            if (silenceT > this.silenceFrames * this.tstatesPerFrame) {
+                this._finalizeBlock();
+            }
+        }
+
+        _finalizeBlock() {
+            if (this.currentPulses.length >= this.minPulses) {
+                const block = {
+                    pulses: this.currentPulses,
+                    initialLevel: this.initialLevel
+                };
+                this.blocks.push(block);
+                if (this.onBlockRecorded) this.onBlockRecorded(block);
+            }
+            this.inBlock = false;
+            this.currentPulses = [];
+        }
+
+        flush(cpuTStates) {
+            if (this.inBlock && this.currentPulses.length > 0) {
+                this._finalizeBlock();
+            }
+        }
+
+        getBlockCount() { return this.blocks.length; }
+        hasData() { return this.blocks.length > 0; }
+
+        clear() {
+            this.blocks = [];
+            this.currentPulses = [];
+            this.inBlock = false;
+        }
+
+        reset() {
+            this.clear();
+            this.lastMicBit = 0;
+            this.lastChangeAbsT = 0;
+            this.totalFrames = 0;
+        }
+
+        setTstatesPerFrame(tpf) {
+            this.tstatesPerFrame = tpf;
+        }
+    }
+
+    /**
+     * Convert pulse durations to TZX Direct Recording (block 0x15) data.
+     * @param {number[]} pulses - T-state durations between level toggles
+     * @param {number} initialLevel - signal level (0 or 1) at start of first pulse
+     * @param {number} tStatesPerSample - sampling resolution (default 79 ≈ 44.3kHz at 3.5MHz)
+     */
+    export function pulsesToDirectRecording(pulses, initialLevel, tStatesPerSample = 79) {
+        let totalT = 0;
+        for (const p of pulses) totalT += p;
+        if (totalT === 0) return null;
+
+        const numSamples = Math.ceil(totalT / tStatesPerSample);
+        const numBytes = Math.ceil(numSamples / 8);
+        const data = new Uint8Array(numBytes);
+
+        // Build toggle timestamps
+        const toggleTimes = [];
+        let t = 0;
+        for (const p of pulses) { t += p; toggleTimes.push(t); }
+
+        let level = initialLevel;
+        let toggleIdx = 0;
+
+        for (let s = 0; s < numSamples; s++) {
+            const sampleT = s * tStatesPerSample;
+            while (toggleIdx < toggleTimes.length && sampleT >= toggleTimes[toggleIdx]) {
+                level ^= 1;
+                toggleIdx++;
+            }
+            if (level) data[s >> 3] |= (0x80 >> (s & 7));
+        }
+
+        return { data, tStatesPerSample, usedBitsInLastByte: (numSamples % 8) || 8 };
+    }
+
+    /**
+     * Build a TZX file from TAP blocks (ROM trap) and/or MIC-recorded pulse blocks.
+     * @param {Uint8Array[]} tapBlocks - TAP-format blocks (with 2-byte length prefix)
+     * @param {Array<{pulses: number[], initialLevel: number}>} micBlocks - MIC-recorded blocks
+     * @returns {Uint8Array} TZX file data
+     */
+    export function buildTZX(tapBlocks, micBlocks) {
+        const parts = [];
+
+        // TZX header: "ZXTape!" 0x1A, version 1.20
+        parts.push(new Uint8Array([0x5A, 0x58, 0x54, 0x61, 0x70, 0x65, 0x21, 0x1A, 1, 20]));
+
+        // TAP blocks → TZX block 0x10 (Standard Speed Data)
+        for (const tap of tapBlocks) {
+            const dataLen = tap.length - 2;  // Strip TAP length prefix
+            const blk = new Uint8Array(5 + dataLen);
+            blk[0] = 0x10;                             // Block ID
+            blk[1] = 0xE8; blk[2] = 0x03;              // Pause 1000ms (LE)
+            blk[3] = dataLen & 0xFF;                    // Data length (LE)
+            blk[4] = (dataLen >> 8) & 0xFF;
+            blk.set(tap.subarray(2), 5);                // Data (skip TAP length prefix)
+            parts.push(blk);
+        }
+
+        // MIC blocks → TZX block 0x15 (Direct Recording)
+        for (const mic of micBlocks) {
+            const dr = pulsesToDirectRecording(mic.pulses, mic.initialLevel);
+            if (!dr) continue;
+            const dLen = dr.data.length;
+            const blk = new Uint8Array(8 + dLen);
+            blk[0] = 0x15;                             // Block ID
+            blk[1] = dr.tStatesPerSample & 0xFF;       // T-states per sample (LE)
+            blk[2] = (dr.tStatesPerSample >> 8) & 0xFF;
+            blk[3] = 0xE8; blk[4] = 0x03;              // Pause 1000ms (LE)
+            blk[5] = dr.usedBitsInLastByte;
+            blk[6] = dLen & 0xFF;                       // Data length 3 bytes (LE)
+            blk[7] = (dLen >> 8) & 0xFF;
+            // blk[8] would be 3rd byte but we need to handle 3-byte length
+            // Reallocate with correct size
+            const blk2 = new Uint8Array(9 + dLen);
+            blk2[0] = 0x15;
+            blk2[1] = dr.tStatesPerSample & 0xFF;
+            blk2[2] = (dr.tStatesPerSample >> 8) & 0xFF;
+            blk2[3] = 0xE8; blk2[4] = 0x03;
+            blk2[5] = dr.usedBitsInLastByte;
+            blk2[6] = dLen & 0xFF;
+            blk2[7] = (dLen >> 8) & 0xFF;
+            blk2[8] = (dLen >> 16) & 0xFF;
+            blk2.set(dr.data, 9);
+            parts.push(blk2);
+        }
+
+        // Concatenate
+        let total = 0;
+        for (const p of parts) total += p.length;
+        const tzx = new Uint8Array(total);
+        let off = 0;
+        for (const p of parts) { tzx.set(p, off); off += p.length; }
+        return tzx;
     }
 
     /**
@@ -2255,9 +2536,9 @@ const VERSION = '0.6.4';
             trd[sector9 + 0xE2] = 1;     // First free track (1)
             trd[sector9 + 0xE3] = 0x16;  // Disk type (80 tracks, double-sided)
             trd[sector9 + 0xE4] = 0;     // File count (0 = empty)
-            // Free sectors: 2544 (total) - 16 (track 0) = 2528
-            trd[sector9 + 0xE5] = 0xE0;  // Free sectors low (2528 & 0xFF)
-            trd[sector9 + 0xE6] = 0x09;  // Free sectors high (2528 >> 8)
+            // Free sectors: 2560 (total) - 16 (track 0) = 2544
+            trd[sector9 + 0xE5] = 0xF0;  // Free sectors low (2544 & 0xFF)
+            trd[sector9 + 0xE6] = 0x09;  // Free sectors high (2544 >> 8)
             trd[sector9 + 0xE7] = 0x10;  // TR-DOS ID
 
             // Disk label at 0xF5-0xFC (8 bytes, space-padded)
@@ -2375,7 +2656,7 @@ const VERSION = '0.6.4';
             trd[sector9 + 0xE2] = freeTrack;
             trd[sector9 + 0xE3] = 0x16;       // Disk type (80 tracks, DS)
             trd[sector9 + 0xE4] = files.length;   // File count
-            const freeSectors = 2544 - trdSector;
+            const freeSectors = 2560 - trdSector;
             trd[sector9 + 0xE5] = freeSectors & 0xFF;
             trd[sector9 + 0xE6] = (freeSectors >> 8) & 0xFF;
             trd[sector9 + 0xE7] = 0x10;       // TR-DOS ID
@@ -2387,6 +2668,65 @@ const VERSION = '0.6.4';
             }
 
             return trd;
+        }
+
+        // Convert TRD back to SCL format (inverse of sclToTrd).
+        // The first 14 bytes of a TRD directory entry (name 8, type 1, start 2,
+        // length 2, sector count 1) have the same layout as an SCL header.
+        // Deleted entries (first byte 0x01) are skipped: TR-DOS erase only marks
+        // the entry and overwrites the name's first character, so including them
+        // would resurrect files with corrupt names. End marker 0x00 stops the scan.
+        trdToScl(trdData) {
+            const trd = new Uint8Array(trdData);
+
+            // Scan directory: track 0, sectors 0-7, 128 entries of 16 bytes
+            const files = [];
+            for (let i = 0; i < 128; i++) {
+                const off = i * 16;
+                if (off + 16 > trd.length) break;
+                const firstByte = trd[off];
+                if (firstByte === 0x00) break;     // End of directory
+                if (firstByte === 0x01) continue;  // Deleted file — never include
+                const sectorCount = trd[off + 13];
+                const startSector = trd[off + 14];
+                const startTrack = trd[off + 15];
+                files.push({
+                    header: trd.slice(off, off + 14),
+                    dataOffset: (startTrack * 16 + startSector) * 256,
+                    dataSize: sectorCount * 256
+                });
+            }
+
+            let totalData = 0;
+            for (const f of files) totalData += f.dataSize;
+
+            // signature(8) + count(1) + headers(14*n) + data + checksum(4)
+            const scl = new Uint8Array(9 + files.length * 14 + totalData + 4);
+            const sig = 'SINCLAIR';
+            for (let i = 0; i < 8; i++) scl[i] = sig.charCodeAt(i);
+            scl[8] = files.length;
+
+            let offset = 9;
+            for (const f of files) {
+                scl.set(f.header, offset);
+                offset += 14;
+            }
+            for (const f of files) {
+                const end = Math.min(f.dataOffset + f.dataSize, trd.length);
+                if (f.dataOffset < end) {
+                    scl.set(trd.subarray(f.dataOffset, end), offset);
+                }
+                offset += f.dataSize;  // Short reads stay zero-padded
+            }
+
+            // Trailing 32-bit little-endian checksum over all preceding bytes
+            const sum = sclChecksum(scl, offset);
+            scl[offset] = sum & 0xFF;
+            scl[offset + 1] = (sum >> 8) & 0xFF;
+            scl[offset + 2] = (sum >> 16) & 0xFF;
+            scl[offset + 3] = (sum >>> 24) & 0xFF;
+
+            return scl;
         }
 
         ejectDisk(driveIndex) {
@@ -2572,14 +2912,17 @@ const VERSION = '0.6.4';
                                 if (this.sector > this.sectorsPerTrack) {
                                     this.writing = false;
                                     this.multiSector = false;
-                                    this.status &= ~this.BUSY;
+                                    // Clear DRQ along with BUSY: TR-DOS checks the final
+                                    // status with AND 7Fh — a leftover DRQ bit reads as
+                                    // a failed write ("Disc error")
+                                    this.status &= ~(this.BUSY | this.DRQ);
                                     this.intrq = true;
                                 } else {
                                     this.writeSector();
                                 }
                             } else {
                                 this.writing = false;
-                                this.status &= ~this.BUSY;
+                                this.status &= ~(this.BUSY | this.DRQ);
                                 this.intrq = true;
                             }
                         }
@@ -3790,9 +4133,7 @@ const VERSION = '0.6.4';
                 header[16] = fileInfo.length & 0xFF;
                 header[17] = (fileInfo.length >> 8) & 0xFF;
                 // Checksum
-                let checksum = 0;
-                for (let i = 0; i < 18; i++) checksum ^= header[i];
-                header[18] = checksum;
+                header[18] = xorChecksum(header, 0, 18);
 
                 blocks.push(header);
 
@@ -3800,9 +4141,7 @@ const VERSION = '0.6.4';
                 const dataBlock = new Uint8Array(fileData.length + 2);
                 dataBlock[0] = 0xFF;  // Data flag
                 dataBlock.set(fileData, 1);
-                checksum = 0xFF;
-                for (let i = 0; i < fileData.length; i++) checksum ^= fileData[i];
-                dataBlock[dataBlock.length - 1] = checksum;
+                dataBlock[dataBlock.length - 1] = xorChecksum(fileData, 0xFF);
 
                 blocks.push(dataBlock);
             } else if (fileInfo.type === 'code') {
@@ -3819,18 +4158,14 @@ const VERSION = '0.6.4';
                 header[15] = (fileInfo.start >> 8) & 0xFF;
                 header[16] = 0x00;
                 header[17] = 0x80;
-                let checksum = 0;
-                for (let i = 0; i < 18; i++) checksum ^= header[i];
-                header[18] = checksum;
+                header[18] = xorChecksum(header, 0, 18);
 
                 blocks.push(header);
 
                 const dataBlock = new Uint8Array(fileData.length + 2);
                 dataBlock[0] = 0xFF;
                 dataBlock.set(fileData, 1);
-                checksum = 0xFF;
-                for (let i = 0; i < fileData.length; i++) checksum ^= fileData[i];
-                dataBlock[dataBlock.length - 1] = checksum;
+                dataBlock[dataBlock.length - 1] = xorChecksum(fileData, 0xFF);
 
                 blocks.push(dataBlock);
             } else {
@@ -3838,9 +4173,7 @@ const VERSION = '0.6.4';
                 const dataBlock = new Uint8Array(fileData.length + 2);
                 dataBlock[0] = 0xFF;
                 dataBlock.set(fileData, 1);
-                let checksum = 0xFF;
-                for (let i = 0; i < fileData.length; i++) checksum ^= fileData[i];
-                dataBlock[dataBlock.length - 1] = checksum;
+                dataBlock[dataBlock.length - 1] = xorChecksum(fileData, 0xFF);
 
                 blocks.push(dataBlock);
             }
@@ -5568,6 +5901,7 @@ const VERSION = '0.6.4';
                     ext: header ? (extMap[header.type] || 'C') : 'C',
                     startAddr: header ? (header.type === 0 ? 0 : header.param1) : 0,
                     autostart: header ? (header.type === 0 ? header.param1 : 0) : 0,
+                    progLength: header && header.type === 0 ? header.param2 : null,
                     dataOffset
                 });
             }
