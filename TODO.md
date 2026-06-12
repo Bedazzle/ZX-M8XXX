@@ -2,6 +2,20 @@
 
 ## Pending
 
+- [ ] **CP866 string decoding option for Import Foreign** (deferred 2026-06)
+  - Today: imported string literals stay byte-exact (display as Latin-1 mojibake in the
+    editor, e.g. `DB "¯à¨¢¥â"`, but assemble to the original CP866 bytes — correct on
+    the Spectrum). Comments are already decoded to readable Cyrillic.
+  - Idea: opt-in "Decode CP866 strings" checkbox in the Import Foreign dialog
+    (`ui/import-foreign.js`) + reverse CP866 mapping in the assembler's string emission
+    (`dirDB`/`dirDM` in `sjasmplus/assembler.js`, `core/asm-detok.js` has `cp866Char`).
+    Unicode Cyrillic U+0410–U+044F + Ё/ё would assemble back to CP866 bytes, so strings
+    become readable AND byte-exact.
+  - Caveat: only valid when the game's font is CP866-ordered (most TR-DOS scene software,
+    but not KOI-8/custom-font games) — must stay opt-in, default off.
+  - Update 2026-06: the ASM ⚙ "CP866 view" setting (display-only highlight-layer transform,
+    `zxm8_asmCp866View`) now makes such strings readable without touching the bytes — the
+    remaining gap is only *editing* Cyrillic strings naturally, which still needs this item.
 - [ ] **halt2int test**: Investigate and fix timing/interrupt issue to pass HALT2INT test
   - Test file: `tests/halt2int.tap`
   - Author: Mark Woodmass

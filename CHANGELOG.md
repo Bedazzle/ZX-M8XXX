@@ -2,6 +2,15 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.5
+- **Import Foreign Sources**: ASM Project ▼ → Import foreign… converts sources written for other assemblers into sjasmplus syntax. Reads .trd/.scl disks, .zip archives and single files (incl. Hobeta); detokenizes native ALASM, TASM 3/4, STORM and ADS binary formats with auto-detection, and converts GENS, Zeus and Pasmo at text level. Dialect differences are rewritten, INCLUDE targets remapped, Cyrillic comments decoded, and untranslatable lines commented out with warnings shown in the preview.
+- **View Codepage**: ASM ⚙ → "View enc" displays raw bytes (Russian DB strings in imported TR-DOS sources) as readable Cyrillic — CP866, KOI8-R or KOI-7. Display-only.
+- **Layout-Independent Shortcuts**: Ctrl+letter shortcuts (Ctrl+G, Ctrl+F, Ctrl+Z/Y, Ctrl+H/R, Ctrl+C) now work with non-English keyboard layouts.
+
+## v0.15.4
+- **Go-To Palette (Ctrl+G)**: quick-navigation overlay — type a label name (fuzzy match) or a hex address, Enter jumps the disasm view there. A "ROM" checkbox optionally includes ROM labels in the search (off by default). On the ASM tab the palette searches source labels across all project files instead — Enter jumps to the definition in the last-focused editor pane, Shift+Enter opens it in the other pane (opening the split if needed). File tabs gained a right-click menu: Set as main file, Open in other pane, Close tab.
+- **Explorer Panel Splitters**: the two file panels in the Explorer Edit tab are now resizable — a drag bar between them sizes the first panel (width side-by-side, height stacked), and in the side-by-side layout a second bar at the right edge sizes the right panel. Persisted, double-click resets.
+
 ## v0.15.3
 - **T-State Selection in Disasm**: drag the mouse across disassembly lines (both panels) to sum their T-states — a popup shows "N instructions = M T-states". Flow control is allowed on the last line if execution leaves the selection for good: unconditional JR/JP/RET sum exactly, a conditional branch shows both totals (taken / not taken), and a branch looping back into the selection explains why an exact sum is impossible. CALL/RST (subroutine duration unknown), mid-selection branches, HALT, block repeats, and data lines can't be summed.
 - **T-State Popup DUP Support**: the assembler editor's T-state selection popup now multiplies DUP/REPT...EDUP/ENDR blocks by their repeat count (nested blocks multiply); non-literal counts mark the total approximate.

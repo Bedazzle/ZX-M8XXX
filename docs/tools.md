@@ -40,7 +40,7 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
 - The "Full memory" source for Z80/SZX now reconstructs 48K from decompressed banks instead of showing raw compressed file bytes.
 
 **Edit Tab (dual-panel file editor):**
-- Two independent panels (left/right) for side-by-side file editing and cross-format copy
+- Two independent panels (stacked vertically in portrait, side-by-side in landscape ≥1400px) for file editing and cross-format copy; the drag bar between them resizes the split (`#explorerPaneSplitter` sets `--explorer-pane-size` = flex-basis, so it controls height when stacked and width when side-by-side; key `zxm8_explorerPaneSize`, double-click resets to the even split). In landscape a second bar at the right edge sizes the right panel independently (`#explorerPaneSplitterRight`, `--explorer-pane2-size`, key `zxm8_explorerPane2Size`; hidden when the panels stack)
 - Supported container formats: TAP, TZX, TRD, SCL, MGT, IMG, MDR, DSK, OPD, OPU, ZIP, SNA, Z80, SZX
 - Each panel displays format-specific file/block lists with selection (click, Ctrl+click multi-select, Shift+click range select)
 - Toolbar: New (format dropdown), Save, Move Up/Down, Delete, Extract (bin/Hobeta dropdown), Copy (to other panel), Add File

@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.15.3</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.15.5</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -163,8 +163,10 @@
                         <tr><td>Ctrl+F3</td><td>Stop auto-capture (if running) + save batch screenshots as ZIP</td></tr>
                         <tr><td>Ctrl+F</td><td>Toggle autofire on/off</td></tr>
                         <tr><td>Shift+F6</td><td>Toggle Follow PC (auto-scroll disassembly to PC)</td></tr>
+                        <tr><td>Ctrl+G</td><td>Go-to palette: type a label name or hex address, Enter navigates the disasm view</td></tr>
                         <tr><td>F10</td><td>Cycle overlay mode (Normal в†' Grid в†' Box в†' ...)</td></tr>
                     </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">Ctrl+letter shortcuts use physical key positions &mdash; they work with any keyboard layout.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-debugger">
                     <h4>Debugger</h4>
@@ -210,6 +212,7 @@
                         <li><strong>&#9881; View options</strong> menu in the toolbar: Show T-states, Follow PC (Shift+F6; while on, manual navigation is disabled), Comment on each step, AY sound on step, Flow break spacing, Show PC cursor, Step Over limit (max T-states for Step Over, default 80000)</li>
                         <li><strong>Export</strong> dropdown in the toolbar: <strong>Visible</strong> saves the on-screen disassembly as .asm; <strong>Range...</strong> opens a dialog to export an address range with options (ORG line, addresses, bytes, T-states)</li>
                         <li><strong>T-state selection</strong>: drag the mouse across instruction lines to sum their T-states (popup shows the total). A jump on the <em>last</em> line is fine: unconditional JR/JP/RET sum exactly, conditional branches show both totals (taken / not taken). CALL/RST (the subroutine's duration is unknown), mid-selection branches, loops back into the selection, HALT, block repeats, and data lines can't be summed exactly &mdash; the popup says why</li>
+                        <li><strong>Ctrl+G</strong> opens the go-to palette: fuzzy-search labels or type a hex address; Enter navigates, &uarr;&darr; select, Esc closes. The <strong>ROM</strong> checkbox includes ROM labels in the search (off by default)</li>
                     </ul>
                     <h5>Pattern Search</h5>
                     <p>Both disasm and memory panels have an inline search bar:</p>
@@ -966,6 +969,7 @@
                     <ul>
                         <li><strong>New file</strong> - Add a new file to the project. A path like <code>gfx/sprites.asm</code> creates it inside a subdirectory</li>
                         <li><strong>Load…</strong> - Load .asm file or .zip project</li>
+                        <li><strong>Import foreign…</strong> - Import sources written for other ZX assemblers and convert them to sjasmplus syntax. Reads .trd/.scl disks, .zip archives and single files (including Hobeta-wrapped); when an archive contains several disk images, a chooser lists them and you pick the exact disk to open. Native ALASM, TASM 3/4, STORM and ADS binary formats are detokenized automatically (format auto-detected from the TR-DOS catalog or file contents, with a per-file override dropdown); GENS, Zeus and Pasmo sources are converted at text level (line-numbered files are auto-suggested as GENS, slash-string/PROC files as Zeus). Dialect differences (EXD, JNZ, IFN, UNPHASE, ALASM <code>'label</code> high-byte operator, chained LD, GENS line numbers, Pasmo word operators like <code>AND</code>/<code>MOD</code>/<code>SHL</code> and <code>&amp;H</code>/<code>&amp;X</code> literals, …) are rewritten, INCLUDE targets are remapped to co-imported files, and untranslatable lines are commented out with <code>; [import]</code> warnings shown in the preview. Binary files import as-is so INCBIN keeps working</li>
                         <li><strong>Import from clipboard</strong> - Import a shared project. Paste the <code>===M8XXX-ASM-BEGIN===...===M8XXX-ASM-END===</code> string and click Import. A preview shows the files and machine/hardware settings that will be applied. Uncheck "Apply machine &amp; hardware settings" to import only the source files without changing the emulator configuration</li>
                         <li><strong>Export…</strong> - Save source files as ZIP</li>
                         <li><strong>Share to clipboard</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
@@ -1014,9 +1018,13 @@ start:  ...</pre>
                         <li><strong>Unused labels</strong> - Show labels that are defined but never referenced</li>
                         <li><strong>Show compiled</strong> - Include hex dump of assembled bytes</li>
                         <li><strong>Export as ZIP</strong> - Always export source as ZIP, even for a single file (default: single file saved as plain text; multi-file projects always export as ZIP)</li>
+                        <li><strong>View enc</strong> - Display codepage for raw bytes (e.g. Russian DB strings in imported TR-DOS sources): Raw, CP866, KOI8-R or KOI-7. Display only: the file content and the assembled bytes stay unchanged, and the cursor position is unaffected. Note: KOI-7 remaps the lowercase Latin range by design, so lowercase code shows as Cyrillic too</li>
                         <li><strong>Font</strong> - Editor font size (also Ctrl+Plus / Ctrl+Minus)</li>
                     </ul>
                     <p>The drag bar above the Output pane resizes it (taking space from the editor); the bar below the Output resizes the whole assembler area &mdash; useful on tall monitors. Double-click a bar to reset.</p>
+                    <h5>Go To Label (Ctrl+G)</h5>
+                    <p>Ctrl+G on the ASM tab opens the go-to palette in source mode: fuzzy-search label definitions across all project files. <strong>Enter</strong> jumps to the definition in the pane you last worked in (left if there's no split); <strong>Shift+Enter</strong> opens it in the <em>other</em> pane (opening the split if needed).</p>
+                    <p>Right-click a file tab for the tab menu: <strong>Set as main file</strong>, <strong>Open in other pane</strong> (send the file to the split pane, Notepad++-style), <strong>Close tab</strong>.</p>
                     <h5>Split Editor (&#9707;)</h5>
                     <p>The &#9707; toolbar button splits the editor into two panes, Notepad++-style:</p>
                     <ul>
@@ -1302,6 +1310,7 @@ start:  ...</pre>
                     <p>The Edit tab uses a two-panel layout inspired by orthodox file managers (Norton Commander, Total Commander). Each panel independently holds a file in any supported format &mdash; TAP, TZX, TRD, SCL, MGT, DSK, or OPD. The toolbar between the panels adapts to the active panel's format.</p>
                     <ul>
                         <li><strong>Active panel</strong> - Click a panel to make it active. The toolbar, Load File button, and New dropdown all operate on the active panel</li>
+                        <li><strong>Resizable panels</strong> - Drag the bar between the panels to resize the split; in the side-by-side layout a second bar at the right edge sizes the right panel. Double-click a bar to reset</li>
                         <li><strong>New</strong> - Dropdown to create an empty file in the active panel: New TAP, New TZX, New TRD, New MGT, New DSK, or New OPD</li>
                         <li><strong>Load File</strong> - Loads a file into the active panel (and into the Explorer for analysis). Supports loading from local files and from ZIP archives</li>
                         <li><strong>Copy &raquo; / &laquo; Copy</strong> - Copy selected blocks/files from the active panel to the other panel. Works across different formats &mdash; tape blocks can be copied to disk and vice versa, with automatic format conversion (header fields mapped to disk attributes, filenames truncated to fit). If the destination panel is empty, a matching format is auto-created</li>
@@ -1671,6 +1680,11 @@ labelManager.importJSON(jsonStr, merge)</pre>
                         <li><strong>ZXMAK2</strong> - .NET Spectrum emulator</li>
                         <li><strong>IDA Pro</strong> - Interactive disassembler (debugger UI concepts)</li>
                         <li><strong>Ghidra</strong> - NSA reverse engineering tool (analysis features)</li>
+                    </ul>
+                    <h5>Acknowledgements</h5>
+                    <ul>
+                        <li><strong>xLook</strong> by Dmitry Kozlov (HalfElf) &amp; Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author</li>
+                        <li><strong>dcorp80</strong> — ES module extraction approach</li>
                     </ul>
                     <h5>Libraries &amp; Fonts</h5>
                     <ul>

@@ -360,9 +360,9 @@ export function initMemoryView({
         }
     });
 
-    // Ctrl+C to copy ASCII selection
+    // Ctrl+C to copy ASCII selection (e.code: layout-independent)
     document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'c' && asciiSelectionStart !== null) {
+        if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC' && asciiSelectionStart !== null) {
             const text = getAsciiSelectionText();
             if (text) {
                 e.preventDefault();

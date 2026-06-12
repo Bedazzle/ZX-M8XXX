@@ -1,0 +1,823 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Foreign Source Import Tests v0.15.5</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button.test-btn { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button.test-btn:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Foreign Source Import Tests <span class="version">v0.15.5</span></h1>
+    <div class="test-resources">
+        <p><a href="import-test.html">Import Dialog Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="disasm-test.html">Disasm Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button class="test-btn" onclick="runAll()">Run All</button>
+        <button class="test-btn" onclick="runHobetaTests()">Hobeta</button>
+        <button class="test-btn" onclick="runDetectTests()">Detection</button>
+        <button class="test-btn" onclick="runAlasmTests()">ALASM Detok</button>
+        <button class="test-btn" onclick="runTasmTests()">TASM Detok</button>
+        <button class="test-btn" onclick="runAdsTests()">ADS Detok</button>
+        <button class="test-btn" onclick="runStormTests()">STORM Detok</button>
+        <button class="test-btn" onclick="runConvertTests()">Converter</button>
+        <button class="test-btn" onclick="runEndToEndTests()">End-to-End</button>
+    </div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { AsmDetok, ALASM_SIGNATURE, DETOK_FORMAT_NAMES } from '../core/asm-detok.js';
+        import { AsmDialectConverter } from '../core/asm-convert.js';
+        import { Assembler } from '../sjasmplus/assembler.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            if (cls) div.className = cls;
+            div.textContent = msg;
+            logEl.appendChild(div);
+        }
+        function assert(cond, msg, detail = '') {
+            if (cond) { passed++; log('  ✓ ' + msg, 'pass'); }
+            else { failed++; log('  ✗ ' + msg + ' - FAILED' + (detail ? ' (' + detail + ')' : ''), 'fail'); }
+        }
+        function assertEq(actual, expected, msg) {
+            assert(actual === expected, msg, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        }
+        function section(name) { log('\n═══ ' + name + ' ═══', 'section'); }
+        function updateSummary() {
+            summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`;
+        }
+
+        // ==================== fixture builders ====================
+
+        function str(s) { return [...s].map(c => c.charCodeAt(0)); }
+
+        // ALASM token codes
+        const A = {
+            LD: 0x80 + 84, JP: 0x80 + 86, ORG: 0x80 + 75, DB: 0x80 + 34,
+            DUP: 0x80 + 79, EDUP: 0x80 + 28, EXD: 0x80 + 97, JNZ: 0x80 + 98,
+            MAIN: 0x80 + 30, INCLUDE: 0x80 + 0, RET: 0x80 + 52, IFN: 0x80 + 80,
+            rHL: 0xE0 + 2, rA: 0xE0 + 21, rDE: 0xE0 + 1
+        };
+
+        // Build an ALASM source file: 0x28-byte header, signature, 16 bytes, lines
+        function alasmFile(lines) {
+            const out = new Array(0x28).fill(0);
+            out.push(...ALASM_SIGNATURE);
+            out.push(...new Array(16).fill(0));
+            for (const content of lines) {
+                out.push(content.length + 1, ...content);
+            }
+            out.push(0);
+            return new Uint8Array(out);
+        }
+
+        // Build a TASM source file: lines framed as len, content, len; 0xFF end
+        function tasmFile(lines) {
+            const out = [];
+            for (const content of lines) {
+                out.push(content.length, ...content, content.length);
+            }
+            out.push(0xFF);
+            return new Uint8Array(out);
+        }
+
+        // TASM token codes
+        const T = {
+            LD: 0xB3,        // "LD "
+            DE: 0x94,        // "DE"
+            CALL: 0x8A,      // "CALL "
+            RET: 0xCC,       // "RET"
+            DEFB: 0x96,      // "DEFB "
+            UNPHASE: 0x9F,   // "UNPHASE " (TASM4: "ENDMAC ")
+            PHASE: 0x9B,     // "PHASE " (TASM4: "DISPLAY ")
+            DEFM: 0x97,      // "DEFM " (TASM4: "DEFMAC ")
+            INCLUDE: 0xE5,   // "INCLUDE "
+            SP: 0x0A         // 0x0A + count = spaces (TASM 3)
+        };
+
+        // Build a STORM source file: lines stored back to front - each line is
+        // content followed by a length byte; the file is read from the end
+        function stormFile(lines) {
+            const out = [];
+            for (const content of lines) {
+                out.push(...content, content.length);
+            }
+            return new Uint8Array(out);
+        }
+
+        // Build an ADS source file: u16 line number + content + 0x00,
+        // terminated by 0xFFFF (TASM token table inside)
+        function adsFile(lines) {
+            const o = [];
+            for (const [no, content] of lines) {
+                o.push(no & 0xFF, no >> 8, ...content, 0);
+            }
+            o.push(0xFF, 0xFF);
+            return new Uint8Array(o);
+        }
+
+        // Hobeta wrapper: 17-byte header + payload
+        function hobeta(name, type, start, payload) {
+            const out = [];
+            const n = (name + '        ').slice(0, 8);
+            out.push(...str(n));
+            out.push(type.charCodeAt(0));
+            out.push(start & 0xFF, (start >> 8) & 0xFF);
+            out.push(payload.length & 0xFF, (payload.length >> 8) & 0xFF);
+            out.push(0, Math.ceil(payload.length / 256), 0, 0);  // reserved, sectors, checksum
+            const head = out.slice(0, 17);
+            return new Uint8Array([...head, ...payload]);
+        }
+
+        // ==================== Hobeta ====================
+        window.runHobetaTests = function() {
+            section('Hobeta wrapper');
+
+            const payload = new Array(300).fill(0x41);
+            const h = AsmDetok.parseHobeta(hobeta('GAME', 'A', 39221, payload));
+            assert(h !== null, 'valid Hobeta header parsed');
+            if (h) {
+                assertEq(h.name, 'GAME', 'name');
+                assertEq(h.type, 'A', 'type char');
+                assertEq(h.start, 39221, 'start address');
+                assertEq(h.length, 300, 'length');
+                assertEq(h.data.length, 300, 'payload size');
+                assertEq(h.data[0], 0x41, 'payload content');
+            }
+
+            assert(AsmDetok.parseHobeta(new Uint8Array(str('        ORG #8000\n        RET\n'))) === null,
+                'plain text is not Hobeta');
+            assert(AsmDetok.parseHobeta(new Uint8Array([1, 2, 3])) === null, 'tiny file is not Hobeta');
+            updateSummary();
+        };
+
+        // ==================== Detection ====================
+        window.runDetectTests = function() {
+            section('Format detection');
+
+            const alasm = alasmFile([[...str('START'), A.LD, A.rHL, ...str(',#4000')]]);
+            let d = AsmDetok.detect(alasm);
+            assert(d && d.format === 'alasm' && d.supported, 'ALASM by signature');
+
+            const tasm = tasmFile([[T.SP, 8, T.LD, T.DE, ...str(',#0607')]]);
+            d = AsmDetok.detect(tasm, { type: 'A', start: 39221 });
+            assert(d && d.format === 'tasm' && d.supported, 'TASM 3 by catalog (start 39221)');
+
+            d = AsmDetok.detect(tasm, { type: 'A', start: 40872 });
+            assert(d && d.format === 'tasm', 'TASM 3 by catalog (start 40872)');
+
+            d = AsmDetok.detect(tasm, { type: 'A', start: 100 });
+            assert(d && d.format === 'tasm4', 'TASM 4 by catalog (start <= 4096)');
+
+            d = AsmDetok.detect(new Uint8Array(64).fill(0x90), { type: 'a', start: 38667 });
+            assert(d && d.format === 'masm' && !d.supported, 'MASM recognized as unsupported');
+
+            d = AsmDetok.detect(new Uint8Array(64).fill(0x90), { type: 'C', start: 0xC00B });
+            assert(d && d.format === 'storm' && d.supported, 'STORM recognized as supported');
+
+            d = AsmDetok.detect(new Uint8Array(str('  ORG #8000\n  LD A,5\n  RET\n')));
+            assert(d && d.format === 'text', 'plain text detected');
+
+            // TASM framing heuristic without catalog metadata (needs >= 8 lines or 0xFF end)
+            const longTasm = tasmFile(Array.from({ length: 10 }, () => [T.SP, 8, T.RET]));
+            d = AsmDetok.detect(longTasm);
+            assert(d && (d.format === 'tasm' || d.format === 'tasm4'), 'TASM by line framing heuristic');
+
+            assert(AsmDetok.detect(new Uint8Array([0xC9, 0x00, 0xC3, 0x00, 0x80])) === null,
+                'random machine code not detected');
+
+            // SCREEN$-like data: long zero runs chain as empty TASM lines but
+            // must not count as detection evidence
+            const screen = new Uint8Array(6912);
+            screen.fill(0x47, 6144);            // attribute area
+            assert(AsmDetok.detect(screen, { type: 'C', start: 16384 }) === null,
+                'SCREEN$ not misdetected as TASM');
+            assert(AsmDetok.detect(new Uint8Array(2048)) === null,
+                'all-zero data not misdetected as TASM');
+            updateSummary();
+        };
+
+        // ==================== ALASM detokenizer ====================
+        window.runAlasmTests = function() {
+            section('ALASM detokenizer');
+
+            const file = alasmFile([
+                [...str('START'), A.LD, A.rHL, ...str(',#4000')],
+                [A.ORG, ...str('#8000')],
+                [0x02, ...str(';'), ...str(' note')],
+                [A.DB, 0x22, ...str('HI'), 0x22],
+                [A.EXD],
+                [A.RET]
+            ]);
+            const r = AsmDetok.detokenize(file, 'alasm');
+            assert(r.text !== null, 'detokenize succeeds');
+            const lines = r.text.split('\n');
+            assertEq(lines[0], 'START   LD\tHL,#4000', 'label + mnemonic + operands');
+            assertEq(lines[1], '        ORG\t#8000', 'mnemonic padded to column 8');
+            assertEq(lines[2], '  ; note', 'comment preserved');
+            assertEq(lines[3], '        DB\t"HI"', 'quoted string preserved');
+            assertEq(lines[4], '        EXD\t', 'EXD token');
+            assertEq(lines[5], '        RET\t', 'RET token');
+
+            const noSig = AsmDetok.detokenize(new Uint8Array(str('hello')), 'alasm');
+            assert(noSig.text === null && noSig.warnings.length > 0, 'missing signature reported');
+
+            // Cyrillic comments are CP866; string bytes stay raw (byte-exact)
+            const cyr = alasmFile([
+                [0x3B, 0xA1, 0xE3, 0xA4, 0xA5, 0xE2],          // ";будет"
+                [A.DB, 0x22, 0xA1, 0x22]                        // DB "<0xA1>"
+            ]);
+            const rc = AsmDetok.detokenize(cyr, 'alasm');
+            const clines = rc.text.split('\n');
+            assertEq(clines[0], ';будет', 'CP866 comment decoded to Cyrillic');
+            assertEq(clines[1], '        DB\t"' + String.fromCharCode(0xA1) + '"', 'string bytes stay raw');
+
+            // ALASM strings may run to end of line without a closing quote
+            // (DB "w, = opcode bytes 77 2C) - detok must terminate them
+            const open = alasmFile([
+                [A.DB, 0x22, ...str('w,')],
+                [A.DB, 0x22, ...str('ok'), 0x22]
+            ]);
+            const ro = AsmDetok.detokenize(open, 'alasm');
+            const olines = ro.text.split('\n');
+            assertEq(olines[0], '        DB\t"w,"', 'unterminated string closed at EOL');
+            assertEq(olines[1], '        DB\t"ok"', 'normally closed string untouched');
+            updateSummary();
+        };
+
+        // ==================== TASM detokenizer ====================
+        window.runTasmTests = function() {
+            section('TASM detokenizer');
+
+            const file = tasmFile([
+                [...str('START'), T.SP, 3, T.LD, T.DE, ...str(',#0607')],
+                [T.SP, 8, T.CALL, ...str('#1234')],
+                [T.SP, 8, T.RET],
+                [...str(';comment line')]
+            ]);
+            const r = AsmDetok.detokenize(file, 'tasm');
+            const lines = r.text.split('\n');
+            assertEq(lines[0], 'START   LD DE,#0607', 'label + spaces + tokens');
+            assertEq(lines[1], '        CALL #1234', 'space run + CALL token');
+            assertEq(lines[2], '        RET', 'RET token');
+            assertEq(lines[3], ';comment line', 'comment line');
+
+            // TASM 4 token reassignments
+            const t4 = tasmFile([[0x01, 8, T.DEFM, ...str('MYMAC')]]);
+            const r4 = AsmDetok.detokenize(t4, 'tasm4');
+            assertEq(r4.text.split('\n')[0], '        DEFMAC MYMAC', 'TASM4: 0x97 = DEFMAC');
+
+            // Broken framing produces a warning
+            const broken = new Uint8Array([3, 0x41, 0x42, 0x43, 99, 5, 0x44, 0x45]);
+            const rb = AsmDetok.detokenize(broken, 'tasm');
+            assert(rb.warnings.length > 0, 'broken framing warning');
+            assertEq(rb.text.split('\n')[0], 'ABC', 'first line decoded before break');
+            updateSummary();
+        };
+
+        // ==================== STORM detokenizer ====================
+        window.runStormTests = function() {
+            section('STORM detokenizer');
+
+            // Hand-encoded per STORM.CPP: lines stored back to front,
+            // each line = content + length byte
+            const file = stormFile([
+                [0x09, 0x8E, 0x40, 0x9C],                       // ORG 40000 (decimal word)
+                [0xC0, 0xCD, 0x0A, 0x8D, 0x34, 0x12],           // AB EQU #1234 (hex word)
+                [0x37, 0x8A, 0x05],                             // LD A,5 (implicit LD, decimal byte)
+                [0x4F, 0xF1],                                   // DJNZ $-2 (relative ref)
+                [0x52],                                         // RET
+                [0x49, 0x00, 0xDC, ...str('F1'), 0x00],         // INCL "F1" (extended directive + string)
+                [0x2F, 0x01, ...str('HI'), 0x00]                // ; HI (comment line)
+            ]);
+            const r = AsmDetok.detokenize(file, 'storm');
+            assert(r.text !== null, 'detokenize succeeds');
+            assertEq(r.warnings.length, 0, 'no warnings');
+            const lines = r.text.split('\n');
+            assertEq(lines[0], '        ORG 40000', 'ORG with decimal word');
+            assertEq(lines[1], 'AB      EQU #1234', 'packed label + hex word');
+            assertEq(lines[2], '        LD A,5', 'implicit LD with register byte');
+            assertEq(lines[3], '        DJNZ $-2', 'relative $ reference');
+            assertEq(lines[4], '        RET', 'plain token');
+            assertEq(lines[5], '        INCL "F1"', 'extended directive + quoted string');
+            assertEq(lines[6], '; HI', 'comment line with space run');
+
+            // detection by catalog metadata is now supported
+            const det = AsmDetok.detect(file, { type: 'C', start: 0xC00B });
+            assert(det && det.format === 'storm' && det.supported, 'STORM detection now supported');
+            updateSummary();
+        };
+
+        // ==================== ADS detokenizer ====================
+        window.runAdsTests = function() {
+            section('ADS detokenizer');
+
+            // 0xBF=ORG, 0xB3=LD, 0x80=A, 0xCC=RET, 0x96=DEFB, 0x97=DEFM
+            const file = adsFile([
+                [10, [...str(';hello')]],
+                [20, [0xBF, ...str('#9300')]],
+                [30, [...str('BEG'), 0x0A, 2, 0xB3, 0x80, ...str(',5')]],
+                [40, [0x0A, 2, 0xCC]],
+                [50, [0x0A, 2, 0x96, 0x22, ...str('1,#FF')]],
+                [60, [0x0A, 2, 0x97, ...str('/Hi/')]]
+            ]);
+            let d = AsmDetok.detect(file, null);
+            assert(d && d.format === 'ads' && d.supported, 'ADS detected by line framing');
+            const r = AsmDetok.detokenize(file, 'ads');
+            const lines = r.text.split('\n');
+            assertEq(lines[0], ';hello', 'comment line');
+            assertEq(lines[1], 'ORG #9300', 'ORG token');
+            assertEq(lines[2], 'BEG  LD A,5', 'label + space run + tokens');
+            assertEq(lines[3], '  RET', 'RET token');
+            assertEq(lines[4], '  DEFB "1,#FF', 'unclosed char literal preserved');
+            assertEq(lines[5], '  DEFM /Hi/', 'slash string preserved');
+
+            // descending line numbers are not ADS
+            const badFile = adsFile([[20, [0xCC]], [10, [0xCC]], [30, [0xCC]], [40, [0xCC]]]);
+            assert(AsmDetok.detect(badFile, null) === null, 'non-ascending line numbers rejected');
+            updateSummary();
+        };
+
+        // ==================== Dialect converter ====================
+        window.runConvertTests = function() {
+            section('Dialect converter - ALASM');
+
+            function conv1(line, dialect = 'alasm', opts = {}) {
+                return AsmDialectConverter.convert(line, dialect, opts);
+            }
+
+            assertEq(conv1('        EXD').text, '        EX DE,HL', 'EXD -> EX DE,HL');
+            assertEq(conv1('        JNZ LOOP').text, '        JP NZ,LOOP', 'JNZ -> JP NZ,');
+            assertEq(conv1('        JZ DONE').text, '        JP Z,DONE', 'JZ -> JP Z,');
+            assertEq(conv1('        JC X').text, '        JP C,X', 'JC -> JP C,');
+            assertEq(conv1('        JNC X').text, '        JP NC,X', 'JNC -> JP NC,');
+            assertEq(conv1('        INF').text, '        IN F,(C)', 'INF -> IN F,(C)');
+            assertEq(conv1('        SLI A').text, '        SLL A', 'SLI -> SLL');
+            assertEq(conv1('        IFN DEBUG').text, '        IF !(DEBUG)', 'IFN -> IF !(...)');
+
+            let r = conv1('        MAIN "GAME"');
+            assert(r.text.startsWith('; [import]') && r.warnings.length === 1, 'MAIN commented out + warning');
+            r = conv1('        REPEAT');
+            assert(r.text.startsWith('; [import]'), 'REPEAT commented out');
+            r = conv1('        LOCAL');
+            assert(r.text.startsWith('; [import]'), 'LOCAL commented out');
+
+            // untouched lines stay byte-identical
+            assertEq(conv1('START   LD\tHL,#4000').text, 'START   LD\tHL,#4000', 'plain line untouched');
+            assertEq(conv1('        AND 5').text, '        AND 5', 'AND instruction untouched');
+            assertEq(conv1('        DB ";"').text, '        DB ";"', 'quoted semicolon untouched');
+            assertEq(conv1('        DUP 3').text, '        DUP 3', 'DUP passes through');
+            assertEq(conv1('lbl     EQU #1234 ; addr').text, 'lbl     EQU #1234 ; addr', 'EQU + comment untouched');
+
+            // EXD with a trailing comment keeps the comment
+            assertEq(conv1('        EXD ;swap').text, '        EX DE,HL ;swap', 'EXD keeps comment');
+
+            // ALASM high-byte operator
+            assertEq(conv1("        ADD\tA,'BMAP").text, '        ADD\tA,HIGH BMAP', "'label -> HIGH label");
+            assertEq(conv1("        LD\tA,'tbl").text, '        LD\tA,HIGH tbl', "'label in LD operand");
+            assertEq(conv1("        ORG\t'$*256+256").text, '        ORG\tHIGH $*256+256', "'$ page alignment");
+            assertEq(conv1("        LD\tA,'#4000").text, '        LD\tA,HIGH #4000', "'#hex constant");
+            {
+                const a = AsmDialectConverter.convert("        ORG\t#8055\n        ORG\t'$*256+256\nHERE    DB 1", 'alasm');
+                const res = Assembler.assemble(a.text);
+                assert(res.success, "'$ alignment assembles", res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 2)));
+            }
+
+            // Unterminated ALASM string in text source (DB "-w = bytes 2D 77)
+            assertEq(conv1('        DB\t"-w').text, '        DB\t"-w"', 'unterminated string closed (text source)');
+            {
+                const a = AsmDialectConverter.convert('        ORG #8000\n        DB "-w', 'alasm');
+                const res = Assembler.assemble(a.text);
+                assert(res.success && res.output.length === 2 && res.output[0] === 0x2D && res.output[1] === 0x77,
+                    'DB "-w assembles to 2D 77 (DEC L : LD (HL),A)',
+                    res.success ? 'got [' + Array.from(res.output).map(b => b.toString(16)).join(' ') + ']' : 'failed');
+            }
+            assertEq(conv1("        EX\tAF,AF'").text, "        EX\tAF,AF'", "AF' untouched");
+            assertEq(conv1('        DB "it\'s"').text, '        DB "it\'s"', 'apostrophe inside string untouched');
+
+            // Labels colliding with instruction/directive names get a colon
+            assertEq(conv1('MUL     PUSH    DE').text, 'MUL:    PUSH    DE', 'instruction-named label gets colon');
+            assertEq(conv1('MUL').text, 'MUL:', 'instruction-named label-only line gets colon');
+            assertEq(conv1('LOOP    DJNZ LOOP').text, 'LOOP    DJNZ LOOP', 'normal label untouched');
+
+            // ALASM chained LD pairs
+            assertEq(conv1('        LD\tH,D,L,E').text, '        LD\tH,D\n        LD\tL,E', 'LD H,D,L,E split');
+            assertEq(conv1('mvxy    LD\tH,D,L,E').text, 'mvxy    LD\tH,D\n        LD\tL,E', 'chained LD keeps label');
+            assertEq(conv1('        LD\tA,(IX+1)').text, '        LD\tA,(IX+1)', 'two-operand LD untouched');
+            r = conv1('        LD\tA,B,C');
+            assert(r.warnings.length === 1, 'odd chained LD warns');
+
+            // INCLUDE remapping
+            const fileMap = {};
+            AsmDialectConverter.addFileMapEntries(fileMap, 'GAME0', 'H', 'game0.a80');
+            r = conv1('        INCLUDE "GAME0"', 'alasm', { fileMap });
+            assertEq(r.text, '        INCLUDE "game0.a80"', 'INCLUDE remapped via fileMap');
+            r = conv1('        INCLUDE "GAME0.H"', 'alasm', { fileMap });
+            assertEq(r.text, '        INCLUDE "game0.a80"', 'INCLUDE with type ext remapped');
+            r = conv1('        INCLUDE "MISSING"', 'alasm', { fileMap });
+            assert(r.warnings.length === 1 && r.text.includes('"MISSING"'), 'unknown INCLUDE warns, kept');
+
+            section('Dialect converter - TASM');
+
+            assertEq(conv1('        UNPHASE', 'tasm').text, '        DEPHASE', 'UNPHASE -> DEPHASE');
+            assertEq(conv1('        DM "TEXT"', 'tasm').text, '        DB "TEXT"', 'DM -> DB');
+            assertEq(conv1('        PHASE #C000', 'tasm').text, '        PHASE #C000', 'PHASE untouched');
+            r = conv1('        DEFMAC WAIT n', 'tasm4');
+            assertEq(r.text, '        WAIT MACRO n', 'DEFMAC -> name MACRO');
+            assert(r.warnings.length === 1, 'DEFMAC conversion warns');
+            assertEq(conv1('        ENDMAC', 'tasm4').text, '        ENDM', 'ENDMAC -> ENDM');
+
+            section('Dialect converter - GENS');
+
+            assertEq(conv1('10 START LD A,5', 'gens').text, 'START LD A,5', 'line number stripped (labeled)');
+            assertEq(conv1('20  DJNZ START', 'gens').text, ' DJNZ START', 'line number stripped (indented)');
+            assertEq(conv1('30 ; note', 'gens').text, '; note', 'numbered comment line');
+            assertEq(conv1('        LD A,5', 'gens').text, '        LD A,5', 'unnumbered line untouched');
+            r = conv1('        ENT START', 'gens');
+            assert(r.text.startsWith('; [import]') && r.warnings.length === 1, 'GENS ENT commented + warning');
+            assertEq(conv1('        DEFM "HI"', 'gens').text, '        DEFM "HI"', 'DEFM passes through');
+            r = conv1('*L+', 'gens');
+            assertEq(r.text, '; [import] *L+  ; listing on', '*L+ commented with meaning');
+            assert(r.warnings.length === 1, '*L+ warns');
+            assertEq(conv1('10 *D-', 'gens').text, '; [import] *D-  ; listing addresses in hex', 'numbered *D- with meaning');
+            assertEq(conv1('*E', 'gens').text, '; [import] *E  ; listing eject (blank lines)', '*E with meaning');
+            r = conv1('*F "part2"', 'gens');
+            assert(r.text.includes('continue assembly from tape') && r.warnings[0].includes('import that file separately'),
+                '*F flagged as tape include');
+            assertEq(conv1('        LD A,2*8', 'gens').text, '        LD A,2*8', 'multiplication untouched');
+
+            section('Dialect converter - Zeus');
+
+            assertEq(conv1('        DEFM /HELLO/', 'zeus').text, '        DEFM "HELLO"', 'slash string -> quotes');
+            assertEq(conv1('        DEFB /CODE/', 'zeus').text, '        DEFB "CODE"', 'DEFB slash string');
+            assertEq(conv1('        DEFM /A,B/', 'zeus').text, '        DEFM "A,B"', 'comma inside slash string');
+            assertEq(conv1('        DEFM /A/,/B/', 'zeus').text, '        DEFM "A","B"', 'two slash strings');
+            assertEq(conv1('        DEFB X/2', 'zeus').text, '        DEFB X/2', 'division untouched');
+            assertEq(conv1('10 START LD A,5', 'zeus').text, 'START LD A,5', 'Zeus line number stripped');
+            r = conv1('PrintChar PROC', 'zeus');
+            assert(r.text.startsWith('PrintChar') && r.text.includes('; [import] PROC') && r.warnings.length === 1,
+                'PROC keeps label, commented');
+            assertEq(conv1('        ENDP', 'zeus').text, '; [import]         ENDP', 'ENDP commented');
+            r = conv1('        RETP', 'zeus');
+            assertEq(r.text, '        RET', 'RETP -> RET');
+            assert(r.warnings.length === 1, 'RETP warns');
+            assertEq(conv1('        MEND', 'zeus').text, '        ENDM', 'MEND -> ENDM');
+            r = conv1('        ENT', 'zeus');
+            assert(r.text.startsWith('; [import]') && r.warnings.length === 1, 'ENT (entry point) commented');
+            r = conv1('        DISP 10000', 'zeus');
+            assert(r.text.startsWith('; [import]') && r.warnings.length === 1, 'DISP commented (inverse semantics)');
+
+            // Zeus overflow condition names map to parity conditions
+            assertEq(conv1('        JP V,DONE', 'zeus').text, '        JP PE,DONE', 'JP V -> JP PE');
+            assertEq(conv1('        JP NV,LOOP', 'zeus').text, '        JP PO,LOOP', 'JP NV -> JP PO');
+            assertEq(conv1('        CALL V,SUB1', 'zeus').text, '        CALL PE,SUB1', 'CALL V -> CALL PE');
+            assertEq(conv1('        RET NV', 'zeus').text, '        RET PO', 'RET NV -> RET PO');
+            assertEq(conv1('        JP NZ,LOOP', 'zeus').text, '        JP NZ,LOOP', 'normal conditions untouched');
+
+            {
+                // Zeus end-to-end
+                const src = '        ORG #8000\nMSG     DEFM /HI/\n        LD A,1\n        JP V,MSG\n        RET';
+                const r2 = AsmDialectConverter.convert(src, 'zeus');
+                const res = Assembler.assemble(r2.text);
+                assert(res.success, 'Zeus source assembles', res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+                if (res.success) {
+                    const expected = [0x48, 0x49, 0x3E, 0x01, 0xEA, 0x00, 0x80, 0xC9];
+                    let same = res.output.length === expected.length;
+                    for (let i = 0; i < expected.length && same; i++) if (res.output[i] !== expected[i]) same = false;
+                    assert(same, 'Zeus assembled bytes match',
+                        'got [' + Array.from(res.output).map(b => b.toString(16)).join(' ') + ']');
+                }
+            }
+
+            section('Dialect converter - Pasmo');
+
+            assertEq(conv1('        DB 5 AND 3', 'pasmo').text, '        DB 5 & 3', 'AND -> &');
+            assertEq(conv1('        DB $FF MOD 10', 'pasmo').text, '        DB $FF % 10', 'MOD -> %');
+            assertEq(conv1('        DB 1 SHL 4', 'pasmo').text, '        DB 1 << 4', 'SHL -> <<');
+            assertEq(conv1('        IF X EQ 5', 'pasmo').text, '        IF X == 5', 'EQ -> ==');
+            assertEq(conv1('        DB NOT 0', 'pasmo').text, '        DB ~ 0', 'NOT -> ~');
+            assertEq(conv1('        DB "X AND Y"', 'pasmo').text, '        DB "X AND Y"', 'AND inside string untouched');
+            assertEq(conv1("        DB 'A'", 'pasmo').text, "        DB 'A'", 'char literal untouched');
+            assertEq(conv1("        DB ';'", 'pasmo').text, "        DB ';'", 'quoted semicolon not a comment');
+            assertEq(conv1('        DB &HFF', 'pasmo').text, '        DB #FF', '&H hex literal');
+            assertEq(conv1('        DB &X1010', 'pasmo').text, '        DB %1010', '&X binary literal');
+            assertEq(conv1('        DB &O77', 'pasmo').text, '        DB 63', '&O octal literal');
+            assertEq(conv1('        DB 0101b', 'pasmo').text, '        DB %0101', 'b-suffix binary');
+            r = conv1('        PUBLIC START', 'pasmo');
+            assert(r.text.startsWith('; [import]') && r.warnings.length === 1, 'PUBLIC commented + warning');
+            r = conv1('        IRP X,1,2', 'pasmo');
+            assert(r.text.startsWith('; [import]'), 'IRP commented');
+            r = conv1('        END $8000', 'pasmo');
+            assert(r.warnings.length === 1 && !r.text.startsWith(';'), 'END addr kept, warns');
+
+            section('Dialect converter - ADS');
+
+            assertEq(conv1('  LD A,"A', 'ads').text, '  LD A,"A"', 'char literal closed');
+            assertEq(conv1('  DEFB "1,#FF,"5,#FF', 'ads').text, '  DEFB "1",#FF,"5",#FF', 'char literals in DEFB');
+            assertEq(conv1('  DEFM "Hi there"', 'ads').text, '  DEFM "Hi there"', 'closed string untouched');
+            assertEq(conv1('  DEFM "Tracks :"', 'ads').text, '  DEFM "Tracks :"', 'string with colon untouched');
+            assertEq(conv1('  DEFM /Tra:cks/', 'ads').text, '  DEFM "Tra:cks"', 'slash string with colon');
+            assertEq(conv1('  LD A,1:RET', 'ads').text, '  LD A,1\n        RET', 'multi-statement split');
+            assertEq(conv1('pos_X DEFB 0:pos_Y DEFB 0', 'ads').text, 'pos_X DEFB 0\npos_Y DEFB 0', 'label after colon split');
+            assertEq(conv1('LD DE,#4000:LD BC,#1B00', 'ads').text, '        LD DE,#4000\n        LD BC,#1B00', 'col-0 statements');
+            assertEq(conv1('  push DEFW #3FC0', 'ads').text, 'push:\n DEFW #3FC0', 'indented label hoisted');
+            r = conv1('  Res CALL DRWN', 'ads');
+            assert(r.text.startsWith('Res:'), 'instruction-named indented label hoisted');
+            assertEq(conv1('  JP OPT', 'ads').text, '  JP OPT', 'flow op with label operand untouched');
+            assertEq(conv1('RET', 'ads').text, '        RET', 'bare zero-operand statement indented');
+            {
+                // shared project-wide renames apply to reference-only files
+                const declFile = 'ANT@ DEFW 0';
+                const renames = AsmDialectConverter.buildLabelRenames(declFile.split('\n'));
+                const refFile = AsmDialectConverter.convert('  LD HL,(ANT@)', 'ads', { renames });
+                assertEq(refFile.text, '  LD HL,(ANT_)', 'cross-file reference renamed via shared map');
+            }
+            {
+                // ADS end-to-end: detok + convert + assemble
+                const file = adsFile([
+                    [10, [0xBF, ...str('#9300')]],
+                    [20, [...str('BEG'), 0x0A, 2, 0xB3, 0x80, ...str(',5:'), 0xCC]],
+                    [30, [0x0A, 2, 0x96, 0x22, ...str('1,#FF')]],
+                    [40, [0x0A, 2, 0x97, ...str('/Hi/')]]
+                ]);
+                const detok = AsmDetok.detokenize(file, 'ads');
+                const conv = AsmDialectConverter.convert(detok.text, 'ads');
+                const res = Assembler.assemble(conv.text);
+                assert(res.success, 'ADS source assembles', res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+                if (res.success) {
+                    const expected = [0x3E, 0x05, 0xC9, 0x31, 0xFF, 0x48, 0x69];
+                    let same = res.output.length === expected.length;
+                    for (let i = 0; i < expected.length && same; i++) if (res.output[i] !== expected[i]) same = false;
+                    assert(same, 'ADS assembled bytes match',
+                        'got [' + Array.from(res.output).map(b => b.toString(16)).join(' ') + ']');
+                }
+            }
+
+            section('Dialect converter - STORM');
+
+            assertEq(conv1('        INCL "game2"', 'storm').text, '        INCLUDE "game2"', 'INCL -> INCLUDE');
+            assertEq(conv1('        INCB "spr"', 'storm').text, '        INCBIN "spr"', 'INCB -> INCBIN');
+            assertEq(conv1('        EIF', 'storm').text, '        ENDIF', 'EIF -> ENDIF');
+            assertEq(conv1('        IFD DEBUG', 'storm').text, '        IFDEF DEBUG', 'IFD -> IFDEF');
+            assertEq(conv1('        IFND REL', 'storm').text, '        IFNDEF REL', 'IFND -> IFNDEF');
+            r = conv1('        IFU SYM', 'storm');
+            assertEq(r.text, '        IFDEF SYM', 'IFU -> IFDEF');
+            assert(r.warnings.length === 1, 'IFU warns about semantics');
+            assertEq(conv1('        LD A,X\\8', 'storm').text, '        LD A,X%8', 'backslash modulo -> %');
+            assertEq(conv1('        JR =2', 'storm').text, '        JR .2', '=N local ref -> .N');
+            assertEq(conv1('        LD A,(X=2)', 'storm').text, '        LD A,(X=2)', 'equality = untouched');
+            assertEq(conv1('        IF X<=2', 'storm').text, '        IF X<=2', '<= comparison untouched');
+            assertEq(conv1('        DB "=2"', 'storm').text, '        DB "=2"', '=N inside string untouched');
+            r = conv1('.2      RET', 'storm');
+            assert(r.warnings.length === 1, 'numeric local label warns');
+            r = conv1('        LD A,`X', 'storm');
+            assert(r.warnings.length === 1, 'unknown STORM operator warns');
+            assertEq(conv1('        SLI A', 'storm').text, '        SLL A', 'SLI -> SLL (common map)');
+
+            // INCL rename must still apply the fileMap remap
+            const sMap = {};
+            AsmDialectConverter.addFileMapEntries(sMap, 'RCWORK', 'C', 'rcwork.a80');
+            r = conv1('        INCL "RCWORK"', 'storm', { fileMap: sMap });
+            assertEq(r.text, '        INCLUDE "rcwork.a80"', 'INCL remapped via fileMap');
+            r = conv1('        INCB "RCWORK"', 'storm', { fileMap: sMap });
+            assertEq(r.text, '        INCBIN "rcwork.a80"', 'INCB remapped via fileMap');
+
+            // INCLUDE of a binary-imported file warns
+            r = conv1('        INCL "RCWORK"', 'storm',
+                { fileMap: sMap, binaryTargets: new Set(['rcwork.a80']) });
+            assert(r.warnings.some(w => w.includes('imported as binary')), 'INCLUDE of binary target warns');
+            r = conv1('        INCB "RCWORK"', 'storm',
+                { fileMap: sMap, binaryTargets: new Set(['rcwork.a80']) });
+            assert(!r.warnings.some(w => w.includes('imported as binary')), 'INCBIN of binary is fine');
+
+            section('Dialect converter - label sanitization');
+
+            // ALASM allows ^ [ ] etc. in label names (real-world: piano102)
+            {
+                const src = [
+                    '^ay     CALL\tout[e]',
+                    '        JR\tNZ,^ay',
+                    'out[e]  LD\tB,H',
+                    '        RET'
+                ].join('\n');
+                const r2 = AsmDialectConverter.convert(src, 'alasm');
+                const ls = r2.text.split('\n');
+                assertEq(ls[0], '_ay     CALL\tout_e_', 'declaration renamed (^ay, out[e] ref)');
+                assertEq(ls[1], '        JR\tNZ,_ay', 'reference renamed');
+                assertEq(ls[2], 'out_e_  LD\tB,H', 'bracket label declaration renamed');
+                assertEq(r2.warnings.length, 2, 'one warning per renamed label');
+            }
+            {
+                const r2 = AsmDialectConverter.convert('out[e]  RET\n        DB "out[e]"', 'alasm');
+                assert(r2.text.includes('DB "out[e]"'), 'label text inside string untouched');
+            }
+            {
+                // deterministic rename colliding with an existing label
+                const r2 = AsmDialectConverter.convert('^ay     RET\n_ay     RET\n        JP ^ay', 'alasm');
+                const ls = r2.text.split('\n');
+                assertEq(ls[0], '_ay__renamed     RET', 'collision gets suffix');
+                assertEq(ls[2], '        JP _ay__renamed', 'collision reference follows');
+            }
+            {
+                // renamed labels assemble end to end
+                const src = '        ORG #8000\n^ay     CALL out[e]\n        JR NZ,^ay\nout[e]  RET';
+                const r2 = AsmDialectConverter.convert(src, 'alasm');
+                const res = Assembler.assemble(r2.text);
+                assert(res.success, 'renamed labels assemble', res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 2)));
+            }
+
+            section('Dialect converter - text passthrough');
+            assertEq(conv1('        EXD', 'text').text, '        EXD', 'text dialect leaves lines alone');
+            updateSummary();
+        };
+
+        // ==================== End-to-end ====================
+        window.runEndToEndTests = function() {
+            section('End-to-end: detokenize + convert + assemble');
+
+            const file = alasmFile([
+                [A.ORG, ...str('#8000')],
+                [...str('START'), A.LD, A.rHL, ...str(',#4000')],
+                [A.LD, A.rA, ...str(',5')],
+                [A.EXD],
+                [A.JNZ, ...str('START')],
+                [A.DUP, ...str('2')],
+                [A.DB, ...str('#AA')],
+                [A.EDUP],
+                [A.RET]
+            ]);
+            const detok = AsmDetok.detokenize(file, 'alasm');
+            assert(detok.text !== null, 'ALASM fixture detokenized');
+            const conv = AsmDialectConverter.convert(detok.text, 'alasm');
+            assertEq(conv.warnings.length, 0, 'no conversion warnings');
+
+            const result = Assembler.assemble(conv.text);
+            assert(result.success, 'converted ALASM source assembles',
+                result.success ? '' : JSON.stringify(result.errors && result.errors.slice(0, 3)));
+            if (result.success) {
+                // ORG #8000: LD HL,#4000; LD A,5; EX DE,HL; JP NZ,START; DB #AA x2; RET
+                const expected = [0x21, 0x00, 0x40, 0x3E, 0x05, 0xEB, 0xC2, 0x00, 0x80, 0xAA, 0xAA, 0xC9];
+                const out = result.output;
+                assertEq(out.length, expected.length, 'output size');
+                let same = out.length === expected.length;
+                for (let i = 0; i < expected.length && same; i++) {
+                    if (out[i] !== expected[i]) same = false;
+                }
+                assert(same, 'assembled bytes match',
+                    'got [' + Array.from(out).map(b => b.toString(16).padStart(2, '0')).join(' ') + ']');
+            }
+
+            // TASM end-to-end
+            const tfile = tasmFile([
+                [T.SP, 8, ...str('ORG #9000')],
+                [...str('BEGIN'), T.SP, 3, T.LD, T.DE, ...str(',#0607')],
+                [T.SP, 8, T.CALL, ...str('BEGIN')],
+                [T.SP, 8, T.RET]
+            ]);
+            const tdetok = AsmDetok.detokenize(tfile, 'tasm');
+            const tconv = AsmDialectConverter.convert(tdetok.text, 'tasm');
+            const tres = Assembler.assemble(tconv.text);
+            assert(tres.success, 'converted TASM source assembles',
+                tres.success ? '' : JSON.stringify(tres.errors && tres.errors.slice(0, 3)));
+            if (tres.success) {
+                const expected = [0x11, 0x07, 0x06, 0xCD, 0x00, 0x90, 0xC9];
+                let same = tres.output.length === expected.length;
+                for (let i = 0; i < expected.length && same; i++) {
+                    if (tres.output[i] !== expected[i]) same = false;
+                }
+                assert(same, 'TASM assembled bytes match',
+                    'got [' + Array.from(tres.output).map(b => b.toString(16).padStart(2, '0')).join(' ') + ']');
+            }
+            // GENS end-to-end: line-numbered source converts and assembles
+            const gensSrc = [
+                '10         ORG #9100',
+                '20 START   LD A,5',
+                '30 LOOP    DJNZ LOOP',
+                '40         DEFB 1,2',
+                '50         ENT START',
+                '60         END'
+            ].join('\n');
+            const gconv = AsmDialectConverter.convert(gensSrc, 'gens');
+            assertEq(gconv.warnings.length, 1, 'GENS: only the ENT warning');
+            const gres = Assembler.assemble(gconv.text);
+            assert(gres.success, 'GENS source assembles', gres.success ? '' : JSON.stringify(gres.errors && gres.errors.slice(0, 3)));
+            if (gres.success) {
+                const expected = [0x3E, 0x05, 0x10, 0xFE, 0x01, 0x02];
+                let same = gres.output.length === expected.length;
+                for (let i = 0; i < expected.length && same; i++) if (gres.output[i] !== expected[i]) same = false;
+                assert(same, 'GENS assembled bytes match',
+                    'got [' + Array.from(gres.output).map(b => b.toString(16)).join(' ') + ']');
+            }
+
+            // STORM end-to-end: detokenize + convert + assemble
+            const sfile = stormFile([
+                [0x09, 0x8E, 0x40, 0x9C],                       // ORG 40000
+                [0x37, 0x8A, 0x05],                             // LD A,5
+                [0x4F, 0xF1],                                   // DJNZ $-2
+                [0x52]                                          // RET
+            ]);
+            const sdetok = AsmDetok.detokenize(sfile, 'storm');
+            const sconv = AsmDialectConverter.convert(sdetok.text, 'storm');
+            assertEq(sconv.warnings.length, 0, 'STORM: no conversion warnings');
+            const sres = Assembler.assemble(sconv.text);
+            assert(sres.success, 'STORM source assembles', sres.success ? '' : JSON.stringify(sres.errors && sres.errors.slice(0, 3)));
+            if (sres.success) {
+                // DJNZ $-2: target = addr-2, offset = -4 = 0xFC
+                const expected = [0x3E, 0x05, 0x10, 0xFC, 0xC9];
+                let same = sres.output.length === expected.length;
+                for (let i = 0; i < expected.length && same; i++) if (sres.output[i] !== expected[i]) same = false;
+                assert(same, 'STORM assembled bytes match',
+                    'got [' + Array.from(sres.output).map(b => b.toString(16)).join(' ') + ']');
+            }
+
+            // Pasmo end-to-end: operators and literals
+            const pasmoSrc = [
+                '        ORG $9200',
+                "        DB $FF MOD 10",
+                '        DB 5 AND 3',
+                '        DB &HFF',
+                "        DB 'A'",
+                '        END'
+            ].join('\n');
+            const pconv = AsmDialectConverter.convert(pasmoSrc, 'pasmo');
+            const pres = Assembler.assemble(pconv.text);
+            assert(pres.success, 'Pasmo source assembles', pres.success ? '' : JSON.stringify(pres.errors && pres.errors.slice(0, 3)));
+            if (pres.success) {
+                const expected = [5, 1, 0xFF, 0x41];
+                let same = pres.output.length === expected.length;
+                for (let i = 0; i < expected.length && same; i++) if (pres.output[i] !== expected[i]) same = false;
+                assert(same, 'Pasmo assembled bytes match',
+                    'got [' + Array.from(pres.output).map(b => b.toString(16)).join(' ') + ']');
+            }
+            updateSummary();
+        };
+
+        window.runAll = function() {
+            logEl.innerHTML = '';
+            passed = 0; failed = 0;
+            runHobetaTests();
+            runDetectTests();
+            runAlasmTests();
+            runTasmTests();
+            runAdsTests();
+            runStormTests();
+            runConvertTests();
+            runEndToEndTests();
+            updateSummary();
+            log('\nDone.', 'info');
+        };
+
+        // Auto-run for headless testing
+        runAll();
+    </script>
+</body>
+</html>

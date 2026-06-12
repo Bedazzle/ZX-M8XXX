@@ -53,7 +53,8 @@ export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsur
 
     // ========== Splitters (resizable debug areas) ==========
     // Each drag bar drives one CSS variable, persisted to localStorage; double-click resets.
-    // axis 'y' = drag changes height, 'x' = drag changes width.
+    // axis 'y' = drag changes height, 'x' = drag changes width; may be a function
+    // (resolved at drag start) for splitters whose orientation depends on the layout.
     // invert = the sized element is after the bar, so dragging down/right shrinks it.
     function initSplitter(id, cssVar, storageKey, getStartSize, minS, maxS, axis = 'y', invert = false) {
         const bar = document.getElementById(id);
@@ -68,11 +69,12 @@ export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsur
 
         bar.addEventListener('mousedown', (e) => {
             e.preventDefault();
-            const startPos = axis === 'x' ? e.clientX : e.clientY;
+            const ax = typeof axis === 'function' ? axis() : axis;
+            const startPos = ax === 'x' ? e.clientX : e.clientY;
             const startS = size || getStartSize();
             bar.classList.add('dragging');
             const onMove = (ev) => {
-                const pos = axis === 'x' ? ev.clientX : ev.clientY;
+                const pos = ax === 'x' ? ev.clientX : ev.clientY;
                 const delta = (pos - startPos) * (invert ? -1 : 1);
                 size = Math.max(minS, Math.min(maxS, startS + delta));
                 applySize(size);
@@ -118,6 +120,25 @@ export function initTabSystem({ getTestRunner, getEnsureGraphicsViewer, getEnsur
         const c = document.querySelector('.assembler-container');
         return c ? c.offsetHeight : 700;
     }, 500, 2000, 'y');
+
+    // Explorer Edit tab: first file panel size (bar between the two panels).
+    // The panels stack in portrait and sit side-by-side in landscape, so the
+    // axis (and which dimension flex-basis controls) depends on the layout.
+    const explorerAxis = () => {
+        const c = document.getElementById('editorPanels');
+        return c && getComputedStyle(c).flexDirection === 'row' ? 'x' : 'y';
+    };
+    initSplitter('explorerPaneSplitter', '--explorer-pane-size', 'zxm8_explorerPaneSize', () => {
+        const p = document.getElementById('editorPanelLeft');
+        if (!p) return 300;
+        return explorerAxis() === 'x' ? p.offsetWidth : p.offsetHeight;
+    }, 80, 1600, explorerAxis);
+
+    // Right panel width (landscape only — the bar is hidden when the panels stack)
+    initSplitter('explorerPaneSplitterRight', '--explorer-pane2-size', 'zxm8_explorerPane2Size', () => {
+        const p = document.getElementById('editorPanelRight');
+        return p ? p.offsetWidth : 400;
+    }, 80, 1600, 'x');
 
     // Assembler split-pane width (bar sits left of the second pane — inverted)
     initSplitter('asmPaneSplitter', '--asm-pane2-w', 'zxm8_asmPane2Width', () => {

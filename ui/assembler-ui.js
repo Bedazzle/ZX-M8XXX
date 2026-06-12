@@ -2,6 +2,7 @@
 // ES module with init-function pattern
 import { escapeHtml, hex8, hex16, storageGet, storageSet } from '../core/utils.js';
 import { z80Opcodes } from '../debug/opcodes-data.js';
+import { decodeViewCodepage } from '../core/asm-detok.js';
 
 export function initAssemblerUI({
     VFS,
@@ -47,6 +48,7 @@ export function initAssemblerUI({
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
+    const asmViewCodepage = document.getElementById('asmViewCodepage');
     const asmDefinesInput = document.getElementById('asmDefines');
     const asmDetectedDefines = document.getElementById('asmDetectedDefines');
     const btnAsmExport = document.getElementById('btnAsmExport');
@@ -1076,15 +1078,10 @@ export function initAssemblerUI({
                 closeFileTab(path);
             });
 
-            // Right-click to set as main file
+            // Right-click: tab context menu (set main / open in other pane / close)
             tab.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
-                if (!file.binary) {
-                    currentProjectMainFile = path;
-                    updateFileTabs();
-                    updateProjectButtons();
-                    showMessage(`Main file set to: ${name}`);
-                }
+                showTabContextMenu(e, path, file, name);
             });
 
             asmFileTabs.appendChild(tab);
@@ -1336,6 +1333,12 @@ export function initAssemblerUI({
     }
 
     function highlightAsmCode(code) {
+        // View-only codepage: the highlight layer paints the visible text (the
+        // textarea text is transparent), and the mapping is 1 char -> 1 char,
+        // so caret/selection positions stay aligned with the raw content
+        if (asmViewCodepage && asmViewCodepage.value !== 'raw') {
+            code = decodeViewCodepage(code, asmViewCodepage.value);
+        }
         const lines = code.split('\n');
         return lines.map(line => {
             const tokens = tokenizeAsmLine(line);
@@ -1466,14 +1469,14 @@ export function initAssemblerUI({
         });
 
         asmEditor.addEventListener('keydown', (e) => {
-            // Ctrl+Z - Undo
-            if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+            // Ctrl+Z - Undo (e.code: layout-independent)
+            if (e.ctrlKey && e.code === 'KeyZ' && !e.shiftKey) {
                 e.preventDefault();
                 asmUndo();
                 return;
             }
             // Ctrl+Y or Ctrl+Shift+Z - Redo
-            if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'Z')) {
+            if ((e.ctrlKey && e.code === 'KeyY') || (e.ctrlKey && e.shiftKey && e.code === 'KeyZ')) {
                 e.preventDefault();
                 asmRedo();
                 return;
@@ -1494,12 +1497,12 @@ export function initAssemblerUI({
                 updateHighlight();
             }
             // Ctrl+F - Find
-            if (e.ctrlKey && e.key === 'f') {
+            if (e.ctrlKey && e.code === 'KeyF') {
                 e.preventDefault();
                 openSearchBar(false);
             }
             // Ctrl+H or Ctrl+R - Replace
-            if (e.ctrlKey && (e.key === 'h' || e.key === 'r')) {
+            if (e.ctrlKey && (e.code === 'KeyH' || e.code === 'KeyR')) {
                 e.preventDefault();
                 openSearchBar(true);
             }
@@ -2107,6 +2110,21 @@ export function initAssemblerUI({
         });
     }
 
+    // View codepage (display-only decoding of raw bytes: CP866/KOI8-R/KOI-7)
+    if (asmViewCodepage) {
+        let viewCp = storageGet('zxm8_asmViewCodepage');
+        // migrate the short-lived boolean CP866 setting
+        if (!viewCp && storageGet('zxm8_asmCp866View') === 'true') viewCp = 'cp866';
+        if (viewCp && [...asmViewCodepage.options].some(o => o.value === viewCp)) {
+            asmViewCodepage.value = viewCp;
+        }
+        asmViewCodepage.addEventListener('change', () => {
+            storageSet('zxm8_asmViewCodepage', asmViewCodepage.value);
+            updateHighlight();
+            if (splitPaneVisible()) pane2Render();
+        });
+    }
+
     // Font size controls for assembler editor
     const asmFontSizeSelect = document.getElementById('asmFontSize');
 
@@ -2185,7 +2203,8 @@ export function initAssemblerUI({
     const asmPane2File = document.getElementById('asmPane2File');
     const asmPane2Header = document.getElementById('asmPane2Header');
     const btnAsmPane2Close = document.getElementById('btnAsmPane2Close');
-    let pane2Path = null;  // null = mirror the main editor buffer
+    let pane2Path = null;          // null = mirror the main editor buffer
+    let asmActivePane = 'main';    // last-focused editor pane ('main' | 'split')
 
     function pane2IsMirror() {
         return pane2Path === null || pane2Path === currentOpenFile;
@@ -2227,6 +2246,7 @@ export function initAssemblerUI({
         asmPane2Header.classList.toggle('hidden', !on);
         asmPaneSplitter.classList.toggle('hidden', !on);
         btnAsmSplit.classList.toggle('active', on);
+        if (!on) asmActivePane = 'main';
         storageSet('zxm8_asmSplit', on);
     }
 
@@ -2243,6 +2263,10 @@ export function initAssemblerUI({
     }
 
     if (btnAsmSplit && asmPane2) {
+        // Track which pane the user last worked in (Ctrl+G targets it)
+        asmEditor.addEventListener('focus', () => { asmActivePane = 'main'; });
+        asmEditor2.addEventListener('focus', () => { asmActivePane = 'split'; });
+
         btnAsmSplit.addEventListener('click', () => {
             if (asmPane2.classList.contains('hidden')) pane2Open();
             else pane2SetVisible(false);
@@ -2301,6 +2325,80 @@ export function initAssemblerUI({
         if (storageGet('zxm8_asmSplit') === 'true') {
             setTimeout(pane2Open, 0);
         }
+    }
+
+    // Open a file in the main editor, optionally with the caret centered on a line
+    function openInMainPane(path, line = null) {
+        if (path !== '(editor)' && VFS.files[path]) openFileTab(path);
+        if (line === null) return;
+        const lines = asmEditor.value.split('\n');
+        let pos = 0;
+        for (let i = 0; i < Math.min(line - 1, lines.length); i++) pos += lines[i].length + 1;
+        asmEditor.focus();
+        asmEditor.setSelectionRange(pos, pos + (lines[line - 1] ? lines[line - 1].length : 0));
+        const lineHeight = parseFloat(getComputedStyle(asmEditor).lineHeight) || 17;
+        asmEditor.scrollTop = Math.max(0, (line - 1) * lineHeight - asmEditor.clientHeight / 2);
+        syncScroll();
+    }
+
+    function splitPaneVisible() {
+        return asmPane2 && !asmPane2.classList.contains('hidden');
+    }
+
+    // Open a file in the split pane (opening the split if needed), optionally at a line
+    function openInSplitPane(path, line = null) {
+        if (!asmPane2) return;
+        syncEditorToVFS();
+        pane2FillFileList();
+        if (asmPane2.classList.contains('hidden')) pane2SetVisible(true);
+        pane2LoadFile(path);
+        if (line !== null) {
+            const lines = asmEditor2.value.split('\n');
+            let pos = 0;
+            for (let i = 0; i < Math.min(line - 1, lines.length); i++) pos += lines[i].length + 1;
+            asmEditor2.focus();
+            asmEditor2.setSelectionRange(pos, pos + (lines[line - 1] ? lines[line - 1].length : 0));
+            const lh = parseFloat(getComputedStyle(asmEditor2).lineHeight) || 17;
+            asmEditor2.scrollTop = Math.max(0, (line - 1) * lh - asmEditor2.clientHeight / 2);
+            asmEditor2.dispatchEvent(new Event('scroll'));  // sync highlight + line numbers
+        }
+    }
+
+    // ---- File tab context menu ----
+
+    const tabMenu = document.createElement('div');
+    tabMenu.className = 'asm-tab-menu hidden';
+    document.body.appendChild(tabMenu);
+    document.addEventListener('mousedown', (e) => {
+        if (!tabMenu.contains(e.target)) tabMenu.classList.add('hidden');
+    });
+
+    function showTabContextMenu(e, path, file, name) {
+        const items = [];
+        if (!file.binary) {
+            items.push(['Set as main file', () => {
+                currentProjectMainFile = path;
+                updateFileTabs();
+                updateProjectButtons();
+                showMessage(`Main file set to: ${name}`);
+            }]);
+            items.push(['Open in other pane', () => openInSplitPane(path)]);
+        }
+        items.push(['Close tab', () => closeFileTab(path)]);
+        tabMenu.innerHTML = '';
+        for (const [label, fn] of items) {
+            const it = document.createElement('div');
+            it.className = 'asm-tab-menu-item';
+            it.textContent = label;
+            it.addEventListener('click', () => {
+                tabMenu.classList.add('hidden');
+                fn();
+            });
+            tabMenu.appendChild(it);
+        }
+        tabMenu.classList.remove('hidden');
+        tabMenu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
+        tabMenu.style.top = Math.min(e.clientY, window.innerHeight - 110) + 'px';
     }
 
     // ========== Share / Import ==========
@@ -4407,5 +4505,69 @@ export function initAssemblerUI({
         // For checking if there's content to save
         hasContent: () => !!(asmEditor && (asmEditor.value || Object.keys(VFS.files).length > 0)),
         getEditorValue: () => asmEditor ? asmEditor.value : '',
+        // For the Ctrl+G palette: label definitions across all source files
+        getSourceSymbols: () => {
+            syncEditorToVFS();
+            const NOT_LABELS = /^(?:DUP|EDUP|REPT|ENDR|MACRO|ENDM|ORG|EQU|IF|ELSE|ENDIF|IFDEF|IFNDEF|DB|DW|DS|DEFB|DEFW|DEFS|DEFM|INCLUDE|INCBIN|DEVICE|MODULE|ENDMODULE|ALIGN|DISPLAY|END|SAVESNA|SAVEBIN|SAVETAP|SAVETRD|SAVEHOB|EMPTYTRD|EMPTYTAP|STRUCT|ENDS|CHARSET)$/i;
+            const out = [];
+            const scan = (path, content) => {
+                const lines = content.split('\n');
+                for (let i = 0; i < lines.length; i++) {
+                    const m = lines[i].match(/^([A-Za-z_.@][\w.]*):?(?=\s|$|:)/);
+                    if (m && !NOT_LABELS.test(m[1]) && !Z80_MNEMONICS.has(m[1].toUpperCase())) {
+                        out.push({ name: m[1], path, line: i + 1 });
+                    }
+                }
+            };
+            const ASM_EXT = /\.(asm|z80|s|a80|inc)$/i;
+            const files = Object.keys(VFS.files).filter(p => !VFS.files[p].binary && ASM_EXT.test(p));
+            // Currently open file first — the palette caps its list, so the
+            // most relevant labels must come before other files fill it up
+            files.sort((a, b) => (a === currentOpenFile ? -1 : b === currentOpenFile ? 1 : a.localeCompare(b)));
+            if (files.length) {
+                for (const p of files) scan(p, VFS.files[p].content);
+            } else if (asmEditor && asmEditor.value) {
+                scan('(editor)', asmEditor.value);
+            }
+            return out;
+        },
+        // Open the file at a line in the last-focused pane (left if no split)
+        gotoSourceLine: (path, line) => {
+            if (asmActivePane === 'split' && splitPaneVisible()) openInSplitPane(path, line);
+            else openInMainPane(path, line);
+        },
+        // Same, but into the *other* pane (Shift+Enter in the palette)
+        gotoSourceLineSplit: (path, line) => {
+            if (asmActivePane === 'split' && splitPaneVisible()) openInMainPane(path, line);
+            else openInSplitPane(path, line);
+        },
+        // Add already-prepared files to the project ({path, text} or
+        // {path, data} for binaries) and refresh the UI.
+        // Used by the foreign-source importer (ui/import-foreign.js).
+        addProjectFiles: (files, mainHint) => {
+            let lastSrc = null;
+            for (const f of files) {
+                const normalized = VFS.normalizePath(f.path);
+                // Drop any open tab showing an overwritten file so it reloads
+                const tabIdx = openTabs.indexOf(normalized);
+                if (tabIdx !== -1) openTabs.splice(tabIdx, 1);
+                if (currentOpenFile === normalized) currentOpenFile = null;
+                if (f.text !== undefined) {
+                    VFS.addFile(f.path, f.text);
+                    if (/\.(asm|z80|s|a80)$/i.test(normalized)) lastSrc = normalized;
+                } else {
+                    VFS.addBinaryFile(f.path, f.data);
+                }
+            }
+            const toOpen = (mainHint && VFS.normalizePath(mainHint)) || lastSrc;
+            if (toOpen) {
+                if (!currentProjectMainFile) currentProjectMainFile = toOpen;
+                openFileTab(toOpen);
+            }
+            assemblyDirty = true;
+            updateProjectButtons();
+            updateDefinesDropdown();
+            updateFileTabs();
+        },
     };
 }

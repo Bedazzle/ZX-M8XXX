@@ -50,8 +50,8 @@ export function initKeyboardShortcuts({
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
         if (e.target.isContentEditable || regEditorAPI.isEditingRegister()) return;
 
-        // Ctrl+F - Toggle autofire
-        if (e.ctrlKey && e.key === 'f' && !e.altKey && !e.repeat) {
+        // Ctrl+F - Toggle autofire (e.code: layout-independent)
+        if (e.ctrlKey && e.code === 'KeyF' && !e.altKey && !e.repeat) {
             e.preventDefault();
             getAutofireAPI().toggleAutofire();
             return;
@@ -123,13 +123,13 @@ export function initKeyboardShortcuts({
         }
 
         // Ctrl+Z - Undo (only when emulator is paused to not interfere with BASIC)
-        if (e.ctrlKey && e.key === 'z' && !spectrum.isRunning()) {
+        if (e.ctrlKey && e.code === 'KeyZ' && !spectrum.isRunning()) {
             e.preventDefault();
             undoManager.undo();
             return;
         }
         // Ctrl+Y - Redo (only when emulator is paused)
-        if (e.ctrlKey && e.key === 'y' && !spectrum.isRunning()) {
+        if (e.ctrlKey && e.code === 'KeyY' && !spectrum.isRunning()) {
             e.preventDefault();
             undoManager.redo();
             return;

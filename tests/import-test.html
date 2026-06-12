@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Import Foreign Dialog Tests v0.15.5</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #252540;
+            --bg-tertiary: #0a0a15;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --border-color: #444;
+            --cyan: #0ff;
+            --yellow: #ff0;
+            --green: #0f0;
+            --red: #f44;
+            --button-bg: #0a84ff;
+            --button-hover: #0070e0;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        .test-resources {
+            background: var(--bg-secondary);
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+        .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button.test-btn { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button.test-btn:hover { background: var(--button-hover); }
+        .controls { margin: 15px 0; display: flex; flex-wrap: wrap; gap: 5px; }
+        /* Hidden dialog DOM required by initImportForeign */
+        #dlgContainer { display: none; }
+    </style>
+</head>
+<body>
+    <h1>Import Foreign Dialog Tests <span class="version">v0.15.5</span></h1>
+    <div class="test-resources">
+        <p><a href="convert-test.html">Foreign Source Import Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="loader-test.html">Loader Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls">
+        <button class="test-btn" onclick="runAll()">Run All</button>
+    </div>
+    <div id="log"></div>
+
+    <!-- Hidden Import Foreign dialog DOM -->
+    <div id="dlgContainer">
+        <button id="btnAsmImportForeign"></button>
+        <div id="importForeignDialog" class="hidden">
+            <button id="btnImpForeignChoose"></button>
+            <input type="file" id="impForeignFile">
+            <span id="impForeignSrcName"></span>
+            <div id="impForeignList"></div>
+            <pre id="impForeignPreview"></pre>
+            <div id="impForeignStatus"></div>
+            <button id="btnImpForeignCancel"></button>
+            <button id="btnImpForeignOk"></button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initImportForeign } from '../ui/import-foreign.js';
+        import { TRDLoader, SCLLoader, ZipLoader } from '../core/loaders.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+
+        function log(msg, cls = '') {
+            const div = document.createElement('div');
+            if (cls) div.className = cls;
+            div.textContent = msg;
+            logEl.appendChild(div);
+        }
+        function assert(cond, msg, detail = '') {
+            if (cond) { passed++; log('  ✓ ' + msg, 'pass'); }
+            else { failed++; log('  ✗ ' + msg + ' - FAILED' + (detail ? ' (' + detail + ')' : ''), 'fail'); }
+        }
+        function assertEq(actual, expected, msg) {
+            assert(actual === expected, msg, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        }
+        function section(name) { log('\n═══ ' + name + ' ═══', 'section'); }
+        function updateSummary() {
+            summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`;
+        }
+
+        // ==================== fixture builders ====================
+
+        function str(s) { return [...s].map(c => c.charCodeAt(0)); }
+
+        // Tokenized TASM source (len, content, len framing; 0xB3="LD ", 0x94="DE", 0xCC="RET")
+        function tasmFile(lines) {
+            const o = [];
+            for (const c of lines) o.push(c.length, ...c, c.length);
+            o.push(0xFF);
+            return o;
+        }
+        const TASM_BODY = tasmFile([
+            [0x0A, 8, ...str('ORG #9000')],
+            [...str('BEGIN'), 0x0A, 3, 0xB3, 0x94, ...str(',#0607')],
+            [0x0A, 8, 0xCC],
+            [0x0A, 8, 0xCC]
+        ]);
+
+        // One-file SCL archive
+        function makeScl(fileName, body, ext = 'A', start = 39221) {
+            const scl = [];
+            scl.push(...str('SINCLAIR'), 1);
+            scl.push(...str((fileName + '        ').slice(0, 8)), ext.charCodeAt(0));
+            scl.push(start & 0xFF, start >> 8);
+            scl.push(body.length & 0xFF, body.length >> 8);
+            scl.push(Math.ceil(body.length / 256));
+            scl.push(...body);
+            while ((scl.length - 9 - 14) % 256 !== 0) scl.push(0);
+            return new Uint8Array(scl);
+        }
+
+        // Minimal valid TRD (163840 bytes, one catalog entry, data on track 1)
+        function makeTrd(fileName, body, ext = 'A', start = 39221) {
+            const trd = new Uint8Array(163840);
+            const name = (fileName + '        ').slice(0, 8);
+            for (let i = 0; i < 8; i++) trd[i] = name.charCodeAt(i);
+            trd[8] = ext.charCodeAt(0);
+            trd[9] = start & 0xFF;
+            trd[10] = start >> 8;
+            trd[11] = body.length & 0xFF;
+            trd[12] = body.length >> 8;
+            trd[13] = Math.ceil(body.length / 256);
+            trd[14] = 0;    // sector
+            trd[15] = 1;    // track -> data at offset 4096
+            trd[0x8E7] = 0x10;  // TR-DOS signature
+            trd.set(body, 4096);
+            return trd;
+        }
+
+        // Hobeta wrapper
+        function makeHobeta(name, type, start, payload) {
+            const out = [];
+            out.push(...str((name + '        ').slice(0, 8)));
+            out.push(type.charCodeAt(0));
+            out.push(start & 0xFF, (start >> 8) & 0xFF);
+            out.push(payload.length & 0xFF, (payload.length >> 8) & 0xFF);
+            out.push(0, Math.ceil(payload.length / 256), 0, 0);
+            return new Uint8Array([...out.slice(0, 17), ...payload]);
+        }
+
+        // Stored (uncompressed) ZIP
+        function crc32(buf) {
+            let c, t = [];
+            for (let n = 0; n < 256; n++) {
+                c = n;
+                for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+                t[n] = c;
+            }
+            let crc = 0 ^ -1;
+            for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xFF];
+            return (crc ^ -1) >>> 0;
+        }
+        function u16(v) { return [v & 0xFF, (v >> 8) & 0xFF]; }
+        function u32(v) { return [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]; }
+        function buildZip(files) {
+            const parts = [], central = [];
+            let offset = 0;
+            for (const [name, data] of files) {
+                const n = str(name), crc = crc32(data);
+                const local = [0x50, 0x4B, 3, 4, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                    ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(n.length), ...u16(0), ...n];
+                central.push([0x50, 0x4B, 1, 2, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                    ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(n.length), ...u16(0), ...u16(0),
+                    ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...n]);
+                parts.push(...local, ...data);
+                offset += local.length + data.length;
+            }
+            const cd = central.flat();
+            const eocd = [0x50, 0x4B, 5, 6, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
+                ...u32(cd.length), ...u32(offset), ...u16(0)];
+            return new Uint8Array([...parts, ...cd, ...eocd]);
+        }
+
+        // ==================== harness ====================
+
+        let importedFiles = null;
+        let importedMainHint = null;
+        const api = initImportForeign({
+            TRDLoader, SCLLoader, ZipLoader,
+            showMessage: () => {},
+            addProjectFiles: (files, mainHint) => {
+                importedFiles = files;
+                importedMainHint = mainHint;
+            }
+        });
+
+        // Hand files to the importer via the API. Re-reading File objects from
+        // synthetic input change events stalls under headless virtual time,
+        // so tests use the direct entry point (same code path from there on).
+        async function loadFile(name, bytes) {
+            await api.loadFile(new File([bytes], name));
+        }
+        function rows(sel = '.impf-row') { return [...document.querySelectorAll('#impForeignList ' + sel)]; }
+        function rowNames() { return rows().map(r => r.querySelector('.impf-name')).filter(Boolean).map(e => e.textContent); }
+        function rowFormat(i) { return rows('.impf-row[data-i]')[i].querySelector('select').value; }
+        function preview() { return document.getElementById('impForeignPreview').textContent; }
+
+        // ==================== tests ====================
+
+        async function runAllTests() {
+            section('Module init');
+            assert(api !== null && typeof api.open === 'function', 'initImportForeign returns API');
+
+            section('Single .trd file');
+            await loadFile('game.trd', makeTrd('GRADCODE', TASM_BODY));
+            assertEq(rowNames().join(','), 'GRADCODE.A', 'TRD catalog listed');
+            assertEq(rowFormat(0), 'tasm', 'TASM detected from catalog metadata');
+            assert(preview().includes('BEGIN   LD DE,#0607'), 'preview shows converted source');
+
+            section('Single Hobeta file');
+            await loadFile('GRADCODE.$A', makeHobeta('GRADCODE', 'A', 39221, TASM_BODY));
+            assertEq(rowNames().join(','), 'GRADCODE.A', 'Hobeta header parsed');
+            assertEq(rowFormat(0), 'tasm', 'format from Hobeta metadata');
+
+            section('ZIP with one disk');
+            await loadFile('one.zip', buildZip([
+                ['a.scl', makeScl('GRADCODE', TASM_BODY)],
+                ['readme.diz', new Uint8Array(str('hello there\nsecond line\nthird\nfourth\n'))]
+            ]));
+            assertEq(rows('.impf-row[data-disk]').length, 0, 'no chooser for single disk');
+            assertEq(rowNames().join(','), 'GRADCODE.A,readme.diz', 'disk expanded + loose file listed');
+            assertEq(rowFormat(1), 'text', 'loose .diz stays text');
+
+            section('ZIP with two disks - chooser');
+            await loadFile('two.zip', buildZip([
+                ['a.scl', makeScl('DISKONE', TASM_BODY)],
+                ['b.scl', makeScl('DISKTWO', TASM_BODY)],
+                ['readme.diz', new Uint8Array(str('hi\nthere\nfour\nlines\n'))]
+            ]));
+            assertEq(rows('.impf-row[data-disk]').length, 2, 'chooser shows two disks');
+            assert(document.getElementById('btnImpForeignOk').disabled, 'Import disabled during chooser');
+            rows('.impf-row[data-disk]')[1].click();
+            await new Promise(r => setTimeout(r, 100));
+            assertEq(rowNames().join(','), 'DISKTWO.A,readme.diz', 'chosen disk catalog + loose files');
+            assertEq(rows('.impf-row[data-back]').length, 1, 'back row present');
+            rows('.impf-row[data-back]')[0].click();
+            await new Promise(r => setTimeout(r, 100));
+            assertEq(rows('.impf-row[data-disk]').length, 2, 'back returns to chooser');
+
+            section('SCREEN$ on disk imports as binary');
+            const screen = new Uint8Array(6912);
+            screen.fill(0x47, 6144);
+            await loadFile('scr.trd', makeTrd('PICTURE', Array.from(screen), 'C', 16384));
+            assertEq(rowFormat(0), 'binary', 'SCREEN$ not misdetected');
+
+            section('GENS auto-suggestion');
+            const gensText = '10 START LD A,5\n20 LOOP DJNZ LOOP\n30  RET\n40 ; done\n50  END\n';
+            await loadFile('src.zip', buildZip([['prog.asm', new Uint8Array(str(gensText))]]));
+            assertEq(rowFormat(0), 'gens', 'line-numbered text suggested as GENS');
+            const starText = '*L+\n CALL X\n RET\nX RET\n';
+            await loadFile('src2.zip', buildZip([['prog2.asm', new Uint8Array(str(starText))]]));
+            assertEq(rowFormat(0), 'gens', '*command text suggested as GENS');
+
+            section('Format override updates VFS name');
+            await loadFile('game.trd', makeTrd('GRADCODE', TASM_BODY));
+            const sel = rows('.impf-row[data-i]')[0].querySelector('select');
+            sel.value = 'binary';
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            await new Promise(r => setTimeout(r, 50));
+            const title = rows('.impf-row[data-i]')[0].querySelector('.impf-name').title;
+            assertEq(title, 'gradcode.a', 'binary keeps type extension');
+
+            section('Import delivers converted payload');
+            importedFiles = null;
+            await loadFile('mix.zip', buildZip([
+                ['a.scl', makeScl('GRADCODE', TASM_BODY)],
+                ['sprites.bin', new Uint8Array([1, 2, 3, 4])]
+            ]));
+            document.getElementById('btnImpForeignOk').click();
+            await new Promise(r => setTimeout(r, 100));
+            assert(importedFiles !== null && importedFiles.length === 2, 'addProjectFiles called with 2 files');
+            if (importedFiles) {
+                const src = importedFiles.find(f => f.path === 'gradcode.a80');
+                const bin = importedFiles.find(f => f.path.endsWith('sprites.bin'));
+                assert(src && typeof src.text === 'string' && src.text.includes('LD DE,#0607'), 'source converted to text');
+                assert(bin && bin.data instanceof Uint8Array && bin.data.length === 4, 'binary passed as-is');
+                assertEq(importedMainHint, 'gradcode.a80', 'main hint is the converted source');
+            }
+            assert(document.getElementById('importForeignDialog').classList.contains('hidden'), 'dialog closed after import');
+
+            updateSummary();
+            log('\nDone.', 'info');
+        }
+
+        window.runAll = function() {
+            logEl.innerHTML = '';
+            passed = 0; failed = 0;
+            runAllTests();
+        };
+
+        // Auto-run for headless testing
+        runAllTests();
+    </script>
+</body>
+</html>

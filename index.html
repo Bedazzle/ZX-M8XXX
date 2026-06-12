@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.3</title>
+    <title>ZX-M8XXX v0.15.5</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -1531,6 +1531,27 @@
         #btnAsmSplit.active {
             background: var(--accent);
             color: #fff;
+        }
+        /* File tab context menu */
+        .asm-tab-menu {
+            position: fixed;
+            z-index: 4500;
+            min-width: 160px;
+            padding: 4px 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-button);
+            border-radius: 4px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        .asm-tab-menu-item {
+            padding: 5px 14px;
+            font-size: 12px;
+            color: var(--text-primary);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .asm-tab-menu-item:hover {
+            background: var(--bg-button);
         }
         .asm-main-label {
             font-size: 10px;
@@ -3940,6 +3961,13 @@
             border-radius: 3px;
             overflow: hidden;
         }
+        /* First panel size adjustable via the splitter between the panels —
+           flex-basis is the main axis, so the same variable is height when the
+           panels are stacked (portrait) and width when side-by-side (landscape).
+           Default: equal split (50% minus its share of gaps and the bar). */
+        #editorPanelLeft {
+            flex: 0 0 var(--explorer-pane-size, calc(50% - 7px));
+        }
         .editor-panel.active { border-color: var(--cyan); }
         .editor-panel-header {
             display: flex;
@@ -3974,9 +4002,25 @@
             font-size: 11px;
             padding: 2px;
         }
-        /* Landscape: side-by-side */
+        /* Right-edge bar only exists in the side-by-side layout */
+        #explorerPaneSplitterRight { display: none; }
+        /* Landscape: side-by-side; the splitters become vertical bars */
         @media (min-width: 1400px) {
             .editor-panels { flex-direction: row; }
+            #explorerPaneSplitter,
+            #explorerPaneSplitterRight {
+                display: block;
+                height: auto;
+                align-self: stretch;
+                cursor: ew-resize;
+            }
+            /* Two bars + three gaps in the row: even split is 50% minus 12px each */
+            #editorPanelLeft {
+                flex: 0 0 var(--explorer-pane-size, calc(50% - 12px));
+            }
+            #editorPanelRight {
+                flex: 0 0 var(--explorer-pane2-size, calc(50% - 12px));
+            }
         }
         /* TRD/SCL file list - compact table-like layout */
         .explorer-file-list {
@@ -5203,6 +5247,74 @@
         .left-disasm-controls #disasmExportSelect {
             margin-left: auto;
         }
+        /* Go-to-label palette (Ctrl+G) */
+        .goto-palette {
+            position: fixed;
+            inset: 0;
+            z-index: 4000;
+            background: rgba(0, 0, 0, 0.45);
+        }
+        .goto-palette-box {
+            width: 440px;
+            max-width: 90vw;
+            margin: 12vh auto 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+        .goto-palette-head {
+            display: flex;
+            align-items: center;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--bg-button);
+        }
+        .goto-palette-head input[type="text"] {
+            flex: 1;
+            min-width: 0;
+            box-sizing: border-box;
+            padding: 8px 12px;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .goto-rom-opt {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 0 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .goto-palette-list {
+            max-height: 320px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            overscroll-behavior: contain;  /* don't chain wheel scrolling to the page behind */
+        }
+        .goto-item {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 4px 12px;
+            font-family: monospace;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .goto-item:hover { background: var(--bg-button); }
+        .goto-item.selected { background: var(--accent); color: #fff; }
+        .goto-item .goto-addr { color: var(--cyan); }
+        .goto-item.selected .goto-addr { color: #fff; }
+        .goto-item .goto-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .goto-item .goto-src { font-size: 10px; color: var(--text-secondary); }
+        .goto-item.selected .goto-src { color: #eee; }
+        .goto-empty { padding: 8px 12px; font-size: 12px; color: var(--text-secondary); font-style: italic; }
         /* T-state selection (drag across disasm lines) */
         .disasm-line.tsel {
             background: var(--bg-button);
@@ -6992,7 +7104,85 @@
         </div>
     </div>
 
+    <div id="importForeignDialog" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 880px; width: 90vw;">
+            <h2>Import Foreign Source</h2>
+            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                <button id="btnImpForeignChoose">Choose file…</button>
+                <input type="file" id="impForeignFile" style="display:none;">
+                <span id="impForeignSrcName" style="font-size:11px; color:var(--text-secondary);">or drop a .trd / .scl / .zip / single file here</span>
+            </div>
+            <div style="display:flex; gap:8px; min-height:260px;">
+                <div id="impForeignList" class="impf-list"></div>
+                <pre id="impForeignPreview" class="impf-preview"></pre>
+            </div>
+            <div id="impForeignStatus" style="font-size:11px; color:var(--text-secondary); min-height:14px; margin-top:6px;"></div>
+            <div class="modal-actions">
+                <button id="btnImpForeignCancel">Cancel</button>
+                <button id="btnImpForeignOk" disabled>Import</button>
+            </div>
+        </div>
+    </div>
+
     <style>
+        .impf-list {
+            flex: 0 0 340px;
+            max-height: 380px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            font-size: 11px;
+        }
+        .impf-empty {
+            padding: 12px;
+            color: var(--text-secondary);
+        }
+        .impf-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 6px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--bg-secondary);
+        }
+        .impf-row:hover { background: var(--bg-secondary); }
+        .impf-row.selected { background: var(--bg-button); }
+        .impf-row .impf-name {
+            flex: 1;
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .impf-row .impf-size {
+            color: var(--text-secondary);
+            min-width: 44px;
+            text-align: right;
+        }
+        .impf-row select {
+            font-size: 10px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+        .impf-row.impf-back {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+        .impf-preview {
+            flex: 1;
+            margin: 0;
+            padding: 6px;
+            max-height: 380px;
+            overflow: auto;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 11px;
+            line-height: 1.35;
+            white-space: pre;
+        }
         .zip-file-list {
             max-height: 300px;
             overflow-y: auto;
@@ -7047,7 +7237,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.3 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.5 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7866,6 +8056,7 @@
                                 <div class="asm-menu-actions">
                                     <button class="asm-menu-item" id="btnAsmNew" title="Create new file">New file</button>
                                     <button class="asm-menu-item" id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load…</button>
+                                    <button class="asm-menu-item" id="btnAsmImportForeign" title="Import sources written for other assemblers (ALASM, TASM) from TRD/SCL/ZIP/single files">Import foreign…</button>
                                     <button class="asm-menu-item" id="btnAsmImport" title="Import shared project from clipboard">Import from clipboard</button>
                                     <button class="asm-menu-item" id="btnAsmExport" title="Export source files (plain text or ZIP)">Export…</button>
                                     <button class="asm-menu-item" id="btnAsmShare" title="Copy project to clipboard for sharing">Share to clipboard</button>
@@ -7890,6 +8081,14 @@
                                 <label title="Report unused labels after assembly"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
                                 <label title="Show compiled bytes next to source lines"><input type="checkbox" id="chkAsmShowCompiled"> Show compiled</label>
                                 <label title="Always export source as ZIP, even for a single file (default: single file saved as plain text)"><input type="checkbox" id="chkAsmExportZip"> Export as ZIP</label>
+                                <label title="Display codepage for raw bytes in the editor (e.g. Cyrillic DB strings of imported TR-DOS sources). Display only — file content and assembled bytes are unchanged. KOI-7 remaps the lowercase Latin range by design">View enc:
+                                    <select id="asmViewCodepage" style="width: 70px; padding: 2px;">
+                                        <option value="raw" selected>Raw</option>
+                                        <option value="cp866">CP866</option>
+                                        <option value="koi8">KOI8-R</option>
+                                        <option value="koi7">KOI-7</option>
+                                    </select>
+                                </label>
                                 <label title="Editor font size">Font:
                                     <select id="asmFontSize" style="width: 45px; padding: 2px;">
                                         <option value="8">8</option>
@@ -8824,6 +9023,7 @@ start:
                                 </div>
                                 <div class="editor-panel-filelist" data-panel="left"></div>
                             </div>
+                            <div id="explorerPaneSplitter" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the panels, double-click to reset"></div>
                             <div class="editor-panel" id="editorPanelRight" data-panel="right">
                                 <div class="editor-panel-header" data-panel="right">
                                     <span class="editor-panel-format"></span>
@@ -8831,6 +9031,8 @@ start:
                                     <span class="editor-panel-status" style="margin-left:auto"></span>
                                 </div>
                                 <div class="editor-panel-filelist" data-panel="right"></div>
+                            </div>
+                            <div id="explorerPaneSplitterRight" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the right panel, double-click to reset">
                             </div>
                         </div>
                     </div>
@@ -10275,6 +10477,17 @@ start:
         </div>
     </div>
 
+    <!-- Go-to-label palette (Ctrl+G) -->
+    <div class="goto-palette hidden" id="gotoPalette">
+        <div class="goto-palette-box">
+            <div class="goto-palette-head">
+                <input type="text" id="gotoPaletteInput" placeholder="Label or hex address… (Ctrl+G)" spellcheck="false" autocomplete="off">
+                <label class="goto-rom-opt" title="Include ROM labels in the search"><input type="checkbox" id="gotoPaletteRom"> ROM</label>
+            </div>
+            <div class="goto-palette-list" id="gotoPaletteList"></div>
+        </div>
+    </div>
+
     <!-- Label Edit Dialog -->
     <div class="label-dialog hidden" id="labelDialog">
         <div class="label-dialog-content">
@@ -10563,7 +10776,7 @@ start:
     import { Spectrum } from './core/spectrum.js';
     import { Disassembler } from './core/disasm.js';
     import { DSKLoader } from './core/fdc.js';
-    import { TapeTrapHandler, RZXLoader, ZipLoader, SZXLoader } from './core/loaders.js';
+    import { TapeTrapHandler, RZXLoader, ZipLoader, SZXLoader, TRDLoader, SCLLoader } from './core/loaders.js';
     import { Assembler } from './sjasmplus/assembler.js';
     import { VFS } from './sjasmplus/vfs.js';
     import { ErrorCollector } from './sjasmplus/errors.js';
@@ -10627,6 +10840,8 @@ start:
     import { initMachineSelector } from './ui/machine-selector.js';
     import { initProjectIO } from './ui/project-io.js';
     import { initKeyboardShortcuts } from './ui/keyboard-shortcuts.js';
+    import { initGotoPalette } from './ui/goto-palette.js';
+    import { initImportForeign } from './ui/import-foreign.js';
     import { initBookmarks } from './ui/bookmarks.js';
     import { initInputSettings } from './ui/input-settings.js';
     import { initAutofire } from './ui/autofire.js';
@@ -10644,7 +10859,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.3';
+        const APP_VERSION = '0.15.5';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -12811,6 +13026,20 @@ start:
             gameMapper,
             getScreenCanvas: () => document.getElementById('screen'),
             getScreenDimensions: () => spectrum.getScreenDimensions()
+        });
+
+        // Go-to-label palette (Ctrl+G, extracted to ui/goto-palette.js)
+        initGotoPalette({
+            labelManager, navigateToAddress, openDebuggerPanel,
+            getAsmSymbols: () => asmAPI.getSourceSymbols(),
+            gotoAsmLine: (path, line) => asmAPI.gotoSourceLine(path, line),
+            gotoAsmLineSplit: (path, line) => asmAPI.gotoSourceLineSplit(path, line)
+        });
+
+        // Foreign assembler source importer (ALASM/TASM from TRD/SCL/ZIP)
+        initImportForeign({
+            TRDLoader, SCLLoader, ZipLoader, showMessage,
+            addProjectFiles: (files, mainHint) => asmAPI.addProjectFiles(files, mainHint)
         });
 
         // Global hotkeys (extracted to ui/keyboard-shortcuts.js)
