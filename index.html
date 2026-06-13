@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.5</title>
+    <title>ZX-M8XXX v0.15.6</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -5334,9 +5334,23 @@
             font-family: monospace;
             color: var(--text-primary);
             box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-            pointer-events: none;
+            pointer-events: none;   /* body passes clicks through */
             white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
+        .disasm-tsel-popup .tsel-fold-btn {
+            pointer-events: auto;   /* but the Fold button is clickable */
+            font: inherit;
+            cursor: pointer;
+            padding: 2px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 3px;
+            background: var(--bg-button, var(--bg-primary));
+            color: var(--text-primary);
+        }
+        .disasm-tsel-popup .tsel-fold-btn:hover { border-color: var(--accent); }
         /* Disasm view options popover (⚙) */
         .disasm-opts-wrap { position: relative; display: inline-block; }
         .disasm-opts-popover {
@@ -7104,19 +7118,87 @@
         </div>
     </div>
 
+    <div id="beautifyDialog" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 920px; width: 92vw;">
+            <h2>Beautify Source</h2>
+            <div class="bf-cols">
+                <div class="bf-opts">
+                    <label id="bfScopeRow" title="Reformat every text file in the project, not just the open file"><input type="checkbox" id="bfAllFiles"> <span>📁 Apply to <b>all project files</b></span></label>
+                    <div class="bf-selects">
+                        <label title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case"><span>Case</span>
+                            <select id="bfCase">
+                                <option value="upper" selected>UPPERCASE</option>
+                                <option value="lower">lowercase</option>
+                                <option value="none">Leave as-is</option>
+                            </select>
+                        </label>
+                        <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
+                            <select id="bfHexPrefix">
+                                <option value="leave" selected>Leave as-is</option>
+                                <option value="#">#FF</option>
+                                <option value="$">$FF</option>
+                                <option value="0x">0xFF</option>
+                                <option value="h">0FFh</option>
+                            </select>
+                        </label>
+                        <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
+                            <select id="bfBinFormat">
+                                <option value="leave" selected>Leave as-is</option>
+                                <option value="%">%1010</option>
+                                <option value="0b">0b1010</option>
+                                <option value="b">1010b</option>
+                            </select>
+                        </label>
+                        <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
+                            <select id="bfOctFormat">
+                                <option value="leave" selected>Leave as-is</option>
+                                <option value="o">77o</option>
+                                <option value="q">77q</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="bf-checks">
+                        <label><input type="checkbox" id="bfSpaceComma" checked> Space after commas</label>
+                        <label><input type="checkbox" id="bfSplitColon" checked> One statement per line</label>
+                        <label><input type="checkbox" id="bfLabelOwnLine" checked> Label on its own line</label>
+                        <label title="Blank line after unconditional RET, JP nn, JR nn, RST"><input type="checkbox" id="bfBlankFlow" checked> Blank line after flow control</label>
+                        <label title="Blank line after LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR"><input type="checkbox" id="bfBlankBlock"> Blank line after block ops</label>
+                        <label title="EXA → EX AF,AF', SLI → SLL"><input type="checkbox" id="bfNormalize" checked> Normalize pseudo-ops</label>
+                        <label title="PUSH AF,HL,BC → one PUSH per line; chained LD H,D,L,E → LD H,D / LD L,E"><input type="checkbox" id="bfExpandMulti" checked> Expand multi-register PUSH/POP/LD</label>
+                        <label title="Blank line before each top-level routine label (not local .labels)"><input type="checkbox" id="bfBlankBeforeLabel"> Blank line before routines</label>
+                        <label title="Ensure a space after ';' in comments (;text → ; text)"><input type="checkbox" id="bfCommentSpace" checked> Space after ';' in comments</label>
+                        <label><input type="checkbox" id="bfIndent" checked> Indent instructions to column 8</label>
+                        <label title="Align operands into a column so a routine lines up vertically"><input type="checkbox" id="bfAlign"> Align operands into columns</label>
+                        <label title="Line up trailing ; comments to a common column"><input type="checkbox" id="bfAlignComments"> Align trailing comments</label>
+                        <label><input type="checkbox" id="bfTrim" checked> Trim trailing whitespace</label>
+                        <label><input type="checkbox" id="bfCollapse" checked> Collapse blank lines</label>
+                    </div>
+                </div>
+                <div class="bf-preview-wrap">
+                    <div class="bf-preview-label">Preview (current file)</div>
+                    <pre id="bfPreview" class="bf-preview"></pre>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="btnBeautifyCancel">Cancel</button>
+                <button id="btnBeautifyApply">Apply</button>
+            </div>
+        </div>
+    </div>
+
     <div id="importForeignDialog" class="modal-overlay hidden">
         <div class="modal" style="max-width: 880px; width: 90vw;">
             <h2>Import Foreign Source</h2>
             <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
                 <button id="btnImpForeignChoose">Choose file…</button>
                 <input type="file" id="impForeignFile" style="display:none;">
-                <span id="impForeignSrcName" style="font-size:11px; color:var(--text-secondary);">or drop a .trd / .scl / .zip / single file here</span>
+                <span id="impForeignSrcName" style="font-size:12px; color:var(--text-secondary);">or drop a .trd / .scl / .zip / single file here</span>
             </div>
             <div style="display:flex; gap:8px; min-height:260px;">
                 <div id="impForeignList" class="impf-list"></div>
                 <pre id="impForeignPreview" class="impf-preview"></pre>
             </div>
-            <div id="impForeignStatus" style="font-size:11px; color:var(--text-secondary); min-height:14px; margin-top:6px;"></div>
+            <div id="impForeignStatus" style="font-size:12px; color:var(--text-secondary); min-height:14px; margin-top:6px;"></div>
             <div class="modal-actions">
                 <button id="btnImpForeignCancel">Cancel</button>
                 <button id="btnImpForeignOk" disabled>Import</button>
@@ -7125,13 +7207,66 @@
     </div>
 
     <style>
+        /* Beautify dialog layout */
+        .bf-cols { display: flex; gap: 16px; min-height: 440px; max-height: 72vh; }
+        .bf-opts { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; overflow-y: auto; min-height: 0; }
+        .bf-checks { display: flex; flex-direction: column; gap: 7px; }
+        .bf-opts label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+        .bf-opts input[type=checkbox] { width: 14px; height: 14px; }
+        .bf-selects {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 7px 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .bf-selects label { justify-content: space-between; gap: 5px; }
+        .bf-selects label > span { color: var(--text-secondary); }
+        .bf-selects select { flex: 1; min-width: 0; padding: 3px; font-size: 13px; }
+        .bf-preview-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+        .bf-preview-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+        .bf-preview {
+            flex: 1;
+            min-height: 0;
+            margin: 0;
+            padding: 8px;
+            overflow: auto;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre;
+        }
+
+        /* Beautify scope toggle - visually separated from the per-transform options */
+        #bfScopeRow {
+            margin-bottom: 2px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 10px;
+            border: 1px solid var(--yellow);
+            border-radius: 4px;
+            background: rgba(255, 255, 0, 0.06);
+            cursor: pointer;
+        }
+        #bfScopeRow:hover { background: rgba(255, 255, 0, 0.12); }
+        #bfScopeRow:has(#bfAllFiles:checked) {
+            background: rgba(255, 255, 0, 0.18);
+            box-shadow: 0 0 0 1px var(--yellow);
+        }
+        #bfScopeRow span { color: var(--yellow); }
+
         .impf-list {
             flex: 0 0 340px;
             max-height: 380px;
             overflow-y: auto;
             border: 1px solid var(--border-color);
             background: var(--bg-primary);
-            font-size: 11px;
+            font-size: 13px;
         }
         .impf-empty {
             padding: 12px;
@@ -7160,7 +7295,7 @@
             text-align: right;
         }
         .impf-row select {
-            font-size: 10px;
+            font-size: 12px;
             background: var(--bg-primary);
             color: var(--text-primary);
             border: 1px solid var(--border-color);
@@ -7172,15 +7307,15 @@
         .impf-preview {
             flex: 1;
             margin: 0;
-            padding: 6px;
+            padding: 8px;
             max-height: 380px;
             overflow: auto;
             border: 1px solid var(--border-color);
             background: var(--bg-primary);
             color: var(--text-primary);
             font-family: monospace;
-            font-size: 11px;
-            line-height: 1.35;
+            font-size: 12px;
+            line-height: 1.4;
             white-space: pre;
         }
         .zip-file-list {
@@ -7237,7 +7372,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.5 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.6 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -8058,6 +8193,7 @@
                                     <button class="asm-menu-item" id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load…</button>
                                     <button class="asm-menu-item" id="btnAsmImportForeign" title="Import sources written for other assemblers (ALASM, TASM) from TRD/SCL/ZIP/single files">Import foreign…</button>
                                     <button class="asm-menu-item" id="btnAsmImport" title="Import shared project from clipboard">Import from clipboard</button>
+                                    <button class="asm-menu-item" id="btnAsmBeautify" title="Reformat the source: case, spacing, blank lines, one statement per line, …">Beautify…</button>
                                     <button class="asm-menu-item" id="btnAsmExport" title="Export source files (plain text or ZIP)">Export…</button>
                                     <button class="asm-menu-item" id="btnAsmShare" title="Copy project to clipboard for sharing">Share to clipboard</button>
                                     <button class="asm-menu-item" id="btnAsmInject" title="Inject assembled code to memory without starting the debugger" disabled>Inject into memory</button>
@@ -10859,7 +10995,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.5';
+        const APP_VERSION = '0.15.6';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -12021,7 +12157,7 @@ start:
         });
 
         // Disasm navigation (extracted to ui/disasm-navigation.js)
-        initDisasmNavigation({
+        const disasmNavAPI = initDisasmNavigation({
             getSpectrum: () => spectrum, getDisasm: () => disasm, downloadFile,
             labelManager, foldManager,
             getDisasmViewAddress: () => disasmViewAddress,
@@ -12086,7 +12222,8 @@ start:
             getRightPanelType: () => rightPanelType,
             readMemory,
             addPoke: pokeManagerAPI.addPoke,
-            getInstrLength: (addr) => disasm ? disasm.disassemble(addr).length : 1
+            getInstrLength: (addr) => disasm ? disasm.disassemble(addr).length : 1,
+            getDisasmSelection: () => disasmNavAPI.getSelectionRange()
         });
 
         // Trigger handlers (extracted to ui/trigger-handlers.js)

@@ -162,3 +162,19 @@ Interactive fold block creation without manual hex entry. Right-click a disasm l
 - Capture-phase keydown handler on `document` — ESC cancels pick mode
 
 **CSS classes**: `.fold-pick-banner` (banner container), `.fold-picking` (applied to disasm views during pick mode — sets crosshair cursor and hover highlight on `.disasm-line`). Light theme override uses a darker tint for the hover highlight.
+
+## Fold from Mouse Selection
+
+Besides the start/end pick flow, a fold can be created from a **mouse-selected range** — the same drag-selection used to sum T-states. After dragging across two or more disasm lines, the selection popup shows the T-state total *and* a **"⊟ Fold N lines"** button; clicking it creates a collapsed user fold spanning the selection (start = first selected instruction, end = end of the last selected instruction) and re-renders. The Fold button is offered for any selection, including ones whose T-states can't be summed (CALL/RST/data), since folding doesn't depend on timing.
+
+There are two ways to fold a selection:
+- **Popup button** — the "⊟ Fold N lines" button in the selection popup folds immediately.
+- **Context menu** — right-click within the selection and choose "Create fold block from selection (N lines)", which opens the fold dialog with start/end pre-filled (so the block can be named). With no active selection the menu shows the plain "Create fold block…" pick-mode item instead.
+
+A fold's `endAddress` is the **start address of its last line** (the convention the fold dialog and the `endAddress === line.addr` end-marker check both use), so the selection stores `end = lastAddr`, not the last byte. The collapse generator (`ui/disasm-generator.js`) resumes after the *full* last instruction (`endAddress + length-at-endAddress`) so a multi-byte last line doesn't leave the disassembly mid-opcode.
+
+**Implementation** (`ui/disasm-navigation.js`): `showResult()` stores the selection's `{ start, end, count }` in `tselRange` and the owning view's `clearSel` in `tselActiveClear`; the popup's `mousedown` handler (the popup body is `pointer-events:none`, only `.tsel-fold-btn` is clickable) calls `foldManager.addUserFold` + `collapse`, then `clearSel()` and `updateDebugger()`. Uses `mousedown` (not `click`) so the post-drag run-to-cursor click guard can't swallow it. `initDisasmNavigation` returns `getSelectionRange()` which exposes `tselRange`. `clearSel` only nulls the shared `tselRange`/`tselActiveClear` when *this* view owns the active selection, so a right-click in one view can't wipe the other's live selection. The context menu (`ui/disasm-context.js`) captures the range into `pendingFoldSelection` at menu-build time (the menu-item click would otherwise clear the live selection first) and the `fold-selection` action opens `showFoldDialog(start, end)`. The post-drag click-swallow (which suppresses the run-to-cursor click after a selection drag) is scoped to clicks *inside* the disasm view, so it no longer eats the context-menu item click.
+
+## PC-fold auto-expand
+
+When execution moves the PC into a collapsed fold, that fold auto-expands so the current instruction stays visible (`debugger-display.js`, `getCollapsedRangeContaining(pc)` → `expand`). This only fires when the PC *changes* (guarded by `foldPrevPc`): collapsing the fold the PC currently sits in — by click or "collapse all" — is no longer undone on the next render.

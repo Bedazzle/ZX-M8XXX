@@ -154,8 +154,14 @@ export function initDisasmGenerator({
                         byteCount += fl.bytes.length;
                         instrCount++;
                     }
-                } else {
-                    byteCount = userFold.endAddress - currentAddr + 1;
+                }
+                // endAddress is the START of the last folded instruction;
+                // resume after that full instruction so we don't land
+                // mid-opcode for a multi-byte last line.
+                const lastLine = disassembleWithRegions(userFold.endAddress, 1)[0];
+                const resumeAddr = (userFold.endAddress + (lastLine ? lastLine.bytes.length : 1)) & 0xffff;
+                if (!countInstructions) {
+                    byteCount = resumeAddr - currentAddr;
                     instrCount = null;
                 }
                 const foldName = userFold.name || `fold_${hex16(currentAddr)}`;
@@ -171,7 +177,7 @@ export function initDisasmGenerator({
                     byteCount: byteCount,
                     instrCount: instrCount
                 });
-                currentAddr = (userFold.endAddress + 1) & 0xffff;
+                currentAddr = resumeAddr;
                 continue;
             }
 

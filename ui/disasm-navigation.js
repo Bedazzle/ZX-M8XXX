@@ -329,6 +329,27 @@ export function initDisasmNavigation({
     tselPopup.className = 'disasm-tsel-popup hidden';
     document.body.appendChild(tselPopup);
 
+    // Active selection range + its clear callback, shared by both disasm views
+    // so the popup's Fold button can act on whichever selection is showing.
+    let tselRange = null;          // { start, end, count }
+    let tselActiveClear = null;    // clearSel() of the owning view
+
+    // Use mousedown (not click): a click after a drag may be swallowed by the
+    // run-to-cursor guard, and stopPropagation keeps the document dismiss
+    // handler from clearing the selection before we read it.
+    tselPopup.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        const btn = e.target.closest('[data-tsel-fold]');
+        if (!btn || !tselRange) return;
+        e.preventDefault();
+        const { start, end, count } = tselRange;
+        foldManager.addUserFold(start, end, null);
+        foldManager.collapse(start);
+        if (tselActiveClear) tselActiveClear();
+        showMessage(`Folded ${hex16(start)}–${hex16(end)} (${count} lines)`);
+        updateDebugger();
+    });
+
     function tselIsFlow(mn) {
         return mn.startsWith('JP') || mn.startsWith('JR') || mn.startsWith('CALL') ||
                mn.startsWith('RET') || mn.startsWith('DJNZ') || mn.startsWith('RST') ||
@@ -358,7 +379,14 @@ export function initDisasmNavigation({
         function clearSel() {
             selA = selB = null;
             applySel();
-            tselPopup.classList.add('hidden');
+            // Only the view that owns the active shared selection clears the
+            // shared popup/range — otherwise the other view's dismiss (e.g. on
+            // a right-click in this view) would wipe a live selection.
+            if (tselActiveClear === clearSel || tselActiveClear === null) {
+                tselPopup.classList.add('hidden');
+                tselRange = null;
+                tselActiveClear = null;
+            }
         }
 
         // The view re-renders frequently (even while paused) and replaces all line
@@ -433,12 +461,23 @@ export function initDisasmNavigation({
                     total += parseInt(timing);
                 }
             }
-            tselPopup.textContent = bad
+            const tstateMsg = bad
                 ? 'Selection contains data — cannot sum T-states'
                 : msg ? msg
                 : dual
                     ? `${selLines.length} instructions = ${dual[0]} / ${dual[1]} T-states (branch taken / not taken)`
                     : `${selLines.length} instructions = ${total} T-states`;
+
+            // A fold can be created from any code/data selection (folding does
+            // not depend on timing). End = START address of the last selected
+            // line — the convention used by the fold dialog/end-marker (which
+            // matches on `endAddress === line.addr`).
+            tselRange = { start: firstAddr, end: lastAddr, count: selLines.length };
+            tselActiveClear = clearSel;
+
+            tselPopup.innerHTML =
+                `<span class="tsel-msg">${tstateMsg}</span>` +
+                `<button class="tsel-fold-btn" data-tsel-fold title="Create a collapsed fold block from the selected lines">⊟ Fold ${selLines.length} lines</button>`;
             tselPopup.classList.remove('hidden');
             tselPopup.style.left = Math.max(4, Math.min(e.clientX + 12, window.innerWidth - 380)) + 'px';
             tselPopup.style.top = Math.min(e.clientY + 14, window.innerHeight - 40) + 'px';
@@ -473,10 +512,14 @@ export function initDisasmNavigation({
             const dragged = selLines.length >= 2;
             startAddr = null;
             if (!dragged) return;
-            // Swallow the click that follows the drag — it would set a run-to target
+            // Swallow the click that follows the drag — it would set a run-to
+            // target. Only swallow clicks inside the disasm view, so clicks on
+            // the context menu / popup buttons still work.
             document.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                ev.preventDefault();
+                if (viewEl.contains(ev.target)) {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                }
             }, { capture: true, once: true });
             showResult(e);
         });
@@ -584,5 +627,9 @@ export function initDisasmNavigation({
         }
     });
 
-    return {};
+    // Current disasm mouse-selection range ({ start, end, count }) or null —
+    // used by the context menu's "Create fold block…" to fold the selection.
+    return {
+        getSelectionRange: () => tselRange
+    };
 }

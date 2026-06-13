@@ -2,6 +2,14 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.6
+- **Fold from selection**: drag-select disasm lines (the same selection that sums T-states), then either click "⊟ Fold N lines" in the popup or right-click → "Create fold block from selection" (opens the fold dialog with start/end pre-filled) — no manual start/end entry. Works for any selection, even ones whose T-states can't be summed. Also fixed the fold closing marker not rendering and a multi-byte last line leaving the collapsed disassembly mid-opcode.
+- **Folding fix**: a fold could not be collapsed when the program counter sat inside it — every render auto-expanded it. The PC-fold is now only auto-expanded when execution moves PC into it, so manual collapse and "collapse all" work as expected.
+- **T-state popup byte count**: the ASM T-state selection popup now also shows the byte size of the selection (multiplied through DUP/REPT, like the T-states).
+- **Modal dialogs**: the Beautify, encoding-select and Import Foreign dialogs no longer close on an outside click (so a misclick can't discard your choices); press Esc to close.
+- **Load hint**: loading a binary file that looks like a foreign assembler source (ADS/ALASM/TASM/STORM) now hints to use Import foreign… to convert it.
+- **Beautify Source**: ASM Project ▼ → Beautify… reformats source (handy after importing badly-formatted foreign sources): uppercase/lowercase mnemonics, space after commas, one statement per line, labels on their own line, blank line after unconditional flow control or block ops (LDIR/CPIR/…), normalize pseudo-ops (EXA→EX AF,AF'), expand multi-register PUSH/POP/LD, blank line before routines, space after ';', unify number notation (hex #/$/0x/h, binary %/0b/b, octal o/q), tabular operand/comment column alignment, indent, trim/collapse whitespace. Live preview, optional apply-to-all-files, single undo.
+
 ## v0.15.5
 - **Import Foreign Sources**: ASM Project ▼ → Import foreign… converts sources written for other assemblers into sjasmplus syntax. Reads .trd/.scl disks, .zip archives and single files (incl. Hobeta); detokenizes native ALASM, TASM 3/4, STORM and ADS binary formats with auto-detection, and converts GENS, Zeus and Pasmo at text level. Dialect differences are rewritten, INCLUDE targets remapped, Cyrillic comments decoded, and untranslatable lines commented out with warnings shown in the preview.
 - **View Codepage**: ASM ⚙ → "View enc" displays raw bytes (Russian DB strings in imported TR-DOS sources) as readable Cyrillic — CP866, KOI8-R or KOI-7. Display-only.

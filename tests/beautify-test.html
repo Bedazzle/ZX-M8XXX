@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>ASM Beautify Tests v0.15.6</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e; --bg-secondary: #252540; --bg-tertiary: #0a0a15;
+            --text-primary: #eee; --text-secondary: #888; --border-color: #444;
+            --cyan: #0ff; --yellow: #ff0; --green: #0f0; --red: #f44;
+            --button-bg: #0a84ff; --button-hover: #0070e0;
+        }
+        body { background: var(--bg-primary); color: var(--text-primary); font-family: monospace; padding: 20px; max-width: 900px; margin: 0 auto; }
+        h1 { color: var(--cyan); margin-bottom: 5px; }
+        .version { color: var(--text-secondary); }
+        .test-resources { background: var(--bg-secondary); padding: 10px 15px; border-radius: 5px; margin: 15px 0; }
+        .test-resources a { color: var(--cyan); }
+        #summary { font-size: 1.2em; margin: 10px 0; }
+        #log { white-space: pre-wrap; word-wrap: break-word; height: 500px; overflow: auto; background: var(--bg-tertiary); padding: 10px; }
+        .pass { color: var(--green); } .fail { color: var(--red); } .info { color: var(--cyan); }
+        .section { color: var(--yellow); font-weight: bold; margin-top: 15px; }
+        button.test-btn { margin: 5px; padding: 10px 20px; background: var(--button-bg); color: white; border: none; border-radius: 5px; cursor: pointer; }
+        .controls { margin: 15px 0; }
+    </style>
+</head>
+<body>
+    <h1>ASM Beautify Tests <span class="version">v0.15.6</span></h1>
+    <div class="test-resources">
+        <p><a href="convert-test.html">Foreign Source Import Tests</a> |
+        <a href="import-test.html">Import Dialog Tests</a> |
+        <a href="asm-test.html">Assembler Tests</a> |
+        <a href="../index.html">Main Emulator</a></p>
+    </div>
+    <div id="summary"></div>
+    <div class="controls"><button class="test-btn" onclick="runAll()">Run All</button></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { beautify } from '../core/asm-beautify.js';
+        import { Assembler } from '../sjasmplus/assembler.js';
+
+        let passed = 0, failed = 0;
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        function log(msg, cls = '') { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; logEl.appendChild(d); }
+        function assert(cond, msg, detail = '') { if (cond) { passed++; log('  ✓ ' + msg, 'pass'); } else { failed++; log('  ✗ ' + msg + ' - FAILED' + (detail ? ' (' + detail + ')' : ''), 'fail'); } }
+        function assertEq(actual, expected, msg) { assert(actual === expected, msg, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); }
+        function section(name) { log('\n═══ ' + name + ' ═══', 'section'); }
+        function updateSummary() { summaryEl.innerHTML = `<span class="${failed ? 'fail' : 'pass'}">${passed} passed</span>, <span class="${failed ? 'fail' : 'pass'}">${failed} failed</span> of ${passed + failed} tests`; }
+
+        // helper: beautify with only the named transforms on, rest off
+        function only(text, on) {
+            const opts = {
+                case: 'none', spaceAfterComma: false, splitColon: false, labelOwnLine: false,
+                blankAfterFlow: false, blankAfterBlock: false, normalizePseudo: false,
+                hexPrefix: 'leave', binFormat: 'leave', octFormat: 'leave', indent: false, trimTrailing: false, collapseBlanks: false,
+                expandMulti: false, align: false, alignComments: false, commentSpace: false, blankBeforeLabel: false
+            };
+            for (const k of Object.keys(on)) opts[k] = on[k];
+            return beautify(text, opts);
+        }
+
+        window.runAll = function () {
+            logEl.innerHTML = ''; passed = 0; failed = 0;
+
+            section('Case folding');
+            assertEq(only('ld a,5', { case: 'upper' }), '\tLD A,5', 'column-0 instruction indented + uppercased');
+            assertEq(only('  ld a,b', { case: 'upper' }), '\tLD A,B', 'mnemonic and registers uppercased');
+            assertEq(only('  LD A,B', { case: 'lower' }), '\tld a,b', 'lowercase everything keyword');
+            assertEq(only('  LD HL,LABEL', { case: 'upper' }), '\tLD HL,LABEL', 'user label case preserved');
+            assertEq(only('  ld hl,myVar', { case: 'upper' }), '\tLD HL,myVar', 'mixed-case identifier preserved');
+            assertEq(only('  jp nz,done', { case: 'upper' }), '\tJP NZ,done', 'condition uppercased, label kept');
+
+            section('Comma spacing');
+            assertEq(only('  LD A,5', { spaceAfterComma: true }), '\tLD A, 5', 'space added after comma');
+            assertEq(only('  LD  A , 5', { spaceAfterComma: true }), '\tLD A, 5', 'space before comma removed, mnemonic gap normalized');
+            assertEq(only('  LD A , B , C', { spaceAfterComma: true }), '\tLD A, B, C', 'multiple commas');
+            assertEq(only('  DB "a,b",5', { spaceAfterComma: true }), '\tDB "a,b", 5', 'comma inside string untouched');
+
+            section('Split colon statements');
+            assertEq(only('  LD A,5:INC A:RET', { splitColon: true }), '\tLD A,5\n\tINC A\n\tRET', 'three statements split');
+            assertEq(only('START LD A,5:RET', { splitColon: true }), 'START LD A,5\n\tRET', 'label stays with first stmt');
+            assertEq(only('  DB ":",5:INC A', { splitColon: true }), '\tDB ":",5\n\tINC A', 'colon inside string not split');
+
+            section('Label on own line');
+            assertEq(only('START LD A,5', { labelOwnLine: true, indent: true }), 'START\n        LD A,5', 'label hoisted, code indented');
+            assertEq(only('START: RET', { labelOwnLine: true, indent: true }), 'START:\n        RET', 'label with colon hoisted');
+            assertEq(only('value EQU 5', { labelOwnLine: true }), 'value EQU 5', 'EQU label stays attached');
+            assertEq(only('PrintCh MACRO', { labelOwnLine: true }), 'PrintCh MACRO', 'MACRO label stays attached');
+            assertEq(only('done:', { labelOwnLine: true }), 'done:', 'label-only line untouched');
+
+            section('Blank line after flow');
+            assertEq(only('  RET\n  LD A,5', { blankAfterFlow: true }), '\tRET\n\n\tLD A,5', 'blank after unconditional RET');
+            assertEq(only('  RET Z\n  LD A,5', { blankAfterFlow: true }), '\tRET Z\n\tLD A,5', 'no blank after RET Z');
+            assertEq(only('  JP done\n  NOP', { blankAfterFlow: true }), '\tJP done\n\n\tNOP', 'blank after unconditional JP');
+            assertEq(only('  JP NZ,loop\n  NOP', { blankAfterFlow: true }), '\tJP NZ,loop\n\tNOP', 'no blank after conditional JP');
+            assertEq(only('  JR skip\n  NOP', { blankAfterFlow: true }), '\tJR skip\n\n\tNOP', 'blank after JR nn');
+            assertEq(only('  RST 8\n  NOP', { blankAfterFlow: true }), '\tRST 8\n\n\tNOP', 'blank after RST');
+            assertEq(only('  CALL sub\n  NOP', { blankAfterFlow: true }), '\tCALL sub\n\tNOP', 'no blank after CALL (returns)');
+            assertEq(only('  RET', { blankAfterFlow: true }), '\tRET', 'no trailing blank at EOF');
+            assertEq(only('  RET\n\n  NOP', { blankAfterFlow: true }), '\tRET\n\n\tNOP', 'no double blank when one exists');
+
+            section('Blank line after block ops');
+            assertEq(only('  LDIR\n  NOP', { blankAfterBlock: true }), '\tLDIR\n\n\tNOP', 'blank after LDIR');
+            assertEq(only('  OTDR\n  NOP', { blankAfterBlock: true }), '\tOTDR\n\n\tNOP', 'blank after OTDR');
+            assertEq(only('  INIR\n  NOP', { blankAfterBlock: true }), '\tINIR\n\n\tNOP', 'blank after INIR');
+            assertEq(only('  LDI\n  NOP', { blankAfterBlock: true }), '\tLDI\n\tNOP', 'no blank after non-repeating LDI');
+            assertEq(only('  LDIR\n  NOP', { blankAfterBlock: false }), '\tLDIR\n\tNOP', 'off: no blank after LDIR');
+
+            section('Normalize pseudo-ops');
+            assertEq(only('  EXA', { normalizePseudo: true }), "\tEX AF,AF'", 'EXA -> EX AF,AF\'');
+            assertEq(only('  SLI A', { normalizePseudo: true }), '\tSLL A', 'SLI -> SLL');
+            assertEq(only('  exa', { normalizePseudo: true }), "\tEX AF,AF'", 'lowercase exa normalized');
+
+            section('Hex prefix normalization');
+            assertEq(only('  LD A,$FF', { hexPrefix: '#' }), '\tLD A,#FF', '$ -> #');
+            assertEq(only('  LD A,#FF', { hexPrefix: '$' }), '\tLD A,$FF', '# -> $');
+            assertEq(only('  LD A,0xFF', { hexPrefix: '#' }), '\tLD A,#FF', '0x -> #');
+            assertEq(only('  LD A,#FF', { hexPrefix: '0x' }), '\tLD A,0xFF', '# -> 0x');
+            assertEq(only('  LD A,0FFh', { hexPrefix: '#' }), '\tLD A,#FF', 'NNh suffix -> #, guard zero dropped');
+            assertEq(only('  LD HL,$8000', { hexPrefix: '#' }), '\tLD HL,#8000', '4-digit hex');
+            assertEq(only('  DEFB $0A,$FF', { hexPrefix: '#' }), '\tDEFB #0A,#FF', 'data directive hex (leading non-letter zero kept)');
+            assertEq(only('  JR $-2', { hexPrefix: '#' }), '\tJR $-2', '$-2 (relative) left alone');
+            assertEq(only('  LD A,$', { hexPrefix: '#' }), '\tLD A,$', 'bare $ (current address) left alone');
+            assertEq(only('  LD A,13', { hexPrefix: '#' }), '\tLD A,13', 'decimal left alone');
+            assertEq(only('  LD A,%1010', { hexPrefix: '#' }), '\tLD A,%1010', 'binary left alone');
+            assertEq(only('  LD A,$FF', { hexPrefix: 'leave' }), '\tLD A,$FF', 'leave: untouched');
+            assertEq(only('  DB "$FF"', { hexPrefix: '#' }), '\tDB "$FF"', 'hex inside string untouched');
+            assertEq(only('  LD A,$FF', { hexPrefix: 'h' }), '\tLD A,0FFh', '$FF -> 0FFh (guard zero added)');
+            assertEq(only('  LD A,$1A', { hexPrefix: 'h' }), '\tLD A,1Ah', '$1A -> 1Ah (no guard needed)');
+            assertEq(only('  LD A,0FFh', { hexPrefix: 'h' }), '\tLD A,0FFh', 'h suffix idempotent');
+
+            section('Binary normalization');
+            assertEq(only('  LD A,%1010', { binFormat: '0b' }), '\tLD A,0b1010', '% -> 0b');
+            assertEq(only('  LD A,0b1010', { binFormat: '%' }), '\tLD A,%1010', '0b -> %');
+            assertEq(only('  LD A,%1010', { binFormat: 'b' }), '\tLD A,1010b', '% -> b suffix');
+            assertEq(only('  LD A,%10', { binFormat: 'b' }), '\tLD A,010b', 'b suffix padded to 3 digits (valid)');
+            assertEq(only('  LD A,10110011b', { binFormat: '%' }), '\tLD A,%10110011', 'b suffix -> %');
+            assertEq(only('  LD A,COUNT%10', { binFormat: '0b' }), '\tLD A,COUNT%10', 'modulo operator not treated as binary');
+            assertEq(only('  LD A,5 % 2', { binFormat: '0b' }), '\tLD A,5 % 2', 'spaced modulo untouched');
+            assertEq(only('  LD A,%1010', { binFormat: 'leave' }), '\tLD A,%1010', 'leave: untouched');
+
+            section('Octal normalization');
+            assertEq(only('  LD A,77o', { octFormat: 'q' }), '\tLD A,77q', 'o -> q');
+            assertEq(only('  LD A,77q', { octFormat: 'o' }), '\tLD A,77o', 'q -> o');
+            assertEq(only('  LD A,17', { octFormat: 'o' }), '\tLD A,17', 'decimal 17 not octal');
+
+            section('Bases assemble');
+            assert(Assembler.assemble(beautify('  ld a,$ff', { hexPrefix: 'h', indent: true })).success, '$ff->0ffh assembles');
+            assert(Assembler.assemble(beautify('  ld a,%1010', { binFormat: 'b', indent: true })).success, '%1010->1010b assembles');
+            assert(Assembler.assemble(beautify('  ld a,%10', { binFormat: 'b', indent: true })).success, '%10->010b assembles (padded)');
+            assert(Assembler.assemble(beautify('  ld a,77o', { octFormat: 'q', indent: true })).success, '77o->77q assembles');
+
+            section('Indent / trim / collapse');
+            assertEq(only('  LD A,5', { indent: true, indentCol: 8 }), '        LD A,5', 'indent to column 8');
+            assertEq(only('LABEL LD A,5', { indent: true, labelOwnLine: false }), 'LABEL   LD A,5', 'label padded to column 8');
+            assertEq(only('  NOP   ', { trimTrailing: true }), '\tNOP', 'trailing whitespace trimmed');
+            assertEq(only('x1:\n\n\n\ny1:', { collapseBlanks: true }), 'x1:\n\ny1:', '3+ blanks collapse to 1');
+
+            section('Expand multi-register PUSH/POP and chained LD');
+            assertEq(only('  PUSH AF,HL,BC,DE', { expandMulti: true }), '\tPUSH AF\n\tPUSH HL\n\tPUSH BC\n\tPUSH DE', 'PUSH list expanded');
+            assertEq(only('  POP DE,BC,HL,AF', { expandMulti: true }), '\tPOP DE\n\tPOP BC\n\tPOP HL\n\tPOP AF', 'POP list expanded');
+            assertEq(only('  PUSH AF', { expandMulti: true }), '\tPUSH AF', 'single PUSH unchanged');
+            assertEq(only('lab PUSH AF,HL', { expandMulti: true }), 'lab PUSH AF\n\tPUSH HL', 'label stays with first PUSH');
+            assertEq(only('  LD H,D,L,E', { expandMulti: true }), '\tLD H,D\n\tLD L,E', 'chained LD split into pairs');
+            assertEq(only('  LD A,5', { expandMulti: true }), '\tLD A,5', 'normal LD unchanged');
+            assertEq(only('  LD A,B,C', { expandMulti: true }), '\tLD A,B,C', 'odd chained LD left alone');
+            assertEq(only('  PUSH IX,IY', { expandMulti: true }), '\tPUSH IX\n\tPUSH IY', 'IX/IY expanded');
+
+            section('Tabular alignment');
+            assertEq(only('  LD A,5', { align: true, indent: true }), '        LD      A,5', 'operand at column 16');
+            assertEq(only('LOOP LD A,5', { align: true, indent: true, labelOwnLine: false }), 'LOOP    LD      A,5', 'label/mnemonic/operand columns');
+            assertEq(only('  RET', { align: true, indent: true }), '        RET', 'no operand: just mnemonic at col 8');
+            assertEq(only('  CALL VeryLongRoutineName', { align: true, indent: true }), '        CALL    VeryLongRoutineName', 'long mnemonic still one space min');
+
+            section('Align trailing comments');
+            assertEq(only('  LD A,5 ; load', { alignComments: true, indent: true, commentCol: 24 }),
+                '        LD A,5          ; load', 'comment padded to column 24');
+            assertEq(only('  LD HL,VeryLongOperandHere ; x', { alignComments: true, indent: true, commentCol: 24 }),
+                '        LD HL,VeryLongOperandHere ; x', 'long line: one space before comment');
+
+            section('Comment spacing');
+            assertEq(only('  RET ;done', { commentSpace: true }), '\tRET ; done', 'space added after ;');
+            assertEq(only('  RET ;; banner', { commentSpace: true }), '\tRET ;; banner', 'double-semicolon banner kept');
+            assertEq(only(';header', { commentSpace: true }), '; header', 'comment-only line spaced');
+
+            section('Blank line before routines');
+            assertEq(only('  RET\nmain LD A,5', { blankBeforeLabel: true }), '\tRET\n\nmain LD A,5', 'blank before top-level label');
+            assertEq(only('start NOP\n.loop DJNZ .loop', { blankBeforeLabel: true }), 'start NOP\n.loop DJNZ .loop', 'no blank before local .label');
+            assertEq(only('first NOP', { blankBeforeLabel: true }), 'first NOP', 'no blank at start of file');
+
+            section('Strings & comments protected');
+            assertEq(only('  LD A,5 ; load a,b:c', { case: 'upper', spaceAfterComma: true, splitColon: true }),
+                '\tLD A, 5 ; load a,b:c', 'comment content untouched');
+            assertEq(only('  DB "Hello, World"', { case: 'upper', spaceAfterComma: true }),
+                '\tDB "Hello, World"', 'string content untouched');
+
+            section('Idempotency');
+            const messy = 'start ld a,5:inc a:ret\n  jp nz,start\n  exa\ndone: ret';
+            const once = beautify(messy);
+            const twice = beautify(once);
+            assertEq(twice, once, 'beautify is idempotent');
+
+            section('End-to-end assemble');
+            {
+                const messy2 = '  org #8000\nmain ld hl,#4000:ld a,5:exa\n  jp nz,main\n  ret\ndone ld b,c';
+                const pretty = beautify(messy2);
+                const res = Assembler.assemble(pretty);
+                assert(res.success, 'beautified source assembles', res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+                // same bytes as the original semantics
+                const orig = Assembler.assemble("        ORG #8000\nmain    LD HL,#4000\n        LD A,5\n        EX AF,AF'\n        JP NZ,main\n        RET\ndone    LD B,C");
+                if (res.success && orig.success) {
+                    let same = res.output.length === orig.output.length;
+                    for (let i = 0; i < orig.output.length && same; i++) if (res.output[i] !== orig.output[i]) same = false;
+                    assert(same, 'beautified bytes match hand-written equivalent',
+                        'got [' + Array.from(res.output).map(b => b.toString(16)).join(' ') + ']');
+                }
+            }
+
+            section('Full transform on a messy block');
+            {
+                const input = 'loop ld a,(hl):cp 13:jr z,done:inc hl:jr loop\ndone ret';
+                const result = beautify(input);
+                log(result, 'info');
+                assert(Assembler.assemble(result).success, 'messy block assembles after beautify');
+            }
+
+            updateSummary();
+            log('\nDone.', 'info');
+        };
+        runAll();
+    </script>
+</body>
+</html>

@@ -22,7 +22,8 @@ export function initDisasmContext({
     showMessage, updateDebugger, updateLabelsList,
     goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
     getRightPanelType,
-    readMemory, addPoke, getInstrLength
+    readMemory, addPoke, getInstrLength,
+    getDisasmSelection
 }) {
     const { showLabelDialog, showRegionDialog, showFoldDialog,
             showCommentDialog, closeLabelContextMenu } = dialogs;
@@ -32,6 +33,9 @@ export function initDisasmContext({
 
     // ---- Fold pick mode ----
     let pendingFoldStart = null;
+    // Disasm mouse-selection range captured when the context menu was built
+    // (the menu-item click can clear the live selection before the action runs)
+    let pendingFoldSelection = null;
 
     const foldPickBanner = document.createElement('div');
     foldPickBanner.className = 'fold-pick-banner hidden';
@@ -264,8 +268,11 @@ export function initDisasmContext({
         }
         // Fold options
         menuHtml += `<div class="menu-separator"></div>`;
+        pendingFoldSelection = (getDisasmSelection && getDisasmSelection()) || null;
         if (existingUserFold) {
             menuHtml += `<div data-action="remove-fold" class="danger">Remove fold block</div>`;
+        } else if (pendingFoldSelection) {
+            menuHtml += `<div data-action="fold-selection">Create fold block from selection (${pendingFoldSelection.count} lines)</div>`;
         } else {
             menuHtml += `<div data-action="add-fold">Create fold block...</div>`;
         }
@@ -434,6 +441,14 @@ export function initDisasmContext({
             updateDebugger();
         } else if (action === 'add-fold') {
             startFoldPick(addr);
+        } else if (action === 'fold-selection') {
+            // Fold the active mouse selection: open the dialog with start/end
+            // prefilled (captured at menu-build time)
+            if (pendingFoldSelection) {
+                showFoldDialog(pendingFoldSelection.start, pendingFoldSelection.end);
+            } else {
+                startFoldPick(addr);
+            }
         } else if (action === 'remove-fold') {
             const oldFold = foldManager.getUserFold(addr);
             if (oldFold) {

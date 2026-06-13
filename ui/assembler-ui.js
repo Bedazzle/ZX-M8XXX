@@ -2,7 +2,8 @@
 // ES module with init-function pattern
 import { escapeHtml, hex8, hex16, storageGet, storageSet } from '../core/utils.js';
 import { z80Opcodes } from '../debug/opcodes-data.js';
-import { decodeViewCodepage } from '../core/asm-detok.js';
+import { decodeViewCodepage, AsmDetok, DETOK_FORMAT_NAMES } from '../core/asm-detok.js';
+import { beautify } from '../core/asm-beautify.js';
 
 export function initAssemblerUI({
     VFS,
@@ -76,11 +77,14 @@ export function initAssemblerUI({
 
     // ========== T-state selection popup ==========
 
-    // Build lookup map: uppercase mnemonic pattern → T-state string (e.g. '4', '17/10')
+    // Build lookup maps: uppercase mnemonic pattern → T-state string (e.g.
+    // '4', '17/10') and → byte size.
     const tstateMap = new Map();
+    const tbyteMap = new Map();
     for (const op of z80Opcodes) {
         const key = op.m.toUpperCase();
         if (!tstateMap.has(key)) tstateMap.set(key, op.c);
+        if (!tbyteMap.has(key) && op.b != null) tbyteMap.set(key, op.b);
     }
 
     // All Z80 register names (used during mnemonic normalization)
@@ -289,47 +293,51 @@ export function initAssemblerUI({
     function isZ80Mnemonic(s) { return Z80_MNEMONICS.has(s); }
 
     /**
-     * Look up T-state timing for a normalized mnemonic pattern.
-     * Returns the timing string (e.g. '4', '17/10') or null if not found.
+     * Look up a value (timing or byte size) for a normalized mnemonic pattern
+     * in the given map, applying the same operand-pattern fallbacks.
      */
-    function lookupTiming(normalized) {
+    function lookupOp(map, normalized) {
         if (!normalized) return null;
         const key = normalized.toUpperCase();
-        if (tstateMap.has(key)) return tstateMap.get(key);
+        if (map.has(key)) return map.get(key);
 
         // Fallback: try nn→n or n→nn substitution
         if (key.includes(',N,') || key.endsWith(',N')) {
             const nnKey = key.replace(/,N$/,',NN').replace(/,N,/,',NN,');
-            if (tstateMap.has(nnKey)) return tstateMap.get(nnKey);
+            if (map.has(nnKey)) return map.get(nnKey);
         }
         if (key.includes(',NN') || key.endsWith(',NN')) {
             const nKey = key.replace(/,NN$/,',N').replace(/,NN,/,',N,');
-            if (tstateMap.has(nKey)) return tstateMap.get(nKey);
+            if (map.has(nKey)) return map.get(nKey);
         }
         // Fallback for LD rr,nn: try with nn if n didn't match
         if (key.startsWith('LD ') && key.endsWith(',N')) {
             const nnKey = key.replace(/,N$/, ',NN');
-            if (tstateMap.has(nnKey)) return tstateMap.get(nnKey);
+            if (map.has(nnKey)) return map.get(nnKey);
         }
 
         // BIT/SET/RES with specific bit number → try generic b pattern
         const bitMatch = key.match(/^(BIT|SET|RES) ([0-7]),(.+)$/);
         if (bitMatch) {
             const genericKey = bitMatch[1] + ' b,' + bitMatch[3];
-            if (tstateMap.has(genericKey)) return tstateMap.get(genericKey);
+            if (map.has(genericKey)) return map.get(genericKey);
             // Also try 'r' for register operand
             const rKey = bitMatch[1] + ' b,r';
-            if (tstateMap.has(rKey)) return tstateMap.get(rKey);
+            if (map.has(rKey)) return map.get(rKey);
         }
 
         // (nn) → (N) fallback for LD A,(nn) style
         if (key.includes('(NN)')) {
             const nKey = key.replace(/\(NN\)/g, '(N)');
-            if (tstateMap.has(nKey)) return tstateMap.get(nKey);
+            if (map.has(nKey)) return map.get(nKey);
         }
 
         return null;
     }
+
+    // Timing string ('4', '17/10') or null; byte size (number) or null.
+    function lookupTiming(normalized) { return lookupOp(tstateMap, normalized); }
+    function lookupBytes(normalized) { return lookupOp(tbyteMap, normalized); }
 
     /** Parse a literal repeat count (decimal, $hex, #hex, 0xhex, hexh). NaN if not a literal. */
     function parseRepeatCount(s) {
@@ -346,10 +354,10 @@ export function initAssemblerUI({
      * Compute total T-states for an array of source lines.
      * DUP/REPT...EDUP/ENDR blocks multiply their body by the repeat count
      * (nested blocks multiply); a non-literal count is treated as 1 and
-     * flagged approximate. Returns { totalMin, totalMax, instrCount, failCount }.
+     * flagged approximate. Returns { totalMin, totalMax, instrCount, byteCount, failCount }.
      */
     function computeTstatesForLines(lines) {
-        let totalMin = 0, totalMax = 0, instrCount = 0, failCount = 0;
+        let totalMin = 0, totalMax = 0, instrCount = 0, byteCount = 0, failCount = 0;
         const repeatStack = [];
         let mult = 1;
         for (const line of lines) {
@@ -379,6 +387,8 @@ export function initAssemblerUI({
                 continue;
             }
             instrCount += mult;
+            const bytes = lookupBytes(normalized);
+            if (bytes != null) byteCount += bytes * mult;
             if (timing.includes('/')) {
                 const [max, min] = timing.split('/').map(Number);
                 totalMax += max * mult;
@@ -389,7 +399,7 @@ export function initAssemblerUI({
                 totalMin += t * mult;
             }
         }
-        return { totalMin, totalMax, instrCount, failCount };
+        return { totalMin, totalMax, instrCount, byteCount, failCount };
     }
 
     /**
@@ -429,9 +439,10 @@ export function initAssemblerUI({
         } else {
             text += result.totalMax + 'T';
         }
-        if (result.instrCount > 1) {
-            text += ' (' + result.instrCount + ' instr)';
-        }
+        const extra = [];
+        if (result.instrCount > 1) extra.push(result.instrCount + ' instr');
+        if (result.byteCount > 0) extra.push((result.failCount > 0 ? '~' : '') + result.byteCount + ' bytes');
+        if (extra.length) text += ' (' + extra.join(', ') + ')';
 
         asmTstatePopup.textContent = text;
         asmTstatePopup.style.display = '';
@@ -604,11 +615,11 @@ export function initAssemblerUI({
             overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
 
             const box = document.createElement('div');
-            box.style.cssText = 'background:var(--bg-secondary,#1e1e2e);border:1px solid var(--border-color,#444);border-radius:6px;padding:16px;max-width:720px;width:92%;color:var(--text-primary,#ccc);font-family:monospace;font-size:12px;';
+            box.style.cssText = 'background:var(--bg-secondary,#1e1e2e);border:1px solid var(--border-color,#444);border-radius:6px;padding:16px;max-width:860px;width:92%;color:var(--text-primary,#ccc);font-family:monospace;font-size:13px;';
 
             // Title
             const title = document.createElement('div');
-            title.style.cssText = 'font-size:13px;font-weight:bold;margin-bottom:12px;color:var(--text-highlight,#fff);';
+            title.style.cssText = 'font-size:15px;font-weight:bold;margin-bottom:12px;color:var(--text-highlight,#fff);';
             title.textContent = 'Non-UTF-8 encoding detected';
             box.appendChild(title);
 
@@ -618,11 +629,11 @@ export function initAssemblerUI({
 
             const label = document.createElement('span');
             label.textContent = 'Encoding:';
-            label.style.cssText = 'font-size:11px;color:var(--text-secondary,#aaa);';
+            label.style.cssText = 'font-size:13px;color:var(--text-secondary,#aaa);';
             selectorRow.appendChild(label);
 
             const select = document.createElement('select');
-            select.style.cssText = 'font-size:11px;padding:3px 6px;font-family:monospace;flex:1;max-width:280px;';
+            select.style.cssText = 'font-size:13px;padding:3px 6px;font-family:monospace;flex:1;max-width:280px;';
             for (const enc of FALLBACK_ENCODINGS) {
                 const opt = document.createElement('option');
                 opt.value = enc.id;
@@ -641,11 +652,11 @@ export function initAssemblerUI({
             const rawBox = document.createElement('div');
             rawBox.style.cssText = 'flex:1;min-width:0;';
             const rawLabel = document.createElement('div');
-            rawLabel.style.cssText = 'font-size:10px;color:var(--text-secondary,#888);margin-bottom:4px;';
+            rawLabel.style.cssText = 'font-size:12px;color:var(--text-secondary,#888);margin-bottom:4px;';
             rawLabel.textContent = 'Raw (UTF-8):';
             rawBox.appendChild(rawLabel);
             const rawPre = document.createElement('pre');
-            rawPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--text-secondary,#888);margin:0;';
+            rawPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.4;color:var(--text-secondary,#888);margin:0;';
             const rawText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
             const rawLines = rawText.split('\n').slice(0, 20);
             rawPre.textContent = rawLines.join('\n');
@@ -656,11 +667,11 @@ export function initAssemblerUI({
             const decBox = document.createElement('div');
             decBox.style.cssText = 'flex:1;min-width:0;';
             const decLabel = document.createElement('div');
-            decLabel.style.cssText = 'font-size:10px;color:var(--cyan,#0af);margin-bottom:4px;';
+            decLabel.style.cssText = 'font-size:12px;color:var(--cyan,#0af);margin-bottom:4px;';
             decLabel.textContent = 'Decoded:';
             decBox.appendChild(decLabel);
             const decPre = document.createElement('pre');
-            decPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;color:var(--text-primary,#ccc);margin:0;';
+            decPre.style.cssText = 'background:var(--bg-primary,#111);padding:8px;border-radius:3px;height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.4;color:var(--text-primary,#ccc);margin:0;';
             decBox.appendChild(decPre);
             previewRow.appendChild(decBox);
             box.appendChild(previewRow);
@@ -676,33 +687,42 @@ export function initAssemblerUI({
             rawPre.addEventListener('scroll', () => { decPre.scrollTop = rawPre.scrollTop; });
             decPre.addEventListener('scroll', () => { rawPre.scrollTop = decPre.scrollTop; });
 
+            // Resolve helper: removes the Esc listener and overlay once.
+            // Esc aborts; clicking outside the box does NOT close (no backdrop
+            // handler), so a misclick can't discard the choice.
+            function finish(value) {
+                document.removeEventListener('keydown', onKey);
+                if (overlay.parentNode) document.body.removeChild(overlay);
+                resolve(value);
+            }
+            function onKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+            }
+
             // Buttons
             const btnRow = document.createElement('div');
             btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;';
 
             const btnAbort = document.createElement('button');
             btnAbort.textContent = 'Abort';
-            btnAbort.style.cssText = 'padding:5px 16px;font-size:12px;cursor:pointer;';
-            btnAbort.addEventListener('click', () => {
-                document.body.removeChild(overlay);
-                resolve(null);
-            });
+            btnAbort.style.cssText = 'padding:6px 18px;font-size:13px;cursor:pointer;';
+            btnAbort.addEventListener('click', () => finish(null));
             btnRow.appendChild(btnAbort);
 
             const btnImport = document.createElement('button');
             btnImport.textContent = 'Import';
-            btnImport.style.cssText = 'padding:5px 16px;font-size:12px;cursor:pointer;font-weight:bold;';
+            btnImport.style.cssText = 'padding:6px 18px;font-size:13px;cursor:pointer;font-weight:bold;';
             btnImport.addEventListener('click', () => {
                 chosenFallbackEncoding = select.value;
                 storageSet('zxm8_asmEncoding', select.value);
-                document.body.removeChild(overlay);
-                resolve(select.value);
+                finish(select.value);
             });
             btnRow.appendChild(btnImport);
 
             box.appendChild(btnRow);
             overlay.appendChild(box);
             document.body.appendChild(overlay);
+            document.addEventListener('keydown', onKey);
 
             // Focus import button
             btnImport.focus();
@@ -1624,6 +1644,18 @@ export function initAssemblerUI({
         let totalAdded = 0;
         let lastAddedFile = null;
         let needsMainFile = !currentProjectMainFile;
+        // Track binary files that foreign-detection recognizes as a convertible
+        // assembler source - Load imports them as-is, so hint at Import foreign…
+        const foreignFormats = new Set();
+        const noteForeign = (data) => {
+            try {
+                const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+                const det = AsmDetok.detect(bytes, null);
+                if (det && det.supported && det.format !== 'text') {
+                    foreignFormats.add(DETOK_FORMAT_NAMES[det.format] || det.format);
+                }
+            } catch (e) { /* detection is best-effort */ }
+        };
 
         try {
             for (const file of files) {
@@ -1657,6 +1689,7 @@ export function initAssemblerUI({
                             }
                         } else {
                             VFS.addBinaryFile(f.name, f.data);
+                            noteForeign(f.data);
                         }
                         totalAdded++;
                     }
@@ -1737,6 +1770,7 @@ export function initAssemblerUI({
                         }
                     } else {
                         VFS.addBinaryFile(targetPath, new Uint8Array(arrayBuffer));
+                        noteForeign(arrayBuffer);
                     }
                     totalAdded++;
                 }
@@ -1759,7 +1793,11 @@ export function initAssemblerUI({
             updateProjectButtons();
             updateDefinesDropdown();
             updateFileTabs();
-            showMessage(totalAdded > 0 ? `Added/updated ${totalAdded} file(s)` : 'No files added');
+            let msg = totalAdded > 0 ? `Added/updated ${totalAdded} file(s)` : 'No files added';
+            if (foreignFormats.size) {
+                msg += ` — looks like ${[...foreignFormats].join('/')} source; use Project ▸ Import foreign… to convert it`;
+            }
+            showMessage(msg);
 
         } catch (err) {
             console.error('Load error:', err);
@@ -2122,6 +2160,147 @@ export function initAssemblerUI({
             storageSet('zxm8_asmViewCodepage', asmViewCodepage.value);
             updateHighlight();
             if (splitPaneVisible()) pane2Render();
+        });
+    }
+
+    // ---- Beautify dialog ----
+    const beautifyDialog = document.getElementById('beautifyDialog');
+    if (beautifyDialog) {
+        const bf = {
+            case: document.getElementById('bfCase'),
+            spaceAfterComma: document.getElementById('bfSpaceComma'),
+            splitColon: document.getElementById('bfSplitColon'),
+            labelOwnLine: document.getElementById('bfLabelOwnLine'),
+            blankAfterFlow: document.getElementById('bfBlankFlow'),
+            blankAfterBlock: document.getElementById('bfBlankBlock'),
+            normalizePseudo: document.getElementById('bfNormalize'),
+            expandMulti: document.getElementById('bfExpandMulti'),
+            blankBeforeLabel: document.getElementById('bfBlankBeforeLabel'),
+            commentSpace: document.getElementById('bfCommentSpace'),
+            hexPrefix: document.getElementById('bfHexPrefix'),
+            binFormat: document.getElementById('bfBinFormat'),
+            octFormat: document.getElementById('bfOctFormat'),
+            indent: document.getElementById('bfIndent'),
+            align: document.getElementById('bfAlign'),
+            alignComments: document.getElementById('bfAlignComments'),
+            trimTrailing: document.getElementById('bfTrim'),
+            collapseBlanks: document.getElementById('bfCollapse')
+        };
+        const bfAll = document.getElementById('bfAllFiles');
+        const bfPreview = document.getElementById('bfPreview');
+        const btnBeautifyCancel = document.getElementById('btnBeautifyCancel');
+        const btnBeautifyApply = document.getElementById('btnBeautifyApply');
+
+        function bfReadOpts() {
+            return {
+                case: bf.case.value,
+                spaceAfterComma: bf.spaceAfterComma.checked,
+                splitColon: bf.splitColon.checked,
+                labelOwnLine: bf.labelOwnLine.checked,
+                blankAfterFlow: bf.blankAfterFlow.checked,
+                blankAfterBlock: bf.blankAfterBlock.checked,
+                normalizePseudo: bf.normalizePseudo.checked,
+                expandMulti: bf.expandMulti.checked,
+                blankBeforeLabel: bf.blankBeforeLabel.checked,
+                commentSpace: bf.commentSpace.checked,
+                hexPrefix: bf.hexPrefix.value,
+                binFormat: bf.binFormat.value,
+                octFormat: bf.octFormat.value,
+                indent: bf.indent.checked,
+                align: bf.align.checked,
+                alignComments: bf.alignComments.checked,
+                trimTrailing: bf.trimTrailing.checked,
+                collapseBlanks: bf.collapseBlanks.checked
+            };
+        }
+
+        function bfSaveOpts() {
+            const o = bfReadOpts();
+            o.allFiles = bfAll.checked;
+            storageSet('zxm8_beautify', JSON.stringify(o));
+        }
+
+        function bfLoadOpts() {
+            let o;
+            try { o = JSON.parse(storageGet('zxm8_beautify') || '{}'); } catch (e) { o = {}; }
+            if (o.case) bf.case.value = o.case;
+            if (o.hexPrefix) bf.hexPrefix.value = o.hexPrefix;
+            if (o.binFormat) bf.binFormat.value = o.binFormat;
+            if (o.octFormat) bf.octFormat.value = o.octFormat;
+            for (const k of ['spaceAfterComma', 'splitColon', 'labelOwnLine', 'blankAfterFlow',
+                'blankAfterBlock', 'normalizePseudo', 'expandMulti', 'blankBeforeLabel',
+                'commentSpace', 'indent', 'align', 'alignComments', 'collapseBlanks']) {
+                if (k in o) bf[k].checked = !!o[k];
+            }
+            if ('trimTrailing' in o) bf.trimTrailing.checked = !!o.trimTrailing;
+            if ('allFiles' in o) bfAll.checked = !!o.allFiles;
+        }
+
+        function bfRenderPreview() {
+            syncEditorToVFS();
+            const src = asmEditor.value || '';
+            try {
+                bfPreview.textContent = beautify(src, bfReadOpts());
+            } catch (e) {
+                bfPreview.textContent = 'Preview error: ' + e.message;
+            }
+        }
+
+        function bfOpen() {
+            bfLoadOpts();
+            bfRenderPreview();
+            beautifyDialog.classList.remove('hidden');
+        }
+        function bfClose() { beautifyDialog.classList.add('hidden'); }
+
+        const btnAsmBeautify = document.getElementById('btnAsmBeautify');
+        if (btnAsmBeautify) btnAsmBeautify.addEventListener('click', bfOpen);
+
+        for (const el of [...Object.values(bf), bfAll]) {
+            if (el) el.addEventListener('change', () => { bfSaveOpts(); bfRenderPreview(); });
+        }
+
+        if (btnBeautifyCancel) btnBeautifyCancel.addEventListener('click', bfClose);
+        if (btnBeautifyApply) {
+            btnBeautifyApply.addEventListener('click', () => {
+                const opts = bfReadOpts();
+                bfSaveOpts();
+                if (bfAll.checked) {
+                    let n = 0;
+                    for (const path of VFS.listFiles()) {
+                        const f = VFS.files[path];
+                        if (f.binary) continue;
+                        if (!/\.(asm|z80|s|a80|inc)$/i.test(path)) continue;
+                        f.content = beautify(f.content, opts);
+                        n++;
+                    }
+                    // refresh the open file from VFS
+                    if (currentOpenFile && VFS.files[currentOpenFile]) {
+                        asmUndoPushImmediate();
+                        asmEditor.value = VFS.files[currentOpenFile].content || '';
+                    }
+                    showMessage(`Beautified ${n} file(s)`);
+                } else {
+                    asmUndoPushImmediate();
+                    asmEditor.value = beautify(asmEditor.value, opts);
+                    syncEditorToVFS();
+                    showMessage('Beautified');
+                }
+                updateLineNumbers();
+                updateHighlight();
+                if (splitPaneVisible()) pane2Render();
+                bfClose();
+            });
+        }
+
+        // Esc closes; clicking outside the modal does NOT (avoid losing the
+        // configured options by accident). Document-level so it works without
+        // focus being inside the dialog.
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !beautifyDialog.classList.contains('hidden')) {
+                e.preventDefault();
+                bfClose();
+            }
         });
     }
 

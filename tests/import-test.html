@@ -121,6 +121,22 @@
             [0x0A, 8, 0xCC]
         ]);
 
+        // Tokenized ADS source: u16 line number + content + 0x00, ended 0xFFFF
+        // (matches the real ads20i.zip framing; tokens are the TASM table).
+        function adsFile(lines) {
+            const o = [];
+            for (const [no, content] of lines) o.push(no & 0xFF, no >> 8, ...content, 0);
+            o.push(0xFF, 0xFF);
+            return o;
+        }
+        const ADS_BODY = adsFile([
+            [10, [...str(';ADS source')]],
+            [20, [0xBF, ...str('#9300')]],          // 0xBF=ORG
+            [30, [...str('BEG'), 0x0A, 2, 0xB3, 0x80, ...str(',5')]],  // BEG  LD A,5
+            [40, [0x0A, 2, 0xCC]],                  // RET
+            [50, [0x0A, 2, 0x96, 0x22, ...str('1,#FF')]]
+        ]);
+
         // One-file SCL archive
         function makeScl(fileName, body, ext = 'A', start = 39221) {
             const scl = [];
@@ -261,6 +277,22 @@
             rows('.impf-row[data-back]')[0].click();
             await new Promise(r => setTimeout(r, 100));
             assertEq(rows('.impf-row[data-disk]').length, 2, 'back returns to chooser');
+
+            section('ADS detection through the dialog');
+            // single tokenized ADS file (extension .C, like real ads20i sources)
+            await loadFile('CC0.C', new Uint8Array(ADS_BODY));
+            assertEq(rowFormat(0), 'ads', 'single ADS .C file detected as ads');
+            assert(preview().includes('LD A,5'), 'ADS preview shows converted source');
+            // ADS files inside a ZIP, mixed with a SCREEN$ and a text file
+            const scr1 = new Uint8Array(6912); scr1.fill(0x47, 6144);
+            await loadFile('ads.zip', buildZip([
+                ['CC0_____.C', new Uint8Array(ADS_BODY)],
+                ['CC1_____.C', new Uint8Array(ADS_BODY)],
+                ['FONT$___.C', scr1],
+                ['readme.diz', new Uint8Array(str('hi\nthere\nfour\nlines\n'))]
+            ]));
+            const fmts = rows().map((r, i) => rowFormat(i)).join(',');
+            assertEq(fmts, 'ads,ads,binary,text', 'ADS sources→ads, SCREEN$→binary, text→text in one zip');
 
             section('SCREEN$ on disk imports as binary');
             const screen = new Uint8Array(6912);

@@ -500,11 +500,14 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
         if (e.dataTransfer.files.length > 0) loadSource(e.dataTransfer.files[0]);
     });
 
-    dialog.addEventListener('mousedown', (e) => {
-        if (e.target === dialog) close();
-    });
-    dialog.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') close();
+    // Esc closes; clicking outside the modal does NOT (avoid discarding the
+    // loaded catalog / format choices by accident). Document-level so it
+    // works without focus being inside the dialog.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !dialog.classList.contains('hidden')) {
+            e.preventDefault();
+            close();
+        }
     });
 
     // loadFile lets callers (and tests) hand a File to the importer directly

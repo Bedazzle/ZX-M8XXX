@@ -47,6 +47,11 @@ export function initDebuggerDisplay({
         return `<div class="register-item"><span class="register-name"${nameTitle}>${name}</span><br><span class="register-value${editClass}"${dataAttr}>${value}</span></div>`;
     }
 
+    // PC at the previous render — used so a fold is only auto-expanded when
+    // execution moves PC into it, not while the user toggles folds at a
+    // standstill (otherwise a manual collapse is undone on the next render).
+    let foldPrevPc = null;
+
     function renderDebugger() {
         const spectrum = getSpectrum();
         if (!spectrum.cpu) return;
@@ -177,9 +182,14 @@ export function initDebuggerDisplay({
 
         const pc = cpu.pc;
 
-        // Auto-expand fold if PC is inside collapsed range
-        const pcFold = foldManager.getCollapsedRangeContaining(pc);
-        if (pcFold) foldManager.expand(pcFold.start);
+        // Auto-expand a fold only when execution has moved PC into it, so a
+        // manual collapse of the fold the PC currently sits in isn't undone
+        // on the very next render.
+        if (pc !== foldPrevPc) {
+            const pcFold = foldManager.getCollapsedRangeContaining(pc);
+            if (pcFold) foldManager.expand(pcFold.start);
+        }
+        foldPrevPc = pc;
 
         let viewAddr;
 
