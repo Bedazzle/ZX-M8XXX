@@ -5,8 +5,9 @@ import {
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
-import { MGTLoader, MDRLoader, OPDLoader, sclChecksum } from '../core/loaders.js';
+import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, sclChecksum } from '../core/loaders.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
+import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
 function isFlowBreak(mnemonic) {
     const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
     return mn.startsWith('JP') || mn.startsWith('JR') ||
@@ -73,7 +74,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerPreviewContainer = document.getElementById('explorerPreviewContainer');
     const explorerPreviewCanvas = document.getElementById('explorerPreviewCanvas');
     const explorerPreviewLabel = document.getElementById('explorerPreviewLabel');
+    const explorerRcsToggle = document.getElementById('explorerRcsToggle');
+    const explorerRcsToggleLabel = document.getElementById('explorerRcsToggleLabel');
+    const explorerSaveScrBtn = document.getElementById('explorerSaveScrBtn');
     const explorerPreviewCtx = explorerPreviewCanvas.getContext('2d');
+    if (explorerRcsToggle) explorerRcsToggle.addEventListener('change', () => explorerRenderPackedScreen());
+    if (explorerSaveScrBtn) explorerSaveScrBtn.addEventListener('click', () => {
+        if (!explorerPackedScreen) return;
+        const useRcs = explorerRcsToggle && explorerRcsToggle.checked;
+        const data = useRcs ? rcsToScr(explorerPackedScreen.data) : explorerPackedScreen.data;
+        const base = ((explorerPackedScreen.name || 'screen') + '').replace(/\s+$/, '').replace(/[\\/:*?"<>|]+/g, '_') || 'screen';
+        downloadFile(base + '.scr', data);
+    });
+    let explorerPreviewTimer = null;   // defers preview/detection so the catalog paints first
+    let explorerPreviewPending = false; // preview/detection deferred until the Info tab is opened
     const explorerPreviewModes = document.getElementById('explorerPreviewModes');
     let explorerPreviewMode = 'spectrum';
     let explorerPreviewDataCache = null;
@@ -121,6 +135,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // Preview rendering functions
     // Sizes that support Spectrum/Linear/Font mode toggle
     const TOGGLEABLE_SIZES = { 2048: 1, 4096: 2, 6144: 3 }; // size -> thirds
+
+    // Previewable graphic blob sizes (full screen, bitmap-only, thirds, attrs, fonts)
+    const PREVIEW_SIZES = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+    // TR-DOS catalogue file-type letter → display name
+    const TRD_TYPE_NAMES = { 'B': 'BASIC', 'C': 'Code', 'D': 'Data', '#': 'Sequential' };
+    // TR-DOS usable sectors (2560 total − 16 on track 0 reserved for system/catalog)
+    const TRD_TOTAL_SECTORS = 2544;
 
     function explorerUpdatePreview(data, blockData = null, fileName = null) {
         if (!data) {
@@ -729,6 +750,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 content.classList.add('active');
                 content.style.display = '';
             }
+            // Run the deferred preview/packed-screen detection only when Info is actually opened.
+            if (btn.dataset.subtab === 'info' && explorerPreviewPending) {
+                explorerPreviewPending = false;
+                clearTimeout(explorerPreviewTimer);
+                explorerPreviewTimer = setTimeout(() => {
+                    explorerUpdatePreviewForFile();
+                    explorerMarkPackedScreens();
+                }, 0);
+            }
         });
     });
 
@@ -833,6 +863,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'opd':
                 explorerParsed = explorerParseOPD(explorerData);
                 break;
+            case 'd40':
+            case 'd80':
+                explorerParsed = explorerParseDidaktik(explorerData);
+                break;
             case 'dsk':
                 explorerParsed = explorerParseDSK(explorerData);
                 break;
@@ -863,7 +897,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'sna', 'z80', 'szx'];
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'sna', 'z80', 'szx'];
         if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
@@ -1514,6 +1548,23 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
     }
 
+    // Decode a TR-DOS catalogue entry's 9-10 / 11-12 words by file type.
+    // BASIC (B, 0x42): 9-10 = total length (program + variables), 11-12 = program
+    // length (offset where variables begin). CODE/others: 9-10 = start/load
+    // address, 11-12 = data length. `length` is always the byte count to extract.
+    function trdEntryFields(extByte, w9, w11) {
+        if (extByte === 0x42) return { startAddress: 0, length: w9, programLength: w11 };
+        return { startAddress: w9, length: w11, programLength: null };
+    }
+
+    // Inverse of trdEntryFields: pack a file's metadata into the 9-10 / 11-12 words.
+    function trdEntryWords(extChar, length, startAddress, programLength) {
+        if (extChar === 'B' || extChar === 'b') {
+            return { w9: length, w11: (programLength != null ? programLength : length) };
+        }
+        return { w9: startAddress || 0, w11: length };
+    }
+
     // TRD file parser
     function explorerParseTRD(data) {
         const files = [];
@@ -1526,8 +1577,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             const name = String.fromCharCode(...data.slice(entryOffset, entryOffset + 8)).replace(/\s+$/, '');
             const ext = String.fromCharCode(data[entryOffset + 8]);
-            const startAddr = data[entryOffset + 9] | (data[entryOffset + 10] << 8);
-            const length = data[entryOffset + 11] | (data[entryOffset + 12] << 8);
+            const w9 = data[entryOffset + 9] | (data[entryOffset + 10] << 8);
+            const w11 = data[entryOffset + 11] | (data[entryOffset + 12] << 8);
+            const { startAddress: startAddr, length, programLength } = trdEntryFields(data[entryOffset + 8], w9, w11);
             const sectors = data[entryOffset + 13];
             const startSector = data[entryOffset + 14];
             const startTrack = data[entryOffset + 15];
@@ -1537,6 +1589,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 ext: ext,
                 startAddress: startAddr,
                 length: length,
+                programLength: programLength,
                 sectors: sectors,
                 startSector: startSector,
                 startTrack: startTrack,
@@ -1575,8 +1628,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         for (let i = 0; i < fileCount; i++) {
             const name = String.fromCharCode(...data.slice(offset, offset + 8)).replace(/\s+$/, '');
             const ext = String.fromCharCode(data[offset + 8]);
-            const startAddr = data[offset + 9] | (data[offset + 10] << 8);
-            const length = data[offset + 11] | (data[offset + 12] << 8);
+            const w9 = data[offset + 9] | (data[offset + 10] << 8);
+            const w11 = data[offset + 11] | (data[offset + 12] << 8);
+            const { startAddress: startAddr, length, programLength } = trdEntryFields(data[offset + 8], w9, w11);
             const sectors = data[offset + 13];
 
             files.push({
@@ -1584,6 +1638,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 ext: ext,
                 startAddress: startAddr,
                 length: length,
+                programLength: programLength,
                 sectors: sectors
             });
 
@@ -1707,13 +1762,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return { type: 'opd', files: files, info: info, size: data.length };
     }
 
+    // Didaktik 40/80 MDOS disk image parser
+    function explorerParseDidaktik(data) {
+        const info = DidaktikLoader.getDiskInfo(data);
+        const files = DidaktikLoader.listFiles(data);
+        explorerBlocks = files;
+        return { type: 'didaktik', files: files, info: info, size: data.length };
+    }
+
     // Hobeta file parser
     function explorerParseHobeta(data) {
         const file = parseHobeta(data);
         if (!file) {
             return { type: 'hobeta', error: 'Invalid Hobeta file (CRC mismatch)', size: data.length };
         }
-        const trdTypeNames = { 'B': 'BASIC', 'C': 'Code', 'D': 'Data', '#': 'Sequential' };
+        const trdTypeNames = TRD_TYPE_NAMES;
         explorerBlocks = [file];
         return {
             type: 'hobeta',
@@ -1759,7 +1822,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
@@ -1817,6 +1880,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     case 'opd':
                     case 'opu':
                         return explorerParseOPD(explorerData);
+                    case 'd40':
+                    case 'd80':
+                        return explorerParseDidaktik(explorerData);
                     case 'dsk':
                         return explorerParseDSK(explorerData);
                 }
@@ -1893,6 +1959,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'opd':
                 html = explorerRenderOPDInfo();
                 break;
+            case 'didaktik':
+                html = explorerRenderDidaktikInfo();
+                break;
             case 'dsk':
                 html = explorerRenderDSKInfo();
                 break;
@@ -1914,8 +1983,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // Update source selectors
         explorerUpdateSourceSelectors(autoSwitchTab);
 
-        // Update preview - check for previewable content
-        explorerUpdatePreviewForFile();
+        // Preview + packed-screen detection are File-Info-tab features and can be non-trivial
+        // (per-file scans, speculative ZX0/ZX7 depacking). Only run them when the Info tab is
+        // actually being shown; if we're staying on the Edit tab, defer until the user opens
+        // Info (see the subtab click handler) so disk editing never pays for the detection.
+        clearTimeout(explorerPreviewTimer);
+        if (autoSwitchTab) {
+            explorerPreviewPending = false;
+            explorerPreviewTimer = setTimeout(() => {
+                explorerUpdatePreviewForFile();
+                explorerMarkPackedScreens();
+            }, 0);
+        } else {
+            explorerPreviewPending = true;
+        }
     }
 
     function explorerRenderGraphicsInfo() {
@@ -1923,7 +2004,153 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return `<div class="explorer-info-section"><div class="explorer-info-header">${p.description}</div><table class="explorer-info-table"><tr><th>Type</th><td>${p.graphicsType.toUpperCase()}</td></tr><tr><th>Size</th><td>${p.size.toLocaleString()} bytes</td></tr></table></div>`;
     }
 
+    // Fallback: try to preview a size-windowed block as a ZX0/ZX7-packed standard
+    // screen. Returns true (and renders) on a confident match. Called only after the
+    // exact-length (uncompressed) screen checks miss, so a real screen always wins.
+    // Holds the raw (un-RCS'd) decode of the currently-previewed packed screen, so the
+    // RCS toggle can re-render without re-depacking. Cleared whenever a non-packed
+    // preview is shown (reset at the top of explorerUpdatePreviewForFile).
+    let explorerPackedScreen = null;
+
+    function explorerRenderPackedScreen() {
+        if (!explorerPackedScreen) return;
+        const useRcs = explorerRcsToggle && explorerRcsToggle.checked;
+        explorerRenderSCR(useRcs ? rcsToScr(explorerPackedScreen.data) : explorerPackedScreen.data);
+        explorerPreviewCanvas.style.width = (explorerPreviewCanvas.width * 2) + 'px';
+        explorerPreviewCanvas.style.height = (explorerPreviewCanvas.height * 2) + 'px';
+        syncPreviewHeight();
+        explorerPreviewLabel.textContent = explorerPackedScreen.label + (useRcs ? ' +RCS' : '');
+    }
+
+    // Detected packed screens by catalog index — populated by explorerMarkPackedScreens()
+    // so clicking a 📦-marked entry re-shows it without re-depacking.
+    const explorerPackedCache = new Map();
+
+    function explorerShowPackedScreen(hit, fileName) {
+        const where = hit.offset > 0 ? ` @${hit.offset}` : '';
+        const via = hit.viaSignature ? ' [sig]' : '';
+        explorerPackedScreen = {
+            data: hit.data,
+            name: fileName || 'screen',
+            label: `${hit.format} packed screen${hit.direction === 'backward' ? ' (reverse)' : ''}${where}${via}`
+                + (fileName ? ` — ${String(fileName).replace(/\s+$/, '')}` : '')
+        };
+        explorerPreviewContainer.classList.remove('hidden');
+        if (explorerRcsToggleLabel) explorerRcsToggleLabel.style.display = '';
+        if (explorerSaveScrBtn) explorerSaveScrBtn.style.display = '';
+        // Auto-detect RCS by image coherence; the checkbox stays a manual override.
+        if (explorerRcsToggle) explorerRcsToggle.checked = looksRcsEncoded(hit.data);
+        explorerRenderPackedScreen();
+    }
+
+    function explorerTryPackedScreenPreview(bytes, fileName, loadAddr) {
+        const hit = findPackedScreenInBlock(bytes, loadAddr || 0);
+        if (!hit) return false;
+        explorerShowPackedScreen(hit, fileName);
+        return true;
+    }
+
+    // Deferred (post-paint) pass: detect packed screens in every catalog entry and mark
+    // them with a 📦 icon + cache the hit so clicking the row previews it. Lets the user
+    // see and switch between multiple packed screens (e.g. two on one tape). Runs off the
+    // catalog's paint path, so it never delays the catalog appearing.
+    function explorerMarkPackedScreens() {
+        explorerPackedCache.clear();
+        if (!explorerParsed || !explorerInfoOutput) return;
+        const type = explorerParsed.type;
+        const ICON = '📦';   // 📦
+
+        if (type === 'tap' || type === 'tzx') {
+            // Uncompressed screens/fonts already get their 🖼️/🔤 from the renderer, in the
+            // `.explorer-tap-preview` span after "Data length". For packed screens we drop 📦
+            // into that SAME span (on the header block, which carries the data-length detail),
+            // so packed and uncompressed icons sit in one consistent place.
+            explorerInfoOutput.querySelectorAll('.explorer-block[data-block-index]').forEach(row => {
+                const idx = parseInt(row.dataset.blockIndex);
+                const block = explorerBlocks[idx];
+                if (!block || !block.data || block.data.length < 3) return;
+                const content = block.data.slice(1, block.data.length - 1);
+                if (content.length <= 256 || content.length > 65536) return;
+                const prev = idx > 0 ? explorerBlocks[idx - 1] : null;
+                const hit = findPackedScreenInBlock(content, prev ? (prev.startAddress || 0) : 0);
+                if (!hit) return;
+                const named = prev && (prev.name || prev.fileName);
+                const fName = named || `#${idx + 1}`;
+                explorerPackedCache.set(idx, { hit, label: fName });
+                // The preview span lives on the header block (it has the "Data length" line).
+                let iconRow = row;
+                if (named) {
+                    explorerPackedCache.set(idx - 1, { hit, label: fName });
+                    const headerRow = explorerInfoOutput.querySelector(`.explorer-block[data-block-index="${idx - 1}"]`);
+                    if (headerRow) iconRow = headerRow;
+                }
+                const span = iconRow.querySelector('.explorer-tap-preview');
+                if (span && !span.textContent.trim()) {
+                    span.textContent = ' 📦';
+                    span.title = 'Packed screen — click to preview';
+                }
+            });
+        } else if (explorerParsed.files) {
+            explorerInfoOutput.querySelectorAll('.explorer-file-entry[data-index]').forEach(row => {
+                const idx = parseInt(row.dataset.index);
+                const file = explorerParsed.files[idx];
+                if (!file) return;
+                const len = explorerDiskFileContentLen(type, file);
+                if (!(len > 256 && len <= 65536)) return;
+                const span = row.querySelector('.explorer-file-preview');
+                if (span && span.textContent.trim()) return;   // already an uncompressed-preview icon
+                const content = explorerExtractDiskFileContent(type, file);
+                if (!content) return;
+                const loadAddr = file.startAddress ?? file.startAddr ?? file.start ?? file.loadAddress ?? 0;
+                const hit = findPackedScreenInBlock(content, loadAddr);
+                if (!hit) return;
+                const baseName = file.name ? String(file.name).replace(/\s+$/, '') : `#${idx + 1}`;
+                const fLabel = (file.ext && !baseName.toLowerCase().endsWith('.' + String(file.ext).toLowerCase()))
+                    ? `${baseName}.${file.ext}` : baseName;
+                explorerPackedCache.set(idx, { hit, label: fLabel });
+                if (span) { span.textContent = ICON; span.title = 'Packed screen — click to preview'; }
+            });
+        }
+    }
+
+    // Logical content length of a disk catalog entry (mirrors each format's exact-size
+    // preview check), used to size-gate the packed-screen pass before extracting.
+    function explorerDiskFileContentLen(type, file) {
+        if (type === 'mdr') return file.isPrint ? file.length : file.dataLength;
+        if (type === 'dsk') return file.size;
+        return file.length;
+    }
+
+    // Extract a disk catalog entry's logical content bytes (headers stripped, trimmed to
+    // length) per format — same extraction the exact-size preview branches use.
+    function explorerExtractDiskFileContent(type, file) {
+        try {
+            if (type === 'mgt') return MGTLoader.extractFile(explorerData, file);
+            if (type === 'mdr') {
+                const fd = MDRLoader.extractFile(explorerData, file);
+                return (!file.isPrint && fd && fd.length > 9) ? fd.slice(9) : fd;
+            }
+            if (type === 'trd' || type === 'scl') return explorerData.slice(file.offset, file.offset + file.length);
+            if (type === 'opd' || type === 'didaktik') {
+                const raw = type === 'opd' ? OPDLoader.extractFile(explorerData, file) : DidaktikLoader.extractFile(explorerData, file);
+                if (!raw) return null;
+                return file.length < raw.length ? raw.slice(0, file.length) : raw;
+            }
+            if (type === 'dsk') {
+                const fd = DSKLoader.readFileData(explorerParsed.dskImage, file.name, file.ext, file.user, file.rawSize || file.size);
+                if (!fd) return null;
+                return file.headerSize ? fd.slice(file.headerSize) : fd;
+            }
+        } catch (e) { return null; }
+        return null;
+    }
+
     function explorerUpdatePreviewForFile() {
+        // Reset packed-screen state (a non-packed preview hides the RCS toggle + Save .scr)
+        explorerPackedScreen = null;
+        if (explorerRcsToggleLabel) explorerRcsToggleLabel.style.display = 'none';
+        if (explorerSaveScrBtn) explorerSaveScrBtn.style.display = 'none';
+
         // For graphics files, preview directly
         if (explorerParsed && explorerParsed.type === 'graphics') {
             // For BSC, extract the SCR portion (first SCREEN_SIZE bytes)
@@ -1937,7 +2164,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For raw files loaded directly, check the file size
         if (explorerData && !explorerParsed) {
-            explorerUpdatePreview(explorerData);
+            if (!explorerTryPackedScreenPreview(explorerData, null)) explorerUpdatePreview(explorerData);
             return;
         }
 
@@ -1958,6 +2185,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return;
                     }
                 }
+            }
+            // No uncompressed screen found — try packed screens (standalone or embedded)
+            for (let bi = 0; bi < explorerBlocks.length; bi++) {
+                const block = explorerBlocks[bi];
+                if (block.blockType !== 'data' || !block.data || block.data.length < 3) continue;
+                const content = block.data.slice(1, block.data.length - 1);
+                const prevBlock = bi > 0 ? explorerBlocks[bi - 1] : null;
+                const fName = prevBlock && prevBlock.name ? prevBlock.name : null;
+                if (explorerTryPackedScreenPreview(content, fName, prevBlock ? (prevBlock.startAddress || 0) : 0)) return;
             }
         }
 
@@ -1982,6 +2218,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     }
                 }
             }
+            // No uncompressed screen found — try packed screens (standalone or embedded)
+            for (let bi = 0; bi < explorerBlocks.length; bi++) {
+                const block = explorerBlocks[bi];
+                if (!((block.id === 0x10 || block.id === 0x11) && block.data && block.data.length > 3)) continue;
+                if (block.data[0] !== 0xFF) continue;
+                const content = block.data.slice(1, block.data.length - 1);
+                const prevBlock = bi > 0 ? explorerBlocks[bi - 1] : null;
+                const fName = prevBlock && prevBlock.fileName ? prevBlock.fileName : null;
+                if (explorerTryPackedScreenPreview(content, fName, prevBlock ? (prevBlock.startAddress || 0) : 0)) return;
+            }
         }
 
         // For Hobeta files, check if the contained data is screen-sized
@@ -1992,6 +2238,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerUpdatePreview(explorerParsed.file.data, null, explorerParsed.file.name || null);
                 return;
             }
+            // Not an uncompressed screen — try a packed screen
+            if (explorerTryPackedScreenPreview(explorerParsed.file.data, explorerParsed.file.name || null, explorerParsed.file.startAddress || 0)) return;
         }
 
         // For SNA/Z80/SZX, extract screen from bank cache (supports modified banks)
@@ -2100,7 +2348,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For MGT, look for previewable files
         if (explorerParsed && explorerParsed.type === 'mgt') {
-            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            const previewSizes = PREVIEW_SIZES;
             for (let fi = 0; fi < explorerParsed.files.length; fi++) {
                 const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.length)) {
@@ -2113,7 +2361,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For MDR, look for previewable files (use dataLength which excludes 9-byte header)
         if (explorerParsed && explorerParsed.type === 'mdr') {
-            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            const previewSizes = PREVIEW_SIZES;
             for (let fi = 0; fi < explorerParsed.files.length; fi++) {
                 const file = explorerParsed.files[fi];
                 const contentLen = file.isPrint ? file.length : file.dataLength;
@@ -2128,7 +2376,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For TRD/SCL, look for previewable files (screens, fonts)
         if (explorerParsed && (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')) {
-            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            const previewSizes = PREVIEW_SIZES;
             for (let fi = 0; fi < explorerParsed.files.length; fi++) {
                 const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.length)) {
@@ -2141,12 +2389,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // For OPD, look for previewable files (extractFile already strips 7-byte header)
-        if (explorerParsed && explorerParsed.type === 'opd') {
-            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+        if (explorerParsed && (explorerParsed.type === 'opd' || explorerParsed.type === 'didaktik')) {
+            const previewSizes = PREVIEW_SIZES;
             for (let fi = 0; fi < explorerParsed.files.length; fi++) {
                 const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.length)) {
-                    const rawData = OPDLoader.extractFile(explorerData, file);
+                    const rawData = explorerParsed.type === 'opd'
+                        ? OPDLoader.extractFile(explorerData, file)
+                        : DidaktikLoader.extractFile(explorerData, file);
                     if (rawData) {
                         const fileData = file.length < rawData.length ? rawData.slice(0, file.length) : rawData;
                         explorerUpdatePreview(fileData, null, file.name || `#${fi + 1}`);
@@ -2158,7 +2408,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // For DSK, look for previewable files (check data size after +3DOS header)
         if (explorerParsed && explorerParsed.type === 'dsk') {
-            const previewSizes = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432];
+            const previewSizes = PREVIEW_SIZES;
             for (let fi = 0; fi < explorerParsed.files.length; fi++) {
                 const file = explorerParsed.files[fi];
                 if (previewSizes.includes(file.size)) {
@@ -2173,6 +2423,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return;
                     }
                 }
+            }
+        }
+
+        // Packed-screen fallback: no uncompressed screen matched in any disk catalog —
+        // try ZX0/ZX7-packed screens (standalone, or embedded with a depacker in the file).
+        if (explorerParsed && explorerParsed.files &&
+            ['mgt', 'mdr', 'trd', 'scl', 'opd', 'didaktik', 'dsk'].includes(explorerParsed.type)) {
+            for (let fi = 0; fi < explorerParsed.files.length; fi++) {
+                const file = explorerParsed.files[fi];
+                const len = explorerDiskFileContentLen(explorerParsed.type, file);
+                if (!(len > 256 && len <= 65536)) continue;
+                const content = explorerExtractDiskFileContent(explorerParsed.type, file);
+                if (!content) continue;
+                const baseName = file.name ? String(file.name).replace(/\s+$/, '') : `#${fi + 1}`;
+                // Some catalogs (e.g. Didaktik MDOS) already carry the extension in the name
+                const fLabel = (file.ext && !baseName.toLowerCase().endsWith('.' + String(file.ext).toLowerCase()))
+                    ? `${baseName}.${file.ext}` : baseName;
+                const loadAddr = file.startAddress ?? file.startAddr ?? file.start ?? file.loadAddress ?? 0;
+                if (explorerTryPackedScreenPreview(content, fLabel, loadAddr)) return;
             }
         }
 
@@ -2453,8 +2722,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 html += `<div class="explorer-block-details">`;
                 html += `<span class="label">Filename:</span> <span class="filename">"${block.name}"</span><br>`;
                 const tapPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.dataLength);
-                const tapPreviewIcon = !tapPreviewable ? '' : block.dataLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
-                html += `<span class="label">Data length:</span> ${block.dataLength} bytes${tapPreviewIcon}`;
+                const tapPreviewIcon = !tapPreviewable ? '' : block.dataLength === SCREEN_ATTR_SIZE ? ' 🔤' : ' 🖼️';
+                html += `<span class="label">Data length:</span> ${block.dataLength} bytes<span class="explorer-tap-preview">${tapPreviewIcon}</span>`;
 
                 if (block.headerType === 0) {
                     // Program
@@ -2469,8 +2738,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 html += `</div></div>`;
             } else {
-                // Data block
-                html += `<div class="explorer-block data-block" data-block-index="${i}">`;
+                // Data block — indent under its header (when one precedes it) to show the pairing
+                const afterHeader = i > 0 && explorerBlocks[i - 1].blockType === 'header';
+                html += `<div class="explorer-block data-block" data-block-index="${i}"${afterHeader ? ' style="margin-left:18px"' : ''}>`;
                 html += `<div class="explorer-block-header">${i + 1}: Data</div>`;
                 html += `<div class="explorer-block-meta">Flag: ${block.flag} ($${hex8(block.flag)}) | Length: ${block.length - 2} bytes | Checksum: ${hex8(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
                 html += `</div>`;
@@ -2500,7 +2770,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 blockClass += ' array-block'; // Control blocks
             }
 
-            html += `<div class="${blockClass}" data-block-index="${i}">`;
+            // Indent a data block that follows a header (a header has a fileName) to show pairing
+            const tzxAfterHeader = block.dataBlock && i > 0 && explorerBlocks[i - 1].fileName != null;
+            html += `<div class="${blockClass}" data-block-index="${i}"${tzxAfterHeader ? ' style="margin-left:18px"' : ''}>`;
             html += `<div class="explorer-block-header">${i + 1}: ${block.name}</div>`;
             let displayLen = block.dataLength !== undefined ? block.dataLength : block.length;
             if ((block.id === 0x10 || block.id === 0x11) && (block.headerType || block.dataBlock)) displayLen -= 2;
@@ -2516,7 +2788,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
                         details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
                         details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
-                        details += `<span class="label">File length:</span> ${block.fileLength} bytes${tzxPreviewIcon}`;
+                        details += `<span class="label">File length:</span> ${block.fileLength} bytes<span class="explorer-tap-preview">${tzxPreviewIcon}</span>`;
                         if (block.autostart !== undefined && block.autostart !== null) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
@@ -2538,7 +2810,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
                         details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
                         details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
-                        details += `<span class="label">File length:</span> ${block.fileLength} bytes${tzxPreviewIcon11}`;
+                        details += `<span class="label">File length:</span> ${block.fileLength} bytes<span class="explorer-tap-preview">${tzxPreviewIcon11}</span>`;
                         if (block.autostart !== undefined && block.autostart !== null) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
@@ -3196,7 +3468,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function explorerRenderTRDInfo() {
-        const trdTypeNames = { 'B': 'BASIC', 'C': 'Code', 'D': 'Data', '#': 'Sequential' };
+        const trdTypeNames = TRD_TYPE_NAMES;
         let html = `<div class="explorer-info-section">
             <div class="explorer-info-header">TRD Disk Image</div>
             <table class="explorer-info-table">
@@ -3257,7 +3529,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             </table>
         </div>`;
 
-        const trdTypeNames = { 'B': 'BASIC', 'C': 'Code', 'D': 'Data', '#': 'Sequential' };
+        const trdTypeNames = TRD_TYPE_NAMES;
         html += `<div class="explorer-info-section">
             <div class="explorer-info-header">Files</div>
             <div class="explorer-file-list">`;
@@ -3432,6 +3704,58 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     <span class="explorer-file-addr">${detail}</span>
                     <span class="explorer-file-preview">${previewIcon}</span>
                     <span class="explorer-file-sectors">${f.sectors} sector${f.sectors !== 1 ? 's' : ''}</span>
+                </div>`;
+            }
+            html += '</div></div>';
+        } else {
+            html += `<div class="explorer-info-section">
+                <div class="explorer-info-header">Files</div>
+                <span class="dim">No files on disk.</span>
+            </div>`;
+        }
+
+        return html;
+    }
+
+    function explorerRenderDidaktikInfo() {
+        const info = explorerParsed.info;
+        let html = `<div class="explorer-info-section">
+            <div class="explorer-info-header">Didaktik 40/80 Disk Image (MDOS)</div>
+            <table class="explorer-info-table">
+                <tr><th>Size</th><td>${explorerData.length} bytes</td></tr>
+                <tr><th>Geometry</th><td>${info.tracks}T × ${info.sides}S × ${info.sectorsPerTrack}sec × ${info.bytesPerSector}B</td></tr>
+                <tr><th>Sectors</th><td>${info.totalSectors}</td></tr>`;
+        if (info.diskLabel) {
+            html += `<tr><th>Label</th><td>${escapeHtml(info.diskLabel)}</td></tr>`;
+        }
+        html += `<tr><th>Files</th><td>${info.fileCount}</td></tr>
+            </table>
+        </div>`;
+
+        const files = explorerParsed.files;
+        if (files.length > 0) {
+            html += '<div class="explorer-info-section"><div class="explorer-info-header">Files</div>';
+            html += '<div class="explorer-file-list">';
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i];
+                let detail = '';
+                if (f.type === 'B') {
+                    detail = `${f.startAddr} ($${hex16(f.startAddr)})`;
+                } else if (f.type === 'P' && f.startAddr && f.startAddr < 0x8000) {
+                    detail = `LINE ${f.startAddr}`;
+                }
+                const len = f.length || 0;
+                const previewable = len === SCREEN_SIZE || len === SCREEN_BITMAP_SIZE || len === 4096 ||
+                    len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
+                    len === 11136 || len === 12288 || len === 18432;
+                const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '🔤' : '🖼️';
+                html += `<div class="explorer-file-entry" data-index="${i}">
+                    <span class="explorer-file-num">${i + 1}</span>
+                    <span class="explorer-file-type" title="${f.typeName}">${f.type}</span>
+                    <span class="explorer-file-name">${escapeHtml(f.name || '(unnamed)')}</span>
+                    <span class="explorer-file-size">${len}</span>
+                    <span class="explorer-file-addr">${detail}</span>
+                    <span class="explorer-file-preview">${previewIcon}</span>
                 </div>`;
             }
             html += '</div></div>';
@@ -3850,9 +4174,35 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // ========== Disk Map ==========
 
+    // Curated file palette chosen to stay clear of the fixed sector-type colors
+    // (gray reserved, gold directory, red error, dark free/empty) so a file is
+    // never confused with a reserved/error sector.
+    const DISKMAP_FILE_PALETTE = [
+        '#3a9bdc', // sky blue
+        '#5fbf60', // green
+        '#a974d6', // lavender
+        '#2fb6a8', // teal
+        '#e066b3', // magenta
+        '#5fd0e0', // light cyan
+        '#b6d44a', // chartreuse
+        '#8089e8', // periwinkle
+        '#d98cc4', // orchid
+        '#4fc3a1'  // mint
+    ];
+
     function diskMapFileColor(index) {
-        const hue = (index * 137.5) % 360;
-        return `hsl(${hue}, 70%, 50%)`;
+        const pal = DISKMAP_FILE_PALETTE;
+        const base = pal[index % pal.length];
+        const cycle = Math.floor(index / pal.length);
+        if (cycle === 0) return base;
+        // For disks with more files than palette entries, shift lightness so the
+        // repeated hue is still distinguishable from its first use.
+        const delta = (cycle % 2 === 1) ? 22 : -22;
+        const r = parseInt(base.slice(1, 3), 16);
+        const g = parseInt(base.slice(3, 5), 16);
+        const b = parseInt(base.slice(5, 7), 16);
+        const adj = (v) => Math.max(0, Math.min(255, v + delta)).toString(16).padStart(2, '0');
+        return `#${adj(r)}${adj(g)}${adj(b)}`;
     }
 
     function diskMapTypeColor(type) {
@@ -4131,6 +4481,102 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         fileIndex,
                         fileName,
                         blockNum: -1,
+                        hasError: false,
+                        isEmpty,
+                        diskOffset: offset
+                    });
+                }
+                trackEntry.sides.push(sideEntry);
+            }
+            tracks.push(trackEntry);
+        }
+
+        return {
+            tracks, numCylinders, numSides,
+            maxSectorsPerTrack: sectorsPerTrack,
+            isCPM: false, isFlat: true, flatSectorSize: sectorSize,
+            fileColors, fileNames
+        };
+    }
+
+    function buildDidaktikSectorMap(data, files, info) {
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        const sectorSize = 512;
+        const sectorsPerTrack = (info && info.sectorsPerTrack) || 9;
+        const numSides = (info && info.sides) || 2;
+        const numCylinders = (info && info.tracks) || Math.floor((bytes.length / sectorSize) / (sectorsPerTrack * numSides)) || 1;
+        const totalSectors = numCylinders * numSides * sectorsPerTrack;
+        const tracks = [];
+        const fileNames = [];
+        const fileColors = [];
+
+        const sectorOwner = new Int16Array(totalSectors).fill(-1);
+        const sectorFileIndex = new Int16Array(totalSectors).fill(-1);
+        const sectorBlock = new Int16Array(totalSectors).fill(-1);
+
+        // MDOS layout: sector 0 = boot, sectors 1..(firstDir-1) = FAT, then the
+        // directory sectors, then file data. The directory occupies sectors 6-13,
+        // so sectors 1-5 hold the FAT.
+        const dirSectors = DidaktikLoader.DIR_SECTORS;
+        const firstDir = Math.min.apply(null, dirSectors);
+        if (totalSectors > 0) sectorOwner[0] = -3; // boot
+        for (let s = 1; s < firstDir && s < totalSectors; s++) sectorOwner[s] = -3; // FAT
+        for (const ds of dirSectors) { if (ds < totalSectors) sectorOwner[ds] = -2; } // directory
+
+        const maxG = Math.floor(bytes.length / sectorSize) + 4;
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            fileNames.push(f.name);
+            fileColors.push(diskMapFileColor(i));
+            let sec = f.firstSec, guard = 0, block = 0;
+            while (guard++ < maxG && sec >= 0 && sec < totalSectors) {
+                if (sectorFileIndex[sec] < 0) {
+                    sectorOwner[sec] = 0;
+                    sectorFileIndex[sec] = i;
+                    sectorBlock[sec] = block;
+                }
+                const nv = DidaktikLoader.getFATnum(bytes, sec);
+                if (nv >= 0xC00) break;
+                sec = nv; block++;
+            }
+        }
+
+        for (let cyl = 0; cyl < numCylinders; cyl++) {
+            const trackEntry = { sides: [] };
+            for (let head = 0; head < numSides; head++) {
+                const sideEntry = { sectors: [] };
+                for (let sec = 0; sec < sectorsPerTrack; sec++) {
+                    const absIdx = (cyl * numSides + head) * sectorsPerTrack + sec;
+                    if (absIdx >= totalSectors) break;
+                    const offset = absIdx * sectorSize;
+
+                    let isEmpty = true;
+                    if (offset + sectorSize <= bytes.length) {
+                        const first = bytes[offset];
+                        for (let b = 1; b < sectorSize; b++) {
+                            if (bytes[offset + b] !== first) { isEmpty = false; break; }
+                        }
+                    }
+
+                    let type, fileIndex = -1, fileName = '';
+                    if (sectorOwner[absIdx] === -3) {
+                        type = 'reserved';
+                    } else if (sectorOwner[absIdx] === -2) {
+                        type = 'directory';
+                    } else if (sectorFileIndex[absIdx] >= 0) {
+                        type = 'file';
+                        fileIndex = sectorFileIndex[absIdx];
+                        fileName = fileNames[fileIndex];
+                    } else {
+                        type = 'free';
+                    }
+
+                    sideEntry.sectors.push({
+                        id: sec + 1,
+                        type,
+                        fileIndex,
+                        fileName,
+                        blockNum: sectorBlock[absIdx],
                         hasError: false,
                         isEmpty,
                         diskOffset: offset
@@ -4622,11 +5068,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         diskmapLegend.innerHTML = html;
     }
 
-    const DISKMAP_TYPES = ['dsk', 'trd', 'mgt', 'opd', 'mdr'];
+    const DISKMAP_TYPES = ['dsk', 'trd', 'mgt', 'opd', 'mdr', 'didaktik'];
 
     function explorerRenderDiskMap() {
         if (!explorerParsed || !DISKMAP_TYPES.includes(explorerParsed.type)) {
-            diskmapGridContainer.innerHTML = '<div class="explorer-empty">Load a disk image (DSK, TRD, MGT, MDR, OPD) to view disk map</div>';
+            diskmapGridContainer.innerHTML = '<div class="explorer-empty">Load a disk image (DSK, TRD, MGT, MDR, OPD, D40/D80) to view disk map</div>';
             diskmapDiskContainer.style.display = 'none';
             diskmapLegend.innerHTML = '';
             diskmapInfo.textContent = '';
@@ -4652,6 +5098,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             sectorMap = buildOPDSectorMap(explorerData, explorerParsed.files, explorerParsed.info);
         } else if (t === 'mdr') {
             sectorMap = buildMDRSectorMap(explorerData, explorerParsed.files);
+        } else if (t === 'didaktik') {
+            sectorMap = buildDidaktikSectorMap(explorerData, explorerParsed.files, explorerParsed.info);
         }
 
         diskmapSectorMap = sectorMap;
@@ -5041,6 +5489,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // Handle clicking on ZIP file entries and TAP blocks
     explorerInfoOutput.addEventListener('click', async (e) => {
+        // Packed screen (📦-marked): clicking the row re-shows it from the cache the
+        // marking pass built — works for both tape (data-block-index) and disk (data-index)
+        // rows, and lets the user switch between multiple packed screens.
+        const packedRow = e.target.closest('.explorer-block[data-block-index], .explorer-file-entry[data-index]');
+        if (packedRow) {
+            const pIdx = parseInt(packedRow.dataset.blockIndex ?? packedRow.dataset.index);
+            const cached = explorerPackedCache.get(pIdx);
+            if (cached) { explorerShowPackedScreen(cached.hit, cached.label); return; }
+        }
+
         const bootLink = e.target.closest('.explorer-boot-disasm-link');
         if (bootLink && explorerParsed && explorerParsed.type === 'dsk') {
             document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
@@ -5059,7 +5517,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const zipFile = explorerZipFiles[idx];
             const ext = zipFile.name.split('.').pop().toLowerCase();
 
-            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk', 'rzx'].includes(ext)) return;
+            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk', 'rzx'].includes(ext)) return;
 
             explorerZipParentName = explorerFileName.textContent;
             explorerData = new Uint8Array(zipFile.data);
@@ -5086,15 +5544,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             const block = explorerBlocks[idx];
 
-            if (block.blockType === 'data' && block.data.length > 2) {
-                const content = block.data.slice(1, block.data.length - 1);
+            // Resolve the data block: the clicked data block, or the data block following a
+            // clicked header — so clicking the header OR the data row previews the screen.
+            const dataIdx = block.blockType === 'data' ? idx
+                : (idx + 1 < explorerBlocks.length && explorerBlocks[idx + 1].blockType === 'data') ? idx + 1 : -1;
+            if (dataIdx >= 0 && explorerBlocks[dataIdx].data && explorerBlocks[dataIdx].data.length > 2) {
+                const content = explorerBlocks[dataIdx].data.slice(1, explorerBlocks[dataIdx].data.length - 1);
                 const contentLen = content.length;
-
                 if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
                     contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
                     contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
-                    const prevBlock = idx > 0 ? explorerBlocks[idx - 1] : null;
-                    const fLabel = (prevBlock && prevBlock.name) ? prevBlock.name : `#${idx + 1}`;
+                    const hdr = dataIdx > 0 ? explorerBlocks[dataIdx - 1] : null;
+                    const fLabel = (hdr && hdr.name) ? hdr.name : `#${dataIdx + 1}`;
                     explorerUpdatePreview(content, null, fLabel);
                     return;
                 }
@@ -5137,6 +5598,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     const fLabel = (prevBlock && prevBlock.fileName) ? prevBlock.fileName : `#${idx + 1}`;
                     explorerUpdatePreview(content, null, fLabel);
                     return;
+                }
+            }
+
+            // Header whose following data block is a screen → preview too, so clicking the
+            // named header behaves the same as clicking its data block.
+            if ((block.headerTypeId === 0 || block.headerTypeId === 3) && idx + 1 < explorerBlocks.length) {
+                const db = explorerBlocks[idx + 1];
+                if (db && db.dataBlock && db.data && db.data.length > 2) {
+                    const content = db.data.slice(1, db.data.length - 1);
+                    const contentLen = content.length;
+                    if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
+                        contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
+                        contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
+                        explorerUpdatePreview(content, null, block.fileName || `#${idx + 1}`);
+                        return;
+                    }
                 }
             }
 
@@ -5254,6 +5731,46 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 return;
             }
 
+            document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
+            explorerHexSource.value = idx.toString();
+            explorerHexLen.value = Math.min(file.length, 65536);
+            explorerHexAddr.value = '0000';
+            explorerRenderHexDump();
+            return;
+        }
+
+        const didaktikEntry = e.target.closest('.explorer-file-entry[data-index]');
+        if (didaktikEntry && explorerParsed && explorerParsed.type === 'didaktik') {
+            const idx = parseInt(didaktikEntry.dataset.index);
+            if (isNaN(idx) || !explorerParsed.files[idx]) return;
+
+            const file = explorerParsed.files[idx];
+            const rawData = DidaktikLoader.extractFile(explorerData, file);
+            if (!rawData || rawData.length === 0) return;
+            const fileData = file.length < rawData.length ? rawData.slice(0, file.length) : rawData;
+
+            const contentLen = fileData.length;
+            if (contentLen === SCREEN_SIZE || contentLen === SCREEN_BITMAP_SIZE || contentLen === 4096 ||
+                contentLen === 2048 || contentLen === SCREEN_ATTR_SIZE || contentLen === 9216 ||
+                contentLen === 11136 || contentLen === 12288 || contentLen === 18432) {
+                explorerUpdatePreview(fileData, null, file.name || `#${idx + 1}`);
+                return;
+            }
+            // MDOS: P = BASIC, B = Code
+            if (file.type === 'P') {
+                document.querySelector('.explorer-subtab[data-subtab="basic"]').click();
+                explorerBasicSource.value = idx.toString();
+                explorerRenderBASIC();
+                return;
+            }
+            if (file.type === 'B') {
+                document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
+                explorerDisasmSource.value = idx.toString();
+                explorerDisasmAddr.value = hex16(file.startAddr);
+                explorerDisasmLen.value = Math.min(file.length, 4096);
+                explorerRenderDisasm();
+                return;
+            }
             document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
             explorerHexSource.value = idx.toString();
             explorerHexLen.value = Math.min(file.length, 65536);
@@ -5434,6 +5951,23 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 }
                 hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
             }
+        } else if (explorerParsed.type === 'didaktik') {
+            // MDOS type chars: P=BASIC, B=Code, N/C=arrays, S=snap, Q=seq
+            const files = explorerParsed.files;
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const displayName = `${file.name} [${file.typeName}]`;
+                if (file.type === 'P') {
+                    basicOpts.push(`<option value="${i}">${displayName}</option>`);
+                    basicSources.push(i.toString());
+                    disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
+                } else if (file.type === 'B') {
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddr)} (${file.length} bytes)</option>`);
+                } else {
+                    disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+                }
+                hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
+            }
         } else if (explorerParsed.type === 'hobeta') {
             if (!explorerParsed.error) {
                 const f = explorerParsed.file;
@@ -5558,7 +6092,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     explorerDisasmAddr.value = hex16(file.startAddress);
                 }
             }
-        } else if (explorerParsed.type === 'opd') {
+        } else if (explorerParsed.type === 'opd' || explorerParsed.type === 'didaktik') {
             if (source.startsWith('basic:')) {
                 explorerDisasmAddr.value = '5CCB';
             } else {
@@ -5722,6 +6256,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     baseAddr = file.startAddr || 0;
                     explorerDisasmAddr.value = hex16(baseAddr);
                 }
+            }
+        } else if (source && explorerParsed.type === 'didaktik') {
+            const fileIdx = parseInt(source.startsWith('basic:') ? source.slice(6) : source);
+            const file = explorerParsed.files[fileIdx];
+            if (file) {
+                const raw = DidaktikLoader.extractFile(explorerData, file);
+                data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
+                baseAddr = source.startsWith('basic:') ? 0x5D3B : (file.startAddr || 0);
+                if (!source.startsWith('basic:')) explorerDisasmAddr.value = hex16(baseAddr);
             }
         } else if (source && explorerParsed.type === 'hobeta') {
             const f = explorerParsed.file;
@@ -6166,11 +6709,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (explorerParsed.type === 'mdr' && data && data.length > 9 && !file.isPrint) data = data.slice(9);
                 baseAddr = 0;
             }
-        } else if (source && explorerParsed.type === 'opd') {
+        } else if (source && (explorerParsed.type === 'opd' || explorerParsed.type === 'didaktik')) {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                const raw = OPDLoader.extractFile(explorerData, file);
+                const raw = explorerParsed.type === 'opd'
+                    ? OPDLoader.extractFile(explorerData, file)
+                    : DidaktikLoader.extractFile(explorerData, file);
                 data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
                 baseAddr = 0;
             }
@@ -6281,11 +6826,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (explorerParsed.type === 'mdr' && result && result.length > 9 && !file.isPrint) result = result.slice(9);
                 return result;
             }
-        } else if (source && explorerParsed.type === 'opd') {
+        } else if (source && (explorerParsed.type === 'opd' || explorerParsed.type === 'didaktik')) {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                const raw = OPDLoader.extractFile(explorerData, file);
+                const raw = explorerParsed.type === 'opd'
+                    ? OPDLoader.extractFile(explorerData, file)
+                    : DidaktikLoader.extractFile(explorerData, file);
                 return raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
             }
         } else if (source && explorerParsed.type === 'hobeta') {
@@ -6547,11 +7094,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     data = explorerData.slice(file.offset, file.offset + file.length);
                 }
             }
-        } else if (explorerParsed.type === 'opd') {
+        } else if (explorerParsed.type === 'opd' || explorerParsed.type === 'didaktik') {
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
-                const raw = OPDLoader.extractFile(explorerData, file);
+                const raw = explorerParsed.type === 'opd'
+                    ? OPDLoader.extractFile(explorerData, file)
+                    : DidaktikLoader.extractFile(explorerData, file);
                 data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
             }
         } else if (explorerParsed.type === 'hobeta') {
@@ -6795,6 +7344,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const btnEditorExtract = document.getElementById('btnEditorExtract');
     const editorExtractDisk = document.getElementById('editorExtractDisk');
     const btnEditorCopy = document.getElementById('btnEditorCopy');
+    const editorKeepSlack = document.getElementById('editorKeepSlack');
+    const editorKeepSlackLabel = document.getElementById('editorKeepSlackLabel');
+    const editorExtractFullOpt = editorExtractDisk
+        ? editorExtractDisk.querySelector('option[value="binfull"]') : null;
+    // Formats whose editor model carries full sectors, so slack can be sourced /
+    // dumped from them. TR-DOS and SCL today; other writers are extended as their
+    // build paths learn to carry slack.
+    const SLACK_FORMATS = ['trd', 'scl'];
     const editorLinkLabel = document.getElementById('editorLinkLabel');
     const editorPanelFileInput = document.getElementById('editorPanelFileInput');
 
@@ -6817,6 +7374,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const btnTapAddOk = document.getElementById('btnTapAddOk');
     const btnTapAddCancel = document.getElementById('btnTapAddCancel');
     const editorPairLock = document.getElementById('editorPairLock');
+    // Toggling "Link header" switches tape panels between the combined and raw views — redraw both.
+    if (editorPairLock) editorPairLock.addEventListener('change', () => {
+        if (editorPanels.left.fileType) editorRenderBlockList(editorPanels.left);
+        if (editorPanels.right.fileType) editorRenderBlockList(editorPanels.right);
+    });
 
     // Disk Add File dialog elements
     const diskAddDialog = document.getElementById('diskAddDialog');
@@ -6858,7 +7420,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Pending file data for add dialogs
             pendingFileData: null,
             // DOM refs (set during init)
-            dom: { container: null, header: null, fileList: null,
+            dom: { container: null, header: null, fileList: null, labelBar: null,
                    formatSpan: null, nameSpan: null, statusSpan: null }
         };
     }
@@ -6873,9 +7435,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.dom.container = el;
         panel.dom.header = el.querySelector('.editor-panel-header');
         panel.dom.fileList = el.querySelector('.editor-panel-filelist');
+        panel.dom.labelBar = el.querySelector('.editor-panel-labelbar');
         panel.dom.formatSpan = el.querySelector('.editor-panel-format');
         panel.dom.nameSpan = el.querySelector('.editor-panel-name');
         panel.dom.statusSpan = el.querySelector('.editor-panel-status');
+        // Volume-label strip interactions (click chip to edit, Apply/Enter to save, Esc to cancel)
+        if (panel.dom.labelBar) {
+            panel.dom.labelBar.addEventListener('click', (e) => {
+                if (e.target.closest('[data-action="label-apply"]')) { editorApplyLabel(panel); return; }
+                if (e.target.closest('[data-label-edit]')) {
+                    panel.expandedBlock = (panel.expandedBlock === -2) ? -1 : -2;
+                    editorRenderLabelBar(panel);
+                }
+            });
+            panel.dom.labelBar.addEventListener('keydown', (e) => {
+                if (!e.target.matches || !e.target.matches('[data-field="label"]')) return;
+                if (e.key === 'Enter') { e.preventDefault(); editorApplyLabel(panel); }
+                else if (e.key === 'Escape') { panel.expandedBlock = -1; editorRenderLabelBar(panel); }
+            });
+        }
     }
     initPanelDom(editorPanels.left, 'left');
     initPanelDom(editorPanels.right, 'right');
@@ -6885,17 +7463,27 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // --- Pair logic (parameterized on panel) ---
 
+    // A header and the data block right after it form a matched pair only when the data
+    // payload length matches the header's declared data length. Mismatched (or missing)
+    // data is treated as unmatched, so it shows separately and selection won't link them.
+    function editorPairLenMatch(panel, headerIdx) {
+        const h = panel.blocks[headerIdx], d = panel.blocks[headerIdx + 1];
+        return !!d && d.blockType === 'data' && d.data && (d.data.length - 2) === h.dataLength;
+    }
+
     function editorIsPairHeader(panel, idx) {
         return idx < panel.blocks.length &&
             panel.blocks[idx].blockType === 'header' &&
             idx + 1 < panel.blocks.length &&
-            panel.blocks[idx + 1].blockType === 'data';
+            panel.blocks[idx + 1].blockType === 'data' &&
+            editorPairLenMatch(panel, idx);
     }
 
     function editorPairHeaderOf(panel, idx) {
         if (idx > 0 &&
             panel.blocks[idx].blockType === 'data' &&
-            panel.blocks[idx - 1].blockType === 'header') {
+            panel.blocks[idx - 1].blockType === 'header' &&
+            editorPairLenMatch(panel, idx - 1)) {
             return idx - 1;
         }
         return -1;
@@ -6977,13 +7565,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         for (let i = 0; i < 8; i++) hdr[i] = name.charCodeAt(i);
         // Byte 8: extension character
         hdr[8] = file.ext.charCodeAt(0);
-        // Bytes 9-10: start address (LE)
-        const addr = file.startAddress || 0;
-        hdr[9] = addr & 0xFF;
-        hdr[10] = (addr >> 8) & 0xFF;
-        // Bytes 11-12: data length (LE)
-        hdr[11] = dataLen & 0xFF;
-        hdr[12] = (dataLen >> 8) & 0xFF;
+        // Bytes 9-10 / 11-12 depend on type. BASIC (B): 9-10 = total length
+        // (program + variables), 11-12 = program length (offset where variables
+        // begin, defaults to total = no variables). CODE/others: 9-10 = start
+        // address, 11-12 = data length. (TR-DOS catalogue convention.)
+        const isBasic = (file.ext || '').toUpperCase() === 'B';
+        const w9 = isBasic ? dataLen : (file.startAddress || 0);
+        const w11 = isBasic ? (file.programLength != null ? file.programLength : dataLen) : dataLen;
+        hdr[9] = w9 & 0xFF;
+        hdr[10] = (w9 >> 8) & 0xFF;
+        hdr[11] = w11 & 0xFF;
+        hdr[12] = (w11 >> 8) & 0xFF;
         // Bytes 13-14: full sector length (LE)
         hdr[13] = sectorLen & 0xFF;
         hdr[14] = (sectorLen >> 8) & 0xFF;
@@ -7007,10 +7599,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let name = '';
         for (let i = 0; i < 8; i++) name += String.fromCharCode(hdr[i]);
         const ext = String.fromCharCode(hdr[8]);
-        const startAddress = hdr[9] | (hdr[10] << 8);
-        const length = hdr[11] | (hdr[12] << 8);
+        const w9 = hdr[9] | (hdr[10] << 8);
+        const w11 = hdr[11] | (hdr[12] << 8);
+        // BASIC (B): 9-10 = total length, 11-12 = program length. CODE/others:
+        // 9-10 = start address, 11-12 = data length. (see buildHobeta)
+        const isBasic = ext.toUpperCase() === 'B';
+        const startAddress = isBasic ? 0 : w9;
+        const length = isBasic ? w9 : w11;
+        const programLength = isBasic ? w11 : null;
         const fileData = data.slice(17, 17 + length);
-        return { name, ext, startAddress, length, data: fileData };
+        return { name, ext, startAddress, length, programLength, data: fileData };
     }
 
     /** Map TAP/+3DOS header type to TR-DOS extension character */
@@ -7093,7 +7691,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const bank7 = explorerExtractBank(7);
                 if (bank7) {
                     entries.push({
-                        name: 'Shadow Screen',
+                        name: 'Shadow',
                         ext: 'C',
                         tapType: 3,
                         addr: 0x4000,
@@ -7142,24 +7740,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             return;
         }
 
-        let html = '<div class="editor-block-row snapshot-header-row" style="font-weight:bold;opacity:0.7;cursor:default">' +
-            '<span style="width:30px;display:inline-block">#</span>' +
-            '<span style="width:140px;display:inline-block">Name</span>' +
-            '<span style="width:60px;display:inline-block">Type</span>' +
-            '<span style="width:60px;display:inline-block">Address</span>' +
-            '<span style="display:inline-block">Size</span></div>';
+        editorRenderLabelBar(panel);
+        let html = editorColHeaderHtml();
 
         for (let i = 0; i < entries.length; i++) {
             const e = entries[i];
             const selected = panel.selection.has(i) ? ' selected' : '';
             const typeLabel = e.kind === 'basic' ? 'BASIC' : e.kind === 'screen' ? 'Screen' : 'CODE';
             html += `<div class="editor-block-row snapshot-row${selected}" data-block-idx="${i}">` +
-                `<span style="width:30px;display:inline-block">${i + 1}</span>` +
-                `<span style="width:140px;display:inline-block">${e.name}</span>` +
-                `<span style="width:60px;display:inline-block">${typeLabel}</span>` +
-                `<span style="width:60px;display:inline-block">$${hex16(e.addr)}</span>` +
-                `<span style="display:inline-block">${e.length}</span>` +
-                `</div>`;
+                `<span class="editor-block-info">` +
+                `<span class="dim">${i + 1}:</span>` +
+                `<span class="file-name">${e.name}</span>` +
+                `<span class="file-flag"></span>` +
+                `<span class="file-ext">${typeLabel}</span>` +
+                `<span class="file-addr">${e.addr} ($${hex16(e.addr)})</span>` +
+                `<span class="file-size">${e.length}</span>` +
+                `</span></div>`;
         }
 
         panel.dom.fileList.innerHTML = html;
@@ -7306,7 +7902,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         // Update screen entry if its bank was modified
         if (entry.kind === 'bank' && (entry.bankNum === 5 || entry.bankNum === 7)) {
-            const screenName = entry.bankNum === 5 ? 'Screen' : 'Shadow Screen';
+            const screenName = entry.bankNum === 5 ? 'Screen' : 'Shadow';
             const screenEntry = (panel.snapshotEntries || []).find(e => e.kind === 'screen' && e.bankNum === entry.bankNum);
             if (screenEntry) {
                 const bank = panel.snapshotBankCache.get(entry.bankNum);
@@ -7481,13 +8077,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         btnEditorSave.textContent = t ? `Save ${t.toUpperCase()}${snapModified ? ' *' : ''}` : 'Save';
         btnEditorSave.disabled = !t || (isSnapshot && !snapModified);
 
-        btnEditorMoveUp.style.display = (isTap || isTrd) && !isZip && !isSnapshot ? '' : 'none';
-        btnEditorMoveDown.style.display = (isTap || isTrd) && !isZip && !isSnapshot ? '' : 'none';
+        const isDidaktik = t === 'didaktik';
+        const canReorder = isTap || isTrd || isOpd || isDidaktik || isDsk;
+        btnEditorMoveUp.style.display = canReorder && !isZip && !isSnapshot ? '' : 'none';
+        btnEditorMoveDown.style.display = canReorder && !isZip && !isSnapshot ? '' : 'none';
         btnEditorMoveUp.disabled = !hasSel;
         btnEditorMoveDown.disabled = !hasSel;
 
-        btnEditorMarkDel.style.display = isTrd && !isSnapshot ? '' : 'none';
+        btnEditorMarkDel.style.display = (isTap || isTrd || isOpd || isDidaktik || isDsk) && !isSnapshot ? '' : 'none';
         btnEditorMarkDel.disabled = !hasSel;
+        btnEditorMarkDel.title = 'Mark selected as deleted, or undelete if already deleted. TR-DOS keeps deleted entries on the disk; other formats flush them on save. Use Delete to remove forever.';
 
         btnEditorDel.disabled = !hasSel || isSnapshot;
         btnEditorExtract.style.display = 'none';
@@ -7502,6 +8101,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         btnEditorCopy.disabled = !hasSel || !t;
         btnEditorCopy.innerHTML = activePanel === 'left' ? 'Copy &#9654;' : '&#9664; Copy';
+
+        // "Keep slack" / "full sectors" only apply where the model holds full sectors,
+        // so show them only then (never as silent no-ops). Extract reads the source, so
+        // it needs only the source to qualify; Copy fills the destination too, so it
+        // needs both panels slack-capable (an empty destination is auto-created to match
+        // the source, so it qualifies).
+        const slackOk = SLACK_FORMATS.includes(t);
+        const otherPanel = editorPanels[activePanel === 'left' ? 'right' : 'left'];
+        const dstType = otherPanel && otherPanel.fileType;
+        const slackCopyOk = slackOk && (!dstType || SLACK_FORMATS.includes(dstType));
+        if (editorKeepSlackLabel) editorKeepSlackLabel.style.display = (slackCopyOk && !isSnapshot) ? '' : 'none';
+        if (editorExtractFullOpt) editorExtractFullOpt.hidden = !slackOk;
     }
 
     function updatePanelHeader(panel) {
@@ -7536,8 +8147,123 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // --- TAP rendering (parameterized) ---
 
+    // Disk-style type label for tape header types, for a uniform look with disk catalogs.
+    function editorTapeTypeLabel(t) {
+        return ['BASIC', 'Number array', 'Character array', 'Code'][t] || 'Unknown';
+    }
+
+    // Inline edit form for a tape header (shared by the combined and raw views).
+    function editorTapeHeaderEditHtml(panel, block, i) {
+        let h = `<div class="editor-inline-edit" data-edit-idx="${i}">`;
+        h += `<input type="text" maxlength="10" value="${block.name}" data-field="name" placeholder="Name" class="editor-input">`;
+        h += `<select data-field="type" class="editor-input">`;
+        h += `<option value="0"${block.headerType === 0 ? ' selected' : ''}>Program</option>`;
+        h += `<option value="1"${block.headerType === 1 ? ' selected' : ''}>Num array</option>`;
+        h += `<option value="2"${block.headerType === 2 ? ' selected' : ''}>Char array</option>`;
+        h += `<option value="3"${block.headerType === 3 ? ' selected' : ''}>Bytes</option>`;
+        h += '</select>';
+        if (block.headerType === 0) {
+            h += `<input type="number" value="${block.autostart !== null ? block.autostart : ''}" data-field="autostart" min="0" max="9999" placeholder="off" title="BASIC autostart line — leave blank for no auto-run" class="editor-input editor-input-short">`;
+        } else if (block.headerType === 3) {
+            h += `<input type="text" value="${hex16(block.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
+        }
+        h += `<button class="editor-apply-btn" data-action="apply" data-idx="${i}">Apply</button>`;
+        h += '</div>';
+        return h;
+    }
+
+    // Labeled column-header row, uniform across tape/disk/snapshot panels. Units live in the
+    // header (Bytes, plus an optional Sectors/Blocks count column) so rows show bare numbers.
+    function editorColHeaderHtml(countLabel) {
+        const count = countLabel ? `<span class="file-sectors">${countLabel}</span>` : '';
+        return `<div class="editor-block-row editor-col-header"><span class="editor-block-info"><span class="dim">#</span><span class="file-name">Name</span><span class="file-flag">Flag</span><span class="file-ext">Type</span><span class="file-addr">Address</span><span class="file-size">Bytes</span>${count}</span></div>`;
+    }
+
+    // Label row above the column headers — the editable media label where one exists, or an
+    // empty row (keeps every panel row-synced: title → label → column header → files).
+    function editorLabelRowHtml(inner, editable) {
+        const content = inner || ' ';
+        return `<div class="editor-block-row disk-label-row"${editable ? ' data-label-row="1"' : ' style="cursor:default"'}><span class="editor-block-info">${content}</span></div>`;
+    }
+
+    // Editable disk-label row (double-click to expand) — shared by formats that carry a
+    // volume label (TR-DOS, Opus, Didaktik, Microdrive). `panel.diskLabel` holds the value.
+    function editorDiskLabelRow(panel, deletedFiles) {
+        const lbl = (panel.diskLabel || '').replace(/\s+$/, '');
+        const del = deletedFiles > 0 ? ` <span class="dim">(+${deletedFiles} deleted)</span>` : '';
+        return editorLabelRowHtml(`Label: <span class="name">"${lbl}"</span>${del}`, true);
+    }
+
+    // Inline label-edit form, rendered below the column header when the label row is expanded
+    // (expandedBlock === -2). `applyAction` is the data-action wired to the format's Apply handler.
+    function editorDiskLabelForm(panel, maxLen, applyAction) {
+        if (panel.expandedBlock !== -2) return '';
+        const lbl = (panel.diskLabel || '').replace(/\s+$/, '');
+        return `<div class="editor-inline-edit" data-edit-idx="-2"><label>Label:</label>`
+            + `<input type="text" maxlength="${maxLen}" value="${lbl}" data-field="label" style="width:100px">`
+            + `<button class="editor-apply-btn" data-action="${applyAction}" data-idx="-2">Apply</button></div>`;
+    }
+
+    // ===== Volume-label strip (panel metadata, shown above the file table, not inside it) =====
+    // Formats with a label slot show an editable "Label: …" chip; others get an empty strip
+    // (which still reserves height so both panels' tables stay row-aligned).
+    const EDITOR_LABEL_MAX = { trd: 8, scl: 8, mdr: 10, opd: 10, didaktik: 10, dsk: 11 };
+
+    // Render a panel's label strip from `panel.diskLabel` into its dedicated bar element.
+    // Call wherever the panel is (re)rendered — writes the bar, never the file list.
+    function editorRenderLabelBar(panel) {
+        const bar = panel.dom && panel.dom.labelBar;
+        if (!bar) return;
+        const maxLen = EDITOR_LABEL_MAX[panel.fileType] || 0;
+        if (!maxLen) { bar.innerHTML = ''; return; }
+        const lbl = (panel.diskLabel || '').replace(/\s+$/, '');
+        if (panel.expandedBlock === -2) {
+            bar.innerHTML = `<label>Label:</label>`
+                + `<input type="text" maxlength="${maxLen}" value="${lbl}" data-field="label" style="width:120px">`
+                + `<button class="editor-apply-btn" data-action="label-apply">Apply</button>`;
+            const inp = bar.querySelector('input');
+            if (inp) { inp.focus(); inp.select(); }
+        } else {
+            bar.innerHTML = `<span class="editor-label-view" data-label-edit="1" title="Click to rename the disk">Label: <span class="name">"${lbl}"</span></span>`;
+        }
+    }
+
+    // Write the edited label from the strip back into the image, per format.
+    function editorApplyLabel(panel) {
+        const input = panel.dom.labelBar && panel.dom.labelBar.querySelector('[data-field="label"]');
+        if (!input) return;
+        const val = input.value;
+        const t = panel.fileType;
+        panel.expandedBlock = -1;
+        if (t === 'trd' || t === 'scl') {
+            panel.diskLabel = (val + '        ').substring(0, 8);
+            diskEditorRenderFileList(panel);
+            diskEditorRefreshExplorer(panel);
+        } else if (t === 'mdr') {
+            panel.diskLabel = (val + '          ').substring(0, 10);
+            panel.rawData = diskEditorBuildMdr(panel);
+            panel.parsedFile = explorerParseMDR(panel.rawData);
+            mdrEditorRenderFileList(panel);
+            syncPanelToExplorer(panel);
+        } else if (t === 'opd') {
+            panel.diskLabel = val.substring(0, 10);
+            opdEditorRebuildImage(panel);
+            opdEditorRenderFileList(panel);
+            syncPanelToExplorer(panel);
+        } else if (t === 'didaktik') {
+            panel.rawData = DidaktikLoader.setDiskLabel(panel.rawData, val);
+            didaktikEditorRefresh(panel);
+        } else if (t === 'dsk') {
+            DSKLoader.setDiskLabel(panel.parsedFile.dskImage, val);
+            dskEditorRefreshState(panel);
+            dskEditorRenderFileList(panel);
+        }
+        editorRenderLabelBar(panel);
+    }
+
     function editorRenderBlockList(panel) {
         if (!panel) panel = getActivePanel();
+        editorRenderLabelBar(panel); // clear/refresh the label strip on every (re)render
         // Format-aware dispatch
         if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr') {
             diskEditorRenderFileList(panel);
@@ -7545,6 +8271,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         if (panel.fileType === 'opd') {
             opdEditorRenderFileList(panel);
+            return;
+        }
+        if (panel.fileType === 'didaktik') {
+            didaktikEditorRenderFileList(panel);
             return;
         }
         if (panel.fileType === 'dsk') {
@@ -7574,100 +8304,79 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             return;
         }
 
-        let html = '';
+        // Summary row mirrors the disk panel's info row (keeps the two panels row-synced).
+        // Total size counts file data only — headers don't count toward size on disk.
+        let tapeFiles = 0, tapeBytes = 0, tapeDeleted = 0;
+        for (const b of panel.blocks) {
+            if (b.deleted) { if (b.blockType === 'data') tapeDeleted++; continue; }
+            if (b.blockType === 'data' && b.data) { tapeFiles++; tapeBytes += Math.max(0, b.data.length - 2); }
+        }
+        editorRenderLabelBar(panel);
+        let html = editorColHeaderHtml();
+        const tapeFlag = (b) => (b && b.data && b.data.length) ? `$${hex8(b.data[0])}` : '';
+        let rowNum = 0;
         for (let i = 0; i < panel.blocks.length; i++) {
             const block = panel.blocks[i];
 
-            // Non-standard TZX block — dimmed info row
-            if (block.blockType === 'nonstandard') {
-                html += `<div class="editor-block-row nonstandard-row">`;
-                html += `<span class="editor-block-info">`;
-                html += `<span class="dim">${i + 1}:</span> ${block.typeName}`;
-                html += ` <span class="dim">\u2014 ${block.dataLength} bytes</span>`;
-                html += `</span></div>`;
-                continue;
-            }
+            // TZX metadata/control blocks (Archive Info, Text Description, Pause/Stop, …) aren't
+            // files — hidden in edit mode, but kept in panel.blocks so they survive on save.
+            if (block.blockType === 'nonstandard') continue;
 
             const isHeader = block.blockType === 'header';
             const isSel = panel.selection.has(i);
-            const isPairData = editorPairLock.checked && !isHeader && editorPairHeaderOf(panel, i) >= 0;
             const isExpanded = panel.expandedBlock === i;
+
+            // Combined view (Link header on): fold a matched header+data pair into one
+            // disk-shaped row (same file-ext/file-name/file-addr/file-size classes as disk
+            // catalogs), in media order. Lone headers / leftover data stay in place below.
+            if (editorPairLock.checked && isHeader && editorIsPairHeader(panel, i)) {
+                const isPairSel = isSel || panel.selection.has(i + 1);
+                let addrText = '';
+                if (block.headerType === 3) addrText = `${block.startAddress} ($${hex16(block.startAddress)})`;
+                else if (block.headerType === 0 && block.autostart !== null) addrText = `LINE ${block.autostart}`;
+                const pairDeleted = block.deleted || (panel.blocks[i + 1] && panel.blocks[i + 1].deleted);
+                html += `<div class="editor-block-row disk-row${pairDeleted ? ' disk-deleted' : ''}${isPairSel ? ' selected' : ''}" data-block-idx="${i}">`;
+                html += `<span class="editor-block-info"><span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(panel.blocks[i + 1])}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}</span><span class="file-addr">${addrText}</span><span class="file-size">${block.dataLength}</span></span></div>`;
+                if (isExpanded) html += editorTapeHeaderEditHtml(panel, block, i);
+                i++;   // consumed the matching data block
+                continue;
+            }
 
             let rowClasses = 'editor-block-row';
             rowClasses += isHeader ? ' header-row' : ' data-row';
-            if (isPairData) rowClasses += ' pair';
+            if (block.deleted) rowClasses += ' disk-deleted';
             if (isSel) rowClasses += ' selected';
-
-            let checksumOk = true;
-            if (!isHeader) {
-                let calcChecksum = 0;
-                for (let j = 0; j < block.data.length - 1; j++) {
-                    calcChecksum ^= block.data[j];
-                }
-                checksumOk = calcChecksum === block.data[block.data.length - 1];
-            }
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
             if (isHeader) {
-                const typeNames = ['Program', 'Number array', 'Character array', 'Bytes'];
-                const typeName = typeNames[block.headerType] || 'Unknown';
-                html += `<span class="dim">${i + 1}:</span> Header \u2014 ${typeName} <span class="name">"${block.name}"</span>`;
-                html += ` <span class="dim">\u2014 ${block.dataLength} bytes</span>`;
-                if (block.headerType === 0 && block.autostart !== null) {
-                    html += ` <span class="dim">\u2014 autostart ${block.autostart}</span>`;
-                } else if (block.headerType === 3) {
-                    html += ` <span class="addr"> @ $${hex16(block.startAddress)}</span>`;
-                }
+                // Lone header (no matching data) \u2014 columnar like a pair so sizes stay aligned
+                let hAddr = '';
+                if (block.headerType === 3) hAddr = `${block.startAddress} ($${hex16(block.startAddress)})`;
+                else if (block.headerType === 0 && block.autostart !== null) hAddr = `LINE ${block.autostart}`;
+                html += `<span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}</span><span class="file-addr">${hAddr}</span><span class="file-size">${block.data ? block.data.length - 2 : 17}</span>`;
             } else {
-                html += `<span class="dim">${i + 1}:</span> Data \u2014 ${block.data.length - 2} bytes`;
-                html += ` <span class="dim">\u2014 checksum </span>`;
-                html += checksumOk ? '<span class="ok">\u2713</span>' : '<span class="bad">\u2717</span>';
-            }
-            if (panel.fileType === 'tzx' && block.tzxPause !== undefined && block.tzxPause !== 1000) {
-                html += ` <span class="dim">\u2014 pause ${block.tzxPause}ms</span>`;
+                // Headerless / leftover data \u2014 empty type/name/addr cells keep the size column aligned
+                html += `<span class="dim">${++rowNum}:</span><span class="file-name"></span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">Data</span><span class="file-addr"></span><span class="file-size">${block.data.length - 2}</span>`;
             }
             html += '</span></div>';
 
-            if (isExpanded && isHeader) {
-                html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name:</label><input type="text" maxlength="10" value="${block.name}" data-field="name" style="width:100px">`;
-                html += `<label>Type:</label><select data-field="type">`;
-                html += `<option value="0"${block.headerType === 0 ? ' selected' : ''}>Program</option>`;
-                html += `<option value="1"${block.headerType === 1 ? ' selected' : ''}>Num array</option>`;
-                html += `<option value="2"${block.headerType === 2 ? ' selected' : ''}>Char array</option>`;
-                html += `<option value="3"${block.headerType === 3 ? ' selected' : ''}>Bytes</option>`;
-                html += '</select>';
-                if (block.headerType === 0) {
-                    html += `<label>Autostart:</label><input type="number" value="${block.autostart !== null ? block.autostart : ''}" data-field="autostart" min="0" max="9999" style="width:60px" placeholder="none">`;
-                } else if (block.headerType === 3) {
-                    html += `<label>Address:</label><input type="text" value="${hex16(block.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
-                }
-                html += `<label class="dim">Data len: ${block.dataLength}</label>`;
-                if (panel.fileType === 'tzx') {
-                    const pauseVal = block.tzxPause !== undefined ? block.tzxPause : 1000;
-                    html += `<label>Pause (ms):</label><input type="number" value="${pauseVal}" data-field="pause" min="0" max="65535" style="width:70px">`;
-                }
-                html += `<button class="editor-apply-btn" data-action="apply" data-idx="${i}">Apply</button>`;
-                html += '</div>';
-            }
+            if (isExpanded && isHeader) html += editorTapeHeaderEditHtml(panel, block, i);
         }
 
         panel.dom.fileList.innerHTML = html;
 
         const selCount = panel.selection.size;
-        if (selCount > 0) {
-            panel.dom.statusSpan.textContent = `${panel.blocks.length} blocks, ${selCount} sel`;
-        } else {
-            panel.dom.statusSpan.textContent = `${panel.blocks.length} blocks`;
-        }
+        const delTag = tapeDeleted > 0 ? ` (+${tapeDeleted} deleted, flushed on save)` : '';
+        const summary = `${tapeFiles} file${tapeFiles !== 1 ? 's' : ''} — ${tapeBytes} bytes${delTag}`;
+        panel.dom.statusSpan.textContent = selCount > 0 ? `${summary}, ${selCount} sel` : summary;
         editorUpdateToolbar();
     }
 
     // --- Selection handling (parameterized) ---
 
     function editorGetItemCount(panel) {
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd' || panel.fileType === 'didaktik';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
         if (isSnapshotType(panel.fileType)) return (panel.snapshotEntries || []).length;
@@ -7678,7 +8387,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function editorSelectBlock(panel, idx, ctrlKey, shiftKey) {
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd' || panel.fileType === 'didaktik';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
         const isSnap = isSnapshotType(panel.fileType);
@@ -7756,6 +8465,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.blocks.splice(idx, 1);
         }
         panel.selection.clear();
+        panel.expandedBlock = -1;
+        editorRenderBlockList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    // TAP/TZX soft-delete toggle: mark selected blocks (and their header/data pair) deleted —
+    // shown greyed, kept in the list, and flushed from the built TAP/TZX on save. Re-running on
+    // an already-deleted selection undeletes it.
+    function editorMarkDeletedSelection(panel) {
+        if (panel.selection.size === 0) return;
+        const indices = [...editorExpandPairs(panel, panel.selection)];
+        const allDeleted = indices.every(idx => panel.blocks[idx] && panel.blocks[idx].deleted);
+        for (const idx of indices) {
+            if (panel.blocks[idx]) panel.blocks[idx].deleted = !allDeleted;
+        }
         panel.expandedBlock = -1;
         editorRenderBlockList(panel);
         syncPanelToExplorer(panel);
@@ -8089,10 +8813,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function editorBuildTap(panel) {
         let totalSize = 0;
-        for (const block of panel.blocks) totalSize += 2 + block.data.length;
+        for (const block of panel.blocks) { if (block.deleted) continue; totalSize += 2 + block.data.length; }
         const tap = new Uint8Array(totalSize);
         let offset = 0;
         for (const block of panel.blocks) {
+            if (block.deleted) continue; // flush soft-deleted blocks on save
             tap[offset] = block.data.length & 0xFF;
             tap[offset + 1] = (block.data.length >> 8) & 0xFF;
             offset += 2;
@@ -8304,6 +9029,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // Calculate total size
         let totalSize = header.length;
         for (const block of panel.blocks) {
+            if (block.deleted) continue; // flush soft-deleted blocks on save
             if (block.blockType === 'nonstandard') {
                 totalSize += 1 + block.rawBytes.length; // ID byte + raw data
             } else {
@@ -8318,6 +9044,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         for (let i = 0; i < panel.blocks.length; i++) {
             const block = panel.blocks[i];
+            if (block.deleted) continue; // flush soft-deleted blocks on save
             if (block.blockType === 'nonstandard') {
                 tzx[offset] = block.tzxId;
                 offset++;
@@ -8332,6 +9059,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 // Find if this is the last standard block
                 let isLastStandard = true;
                 for (let j = i + 1; j < panel.blocks.length; j++) {
+                    if (panel.blocks[j].deleted) continue;
                     if (panel.blocks[j].blockType !== 'nonstandard') { isLastStandard = false; break; }
                 }
                 if (isLastStandard && block.tzxPause === undefined) pause = 0;
@@ -8378,8 +9106,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const deleted = panel.rawData[entryOffset] === 1;
                 const name = String.fromCharCode(...panel.rawData.slice(entryOffset, entryOffset + 8));
                 const ext = String.fromCharCode(panel.rawData[entryOffset + 8]);
-                const startAddr = panel.rawData[entryOffset + 9] | (panel.rawData[entryOffset + 10] << 8);
-                const length = panel.rawData[entryOffset + 11] | (panel.rawData[entryOffset + 12] << 8);
+                const w9 = panel.rawData[entryOffset + 9] | (panel.rawData[entryOffset + 10] << 8);
+                const w11 = panel.rawData[entryOffset + 11] | (panel.rawData[entryOffset + 12] << 8);
+                const { startAddress: startAddr, length, programLength } = trdEntryFields(panel.rawData[entryOffset + 8], w9, w11);
                 const sectors = panel.rawData[entryOffset + 13];
                 const startSector = panel.rawData[entryOffset + 14];
                 const startTrack = panel.rawData[entryOffset + 15];
@@ -8392,6 +9121,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     ext: ext,
                     startAddress: startAddr,
                     length: length,
+                    programLength: programLength,
                     sectors: sectors,
                     data: data,
                     deleted: deleted
@@ -8411,6 +9141,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     ext: f.ext,
                     startAddress: f.startAddress,
                     length: f.length,
+                    programLength: f.programLength,
                     sectors: sectors,
                     data: data,
                     deleted: false
@@ -8446,6 +9177,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         diskEditorExtractFiles(panel);
 
         if (panel.diskFiles.length === 0) {
+            editorRenderLabelBar(panel);
             panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty disk. Use "Add File" to add files.</span>';
             panel.dom.statusSpan.textContent = '0 files';
             editorUpdateToolbar();
@@ -8453,26 +9185,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         const totalSectors = diskEditorTotalSectors(panel);
-        const freeSectors = 2544 - totalSectors;
+        const freeSectors = TRD_TOTAL_SECTORS - totalSectors;
         const activeFiles = panel.diskFiles.filter(f => !f.deleted).length;
         const deletedFiles = panel.diskFiles.length - activeFiles;
 
         let html = '';
-
-        html += '<div class="editor-block-row disk-label-row" data-label-row="1">';
-        html += '<span class="editor-block-info">';
-        html += `Label: <span class="name">"${panel.diskLabel.replace(/\s+$/, '')}"</span>`;
-        html += ` \u2014 ${activeFiles} file${activeFiles !== 1 ? 's' : ''}`;
-        if (deletedFiles > 0) html += ` <span class="dim">(+${deletedFiles} deleted)</span>`;
-        html += ` \u2014 ${totalSectors} used, ${freeSectors} free sectors`;
-        html += '</span></div>';
-
-        if (panel.expandedBlock === -2) {
-            html += '<div class="editor-inline-edit" data-edit-idx="-2">';
-            html += `<label>Label:</label><input type="text" maxlength="8" value="${panel.diskLabel.replace(/\s+$/, '')}" data-field="label" style="width:100px">`;
-            html += '<button class="editor-apply-btn" data-action="disk-apply" data-idx="-2">Apply</button>';
-            html += '</div>';
-        }
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml('Sectors');
 
         for (let i = 0; i < panel.diskFiles.length; i++) {
             const file = panel.diskFiles[i];
@@ -8485,34 +9204,34 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            const trdTypeNames = { 'B': 'BASIC', 'C': 'Code', 'D': 'Data', '#': 'Sequential' };
+            const trdTypeNames = TRD_TYPE_NAMES;
             const typeName = trdTypeNames[file.ext] || file.ext;
-            let addrDetail = '';
+            let addrText = '';
             if (file.ext === 'C') {
-                addrDetail = ` <span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
+                addrText = `${file.startAddress} ($${hex16(file.startAddress)})`;
             } else if (file.ext === 'B') {
                 const autostart = trdGetBasicAutostart(file);
-                if (autostart >= 0) addrDetail = ` <span class="file-addr">LINE ${autostart}</span>`;
+                if (autostart >= 0) addrText = `LINE ${autostart}`;
             }
-            html += `<span class="dim">${i + 1}:</span> `;
-            html += `<span class="file-ext">${typeName}</span>`;
+            html += `<span class="dim">${i + 1}:</span>`;
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
-            html += addrDetail;
-            html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-ext">${typeName}</span>`;
+            html += `<span class="file-addr">${addrText}</span>`;
+            html += `<span class="file-size">${file.length}</span>`;
+            html += `<span class="file-sectors">${file.sectors}</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
             if (isExpanded) {
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name:</label><input type="text" maxlength="8" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:80px">`;
-                html += `<label>Ext:</label><select data-field="ext">`;
+                html += `<input type="text" maxlength="8" value="${file.name.replace(/\s+$/, '')}" data-field="name" placeholder="Name" class="editor-input">`;
+                html += `<select data-field="ext" class="editor-input">`;
                 for (const e of ['C', 'B', 'D', '#']) {
                     html += `<option value="${e}"${file.ext === e ? ' selected' : ''}>${e}</option>`;
                 }
                 html += '</select>';
-                html += `<label>Addr:</label><input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
+                html += `<input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
                 html += `<button class="editor-apply-btn" data-action="disk-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -8579,24 +9298,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // Raw data has 512-byte sectors: 510 bytes data + 2 bytes chain pointer.
     // G+DOS files have a 9-byte header (type+len+params); auto-detected and stripped if present.
     function mgtExtractCleanData(file) {
-        const sectors = file.sectors;
-        const clean = new Uint8Array(sectors * 510);
-        for (let i = 0; i < sectors; i++) {
-            clean.set(file.data.subarray(i * 512, i * 512 + 510), i * 510);
+        // panel.diskFiles[].data holds clean file bytes (no chain pointers, no +D
+        // header — stripped on import, never added on build), so return it directly.
+        return file.data.slice(0, file.length);
+    }
+
+    // MDR non-print files store a 9-byte Spectrum header inside the data; Hobeta needs
+    // the payload only, with the real length/type/address taken from that header
+    // (already parsed into dataLength/ext/startAddress by mdrEditorParseHeader).
+    function hobetaSourceFile(file) {
+        if (file.mdrFile && !file.isPrint && file.data && file.data.length > 9) {
+            return {
+                name: file.name,
+                ext: file.ext,
+                startAddress: file.startAddress || 0,
+                length: file.dataLength,
+                data: file.data.slice(9)
+            };
         }
-        // Detect 9-byte +D file header: check if byte 0 matches expected tape type
-        // and bytes 1-2 match directory length. Some utilities omit this header.
-        const gdosType = file.mgtType || file.type;
-        const gdosToTape = { 1: 0, 2: 1, 3: 2, 4: 3, 7: 3 };
-        const expectedTape = gdosToTape[gdosType];
-        if (expectedTape !== undefined && clean.length >= 9) {
-            const hdrType = clean[0];
-            const hdrLen = clean[1] | (clean[2] << 8);
-            if (hdrType === expectedTape && hdrLen === file.length) {
-                return clean.slice(9, 9 + file.length);
-            }
-        }
-        return clean.slice(0, file.length);
+        return file;
     }
 
     function diskEditorExtractSelection(panel, format) {
@@ -8606,6 +9326,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const asHobeta = format === 'hobeta';
 
         const isMgt = panel.fileType === 'mgt';
+        // "Extract bin (full sectors)": dump the file's whole last-sector allocation
+        // incl. unused slack (no header strip). Only TR-DOS/SCL keep full sectors in
+        // the editor model; MGT (chain-stripped) has no slack to give, so it falls
+        // back to its clean payload.
+        const fullSectors = format === 'binfull';
+        const diskFileExportData = (file) => {
+            if (isMgt) return mgtExtractCleanData(file);
+            if (fullSectors) {
+                const secs = file.sectors || Math.ceil((file.length || 0) / 256);
+                return file.data.slice(0, secs * 256);
+            }
+            let d = file.data.slice(0, file.length);
+            if (file.mdrFile && !file.isPrint && d.length > 9) d = d.slice(9);
+            return d;
+        };
 
         if (sorted.length === 1) {
             const file = panel.diskFiles[sorted[0]];
@@ -8613,18 +9348,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             let name, data;
             if (asHobeta) {
                 name = trimName + '.' + trdExtToHobetaExt(file.ext);
-                data = buildHobeta(file);
+                data = buildHobeta(hobetaSourceFile(file));
             } else {
                 name = trimName + '.' + file.ext;
-                if (isMgt) {
-                    // MGT: strip 2-byte chain pointers per sector,
-                    // auto-detect and strip 9-byte G+DOS header if present
-                    data = mgtExtractCleanData(file);
-                } else {
-                    data = file.data.slice(0, file.length);
-                    // MDR files include a 9-byte Spectrum header — strip for export
-                    if (file.mdrFile && !file.isPrint && data.length > 9) data = data.slice(9);
-                }
+                data = diskFileExportData(file);
             }
             downloadFile(name, data);
             return;
@@ -8636,16 +9363,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (asHobeta) {
                 return {
                     name: trimName + '.' + trdExtToHobetaExt(file.ext),
-                    data: buildHobeta(file)
+                    data: buildHobeta(hobetaSourceFile(file))
                 };
             }
-            let data;
-            if (isMgt) {
-                data = mgtExtractCleanData(file);
-            } else {
-                data = file.data.slice(0, file.length);
-                if (file.mdrFile && !file.isPrint && data.length > 9) data = data.slice(9);
-            }
+            const data = diskFileExportData(file);
             return {
                 name: trimName + '.' + file.ext,
                 data
@@ -8659,7 +9380,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.diskFiles = [];
         panel.diskLabel = '        ';
         panel.blocks = [];
-        panel.parsedFile = { type: 'trd', files: [], diskTitle: '', freeSectors: 2544, size: 0 };
+        panel.parsedFile = { type: 'trd', files: [], diskTitle: '', freeSectors: TRD_TOTAL_SECTORS, size: 0 };
         panel.fileType = 'trd';
         panel.rawData = new Uint8Array(0);
         panel.fileName = 'new.trd';
@@ -8673,15 +9394,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // basicInfo (optional, BASIC 'B' files): { autostart, varsOffset } from the source format
     function diskEditorAddFile(panel, data, name, ext, addr, basicInfo = null) {
         let fileData = data;
-        let startField = addr;        // Dir entry bytes 9-10
-        let lengthField = data.length; // Dir entry bytes 11-12
+        // Semantic diskFiles model: startAddress = load address (0 for BASIC),
+        // length = total data bytes to extract, programLength = variables offset
+        // (BASIC only). diskEditorBuildTrd packs these into the 9-10 / 11-12 words.
+        let startField = addr;
+        let lengthField = data.length;
+        let progLenField = null;
 
         if (ext === 'B') {
             // TR-DOS BASIC layout (per TR-DOS SAVE): file data = program+variables,
             // then 0x80 end marker, 0xAA, and the autostart line as LE16 (0x8000 = none).
-            // Dir entry bytes 9-10 = program+variables length (excluding the trailer),
-            // bytes 11-12 = variables offset (program length without variables).
-            // Writing the addr here instead (as before) made TR-DOS load an empty program.
+            // length = program+variables (excluding that trailer); programLength =
+            // variables offset (program length without variables).
             let progVars = data;
             if (progVars.length > 0 && progVars[progVars.length - 1] === 0x80) {
                 progVars = progVars.slice(0, progVars.length - 1); // 0x80 re-added below
@@ -8695,8 +9419,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             fileData[progVars.length + 1] = 0xAA;
             fileData[progVars.length + 2] = line & 0xFF;
             fileData[progVars.length + 3] = (line >> 8) & 0xFF;
-            startField = progVars.length;
-            lengthField = (basicInfo && basicInfo.varsOffset != null)
+            startField = 0;
+            lengthField = progVars.length;
+            progLenField = (basicInfo && basicInfo.varsOffset != null)
                 ? Math.min(basicInfo.varsOffset, progVars.length)
                 : progVars.length;
         }
@@ -8704,7 +9429,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const sectors = Math.ceil(fileData.length / 256);
         if (sectors > 255) return 'File too large (max 255 sectors / 65,280 bytes)';
         if (panel.diskFiles.length >= 128) return 'Directory full (max 128 files)';
-        if (diskEditorTotalSectors(panel) + sectors > 2544) return 'Disk full (not enough free sectors)';
+        if (diskEditorTotalSectors(panel) + sectors > TRD_TOTAL_SECTORS) return 'Disk full (not enough free sectors)';
 
         const paddedData = new Uint8Array(sectors * 256);
         paddedData.set(fileData);
@@ -8715,6 +9440,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             ext: ext,
             startAddress: startField,
             length: lengthField,
+            programLength: progLenField,
             sectors: sectors,
             data: paddedData,
             deleted: false
@@ -8735,10 +9461,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             for (let i = 0; i < fileCount; i++) {
                 const name = String.fromCharCode(...data.slice(offset, offset + 8));
                 const fext = String.fromCharCode(data[offset + 8]);
-                const startAddr = data[offset + 9] | (data[offset + 10] << 8);
-                const length = data[offset + 11] | (data[offset + 12] << 8);
+                const w9 = data[offset + 9] | (data[offset + 10] << 8);
+                const w11 = data[offset + 11] | (data[offset + 12] << 8);
+                const { startAddress: startAddr, length, programLength } = trdEntryFields(data[offset + 8], w9, w11);
                 const sectors = data[offset + 13];
-                files.push({ name, ext: fext, startAddress: startAddr, length, sectors });
+                files.push({ name, ext: fext, startAddress: startAddr, length, programLength, sectors });
                 offset += 14;
             }
             let dataOffset = offset;
@@ -8757,8 +9484,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (data[entryOffset] === 1) continue;
                 const name = String.fromCharCode(...data.slice(entryOffset, entryOffset + 8));
                 const fext = String.fromCharCode(data[entryOffset + 8]);
-                const startAddr = data[entryOffset + 9] | (data[entryOffset + 10] << 8);
-                const length = data[entryOffset + 11] | (data[entryOffset + 12] << 8);
+                const w9 = data[entryOffset + 9] | (data[entryOffset + 10] << 8);
+                const w11 = data[entryOffset + 11] | (data[entryOffset + 12] << 8);
+                const { startAddress: startAddr, length, programLength } = trdEntryFields(data[entryOffset + 8], w9, w11);
                 const sectors = data[entryOffset + 13];
                 const startSector = data[entryOffset + 14];
                 const startTrack = data[entryOffset + 15];
@@ -8766,19 +9494,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const dataSize = sectors * 256;
                 const fileData = new Uint8Array(dataSize);
                 fileData.set(data.slice(fileOffset, fileOffset + dataSize));
-                files.push({ name, ext: fext, startAddress: startAddr, length, sectors, data: fileData });
+                files.push({ name, ext: fext, startAddress: startAddr, length, programLength, sectors, data: fileData });
             }
         }
 
         let skipped = 0;
         for (const f of files) {
             if (panel.diskFiles.length >= 128) { skipped++; continue; }
-            if (diskEditorTotalSectors(panel) + f.sectors > 2544) { skipped++; continue; }
+            if (diskEditorTotalSectors(panel) + f.sectors > TRD_TOTAL_SECTORS) { skipped++; continue; }
             panel.diskFiles.push({
                 name: (f.name + '        ').substring(0, 8),
                 ext: f.ext,
                 startAddress: f.startAddress,
                 length: f.length,
+                programLength: f.programLength,
                 sectors: f.sectors,
                 data: f.data,
                 deleted: false
@@ -8787,95 +9516,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped (capacity)` : null;
     }
 
+    // Build TRD/SCL via the core loaders (so create/add/delete/compaction is shared
+    // with the test suite). Rebuilding from the surviving files compacts the disk.
     function diskEditorBuildTrd(panel) {
-        const trd = new Uint8Array(655360);
-        let trdSector = 16;
-        let activeFileCount = 0;
-
-        for (let i = 0; i < panel.diskFiles.length; i++) {
-            const f = panel.diskFiles[i];
-            const entryOffset = i * 16;
-
-            for (let c = 0; c < 8; c++) {
-                trd[entryOffset + c] = f.name.charCodeAt(c);
-            }
-            if (f.deleted) {
-                trd[entryOffset] = 0x01;
-            } else {
-                activeFileCount++;
-            }
-            trd[entryOffset + 8] = f.ext.charCodeAt(0);
-            trd[entryOffset + 9] = f.startAddress & 0xFF;
-            trd[entryOffset + 10] = (f.startAddress >> 8) & 0xFF;
-            trd[entryOffset + 11] = f.length & 0xFF;
-            trd[entryOffset + 12] = (f.length >> 8) & 0xFF;
-            trd[entryOffset + 13] = f.sectors;
-            const startSector = trdSector % 16;
-            const startTrack = Math.floor(trdSector / 16);
-            trd[entryOffset + 14] = startSector;
-            trd[entryOffset + 15] = startTrack;
-
-            const dataOffset = trdSector * 256;
-            trd.set(f.data.subarray(0, f.sectors * 256), dataOffset);
-            trdSector += f.sectors;
-        }
-
-        const info = 0x800;
-        trd[info + 0xE1] = trdSector % 16;
-        trd[info + 0xE2] = Math.floor(trdSector / 16);
-        trd[info + 0xE3] = 0x16;
-        trd[info + 0xE4] = activeFileCount;
-        const freeSectors = 2560 - trdSector;
-        trd[info + 0xE5] = freeSectors & 0xFF;
-        trd[info + 0xE6] = (freeSectors >> 8) & 0xFF;
-        trd[info + 0xE7] = 0x10;
-
-        for (let c = 0; c < 8; c++) {
-            trd[info + 0xF5 + c] = panel.diskLabel.charCodeAt(c) || 0x20;
-        }
-
-        return trd;
+        return TRDLoader.buildTRD(panel.diskFiles, panel.diskLabel);
     }
 
     function diskEditorBuildScl(panel) {
-        const activeFiles = panel.diskFiles.filter(f => !f.deleted);
-
-        let totalDataSize = 0;
-        for (const f of activeFiles) totalDataSize += f.sectors * 256;
-        const headerSize = 9 + activeFiles.length * 14;
-        const scl = new Uint8Array(headerSize + totalDataSize + 4);
-
-        const sig = 'SINCLAIR';
-        for (let i = 0; i < 8; i++) scl[i] = sig.charCodeAt(i);
-        scl[8] = activeFiles.length;
-
-        let offset = 9;
-        for (const f of activeFiles) {
-            for (let c = 0; c < 8; c++) {
-                scl[offset + c] = f.name.charCodeAt(c) || 0x20;
-            }
-            scl[offset + 8] = f.ext.charCodeAt(0);
-            scl[offset + 9] = f.startAddress & 0xFF;
-            scl[offset + 10] = (f.startAddress >> 8) & 0xFF;
-            scl[offset + 11] = f.length & 0xFF;
-            scl[offset + 12] = (f.length >> 8) & 0xFF;
-            scl[offset + 13] = f.sectors;
-            offset += 14;
-        }
-
-        for (const f of activeFiles) {
-            scl.set(f.data.subarray(0, f.sectors * 256), offset);
-            offset += f.sectors * 256;
-        }
-
-        // Trailing 32-bit little-endian checksum over all preceding bytes
-        const sum = sclChecksum(scl, offset);
-        scl[offset] = sum & 0xFF;
-        scl[offset + 1] = (sum >> 8) & 0xFF;
-        scl[offset + 2] = (sum >> 16) & 0xFF;
-        scl[offset + 3] = (sum >>> 24) & 0xFF;
-
-        return scl;
+        return SCLLoader.buildSCL(panel.diskFiles);
     }
 
     function diskEditorSaveDisk(panel) {
@@ -8947,10 +9595,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         const files = MGTLoader.listFiles(panel.rawData);
         for (const f of files) {
-            const fileData = MGTLoader.extractFileRaw(panel.rawData, f);
-            const sectors = f.sectors;
-            const paddedData = new Uint8Array(sectors * 512);
-            paddedData.set(fileData.subarray(0, Math.min(fileData.length, sectors * 512)));
+            // Store clean file bytes (chain pointers + any +D header stripped) — the model
+            // the editor, exporters and buildMGT all expect. A raw full-sector read would
+            // leave the 2-byte per-sector chain pointers interspersed, corrupting export/save.
+            const cleanData = MGTLoader.extractFile(panel.rawData, f);
             panel.diskFiles.push({
                 name: (f.name + '          ').substring(0, 10),
                 ext: f.typeName.substring(0, 1).toUpperCase(),
@@ -8959,8 +9607,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 typeName: f.typeName,
                 startAddress: f.startAddress,
                 length: f.length,
-                sectors: sectors,
-                data: paddedData,
+                sectors: Math.max(1, Math.ceil(f.length / 510)),
+                data: new Uint8Array(cleanData),
                 autostart: f.autostart,
                 bodyLength: f.bodyLength,
                 deleted: false
@@ -8991,12 +9639,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const deletedFiles = panel.diskFiles.length - activeFiles;
 
         let html = '';
-        html += '<div class="editor-block-row disk-label-row">';
-        html += '<span class="editor-block-info">';
-        html += `MGT Disk \u2014 ${activeFiles} file${activeFiles !== 1 ? 's' : ''}`;
-        if (deletedFiles > 0) html += ` <span class="dim">(+${deletedFiles} deleted)</span>`;
-        html += ` \u2014 ${totalSectors} used, ${freeSectors} free sectors`;
-        html += '</span></div>';
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml('Sectors');
 
         for (let i = 0; i < panel.diskFiles.length; i++) {
             const file = panel.diskFiles[i];
@@ -9010,32 +9654,32 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            let addrDetail = '';
+            let addrDetail = '<span class="file-addr"></span>';
             if (file.mgtType === 4 || file.mgtType === 7 || file.mgtType === 19 || file.mgtType === 20) {
-                addrDetail = ` <span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
+                addrDetail = `<span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
             } else if ((file.mgtType === 1 || file.mgtType === 16) && file.autostart != null && file.autostart < 0x8000) {
-                addrDetail = ` <span class="file-addr">LINE ${file.autostart}</span>`;
+                addrDetail = `<span class="file-addr">LINE ${file.autostart}</span>`;
             }
-            html += `<span class="dim">${i + 1}:</span> `;
-            html += `<span class="file-mgttype">${tName}</span>`;
+            html += `<span class="dim">${i + 1}:</span>`;
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-mgttype">${tName}</span>`;
             html += addrDetail;
-            html += ` <span class="file-size">\u2014 ${file.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
+            html += `<span class="file-size">${file.length}</span>`;
+            html += `<span class="file-sectors">${file.sectors}</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
             if (isExpanded) {
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name:</label><input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:100px">`;
-                html += `<label>Type:</label><select data-field="mgttype">`;
+                html += `<input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" placeholder="Name" class="editor-input">`;
+                html += `<select data-field="mgttype" class="editor-input">`;
                 for (const [k, v] of Object.entries(MGT_TYPE_NAMES)) {
                     if (k === '0') continue; // skip Erased
                     html += `<option value="${k}"${file.mgtType === parseInt(k) ? ' selected' : ''}>${v}</option>`;
                 }
                 html += '</select>';
-                html += `<label>Addr:</label><input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" style="width:60px">`;
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
+                html += `<input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
                 html += `<button class="editor-apply-btn" data-action="mgt-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -9073,13 +9717,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         // bytes 216-217 the program body length (vars offset)
         const isBASICType = mgtType === 1 || mgtType === 16;
         if (isBASICType && !addr) addr = 23755;
-        const sectors = Math.ceil(length / 512);
-        if (sectors > 195) return 'File too large (max 195 sectors / 99,840 bytes)';
+        // G+DOS chain format stores 510 data bytes per sector (2-byte chain pointer).
+        const sectors = Math.max(1, Math.ceil(length / 510));
+        if (sectors > 195) return 'File too large (max 195 sectors)';
         if (panel.diskFiles.length >= 80) return 'Directory full (max 80 files)';
         if (mgtEditorTotalSectors(panel) + sectors > 1560) return 'Disk full (not enough free sectors)';
 
-        const paddedData = new Uint8Array(sectors * 512);
-        paddedData.set(data);
+        // Store clean file bytes; buildMGT lays them out into the chain format.
+        const cleanData = new Uint8Array(data.subarray(0, length));
         const paddedName = (name + '          ').substring(0, 10);
 
         // Map mgtType to tapeType and typeName
@@ -9096,7 +9741,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             startAddress: addr,
             length: length,
             sectors: sectors,
-            data: paddedData,
+            data: cleanData,
             autostart: autostart != null ? autostart : null,
             bodyLength: (isBASICType && varsOffset != null) ? Math.min(varsOffset, length) : null,
             deleted: false
@@ -9105,105 +9750,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function diskEditorBuildMgt(panel) {
-        const mgt = new Uint8Array(819200);
-        // Directory: slots 0-79 in tracks 0-1 (4 directory tracks: T0S0, T0S1, T1S0, T1S1)
-        // Data starts at track 2, side 0, sector 1
-
-        let nextTrack = 2, nextSide = 0, nextSector = 1;
-
-        function advanceSector() {
-            nextSector++;
-            if (nextSector > 10) {
-                nextSector = 1;
-                nextSide++;
-                if (nextSide > 1) {
-                    nextSide = 0;
-                    nextTrack++;
-                }
-            }
-        }
-
-        for (let i = 0; i < panel.diskFiles.length; i++) {
-            const f = panel.diskFiles[i];
-            const slotIndex = i;
-
-            // Directory entry offset: slot N → sectorIndex = floor(N/2), entry-in-sector = N%2
-            const sectorIndex = Math.floor(slotIndex / 2);
-            const entryInSector = slotIndex % 2;
-            // sectorIndex maps to: track = floor(sectorIndex/10), which side/track in image:
-            // 0-9 = T0 S0, 10-19 = T0 S1, 20-29 = T1 S0, 30-39 = T1 S1
-            const dirLogical = sectorIndex;
-            const dirTrack = Math.floor(dirLogical / 20);
-            const dirRemain = dirLogical % 20;
-            const dirSide = dirRemain >= 10 ? 1 : 0;
-            const dirSec = (dirRemain % 10) + 1;
-            const dirOffset = ((dirTrack * 2 + dirSide) * 10 + (dirSec - 1)) * 512 + entryInSector * 256;
-
-            // File type
-            if (f.deleted) {
-                mgt[dirOffset] = 0;
-                continue;
-            }
-            mgt[dirOffset] = f.mgtType || 4;
-
-            // Filename (10 bytes, space-padded)
-            for (let c = 0; c < 10; c++) {
-                mgt[dirOffset + 1 + c] = c < f.name.length ? f.name.charCodeAt(c) : 0x20;
-            }
-
-            // Sector count (big-endian)
-            mgt[dirOffset + 11] = (f.sectors >> 8) & 0xFF;
-            mgt[dirOffset + 12] = f.sectors & 0xFF;
-
-            // First sector track and sector
-            const firstTrack = nextSide === 0 ? nextTrack : nextTrack + 128;
-            mgt[dirOffset + 13] = firstTrack;
-            mgt[dirOffset + 14] = nextSector;
-
-            // Sector address map (up to 195 pairs at offset 15-209)
-            const sectorMap = [];
-            const savedTrack = nextTrack, savedSide = nextSide, savedSector = nextSector;
-            for (let s = 0; s < f.sectors; s++) {
-                const mapTrack = nextSide === 0 ? nextTrack : nextTrack + 128;
-                sectorMap.push(mapTrack, nextSector);
-
-                // Write file data to this sector
-                const imgOffset = ((nextTrack * 2 + nextSide) * 10 + (nextSector - 1)) * 512;
-                const srcOffset = s * 512;
-                mgt.set(f.data.subarray(srcOffset, srcOffset + 512), imgOffset);
-
-                advanceSector();
-            }
-
-            for (let m = 0; m < sectorMap.length && m < 390; m++) {
-                mgt[dirOffset + 15 + m] = sectorMap[m];
-            }
-
-            // Tape type
-            mgt[dirOffset + 211] = f.tapeType !== undefined ? f.tapeType : 3;
-
-            // File data length (LSB, MSB)
-            mgt[dirOffset + 212] = f.length & 0xFF;
-            mgt[dirOffset + 213] = (f.length >> 8) & 0xFF;
-
-            // Offset 214-215: start address (CODE load addr, BASIC PROG sysvar)
-            const startAddr = f.startAddress || 0;
-            mgt[dirOffset + 214] = startAddr & 0xFF;
-            mgt[dirOffset + 215] = (startAddr >> 8) & 0xFF;
-
-            // Offset 216-217: type-specific (BASIC program body length, CODE = 32768)
-            const isBASICType = f.mgtType === 1 || f.mgtType === 16;
-            const param2 = isBASICType ? (f.bodyLength || f.length) : 0x8000;
-            mgt[dirOffset + 216] = param2 & 0xFF;
-            mgt[dirOffset + 217] = (param2 >> 8) & 0xFF;
-
-            // Offset 218-219: autostart line (BASIC) or 0
-            const autostart = isBASICType ? (f.autostart != null && f.autostart >= 0 && f.autostart < 0x8000 ? f.autostart : 0x8000) : 0;
-            mgt[dirOffset + 218] = autostart & 0xFF;
-            mgt[dirOffset + 219] = (autostart >> 8) & 0xFF;
-        }
-
-        return mgt;
+        // Serialize via the core builder, which writes the proper G+DOS chain
+        // format (510 data bytes + 2-byte chain pointer per sector). panel.diskFiles
+        // hold clean file bytes (length-trimmed), which is what buildMGT expects.
+        return MGTLoader.buildMGT(panel.diskFiles, panel.diskLabel);
     }
 
     function diskEditorSaveMgt(panel) {
@@ -9220,11 +9770,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let skipped = 0;
         for (const f of files) {
             if (panel.diskFiles.length >= 80) { skipped++; continue; }
-            const sectors = f.sectors;
+            // Clean file bytes (header stripped, length-trimmed) — the model buildMGT expects.
+            const cleanData = MGTLoader.extractFile(data, f);
+            const sectors = Math.max(1, Math.ceil(f.length / 510));
             if (mgtEditorTotalSectors(panel) + sectors > 1560) { skipped++; continue; }
-            const fileData = MGTLoader.extractFileRaw(data, f);
-            const paddedData = new Uint8Array(sectors * 512);
-            paddedData.set(fileData.subarray(0, Math.min(fileData.length, sectors * 512)));
             panel.diskFiles.push({
                 name: (f.name + '          ').substring(0, 10),
                 ext: f.typeName.substring(0, 1).toUpperCase(),
@@ -9234,7 +9783,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 startAddress: f.startAddress,
                 length: f.length,
                 sectors: sectors,
-                data: paddedData,
+                data: new Uint8Array(cleanData),
                 autostart: f.autostart,
                 bodyLength: f.bodyLength,
                 deleted: false
@@ -9324,12 +9873,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             mdrEditorParseHeader(entry);
             panel.diskFiles.push(entry);
         }
+        panel.diskLabel = MDRLoader.getDiskInfo(panel.rawData).cartridgeName || '';
     }
 
     function mdrEditorRenderFileList(panel) {
         diskEditorExtractMdrFiles(panel);
 
         if (panel.diskFiles.length === 0) {
+            editorRenderLabelBar(panel);
             panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty MDR cartridge. Use "Add File" to add files.</span>';
             panel.dom.statusSpan.textContent = '0 files';
             editorUpdateToolbar();
@@ -9341,12 +9892,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const deletedFiles = panel.diskFiles.length - activeFiles;
 
         let html = '';
-        html += '<div class="editor-block-row disk-label-row">';
-        html += '<span class="editor-block-info">';
-        html += `MDR Cartridge \u2014 ${activeFiles} file${activeFiles !== 1 ? 's' : ''}`;
-        if (deletedFiles > 0) html += ` <span class="dim">(+${deletedFiles} deleted)</span>`;
-        html += ` \u2014 ${info.usedSectors} used, ${info.freeSectors} free sectors`;
-        html += '</span></div>';
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml('Sectors');
 
         for (let i = 0; i < panel.diskFiles.length; i++) {
             const file = panel.diskFiles[i];
@@ -9359,24 +9906,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            html += `<span class="dim">${i + 1}:</span> `;
-            html += `<span class="file-mgttype">${file.typeName}</span>`;
+            html += `<span class="dim">${i + 1}:</span>`;
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
-            html += ` <span class="file-size">\u2014 ${file.dataLength} bytes</span>`;
-            if (file.ext === 'C') html += ` <span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
-            if (file.ext === 'B' && file.autorunLine >= 0) html += ` <span class="file-addr">LINE ${file.autorunLine}</span>`;
-            html += ` <span class="file-sectors">(${file.sectors} sector${file.sectors !== 1 ? 's' : ''})</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-mgttype">${file.typeName}</span>`;
+            if (file.ext === 'C') html += `<span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
+            else if (file.ext === 'B' && file.autorunLine >= 0) html += `<span class="file-addr">LINE ${file.autorunLine}</span>`;
+            else html += `<span class="file-addr"></span>`;
+            html += `<span class="file-size">${file.dataLength}</span>`;
+            html += `<span class="file-sectors">${file.sectors}</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
 
             if (isExpanded) {
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name:</label><input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" style="width:100px">`;
-                html += `<label>Type:</label><select data-field="mdrtype">`;
+                html += `<input type="text" maxlength="10" value="${file.name.replace(/\s+$/, '')}" data-field="name" placeholder="Name" class="editor-input">`;
+                html += `<select data-field="mdrtype" class="editor-input">`;
                 html += `<option value="F"${!file.isPrint ? ' selected' : ''}>File</option>`;
                 html += `<option value="P"${file.isPrint ? ' selected' : ''}>Data</option>`;
                 html += '</select>';
-                html += `<label class="dim">${file.length} bytes, ${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</label>`;
                 html += `<button class="editor-apply-btn" data-action="mdr-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -9473,6 +10021,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function mdrEditorApplyInlineEdit(panel, idx) {
+        if (idx === -2) {
+            const editRow = panel.dom.fileList.querySelector('.editor-inline-edit[data-edit-idx="-2"]');
+            if (!editRow) return;
+            const labelInput = editRow.querySelector('[data-field="label"]');
+            panel.diskLabel = ((labelInput ? labelInput.value : '') + '          ').substring(0, 10);
+            panel.expandedBlock = -1;
+            panel.rawData = diskEditorBuildMdr(panel);
+            panel.parsedFile = explorerParseMDR(panel.rawData);
+            mdrEditorRenderFileList(panel);
+            syncPanelToExplorer(panel);
+            return;
+        }
         if (idx < 0 || idx >= panel.diskFiles.length) return;
         const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
         if (!editRow) return;
@@ -9508,18 +10068,33 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // ========== OPD (Opus Discovery) Editor Functions ==========
 
-    function diskEditorNewOpd(panel) {
+    function diskEditorNewOpd(panel, sides = 1) {
+        const blank = OPDLoader.createBlankOPD(sides);
         panel.diskFiles = [];
         panel.diskLabel = '';
         panel.blocks = [];
-        panel.parsedFile = { type: 'opd', files: [], info: OPDLoader.getDiskInfo(OPDLoader.createBlankOPD(1)), size: OPDLoader.SS_SIZE };
+        panel.parsedFile = { type: 'opd', files: [], info: OPDLoader.getDiskInfo(blank), size: blank.length };
         panel.fileType = 'opd';
-        panel.rawData = OPDLoader.createBlankOPD(1);
+        panel.rawData = blank;
         panel.fileName = 'new.opd';
         panel.selection.clear();
         panel.expandedBlock = -1;
         updatePanelHeader(panel);
         opdEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function diskEditorNewDidaktik(panel, variant = 'd80') {
+        panel.fileType = 'didaktik';
+        panel.rawData = (variant === 'd40') ? DidaktikLoader.createBlankD40('') : DidaktikLoader.createBlankD80('');
+        panel.parsedFile = explorerParseDidaktik(panel.rawData);
+        panel.fileName = (variant === 'd40') ? 'new.d40' : 'new.d80';
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        panel.diskFiles = [];        // fresh load → no carried-over soft-delete marks
+        didaktikEditorExtractFiles(panel);
+        updatePanelHeader(panel);
+        didaktikEditorRenderFileList(panel);
         syncPanelToExplorer(panel);
     }
 
@@ -9591,33 +10166,29 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
 
         let html = '';
-        html += '<div class="editor-block-row disk-label-row" data-label-row="1">';
-        html += '<span class="editor-block-info">';
-        html += `OPD Disk (${sides === 2 ? 'DS' : 'SS'}) \u2014 `;
-        html += `${info.fileCount} files, ${info.usedSectors} used, ${info.freeSectors} free of ${info.totalSectors} sectors`;
-        if (info.diskLabel) html += ` \u2014 "${escapeHtml(info.diskLabel)}"`;
-        html += '</span></div>';
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml('Sectors');
 
         for (let i = 0; i < panel.diskFiles.length; i++) {
             const f = panel.diskFiles[i];
-            if (f.deleted) continue;
             const selected = panel.selection.has(i);
             const trimName = f.name.replace(/\s+$/, '');
-            let addrDetail = '';
+            let addrDetail = '<span class="file-addr"></span>';
             if (f.type === 3) {
-                addrDetail = ` <span class="file-addr">${f.startAddr || 0} ($${hex16(f.startAddr || 0)})</span>`;
+                addrDetail = `<span class="file-addr">${f.startAddr || 0} ($${hex16(f.startAddr || 0)})</span>`;
             } else if (f.type === 0 && f.autostart != null && f.autostart < 0x8000) {
-                addrDetail = ` <span class="file-addr">LINE ${f.autostart}</span>`;
+                addrDetail = `<span class="file-addr">LINE ${f.autostart}</span>`;
             }
 
-            html += `<div class="editor-block-row${selected ? ' selected' : ''}" data-block-idx="${i}">`;
+            html += `<div class="editor-block-row disk-row${f.deleted ? ' disk-deleted' : ''}${selected ? ' selected' : ''}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            html += `<span class="dim">${i + 1}:</span> `;
-            html += `<span class="file-ext">${f.typeName}</span>`;
+            html += `<span class="dim">${i + 1}:</span>`;
             html += `<span class="file-name">${escapeHtml(trimName)}</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-ext">${f.typeName}</span>`;
             html += addrDetail;
-            html += ` <span class="file-size">\u2014 ${f.length} bytes</span>`;
-            html += ` <span class="file-sectors">(${f.sectors} sector${f.sectors !== 1 ? 's' : ''})</span>`;
+            html += `<span class="file-size">${f.length}</span>`;
+            html += `<span class="file-sectors">${f.sectors}</span>`;
             html += '</span></div>';
 
             if (panel.expandedBlock === i) {
@@ -9626,22 +10197,36 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     return `<option value="${t}"${t === f.type ? ' selected' : ''}>${names[t]}</option>`;
                 }).join('');
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name: <input type="text" data-field="name" value="${escapeHtml(trimName)}" maxlength="10" class="editor-input"></label>`;
-                html += ` <label>Type: <select data-field="opdtype" class="editor-input">${typeOptions}</select></label>`;
+                html += `<input type="text" data-field="name" value="${escapeHtml(trimName)}" maxlength="10" placeholder="Name" class="editor-input">`;
+                html += `<select data-field="opdtype" class="editor-input">${typeOptions}</select>`;
                 if (f.type === 3) {
-                    html += ` <label>Addr: <input type="text" data-field="addr" value="${hex16(f.startAddr || 0)}" maxlength="4" class="editor-input editor-input-short"></label>`;
+                    html += `<input type="text" data-field="addr" value="${hex16(f.startAddr || 0)}" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
                 }
-                html += ` <button class="btn" data-action="opd-apply" data-idx="${i}">Apply</button>`;
+                html += `<button class="editor-apply-btn" data-action="opd-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
         }
 
         panel.dom.fileList.innerHTML = html;
-        panel.dom.statusSpan.textContent = `${sides === 2 ? 'DS' : 'SS'} ${info.fileCount} files, ${info.usedSectors}/${info.totalSectors} sectors`;
+        const opdActive = panel.diskFiles.filter(f => !f.deleted).length;
+        const opdDeleted = panel.diskFiles.length - opdActive;
+        const opdDelTag = opdDeleted > 0 ? ` (+${opdDeleted} deleted, flushed on save)` : '';
+        panel.dom.statusSpan.textContent = `${sides === 2 ? 'DS' : 'SS'} ${opdActive} files, ${info.usedSectors}/${info.totalSectors} sectors${opdDelTag}`;
         editorUpdateToolbar();
     }
 
     function opdEditorApplyInlineEdit(panel, idx) {
+        if (idx === -2) {
+            const editRow = panel.dom.fileList.querySelector('.editor-inline-edit[data-edit-idx="-2"]');
+            if (!editRow) return;
+            const labelInput = editRow.querySelector('[data-field="label"]');
+            panel.diskLabel = (labelInput ? labelInput.value : '').substring(0, 10);
+            panel.expandedBlock = -1;
+            opdEditorRebuildImage(panel);
+            opdEditorRenderFileList(panel);
+            syncPanelToExplorer(panel);
+            return;
+        }
         if (idx < 0 || idx >= panel.diskFiles.length) return;
         const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
         if (!editRow) return;
@@ -9679,12 +10264,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function diskEditorSaveOpd(panel) {
         if (!panel.rawData || panel.rawData.length === 0) return;
+        opdEditorRebuildImage(panel); // flush any soft-deleted (Mark Del) entries
         const baseName = (panel.fileName || 'output').replace(/\.opd$/i, '').replace(/\.opu$/i, '');
         downloadFile(baseName + '.opd', panel.rawData);
     }
 
     function opdEditorDeleteSelection(panel) {
         if (panel.selection.size === 0) return;
+        // Hard delete (forever): drop the entries and compact. Use "Mark Del" for a
+        // recoverable soft-delete that stays greyed in the list and is flushed on save.
         const sorted = editorSelectedSorted(panel).reverse();
         for (const idx of sorted) {
             panel.diskFiles.splice(idx, 1);
@@ -9700,55 +10288,256 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const sorted = editorSelectedSorted(panel);
         if (sorted.length === 0) return;
         const baseName = (panel.fileName || 'extract').replace(/\.(opd|opu)$/i, '');
-        const asTap = format === 'tap';
-
-        if (sorted.length === 1) {
-            const file = panel.diskFiles[sorted[0]];
+        const asHobeta = format === 'hobeta';
+        const mk = (file) => {
+            const body = file.data.slice(0, file.length);
             const trimName = file.name.replace(/\s+$/, '');
-            let name, data;
-            if (asTap) {
-                name = trimName + '.tap';
-                data = OPDLoader.fileToTAP(file.data.slice(0, file.length), {
-                    name: trimName, type: file.type, startAddr: file.startAddr || 0, autostart: file.autostart || 0
-                });
-            } else {
-                name = trimName + '.' + file.ext;
-                data = file.data.slice(0, file.length);
+            if (asHobeta) {
+                const ext = (file.ext && file.ext.length === 1) ? file.ext
+                    : (file.type === 0 ? 'B' : file.type === 3 ? 'C' : 'D');
+                const hob = buildHobeta({ name: trimName, ext, startAddress: file.startAddr || 0, length: file.length, data: body });
+                return { name: trimName + '.' + trdExtToHobetaExt(ext), data: hob };
             }
+            return { name: `${trimName}.${file.ext}`, data: body };
+        };
+        if (sorted.length === 1) {
+            const { name, data } = mk(panel.diskFiles[sorted[0]]);
             downloadFile(name, data);
             return;
         }
+        const files = sorted.map(idx => mk(panel.diskFiles[idx]));
+        downloadFile(baseName + '_extract.zip', editorCreateZip(files));
+    }
 
-        const files = sorted.map(idx => {
-            const file = panel.diskFiles[idx];
-            const trimName = file.name.replace(/\s+$/, '');
-            if (asTap) {
-                return {
-                    name: trimName + '.tap',
-                    data: OPDLoader.fileToTAP(file.data.slice(0, file.length), {
-                        name: trimName, type: file.type, startAddr: file.startAddr || 0, autostart: file.autostart || 0
-                    })
-                };
+    // ========== Didaktik MDOS Editor (read-only: list + extract/copy only) ==========
+
+    function didaktikEditorExtractFiles(panel) {
+        // Preserve soft-delete marks across re-extraction (refresh): keyed by start sector,
+        // which is stable across renames/edits. Empty on a fresh load (diskFiles reset there).
+        const prevDeleted = new Set((panel.diskFiles || []).filter(f => f.deleted).map(f => f.firstSec));
+        const files = DidaktikLoader.listFiles(panel.rawData);
+        panel.diskFiles = [];
+        for (const f of files) {
+            const raw = DidaktikLoader.extractFile(panel.rawData, f);
+            panel.diskFiles.push({
+                name: f.name,
+                ext: f.ext,
+                type: f.type,            // MDOS type char ('P', 'B', 'N', 'C', ...)
+                typeName: f.typeName,
+                length: f.length,
+                startAddr: f.startAddr,
+                basicLength: f.basicLength,
+                firstSec: f.firstSec,
+                data: raw ? new Uint8Array(raw) : new Uint8Array(0),
+                deleted: prevDeleted.has(f.firstSec)
+            });
+        }
+        panel.blocks = panel.diskFiles;
+        const info = DidaktikLoader.getDiskInfo(panel.rawData);
+        panel.diskLabel = info.diskLabel || '';
+    }
+
+    function didaktikEditorRenderFileList(panel) {
+        const info = DidaktikLoader.getDiskInfo(panel.rawData);
+        const freeSec = DidaktikLoader._freeSectors(panel.rawData).length;
+        let html = '';
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml();
+
+        for (let i = 0; i < panel.diskFiles.length; i++) {
+            const f = panel.diskFiles[i];
+            const selected = panel.selection.has(i);
+            let addrDetail = '<span class="file-addr"></span>';
+            if (f.type === 'B') {
+                addrDetail = `<span class="file-addr">${f.startAddr} ($${hex16(f.startAddr)})</span>`;
+            } else if (f.type === 'P' && f.startAddr > 0 && f.startAddr < 0x8000) {
+                addrDetail = `<span class="file-addr">LINE ${f.startAddr}</span>`;
             }
-            return {
-                name: trimName + '.' + file.ext,
-                data: file.data.slice(0, file.length)
-            };
-        });
+            html += `<div class="editor-block-row disk-row${f.deleted ? ' disk-deleted' : ''}${selected ? ' selected' : ''}" data-block-idx="${i}">`;
+            html += '<span class="editor-block-info">';
+            html += `<span class="dim">${i + 1}:</span>`;
+            html += `<span class="file-name">${escapeHtml(f.name)}</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-ext">${escapeHtml(f.typeName)}</span>`;
+            html += addrDetail;
+            html += `<span class="file-size">${f.length}</span>`;
+            html += '</span></div>';
+
+            if (panel.expandedBlock === i) {
+                const isBasic = f.type === 'P';
+                const addrLabel = isBasic ? 'LINE' : 'Addr';
+                const addrVal = isBasic ? String(f.startAddr) : hex16(f.startAddr || 0);
+                html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
+                html += `<input type="text" data-field="name" value="${escapeHtml(f.name)}" maxlength="10" placeholder="Name" class="editor-input">`;
+                html += `<input type="text" data-field="addr" value="${addrVal}" maxlength="5" placeholder="${addrLabel}" class="editor-input editor-input-short">`;
+                html += `<button class="editor-apply-btn" data-action="didaktik-apply" data-idx="${i}">Apply</button>`;
+                html += '</div>';
+            }
+        }
+
+        panel.dom.fileList.innerHTML = html;
+        const dkDeleted = panel.diskFiles.filter(f => f.deleted).length;
+        const dkActive = panel.diskFiles.length - dkDeleted;
+        const dkDelTag = dkDeleted > 0 ? ` (+${dkDeleted} deleted, flushed on save)` : '';
+        panel.dom.statusSpan.textContent = `${dkActive} files — ${freeSec} free${dkDelTag}`;
+        editorUpdateToolbar();
+    }
+
+    function didaktikEditorExtractSelection(panel, format) {
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        const baseName = (panel.fileName || 'extract').replace(/\.(d40|d80)$/i, '');
+        const asHobeta = format === 'hobeta';
+        // MDOS type char → TR-DOS extension (Hobeta uses TR-DOS conventions)
+        const mdosToTrd = { P: 'B', B: 'C', N: 'D', C: 'D', S: 'C', Q: '#' };
+        const mk = (file) => {
+            const body = file.data.slice(0, file.length);
+            const trimName = file.name.replace(/\s+$/, '');
+            if (asHobeta) {
+                const trdExt = mdosToTrd[file.type] || 'C';
+                const hob = buildHobeta({ name: trimName, ext: trdExt, startAddress: file.startAddr || 0, length: file.length, data: body });
+                return { name: trimName + '.' + trdExtToHobetaExt(trdExt), data: hob };
+            }
+            return { name: `${trimName}.${file.ext}`, data: body };
+        };
+        if (sorted.length === 1) {
+            const { name, data } = mk(panel.diskFiles[sorted[0]]);
+            downloadFile(name, data);
+            return;
+        }
+        const files = sorted.map(idx => mk(panel.diskFiles[idx]));
         const zipData = editorCreateZip(files);
         downloadFile(baseName + '_extract.zip', zipData);
     }
 
+    // Re-derive editor state + explorer view after an in-place image mutation.
+    function didaktikEditorRefresh(panel) {
+        panel.parsedFile = explorerParseDidaktik(panel.rawData);
+        didaktikEditorExtractFiles(panel);
+        didaktikEditorRenderFileList(panel);
+        syncPanelToExplorer(panel);
+    }
+
+    function didaktikEditorDeleteSelection(panel) {
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        // Capture firstSec before mutating — indices shift as files are removed.
+        const targets = sorted.map(idx => panel.diskFiles[idx]).filter(Boolean);
+        for (const f of targets) {
+            panel.rawData = DidaktikLoader.deleteFile(panel.rawData, { firstSec: f.firstSec });
+        }
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        didaktikEditorRefresh(panel);
+    }
+
+    // Soft-delete toggle (Mark Del): flag selected entries deleted (greyed) without touching
+    // the image; flushed (0xE5) into a copy on save. Re-running undeletes. Marks survive
+    // refresh via the firstSec-keyed preserve in didaktikEditorExtractFiles.
+    function didaktikEditorMarkDeletedSelection(panel) {
+        if (panel.selection.size === 0) return;
+        const sorted = editorSelectedSorted(panel);
+        const allDeleted = sorted.every(idx => panel.diskFiles[idx] && panel.diskFiles[idx].deleted);
+        for (const idx of sorted) {
+            if (panel.diskFiles[idx]) panel.diskFiles[idx].deleted = !allDeleted;
+        }
+        panel.expandedBlock = -1;
+        didaktikEditorRenderFileList(panel);
+    }
+
+    function didaktikEditorMoveSelection(panel, dir) {
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        if (dir === -1 && sorted[0] === 0) return;
+        if (dir === 1 && sorted[sorted.length - 1] === panel.diskFiles.length - 1) return;
+        // Process in an order that doesn't clobber not-yet-moved neighbours.
+        const order = dir === -1 ? sorted : sorted.slice().reverse();
+        const newSel = new Set();
+        for (const idx of order) {
+            const a = panel.diskFiles[idx];
+            const b = panel.diskFiles[idx + dir];
+            if (a && b) panel.rawData = DidaktikLoader.swapDirEntries(panel.rawData, a.firstSec, b.firstSec);
+            newSel.add(idx + dir);
+        }
+        panel.expandedBlock = -1;
+        didaktikEditorRefresh(panel);          // re-extracts diskFiles in the new order
+        panel.selection = newSel;
+        didaktikEditorRenderFileList(panel);   // re-render with restored selection
+    }
+
+    function didaktikEditorAddFile(panel, data, name, dialogExt, addr) {
+        // Dialog convention: B = BASIC, C/other = Code. MDOS: P = BASIC, B = Code.
+        const isBasic = dialogExt === 'B';
+        const file = {
+            name,
+            type: isBasic ? 'P' : 'B',
+            data: data,
+            startAddr: addr,
+            basicLength: isBasic ? data.length : undefined
+        };
+        panel.rawData = DidaktikLoader.addFile(panel.rawData, file); // throws on full disk/dir
+        panel.selection.clear();
+        panel.expandedBlock = -1;
+        didaktikEditorRefresh(panel);
+        return null;
+    }
+
+    function didaktikEditorApplyInlineEdit(panel, idx) {
+        if (idx === -2) {
+            const editRow = panel.dom.fileList.querySelector('.editor-inline-edit[data-edit-idx="-2"]');
+            if (!editRow) return;
+            const labelInput = editRow.querySelector('[data-field="label"]');
+            panel.rawData = DidaktikLoader.setDiskLabel(panel.rawData, labelInput ? labelInput.value : '');
+            panel.expandedBlock = -1;
+            didaktikEditorRefresh(panel);
+            return;
+        }
+        if (idx < 0 || idx >= panel.diskFiles.length) return;
+        const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
+        if (!editRow) return;
+        const f = panel.diskFiles[idx];
+        const nameInput = editRow.querySelector('[data-field="name"]');
+        const addrInput = editRow.querySelector('[data-field="addr"]');
+        let bytes = panel.rawData;
+        if (nameInput) bytes = DidaktikLoader.renameFile(bytes, f, nameInput.value);
+        if (addrInput) {
+            const v = parseInt(addrInput.value, f.type === 'P' ? 10 : 16);
+            if (!isNaN(v)) bytes = DidaktikLoader.setStartAddr(bytes, f.firstSec, v);
+        }
+        panel.rawData = bytes;
+        panel.expandedBlock = -1;
+        didaktikEditorRefresh(panel);
+    }
+
+    function didaktikEditorSave(panel) {
+        if (!panel.rawData || panel.rawData.length === 0) return;
+        // Flush soft-deleted entries into a copy (in-place 0xE5 delete); the editor view keeps them.
+        let out = panel.rawData;
+        const del = panel.diskFiles.filter(f => f.deleted);
+        if (del.length) {
+            out = new Uint8Array(panel.rawData);
+            for (const f of del) out = DidaktikLoader.deleteFile(out, { firstSec: f.firstSec });
+        }
+        const isD40 = /\.d40$/i.test(panel.fileName || '');
+        const baseName = (panel.fileName || 'disk').replace(/\.(d40|d80)$/i, '');
+        downloadFile(baseName + (isD40 ? '.d40' : '.d80'), out);
+    }
+
     // ========== DSK (CP/M +3DOS) Editor Functions (parameterized) ==========
+
+    const dskFileKey = (f) => `${f.user}:${f.name}:${f.ext}`;
 
     function dskEditorRefreshState(panel) {
         if (!panel.parsedFile || !panel.parsedFile.dskImage) return;
+        // Preserve soft-delete marks across re-listing (keyed by user:name:ext).
+        const prevDeleted = new Set((panel.parsedFile.files || []).filter(f => f.deleted).map(dskFileKey));
         const buf = panel.parsedFile.dskImage.toBuffer();
         panel.rawData = buf;
         let files = [];
         try {
             files = DSKLoader.listFiles(panel.parsedFile.dskImage);
         } catch (e) { /* non-CP/M */ }
+        for (const f of files) if (prevDeleted.has(dskFileKey(f))) f.deleted = true;
         panel.parsedFile.files = files;
         panel.blocks = files;
         syncPanelToExplorer(panel);
@@ -9784,7 +10573,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const allocMap = DSKLoader.getBlockAllocationMap(dskImage, spec);
 
         if (files.length === 0) {
-            panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty disk. Use "Add File" to add files.</span>';
+            // Still surface the editable label row so a blank disk can be named.
+            panel.diskLabel = DSKLoader.getDiskLabel(dskImage);
+            editorRenderLabelBar(panel);
+            let emptyHtml = editorColHeaderHtml('Blocks');
+            emptyHtml += '<span class="explorer-empty">Empty disk. Use "Add File" to add files.</span>';
+            panel.dom.fileList.innerHTML = emptyHtml;
             panel.dom.statusSpan.textContent = `0 files \u2014 ${allocMap.freeBlocks} free blocks (${allocMap.freeBlocks * spec.blockSize} bytes)`;
             editorUpdateToolbar();
             return;
@@ -9792,12 +10586,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         let html = '';
         const typeNames = { 0: 'BASIC', 1: 'Num array', 2: 'Char array', 3: 'Code' };
-        html += '<div class="editor-block-row dsk-info-row">';
-        html += '<span class="editor-block-info">';
-        html += `${files.length} file${files.length !== 1 ? 's' : ''} \u2014 `;
-        html += `${allocMap.totalBlocks} blocks (${allocMap.totalBlocks - allocMap.freeBlocks} used, ${allocMap.freeBlocks} free) \u2014 `;
-        html += `${allocMap.freeBlocks * spec.blockSize} bytes free`;
-        html += '</span></div>';
+        panel.diskLabel = DSKLoader.getDiskLabel(dskImage);
+        editorRenderLabelBar(panel);
+        html += editorColHeaderHtml('Blocks');
 
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
@@ -9805,30 +10596,29 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const isExpanded = panel.expandedBlock === i;
 
             let rowClasses = 'editor-block-row dsk-row';
+            if (file.deleted) rowClasses += ' disk-deleted';
             if (isSel) rowClasses += ' selected';
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            html += `<span class="dim">${i + 1}:</span> `;
+            html += `<span class="dim">${i + 1}:</span>`;
             if (file.user > 0) html += `<span class="file-user">[U${file.user}]</span> `;
+            html += `<span class="file-name">${file.name}${file.ext ? '.' + file.ext : ''}</span>`;
+            html += `<span class="file-flag"></span>`;
             const typeName = file.headerSize ? (typeNames[file.plus3Type] || '?') : '';
-            if (typeName) html += `<span class="file-plus3type">${typeName}</span>`;
-            html += `<span class="file-name">${file.name}</span>`;
-            if (file.ext) html += `<span class="dim">.${file.ext}</span>`;
-            if (file.plus3Type === 3 && file.loadAddress !== undefined) {
-                html += ` <span class="file-addr">${file.loadAddress} ($${hex16(file.loadAddress)})</span>`;
-            } else if (file.plus3Type === 0 && file.autostart !== undefined && file.autostart < 0x8000) {
-                html += ` <span class="file-addr">LINE ${file.autostart}</span>`;
-            }
-            html += ` <span class="file-size">\u2014 ${file.size} bytes</span>`;
-            html += ` <span class="file-sectors">(${file.blocks} blocks)</span>`;
+            html += `<span class="file-plus3type">${typeName}</span>`;
+            let dskAddrText = '';
+            if (file.plus3Type === 3 && file.loadAddress !== undefined) dskAddrText = `${file.loadAddress} ($${hex16(file.loadAddress)})`;
+            else if (file.plus3Type === 0 && file.autostart !== undefined && file.autostart < 0x8000) dskAddrText = `LINE ${file.autostart}`;
+            html += `<span class="file-addr">${dskAddrText}</span>`;
+            html += `<span class="file-size">${file.size}</span>`;
+            html += `<span class="file-sectors">${file.blocks}</span>`;
             html += '</span></div>';
 
             if (isExpanded) {
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-                html += `<label>Name:</label><input type="text" maxlength="8" value="${file.name}" data-field="name" style="width:80px">`;
-                html += `<label>Ext:</label><input type="text" maxlength="3" value="${file.ext}" data-field="ext" style="width:40px">`;
-                html += `<label class="dim">${file.size} bytes, ${file.blocks} blocks</label>`;
+                html += `<input type="text" maxlength="8" value="${file.name}" data-field="name" placeholder="Name" class="editor-input">`;
+                html += `<input type="text" maxlength="3" value="${file.ext}" data-field="ext" placeholder="Ext" class="editor-input editor-input-short">`;
                 html += `<button class="editor-apply-btn" data-action="dsk-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -9837,10 +10627,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.dom.fileList.innerHTML = html;
 
         const selCount = panel.selection.size;
+        const dskDeleted = files.filter(f => f.deleted).length;
+        const dskActive = files.length - dskDeleted;
+        const dskDelTag = dskDeleted > 0 ? ` (+${dskDeleted} deleted, flushed on save)` : '';
+        const freeTxt = `${allocMap.freeBlocks * spec.blockSize} bytes free`;
         if (selCount > 0) {
-            panel.dom.statusSpan.textContent = `${files.length} files, ${selCount} sel \u2014 ${allocMap.freeBlocks * spec.blockSize} bytes free`;
+            panel.dom.statusSpan.textContent = `${dskActive} files, ${selCount} sel \u2014 ${freeTxt}${dskDelTag}`;
         } else {
-            panel.dom.statusSpan.textContent = `${files.length} files \u2014 ${allocMap.freeBlocks * spec.blockSize} bytes free`;
+            panel.dom.statusSpan.textContent = `${dskActive} files \u2014 ${freeTxt}${dskDelTag}`;
         }
         editorUpdateToolbar();
     }
@@ -9897,208 +10691,69 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         dskEditorRenderFileList(panel);
     }
 
-    function dskEditorAddFile(panel, data, name, ext, type, addr, autostart, varsOffset) {
-        if (!panel.parsedFile || !panel.parsedFile.dskImage) return 'No DSK image loaded';
+    function dskEditorMoveSelection(panel, dir) {
+        if (!panel.parsedFile || !panel.parsedFile.dskImage) return;
+        const files = panel.parsedFile.files || [];
+        const sorted = editorSelectedSorted(panel);
+        if (sorted.length === 0) return;
+        if (dir === -1 && sorted[0] === 0) return;
+        if (dir === 1 && sorted[sorted.length - 1] === files.length - 1) return;
+
         const dskImage = panel.parsedFile.dskImage;
         const spec = DSKLoader.getDiskSpec(dskImage);
-
-        const blockSize = spec.blockSize;
-        const sectorSize = spec.sectorSize || 512;
-        const sectorsPerBlock = Math.max(1, Math.round(blockSize / sectorSize));
-        const sectorsPerTrack = spec.sectorsPerTrack || 9;
-        const reservedTracks = spec.reservedTracks;
-
-        let fullData;
-        if (type >= 0 && spec.isTOS) {
-            // TOS header: BASIC (type 0) = 7 bytes, Code/arrays (types 1-3) = 5 bytes
-            // BASIC: type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE)
-            // Code/arrays: type(1) + dataLen(2LE) + address(2LE)
-            const hdrSize = (type === 0) ? 7 : 5;
-            const header = new Uint8Array(hdrSize);
-            header[0] = type & 0xFF;
-            if (type === 0) {
-                const auto = (autostart !== undefined && autostart !== null && autostart !== '') ?
-                    (parseInt(autostart) & 0xFFFF) : 0x8000;
-                header[1] = auto & 0xFF;
-                header[2] = (auto >> 8) & 0xFF;
-                header[3] = data.length & 0xFF;
-                header[4] = (data.length >> 8) & 0xFF;
-                // basLen = program body length without variables (vars offset)
-                const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
-                header[5] = basLen & 0xFF;
-                header[6] = (basLen >> 8) & 0xFF;
-            } else {
-                header[1] = data.length & 0xFF;
-                header[2] = (data.length >> 8) & 0xFF;
-                header[3] = addr & 0xFF;
-                header[4] = (addr >> 8) & 0xFF;
-            }
-            fullData = new Uint8Array(hdrSize + data.length);
-            fullData.set(header);
-            fullData.set(data, hdrSize);
-        } else if (type >= 0) {
-            // +3DOS 128-byte header
-            const header = new Uint8Array(128);
-            const sig = 'PLUS3DOS';
-            for (let i = 0; i < sig.length; i++) header[i] = sig.charCodeAt(i);
-            header[8] = 0x1A;
-            header[9] = 1;
-            header[10] = 0;
-            const totalLen = data.length + 128;
-            header[11] = totalLen & 0xFF;
-            header[12] = (totalLen >> 8) & 0xFF;
-            header[13] = (totalLen >> 16) & 0xFF;
-            header[14] = (totalLen >> 24) & 0xFF;
-            header[15] = type & 0xFF;
-            // +3DOS header data (tape-style): +16/17 = length, +18/19 = param1
-            // (load address for CODE, autostart for BASIC), +20/21 = param2
-            // (vars offset for BASIC). The CODE fields were previously swapped
-            // (address in 16-17, length in 18-19) — files misloaded on a real +3.
-            if (type === 3) {
-                header[16] = data.length & 0xFF;
-                header[17] = (data.length >> 8) & 0xFF;
-                header[18] = addr & 0xFF;
-                header[19] = (addr >> 8) & 0xFF;
-            } else if (type === 0) {
-                header[16] = data.length & 0xFF;
-                header[17] = (data.length >> 8) & 0xFF;
-                const auto = (autostart !== undefined && autostart !== null && autostart !== '') ?
-                    (parseInt(autostart) & 0xFFFF) : 0x8000;
-                header[18] = auto & 0xFF;
-                header[19] = (auto >> 8) & 0xFF;
-                const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
-                header[20] = basLen & 0xFF;
-                header[21] = (basLen >> 8) & 0xFF;
-            }
-            let hdrSum = 0;
-            for (let i = 0; i < 127; i++) hdrSum = (hdrSum + header[i]) & 0xFF;
-            header[127] = hdrSum;
-
-            fullData = new Uint8Array(128 + data.length);
-            fullData.set(header);
-            fullData.set(data, 128);
-        } else {
-            fullData = data;
-        }
-
-        const requiredBlocks = Math.ceil(fullData.length / blockSize);
-        if (requiredBlocks === 0) return 'File is empty';
-
-        const allocMap = DSKLoader.getBlockAllocationMap(dskImage, spec);
-        if (requiredBlocks > allocMap.freeBlocks) {
-            return `Not enough space: need ${requiredBlocks} blocks, ${allocMap.freeBlocks} free`;
-        }
-
-        const dir = DSKLoader._readDirectory(dskImage, spec);
-        if (!dir) return 'Cannot read directory';
-        const { dirData } = dir;
+        const d = DSKLoader._readDirectory(dskImage, spec);
+        if (!d) return;
+        const { dirData } = d;
         const maxEntries = Math.floor(dirData.length / 32);
 
-        const blocksPerExtent = spec.use16bit ? 8 : 16;
-        const requiredExtents = Math.ceil(requiredBlocks / blocksPerExtent);
-        let freeSlots = 0;
+        // Group the 32-byte directory entries by file key (user:name:ext); a file may
+        // span several extent entries, which must stay grouped and in directory order.
+        const keyOf = (base) => {
+            const user = dirData[base];
+            if (user === 0xE5 || user > 15) return null;
+            let name = '', ext = '';
+            for (let j = 1; j <= 8; j++) { const c = dirData[base + j] & 0x7F; if (c >= 0x20) name += String.fromCharCode(c); }
+            for (let j = 9; j <= 11; j++) { const c = dirData[base + j] & 0x7F; if (c >= 0x20) ext += String.fromCharCode(c); }
+            return `${user}:${name.trimEnd()}:${ext.trimEnd()}`;
+        };
+        const groups = new Map();
         for (let i = 0; i < maxEntries; i++) {
-            if (dirData[i * 32] === 0xE5) freeSlots++;
+            const base = i * 32, k = keyOf(base);
+            if (k === null) continue;
+            if (!groups.has(k)) groups.set(k, []);
+            groups.get(k).push(dirData.slice(base, base + 32));
         }
-        if (requiredExtents > freeSlots) {
-            return `Directory full: need ${requiredExtents} entries, ${freeSlots} free`;
-        }
+        const fileKeys = files.map(f => `${f.user}:${f.name}:${f.ext}`);
 
-        const freeBlockNums = [];
-        for (let b = 0; b < allocMap.totalBlocks && freeBlockNums.length < requiredBlocks; b++) {
-            if (!allocMap.used.has(b)) freeBlockNums.push(b);
-        }
-
-        for (let bi = 0; bi < freeBlockNums.length; bi++) {
-            const blockNum = freeBlockNums[bi];
-            const absoluteSector = blockNum * sectorsPerBlock;
-            const dataOffset = bi * blockSize;
-
-            for (let s = 0; s < sectorsPerBlock; s++) {
-                const curSectorInTrack = (absoluteSector + s) % sectorsPerTrack;
-                const curTrack = reservedTracks + Math.floor((absoluteSector + s) / sectorsPerTrack);
-                const sectorId = DSKLoader._logicalToSectorId(spec, curSectorInTrack);
-                const phys = DSKLoader._logicalTrackToPhysical(spec, curTrack);
-
-                const sectorData = new Uint8Array(sectorSize);
-                const srcOffset = dataOffset + s * sectorSize;
-                if (srcOffset < fullData.length) {
-                    const copyLen = Math.min(sectorSize, fullData.length - srcOffset);
-                    sectorData.set(fullData.subarray(srcOffset, srcOffset + copyLen));
-                }
-                dskImage.writeSector(phys.cylinder, phys.head, sectorId, sectorData);
-            }
+        // Compute the new file order by the same adjacent-swap rule as the other formats.
+        const newOrder = files.map((_, i) => i);
+        const order = dir === -1 ? sorted : sorted.slice().reverse();
+        const newSel = new Set();
+        for (const idx of order) {
+            const j = idx + dir;
+            const t = newOrder[idx]; newOrder[idx] = newOrder[j]; newOrder[j] = t;
+            newSel.add(j);
         }
 
-        const paddedName = (name + '        ').substring(0, 8);
-        const paddedExt = (ext + '   ').substring(0, 3);
-        let freeSlotIdx = 0;
-        for (let extNum = 0; extNum < requiredExtents; extNum++) {
-            while (freeSlotIdx < maxEntries && dirData[freeSlotIdx * 32] !== 0xE5) freeSlotIdx++;
-            if (freeSlotIdx >= maxEntries) return 'Directory full (internal error)';
-
-            const entryBase = freeSlotIdx * 32;
-            dirData[entryBase] = 0;
-
-            for (let j = 0; j < 8; j++) {
-                dirData[entryBase + 1 + j] = j < paddedName.length ? paddedName.charCodeAt(j) & 0x7F : 0x20;
-            }
-            for (let j = 0; j < 3; j++) {
-                dirData[entryBase + 9 + j] = j < paddedExt.length ? paddedExt.charCodeAt(j) & 0x7F : 0x20;
-            }
-
-            const startBlock = extNum * blocksPerExtent;
-            const endBlock = Math.min(startBlock + blocksPerExtent, requiredBlocks);
-            const blocksInExtent = endBlock - startBlock;
-
-            if (spec.use16bit) {
-                for (let j = 0; j < 8; j++) {
-                    const blk = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
-                    dirData[entryBase + 16 + j * 2] = blk & 0xFF;
-                    dirData[entryBase + 16 + j * 2 + 1] = (blk >> 8) & 0xFF;
-                }
-            } else {
-                for (let j = 0; j < 16; j++) {
-                    dirData[entryBase + 16 + j] = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
-                }
-            }
-
-            if (spec.isTOS) {
-                // TOS directory: byte 12=part, 13=tail, 14=sizeHi, 15=sizeLo
-                // Size encoding: sectors = ceil(size/256)*2, tail = size & 0xFF
-                // Source: Tomato FDD3000 tool (tos_image.cpp create_file())
-                dirData[entryBase + 12] = extNum;
-                if (extNum === requiredExtents - 1) {
-                    const bytesInExtent = fullData.length - startBlock * blockSize;
-                    const sectors = Math.ceil(bytesInExtent / 256) * 2;
-                    dirData[entryBase + 13] = bytesInExtent & 0xFF;          // tail
-                    dirData[entryBase + 14] = (sectors >> 8) & 0xFF;         // sizeHi
-                    dirData[entryBase + 15] = sectors & 0xFF;                // sizeLo
-                } else {
-                    // Full 16K extent: 64 sectors * 2 = 128, tail = 0
-                    dirData[entryBase + 13] = 0;                              // tail
-                    dirData[entryBase + 14] = 0;                              // sizeHi
-                    dirData[entryBase + 15] = 0x80;                           // sizeLo = 128
-                }
-            } else {
-                // CP/M directory: byte 12=extentLo, 13=BC, 14=extentHi, 15=RC
-                dirData[entryBase + 12] = extNum & 0x1F;
-                dirData[entryBase + 13] = 0;
-                dirData[entryBase + 14] = (extNum >> 5) & 0x3F;
-                if (extNum === requiredExtents - 1) {
-                    const bytesInExtent = fullData.length - startBlock * blockSize;
-                    const records = Math.ceil(bytesInExtent / 128);
-                    dirData[entryBase + 15] = Math.min(records, 128);
-                } else {
-                    dirData[entryBase + 15] = 128;
-                }
-            }
-
-            freeSlotIdx++;
+        // Rebuild the directory: write each file's entry-group in the new order,
+        // 0xE5-fill the remainder (data/allocation blocks are untouched).
+        const newDir = new Uint8Array(dirData.length).fill(0xE5);
+        let pos = 0;
+        for (const fi of newOrder) {
+            const g = groups.get(fileKeys[fi]) || [];
+            for (const e of g) { if (pos + 32 <= newDir.length) { newDir.set(e, pos); pos += 32; } }
         }
+        DSKLoader.writeDirectory(dskImage, spec, newDir);
+        panel.selection = newSel;
+        panel.expandedBlock = -1;
+        dskEditorRefreshState(panel);
+        dskEditorRenderFileList(panel);
+    }
 
-        DSKLoader.writeDirectory(dskImage, spec, dirData);
-        return null;
+    function dskEditorAddFile(panel, data, name, ext, type, addr, autostart, varsOffset) {
+        if (!panel.parsedFile || !panel.parsedFile.dskImage) return 'No DSK image loaded';
+        return DSKLoader.addFile(panel.parsedFile.dskImage,
+            { data, name, ext, type, addr, autostart, varsOffset });
     }
 
     function dskEditorRenameFile(panel, idx, newName, newExt) {
@@ -10261,15 +10916,45 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             (added > 0 ? null : 'No files imported');
     }
 
+    // Soft-delete (Mark Del) for DSK: toggle the in-memory `deleted` flag (greyed). The on-disk
+    // entry is left intact until save, when matching entries are 0xE5'd in a cloned image
+    // (flush on save). The flag survives refresh via the key preserve in dskEditorRefreshState.
+    // Re-running on an already-deleted selection undeletes it.
+    function dskEditorMarkDeletedSelection(panel) {
+        const files = panel.parsedFile && panel.parsedFile.files;
+        if (!files || panel.selection.size === 0) return;
+        const sorted = editorSelectedSorted(panel);
+        const allDeleted = sorted.every(idx => files[idx] && files[idx].deleted);
+        for (const idx of sorted) if (files[idx]) files[idx].deleted = !allDeleted;
+        panel.expandedBlock = -1;
+        dskEditorRenderFileList(panel);
+    }
+
     function dskEditorSaveDsk(panel) {
         if (!panel.parsedFile || !panel.parsedFile.dskImage) return;
-        const buf = panel.parsedFile.dskImage.toBuffer();
+        let img = panel.parsedFile.dskImage;
+        const del = (panel.parsedFile.files || []).filter(f => f.deleted);
+        if (del.length) {
+            img = DSKLoader.parse(img.toBuffer());   // clone so the editor view keeps the entries
+            DSKLoader.deleteFiles(img, del);
+        }
+        const buf = img.toBuffer();
         const baseName = (panel.fileName || 'output').replace(/\.dsk$/i, '');
         downloadFile(baseName + '.dsk', buf);
     }
 
     function dskEditorApplyInlineEdit(panel, idx) {
         if (!panel.parsedFile || !panel.parsedFile.dskImage) return;
+        if (idx === -2) {
+            const editRow = panel.dom.fileList.querySelector('.editor-inline-edit[data-edit-idx="-2"]');
+            if (!editRow) return;
+            const labelInput = editRow.querySelector('[data-field="label"]');
+            DSKLoader.setDiskLabel(panel.parsedFile.dskImage, labelInput ? labelInput.value : '');
+            panel.expandedBlock = -1;
+            dskEditorRefreshState(panel);
+            dskEditorRenderFileList(panel);
+            return;
+        }
         const files = panel.parsedFile.files;
         if (idx < 0 || idx >= files.length) return;
 
@@ -10322,6 +11007,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             parsed = explorerParseMDR(innerData);
         } else if (innerExt === 'opd' || innerExt === 'opu') {
             parsed = explorerParseOPD(innerData);
+        } else if (innerExt === 'd40' || innerExt === 'd80') {
+            parsed = explorerParseDidaktik(innerData);
         } else if (innerExt === 'dsk') {
             try {
                 const dskImage = DSKLoader.parse(innerData);
@@ -10347,6 +11034,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const isMgtSize = innerData.length === 819200 || innerData.length === 409600;
                 explorerFileType = (innerExt === 'img' && isMgtSize) ? 'mgt' : innerExt;
                 explorerZipFiles = [];
+                // Some read-only formats (e.g. Didaktik D40/D80) have no editor branch in
+                // loadFileIntoPanel, so panel.parsedFile stays at the outer ZIP parse. Point
+                // the explorer globals directly at the inner parse for the File Info views.
+                explorerParsed = parsed;
+                explorerData = innerData;
                 explorerRenderFileInfo();
             }
         }
@@ -10366,7 +11058,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += '<span class="editor-block-info">';
             html += `<span class="file-ext">${ext}</span>`;
             html += `<span class="file-name">${f.name}</span>`;
-            html += ` <span class="file-size">\u2014 ${size.toLocaleString()} bytes</span>`;
+            html += `<span class="file-size">\u2014 ${size.toLocaleString()} bytes</span>`;
             html += '</span></div>';
         }
         zipPickList.innerHTML = html;
@@ -10440,7 +11132,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         let totalSize = 0;
-        let html = '';
+        editorRenderLabelBar(panel);
+        let html = editorColHeaderHtml();
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const isSel = panel.selection.has(i);
@@ -10454,10 +11147,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             html += `<div class="${rowClasses}" data-block-idx="${i}">`;
             html += '<span class="editor-block-info">';
-            html += `<span class="dim">${i + 1}:</span> `;
-            html += `<span class="file-ext">${badge}</span>`;
+            html += `<span class="dim">${i + 1}:</span>`;
             html += `<span class="file-name">${file.name}</span>`;
-            html += ` <span class="file-size">\u2014 ${size.toLocaleString()} bytes</span>`;
+            html += `<span class="file-flag"></span>`;
+            html += `<span class="file-ext">${badge}</span>`;
+            html += `<span class="file-addr"></span>`;
+            html += `<span class="file-size">${size}</span>`;
             html += '</span></div>';
         }
 
@@ -10620,6 +11315,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             diskEditorExtractOpdFiles(panel);
             updatePanelHeader(panel);
             opdEditorRenderFileList(panel);
+        } else if (ext === 'd40' || ext === 'd80') {
+            // Didaktik MDOS: list/extract/copy plus in-place add/delete/rename/save.
+            panel.fileType = 'didaktik';
+            panel.parsedFile = parsed || explorerParseDidaktik(data);
+            didaktikEditorExtractFiles(panel);
+            updatePanelHeader(panel);
+            didaktikEditorRenderFileList(panel);
         } else if (ext === 'dsk') {
             panel.fileType = 'dsk';
             if (parsed && parsed.dskImage) {
@@ -10657,7 +11359,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
             const zipFiles = await ZipLoader.extract(rawCopy.buffer);
-            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
             const candidates = zipFiles.filter(f => {
                 const fext = f.name.split('.').pop().toLowerCase();
                 if (fext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
@@ -10681,6 +11383,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function extractFilesFromPanel(panel) {
         const sorted = editorSelectedSorted(panel);
         const result = [];
+        // "Keep slack": carry the unused bytes in a CODE file's last sector so they
+        // ride along on copy. Only formats whose editor model retains the full
+        // sectors (TR-DOS / SCL) can source slack; the destination cuts it to fit
+        // its own last sector (see applyKeptSlack).
+        const keepSlack = !!(editorKeepSlack && editorKeepSlack.checked);
 
         if (isTapOrTzx(panel.fileType)) {
             // Group header+data pairs
@@ -10738,14 +11445,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         rawData: f.data.slice(0, total)
                     });
                 } else {
-                    result.push({
+                    const desc = {
                         name: f.name.replace(/\s+$/, ''),
                         ext: f.ext,
                         type: 3,
                         addr: f.startAddress || 0,
                         autostart: null,
                         rawData: f.data.slice(0, f.length)
-                    });
+                    };
+                    if (keepSlack && f.data && f.data.length > f.length) {
+                        desc.slack = f.data.slice(f.length, f.sectors * 256);
+                    }
+                    result.push(desc);
                 }
             }
         } else if (panel.fileType === 'mgt') {
@@ -10805,6 +11516,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     addr: isBASIC ? 0 : (f.startAddr || 0),
                     autostart: f.autostart,
                     varsOffset: isBASIC ? (f.progLength ?? null) : null,
+                    rawData: f.data.slice(0, f.length)
+                });
+            }
+        } else if (panel.fileType === 'didaktik') {
+            for (const idx of sorted) {
+                if (idx < 0 || idx >= panel.diskFiles.length) continue;
+                const f = panel.diskFiles[idx];
+                const isBASIC = f.type === 'P';
+                result.push({
+                    name: f.name.replace(/\s+$/, ''),
+                    ext: f.ext,
+                    type: isBASIC ? 0 : 3,
+                    addr: isBASIC ? 0 : (f.startAddr || 0),
+                    autostart: isBASIC ? ((f.startAddr > 0 && f.startAddr < 32768) ? f.startAddr : null) : null,
+                    varsOffset: isBASIC ? (f.basicLength ?? null) : null,
                     rawData: f.data.slice(0, f.length)
                 });
             }
@@ -11040,6 +11766,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (f.type === undefined) {
                 f.type = f.ext === 'B' ? 0 : 3;
             }
+        } else if (dstType === 'didaktik') {
+            f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
+            if (f.type === undefined) f.type = f.ext === 'B' ? 0 : 3;
         } else if (isTapOrTzx(dstType)) {
             f.name = (f.name + '          ').substring(0, 10).replace(/\s+$/, '') || 'untitled';
             // Map ext to TAP type if not already set from source
@@ -11066,13 +11795,28 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return f;
     }
 
+    // Write carried slack (file.slack) into a freshly-added disk-model entry's
+    // last-sector padding. entry.data is already padded to the destination's
+    // sectors*256, so writing at offset entry.length and truncating the source
+    // slack to the remaining room implements the "cut to the target's slack" rule
+    // (excess source slack is discarded; a larger target slack stays zero-filled).
+    function applyKeptSlack(entry, file) {
+        if (!entry || !file || !file.slack || !file.slack.length) return;
+        if (!entry.data || typeof entry.length !== 'number') return;
+        const room = entry.data.length - entry.length;
+        if (room <= 0) return;
+        entry.data.set(file.slack.subarray(0, room), entry.length);
+    }
+
     function addConvertedFile(panel, file) {
         if (isTapOrTzx(panel.fileType)) {
             editorAddFileBlocks(panel, file.rawData, file.name, file.type, file.addr, file.autostart, null, undefined, file.varsOffset);
             return null;
         } else if (panel.fileType === 'trd' || panel.fileType === 'scl') {
-            return diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr,
+            const err = diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr,
                 { autostart: file.autostart, varsOffset: file.varsOffset });
+            if (!err) applyKeptSlack(panel.diskFiles[panel.diskFiles.length - 1], file);
+            return err;
         } else if (panel.fileType === 'mgt') {
             // Map ext to MGT type: B→1(BASIC), C→4(CODE), D→2(Num Array)
             const mgtTypeMap = { 'B': 1, 'C': 4, 'D': 2, '#': 10 };
@@ -11110,6 +11854,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             return diskEditorAddMdrFile(panel, mdrData, file.name, isPrint);
         } else if (panel.fileType === 'opd') {
             return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart, file.varsOffset);
+        } else if (panel.fileType === 'didaktik') {
+            const isBasic = (file.type === 0);
+            try {
+                panel.rawData = DidaktikLoader.addFile(panel.rawData, {
+                    name: (file.name || 'untitled').substring(0, 10),
+                    type: isBasic ? 'P' : 'B',
+                    data: file.rawData,
+                    startAddr: isBasic
+                        ? ((file.autostart != null && file.autostart >= 0 && file.autostart < 0x8000) ? file.autostart : 0x8000)
+                        : (file.addr || 0),
+                    basicLength: isBasic ? (file.varsOffset != null ? file.varsOffset : file.rawData.length) : undefined
+                });
+                return null;
+            } catch (e) {
+                return e.message;
+            }
         } else if (panel.fileType === 'dsk') {
             return dskEditorAddFile(panel, file.rawData, file.name, file.ext || '', file.type, file.addr, file.autostart, file.varsOffset);
         } else if (panel.fileType === 'zip') {
@@ -11154,6 +11914,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 case 'opd': diskEditorNewOpd(dst); break;
                 case 'dsk': dskEditorNewDsk(dst); break;
                 case 'zip': zipEditorNewZip(dst); break;
+                case 'didaktik': editorNewTap(dst); break; // read-only source → copy into a new TAP
                 case 'sna': case 'z80': case 'szx': editorNewTap(dst); break;
             }
         }
@@ -11193,6 +11954,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         } else if (dst.fileType === 'opd') {
             opdEditorRenderFileList(dst);
             opdEditorRefreshExplorer(dst);
+        } else if (dst.fileType === 'didaktik') {
+            didaktikEditorRefresh(dst);
         } else if (dst.fileType === 'dsk') {
             dskEditorRefreshState(dst);
             dskEditorRenderFileList(dst);
@@ -11223,7 +11986,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             return;
         }
 
-        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd';
+        const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd' || panel.fileType === 'didaktik';
         const isDsk = panel.fileType === 'dsk';
         const isZip = panel.fileType === 'zip';
         const isSnap = isSnapshotType(panel.fileType);
@@ -11233,6 +11996,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (opdApplyBtn) {
             const idx = parseInt(opdApplyBtn.dataset.idx);
             opdEditorApplyInlineEdit(panel, idx);
+            return;
+        }
+
+        // Handle Didaktik Apply button
+        const didaktikApplyBtn = e.target.closest('[data-action="didaktik-apply"]');
+        if (didaktikApplyBtn) {
+            const idx = parseInt(didaktikApplyBtn.dataset.idx);
+            didaktikEditorApplyInlineEdit(panel, idx);
             return;
         }
 
@@ -11312,7 +12083,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const row = e.target.closest('.editor-block-row');
         if (row) {
             // Handle disk label row double-click
-            if (isDisk && row.dataset.labelRow) {
+            if ((isDisk || isDsk) && row.dataset.labelRow) {
                 const now = Date.now();
                 if (panel.lastClickIdx === -2 && now - panel.lastClickTime < 400) {
                     panel.lastClickIdx = -1;
@@ -11400,7 +12171,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'scl': diskEditorNewTrd(panel); panel.fileType = 'scl'; panel.fileName = 'new.scl'; panel.parsedFile.type = 'scl'; updatePanelHeader(panel); break;
             case 'mgt': diskEditorNewMgt(panel); break;
             case 'mdr': diskEditorNewMdr(panel); break;
-            case 'opd': diskEditorNewOpd(panel); break;
+            case 'opd': diskEditorNewOpd(panel, 1); break;
+            case 'opd-ds': diskEditorNewOpd(panel, 2); break;
+            case 'd40': diskEditorNewDidaktik(panel, 'd40'); break;
+            case 'd80': diskEditorNewDidaktik(panel, 'd80'); break;
             case 'zip': zipEditorNewZip(panel); break;
             default:
                 if (fmt.startsWith('dsk-')) {
@@ -11436,13 +12210,19 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 return;
             }
 
+            // Universal Hobeta recognition: a .$X file is detected for EVERY format —
+            // strip its 17-byte header so only the payload is stored, and use its
+            // name / type / start address for the dialog prefills below.
+            const inputExt = file.name.split('.').pop().toLowerCase();
+            const hobetaFile = isHobetaExt(inputExt) ? parseHobeta(panel.pendingFileData) : null;
+            if (hobetaFile) panel.pendingFileData = hobetaFile.data;
+            // Stash the BASIC variables offset (program length) so the add handler can
+            // record it; null for non-BASIC or non-Hobeta input.
+            panel.pendingProgramLength = (hobetaFile && hobetaFile.programLength != null) ? hobetaFile.programLength : null;
+            const hobName = hobetaFile ? hobetaFile.name.replace(/\s+$/, '') : file.name.replace(/\.[^.]+$/, '');
+            const hobTag = hobetaFile ? ' [Hobeta]' : '';
+
             if (panel.fileType === 'trd' || panel.fileType === 'scl') {
-                // Check for Hobeta file — auto-extract metadata from header
-                const inputExt = file.name.split('.').pop().toLowerCase();
-                const hobetaFile = isHobetaExt(inputExt) ? parseHobeta(panel.pendingFileData) : null;
-                if (hobetaFile) {
-                    panel.pendingFileData = hobetaFile.data;
-                }
                 // Open disk add dialog
                 const maxSize = 65280;
                 const fileData = panel.pendingFileData;
@@ -11466,13 +12246,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const fileData = panel.pendingFileData;
                 const tooLarge = fileData.length > maxSize;
                 const sectors = Math.ceil(fileData.length / 512);
-                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
-                diskAddName.value = baseName;
+                diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
-                diskAddAddr.value = '8000';
-                diskAddExt.value = 'C';
+                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
-                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                    hobTag + (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
                 diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
                 btnDiskAddOk.disabled = tooLarge;
                 diskAddDialog.classList.remove('hidden');
@@ -11484,13 +12263,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const fileData = panel.pendingFileData;
                 const tooLarge = fileData.length > maxSize;
                 const sectors = Math.ceil(fileData.length / MDRLoader.DATA_SIZE);
-                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
-                diskAddName.value = baseName;
+                diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
                 diskAddAddr.value = '0000';
                 diskAddExt.value = 'F';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
-                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                    hobTag + (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
                 diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
                 btnDiskAddOk.disabled = tooLarge;
                 diskAddDialog.classList.remove('hidden');
@@ -11502,28 +12280,46 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const fileData = panel.pendingFileData;
                 const tooLarge = fileData.length > maxSize;
                 const sectors = Math.ceil(fileData.length / OPDLoader.BYTES_PER_SECTOR);
-                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
-                diskAddName.value = baseName;
+                diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
-                diskAddAddr.value = '8000';
-                diskAddExt.value = 'C';
+                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
-                    (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                    hobTag + (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
+                diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
+                btnDiskAddOk.disabled = tooLarge;
+                diskAddDialog.classList.remove('hidden');
+            } else if (panel.fileType === 'didaktik') {
+                // Didaktik MDOS: reuse the disk add dialog; free space is FAT-derived
+                const free = DidaktikLoader._freeSectors(panel.rawData).length;
+                const maxSize = free * DidaktikLoader.SECTOR_SIZE;
+                const fileData = panel.pendingFileData;
+                const tooLarge = fileData.length > maxSize;
+                const sectors = Math.ceil(fileData.length / DidaktikLoader.SECTOR_SIZE);
+                diskAddName.value = hobName.substring(0, 10);
+                diskAddName.maxLength = 10;
+                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
+                diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''}, ${free} free)` +
+                    hobTag + (tooLarge ? ` — disk full` : '');
                 diskAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
                 btnDiskAddOk.disabled = tooLarge;
                 diskAddDialog.classList.remove('hidden');
             } else if (panel.fileType === 'dsk') {
                 // Open DSK add dialog
-                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 8);
-                const ext = file.name.includes('.') ? file.name.split('.').pop().substring(0, 3) : '';
+                // map Hobeta TR-DOS type char → +3DOS type + 3-char extension
+                const hobToDsk = { B: ['0', 'BAS'], C: ['3', 'BIN'], D: ['1', 'DAT'], '#': ['3', 'SEQ'] };
+                const dmap = hobetaFile ? (hobToDsk[hobetaFile.ext] || ['3', 'BIN']) : null;
+                const baseName = hobName.substring(0, 8);
+                const ext = dmap ? dmap[1] : (file.name.includes('.') ? file.name.split('.').pop().substring(0, 3) : '');
                 dskAddName.value = baseName;
                 dskAddExt.value = ext;
-                dskAddType.value = '3';
-                dskAddAddr.value = '8000';
+                dskAddType.value = dmap ? dmap[0] : '3';
+                dskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
                 dskAddAuto.value = '';
                 dskAddAddrRow.style.display = '';
                 dskAddAutoRow.style.display = 'none';
-                dskAddFileInfo.textContent = `${panel.pendingFileData.length.toLocaleString()} bytes`;
+                dskAddFileInfo.textContent = `${panel.pendingFileData.length.toLocaleString()} bytes` + hobTag;
                 dskAddFileInfo.style.color = '';
                 btnDskAddOk.disabled = false;
                 dskAddDialog.classList.remove('hidden');
@@ -11532,21 +12328,26 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (!panel.fileType) editorNewTap(panel);
                 const maxPayload = 65533;
                 const tooLarge = panel.pendingFileData.length > maxPayload;
-                const baseName = file.name.replace(/\.[^.]+$/, '').substring(0, 10);
-                tapAddName.value = baseName;
-                tapAddFileInfo.textContent = `${panel.pendingFileData.length.toLocaleString()} bytes` +
+                const hobToTap = { B: '0', C: '3', D: '1', '#': '3' };
+                tapAddName.value = hobName.substring(0, 10);
+                tapAddFileInfo.textContent = `${panel.pendingFileData.length.toLocaleString()} bytes` + hobTag +
                     (tooLarge ? ` (max ${maxPayload.toLocaleString()})` : '');
                 tapAddFileInfo.style.color = tooLarge ? 'var(--accent)' : '';
                 btnTapAddOk.disabled = tooLarge;
-                tapAddType.value = '3';
+                tapAddType.value = hobetaFile ? (hobToTap[hobetaFile.ext] || '3') : '3';
+                // Show the rows that match the chosen type (mirrors the tapAddType
+                // change handler). For BASIC this exposes the autostart field so a
+                // start line can be entered manually — the Hobeta itself carries no
+                // autostart and its format is left untouched (stays spec-compliant).
+                const tt = tapAddType.value;
                 tapAddNameRow.style.display = '';
-                tapAddAddrRow.style.display = '';
-                tapAddAutoRow.style.display = 'none';
-                tapAddVarRow.style.display = 'none';
+                tapAddAddrRow.style.display = (tt === '3') ? '' : 'none';
+                tapAddAutoRow.style.display = (tt === '0') ? '' : 'none';
+                tapAddVarRow.style.display = (tt === '1' || tt === '2') ? '' : 'none';
                 tapAddFlagRow.style.display = 'none';
                 tapAddPauseRow.style.display = panel.fileType === 'tzx' ? '' : 'none';
                 tapAddPause.value = '1000';
-                tapAddAddr.value = '8000';
+                tapAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
                 tapAddAuto.value = '';
                 tapAddVar.value = 'A';
                 tapAddFlag.value = 'FF';
@@ -11565,23 +12366,23 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         else if (panel.fileType === 'mgt') diskEditorSaveMgt(panel);
         else if (panel.fileType === 'mdr') diskEditorSaveMdr(panel);
         else if (panel.fileType === 'opd') diskEditorSaveOpd(panel);
+        else if (panel.fileType === 'didaktik') didaktikEditorSave(panel);
         else if (panel.fileType === 'dsk') dskEditorSaveDsk(panel);
         else if (panel.fileType === 'zip') zipEditorSaveZip(panel);
     });
 
 
 
-    btnEditorMoveUp.addEventListener('click', () => {
+    function editorMoveDispatch(dir) {
         const panel = getActivePanel();
-        if (isTapOrTzx(panel.fileType)) editorMoveSelection(panel, -1);
-        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMoveSelection(panel, -1);
-    });
-
-    btnEditorMoveDown.addEventListener('click', () => {
-        const panel = getActivePanel();
-        if (isTapOrTzx(panel.fileType)) editorMoveSelection(panel, 1);
-        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMoveSelection(panel, 1);
-    });
+        const t = panel.fileType;
+        if (isTapOrTzx(t)) editorMoveSelection(panel, dir);
+        else if (t === 'trd' || t === 'scl' || t === 'mgt' || t === 'mdr' || t === 'opd') diskEditorMoveSelection(panel, dir);
+        else if (t === 'didaktik') didaktikEditorMoveSelection(panel, dir);
+        else if (t === 'dsk') dskEditorMoveSelection(panel, dir);
+    }
+    btnEditorMoveUp.addEventListener('click', () => editorMoveDispatch(-1));
+    btnEditorMoveDown.addEventListener('click', () => editorMoveDispatch(1));
 
     btnEditorDel.addEventListener('click', () => {
         const panel = getActivePanel();
@@ -11589,13 +12390,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (isTapOrTzx(panel.fileType)) editorDeleteSelection(panel);
         else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr') diskEditorDeleteSelection(panel);
         else if (panel.fileType === 'opd') opdEditorDeleteSelection(panel);
+        else if (panel.fileType === 'didaktik') didaktikEditorDeleteSelection(panel);
         else if (panel.fileType === 'dsk') dskEditorDeleteFiles(panel);
         else if (panel.fileType === 'zip') zipEditorDeleteFiles(panel);
     });
 
     btnEditorMarkDel.addEventListener('click', () => {
         const panel = getActivePanel();
-        if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMarkDeletedSelection(panel);
+        if (isTapOrTzx(panel.fileType)) editorMarkDeletedSelection(panel);
+        else if (panel.fileType === 'trd' || panel.fileType === 'scl' || panel.fileType === 'mgt' || panel.fileType === 'mdr' || panel.fileType === 'opd') diskEditorMarkDeletedSelection(panel);
+        else if (panel.fileType === 'didaktik') didaktikEditorMarkDeletedSelection(panel);
+        else if (panel.fileType === 'dsk') dskEditorMarkDeletedSelection(panel);
     });
 
     editorExtractDisk.addEventListener('change', () => {
@@ -11606,6 +12411,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (isTapOrTzx(t)) editorExtractSelection(panel, fmt);
         else if (t === 'trd' || t === 'scl' || t === 'mgt' || t === 'mdr') diskEditorExtractSelection(panel, fmt);
         else if (t === 'opd') opdEditorExtractSelection(panel, fmt);
+        else if (t === 'didaktik') didaktikEditorExtractSelection(panel, fmt);
         else if (t === 'dsk') dskEditorExtractFiles(panel, fmt);
         else if (t === 'zip') zipEditorExtractFiles(panel, fmt);
         else if (isSnapshotType(t)) snapshotEditorExtractSelection(panel, fmt);
@@ -11639,7 +12445,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const startAddr = parseInt(tapAddAddr.value, 16) || 0;
             const autostart = tapAddAuto.value;
             const varLetter = tapAddVar.value;
-            editorAddFileBlocks(panel, panel.pendingFileData, name, type, startAddr, autostart, varLetter, pause);
+            // For a BASIC Hobeta the variables offset (program length) was stashed on
+            // the panel; pass it so the TAP header's param2 marks where variables begin
+            // (without it, param2 = total length, so the file looks like it has no vars).
+            const varsOffset = (type === 0 && panel.pendingProgramLength != null) ? panel.pendingProgramLength : undefined;
+            editorAddFileBlocks(panel, panel.pendingFileData, name, type, startAddr, autostart, varLetter, pause, varsOffset);
         }
         panel.pendingFileData = null;
         tapAddDialog.classList.add('hidden');
@@ -11706,10 +12516,22 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             panel.expandedBlock = -1;
             opdEditorRenderFileList(panel);
             opdEditorRefreshExplorer(panel);
+        } else if (panel.fileType === 'didaktik') {
+            try {
+                didaktikEditorAddFile(panel, panel.pendingFileData, name, ext, addr);
+            } catch (err) {
+                diskAddFileInfo.textContent = err.message;
+                diskAddFileInfo.style.color = 'var(--accent)';
+                return;
+            }
+            panel.pendingFileData = null;
+            diskAddDialog.classList.add('hidden');
         } else {
             const isDisk = panel.fileType === 'trd' || panel.fileType === 'scl';
             if (!isDisk) diskEditorNewTrd(panel);
-            const err = diskEditorAddFile(panel, panel.pendingFileData, name, ext, addr);
+            const basicInfo = (ext === 'B' && panel.pendingProgramLength != null)
+                ? { varsOffset: panel.pendingProgramLength } : null;
+            const err = diskEditorAddFile(panel, panel.pendingFileData, name, ext, addr, basicInfo);
             if (err) {
                 diskAddFileInfo.textContent = err;
                 diskAddFileInfo.style.color = 'var(--accent)';

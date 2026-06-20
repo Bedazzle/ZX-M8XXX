@@ -107,6 +107,8 @@ The pane reuses `highlightAsmCode()` and the `.asm-textarea`/`.asm-highlight` cl
 - `EMPTYTRD "file"` / `SAVETRD "file", "name", [type,] start, length` — TRD disk image
 - `EMPTYTAP "file"` — empty TAP file
 - `SAVEHOB "file", "name.X", start, length` — Hobeta file (17-byte header + data). TR-DOS name parsed as 8-char name + extension char (B/C/D/#). Complement of `INCHOB`.
+- `LABELSLIST "file"` — text labels file in the sjasmplus "unreal speccy" `.l` format: one `PP:AAAA name` line per defined label/EQU (`PP` = 2-hex memory page from the active `DEVICE` slot map, `AAAA` = 4-hex address), sorted by address. Content is built at end of assembly (once all symbols resolve), not at the declaration point.
+- `TAPOUT "file"[, flagbyte]` … `TAPEND` — wrap the bytes emitted between the two directives into one standard ZX tape block: `[len_lo][len_hi][flag][data…][checksum]`, where `len = data + 2` (flag + checksum), `checksum = flag XOR all data bytes`, and `flag` defaults to `0xFF`. Bytes are captured in emission order (handled via the `emit()` hook, so `ORG` jumps inside a block are honoured). Multiple `TAPOUT`/`TAPEND` pairs to the same filename append blocks. `TAPEND` without a matching `TAPOUT` (or a second `TAPOUT` before `TAPEND`) is an error.
 
 All SAVE directives capture data at the point of declaration (not end of assembly), push to `saveCommands[]`, and support `; md5: <hash>` comment verification.
 

@@ -194,6 +194,27 @@
                 assertEq(h.data[0], 0x41, 'payload content');
             }
 
+            // BASIC: 9-10 = total length (program + variables), 11-12 = program
+            // length (variables offset). parseHobeta must return the FULL payload —
+            // the old code used 11-12 as the length and dropped the variables area.
+            {
+                const total = 48, progLen = 42;
+                const pl = []; for (let i = 0; i < total; i++) pl.push((i * 7) & 0xFF);
+                const head = [...str('BASVARS '), 0x42,
+                    total & 0xFF, (total >> 8) & 0xFF,        // 9-10 = total length
+                    progLen & 0xFF, (progLen >> 8) & 0xFF,    // 11-12 = program length
+                    0, Math.ceil(total / 256), 0, 0];
+                const b = AsmDetok.parseHobeta(new Uint8Array([...head.slice(0, 17), ...pl]));
+                assert(b !== null, 'BASIC Hobeta parsed');
+                if (b) {
+                    assertEq(b.type, 'B', 'BASIC type char');
+                    assertEq(b.length, total, 'BASIC length = total (program+variables)');
+                    assertEq(b.programLength, progLen, 'BASIC programLength = variables offset');
+                    assertEq(b.data.length, total, 'BASIC payload includes the variables area');
+                    assertEq(b.data[total - 1], ((total - 1) * 7) & 0xFF, 'last variable byte preserved');
+                }
+            }
+
             assert(AsmDetok.parseHobeta(new Uint8Array(str('        ORG #8000\n        RET\n'))) === null,
                 'plain text is not Hobeta');
             assert(AsmDetok.parseHobeta(new Uint8Array([1, 2, 3])) === null, 'tiny file is not Hobeta');

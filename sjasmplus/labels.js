@@ -9,7 +9,6 @@ export const SymbolTable = {
     modules: [],           // Module stack for MODULE/ENDMODULE
     localPrefix: '',       // Current label prefix for local labels
     tempLabels: {},        // Temporary labels: number -> [{ addr, line, defOrder }]
-    tempLabelCounters: {}, // For generating unique temp label references
     tempDefOrder: 0,       // Global counter for temp label definition order
     tempRefOrder: 0,       // Current reference point in definition order
     caseInsensitive: false, // When true, all label names are lowercased
@@ -20,7 +19,6 @@ export const SymbolTable = {
         this.localPrefix = '';
         this.tempLabels = {};
         this.prevTempLabels = {};
-        this.tempLabelCounters = {};
         this.tempDefOrder = 0;
         this.tempRefOrder = 0;
         this.caseInsensitive = false;
@@ -46,6 +44,27 @@ export const SymbolTable = {
         }
         // Regular label - add module prefix
         return this.getModulePrefix() + name;
+    },
+
+    // Find a DEFINED symbol for `rawName` by walking module scopes innermost → global
+    // (sjasmplus: an unqualified name inside MODULE a.b resolves as a.b.NAME, a.NAME,
+    // NAME — first defined wins). Returns the matched key, or null. `mods` defaults to
+    // the current module stack.
+    findDefinedInScope(rawName, mods = this.modules) {
+        for (let depth = mods.length; depth >= 0; depth--) {
+            const fn = (depth > 0 ? mods.slice(0, depth).join('.') + '.' : '') + rawName;
+            if (this.symbols[fn] && this.symbols[fn].defined) return fn;
+        }
+        return null;
+    },
+
+    // Resolve a referenced name to an existing key for lookups: a defined symbol in any
+    // enclosing scope wins; otherwise the current-scope name (for undefined reporting).
+    resolveFullName(name) {
+        if (this.caseInsensitive) name = name.toLowerCase();
+        if (name.startsWith('@') && name.length > 1 && !/^\d/.test(name[1])) return name.slice(1);
+        if (name.startsWith('.') && this.localPrefix) return this.localPrefix + name;
+        return this.findDefinedInScope(name) || (this.getModulePrefix() + name);
     },
 
     // Define a label
@@ -85,21 +104,32 @@ export const SymbolTable = {
 
     // Reference a label (may be forward reference)
     reference(name, line = null, file = null) {
+        // If it already resolves to a defined symbol in an enclosing scope, use that.
+        const resolved = this.resolveFullName(name);
+        if (resolved in this.symbols && this.symbols[resolved].defined) {
+            this.symbols[resolved].used = true;
+            return this.symbols[resolved];
+        }
+
         const fullName = this.getFullName(name);
-        
         if (fullName in this.symbols) {
             this.symbols[fullName].used = true;
             return this.symbols[fullName];
         }
 
-        // Forward reference - create undefined entry
+        // Forward reference - create undefined entry, tagging the raw name + module
+        // scope so checkUndefined() can re-resolve it against an outer/global scope
+        // once that symbol is defined in a later pass.
+        const raw = this.caseInsensitive ? name.toLowerCase() : name;
         this.symbols[fullName] = {
             value: 0,
             type: 'label',
             defined: false,
             used: true,
             line: line,
-            file: file
+            file: file,
+            scopeName: raw,
+            scopeMods: this.modules.slice()
         };
 
         return this.symbols[fullName];
@@ -116,7 +146,7 @@ export const SymbolTable = {
             return { value: ErrorCollector.warnings.length, undefined: false };
         }
         
-        const fullName = this.getFullName(name);
+        const fullName = this.resolveFullName(name);
         if (fullName in this.symbols) {
             return {
                 value: this.symbols[fullName].value,
@@ -134,7 +164,7 @@ export const SymbolTable = {
             return true;
         }
         
-        const fullName = this.getFullName(name);
+        const fullName = this.resolveFullName(name);
         return fullName in this.symbols && this.symbols[fullName].defined;
     },
 
@@ -231,6 +261,13 @@ export const SymbolTable = {
         for (const name in syms) {
             const sym = syms[name];
             if (!sym.defined && sym.used) {
+                // A forward ref that now resolves to a defined symbol in an enclosing
+                // scope (e.g. a module-prefixed placeholder whose target is global) is
+                // not undefined — skip it.
+                if (sym.scopeName !== undefined &&
+                    this.findDefinedInScope(sym.scopeName, sym.scopeMods || []) !== null) {
+                    continue;
+                }
                 undefined.push({ name, line: sym.line, file: sym.file });
             }
         }

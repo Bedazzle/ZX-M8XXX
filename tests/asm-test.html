@@ -1134,6 +1134,107 @@ label: NOP
                 ENDMODULE
             `);
             assert(result.success, 'Nested MODULE name resolution');
+
+            // Scope fallback: an unqualified name inside a MODULE that isn't a local
+            // member must fall back to the enclosing/global scope (sjasmplus rule).
+            // Regression for a real Lode Runner disassembly that referenced GLOBAL
+            // labels (defined after the module) from inside MODULE ig_v / dpub.
+            result = asm(`
+                ORG $8000
+                MODULE ig_v
+                LD HL, GLOB
+                ENDMODULE
+GLOB:           DEFB 1, 2
+            `);
+            assert(result.success, 'global label resolves from inside a MODULE (forward, scope fallback)');
+            if (result.output) {
+                assertBytes(result.output, [0x21, 0x03, 0x80, 0x01, 0x02], 'global-from-module ref uses the global address ($8003)');
+            }
+
+            // Fallback to an OUTER (non-global) module too: inside outer.inner,
+            // an unqualified name defined in `outer` resolves up one level.
+            result = asm(`
+                ORG $9000
+                MODULE outer
+OVAL:           EQU $1234
+                MODULE inner
+                LD BC, OVAL
+                ENDMODULE
+                ENDMODULE
+            `);
+            assert(result.success, 'unqualified ref resolves to an outer module scope');
+            if (result.output) {
+                assertBytes(result.output, [0x01, 0x34, 0x12], 'outer-scope ref uses outer value ($1234)');
+            }
+
+            // Shadowing: a module-local symbol shadows a global of the same name for
+            // unqualified refs INSIDE the module; outside, the global is used.
+            result = asm(`
+                ORG $8000
+COLLIDE:        EQU 99
+                MODULE m
+COLLIDE:        EQU 1
+                LD A, COLLIDE
+                ENDMODULE
+                LD B, COLLIDE
+            `);
+            assert(result.success, 'local/global name collision assembles');
+            if (result.output) {
+                assertBytes(result.output, [0x3E, 0x01, 0x06, 0x63], 'module-local shadows global inside ($01), global outside ($63)');
+            }
+
+            // LABELSLIST: produces a 'labelslist' save command whose content is the
+            // sjasmplus unreal-speccy ".l" format ("PP:AAAA name", sorted by address).
+            result = asm(`
+                DEVICE ZXSPECTRUM48
+                LABELSLIST "out.l"
+                ORG $8000
+START:          NOP
+NEXT:           NOP
+VAL:            EQU 42
+            `);
+            assert(result.success, 'LABELSLIST assembles (directive recognized)');
+            const llCmd = (result.saveCommands || []).find(c => c.type === 'labelslist');
+            assert(!!llCmd, 'LABELSLIST emits a labelslist save command');
+            if (llCmd) {
+                assert(llCmd.filename === 'out.l', 'LABELSLIST filename captured');
+                assert(/^02:8000 START$/m.test(llCmd.content), 'LABELSLIST lists START as 02:8000');
+                assert(/^02:8001 NEXT$/m.test(llCmd.content), 'LABELSLIST lists NEXT as 02:8001');
+                assert(/^00:002A VAL$/m.test(llCmd.content), 'LABELSLIST lists EQU VAL as 00:002A');
+                const idxVal = llCmd.content.indexOf('VAL');
+                const idxStart = llCmd.content.indexOf('START');
+                assert(idxVal >= 0 && idxStart >= 0 && idxVal < idxStart, 'LABELSLIST sorted by address (VAL before START)');
+            }
+
+            // TAPOUT/TAPEND: wrap bytes emitted between them as a standard ZX tape
+            // block [len_lo][len_hi][flag][data...][checksum], len = data+2,
+            // checksum = flag XOR all data bytes (matches sjasmplus framing).
+            result = asm(`
+                ORG $8000
+                TAPOUT "out.tap", $FF
+                DB 1, 2, 3
+                TAPEND
+                TAPOUT "out.tap"
+                DW $1234
+                TAPEND
+            `);
+            assert(result.success, 'TAPOUT/TAPEND assembles');
+            const toCmds = (result.saveCommands || []).filter(c => c.type === 'tapout');
+            assert(toCmds.length === 2, 'TAPOUT/TAPEND emits one block per pair');
+            if (toCmds.length === 2) {
+                assert(toCmds[0].filename === 'out.tap', 'TAPOUT filename captured');
+                // Block 1: flag FF, data 01 02 03, checksum FF^01^02^03 = FF, len = 5
+                assertBytes(toCmds[0].blockData, [0x05, 0x00, 0xFF, 0x01, 0x02, 0x03, 0xFF], 'TAPOUT block framing (explicit flag $FF)');
+                // Block 2: default flag FF, DW $1234 -> 34 12, checksum FF^34^12 = D9, len = 4
+                assertBytes(toCmds[1].blockData, [0x04, 0x00, 0xFF, 0x34, 0x12, 0xD9], 'TAPOUT block framing (default flag)');
+            }
+
+            // TAPEND without a preceding TAPOUT is an error.
+            result = asm(`
+                ORG $8000
+                TAPEND
+            `);
+            assert(!result.success, 'TAPEND without TAPOUT is an error');
         }
 
         // ==================== RUN ALL ====================

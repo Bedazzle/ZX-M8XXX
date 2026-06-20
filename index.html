@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.6</title>
+    <title>ZX-M8XXX v0.15.11</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -3897,7 +3897,7 @@
         .editor-block-row.header-row { border-left: 3px solid var(--cyan); }
         .editor-block-row.data-row { border-left: 3px solid #7f8c8d; }
         .editor-block-row.data-row.pair { border-left-color: var(--cyan); opacity: 0.8; }
-        .editor-block-info { flex: 1; color: var(--text-primary); }
+        .editor-block-info { flex: 1; color: var(--text-primary); white-space: nowrap; }
         .editor-block-info .dim { color: var(--text-secondary); }
         .editor-block-info .name { color: var(--cyan); }
         .editor-block-info .addr { color: var(--accent); }
@@ -3909,7 +3909,9 @@
             flex-wrap: wrap; border-left: 3px solid var(--accent);
         }
         .editor-inline-edit input { width: 100px; font-size: 11px; }
-        .editor-inline-edit select { font-size: 11px; }
+        .editor-inline-edit input.editor-input { width: 110px; }
+        .editor-inline-edit input.editor-input-short { width: 56px; }
+        .editor-inline-edit select { font-size: 11px; padding: 2px 4px; border-radius: 3px; }
         .editor-inline-edit label { color: var(--text-secondary); font-size: 11px; }
         .editor-inline-edit .editor-apply-btn {
             background: var(--bg-button); border: 1px solid var(--bg-button); color: var(--text-primary);
@@ -3918,12 +3920,9 @@
         .editor-inline-edit .editor-apply-btn:hover { background: var(--bg-tertiary); }
         /* Disk editor rows */
         .editor-block-row.disk-row { border-left: 3px solid var(--cyan); }
-        .editor-block-row.disk-row.disk-deleted {
-            border-left-color: #7f8c8d;
-            opacity: 0.5;
-            text-decoration: line-through;
-        }
-        .editor-block-row.disk-row.disk-deleted.selected { opacity: 0.7; }
+        /* Deleted directory entry: dim the filename grey (with strikethrough); the rest of the
+           row stays normal so its fields remain readable. */
+        .editor-block-row.disk-deleted .file-name { color: #7f8c8d; text-decoration: line-through; }
         .editor-block-row.disk-label-row {
             border-left: 3px solid var(--accent);
             color: var(--text-secondary);
@@ -3931,15 +3930,22 @@
             cursor: default;
         }
         .editor-block-row.disk-label-row:hover { background: transparent; }
-        .editor-block-info .file-ext { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 1.2em; }
-        .editor-block-info .file-mgttype { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5.5em; }
-        .editor-block-info .file-name { color: var(--cyan); }
-        .editor-block-info .file-addr { color: var(--accent); }
-        .editor-block-info .file-size { color: var(--text-secondary); }
-        .editor-block-info .file-sectors { color: var(--text-secondary); }
+        /* Fixed-width columns (monospace font) so editor file rows align vertically across tape + disk */
+        .editor-block-info > .dim:first-child { display: inline-block; min-width: 3ch; text-align: right; margin-right: 6px; }
+        .editor-block-info .file-ext { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
+        .editor-block-info .file-mgttype { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
+        .editor-block-info .file-name { color: var(--cyan); display: inline-block; min-width: 11ch; margin-right: 6px; }
+        .editor-block-info .file-flag { color: var(--text-secondary); display: inline-block; min-width: 4ch; margin-right: 6px; }
+        .editor-block-info .file-addr { color: var(--accent); display: inline-block; min-width: 14ch; margin-right: 6px; }
+        .editor-block-info .file-size { color: var(--text-secondary); display: inline-block; min-width: 8ch; margin-right: 6px; }
+        .editor-block-info .file-sectors { color: var(--text-secondary); display: inline-block; min-width: 7ch; }
+        /* Column-header row (Name/Type/Address/Size) — uniform across tape, disk, snapshot panels */
+        .editor-block-row.editor-col-header { cursor: default; font-weight: bold; border-left: 3px solid transparent; }
+        .editor-block-row.editor-col-header:hover { background: transparent; }
+        .editor-col-header .dim, .editor-col-header .file-name, .editor-col-header .file-flag, .editor-col-header .file-ext, .editor-col-header .file-addr, .editor-col-header .file-size, .editor-col-header .file-sectors { color: var(--text-secondary); }
         .editor-block-row.dsk-row { border-left: 3px solid var(--cyan); }
         .editor-block-row.dsk-row .file-user { color: var(--text-secondary); font-size: 10px; }
-        .editor-block-row.dsk-row .file-plus3type { color: var(--accent); margin-right: 4px; display: inline-block; width: 4em; }
+        .editor-block-row.dsk-row .file-plus3type { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
         .editor-block-row.dsk-info-row { border-left: 3px solid var(--accent); color: var(--text-secondary); font-size: 10px; cursor: default; }
         .editor-block-row.dsk-info-row:hover { background: transparent; }
         .editor-block-row.nonstandard-row { border-left: 3px solid #555; opacity: 0.5; cursor: default; }
@@ -4002,6 +4008,29 @@
             font-size: 11px;
             padding: 2px;
         }
+        /* Volume-label strip: panel-level metadata, kept out of the file table.
+           Always present (reserves height) so both panels' tables stay row-aligned. */
+        .editor-panel-labelbar {
+            flex-shrink: 0;
+            min-height: 20px;
+            padding: 2px 8px;
+            margin-bottom: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            border-bottom: 1px solid var(--bg-secondary);
+        }
+        .editor-panel-labelbar:empty { border-bottom-color: transparent; }
+        .editor-panel-labelbar .editor-label-view {
+            cursor: pointer;
+            border-left: 3px solid var(--accent);
+            padding-left: 5px;
+        }
+        .editor-panel-labelbar .editor-label-view:hover { color: var(--text-primary); }
+        .editor-panel-labelbar .name { color: var(--cyan); }
         /* Right-edge bar only exists in the side-by-side layout */
         #explorerPaneSplitterRight { display: none; }
         /* Landscape: side-by-side; the splitters become vertical bars */
@@ -7372,7 +7401,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.6 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.11 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -8775,6 +8804,7 @@ start:
                     </label>
                     <a href="tests/fuse-test.html" class="test-link" title="FUSE Z80 CPU tests (external suite)">FUSE Tests</a>
                     <a href="tests/all-tests.html" class="test-link" title="Unit test suites">Unit Tests</a>
+                    <a href="tests/pristine-test.html" class="test-link" title="Pristine-file comparison tests (byte-compare against reference disks made by other software — drop them in tests/pristine/)">Pristine Tests</a>
                     <span class="tests-status" id="testsStatus">Loading tests...</span>
                 </div>
 
@@ -8960,7 +8990,7 @@ start:
             <div class="explorer-container">
                 <!-- Controls Row -->
                 <div class="explorer-controls">
-                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.opd,.opu,.zip,.$b,.$c,.$d,.$#,.hobeta" style="display:none">
+                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.opd,.opu,.d40,.d80,.zip,.$b,.$c,.$d,.$#,.hobeta" style="display:none">
                     <button id="btnExplorerLoad" class="explorer-btn primary">Load File</button>
                     <span id="explorerFileName" class="explorer-file-info">No file loaded</span>
                     <span id="explorerFileSize" class="explorer-file-size"></span>
@@ -8993,6 +9023,10 @@ start:
                                     <button class="explorer-mode-btn" data-mode="font">Font</button>
                                 </div>
                                 <div id="explorerPreviewLabel" class="explorer-preview-label"></div>
+                                <label id="explorerRcsToggleLabel" style="display:none;font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="De-scramble an RCS-reordered screen (Reverse Computer Screen)">
+                                    <input type="checkbox" id="explorerRcsToggle" style="vertical-align:middle;margin-right:2px">RCS
+                                </label>
+                                <button id="explorerSaveScrBtn" class="explorer-btn" style="display:none;font-size:11px;padding:2px 6px;margin-left:6px" title="Download the decoded screen as a 6912-byte .scr (de-RCS'd when RCS is ticked)">Save .scr</button>
                             </div>
                         </div>
                     </div>
@@ -9113,7 +9147,10 @@ start:
                                 <option value="scl">SCL (TR-DOS archive)</option>
                                 <option value="mgt">MGT (+D disk)</option>
                                 <option value="mdr">MDR (Microdrive)</option>
-                                <option value="opd">OPD (Opus Discovery)</option>
+                                <option value="opd">OPD (Opus Discovery SS, 180K)</option>
+                                <option value="opd-ds">OPD (Opus Discovery DS, 720K)</option>
+                                <option value="d40">D40 (Didaktik MDOS, 360K)</option>
+                                <option value="d80">D80 (Didaktik MDOS, 720K)</option>
                                 <optgroup label="DSK — +3">
                                     <option value="dsk-p3-ss40">DSK +3 SS 40T (180K)</option>
                                     <option value="dsk-p3-ds80">DSK +3 DS 80T (720K)</option>
@@ -9140,9 +9177,13 @@ start:
                             <select id="editorExtractDisk" class="explorer-btn" style="display:none;font-size:12px;padding:5px 6px;border-radius:4px;border:none;background:var(--bg-button);color:var(--text-primary);cursor:pointer" disabled>
                                 <option value="" disabled selected>Extract</option>
                                 <option value="bin">Extract bin</option>
+                                <option value="binfull">Extract bin (full sectors)</option>
                                 <option value="hobeta">Extract Hobeta</option>
                             </select>
                             <button id="btnEditorCopy" class="explorer-btn" disabled title="Copy selected files to other panel">Copy &#9654;</button>
+                            <label id="editorKeepSlackLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Carry the unused bytes in each file's last sector to the destination">
+                                <input type="checkbox" id="editorKeepSlack" style="vertical-align:middle;margin-right:2px">Keep slack
+                            </label>
                             <label id="editorLinkLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Select header+data blocks together">
                                 <input type="checkbox" id="editorPairLock" checked style="vertical-align:middle;margin-right:2px">Link header
                             </label>
@@ -9157,6 +9198,7 @@ start:
                                     <span class="editor-panel-name">Empty</span>
                                     <span class="editor-panel-status" style="margin-left:auto"></span>
                                 </div>
+                                <div class="editor-panel-labelbar" data-panel="left"></div>
                                 <div class="editor-panel-filelist" data-panel="left"></div>
                             </div>
                             <div id="explorerPaneSplitter" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the panels, double-click to reset"></div>
@@ -9166,6 +9208,7 @@ start:
                                     <span class="editor-panel-name">Empty</span>
                                     <span class="editor-panel-status" style="margin-left:auto"></span>
                                 </div>
+                                <div class="editor-panel-labelbar" data-panel="right"></div>
                                 <div class="editor-panel-filelist" data-panel="right"></div>
                             </div>
                             <div id="explorerPaneSplitterRight" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the right panel, double-click to reset">
@@ -10995,7 +11038,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.6';
+        const APP_VERSION = '0.15.11';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -11144,22 +11187,19 @@ start:
         const saveSelect = document.getElementById('saveSelect');
         const machineSelect = document.getElementById('machineSelect');
         const speedSelect = document.getElementById('speedSelect');
-        const btnSound = document.getElementById('btnSound');
         const borderSizeSelect = document.getElementById('borderSizeSelect');
         const chkSound = document.getElementById('chkSound');
         const chkAY48k = document.getElementById('chkAY48k');
-        const btnMute = document.getElementById('btnMute');
         const volumeSlider = document.getElementById('volumeSlider');
         const volumeValue = document.getElementById('volumeValue');
         const stereoMode = document.getElementById('stereoMode');
         const btnFullscreen = document.getElementById('btnFullscreen');
         const fullscreenMode = document.getElementById('fullscreenMode');
-        const screenWrapper = document.querySelector('.screen-wrapper');
         // Forward declarations for file-loader (assigned by initFileLoader below)
         let handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex;
 
         // Machine Dropdown & Settings (extracted to ui/machine-selector.js)
-        const { populateMachineDropdown, updateRomFileNames } = initMachineSelector({
+        const { updateRomFileNames } = initMachineSelector({
             MACHINE_PROFILES, getMachineTypes, DEFAULT_VISIBLE_MACHINES,
             getLoadRomForMachineById: () => loadRomForMachineById,
             getGetRomFileName: () => getRomFileName
@@ -11526,8 +11566,6 @@ start:
 
 
         // Bookmarks - now store {addr, type} where type is 'disasm' or 'memdump'
-        const disasmBookmarksBar = document.getElementById('disasmBookmarks');
-        const memoryBookmarksBar = document.getElementById('memoryBookmarks');
         let leftBookmarks = [null, null, null, null, null];   // 5 bookmark slots for left panel
         let rightBookmarks = [null, null, null, null, null];  // 5 bookmark slots for right panel
         // Legacy aliases for compatibility
@@ -12272,21 +12310,7 @@ start:
                 }, 'image/png');
             } else if (format === 'scr') {
                 // Export SCR - with ULAplus palette if active and modified
-                let data, msg;
-                if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
-                    data = new Uint8Array(6912 + 64);
-                    for (let i = 0; i < 6912; i++) {
-                        data[i] = spectrum.memory.read(0x4000 + i);
-                    }
-                    data.set(spectrum.ula.ulaplus.palette, 6912);
-                    msg = 'SCR saved with ULAplus palette (6976 bytes)';
-                } else {
-                    data = new Uint8Array(6912);
-                    for (let i = 0; i < 6912; i++) {
-                        data[i] = spectrum.memory.read(0x4000 + i);
-                    }
-                    msg = 'SCR saved (6912 bytes)';
-                }
+                const { data, msg } = createScrData();
                 const blob = new Blob([data], { type: 'application/octet-stream' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -12343,6 +12367,23 @@ start:
                 showMessage(`Use Start/Stop for ${format.toUpperCase()} format`, 'info');
             }
         });
+
+        // Helper: build .scr bytes from the current screen — 6912 bytes, plus the
+        // 64-byte ULAplus palette appended when an active, modified palette exists.
+        function createScrData() {
+            let data, msg;
+            if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
+                data = new Uint8Array(6912 + 64);
+                for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
+                data.set(spectrum.ula.ulaplus.palette, 6912);
+                msg = 'SCR saved with ULAplus palette (6976 bytes)';
+            } else {
+                data = new Uint8Array(6912);
+                for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
+                msg = 'SCR saved (6912 bytes)';
+            }
+            return { data, msg };
+        }
 
         // Helper: capture screen canvas with configurable crop, zoom, and overlay
         function captureScreenCanvas(size, zoom, includeOverlay) {
@@ -12464,15 +12505,7 @@ start:
                     screenshotBatch.push({ name: `${baseName}_${seq}.img`, data });
                 }
             } else if (format === 'scr') {
-                let data;
-                if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
-                    data = new Uint8Array(6912 + 64);
-                    for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
-                    data.set(spectrum.ula.ulaplus.palette, 6912);
-                } else {
-                    data = new Uint8Array(6912);
-                    for (let i = 0; i < 6912; i++) data[i] = spectrum.memory.read(0x4000 + i);
-                }
+                const { data } = createScrData();
                 screenshotBatch.push({ name: `${baseName}_${seq}.scr`, data });
             } else {
                 // PNG (also used for GIF mode — flash GIF per frame is impractical)
@@ -12515,21 +12548,7 @@ start:
 
             if (format === 'scr') {
                 // SCR: raw 6912 bytes from $4000 — zoom/size/overlay don't apply
-                let data, msg;
-                if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled && spectrum.ula.ulaplus.paletteModified) {
-                    data = new Uint8Array(6912 + 64);
-                    for (let i = 0; i < 6912; i++) {
-                        data[i] = spectrum.memory.read(0x4000 + i);
-                    }
-                    data.set(spectrum.ula.ulaplus.palette, 6912);
-                    msg = 'SCR saved with ULAplus palette (6976 bytes)';
-                } else {
-                    data = new Uint8Array(6912);
-                    for (let i = 0; i < 6912; i++) {
-                        data[i] = spectrum.memory.read(0x4000 + i);
-                    }
-                    msg = 'SCR saved (6912 bytes)';
-                }
+                const { data, msg } = createScrData();
                 const fn = `${baseName}_${timestamp}.scr`;
                 if (batch) {
                     captureToBuffer(fn, data);

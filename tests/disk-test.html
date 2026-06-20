@@ -90,11 +90,12 @@
         <button onclick="runMGTLoaderTests()">MGTLoader</button>
         <button onclick="runMDRLoaderTests()">MDRLoader</button>
         <button onclick="runOPDLoaderTests()">OPDLoader</button>
+        <button onclick="runDidaktikLoaderTests()">DidaktikLoader</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader } from '../core/loaders.js';
+    import { TRDLoader, SCLLoader, TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 
     const logEl = document.getElementById('log');
     const summaryEl = document.getElementById('summary');
@@ -1215,6 +1216,34 @@
         // At offset 501+510=1011, sector 3 data begins
         assert(extracted[1011] === 0xA3, 'extracted data: sector 3 boundary correct');
 
+        section('MGTLoader - buildMGT writes the +D 9-byte data header');
+        {
+            // Real +D stores a 9-byte file header at the START of a standard file's data
+            // (mirrored in the directory). buildMGT must re-add it so the image is readable by
+            // real +D/other tools — not just round-trippable through M8XXX's own (lenient) reader.
+            const content = new Uint8Array(600);
+            for (let i = 0; i < content.length; i++) content[i] = (i + 1) & 0xFF;
+            const img = MGTLoader.buildMGT([{ name: 'HDRTEST', data: content, startAddress: 0x8000, mgtType: 4 }], 'HDR');
+            const fi = MGTLoader.listFiles(img)[0];
+            assert(!!fi, 'built file listed');
+            // Real +D layout: data starts at cyl 4 (track byte 4); cyl 0-3 reserved.
+            assert(fi.firstTrack === 4 && fi.firstSector === 1, 'first file at cyl 4 sector 1 (track byte 4)');
+            let cyl23Empty = true;
+            for (let p = 20480; p < 40960; p++) if (img[p] !== 0) { cyl23Empty = false; break; }
+            assert(cyl23Empty, 'cylinders 2-3 left empty (reserved), not written with file data');
+            assert((img[15] & 1) === 1, 'SAM bitmap bit 0 set (cyl 4 sec 1)');
+            const off = MGTLoader.logicalTrackOffset(fi.firstTrack, fi.firstSector);
+            assert(img[off] === 3, 'data sector starts with the 9-byte header (tape type 3 = Code)');
+            assert((img[off + 1] | (img[off + 2] << 8)) === 600, 'header length field = content length');
+            assert((img[off + 3] | (img[off + 4] << 8)) === 0x8000, 'header start address = 0x8000');
+            assert(img[off + 9] === 1, 'real content begins right after the 9-byte header');
+            assert(fi.sectors === Math.ceil((9 + 600) / 510), 'sector count accounts for the header');
+            const rt = MGTLoader.extractFile(img, fi);
+            let rtSame = rt.length === content.length;
+            if (rtSame) for (let i = 0; i < content.length; i++) if (rt[i] !== content[i]) { rtSame = false; break; }
+            assert(rtSame, 'round-trip: extractFile strips header, returns content');
+        }
+
         section('MGTLoader - Invalid entries skipped');
 
         const mgt2 = new Uint8Array(819200);
@@ -1402,9 +1431,11 @@
         assert(MDRLoader.mdrChecksum(testArr, 0, 3) === 60, 'checksum of [10,20,30] = 60');
         assert(MDRLoader.mdrChecksum(testArr, 1, 2) === 50, 'checksum of [20,30] = 50');
 
-        // Overflow wraps to mod 256
+        // Overflow folds mod 255 (Interface 1 checksum; never produces 255)
         const overArr = new Uint8Array([200, 200]);
-        assert(MDRLoader.mdrChecksum(overArr, 0, 2) === (400 & 0xFF), 'checksum wraps mod 256');
+        assert(MDRLoader.mdrChecksum(overArr, 0, 2) === (400 % 255), 'checksum folds mod 255 (= 145)');
+        // mod-255 sum of 255 itself is 0 (never 255)
+        assert(MDRLoader.mdrChecksum(new Uint8Array([255]), 0, 1) === 0, 'single byte 255 → checksum 0 (mod 255)');
 
         section('MDRLoader - isMDR');
 
@@ -1527,21 +1558,20 @@
 
         assert(OPDLoader.SECTORS_PER_TRACK === 18, 'SECTORS_PER_TRACK = 18');
         assert(OPDLoader.BYTES_PER_SECTOR === 256, 'BYTES_PER_SECTOR = 256');
-        assert(OPDLoader.TRACKS === 40, 'TRACKS = 40');
         assert(OPDLoader.SS_SIZE === 184320, 'SS_SIZE = 184320');
-        assert(OPDLoader.DS_SIZE === 368640, 'DS_SIZE = 368640');
+        assert(OPDLoader.DS_SIZE === 737280, 'DS_SIZE = 737280 (80-track DS)');
 
         section('OPDLoader - isOPD');
 
         assert(OPDLoader.isOPD(new Uint8Array(184320)) === true, 'SS size valid');
-        assert(OPDLoader.isOPD(new Uint8Array(368640)) === true, 'DS size valid');
+        assert(OPDLoader.isOPD(new Uint8Array(737280)) === true, 'DS size valid');
         assert(OPDLoader.isOPD(new Uint8Array(100000)) === false, 'wrong size rejected');
         assert(OPDLoader.isOPD(new Uint8Array(0)) === false, 'empty rejected');
 
         section('OPDLoader - isDoubleSided');
 
         assert(OPDLoader.isDoubleSided(new Uint8Array(184320)) === false, 'SS not double-sided');
-        assert(OPDLoader.isDoubleSided(new Uint8Array(368640)) === true, 'DS is double-sided');
+        assert(OPDLoader.isDoubleSided(new Uint8Array(737280)) === true, 'DS is double-sided');
 
         section('OPDLoader - getSectorOffset');
 
@@ -1567,7 +1597,7 @@
         assert(ssOPD[dataStart] === 0xE5, 'data area filled with 0xE5');
 
         const dsOPD = OPDLoader.createBlankOPD(2);
-        assert(dsOPD.length === 368640, 'DS blank size = 368640');
+        assert(dsOPD.length === 737280, 'DS blank size = 737280 (80-track)');
 
         section('OPDLoader - buildOPD / listFiles round-trip');
 
@@ -1641,10 +1671,10 @@
         const dsOpd = OPDLoader.buildOPD([
             { name: 'DSIDE', type: 3, data: new Uint8Array(10), startAddr: 0, autostart: 0 }
         ], 'DS_DISK', 2);
-        assert(dsOpd.length === 368640, 'DS build: correct size');
+        assert(dsOpd.length === 737280, 'DS build: correct size');
         const dsInfo = OPDLoader.getDiskInfo(dsOpd);
         assert(dsInfo.sides === 2, 'DS diskInfo: 2 sides');
-        assert(dsInfo.totalSectors === 1440, 'DS: totalSectors = 1440');
+        assert(dsInfo.totalSectors === 2880, 'DS: totalSectors = 2880 (80-track)');
 
         updateSummary();
     }
@@ -1652,6 +1682,417 @@
     // ═══════════════════════════════════════════════════════
     // Run All
     // ═══════════════════════════════════════════════════════
+    // DidaktikLoader (MDOS D40/D80) Tests
+    function runDidaktikLoaderTests() {
+        section('DidaktikLoader - FAT packing round-trip');
+
+        // Inverse of getFATnum: write a 12-bit value for a sector
+        function setFAT(bytes, sector, value) {
+            const sec = sector % 341;
+            const base = 512 + Math.floor(sector / 341) * 512 + Math.floor(sec * 3 / 2);
+            if (sec % 2 === 0) {
+                bytes[base] = value & 0xFF;
+                bytes[base + 1] = (bytes[base + 1] & 0x0F) | (((value >> 8) & 0x0F) << 4);
+            } else {
+                bytes[base + 1] = value & 0xFF;
+                bytes[base] = (bytes[base] & 0xF0) | ((value >> 8) & 0x0F);
+            }
+        }
+        function writeDir(bytes, physSec, idx, f) {
+            const off = physSec * 512 + idx * 32;
+            bytes[off] = f.type.charCodeAt(0);
+            for (let i = 0; i < f.name.length && i < 10; i++) bytes[off + 1 + i] = f.name.charCodeAt(i);
+            bytes[off + 11] = f.length & 0xFF; bytes[off + 12] = (f.length >> 8) & 0xFF; bytes[off + 21] = (f.length >> 16) & 0xFF;
+            bytes[off + 13] = f.startAddr & 0xFF; bytes[off + 14] = (f.startAddr >> 8) & 0xFF;
+            bytes[off + 17] = f.firstSec & 0xFF; bytes[off + 18] = (f.firstSec >> 8) & 0xFF;
+        }
+
+        const img = new Uint8Array(368640);   // D40 DS 40×2×9×512
+        // boot sector: SDOS signature + geometry
+        img[204] = 0x53; img[205] = 0x44; img[206] = 0x4F; img[207] = 0x53;
+        'MYDISK'.split('').forEach((c, i) => img[192 + i] = c.charCodeAt(0));
+        img[177] = 0x10; img[178] = 40; img[179] = 9;
+
+        // FAT chain round-trip
+        setFAT(img, 20, 21);
+        setFAT(img, 21, 0xE00 | 100);   // last sector: 100 bytes
+        assert(DidaktikLoader.getFATnum(img, 20) === 21, 'FAT[20] = 21 (even entry)');
+        assert(DidaktikLoader.getFATnum(img, 21) === (0xE00 | 100), 'FAT[21] = 0xE64 (odd entry)');
+
+        // data: sector 20 = 512×0xAA, sector 21 = 100×0xBB
+        for (let i = 0; i < 512; i++) img[20 * 512 + i] = 0xAA;
+        for (let i = 0; i < 100; i++) img[21 * 512 + i] = 0xBB;
+
+        // directory: one file in the first dir sector (physical 6)
+        writeDir(img, 6, 0, { type: 'B', name: 'HELLO', length: 612, startAddr: 0x8000, firstSec: 20 });
+        // a second file in physical sector 8 (catalog order index 1)
+        setFAT(img, 30, 0xE00 | 256);
+        for (let i = 0; i < 256; i++) img[30 * 512 + i] = 0x55;
+        writeDir(img, 8, 0, { type: 'P', name: 'PROG', length: 256, startAddr: 10, firstSec: 30 });
+        // a deleted entry (0xE5) must be skipped
+        img[6 * 512 + 32] = 0xE5;
+
+        section('DidaktikLoader - Detection');
+        assert(DidaktikLoader.isDidaktik(img) === true, 'SDOS signature detected');
+        assert(DidaktikLoader.isDidaktik(new Uint8Array(1000)) === false, 'tiny buffer rejected');
+
+        section('DidaktikLoader - listFiles');
+        const files = DidaktikLoader.listFiles(img);
+        assert(files.length === 2, `2 files listed (got ${files.length})`);
+        assert(files[0].name === 'HELLO' && files[0].type === 'B', 'file 0: HELLO type B');
+        assert(files[0].length === 612, `HELLO length 612 (got ${files[0].length})`);
+        assert(files[0].firstSec === 20, 'HELLO firstSec 20');
+        assert(files[0].typeName === 'Code', 'B → Code');
+        assert(files[1].name === 'PROG' && files[1].type === 'P', 'file 1: PROG type P (catalog order)');
+        assert(files[1].typeName === 'BASIC', 'P → BASIC');
+
+        section('DidaktikLoader - extractFile');
+        const data = DidaktikLoader.extractFile(img, files[0]);
+        assert(data && data.length === 612, `extracted 612 bytes (got ${data ? data.length : 'null'})`);
+        assert(data[0] === 0xAA && data[511] === 0xAA, 'first sector bytes = 0xAA');
+        assert(data[512] === 0xBB && data[611] === 0xBB, 'partial last sector bytes = 0xBB');
+        const data2 = DidaktikLoader.extractFile(img, files[1]);
+        assert(data2 && data2.length === 256 && data2[0] === 0x55, 'PROG: 256 bytes of 0x55');
+
+        section('DidaktikLoader - getDiskInfo');
+        const info = DidaktikLoader.getDiskInfo(img);
+        assert(info.diskLabel === 'MYDISK', `disk label MYDISK (got "${info.diskLabel}")`);
+        assert(info.sectorsPerTrack === 9, 'sectorsPerTrack 9');
+        assert(info.tracks === 40, 'tracks 40');
+        assert(info.sides === 2, 'double-sided');
+        assert(info.fileCount === 2, 'fileCount 2');
+
+        section('DidaktikLoader - setDiskLabel (write)');
+        {
+            const relabelled = DidaktikLoader.setDiskLabel(img, 'NEWNAME');
+            assert(relabelled !== img, 'returns a new array (img untouched)');
+            assert(DidaktikLoader.getDiskInfo(relabelled).diskLabel === 'NEWNAME', 'label written back (NEWNAME)');
+            assert(DidaktikLoader.getDiskInfo(img).diskLabel === 'MYDISK', 'original image unchanged');
+            // over-long labels are truncated to 10 chars, files survive the write
+            const trunc = DidaktikLoader.setDiskLabel(img, 'ABCDEFGHIJKLMNOP');
+            assert(DidaktikLoader.getDiskInfo(trunc).diskLabel === 'ABCDEFGHIJ', '16-char label truncated to 10');
+            assert(DidaktikLoader.listFiles(trunc).length === 2, 'files intact after relabel');
+            // no boot sector → no-op
+            assert(DidaktikLoader.setDiskLabel(new Uint8Array(100), 'X').length === 100, 'no-op when no boot sector');
+        }
+
+        section('DidaktikLoader - fileToTAP');
+        const tap = DidaktikLoader.fileToTAP(data2, files[1]);
+        assert(tap && tap.length > 0, 'TAP produced');
+        // header block: 0x13 0x00 length, flag 0x00, type 0 (BASIC)
+        assert(tap[0] === 0x13 && tap[2] === 0x00 && tap[3] === 0x00, 'TAP header block (BASIC)');
+
+        section('DidaktikLoader - setFATnum (write)');
+        {
+            const t = new Uint8Array(img);
+            let ok = true;
+            // span even/odd entries and FAT-sector boundaries (341 entries/sector)
+            for (const v of [0x000, 0x001, 0x00e, 0xabc, 0xfff, 0xe0b, 0xddd]) {
+                for (const s of [14, 15, 16, 17, 340, 341, 342, 681, 682, 683]) {
+                    DidaktikLoader.setFATnum(t, s, v);
+                    if (DidaktikLoader.getFATnum(t, s) !== v) { ok = false; }
+                }
+            }
+            assert(ok, 'setFATnum/getFATnum round-trip across even/odd + sector boundaries');
+            // writing one entry must not corrupt its packing-neighbour
+            const t2 = new Uint8Array(img);
+            DidaktikLoader.setFATnum(t2, 14, 0xabc);  // even
+            DidaktikLoader.setFATnum(t2, 15, 0xdef);  // odd (shares a byte with 14)
+            assert(DidaktikLoader.getFATnum(t2, 14) === 0xabc && DidaktikLoader.getFATnum(t2, 15) === 0xdef,
+                'adjacent shared-nibble entries independent');
+        }
+
+        section('DidaktikLoader - addFile (write)');
+        {
+            const payload = new Uint8Array(600);
+            for (let i = 0; i < 600; i++) payload[i] = (i * 7) & 0xFF;
+            const img2 = DidaktikLoader.addFile(img, { name: 'NEWCODE', type: 'B', data: payload, startAddr: 40000 });
+            const l2 = DidaktikLoader.listFiles(img2);
+            const nf = l2.find(f => f.name === 'NEWCODE');
+            assert(!!nf, 'added file appears in catalog');
+            assert(nf && nf.type === 'B' && nf.length === 600 && nf.startAddr === 40000, 'added file metadata correct');
+            const back = nf && DidaktikLoader.extractFile(img2, nf);
+            let match = !!back && back.length === 600;
+            if (match) for (let i = 0; i < 600; i++) if (back[i] !== payload[i]) { match = false; break; }
+            assert(match, 'added file data round-trips');
+            // existing files untouched
+            const h = DidaktikLoader.extractFile(img2, l2.find(f => f.name === 'HELLO'));
+            assert(h && h.length === 612 && h[0] === 0xAA, 'existing HELLO intact after add');
+            // BASIC add: P type, basicLength + autostart line
+            const prog = new Uint8Array([0, 10, 5, 0, 0xf5, 0x22, 0x48, 0x49, 0x22, 0x0d]);
+            const img3 = DidaktikLoader.addFile(img, { name: 'HI', type: 'P', data: prog, startAddr: 10, basicLength: prog.length });
+            const pf = DidaktikLoader.listFiles(img3).find(f => f.name === 'HI');
+            assert(pf && pf.type === 'P' && pf.startAddr === 10 && pf.basicLength === prog.length, 'added BASIC metadata (line/basicLength)');
+        }
+
+        section('DidaktikLoader - deleteFile (write)');
+        {
+            const hello = files.find(f => f.name === 'HELLO');
+            const img2 = DidaktikLoader.deleteFile(img, hello);
+            const l2 = DidaktikLoader.listFiles(img2);
+            assert(!l2.find(f => f.name === 'HELLO'), 'deleted file gone from catalog');
+            assert(!!l2.find(f => f.name === 'PROG'), 'sibling PROG survives delete');
+            assert(DidaktikLoader.getFATnum(img2, 20) === 0x000 && DidaktikLoader.getFATnum(img2, 21) === 0x000,
+                'deleted file FAT chain freed');
+            const p = DidaktikLoader.extractFile(img2, l2.find(f => f.name === 'PROG'));
+            assert(p && p.length === 256 && p[0] === 0x55, 'PROG data intact after sibling delete');
+        }
+
+        section('DidaktikLoader - rename / setStartAddr (write)');
+        {
+            const prog = files.find(f => f.name === 'PROG');
+            const img2 = DidaktikLoader.renameFile(img, prog, 'RENAMED');
+            const rf = DidaktikLoader.listFiles(img2).find(f => f.name === 'RENAMED');
+            assert(!!rf && rf.firstSec === prog.firstSec, 'rename keeps the file (firstSec stable)');
+            const img3 = DidaktikLoader.setStartAddr(img, prog.firstSec, 25);
+            const sf = DidaktikLoader.listFiles(img3).find(f => f.firstSec === prog.firstSec);
+            assert(sf && sf.startAddr === 25, 'setStartAddr updates the LINE/address field');
+        }
+
+        section('DidaktikLoader - swapDirEntries (reorder)');
+        {
+            const before = DidaktikLoader.listFiles(img);
+            assert(before.length >= 2, 'have >= 2 files to reorder');
+            const a = before[0], b = before[1];
+            const img2 = DidaktikLoader.swapDirEntries(img, a.firstSec, b.firstSec);
+            const after = DidaktikLoader.listFiles(img2);
+            assert(after.length === before.length, 'file count unchanged after swap');
+            assert(after[0].name === b.name && after[1].name === a.name, 'catalog order swapped');
+            // data/FAT untouched: each file still extracts identically
+            const da1 = DidaktikLoader.extractFile(img, a), da2 = DidaktikLoader.extractFile(img2, after.find(f => f.name === a.name));
+            let same = da1 && da2 && da1.length === da2.length;
+            if (same) for (let i = 0; i < da1.length; i++) if (da1[i] !== da2[i]) { same = false; break; }
+            assert(same, 'file data intact after reorder (chains untouched)');
+        }
+
+        section('DidaktikLoader - CRUD lifecycle + spec byte layout');
+        {
+            const cmp = (a, b) => !!a && !!b && a.length === b.length && Array.from(a).every((x, i) => x === b[i]);
+
+            // CREATE
+            let d = new Uint8Array(img);
+            const payload = new Uint8Array(700);
+            for (let i = 0; i < 700; i++) payload[i] = (i * 9 + 3) & 0xFF;
+            d = DidaktikLoader.addFile(d, { name: 'NEWF', type: 'B', data: payload, startAddr: 50000 });
+            let nf = DidaktikLoader.listFiles(d).find(f => f.name === 'NEWF');
+            assert(!!nf && nf.length === 700 && nf.type === 'B' && nf.startAddr === 50000, 'CREATE: file present with metadata');
+
+            // READ
+            assert(cmp(DidaktikLoader.extractFile(d, nf), payload), 'READ: extracts byte-identical');
+
+            // Byte layout vs the documented MDOS directory entry (independent of round-trip)
+            const off = DidaktikLoader._findDirEntry(d, nf.firstSec);
+            assert(d[off] === 0x42, 'byte 0 = type char "B"');
+            assert(String.fromCharCode(d[off + 1], d[off + 2], d[off + 3], d[off + 4]) === 'NEWF', 'bytes 1-4 = name');
+            assert((d[off + 11] | (d[off + 12] << 8) | (d[off + 21] << 16)) === 700, 'bytes 11-12,21 = 24-bit length');
+            assert((d[off + 13] | (d[off + 14] << 8)) === 50000, 'bytes 13-14 = start address');
+            assert(d[off + 20] === 0x0F, 'byte 20 = attributes 0x0F');
+
+            // UPDATE: rename + change address (data must survive)
+            d = DidaktikLoader.renameFile(d, nf, 'RENF');
+            d = DidaktikLoader.setStartAddr(d, nf.firstSec, 25000);
+            const rf = DidaktikLoader.listFiles(d).find(f => f.firstSec === nf.firstSec);
+            assert(rf && rf.name === 'RENF' && rf.startAddr === 25000, 'UPDATE: rename + setStartAddr applied');
+            assert(cmp(DidaktikLoader.extractFile(d, rf), payload), 'UPDATE: data intact after edits');
+
+            // UPDATE (reorder)
+            const ord0 = DidaktikLoader.listFiles(d);
+            d = DidaktikLoader.swapDirEntries(d, ord0[0].firstSec, ord0[1].firstSec);
+            const ord1 = DidaktikLoader.listFiles(d);
+            assert(ord1[0].name === ord0[1].name && ord1[1].name === ord0[0].name, 'UPDATE: reorder swaps order');
+
+            // DELETE
+            const countBefore = DidaktikLoader.listFiles(d).length;
+            d = DidaktikLoader.deleteFile(d, { firstSec: nf.firstSec });
+            assert(!DidaktikLoader.listFiles(d).find(f => f.firstSec === nf.firstSec), 'DELETE: file gone');
+            assert(DidaktikLoader.getFATnum(d, nf.firstSec) === 0x000, 'DELETE: first sector freed in FAT');
+            assert(DidaktikLoader.listFiles(d).length === countBefore - 1, 'DELETE: one fewer file');
+        }
+
+        section('DidaktikLoader - writer format fidelity');
+        {
+            // (a) full last sector → terminator is exactly 0xE00, exact round-trip
+            const p1024 = new Uint8Array(1024);
+            for (let i = 0; i < 1024; i++) p1024[i] = i & 0xFF;
+            const imgF = DidaktikLoader.addFile(img, { name: 'FULL', type: 'B', data: p1024, startAddr: 0x8000 });
+            const ff = DidaktikLoader.listFiles(imgF).find(f => f.name === 'FULL');
+            assert(!!ff && ff.length === 1024, 'full-sector file length 1024');
+            // walk to the last sector and confirm terminator == 0xE00
+            let ls = ff.firstSec;
+            while (DidaktikLoader.getFATnum(imgF, ls) < 0xC00) ls = DidaktikLoader.getFATnum(imgF, ls);
+            assert(DidaktikLoader.getFATnum(imgF, ls) === 0xE00, 'exact-multiple last sector → 0xE00 terminator');
+            const fd = DidaktikLoader.extractFile(imgF, ff);
+            let fok = !!fd && fd.length === 1024;
+            if (fok) for (let i = 0; i < 1024; i++) if (fd[i] !== (i & 0xFF)) { fok = false; break; }
+            assert(fok, 'exact-multiple-of-512 file round-trips');
+
+            // (b) new dir entry tail (bytes 22-31) filled with 0xE5 (matches tap2d80.cpp / real disks)
+            const off = DidaktikLoader._findDirEntry(imgF, ff.firstSec);
+            let tailOk = off >= 0;
+            if (tailOk) for (let i = 22; i < 32; i++) if (imgF[off + i] !== 0xE5) { tailOk = false; break; }
+            assert(tailOk, 'new directory entry tail 22-31 = 0xE5');
+
+            // (c) >64KB file exercises the 3-byte length (morelength @ byte 21)
+            const big = new Uint8Array(70000);
+            for (let i = 0; i < 70000; i++) big[i] = (i * 3) & 0xFF;
+            const imgB = DidaktikLoader.addFile(img, { name: 'BIG', type: 'B', data: big, startAddr: 0x8000 });
+            const bf = DidaktikLoader.listFiles(imgB).find(f => f.name === 'BIG');
+            assert(!!bf && bf.length === 70000, `>64KB length via 3-byte field (got ${bf ? bf.length : '?'})`);
+            const bofs = DidaktikLoader._findDirEntry(imgB, bf.firstSec);
+            assert(imgB[bofs + 21] === ((70000 >> 16) & 0xFF), 'morelength byte (21) holds high byte of length');
+            const bd = DidaktikLoader.extractFile(imgB, bf);
+            let bok = !!bd && bd.length === 70000;
+            if (bok) for (let i = 0; i < 70000; i += 257) if (bd[i] !== ((i * 3) & 0xFF)) { bok = false; break; }
+            assert(bok, '>64KB file round-trips');
+
+            // (d) delete reclaims sectors for re-use
+            const free1 = DidaktikLoader._freeSectors(img).length;
+            const imgD = DidaktikLoader.deleteFile(img, files.find(f => f.name === 'HELLO'));
+            const free2 = DidaktikLoader._freeSectors(imgD).length;
+            assert(free2 > free1, `delete reclaims free sectors (${free1} → ${free2})`);
+        }
+    }
+
+    // Delete + compaction across formats: build N files, rebuild with the middle one
+    // dropped, and confirm the count falls, survivors stay intact and repack, and free
+    // space is reclaimed. (DSK's mark-0xE5 delete is covered by the headless cross-check.)
+    function runDeleteCompactionTests() {
+        const data = (seed, len) => { const d = new Uint8Array(len); for (let i = 0; i < len; i++) d[i] = (seed + i) & 0xFF; return d; };
+        const eq = (a, ref) => !!a && a.length === ref.length && Array.from(a).every((x, i) => x === ref[i]);
+        const dA = data(0xA0, 200), dB = data(0xB0, 600), dC = data(0xC0, 100); // seeds > 7 so no false 9-byte-header detect
+
+        section('Delete + compaction — TR-DOS (TRD)');
+        {
+            const F = (n, d, a) => ({ name: n, ext: 'C', length: d.length, startAddress: a, programLength: null, sectors: Math.ceil(d.length / 256), data: d });
+            const full = TRDLoader.buildTRD([F('AAA', dA, 0x8000), F('BBB', dB, 0x9000), F('CCC', dC, 0xA000)], 'DELTRD');
+            const freeFull = full[0x800 + 0xE5] | (full[0x800 + 0xE6] << 8);
+            assert(TRDLoader.listFiles(full).length === 3, 'TRD: 3 files before delete');
+            const comp = TRDLoader.buildTRD([F('AAA', dA, 0x8000), F('CCC', dC, 0xA000)], 'DELTRD'); // BBB removed
+            const lc = TRDLoader.listFiles(comp);
+            assert(lc.length === 2 && !lc.some(f => f.name.trim() === 'BBB'), 'TRD: middle file deleted');
+            const c = lc.find(f => f.name.trim() === 'CCC');
+            assert(c.track * 16 + c.sector === 17, 'TRD: survivor repacked into freed space (logical sector 17)');
+            assert(eq(TRDLoader.extractFile(comp, c), dC), 'TRD: survivor data intact after compaction');
+            const freeComp = comp[0x800 + 0xE5] | (comp[0x800 + 0xE6] << 8);
+            assert(freeComp === freeFull + 3, `TRD: 3 sectors reclaimed (${freeFull} → ${freeComp})`);
+            assert(comp[0x800 + 0xE4] === 2, 'TRD: sysinfo file count = 2');
+        }
+
+        section('Delete + compaction — TR-DOS soft delete (0x01 marker)');
+        {
+            const F = (n, d, a, del) => ({ name: n, ext: 'C', length: d.length, startAddress: a, programLength: null, sectors: 1, data: d, deleted: del });
+            const soft = TRDLoader.buildTRD([F('AAA', dC, 0x8000, false), F('BBB', dC, 0x9000, true)], 'SOFT');
+            assert(soft[16] === 0x01, 'TRD soft-delete: entry marked 0x01');
+            assert(TRDLoader.listFiles(soft).length === 1, 'TRD soft-delete: deleted file not listed');
+            assert(soft[0x800 + 0xE4] === 1, 'TRD soft-delete: file count excludes it');
+        }
+
+        section('Delete + compaction — SCL');
+        {
+            const F = (n, d, a) => ({ name: n, ext: 'C', length: d.length, startAddress: a, programLength: null, sectors: Math.ceil(d.length / 256), data: d });
+            const full = SCLLoader.buildSCL([F('AAA', dA, 0x8000), F('BBB', dB, 0x9000), F('CCC', dC, 0xA000)]);
+            assert(SCLLoader.listFiles(full).length === 3, 'SCL: 3 files before delete');
+            const comp = SCLLoader.buildSCL([F('AAA', dA, 0x8000), { ...F('BBB', dB, 0x9000), deleted: true }, F('CCC', dC, 0xA000)]);
+            const lc = SCLLoader.listFiles(comp);
+            assert(lc.length === 2 && !lc.some(f => f.name.trim() === 'BBB'), 'SCL: deleted file dropped');
+            assert(eq(SCLLoader.extractFile(comp, lc.find(f => f.name.trim() === 'CCC')), dC), 'SCL: survivor data intact');
+            assert(comp.length < full.length, 'SCL: archive compacted (smaller)');
+        }
+
+        section('Delete + compaction — MGT (+D)');
+        {
+            const F = (n, d, a) => ({ name: n, data: d, startAddress: a });
+            const full = MGTLoader.buildMGT([F('AAA', dA, 0x8000), F('BBB', dB, 0x9000), F('CCC', dC, 0xA000)], 'DELMGT');
+            const freeFull = MGTLoader.getDiskInfo(full).freeSectors;
+            assert(MGTLoader.listFiles(full).length === 3, 'MGT: 3 files before delete');
+            const comp = MGTLoader.buildMGT([F('AAA', dA, 0x8000), F('CCC', dC, 0xA000)], 'DELMGT');
+            const lc = MGTLoader.listFiles(comp);
+            assert(lc.length === 2 && !lc.some(f => (f.name || '').trim() === 'BBB'), 'MGT: deleted file gone');
+            assert(eq(MGTLoader.extractFile(comp, lc.find(f => (f.name || '').trim() === 'CCC')), dC), 'MGT: survivor data intact');
+            assert(MGTLoader.getDiskInfo(comp).freeSectors > freeFull, 'MGT: free sectors reclaimed');
+        }
+
+        section('Delete + compaction — Microdrive (MDR)');
+        {
+            const F = (n, d) => ({ name: n, data: d, isPrint: false });
+            const full = MDRLoader.buildMDR([F('AAA', dA), F('BBB', dB), F('CCC', dC)], 'DELMDR');
+            assert(MDRLoader.listFiles(full).length === 3, 'MDR: 3 files before delete');
+            const comp = MDRLoader.buildMDR([F('AAA', dA), F('CCC', dC)], 'DELMDR');
+            const lc = MDRLoader.listFiles(comp);
+            assert(lc.length === 2 && !lc.some(f => (f.name || '').trim() === 'BBB'), 'MDR: deleted file gone');
+            assert(eq(MDRLoader.extractFile(comp, lc.find(f => (f.name || '').trim() === 'CCC')), dC), 'MDR: survivor data intact');
+        }
+
+        section('Delete + compaction — OPD (Opus)');
+        {
+            const F = (n, d, a) => ({ name: n, type: 3, data: d, startAddr: a, autostart: 0 });
+            const full = OPDLoader.buildOPD([F('AAA', dA, 0x8000), F('BBB', dB, 0x9000), F('CCC', dC, 0xA000)], 'DELOPD', 1);
+            const freeFull = OPDLoader.getDiskInfo(full).freeSectors;
+            assert(OPDLoader.listFiles(full).length === 3, 'OPD: 3 files before delete');
+            const comp = OPDLoader.buildOPD([F('AAA', dA, 0x8000), F('CCC', dC, 0xA000)], 'DELOPD', 1);
+            const lc = OPDLoader.listFiles(comp);
+            assert(lc.length === 2 && !lc.some(f => (f.name || '').trim() === 'BBB'), 'OPD: deleted file gone');
+            assert(eq(OPDLoader.extractFile(comp, lc.find(f => (f.name || '').trim() === 'CCC')), dC), 'OPD: survivor data intact');
+            assert(OPDLoader.getDiskInfo(comp).freeSectors > freeFull, 'OPD: free sectors reclaimed');
+        }
+    }
+
+    // Keep-slack copy (Explorer "Keep slack" / "bin full sectors"): the load-bearing
+    // guarantees are (1) buildTRD writes & a rebuild preserves a CODE file's last-sector
+    // slack, and (2) the cut-to-target-room fill (applyKeptSlack) carries slack to a
+    // destination, truncated to the target's own last-sector room (never bloats).
+    function runSlackTests() {
+        const eq = (a, ref) => !!a && a.length === ref.length && Array.from(a).every((x, i) => x === ref[i]);
+        // Mirror of ui/explorer.js applyKeptSlack
+        const applyKeptSlack = (entry, slack) => {
+            if (!slack || !slack.length || !entry.data) return;
+            const room = entry.data.length - entry.length;
+            if (room <= 0) return;
+            entry.data.set(slack.subarray(0, room), entry.length);
+        };
+
+        section('Keep slack — TR-DOS last-sector preserved through buildTRD');
+        {
+            const logical = 300, secs = 2;
+            const padded = new Uint8Array(secs * 256);
+            for (let i = 0; i < logical; i++) padded[i] = (0xC0 + i) & 0xFF;
+            const slackPattern = new Uint8Array(secs * 256 - logical);
+            for (let i = 0; i < slackPattern.length; i++) slackPattern[i] = (0x5A + i) & 0xFF;
+            padded.set(slackPattern, logical);
+            const F = (n, d, len, a) => ({ name: n, ext: 'C', length: len, startAddress: a, programLength: null, sectors: Math.ceil(d.length / 256), data: d });
+            const srcTrd = TRDLoader.buildTRD([F('SLK', padded, logical, 0x8000)], 'SLACK');
+            const sl = TRDLoader.listFiles(srcTrd);
+            const off = (sl[0].track * 16 + sl[0].sector) * 256;
+            const fullRead = srcTrd.slice(off, off + sl[0].sectors * 256);
+            assert(eq(fullRead.slice(logical), slackPattern), 'TRD: buildTRD writes & preserves last-sector slack');
+            assert(eq(TRDLoader.extractFile(srcTrd, sl[0]), padded.slice(0, logical)), 'TRD: logical extract still drops slack');
+            assert(eq(padded.slice(logical, secs * 256), slackPattern), 'TRD: source carry = data.slice(length, sectors*256)');
+        }
+
+        section('Keep slack — cut to the target last-sector room (no bloat)');
+        {
+            const tgtLogical = 412;                       // 2 sectors (512) -> room = 100
+            const entry = { length: tgtLogical, data: new Uint8Array(Math.ceil(tgtLogical / 256) * 256) };
+            const room = entry.data.length - entry.length;
+            const srcSlack = new Uint8Array(212);          // larger than the target room
+            for (let i = 0; i < srcSlack.length; i++) srcSlack[i] = (i + 1) & 0xFF;
+            applyKeptSlack(entry, srcSlack);
+            assert(room === 100, 'cut: target room computed (512 - 412)');
+            assert(eq(entry.data.slice(tgtLogical), srcSlack.subarray(0, room)), 'cut: only the first 100 slack bytes kept');
+            assert(entry.data.length === 512, 'cut: allocation not bloated (still 2 sectors)');
+        }
+
+        section('Keep slack — same-size target keeps all slack');
+        {
+            const len = 300;
+            const entry = { length: len, data: new Uint8Array(512) };
+            const srcSlack = new Uint8Array(512 - len);
+            for (let i = 0; i < srcSlack.length; i++) srcSlack[i] = (0xE0 + i) & 0xFF;
+            applyKeptSlack(entry, srcSlack);
+            assert(eq(entry.data.slice(len), srcSlack), 'same-size: all slack bytes preserved');
+        }
+    }
+
     function runAll() {
         logEl.innerHTML = '';
         passed = 0;
@@ -1665,6 +2106,9 @@
         try { runMGTLoaderTests(); } catch(e) { log(`ERROR in MGTLoader: ${e.message}`, 'fail'); }
         try { runMDRLoaderTests(); } catch(e) { log(`ERROR in MDRLoader: ${e.message}`, 'fail'); }
         try { runOPDLoaderTests(); } catch(e) { log(`ERROR in OPDLoader: ${e.message}`, 'fail'); }
+        try { runDidaktikLoaderTests(); } catch(e) { log(`ERROR in DidaktikLoader: ${e.message}`, 'fail'); }
+        try { runDeleteCompactionTests(); } catch(e) { log(`ERROR in Delete/Compaction: ${e.message}`, 'fail'); }
+        try { runSlackTests(); } catch(e) { log(`ERROR in Keep-slack: ${e.message}`, 'fail'); }
         updateSummary();
     }
 
@@ -1679,6 +2123,7 @@
     window.runMGTLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMGTLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
     window.runMDRLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMDRLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
     window.runOPDLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runOPDLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runDidaktikLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runDidaktikLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
 
     // Auto-run
     runAll();

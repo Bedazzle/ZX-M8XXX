@@ -1,0 +1,79 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>HALT/INT Tests</title>
+<style>body{font-family:monospace;background:#1a1a1a;color:#ddd;padding:1em}
+.pass{color:#5f5}.fail{color:#f55}.section{color:#5cf;margin-top:1em}
+#summary{font-size:1.1em;padding:.5em;margin-bottom:1em;border:1px solid #444}</style></head>
+<body>
+<h1>HALT / Interrupt Tests</h1>
+<div id="summary">running…</div>
+<pre id="log"></pre>
+<script type="module">
+import { Spectrum } from '../core/spectrum.js';
+
+const logEl = document.getElementById('log');
+const summaryEl = document.getElementById('summary');
+let passed = 0, failed = 0;
+function log(msg, cls){ const d = document.createElement('div'); if(cls) d.className=cls; d.textContent=msg; logEl.appendChild(d); }
+function assert(cond, name, detail=''){ if(cond){passed++; log('  ✓ '+name,'pass');} else {failed++; log('  ✗ '+name+(detail?' — '+detail:''),'fail');} }
+function section(n){ log('═══ '+n+' ═══','section'); }
+
+function makeMachine(type){
+    const canvas = document.createElement('canvas');
+    canvas.width = 320; canvas.height = 240;
+    const sp = new Spectrum(canvas, { machineType: type });
+    sp.reset();
+    return sp;
+}
+
+// Build an EI/HALT main loop whose EI lives in the post-HALT body (NOT the handler),
+// plus an IM2 handler that only bumps a counter and RETs (does NOT re-enable ints).
+// This is the pattern used by demos like the "shock" megademo: it only keeps running
+// if the interrupt that wakes the HALT returns to the instruction AFTER the HALT.
+function setupHaltLoop(sp){
+    const w = (a,v) => sp.memory.write(a & 0xffff, v & 0xff);
+    // Main loop @ 0x8000
+    w(0x8000, 0x76);                 // HALT
+    w(0x8001, 0xFB);                 // EI
+    w(0x8002, 0x18); w(0x8003, 0xFC);// JR 0x8000
+    // IM2 handler @ 0xC200: LD A,(0xBF00); INC A; LD (0xBF00),A; RET   (no EI)
+    w(0xC200, 0x3A); w(0xC201, 0x00); w(0xC202, 0xBF);
+    w(0xC203, 0x3C);
+    w(0xC204, 0x32); w(0xC205, 0x00); w(0xC206, 0xBF);
+    w(0xC207, 0xC9);
+    // IM2 vector table: (I<<8)|0xFF -> 0xC0FF must point at the handler (0xC200)
+    w(0xC0FF, 0x00); w(0xC100, 0xC2);
+    w(0xBF00, 0x00);                 // frame counter
+    // CPU state: resumed sitting ON the HALT, interrupts enabled, IM2 — like a snapshot
+    const c = sp.cpu;
+    c.pc = 0x8000; c.sp = 0xBFF0;
+    c.i = 0xC0; c.im = 2;
+    c.iff1 = 1; c.iff2 = 1;
+    c.halted = false; c.eiPending = false;
+    c.tStates = 0;
+}
+
+function run(){
+    section('IM2 EI/HALT main loop (EI in post-HALT body) resumed on the HALT');
+    const sp = makeMachine('48k');
+    setupHaltLoop(sp);
+    const N = 12;
+    for (let f = 0; f < N; f++) sp.runFrame();
+    const counter = sp.memory.read(0xBF00);
+    assert(counter === N, `handler runs once per frame (interrupt keeps firing)`, `counter=${counter}, expected ${N}`);
+    assert(!!sp.cpu.iff1, 'interrupts remain enabled across frames', `iff1=${sp.cpu.iff1}`);
+    assert(sp.cpu.halted === true, 'CPU is halted at frame end (waiting for next INT)');
+
+    section('128K variant');
+    const sp2 = makeMachine('128k');
+    setupHaltLoop(sp2);
+    for (let f = 0; f < N; f++) sp2.runFrame();
+    const counter2 = sp2.memory.read(0xBF00);
+    assert(counter2 === N, '128K: handler runs once per frame', `counter=${counter2}, expected ${N}`);
+
+    summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed+failed}`;
+    summaryEl.className = failed > 0 ? 'fail' : 'pass';
+}
+
+try { run(); }
+catch(e){ summaryEl.textContent = 'ERROR: ' + e; summaryEl.className='fail'; log(String(e&&e.stack||e),'fail'); }
+</script>
+</body></html>

@@ -93,6 +93,13 @@ import { Disassembler } from './disasm.js';
             this.beeperChanges = [];      // Array of {tStates, level} for frame
             this.beeperLevel = 0;         // Current beeper output level (0 or 1)
 
+            // AY register write tracking for audio generation. Writes are timestamped
+            // (frame-relative T-state) and replayed in processFrame so intra-frame
+            // volume changes — digitized speech / sample playback via R8-R10 — are
+            // reproduced instead of being collapsed to the last value of the frame.
+            this.ayChanges = [];          // Array of {tStates, reg, value} for frame
+            this.ayStateSnapshot = null;  // AY state at frame start (replay baseline)
+
             // Tape audio setting (enable loading sounds)
             this.tapeAudioEnabled = true;
             
@@ -1741,8 +1748,13 @@ import { Disassembler } from './disasm.js';
                     // Port 0xFFFD: AY register select
                     this.ay.selectRegister(val);
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_DATA) {
-                    // Port 0xBFFD: AY register write
+                    // Port 0xBFFD: AY register write. Applied immediately (so register
+                    // readback / AY-detection see the value), and also recorded with its
+                    // frame-relative T-state so processFrame can replay intra-frame
+                    // volume changes (digitized speech) at the right moment.
+                    const reg = this.ay.selectedRegister;
                     this.ay.writeRegister(val);
+                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: this.ay.registers[reg] });
                 }
             }
 
@@ -1796,6 +1808,9 @@ import { Disassembler } from './disasm.js';
             this.ula.processExtendedMode(); // Process extended mode key sequences
             this.lastContentionLine = -1;  // Reset per-line contention tracking
             this.beeperChanges = [];       // Reset beeper changes for new frame
+            // Snapshot AY state (replay baseline) and clear this frame's writes
+            this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
+            this.ayChanges = [];
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -1833,6 +1848,16 @@ import { Disassembler } from './disasm.js';
             const normalIntWindow = !this.rzxPlaying &&
                 this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
                 this.cpu.iff1 && !this.cpu.eiPending;
+            // A real Z80 executes the instruction at PC before accepting an interrupt.
+            // If PC sits on a not-yet-executed HALT, enter the halt state first so
+            // interrupt() returns to the instruction AFTER the HALT (PC+1). Otherwise
+            // the INT pushes the HALT's own address and a handler that re-enables
+            // interrupts only in its post-HALT loop body halts forever — which froze
+            // demos resumed from a snapshot whose PC was saved on an EI/HALT main loop
+            // (snapshot load resets frame-start tStates to 0, landing in the INT window).
+            if (normalIntWindow && !this.cpu.halted && this.memory.read(this.cpu.pc) === 0x76) {
+                this.cpu.halted = true;
+            }
             if (rzxHaltedNeedsInt || normalIntWindow) {
                 // RZX recording: capture instruction count BEFORE interrupt
                 if (this.rzxRecording && !intFired) {
@@ -2338,7 +2363,7 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
             }
 
             // Advance AY logging frame counter
@@ -2459,6 +2484,9 @@ import { Disassembler } from './disasm.js';
             this.ula.processExtendedMode(); // Process extended mode key sequences
             this.lastContentionLine = -1;
             this.beeperChanges = [];       // Reset beeper changes for new frame
+            // Snapshot AY state (replay baseline) and clear this frame's writes
+            this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
+            this.ayChanges = [];
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -2718,7 +2746,7 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
             }
 
             // Advance AY logging frame counter
@@ -9231,8 +9259,17 @@ import { Disassembler } from './disasm.js';
          * @param {number} beeperLevel - Final beeper level at end of frame
          * @param {Array} tapeAudioChanges - Array of {tStates, level} tape signal changes
          */
-        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = []) {
+        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = [], ayChanges = [], aySnapshot = null) {
             if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
+
+            // Restore the AY to its start-of-frame state so the timestamped register
+            // writes can be replayed at the right T-state during the sample loop. The
+            // chip is only stepped here, so without this the whole frame would render
+            // with the final register values (which destroys digitized speech).
+            if (this.ay && aySnapshot) {
+                this.ay.importState(aySnapshot);
+            }
+            let ayIdx = 0;
 
             // Generate samples for this frame
             const samplesToGenerate = this.samplesPerFrame;
@@ -9286,6 +9323,12 @@ import { Disassembler } from './disasm.js';
                 // Get AY sample (if AY is available)
                 let left = 0, right = 0;
                 if (this.ay) {
+                    // Apply any AY register writes that occurred up to this sample's
+                    // T-state, then step. This reproduces intra-frame volume changes.
+                    while (ayIdx < ayChanges.length && ayChanges[ayIdx].tStates <= sampleTstates) {
+                        this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                        ayIdx++;
+                    }
                     this.ay.stepMultiple(Math.round(ayStepsPerSample));
                     [left, right] = this.ay.getAveragedSample();
                 }
@@ -9316,6 +9359,15 @@ import { Disassembler } from './disasm.js';
                 // Flush when buffer is full
                 if (this.sendBufferPos >= this.sendBufferSize) {
                     this.flushSamples();
+                }
+            }
+
+            // Apply any AY writes that landed after the last sample point, so the chip
+            // ends the frame at the final register state (matches immediate-write state).
+            if (this.ay) {
+                while (ayIdx < ayChanges.length) {
+                    this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                    ayIdx++;
                 }
             }
 

@@ -106,164 +106,66 @@ export const VFS = {
         return false;
     },
 
-    // Get text file content
-    getFile(path, fromFile = '') {
+    // Resolve `path` (relative to `fromFile`) to an actual key in `files`, trying
+    // in order: exact resolved → case-insensitive resolved → each include path
+    // (exact then ci) → normalized-from-root (exact then ci) → basename (ci).
+    // Returns the matched key, or null if not found. Shared by getFile/getBinaryFile.
+    _resolveExisting(path, fromFile = '') {
         const files = this.files || {};
+        const ci = (target) => {
+            const t = target.toLowerCase();
+            for (const fp in files) if (fp.toLowerCase() === t) return fp;
+            return null;
+        };
+
         const resolved = this.resolvePath(path, fromFile);
-        
-        if (resolved in files) {
-            const file = files[resolved];
-            if (file.binary) {
-                return { error: `Cannot INCLUDE binary file: ${path}` };
-            }
-            return { path: resolved, content: file.content };
-        }
-        
-        // Try case-insensitive lookup on resolved path
-        const resolvedLower = resolved.toLowerCase();
-        for (const filePath in files) {
-            if (filePath.toLowerCase() === resolvedLower) {
-                const file = files[filePath];
-                if (file.binary) {
-                    return { error: `Cannot INCLUDE binary file: ${path}` };
-                }
-                return { path: filePath, content: file.content };
-            }
-        }
-        
-        // Try include paths
+        if (resolved in files) return resolved;
+        let hit = ci(resolved);
+        if (hit) return hit;
+
         for (const incPath of (this.includePaths || [])) {
             const tryPath = this.normalizePath(incPath + '/' + path);
-            if (tryPath in files) {
-                const file = files[tryPath];
-                if (file.binary) {
-                    return { error: `Cannot INCLUDE binary file: ${path}` };
-                }
-                return { path: tryPath, content: file.content };
-            }
-            // Case-insensitive
-            const tryPathLower = tryPath.toLowerCase();
-            for (const filePath in files) {
-                if (filePath.toLowerCase() === tryPathLower) {
-                    const file = files[filePath];
-                    if (file.binary) {
-                        return { error: `Cannot INCLUDE binary file: ${path}` };
-                    }
-                    return { path: filePath, content: file.content };
-                }
-            }
+            if (tryPath in files) return tryPath;
+            hit = ci(tryPath);
+            if (hit) return hit;
         }
-        
-        // Try without relative path - use path as-is from project root
+
         const normalizedPath = this.normalizePath(path);
-        if (normalizedPath in files) {
-            const file = files[normalizedPath];
-            if (file.binary) {
-                return { error: `Cannot INCLUDE binary file: ${path}` };
-            }
-            return { path: normalizedPath, content: file.content };
-        }
-        
-        // Case-insensitive on normalized path
-        const normalizedLower = normalizedPath.toLowerCase();
-        for (const filePath in files) {
-            if (filePath.toLowerCase() === normalizedLower) {
-                const file = files[filePath];
-                if (file.binary) {
-                    return { error: `Cannot INCLUDE binary file: ${path}` };
-                }
-                return { path: filePath, content: file.content };
-            }
-        }
-        
-        // Final fallback: search by basename (case-insensitive)
+        if (normalizedPath in files) return normalizedPath;
+        hit = ci(normalizedPath);
+        if (hit) return hit;
+
         const basename = path.split('/').pop().toLowerCase();
-        for (const filePath in files) {
-            const fileBasename = filePath.split('/').pop().toLowerCase();
-            if (fileBasename === basename) {
-                const file = files[filePath];
-                if (file.binary) {
-                    return { error: `Cannot INCLUDE binary file: ${path}` };
-                }
-                return { path: filePath, content: file.content };
-            }
+        for (const fp in files) {
+            if (fp.split('/').pop().toLowerCase() === basename) return fp;
         }
-        
-        return { error: `File not found: ${path}` };
+        return null;
+    },
+
+    // Get text file content
+    getFile(path, fromFile = '') {
+        const hit = this._resolveExisting(path, fromFile);
+        if (!hit) return { error: `File not found: ${path}` };
+        const file = this.files[hit];
+        if (file.binary) return { error: `Cannot INCLUDE binary file: ${path}` };
+        return { path: hit, content: file.content };
     },
 
     // Get binary file content
     getBinaryFile(path, fromFile = '') {
-        const files = this.files || {};
-        const resolved = this.resolvePath(path, fromFile);
-        
-        // Helper to return file content as binary
-        const getAsBinary = (filePath) => {
-            const file = files[filePath];
-            if (!file) return { error: `File not found: ${path}` };
-            if (!file.binary) {
-                // Text file - convert to bytes
-                const content = file.content || '';
-                const bytes = new Uint8Array(content.length);
-                for (let i = 0; i < content.length; i++) {
-                    bytes[i] = content.charCodeAt(i) & 0xFF;
-                }
-                return { path: filePath, content: bytes };
+        const hit = this._resolveExisting(path, fromFile);
+        if (!hit) return { error: `File not found: ${path}` };
+        const file = this.files[hit];
+        if (!file.binary) {
+            // Text file - convert to bytes
+            const content = file.content || '';
+            const bytes = new Uint8Array(content.length);
+            for (let i = 0; i < content.length; i++) {
+                bytes[i] = content.charCodeAt(i) & 0xFF;
             }
-            return { path: filePath, content: file.content };
-        };
-        
-        if (resolved in files) {
-            return getAsBinary(resolved);
+            return { path: hit, content: bytes };
         }
-        
-        // Case-insensitive lookup
-        const resolvedLower = resolved.toLowerCase();
-        for (const filePath in files) {
-            if (filePath.toLowerCase() === resolvedLower) {
-                return getAsBinary(filePath);
-            }
-        }
-        
-        // Try include paths
-        for (const incPath of (this.includePaths || [])) {
-            const tryPath = this.normalizePath(incPath + '/' + path);
-            if (tryPath in files) {
-                return getAsBinary(tryPath);
-            }
-            // Case-insensitive
-            const tryPathLower = tryPath.toLowerCase();
-            for (const filePath in files) {
-                if (filePath.toLowerCase() === tryPathLower) {
-                    return getAsBinary(filePath);
-                }
-            }
-        }
-        
-        // Try without relative path - use path as-is from project root
-        const normalizedPath = this.normalizePath(path);
-        if (normalizedPath in files) {
-            return getAsBinary(normalizedPath);
-        }
-        
-        // Case-insensitive on normalized path
-        const normalizedLower = normalizedPath.toLowerCase();
-        for (const filePath in files) {
-            if (filePath.toLowerCase() === normalizedLower) {
-                return getAsBinary(filePath);
-            }
-        }
-        
-        // Final fallback: search by basename (case-insensitive)
-        const basename = path.split('/').pop().toLowerCase();
-        for (const filePath in files) {
-            const fileBasename = filePath.split('/').pop().toLowerCase();
-            if (fileBasename === basename) {
-                return getAsBinary(filePath);
-            }
-        }
-        
-        return { error: `File not found: ${path}` };
+        return { path: hit, content: file.content };
     },
 
     // List all files

@@ -91,11 +91,12 @@
         <button onclick="runDSKTests()">DSK</button>
         <button onclick="runSZXTests()">SZX</button>
         <button onclick="runWAVTests()">WAV</button>
+        <button onclick="runZ80Tests()">Z80</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, SZXLoader, ZipLoader, RZXLoader, WAVLoader } from '../core/loaders.js';
+    import { TapeLoader, TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, SZXLoader, ZipLoader, RZXLoader, WAVLoader, SnapshotLoader } from '../core/loaders.js';
     import { DSKLoader, DSKImage } from '../core/fdc.js';
 
     const TEST_VERSION = '0.9.12';
@@ -151,12 +152,15 @@
             for (let i = 0; i < 8; i++) trd[offset + i] = name.charCodeAt(i);
             // Extension byte
             trd[offset + 8] = f.ext.charCodeAt(0);
-            // Start address (little-endian)
-            trd[offset + 9] = f.start & 0xFF;
-            trd[offset + 10] = (f.start >> 8) & 0xFF;
-            // Length (little-endian)
-            trd[offset + 11] = f.data.length & 0xFF;
-            trd[offset + 12] = (f.data.length >> 8) & 0xFF;
+            // BASIC (B): 9-10 = total length (program+vars), 11-12 = program length;
+            // others: 9-10 = start address, 11-12 = length. (TR-DOS convention)
+            const isBasicEntry = f.ext === 'B';
+            const w9 = isBasicEntry ? f.data.length : f.start;
+            const w11 = isBasicEntry ? (f.progLen != null ? f.progLen : f.data.length) : f.data.length;
+            trd[offset + 9] = w9 & 0xFF;
+            trd[offset + 10] = (w9 >> 8) & 0xFF;
+            trd[offset + 11] = w11 & 0xFF;
+            trd[offset + 12] = (w11 >> 8) & 0xFF;
             // Sectors
             const sectors = Math.ceil(f.data.length / 256);
             trd[offset + 13] = sectors;
@@ -212,10 +216,15 @@
             const name = (f.name + '        ').substring(0, 8);
             for (let i = 0; i < 8; i++) scl[pos++] = name.charCodeAt(i);
             scl[pos++] = f.ext.charCodeAt(0);
-            scl[pos++] = f.start & 0xFF;
-            scl[pos++] = (f.start >> 8) & 0xFF;
-            scl[pos++] = f.data.length & 0xFF;
-            scl[pos++] = (f.data.length >> 8) & 0xFF;
+            // BASIC (B): 9-10 = total length, 11-12 = program length; others:
+            // 9-10 = start address, 11-12 = length. (TR-DOS convention)
+            const isBasicEntry = f.ext === 'B';
+            const w9 = isBasicEntry ? f.data.length : f.start;
+            const w11 = isBasicEntry ? (f.progLen != null ? f.progLen : f.data.length) : f.data.length;
+            scl[pos++] = w9 & 0xFF;
+            scl[pos++] = (w9 >> 8) & 0xFF;
+            scl[pos++] = w11 & 0xFF;
+            scl[pos++] = (w11 >> 8) & 0xFF;
             scl[pos++] = Math.ceil(f.data.length / 256);
         }
 
@@ -677,6 +686,37 @@
             assert(tapBlocks !== null && tapBlocks !== undefined, 'fileToTAP returns result');
             assert(tapBlocks.length >= 1, 'fileToTAP produces at least 1 block');
         }
+
+        section('TRD - BASIC with variables area');
+
+        {
+            // A BASIC file = program (10 bytes) + variables area (6 bytes) = 16 total.
+            // Per TR-DOS: dir 9-10 = total length (16), 11-12 = program length (10).
+            const prog = new Uint8Array(16);
+            for (let i = 0; i < 16; i++) prog[i] = i + 1;   // 0x01..0x10
+            const trd = buildTestTRD([
+                { name: 'withvars', ext: 'B', start: 0, data: prog, progLen: 10 }
+            ]);
+            const files = TRDLoader.listFiles(trd);
+            assert(files.length === 1, 'BASIC TRD has 1 file');
+            const f = files[0];
+            assert(f.type === 'basic', 'BASIC type detected');
+            assert(f.length === 16, 'length is the TOTAL program+variables', `got ${f.length}`);
+            assert(f.programLength === 10, 'programLength is the variables offset', `got ${f.programLength}`);
+            assert(f.start === 0, 'BASIC start address is 0 (no load address)');
+            // Extraction must keep the whole program + variables (the bug truncated it)
+            const data = TRDLoader.extractFile(trd, f);
+            assert(data.length === 16, 'extractFile returns full program+variables', `got ${data ? data.length : 'null'}`);
+            assert(Array.from(data).every((b, i) => b === i + 1), 'extracted bytes match (variables preserved)');
+            // TAP header: data length = total, program-length param2 = variables offset.
+            // fileToTAP returns a flat TAP (2-byte length prefix + 19-byte header block),
+            // so header byte i lives at tap[2 + i].
+            const tap = TRDLoader.fileToTAP(data, f);
+            const H = (i) => tap[2 + i] | (tap[2 + i + 1] << 8);
+            assert(H(12) === 16, 'TAP header data length = total (16)', `got ${H(12)}`);
+            assert(H(16) === 10, 'TAP header param2 = program length (10)', `got ${H(16)}`);
+            assert(H(14) >= 0x8000, 'TAP header autostart = none', `got ${H(14)}`);
+        }
     }
 
     // ==================== SCL TESTS ====================
@@ -783,6 +823,53 @@
             assert(MGTLoader.isMGT(new Uint8Array(819199)) === false, '1 byte too small');
             assert(MGTLoader.isMGT(new Uint8Array(500000)) === false, 'random size rejected');
         }
+
+        section('MGT - buildMGT round-trip (chain format)');
+
+        {
+            const cmp = (a, b) => {
+                if (!a || a.length !== b.length) return false;
+                for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+                return true;
+            };
+            // multi-sector files exercise the 510-data + 2-byte chain pointer layout
+            const d1 = new Uint8Array(1200); for (let i = 0; i < 1200; i++) d1[i] = (i * 3 + 10) & 0xFF; // 3 sectors
+            const d2 = new Uint8Array(400);  for (let i = 0; i < 400; i++)  d2[i] = (i * 7 + 20) & 0xFF; // 1 sector
+            const d3 = new Uint8Array(1020); for (let i = 0; i < 1020; i++) d3[i] = (i * 5 + 30) & 0xFF; // 3 sectors once the 9-byte +D header is prepended (1020+9=1029)
+
+            const img = MGTLoader.buildMGT([
+                { name: 'CODE1', mgtType: 4, tapeType: 3, length: 1200, data: d1, startAddress: 0x8000 },
+                { name: 'CODE2', mgtType: 4, tapeType: 3, length: 400,  data: d2, startAddress: 0x9000 },
+                { name: 'CODE3', mgtType: 4, tapeType: 3, length: 1020, data: d3, startAddress: 0xA000 },
+            ]);
+            assert(img.length === 819200, 'built image is DS size');
+            assert(MGTLoader.isMGT(img) === true, 'built image detected as MGT');
+
+            const files = MGTLoader.listFiles(img);
+            assert(files.length === 3, `3 files listed (got ${files.length})`);
+
+            const f1 = files.find(f => f.name === 'CODE1');
+            assert(!!f1 && f1.sectors === 3, `CODE1 uses 3 chain sectors (got ${f1 ? f1.sectors : '?'})`);
+            assert(cmp(MGTLoader.extractFile(img, f1), d1), 'CODE1 (3 sectors) round-trips byte-identical');
+
+            const f2 = files.find(f => f.name === 'CODE2');
+            assert(!!f2 && cmp(MGTLoader.extractFile(img, f2), d2), 'CODE2 (1 sector) round-trips');
+
+            const f3 = files.find(f => f.name === 'CODE3');
+            assert(!!f3 && f3.sectors === 3, `CODE3 uses 3 chain sectors incl. 9-byte header (got ${f3 ? f3.sectors : '?'})`);
+            assert(cmp(MGTLoader.extractFile(img, f3), d3), 'CODE3 (3 sectors) round-trips');
+
+            assert(f1.startAddress === 0x8000 && f3.startAddress === 0xA000, 'start addresses preserved');
+
+            // BASIC file: autostart + body length carried in metadata
+            const bas = new Uint8Array(300); for (let i = 0; i < 300; i++) bas[i] = (i + 1) & 0xFF;
+            const bimg = MGTLoader.buildMGT([
+                { name: 'PROG', mgtType: 1, tapeType: 0, length: 300, data: bas, startAddress: 23755, bodyLength: 200, autostart: 10 },
+            ]);
+            const bf = MGTLoader.listFiles(bimg)[0];
+            assert(bf && bf.type === 1 && bf.autostart === 10, 'BASIC autostart preserved');
+            assert(cmp(MGTLoader.extractFile(bimg, bf), bas), 'BASIC data round-trips');
+        }
     }
 
     // ==================== MDR TESTS ====================
@@ -862,8 +949,8 @@
             const data = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
             const chk = MDRLoader.mdrChecksum(data, 0, 4);
             assert(typeof chk === 'number', 'checksum returns number');
-            assert(chk >= 0 && chk <= 255, 'checksum in 0-255 range');
-            // 1+2+3+4 = 10 mod 256 = 10 (or XOR-based depending on impl)
+            assert(chk >= 0 && chk <= 254, 'checksum in 0-254 range (IF1 mod 255, never 255)');
+            assert(chk === 10, '1+2+3+4 = 10 (mod 255)');
         }
 
         section('MDR - Constants');
@@ -1067,7 +1154,7 @@
 
         {
             const opd = OPDLoader.createBlankOPD(2);
-            assert(opd.length === 368640, 'DS OPD size = 368640');
+            assert(opd.length === 737280, 'DS OPD size = 737280 (80-track)');
             assert(OPDLoader.isOPD(opd) === true, 'blank DS OPD is valid');
             assert(OPDLoader.isDoubleSided(opd) === true, 'double-sided');
         }
@@ -1088,7 +1175,8 @@
             const opd = OPDLoader.createBlankOPD(2);
             const info = OPDLoader.getDiskInfo(opd);
             assert(info.sides === 2, 'DS sides = 2');
-            assert(info.totalSize === 368640, 'DS totalSize correct');
+            assert(info.tracks === 80, 'DS tracks = 80');
+            assert(info.totalSize === 737280, 'DS totalSize correct');
         }
 
         section('OPD - Sector offset calculation');
@@ -1117,9 +1205,38 @@
         {
             assert(OPDLoader.SECTORS_PER_TRACK === 18, 'SECTORS_PER_TRACK = 18');
             assert(OPDLoader.BYTES_PER_SECTOR === 256, 'BYTES_PER_SECTOR = 256');
-            assert(OPDLoader.TRACKS === 40, 'TRACKS = 40');
             assert(OPDLoader.SS_SIZE === 184320, 'SS_SIZE correct');
-            assert(OPDLoader.DS_SIZE === 368640, 'DS_SIZE correct');
+            assert(OPDLoader.DS_SIZE === 737280, 'DS_SIZE correct (80-track DS)');
+        }
+
+        section('OPD - buildOPD round-trip');
+
+        {
+            const cmp = (a, b) => {
+                if (!a || a.length !== b.length) return false;
+                for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+                return true;
+            };
+            const d1 = new Uint8Array(700); for (let i = 0; i < 700; i++) d1[i] = (i * 3 + 5) & 0xFF; // 3 sectors (700+7 header)
+            const d2 = new Uint8Array(200); for (let i = 0; i < 200; i++) d2[i] = (i * 7 + 9) & 0xFF; // 1 sector
+            const img = OPDLoader.buildOPD([
+                { name: 'CODE1', type: 3, data: d1, startAddr: 0x8000 },
+                { name: 'PROG1', type: 0, data: d2, autostart: 10, progLength: 200 },
+            ], 'TESTDISK', 1, OPDLoader.createBlankOPD(1));
+
+            assert(OPDLoader.isOPD(img) === true, 'built OPD is valid');
+            const files = OPDLoader.listFiles(img);
+            assert(files.length === 2, `2 files listed (got ${files.length})`);
+
+            const f1 = files.find(f => f.name === 'CODE1');
+            assert(!!f1 && f1.type === 3 && f1.startAddr === 0x8000, 'CODE1 header (type 3, addr 0x8000)');
+            assert(cmp(OPDLoader.extractFile(img, f1), d1), 'CODE1 (3 sectors) round-trips byte-identical');
+
+            const f2 = files.find(f => f.name === 'PROG1');
+            assert(!!f2 && f2.type === 0 && f2.autostart === 10, 'PROG1 BASIC header (autostart 10)');
+            assert(cmp(OPDLoader.extractFile(img, f2), d2), 'PROG1 (1 sector) round-trips');
+
+            assert(OPDLoader.getDiskInfo(img).diskLabel === 'TESTDISK', 'disk label preserved');
         }
     }
 
@@ -1552,6 +1669,45 @@
         }
     }
 
+    function runZ80Tests() {
+        const ld = new SnapshotLoader();
+
+        section('Z80 - RLE decompression (ED ED run, v1 vs v2/3 end marker)');
+        {
+            // ED ED 04 AA → four 0xAA, then literals copied through
+            const r = ld.decompressZ80Block(new Uint8Array([0xED, 0xED, 0x04, 0xAA, 0x01, 0x02]), 100, true, false);
+            assert(r.length === 6 && r[0] === 0xAA && r[3] === 0xAA && r[4] === 0x01 && r[5] === 0x02,
+                'ED ED 04 AA expands to 4×AA then literals', `got len ${r.length}`);
+
+            // v1: the 00 ED ED 00 end marker terminates the block
+            const seq = new Uint8Array([0x42, 0x00, 0xED, 0xED, 0x00, 0x99]);
+            const v1 = ld.decompressZ80Block(seq, 100, true, true);
+            assert(v1.length === 1 && v1[0] === 0x42, 'v1: 00 ED ED 00 ends the block', `got len ${v1.length}`);
+
+            // v2/3: same bytes are NOT an end marker (those blocks are length-prefixed)
+            const v23 = ld.decompressZ80Block(seq, 100, true, false);
+            assert(v23.length > v1.length, 'v2/3: 00 ED ED 00 is NOT an end marker', `v1=${v1.length} v23=${v23.length}`);
+        }
+
+        section('Z80 - byte 12 == 255 treated as 1 (compatibility rule)');
+        {
+            // v1 (PC != 0) 48K snapshot; byte12 = 255 must be read as 1
+            // → border 0 and NOT compressed (so RAM is copied verbatim, not RLE-misread).
+            const img = new Uint8Array(30 + 49152);
+            img[6] = 0x00; img[7] = 0x80;     // PC = 0x8000 → version 1
+            img[12] = 255;                    // compatibility: treat as 1
+            img[30] = 0x5A;                   // first RAM byte (addr 0x4000)
+            img[30 + 49151] = 0xC3;           // last RAM byte (addr 0xFFFF)
+            const cpu = {};
+            const mem = { buf: new Uint8Array(0x10000), write(a, v) { this.buf[a] = v; } };
+            const res = ld.loadZ80(img, cpu, mem);
+            assert(res.border === 0, 'byte12=255 → border 0 (not 7)', `got ${res.border}`);
+            assert(mem.buf[0x4000] === 0x5A, 'RAM loaded verbatim (uncompressed, not RLE-misread)',
+                `got ${mem.buf[0x4000].toString(16)}`);
+            assert(mem.buf[0xFFFF] === 0xC3, 'last RAM byte loaded verbatim');
+        }
+    }
+
     // ==================== RUN ALL ====================
 
     async function runAll() {
@@ -1573,6 +1729,7 @@
         runDSKTests();
         runSZXTests();
         runWAVTests();
+        runZ80Tests();
 
         log('');
         log(`Completed: ${new Date().toLocaleTimeString()}`, 'info');
@@ -1591,6 +1748,7 @@
     window.runDSKTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runDSKTests(); };
     window.runSZXTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runSZXTests(); };
     window.runWAVTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runWAVTests(); };
+    window.runZ80Tests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runZ80Tests(); };
 
     // Auto-run
     runAll();

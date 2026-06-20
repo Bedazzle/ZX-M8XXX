@@ -414,6 +414,7 @@ export const Parser = {
             // Output
             'OUTPUT', 'OUTEND',
             'SAVEBIN', 'SAVESNA', 'SAVETAP', 'EMPTYTAP', 'SAVETRD', 'EMPTYTRD', 'SAVEHOB',
+            'LABELSLIST', 'TAPOUT', 'TAPEND',
             // Device
             'DEVICE', 'SLOT', 'PAGE', 'MMU',
             // Misc

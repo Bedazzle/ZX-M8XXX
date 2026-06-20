@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>M8XXX Pristine-file tests</title>
+    <style>
+        body { font-family: monospace; background: #1a1a2e; color: #ddd; padding: 12px; }
+        #summary { font-size: 16px; margin: 8px 0; }
+        .pass { color: #4caf50; } .fail { color: #ff5252; } .info { color: #64b5f6; } .skip { color: #ffb74d; }
+        .section { color: #ce93d8; margin-top: 10px; font-weight: bold; }
+        #log div { white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h3>Pristine-file tests</h3>
+    <p class="info" style="max-width: 50%">Compares M8XXX's reads against pristine reference files made by OTHER software. Drop the references into
+        <code>tests/pristine/</code> (see the registry at the top of this file) to enable; missing references are skipped, not failed.</p>
+    <button onclick="runAll()">Run All</button>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+    import { TRDLoader, SCLLoader, MGTLoader, OPDLoader, MDRLoader, DidaktikLoader } from '../core/loaders.js';
+    import { DSKLoader } from '../core/fdc.js';
+    import { AsmDetok } from '../core/asm-detok.js';
+
+    // ============================================================================
+    // PRISTINE REGISTRY — drop the files into tests/pristine/ to activate a set.
+    //
+    // Each set: a pristine disk image made by other software, plus the source
+    // files that were added to it. The test extracts each named file from the
+    // disk and asserts it equals the source payload byte-for-byte.
+    //   diskType : 'trd' | 'scl' | 'mgt' | 'opd' | 'mdr' | 'dsk'
+    //   expectDisk: (optional) disk-level metadata you set in the other tool, asserted
+    //               against getDiskInfo / the sysinfo. Keys: diskLabel, fileCount,
+    //               freeSectors, diskType, trdosId, tracks, sides, … (whatever the
+    //               format's disk-info exposes).
+    //   sources  : [{ path, kind: 'hobeta' | 'raw', name?, expect? }]
+    //               - 'hobeta': .$X file; payload = bytes after the 17-byte header
+    //               - 'raw'   : compared as-is; `name` = catalog name to match
+    //               - expect  : (optional) per-file catalog fields NOT in the Hobeta,
+    //                           keyed by the loader's listFiles field names
+    //                           (e.g. { sectors: 17, startSector: 1, autostart: 10 }).
+    // ============================================================================
+    const PRISTINE_SETS = [
+        {
+            // Add the 7 sources below to a blank TRD IN ORDER (1→7) in your tool, save as ref-trd-80ds.trd.
+            label: 'ref-trd-80ds.trd (TR-DOS)',
+            disk: 'pristine/ref-trd-80ds.trd', diskType: 'trd', rebuildMatch: true,
+            expectDisk: {
+                diskLabel: 'ZXMODULS',  // the disk title set in the other tool (real ground truth)
+                fileCount: 7,
+                diskType: 0x16,         // 80-track, double-sided
+                trdosId: 0x10,          // TR-DOS signature byte
+                freeSectors: 2519,      // allocation for these 7 files (tool-dependent)
+            },
+            sources: [
+                // expect = catalogue fields (sector count, start track/sector) the writing
+                // tool assigned; placement is deterministic for a sequential add onto a
+                // fresh disk. For BASIC, also lock total length + program length.
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { sectors: 1,  track: 1, sector: 0 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { sectors: 1,  track: 1, sector: 1 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { sectors: 3,  track: 1, sector: 2 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { sectors: 2,  track: 1, sector: 5 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { sectors: 16, track: 1, sector: 7 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { sectors: 1,  track: 2, sector: 7, length: 42,  programLength: 42 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { sectors: 1,  track: 2, sector: 8, length: 100, programLength: 85 } },
+            ],
+        },
+        {
+            // The same 7 sources added to a +3 (CPCEMU) DSK in another tool, saved as
+            // ref-dsk-80ds.dsk. Each file carries a 128-byte +3DOS header; the harness
+            // strips it and compares the payload to the Hobeta source byte-for-byte. CODE
+            // load addresses (+3DOS header) are auto-checked against the Hobeta start.
+            label: 'ref-dsk-80ds.dsk (+3)',
+            disk: 'pristine/ref-dsk-80ds.dsk', diskType: 'dsk',
+            rebuildMatch: true,   // DSKLoader.addFile must reproduce this externally-built disk (sector-level)
+            expectDisk: { sides: 2, tracksPerSide: 80, sectorsPerTrack: 9, sectorSize: 512 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { plus3Type: 0, dataLength: 42 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { plus3Type: 0, dataLength: 100 } },
+            ],
+        },
+        {
+            // Same 7 sources added to a +D/G+DOS (MGT) disk in another tool, saved as
+            // ref-mgt-80ds.mgt. extractFile returns clean payloads (chain pointers
+            // stripped), compared to the Hobeta sources byte-for-byte; CODE start
+            // addresses are auto-checked against the Hobeta start.
+            label: 'ref-mgt-80ds.mgt (+D)',
+            disk: 'pristine/ref-mgt-80ds.mgt', diskType: 'mgt',
+            rebuildMatch: true,   // buildMGT must reproduce this externally-built disk byte-for-byte
+            expectDisk: { fileCount: 7, tracks: 80, sides: 2, sectorsPerTrack: 10, bytesPerSector: 512 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { sectors: 1, firstTrack: 4, firstSector: 1 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { sectors: 1, firstTrack: 4, firstSector: 2 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { sectors: 2, firstTrack: 4, firstSector: 3 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { sectors: 2, firstTrack: 4, firstSector: 5 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { sectors: 8, firstTrack: 4, firstSector: 7 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { sectors: 1, firstTrack: 5, firstSector: 5 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { sectors: 1, firstTrack: 5, firstSector: 6 } },
+            ],
+        },
+        {
+            // Same 7 sources written to a TAP in other software, saved as ref-tap.tap.
+            // TAP is a block stream, not a catalogue: each header+data pair is one
+            // "file". Data is compared byte-for-byte; CODE load addresses (param1)
+            // auto-checked; BASIC program length (param2) + autostart (param1) asserted
+            // — independent confirmation of the variables convention.
+            label: 'ref-tap.tap (simple tape)',
+            disk: 'pristine/ref-tap.tap', diskType: 'tap',
+            expectDisk: { fileCount: 7 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { programLength: 42, autostart: 1 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { programLength: 85, autostart: 1 } },
+            ],
+        },
+        {
+            // Same 7 sources written to a TZX (ZXTape! container) in other software,
+            // saved as ref-tzx.tzx. The harness reads the tape blocks carried in the
+            // Standard/Turbo data blocks, then checks them exactly like the TAP set.
+            label: 'ref-tzx.tzx (complex tape)',
+            disk: 'pristine/ref-tzx.tzx', diskType: 'tzx',
+            expectDisk: { fileCount: 7 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { programLength: 42, autostart: 1 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { programLength: 85, autostart: 1 } },
+            ],
+        },
+        {
+            // Same 7 sources added to a Didaktik D80 (MDOS) disk in another tool, saved
+            // as ref-d80.d80. extractFile returns the raw payload, compared to the Hobeta
+            // sources byte-for-byte; CODE load addresses auto-checked. For BASIC, MDOS
+            // stores the program length in `basicLength` and the autostart in `startAddr`.
+            label: 'ref-d80.d80 (Didaktik)',
+            disk: 'pristine/ref-d80.d80', diskType: 'didaktik', rebuildMatch: true,
+            expectDisk: { diskLabel: 'reftap', fileCount: 7, tracks: 80, sides: 2, sectorsPerTrack: 9, bytesPerSector: 512 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100,  firstSec: 14 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256,  firstSec: 15 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700,  firstSec: 16 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512,  firstSec: 18 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000, firstSec: 19 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { length: 42,  basicLength: 42, startAddr: 1, firstSec: 27 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { length: 100, basicLength: 85, startAddr: 1, firstSec: 28 } },
+            ],
+        },
+        {
+            // Same 7 sources on a Didaktik D40 (360K, 40T DS). Build it with the SAME
+            // tool used for ref-d80.d80 — the directory attribute byte (0x0F) and the
+            // first-fit allocation must match M8XXX's addFile, which they do for that
+            // tool but NOT for arbitrary D40s (e.g. hracka system.d40 uses attr 0x88).
+            // Skipped until tests/pristine/ref-d40.d40 is supplied; then rebuildMatch
+            // byte-verifies D40 addFile and the payload extract closes D40 read.
+            label: 'ref-d40.d40 (Didaktik 360K)',
+            disk: 'pristine/ref-d40.d40', diskType: 'didaktik', rebuildMatch: true,
+            expectDisk: { fileCount: 7, tracks: 40, sides: 2, sectorsPerTrack: 9, bytesPerSector: 512 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { length: 42,  basicLength: 42, startAddr: 1 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { length: 100, basicLength: 85, startAddr: 1 } },
+            ],
+        },
+        {
+            // OPD differs: there's no third-party Opus *writer*, so this image is
+            // M8XXX-built — but VALIDATED ONCE by an independent reader (HCDisk reads it
+            // as a real Opus disk: boot descriptor + catalog + data all correct). It now
+            // anchors the OPD read/write round-trip against regressions. buildOPD writes
+            // the Opus boot sector + directory skeleton (fixed after HCDisk rejected the
+            // descriptor-less version). CODE start addresses auto-checked.
+            label: 'ref-opd.opd (Opus, HCDisk-validated)',
+            disk: 'pristine/ref-opd.opd', diskType: 'opd',
+            expectDisk: { fileCount: 7, tracks: 40, sectorsPerTrack: 18, bytesPerSector: 256 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100,  firstBlock: 7,  lastBlock: 7 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256,  firstBlock: 8,  lastBlock: 9 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700,  firstBlock: 10, lastBlock: 12 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512,  firstBlock: 13, lastBlock: 15 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000, firstBlock: 16, lastBlock: 31 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { length: 42,   firstBlock: 32, lastBlock: 32 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { length: 100,  firstBlock: 33, lastBlock: 33 } },
+            ],
+        },
+        {
+            // The 7 sources packed into a TR-DOS SCL archive by other software.
+            // SCL shares the TR-DOS catalogue entry layout; no sysinfo sector, so no
+            // expectDisk. CODE load addresses auto-checked against the Hobeta start.
+            label: 'ref.scl (TR-DOS SCL)',
+            disk: 'pristine/ref.scl', diskType: 'scl', rebuildMatch: true,
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100,  sectors: 1 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256,  sectors: 1 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700,  sectors: 3 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512,  sectors: 2 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000, sectors: 16 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { length: 42,  sectors: 1, programLength: 42 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { length: 100, sectors: 1, programLength: 85 } },
+            ],
+        },
+        {
+            // Microdrive: built by M8XXX's writer (buildMDR) with the 7 sources — its
+            // reader is independently validated by the z80to cross-read below, so this
+            // round-trip set anchors writer+reader. MDR files carry no type/address
+            // (no 9-byte header here), so only length is asserted.
+            label: 'ref-mdr.mdr (Microdrive, M8XXX-built; reader z80to-validated)',
+            disk: 'pristine/ref-mdr.mdr', diskType: 'mdr',
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { length: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { length: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { length: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { length: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { length: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { length: 42 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { length: 100 } },
+            ],
+        },
+        {
+            // Extended DSK (EDSK): a real, independently-created Extended CPC DSK (40T SS,
+            // CPC-data format) holding the 7 sources — exercises the variable-track-size
+            // parse path against genuine third-party output. Its directory also carries a
+            // +3DOS disc-specification record in slot 0, which the reader now skips
+            // (control-byte filename = not a file).
+            label: 'ref-edsk-40ss.dsk (+3 Extended DSK, independent)',
+            disk: 'pristine/ref-edsk-40ss.dsk', diskType: 'dsk',
+            expectDisk: { sides: 1, tracksPerSide: 40, sectorsPerTrack: 9, sectorSize: 512 },
+            sources: [
+                { path: 'pristine/src/1TINY100.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 100 } },
+                { path: 'pristine/src/2FULL256.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 256 } },
+                { path: 'pristine/src/3PART700.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 700 } },
+                { path: 'pristine/src/4FULL512.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 512 } },
+                { path: 'pristine/src/5BIG4000.$c', kind: 'hobeta', expect: { plus3Type: 3, dataLength: 4000 } },
+                { path: 'pristine/src/6BASPROG.$b', kind: 'hobeta', expect: { plus3Type: 0, dataLength: 42 } },
+                { path: 'pristine/src/7BASVARS.$b', kind: 'hobeta', expect: { plus3Type: 0, dataLength: 100 } },
+            ],
+        },
+        // ── Independent-author cross-read (Z80to by Tom Dalby) ──────────────────────
+        // These images were written by Z80to v1.4 (a separate codebase) by converting
+        // tests/pristine/z80to/test.z80 — `z80to -o/-m/-r/-p test.z80`. Z80to emits a
+        // bootable loader (run/test), screen (tes.0) and compressed memory (tes.M), so
+        // there are no byte-compare sources; we assert the catalogue M8XXX reads and
+        // that each file extracts. This is the non-circular reader check for OPD (no
+        // third-party Opus writer exists otherwise) and the only MDR coverage.
+        {
+            label: 'z80to/test.opd (Opus — independent writer)',
+            disk: 'pristine/z80to/test.opd', diskType: 'opd',
+            expectFiles: [
+                { name: 'run',   ext: 'B', length: 113 },
+                { name: 'tes.0', ext: 'C', length: 184 },
+                { name: 'tes.M', ext: 'C', length: 843 },
+            ],
+        },
+        {
+            label: 'z80to/test.mdr (Microdrive — independent writer)',
+            disk: 'pristine/z80to/test.mdr', diskType: 'mdr',
+            expectFiles: [
+                { name: 'run',   length: 126 },
+                { name: 'tes.0', length: 193 },
+                { name: 'tes.M', length: 852 },
+            ],
+        },
+        {
+            label: 'z80to/test.trd (TR-DOS — independent writer)',
+            disk: 'pristine/z80to/test.trd', diskType: 'trd',
+            expectFiles: [
+                { name: 'run',   ext: 'B', length: 140 },
+                { name: 'tes.0', ext: 'C', length: 184 },
+                { name: 'tes.M', ext: 'C', length: 843 },
+            ],
+        },
+        {
+            label: 'z80to/test.mgt (+D — independent writer)',
+            disk: 'pristine/z80to/test.mgt', diskType: 'mgt',
+            expectFiles: [
+                { name: 'test',  length: 97 },
+                { name: 'tes.0', length: 184 },
+                { name: 'tes.M', length: 843 },
+            ],
+        },
+        // Add more sets here…
+    ];
+
+    const LOADERS = { trd: TRDLoader, scl: SCLLoader, mgt: MGTLoader, opd: OPDLoader, mdr: MDRLoader, dsk: DSKLoader, didaktik: DidaktikLoader };
+
+    const logEl = document.getElementById('log');
+    let passed = 0, failed = 0, skipped = 0;
+    const log = (msg, cls = '') => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; logEl.appendChild(d); };
+    const section = (n) => log(n, 'section');
+    // Quiet on success (just count) — only failures are logged, with their detail.
+    // Callers emit a single concise PASS line per file/group when everything passed.
+    function assert(cond, msg, detail = '') {
+        if (cond) { passed++; }
+        else { failed++; log('  FAIL: ' + msg + (detail ? ' — ' + detail : ''), 'fail'); }
+    }
+    function updateSummary() {
+        document.getElementById('summary').innerHTML =
+            `<span class="pass">Passed: ${passed}</span> | <span class="fail">Failed: ${failed}</span> | <span class="skip">Skipped: ${skipped}</span>`;
+    }
+    const cmp = (a, b) => !!a && !!b && a.length === b.length && Array.from(a).every((x, i) => x === b[i]);
+
+    const isTape = (t) => t === 'tap' || t === 'tzx';
+
+    // Pair raw tape blocks (each = flag + payload + checksum) into "files": a 19-byte
+    // header block (flag 0x00) followed by its data block (flag 0xFF). CODE → start =
+    // param1 (load address); BASIC → programLength = param2 and autostart = param1
+    // (or null when ≥ 32768 = no auto-run).
+    function pairTapeBlocks(blocks) {
+        const files = []; let pend = null;
+        for (const blk of blocks) {
+            if (!blk || blk.length === 0) continue;
+            if (blk[0] === 0x00 && blk.length >= 19) {
+                let name = ''; for (let j = 2; j < 12; j++) name += String.fromCharCode(blk[j]);
+                pend = { name: name.replace(/\s+$/, ''), type: blk[1],
+                         length: blk[12] | (blk[13] << 8), param1: blk[14] | (blk[15] << 8), param2: blk[16] | (blk[17] << 8) };
+            } else if (blk[0] === 0xFF && pend) {
+                const f = { name: pend.name, ext: '', type: pend.type, length: pend.length, data: blk.slice(1, blk.length - 1) };
+                if (pend.type === 3) f.start = pend.param1;
+                if (pend.type === 0) { f.programLength = pend.param2; f.autostart = pend.param1 < 32768 ? pend.param1 : null; }
+                files.push(f); pend = null;
+            }
+        }
+        return files;
+    }
+
+    // TAP: length-prefixed tape blocks.
+    function parseTap(bytes) {
+        const blocks = []; let i = 0;
+        while (i + 2 <= bytes.length) {
+            const blen = bytes[i] | (bytes[i + 1] << 8); i += 2;
+            blocks.push(bytes.subarray(i, i + blen)); i += blen;
+        }
+        return pairTapeBlocks(blocks);
+    }
+
+    // TZX (ZXTape! container): collect the tape blocks carried in Standard (0x10) and
+    // Turbo (0x11) data blocks; skip every other block ID by its declared size.
+    function parseTzx(bytes) {
+        const blocks = []; let i = 10;   // 8-byte signature + 2 version bytes
+        const le16 = (o) => bytes[o] | (bytes[o + 1] << 8);
+        const le24 = (o) => bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16);
+        while (i < bytes.length) {
+            const id = bytes[i++];
+            if (id === 0x10) { const ln = le16(i + 2); blocks.push(bytes.subarray(i + 4, i + 4 + ln)); i += 4 + ln; }
+            else if (id === 0x11) { const ln = le24(i + 0x0F); blocks.push(bytes.subarray(i + 0x12, i + 0x12 + ln)); i += 0x12 + ln; }
+            else if (id === 0x12) { i += 4; }                          // pure tone
+            else if (id === 0x13) { i += 1 + bytes[i] * 2; }           // pulse sequence
+            else if (id === 0x14) { i += 10 + le24(i + 7); }           // pure data
+            else if (id === 0x20 || id === 0x23 || id === 0x24 || id === 0x2A) { i += 2; } // pause/jump/loop/stop48k
+            else if (id === 0x21) { i += 1 + bytes[i]; }               // group start
+            else if (id === 0x22 || id === 0x25) { /* group/loop end: 0 bytes */ }
+            else if (id === 0x30) { i += 1 + bytes[i]; }               // text description
+            else if (id === 0x31) { i += 2 + bytes[i + 1]; }           // message
+            else if (id === 0x32) { i += 2 + le16(i); }                // archive info
+            else if (id === 0x33) { i += 1 + bytes[i] * 3; }           // hardware type
+            else if (id === 0x35) { i += 0x14 + (bytes[i + 0x10] | (bytes[i + 0x11] << 8) | (bytes[i + 0x12] << 16) | (bytes[i + 0x13] << 24)); } // custom info
+            else if (id === 0x5A) { i += 9; }                          // glue
+            else break;   // unknown ID — stop walking
+        }
+        return pairTapeBlocks(blocks);
+    }
+
+    // Per-format listing + extraction. TRD/SCL/MGT/OPD/MDR list/extract from raw
+    // bytes; DSK needs a parsed image and stores files behind a 128-byte +3DOS
+    // header, which we strip to expose the raw payload; TAP is a block stream.
+    function listDisk(L, diskType, disk) {
+        if (diskType === 'tap') return { files: parseTap(disk), img: null };
+        if (diskType === 'tzx') return { files: parseTzx(disk), img: null };
+        if (diskType === 'dsk') { const img = L.parse(disk); return { files: L.listFiles(img), img }; }
+        return { files: L.listFiles(disk), img: null };
+    }
+    function extractDisk(L, diskType, disk, img, df) {
+        if (isTape(diskType)) return df.data;
+        if (diskType === 'dsk') {
+            const full = L.readFileData(img, df.name, df.ext, df.user, (df.headerSize || 0) + df.dataLength);
+            if (!full) return null;
+            return df.hasPlus3Header ? full.slice(df.headerSize, df.headerSize + df.dataLength) : full.slice(0, df.dataLength);
+        }
+        return L.extractFile(disk, df);
+    }
+
+    // Sector-level diff of two DSKImages (rebuilt vs reference). Returns null on a
+    // perfect match or a human-readable description of the first divergence. DSK
+    // can't be file-byte-matched (our serializer re-emits EDSK with its own
+    // framing), so writer fidelity is checked at the sector level instead.
+    function dskSectorDiff(rebuilt, ref) {
+        if (rebuilt.numTracks !== ref.numTracks || rebuilt.numSides !== ref.numSides)
+            return `geometry ${rebuilt.numTracks}x${rebuilt.numSides} vs ${ref.numTracks}x${ref.numSides}`;
+        const total = ref.numTracks * ref.numSides;
+        for (let t = 0; t < total; t++) {
+            const ta = rebuilt.tracks[t], tb = ref.tracks[t];
+            const na = ta ? ta.sectors.length : 0, nb = tb ? tb.sectors.length : 0;
+            if (na !== nb) return `track ${t}: ${na} sectors vs ${nb}`;
+            for (let s = 0; s < na; s++) {
+                const sa = ta.sectors[s], sb = tb.sectors[s];
+                if (sa.id !== sb.id) return `track ${t} sec ${s}: id 0x${sa.id.toString(16)} vs 0x${sb.id.toString(16)}`;
+                if (sa.data.length !== sb.data.length) return `track ${t} sec 0x${sa.id.toString(16)}: len ${sa.data.length} vs ${sb.data.length}`;
+                for (let i = 0; i < sa.data.length; i++)
+                    if (sa.data[i] !== sb.data[i]) return `track ${t} sec 0x${sa.id.toString(16)} off ${i}: ${sa.data[i]} vs ${sb.data[i]}`;
+            }
+        }
+        return null;
+    }
+
+    async function fetchBin(path) {
+        try { const r = await fetch('./' + path); if (!r.ok) return null; return new Uint8Array(await r.arrayBuffer()); }
+        catch (e) { return null; }
+    }
+
+    function parseSource(bytes, kind) {
+        if (kind === 'hobeta') {
+            const h = AsmDetok.parseHobeta(bytes);
+            if (!h) return null;
+            return { name: h.name, type: h.type, start: h.start, length: h.length, data: h.data };
+        }
+        return { name: null, data: bytes, length: bytes.length };
+    }
+
+    // Disk-level metadata (label, counts, geometry). Uses the loader's getDiskInfo
+    // where available; reads the TR-DOS sysinfo (sector 8) directly for TRD/SCL,
+    // and getDiskSpec for DSK. Returns a plain object the registry's expectDisk
+    // keys are matched against.
+    function readDiskInfo(diskType, data, L) {
+        if (diskType === 'tap') return { fileCount: parseTap(data).length };
+        if (diskType === 'tzx') return { fileCount: parseTzx(data).length };
+        if (L.getDiskInfo) return L.getDiskInfo(data);
+        if (diskType === 'trd' || diskType === 'scl') {
+            const b = 8 * 256; // sysinfo sector (track 0, sector 8)
+            let label = '';
+            for (let i = 0; i < 8; i++) { const c = data[b + 0xF5 + i]; if (c >= 0x20 && c < 0x7F) label += String.fromCharCode(c); }
+            return {
+                diskLabel: label.replace(/\s+$/, ''),
+                fileCount: data[b + 0xE4],
+                freeSectors: data[b + 0xE5] | (data[b + 0xE6] << 8),
+                diskType: data[b + 0xE3],
+                trdosId: data[b + 0xE7],
+            };
+        }
+        if (diskType === 'dsk' && L.getDiskSpec && L.parse) {
+            try { return L.getDiskSpec(L.parse(data)); } catch (e) { return null; }
+        }
+        return null;
+    }
+
+    async function runSet(set) {
+        section(set.label);
+        const disk = await fetchBin(set.disk);
+        if (!disk) { skipped++; log(`  SKIP: ${set.disk} not present (drop it in tests/${set.disk} to enable)`, 'skip'); return; }
+        const L = LOADERS[set.diskType];
+        if (!isTape(set.diskType) && !L) { failed++; log('  FAIL: unknown diskType ' + set.diskType, 'fail'); return; }
+
+        let diskFiles, img;
+        try { ({ files: diskFiles, img } = listDisk(L, set.diskType, disk)); }
+        catch (e) { failed++; log('  FAIL: listFiles threw — ' + e.message, 'fail'); return; }
+        log(`  pristine disk: ${diskFiles.length} files`, 'info');
+
+        // Disk-level metadata you set in the other tool (label, counts, geometry…)
+        if (set.expectDisk) {
+            const info = readDiskInfo(set.diskType, disk, L);
+            if (!info) { failed++; log('  FAIL: no disk-info reader for ' + set.diskType, 'fail'); }
+            else {
+                const fb = failed;
+                for (const [k, v] of Object.entries(set.expectDisk)) {
+                    assert(info[k] === v, `disk ${k} = ${JSON.stringify(v)}`, `got ${JSON.stringify(info[k])}`);
+                }
+                const n = Object.keys(set.expectDisk).length;
+                if (failed === fb) log(`  PASS: disk metadata OK (${n} check${n !== 1 ? 's' : ''})`, 'pass');
+            }
+        }
+
+        // Writer byte-match: rebuild the disk from its own files with M8XXX's writer and require
+        // a byte-for-byte match against the externally-built reference image. This validates the
+        // WRITER (not just the reader) — the check that would have caught the MGT layout bugs.
+        if (set.rebuildMatch) {
+            let rebuilt = null;
+            if (set.diskType === 'mgt') {
+                const entries = diskFiles.map(f => ({
+                    name: f.name, mgtType: f.type, tapeType: f.tapeType, length: f.length,
+                    startAddress: f.startAddress, autostart: f.autostart, bodyLength: f.bodyLength,
+                    data: extractDisk(L, set.diskType, disk, img, f)
+                }));
+                rebuilt = MGTLoader.buildMGT(entries, '');
+            } else if (set.diskType === 'trd' || set.diskType === 'scl') {
+                // Read catalogue entries with FULL-sector data (slack preserved): buildTRD/buildSCL
+                // write sectors*256 bytes, so content-trimmed data wouldn't byte-match.
+                const ent = (o) => {
+                    const dec = TRDLoader.decodeEntryLen(disk[o + 8], disk[o+9]|(disk[o+10]<<8), disk[o+11]|(disk[o+12]<<8));
+                    return { name: String.fromCharCode(...disk.slice(o, o + 8)), ext: String.fromCharCode(disk[o + 8]),
+                             startAddress: dec.start, length: dec.length, programLength: dec.programLength, sectors: disk[o + 13] };
+                };
+                const ents = [];
+                if (set.diskType === 'trd') {
+                    for (let i = 0; i < 128; i++) {
+                        const o = i * 16; if (disk[o] === 0) break;
+                        const e = ent(o); const fo = ((disk[o+15]*16) + disk[o+14]) * 256;
+                        ents.push({ ...e, deleted: disk[o] === 1, data: disk.slice(fo, fo + e.sectors*256) });
+                    }
+                    rebuilt = TRDLoader.buildTRD(ents, String.fromCharCode(...disk.slice(0x800+0xF5, 0x800+0xFD)));
+                } else {
+                    const n = disk[8]; let dataOff = 9 + n*14;
+                    for (let i = 0; i < n; i++) {
+                        const o = 9 + i*14; const e = ent(o);
+                        ents.push({ ...e, data: disk.slice(dataOff, dataOff + e.sectors*256) });
+                        dataOff += e.sectors*256;
+                    }
+                    rebuilt = SCLLoader.buildSCL(ents);
+                }
+            } else if (set.diskType === 'didaktik') {
+                // No build-from-list API (in-place writer). Neutralize a copy to a blank — free the
+                // data FAT, blank the directory + data area to 0xE5 (no writer logic) — then re-add
+                // each file via DidaktikLoader.addFile and require a byte-match to the reference.
+                const total = DidaktikLoader._totalSectors(disk);
+                const blank = new Uint8Array(disk);
+                for (let s = 14; s < total; s++) DidaktikLoader.setFATnum(blank, s, 0);
+                for (const ds of DidaktikLoader.DIR_SECTORS) { const o = ds * 512; for (let i = 0; i < 512; i++) blank[o + i] = 0xE5; }
+                for (let i = 14 * 512; i < blank.length; i++) blank[i] = 0xE5;
+                let img = blank;
+                for (const f of diskFiles) {
+                    img = DidaktikLoader.addFile(img, { name: f.name, type: f.type, startAddr: f.startAddr, basicLength: f.basicLength, data: DidaktikLoader.extractFile(disk, f) });
+                }
+                rebuilt = img;
+            } else if (set.diskType === 'dsk') {
+                // No flat byte-match (the DSK container framing differs from the
+                // external tool). Neutralize a parsed copy to a blank — 0xE5 over
+                // every track from reservedTracks on (data + directory), boot track
+                // preserved — then re-add each file via DSKLoader.addFile, wrapping
+                // the +3DOS header from the parsed params, and require a sector-level
+                // byte match to the reference image.
+                const spec = DSKLoader.getDiskSpec(img);
+                const blank = DSKLoader.parse(disk);
+                const totalLogical = blank.numTracks * blank.numSides;
+                for (let lt = spec.reservedTracks; lt < totalLogical; lt++) {
+                    const phys = DSKLoader._logicalTrackToPhysical(spec, lt);
+                    const trk = blank.getTrack(phys.cylinder, phys.head);
+                    if (trk) for (const sec of trk.sectors) sec.data.fill(0xE5);
+                }
+                for (const f of diskFiles) {
+                    const err = DSKLoader.addFile(blank, {
+                        data: extractDisk(L, set.diskType, disk, img, f),
+                        name: (f.name || '').trim(), ext: (f.ext || '').trim(),
+                        type: (f.plus3Type !== undefined) ? f.plus3Type : -1,
+                        addr: f.loadAddress, autostart: f.autostart, varsOffset: f.varsOffset
+                    });
+                    if (err) { failed++; log(`  FAIL: DSK addFile "${f.name}" — ${err}`, 'fail'); }
+                }
+                const mism = dskSectorDiff(blank, img);
+                assert(mism === null, 'DSK writer reproduces the reference disk sector-for-sector', mism || '');
+                // sector-level path handles its own assert; skip the generic flat compare
+                rebuilt = null;
+            }
+            if (rebuilt) {
+                let firstDiff = (rebuilt.length === disk.length) ? -1 : 0;
+                if (firstDiff < 0) for (let i = 0; i < disk.length; i++) if (rebuilt[i] !== disk[i]) { firstDiff = i; break; }
+                assert(firstDiff < 0, `${set.diskType.toUpperCase()} writer reproduces the reference disk byte-for-byte`, firstDiff < 0 ? '' : `first diff @ ${firstDiff}`);
+            }
+        }
+
+        for (const src of (set.sources || [])) {
+            const raw = await fetchBin(src.path);
+            if (!raw) { skipped++; log(`  SKIP: source ${src.path} not present`, 'skip'); continue; }
+            const parsed = parseSource(raw, src.kind);
+            if (!parsed) { failed++; log(`  FAIL: could not parse source ${src.path}`, 'fail'); continue; }
+
+            const nm = parsed.name || src.name;
+            const fb = failed, pb = passed;   // detect this file's own failures
+
+            const wantName = (src.name || parsed.name || '').trim().toLowerCase();
+            const df = diskFiles.find(f => (f.name || '').trim().toLowerCase() === wantName);
+            assert(!!df, `"${nm}" present`, `looked for "${wantName}"`);
+            if (!df) continue;
+
+            let data;
+            try { data = extractDisk(L, set.diskType, disk, img, df); }
+            catch (e) { failed++; log(`  FAIL: extract threw for ${wantName} — ${e.message}`, 'fail'); continue; }
+
+            assert(cmp(data, parsed.data),
+                `"${nm}" payload`,
+                `extracted ${data ? data.length : 'null'} vs source ${parsed.data.length}`);
+
+            // metadata cross-checks from the Hobeta header, where available. CODE only:
+            // the catalogue load address (TRD → `start`, DSK → `loadAddress`,
+            // MGT → `startAddress`, Didaktik → `startAddr`) must equal the Hobeta's
+            // start. (BASIC has none — that field holds the autostart line there.)
+            const loadAddr = (df.start !== undefined) ? df.start
+                           : (df.loadAddress !== undefined) ? df.loadAddress
+                           : (df.startAddress !== undefined) ? df.startAddress : df.startAddr;
+            if (src.kind === 'hobeta' && loadAddr !== undefined && parsed.type !== 'B') {
+                assert(loadAddr === parsed.start, `"${nm}" addr = ${parsed.start}`);
+            }
+
+            // per-file expected fields you supply (catalog metadata not in the Hobeta —
+            // e.g. start track/sector, sector count, autostart line). Keys are the
+            // loader's listFiles field names.
+            if (src.expect) {
+                for (const [k, v] of Object.entries(src.expect)) {
+                    assert(df[k] === v, `"${nm}" ${k} = ${JSON.stringify(v)}`, `got ${JSON.stringify(df[k])}`);
+                }
+            }
+
+            // One concise line per file when all its checks passed; on any failure
+            // the FAIL line(s) above carry the detail and this summary is skipped.
+            if (failed === fb) {
+                const n = passed - pb;
+                log(`  PASS: "${nm}" OK (${n} check${n !== 1 ? 's' : ''})`, 'pass');
+            }
+        }
+
+        // Catalogue-only assertions (no byte-compare source): used for images written
+        // by an independent tool whose content we don't have as separate files — we
+        // assert the catalogue M8XXX reads and that each file extracts without error.
+        for (const ef of (set.expectFiles || [])) {
+            const fb = failed, pb = passed;
+            const want = (ef.name || '').trim().toLowerCase();
+            const df = diskFiles.find(f => (f.name || '').trim().toLowerCase() === want);
+            assert(!!df, `"${ef.name}" present`, `looked for "${want}"`);
+            if (!df) continue;
+            for (const [k, v] of Object.entries(ef)) {
+                if (k === 'name') continue;
+                assert(df[k] === v, `"${ef.name}" ${k} = ${JSON.stringify(v)}`, `got ${JSON.stringify(df[k])}`);
+            }
+            let data;
+            try { data = extractDisk(L, set.diskType, disk, img, df); }
+            catch (e) { failed++; log(`  FAIL: extract threw for ${want} — ${e.message}`, 'fail'); continue; }
+            assert(data && data.length > 0, `"${ef.name}" extracts (${data ? data.length : 'null'} bytes)`);
+            if (failed === fb) { const n = passed - pb; log(`  PASS: "${ef.name}" OK (${n} check${n !== 1 ? 's' : ''})`, 'pass'); }
+        }
+    }
+
+    // Blank-disk writer check: DidaktikLoader.createBlankD80 must byte-reproduce a
+    // real greaseweazle/MDOS_2 empty format (extracted to a flat .d80), and our own
+    // reader must see a valid, empty, editable disk.
+    async function runBlankD80() {
+        section('Didaktik createBlankD80 (vs greaseweazle MDOS_2 blank)');
+        const ref = await fetchBin('pristine/ref-d80-blank.d80');
+        if (!ref) { skipped++; log('  SKIP: pristine/ref-d80-blank.d80 not present', 'skip'); return; }
+        const blank = DidaktikLoader.createBlankD80('SPECCYPL');   // same label as the reference
+        assert(blank.length === ref.length, 'blank size matches', `${blank.length} vs ${ref.length}`);
+        let diff = -1;
+        for (let i = 0; i < Math.min(blank.length, ref.length); i++) if (blank[i] !== ref[i]) { diff = i; break; }
+        assert(diff < 0, 'createBlankD80 reproduces the MDOS_2 blank byte-for-byte', diff < 0 ? '' : `first diff @ ${diff}`);
+        assert(DidaktikLoader.isDidaktik(blank), 'reader recognizes the blank as Didaktik');
+        const info = DidaktikLoader.getDiskInfo(blank);
+        assert(info.fileCount === 0, 'blank is empty', `fileCount=${info.fileCount}`);
+        assert(info.tracks === 80 && info.sides === 2 && info.sectorsPerTrack === 9, 'geometry 80T/DS/9', JSON.stringify(info));
+        const added = DidaktikLoader.addFile(blank, { name: 'TEST', type: 'B', startAddr: 0x8000, data: new Uint8Array([1,2,3,4,5]) });
+        assert(DidaktikLoader.listFiles(added).length === 1, 'addFile onto the blank works');
+    }
+
+    // Didaktik D40 empty-disk writer: createBlankD40 must byte-reproduce a real
+    // 360K D40 format (ref-d40-blank.d40 — a real system.d40 neutralised to empty).
+    async function runBlankD40() {
+        section('Didaktik createBlankD40 (vs real 360K D40 blank)');
+        const ref = await fetchBin('pristine/ref-d40-blank.d40');
+        if (!ref) { skipped++; log('  SKIP: pristine/ref-d40-blank.d40 not present', 'skip'); return; }
+        const blank = DidaktikLoader.createBlankD40('SYSTEM');   // same label as the reference
+        assert(blank.length === ref.length, 'blank size matches', `${blank.length} vs ${ref.length}`);
+        let diff = -1;
+        for (let i = 0; i < Math.min(blank.length, ref.length); i++) if (blank[i] !== ref[i]) { diff = i; break; }
+        assert(diff < 0, 'createBlankD40 reproduces the D40 blank byte-for-byte', diff < 0 ? '' : `first diff @ ${diff}`);
+        const info = DidaktikLoader.getDiskInfo(blank);
+        assert(info.fileCount === 0, 'blank is empty', `fileCount=${info.fileCount}`);
+        assert(info.tracks === 40 && info.sides === 2 && info.sectorsPerTrack === 9, 'geometry 40T/DS/9', JSON.stringify(info));
+        assert(DidaktikLoader.listFiles(DidaktikLoader.addFile(blank, { name: 'T', type: 'B', startAddr: 0x8000, data: new Uint8Array([1,2,3]) })).length === 1, 'addFile onto the blank works');
+    }
+
+    // Full add→delete cycle for the Didaktik in-place writer (D40 & D80): adding
+    // then deleting a file must fully reclaim its space (file gone, free space back
+    // to the blank's), without corrupting other files; and a re-add after delete
+    // must byte-reproduce the original add (delete is a clean inverse for re-use).
+    function runDidaktikDeleteCycle() {
+        section('Didaktik add→delete cycle (D40 & D80)');
+        const big = new Uint8Array(1500); for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xFF;   // 3 sectors
+        const X = { name: 'CYCLE', type: 'B', startAddr: 0x8000, data: big };
+
+        for (const [name, blank] of [['D80', DidaktikLoader.createBlankD80('')], ['D40', DidaktikLoader.createBlankD40('')]]) {
+            const freeBlank = DidaktikLoader._freeSectors(blank).length;
+
+            // add → file present, 3 sectors consumed
+            const img1 = DidaktikLoader.addFile(blank, X);
+            assert(DidaktikLoader.listFiles(img1).length === 1, `${name}: file present after add`);
+            assert(DidaktikLoader._freeSectors(img1).length === freeBlank - 3, `${name}: 3 sectors consumed by add`);
+
+            // delete → file gone, space fully reclaimed
+            const img2 = DidaktikLoader.deleteFile(img1, DidaktikLoader.listFiles(img1)[0]);
+            assert(DidaktikLoader.listFiles(img2).length === 0, `${name}: file gone after delete`);
+            assert(DidaktikLoader._freeSectors(img2).length === freeBlank, `${name}: free space fully reclaimed`);
+
+            // re-add → byte-identical to the original add (clean inverse)
+            const img3 = DidaktikLoader.addFile(img2, X);
+            assert(cmp(img3, img1), `${name}: re-add after delete byte-matches the original add`);
+
+            // deleting one of two files leaves the other intact
+            const A = { name: 'AAA', type: 'B', startAddr: 0x4000, data: big.subarray(0, 500) };
+            const B = { name: 'BBB', type: 'B', startAddr: 0x6000, data: big.subarray(0, 800) };
+            let img = DidaktikLoader.addFile(DidaktikLoader.addFile(blank, A), B);
+            img = DidaktikLoader.deleteFile(img, DidaktikLoader.listFiles(img).find(f => f.name === 'AAA'));
+            const survivors = DidaktikLoader.listFiles(img);
+            assert(survivors.length === 1 && survivors[0].name === 'BBB', `${name}: sibling survives delete`);
+            assert(cmp(DidaktikLoader.extractFile(img, survivors[0]), B.data), `${name}: sibling data intact after delete`);
+        }
+    }
+
+    // Full add→delete cycle for the +3 DSK in-place writer (DSKLoader.addFile /
+    // deleteFiles): delete must reclaim the file's blocks (file gone, free blocks
+    // back to the blank's), and a re-add after delete must byte-reproduce the
+    // original add (delete is a clean inverse for re-use).
+    function runDskDeleteCycle() {
+        section('+3 DSK add→delete cycle');
+        const big = new Uint8Array(1500); for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xFF;
+        const X = { data: big, name: 'CYCLE', ext: '', type: 3, addr: 0x8000 };   // CODE (+3DOS)
+
+        // reference: blank → add once
+        const imgAdd = DSKLoader.createBlankDSK('p3-ss40');
+        assert(!DSKLoader.addFile(imgAdd, X), '+3: addFile succeeds');
+        assert(DSKLoader.listFiles(imgAdd).length === 1, '+3: file present after add');
+        const bufAdd = imgAdd.toBuffer();
+
+        // cycle: blank → add → delete → re-add
+        const img = DSKLoader.createBlankDSK('p3-ss40');
+        const freeBlank = DSKLoader.getBlockAllocationMap(img, DSKLoader.getDiskSpec(img)).freeBlocks;
+        DSKLoader.addFile(img, X);
+        const cleared = DSKLoader.deleteFiles(img, [DSKLoader.listFiles(img)[0]]);
+        assert(cleared >= 1, '+3: deleteFiles cleared a directory entry');
+        assert(DSKLoader.listFiles(img).length === 0, '+3: file gone after delete');
+        assert(DSKLoader.getBlockAllocationMap(img, DSKLoader.getDiskSpec(img)).freeBlocks === freeBlank,
+               '+3: blocks fully reclaimed after delete');
+        DSKLoader.addFile(img, X);
+        assert(cmp(img.toBuffer(), bufAdd), '+3: re-add after delete byte-matches the original add');
+    }
+
+    // TR-DOS empty-disk writer: buildTRD([], label) must byte-reproduce a real
+    // TR-DOS format (betadisk_dsdd.trd, label "SPECCYPL").
+    async function runBlankTRD() {
+        section('TR-DOS buildTRD([]) (vs real TR-DOS blank)');
+        const ref = await fetchBin('pristine/ref-trd-blank.trd');
+        if (!ref) { skipped++; log('  SKIP: pristine/ref-trd-blank.trd not present', 'skip'); return; }
+        const blank = TRDLoader.buildTRD([], 'SPECCYPL');
+        assert(blank.length === ref.length, 'blank size matches', `${blank.length} vs ${ref.length}`);
+        let diff = -1;
+        for (let i = 0; i < Math.min(blank.length, ref.length); i++) if (blank[i] !== ref[i]) { diff = i; break; }
+        assert(diff < 0, 'buildTRD([]) reproduces the TR-DOS blank byte-for-byte', diff < 0 ? '' : `first diff @ ${diff}`);
+        assert(TRDLoader.listFiles(blank).length === 0, 'blank TRD is empty');
+    }
+
+    // Opus Discovery empty-disk writer: buildOPD([], label, 1) must byte-reproduce
+    // a real Opus SS format (opus_discovery_sssd.opd, label "SpeccyPL"). This is an
+    // independent cross-check of the OPD writer (its other ref is M8XXX-built).
+    async function runBlankOPD() {
+        section('Opus buildOPD([]) (vs real Opus SS blank)');
+        const ref = await fetchBin('pristine/ref-opd-blank-ss.opd');
+        if (!ref) { skipped++; log('  SKIP: pristine/ref-opd-blank-ss.opd not present', 'skip'); return; }
+        const blank = OPDLoader.buildOPD([], 'SpeccyPL', 1);
+        assert(blank.length === ref.length, 'SS blank size matches', `${blank.length} vs ${ref.length}`);
+        let diff = -1;
+        for (let i = 0; i < Math.min(blank.length, ref.length); i++) if (blank[i] !== ref[i]) { diff = i; break; }
+        assert(diff < 0, 'buildOPD([],…,1) reproduces the Opus SS blank byte-for-byte', diff < 0 ? '' : `first diff @ ${diff}`);
+        assert(OPDLoader.listFiles(blank).length === 0, 'blank OPD (SS) is empty');
+
+        // DS (80-track 720K) — the real Opus DS DD geometry.
+        const refDs = await fetchBin('pristine/ref-opd-blank-ds.opd');
+        if (refDs) {
+            const blankDs = OPDLoader.buildOPD([], 'SpeccyPL', 2);
+            assert(blankDs.length === refDs.length, 'DS blank size matches (737280)', `${blankDs.length} vs ${refDs.length}`);
+            let dd = -1;
+            for (let i = 0; i < Math.min(blankDs.length, refDs.length); i++) if (blankDs[i] !== refDs[i]) { dd = i; break; }
+            assert(dd < 0, 'buildOPD([],…,2) reproduces the Opus DS blank byte-for-byte', dd < 0 ? '' : `first diff @ ${dd}`);
+            const info = OPDLoader.getDiskInfo(refDs);
+            assert(info.tracks === 80 && info.sides === 2, 'DS geometry 80T/DS', JSON.stringify(info));
+        } else { skipped++; log('  SKIP: pristine/ref-opd-blank-ds.opd not present', 'skip'); }
+    }
+
+    async function runAll() {
+        logEl.innerHTML = ''; passed = 0; failed = 0; skipped = 0; updateSummary();
+        for (const set of PRISTINE_SETS) { try { await runSet(set); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); } }
+        try { await runBlankD80(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        try { await runBlankD40(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        try { await runBlankTRD(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        try { await runBlankOPD(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        try { runDidaktikDeleteCycle(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        try { runDskDeleteCycle(); } catch (e) { failed++; log('ERROR: ' + (e.stack || e), 'fail'); }
+        log('');
+        log(`Total: ${passed + failed + skipped} | Pass: ${passed} | Fail: ${failed} | Skip: ${skipped}`, failed > 0 ? 'fail' : 'pass');
+        updateSummary();
+    }
+    window.runAll = runAll;
+    runAll();
+    </script>
+</body>
+</html>

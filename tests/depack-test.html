@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZX0/ZX7 depacker + packed-screen detector tests</title>
+<style>
+    body { font-family: monospace; background: #1e1e1e; color: #ddd; padding: 16px; }
+    .pass { color: #4caf50; } .fail { color: #e74c3c; }
+    .section { color: #4fc3f7; margin-top: 14px; font-weight: bold; }
+    #summary { font-size: 1.2em; margin: 10px 0; }
+</style>
+</head>
+<body>
+<h2>ZX0/ZX7 depacker + packed-screen detector</h2>
+<div id="summary">Running…</div>
+<div id="log"></div>
+<script type="module">
+import { zx0Compress, zx0Decompress, zx7Compress, zx7Decompress, detectPackedScreen, attributeEntropy, rcsToScr, findDepackerSignature, findPackedScreenInBlock, screenCoherence, looksRcsEncoded } from '../core/depackers.js';
+
+const logEl = document.getElementById('log');
+let passed = 0, failed = 0;
+function log(msg, cls) { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; logEl.appendChild(d); }
+function section(t) { log('═══ ' + t + ' ═══', 'section'); }
+function assert(cond, msg) { if (cond) { passed++; log('  PASS: ' + msg, 'pass'); } else { failed++; log('  FAIL: ' + msg, 'fail'); } }
+const eq = (a, b) => !!a && !!b && a.length === b.length && Array.from(a).every((x, i) => x === b[i]);
+
+// Deterministic PRNG so runs are reproducible.
+let seed = 0x12345;
+const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed >> 8) & 0xFF; };
+
+// Build a plausible 6912 screen: background, a varied bitmap band (so it doesn't
+// compress below the 1024 gate), and a structured low-entropy attribute area.
+function makeScreen() {
+    seed = 0x12345;
+    const scr = new Uint8Array(6912);
+    for (let i = 1500; i < 4000; i++) scr[i] = rnd();   // incompressible band
+    for (let i = 6144; i < 6912; i++) scr[i] = ((i - 6144) % 64 < 32) ? 0x38 : 0x07;  // 2 attr values
+    return scr;
+}
+// Same bitmap but random (high-entropy) attributes — a valid packed screen the detector
+// should *reject* on the entropy guard.
+function makeNoisyAttrScreen() {
+    seed = 0x9999;
+    const scr = new Uint8Array(6912);
+    for (let i = 1500; i < 4000; i++) scr[i] = rnd();
+    for (let i = 6144; i < 6912; i++) scr[i] = rnd();
+    return scr;
+}
+
+function run() {
+    const scr = makeScreen();
+
+    section('attributeEntropy');
+    assert(attributeEntropy(scr) < 2, `structured attrs low entropy (${attributeEntropy(scr).toFixed(2)} bits)`);
+    assert(attributeEntropy(makeNoisyAttrScreen()) > 7, 'random attrs high entropy');
+
+    section('ZX0 round-trip (forward / backward)');
+    {
+        const cf = zx0Compress(scr);
+        const df = zx0Decompress(cf, { maxOutput: 8192 });
+        assert(df.length === 6912 && eq(df, scr), `forward round-trips (packed ${cf.length} B)`);
+        const cb = zx0Compress(scr, { backwards: true });
+        const db = zx0Decompress(cb, { backwards: true, maxOutput: 8192 });
+        assert(eq(db, scr), `backward round-trips (packed ${cb.length} B)`);
+    }
+
+    section('ZX7 round-trip (forward / backward)');
+    {
+        const cf = zx7Compress(scr);
+        const df = zx7Decompress(cf, { maxOutput: 8192 });
+        assert(df.length === 6912 && eq(df, scr), `forward round-trips (packed ${cf.length} B)`);
+        const cb = zx7Compress(scr, { backwards: true });
+        const db = zx7Decompress(cb, { backwards: true, maxOutput: 8192 });
+        assert(eq(db, scr), `backward round-trips (packed ${cb.length} B)`);
+    }
+
+    section('detectPackedScreen — positive matches');
+    {
+        const z0 = zx0Compress(scr);
+        assert(z0.length > 1024 && z0.length < 6912, `ZX0 packed in size window (${z0.length} B)`);
+        const r0 = detectPackedScreen(z0);
+        assert(r0 && r0.format === 'ZX0' && r0.direction === 'forward' && eq(r0.data, scr), 'detects ZX0 forward, data matches');
+
+        const z7 = zx7Compress(scr);
+        const r7 = detectPackedScreen(z7);
+        assert(r7 && r7.format === 'ZX7' && r7.direction === 'forward' && eq(r7.data, scr), 'detects ZX7 forward, data matches');
+
+        const z0b = zx0Compress(scr, { backwards: true });
+        const r0b = detectPackedScreen(z0b);
+        assert(r0b && r0b.format === 'ZX0' && r0b.direction === 'backward' && eq(r0b.data, scr), 'detects ZX0 backward, data matches');
+
+        const z7b = zx7Compress(scr, { backwards: true });
+        const r7b = detectPackedScreen(z7b);
+        assert(r7b && r7b.format === 'ZX7' && r7b.direction === 'backward' && eq(r7b.data, scr), 'detects ZX7 backward, data matches');
+    }
+
+    section('detectPackedScreen — negatives / guards');
+    {
+        // entropy guard: a real packed screen with random attributes is rejected
+        const noisy = zx0Compress(makeNoisyAttrScreen());
+        const rn = detectPackedScreen(noisy);
+        assert(rn === null, 'rejects packed screen with high-entropy attributes');
+
+        // random data: should not decode to a valid 6912 screen
+        seed = 0x5555; const rand = new Uint8Array(3000); for (let i = 0; i < rand.length; i++) rand[i] = rnd();
+        let threw = false, res = null;
+        try { res = detectPackedScreen(rand); } catch (e) { threw = true; }
+        assert(!threw, 'random data does not throw (cap/guards hold)');
+        assert(res === null, 'random data is not mistaken for a screen');
+
+        // size gate: an *uncompressed* 6912 screen is out of the window
+        assert(detectPackedScreen(scr) === null, 'uncompressed 6912 rejected by size gate (len not < 6912)');
+        // too small (below the 256 floor)
+        assert(detectPackedScreen(new Uint8Array(100)) === null, 'too-small input rejected');
+        // too big
+        assert(detectPackedScreen(new Uint8Array(7000)) === null, 'too-big input rejected');
+    }
+
+    section('Output cap (safety)');
+    {
+        // A degenerate stream must not run away; depacker throws, caught by detector.
+        seed = 0xABCD; const junk = new Uint8Array(2000); for (let i = 0; i < junk.length; i++) junk[i] = rnd();
+        let out = null, threw = false;
+        try { out = zx0Decompress(junk, { maxOutput: 8192 }); } catch (e) { threw = true; }
+        assert(threw || (out && out.length <= 8192), 'ZX0 decompress stays within cap or throws on junk');
+    }
+
+    section('RCS inverse transform (rcsToScr)');
+    {
+        // Replicate the rcs.c encode (sector→col→row→lin), then assert rcsToScr inverts it.
+        const scrToRcs = (scr) => {
+            const out = new Uint8Array(6912);
+            let i = 0;
+            for (let s = 0; s < 3; s++) for (let c = 0; c < 32; c++) for (let r = 0; r < 8; r++) for (let l = 0; l < 8; l++)
+                out[i++] = scr[s * 2048 + l * 256 + r * 32 + c];
+            for (let a = 6144; a < 6912; a++) out[a] = scr[a];
+            return out;
+        };
+        const scr = makeScreen();
+        const enc = scrToRcs(scr);
+        assert(eq(rcsToScr(enc), scr), 'rcsToScr exactly inverts the RCS encode');
+        // attributes are untouched by RCS
+        assert(eq(enc.slice(6144), scr.slice(6144)), 'RCS leaves the attribute area in place');
+        // bitmap really is permuted (our screen has a varied band, so it must differ)
+        let bmpDiffers = false;
+        for (let k = 0; k < 6144; k++) if (enc[k] !== scr[k]) { bmpDiffers = true; break; }
+        assert(bmpDiffers, 'RCS actually permutes the bitmap');
+    }
+
+    section('Depacker signature scan + pointer-parse locate');
+    {
+        const SIG_ZX7 = [0x87, 0xC0, 0x7E, 0x23, 0x17, 0xC9];
+        const SIG_ZX0 = [0x87, 0x20, 0x03, 0x7E, 0x23, 0x17, 0xD8];
+        // findDepackerSignature
+        assert(findDepackerSignature(new Uint8Array([0,0, ...SIG_ZX7, 0])).format === 'ZX7', 'signature: ZX7 family detected');
+        assert(findDepackerSignature(new Uint8Array([1, ...SIG_ZX0, 9])).format === 'ZX0', 'signature: ZX0 family detected');
+        assert(findDepackerSignature(new Uint8Array([1,2,3,4,5,6,7,8])) === null, 'signature: none in plain bytes');
+
+        // Build a loader-style block: depacker sig + LD HL,src + (packed screen at offset P)
+        const build = (compress, sig, fmt) => {
+            const scr = makeScreen();
+            const packed = compress(scr);
+            const loadAddr = 0x8000, P = 256, src = loadAddr + P;
+            const block = new Uint8Array(P + packed.length + 32);
+            block.set(sig, 16);                         // "depacker code"
+            block[40] = 0x21; block[41] = src & 0xFF; block[42] = (src >> 8) & 0xFF;  // LD HL,src
+            block.set(packed, P);
+            const r = findPackedScreenInBlock(block, loadAddr);
+            assert(r && r.format === fmt && r.offset === P && r.viaSignature && eq(r.data, scr),
+                `${fmt} embedded loader: located at ${P} via signature (got ${r ? r.offset : 'null'}, ${r ? r.format : '-'})`);
+        };
+        build(zx7Compress, SIG_ZX7, 'ZX7');
+        build(zx0Compress, SIG_ZX0, 'ZX0');
+
+        // No signature → no locate even if data is present
+        const scr = makeScreen();
+        const packed = zx0Compress(scr);
+        const blk = new Uint8Array(300 + packed.length);
+        blk.set(packed, 300);   // no depacker code, > whole-block window
+        assert(findPackedScreenInBlock(blk, 0x8000) === null, 'no signature → not located (avoids brute scan)');
+    }
+
+    section('RCS auto-detect by image coherence');
+    {
+        const scrToRcs = (scr) => {
+            const out = new Uint8Array(6912);
+            let i = 0;
+            for (let s = 0; s < 3; s++) for (let c = 0; c < 32; c++) for (let r = 0; r < 8; r++) for (let l = 0; l < 8; l++)
+                out[i++] = scr[s * 2048 + l * 256 + r * 32 + c];
+            for (let a = 6144; a < 6912; a++) out[a] = scr[a];
+            return out;
+        };
+        // A coherent screen built in SCREEN space (top half black, bottom half white) —
+        // smooth: one horizontal edge. Byte-space halves would be striped (ZX interleave).
+        const flat = new Uint8Array(6912);
+        const rowAddr = (y) => ((y >> 6) * 2048) + ((y & 7) * 256) + (((y >> 3) & 7) * 32);
+        for (let y = 0; y < 192; y++) { const a = rowAddr(y), v = y < 96 ? 0x00 : 0xFF; for (let xb = 0; xb < 32; xb++) flat[a + xb] = v; }
+        for (let i = 6144; i < 6912; i++) flat[i] = 0x38;
+        const scrambled = scrToRcs(flat);   // what an RCS screen looks like decoded-but-not-de-RCS'd
+
+        assert(screenCoherence(flat) < screenCoherence(scrambled), 'coherent screen is smoother than its scrambled form');
+        assert(looksRcsEncoded(flat) === false, 'non-RCS screen → RCS auto-off');
+        assert(looksRcsEncoded(scrambled) === true, 'RCS screen → RCS auto-on');
+    }
+
+    const sum = document.getElementById('summary');
+    sum.textContent = `Total: ${passed + failed} — Passed: ${passed}, Failed: ${failed}`;
+    sum.className = failed ? 'fail' : 'pass';
+}
+
+try { run(); } catch (e) {
+    log('FATAL: ' + (e && e.stack ? e.stack : e), 'fail');
+    document.getElementById('summary').textContent = 'FATAL ERROR';
+}
+</script>
+</body>
+</html>

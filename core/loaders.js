@@ -21,6 +21,17 @@ export function xorChecksum(data, seed = 0, length = data.length) {
     return checksum;
 }
 
+// Write `str` into `bytes` at `offset` as a fixed `length`-byte field: the
+// string's char codes (truncated to `length`), the remainder filled with `pad`
+// (default 0x20 space; pass 0x00 for null-padded fields). Used by the disk
+// catalog writers for file names and disk labels.
+function writeField(bytes, offset, str, length, pad = 0x20) {
+    str = str || '';
+    for (let i = 0; i < length; i++) {
+        bytes[offset + i] = i < str.length ? str.charCodeAt(i) : pad;
+    }
+}
+
 // SCL trailing checksum: 32-bit sum of all bytes before the checksum itself
 export function sclChecksum(data, length = data.length) {
     let sum = 0;
@@ -1684,9 +1695,12 @@ export function sclChecksum(data, length = data.length) {
             let pc = bytes[6] | (bytes[7] << 8);
             cpu.sp = bytes[8] | (bytes[9] << 8);
             cpu.i = bytes[10];
-            cpu.rFull = (bytes[11] & 0x7f) | ((bytes[12] & 0x01) << 7);
-            
-            const byte12 = bytes[12];
+            // Compatibility: a byte-12 value of 255 must be treated as 1 (per the .z80
+            // spec, for very old files). Affects R bit 7, border, and the "compressed" flag.
+            let byte12 = bytes[12];
+            if (byte12 === 255) byte12 = 1;
+            cpu.rFull = (bytes[11] & 0x7f) | ((byte12 & 0x01) << 7);
+
             const border = (byte12 >> 1) & 0x07;
             const compressed = (byte12 & 0x20) !== 0;
             
@@ -1709,7 +1723,7 @@ export function sclChecksum(data, length = data.length) {
             if (pc !== 0) {
                 // Version 1 - 48K only
                 cpu.pc = pc;
-                const memData = this.decompressZ80Block(bytes.subarray(30), SNA_48K_RAM, compressed);
+                const memData = this.decompressZ80Block(bytes.subarray(30), SNA_48K_RAM, compressed, true);
                 for (let i = 0; i < memData.length; i++) {
                     memory.write(SLOT1_START + i, memData[i]);
                 }
@@ -1730,8 +1744,9 @@ export function sclChecksum(data, length = data.length) {
                 const port7FFD = bytes[35];
                 // Reset paging lock before setting paging state from snapshot
                 memory.pagingDisabled = false;
-                // +2A: restore port 0x1FFD before 0x7FFD (Z80 v3 byte 86 if present)
-                if (memory.machineType === '+2a' && bytes.length > 86) {
+                // +2A/+3: restore port 0x1FFD before 0x7FFD. Byte 86 holds 1FFD only when
+                // the extended-header length word (offset 30) is exactly 55 (per .z80 spec).
+                if ((memory.machineType === '+2a' || memory.machineType === '+3') && extHeaderLen === 55) {
                     memory.write1FFD(bytes[86]);
                 }
                 memory.writePaging(port7FFD);
@@ -1750,7 +1765,7 @@ export function sclChecksum(data, length = data.length) {
                 const rawLen = isCompressed ? blockLen : PAGE_SIZE;
                 const blockData = bytes.subarray(offset, offset + rawLen);
                 const pageData = isCompressed ?
-                    this.decompressZ80Block(blockData, PAGE_SIZE, true) : blockData;
+                    this.decompressZ80Block(blockData, PAGE_SIZE, true, false) : blockData;
                 
                 this.loadZ80Page(pageNum, pageData, memory, machineType);
                 offset += rawLen;
@@ -1760,17 +1775,17 @@ export function sclChecksum(data, length = data.length) {
             return { border, machineType };
         }
         
-        decompressZ80Block(data, maxLen, compressed) {
+        decompressZ80Block(data, maxLen, compressed, isV1) {
             if (!compressed) {
                 return data.slice(0, maxLen);
             }
-            
+
             const result = new Uint8Array(maxLen);
             let srcIdx = 0;
             let dstIdx = 0;
-            
+
             while (srcIdx < data.length && dstIdx < maxLen) {
-                if (srcIdx + 3 < data.length && 
+                if (srcIdx + 3 < data.length &&
                     data[srcIdx] === 0xED && data[srcIdx + 1] === 0xED) {
                     // ED ED nn xx = repeat byte xx nn times
                     const count = data[srcIdx + 2];
@@ -1779,16 +1794,17 @@ export function sclChecksum(data, length = data.length) {
                         result[dstIdx++] = value;
                     }
                     srcIdx += 4;
-                } else if (data[srcIdx] === 0x00 && srcIdx + 3 < data.length &&
+                } else if (isV1 && data[srcIdx] === 0x00 && srcIdx + 3 < data.length &&
                            data[srcIdx + 1] === 0xED && data[srcIdx + 2] === 0xED &&
                            data[srcIdx + 3] === 0x00) {
-                    // End marker (v1 only)
+                    // End marker — present ONLY in version 1 (v2/v3 blocks are
+                    // length-prefixed and have no end marker, per the .z80 spec).
                     break;
                 } else {
                     result[dstIdx++] = data[srcIdx++];
                 }
             }
-            
+
             return result.slice(0, dstIdx);
         }
         
@@ -2542,10 +2558,7 @@ export function sclChecksum(data, length = data.length) {
             trd[sector9 + 0xE7] = 0x10;  // TR-DOS ID
 
             // Disk label at 0xF5-0xFC (8 bytes, space-padded)
-            const paddedLabel = label.substring(0, 8).padEnd(8, ' ');
-            for (let i = 0; i < 8; i++) {
-                trd[sector9 + 0xF5 + i] = paddedLabel.charCodeAt(i);
-            }
+            writeField(trd, sector9 + 0xF5, label, 8, 0x20);
 
             // Load the blank disk into specified drive
             const drv = this.drives[driveIndex & 0x03];
@@ -4024,8 +4037,34 @@ export function sclChecksum(data, length = data.length) {
         }
 
         /**
+         * Decode the start/length pair of a TR-DOS catalogue entry by file type.
+         * BASIC (B, 0x42): bytes 9-10 = total length (program + variables),
+         *   bytes 11-12 = program length (the offset where variables begin).
+         * CODE/others: bytes 9-10 = start/load address, bytes 11-12 = data length.
+         * (TR-DOS catalogue convention; Sinclair Wiki + Kaitai tr_dos_image spec.)
+         * Returns { start, length, programLength }, where `length` is always the
+         * number of data bytes to extract and `programLength` is null for non-BASIC.
+         */
+        static decodeEntryLen(extByte, w9, w11) {
+            if (extByte === 0x42) return { start: 0, length: w9, programLength: w11 };
+            return { start: w9, length: w11, programLength: null };
+        }
+
+        /**
+         * Encode a TR-DOS catalogue entry's 9-10 / 11-12 words for a file being
+         * written. Inverse of decodeEntryLen. For BASIC, `total` is the full data
+         * length (program + variables) and `programLength` the variables offset
+         * (defaults to total = "no variables"). For others, `start` is the load
+         * address and `total` the data length.
+         */
+        static encodeEntryLen(extByte, total, start, programLength) {
+            if (extByte === 0x42) return { w9: total, w11: (programLength != null ? programLength : total) };
+            return { w9: start || 0, w11: total };
+        }
+
+        /**
          * List files in TRD image
-         * Returns array of {name, ext, start, length, sectors, track, sector}
+         * Returns array of {name, ext, start, length, programLength, sectors, track, sector}
          */
         static listFiles(data) {
             const bytes = new Uint8Array(data);
@@ -4061,10 +4100,11 @@ export function sclChecksum(data, length = data.length) {
                 else if (extByte === 0x44) type = 'data';  // 'D'
                 else if (extByte === 0x23) type = 'seq';   // '#'
 
-                // Start address or BASIC autostart line
-                const start = bytes[offset + 9] | (bytes[offset + 10] << 8);
-                // Length in bytes
-                const length = bytes[offset + 11] | (bytes[offset + 12] << 8);
+                // BASIC: 9-10 = total length, 11-12 = program length; CODE: 9-10 =
+                // load address, 11-12 = length. (see decodeEntryLen)
+                const w9 = bytes[offset + 9] | (bytes[offset + 10] << 8);
+                const w11 = bytes[offset + 11] | (bytes[offset + 12] << 8);
+                const { start, length, programLength } = TRDLoader.decodeEntryLen(extByte, w9, w11);
                 // Length in sectors
                 const sectors = bytes[offset + 13];
                 // Starting position
@@ -4078,6 +4118,7 @@ export function sclChecksum(data, length = data.length) {
                         type,
                         start,
                         length,
+                        programLength,
                         sectors,
                         sector,
                         track,
@@ -4120,18 +4161,19 @@ export function sclChecksum(data, length = data.length) {
                 header[0] = 0x00;  // Header flag
                 header[1] = 0x00;  // Type: Program
                 // Filename (10 bytes, space-padded)
-                for (let i = 0; i < 10; i++) {
-                    header[2 + i] = i < fileInfo.name.length ? fileInfo.name.charCodeAt(i) : 0x20;
-                }
-                // Length
-                header[12] = fileInfo.length & 0xFF;
-                header[13] = (fileInfo.length >> 8) & 0xFF;
-                // Autostart line
-                header[14] = fileInfo.start & 0xFF;
-                header[15] = (fileInfo.start >> 8) & 0xFF;
-                // Program length (same as data length for BASIC)
-                header[16] = fileInfo.length & 0xFF;
-                header[17] = (fileInfo.length >> 8) & 0xFF;
+                writeField(header, 2, fileInfo.name, 10, 0x20);
+                // Data length = total (program + variables)
+                header[12] = fileData.length & 0xFF;
+                header[13] = (fileData.length >> 8) & 0xFF;
+                // Autostart line — the TR-DOS catalogue has no autostart field, so
+                // emit "no auto-run" (>= 32768) rather than a bogus line number.
+                header[14] = 0x00;
+                header[15] = 0x80;
+                // Program length (param 2) = offset where variables begin; falls back
+                // to the full length when no variables area is present.
+                const progLen = (fileInfo.programLength != null) ? fileInfo.programLength : fileData.length;
+                header[16] = progLen & 0xFF;
+                header[17] = (progLen >> 8) & 0xFF;
                 // Checksum
                 header[18] = xorChecksum(header, 0, 18);
 
@@ -4193,6 +4235,50 @@ export function sclChecksum(data, length = data.length) {
 
             return tap;
         }
+
+        /**
+         * Build a 640KB TRD image from a file list. Files are written sequentially
+         * from logical track 1 — so rebuilding from the surviving files after a delete
+         * compacts the disk (reclaims the removed files' sectors). Each file:
+         * { name, ext, length, startAddress, programLength, sectors, data, deleted }.
+         * A `deleted` file keeps its slot/data but its dir entry is marked 0x01 and it
+         * is excluded from the file count (TR-DOS soft delete).
+         */
+        static buildTRD(files, diskLabel = '') {
+            const trd = new Uint8Array(655360);
+            let trdSector = 16;          // data starts at logical track 1
+            let activeFileCount = 0;
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i];
+                const off = i * 16;
+                writeField(trd, off, f.name || '', 8, 0x20);
+                if (f.deleted) trd[off] = 0x01;
+                else activeFileCount++;
+                const extByte = (f.ext || 'C').charCodeAt(0);
+                trd[off + 8] = extByte;
+                const { w9, w11 } = TRDLoader.encodeEntryLen(extByte, f.length, f.startAddress, f.programLength);
+                trd[off + 9] = w9 & 0xFF; trd[off + 10] = (w9 >> 8) & 0xFF;
+                trd[off + 11] = w11 & 0xFF; trd[off + 12] = (w11 >> 8) & 0xFF;
+                trd[off + 13] = f.sectors;
+                trd[off + 14] = trdSector % 16;
+                trd[off + 15] = Math.floor(trdSector / 16);
+                trd.set(f.data.subarray(0, f.sectors * 256), trdSector * 256);
+                trdSector += f.sectors;
+            }
+            const info = 0x800;          // sysinfo sector (track 0, sector 8)
+            trd[info + 0xE1] = trdSector % 16;
+            trd[info + 0xE2] = Math.floor(trdSector / 16);
+            trd[info + 0xE3] = 0x16;     // 80-track DS
+            trd[info + 0xE4] = activeFileCount;
+            const freeSectors = 2560 - trdSector;
+            trd[info + 0xE5] = freeSectors & 0xFF;
+            trd[info + 0xE6] = (freeSectors >> 8) & 0xFF;
+            trd[info + 0xE7] = 0x10;     // TR-DOS id
+            for (let c = 0xEA; c <= 0xF2; c++) trd[info + c] = 0x20; // sysinfo: 9 spaces (per real TR-DOS)
+            const label = (diskLabel || '') + '        ';
+            for (let c = 0; c < 8; c++) trd[info + 0xF5 + c] = label.charCodeAt(c) || 0x20;
+            return trd;
+        }
     }
 
     /**
@@ -4247,8 +4333,11 @@ export function sclChecksum(data, length = data.length) {
                 else if (extByte === 0x44) type = 'data';
                 else if (extByte === 0x23) type = 'seq';
 
-                const start = bytes[descOffset + 9] | (bytes[descOffset + 10] << 8);
-                const length = bytes[descOffset + 11] | (bytes[descOffset + 12] << 8);
+                // BASIC: 9-10 = total length, 11-12 = program length; CODE: 9-10 =
+                // load address, 11-12 = length. (see TRDLoader.decodeEntryLen)
+                const w9 = bytes[descOffset + 9] | (bytes[descOffset + 10] << 8);
+                const w11 = bytes[descOffset + 11] | (bytes[descOffset + 12] << 8);
+                const { start, length, programLength } = TRDLoader.decodeEntryLen(extByte, w9, w11);
                 const sectors = bytes[descOffset + 13];
 
                 files.push({
@@ -4257,6 +4346,7 @@ export function sclChecksum(data, length = data.length) {
                     type,
                     start,
                     length,
+                    programLength,
                     sectors,
                     dataOffset,
                     fullName: `${name}.${ext}`
@@ -4287,6 +4377,38 @@ export function sclChecksum(data, length = data.length) {
          */
         static fileToTAP(fileData, fileInfo) {
             return TRDLoader.fileToTAP(fileData, fileInfo);
+        }
+
+        /**
+         * Build an SCL archive from a file list (deleted files are dropped — SCL has no
+         * erase marker, so rebuilding compacts). Same per-file fields as buildTRD; uses
+         * the TR-DOS catalogue convention for the 9-10/11-12 words (BASIC-aware).
+         */
+        static buildSCL(files) {
+            const active = files.filter(f => !f.deleted);
+            let totalData = 0;
+            for (const f of active) totalData += f.sectors * 256;
+            const scl = new Uint8Array(9 + active.length * 14 + totalData + 4);
+            const sig = 'SINCLAIR';
+            for (let i = 0; i < 8; i++) scl[i] = sig.charCodeAt(i);
+            scl[8] = active.length;
+            let offset = 9;
+            for (const f of active) {
+                const name = ((f.name || '') + '        ').substring(0, 8);
+                for (let c = 0; c < 8; c++) scl[offset + c] = name.charCodeAt(c) || 0x20;
+                const extByte = (f.ext || 'C').charCodeAt(0);
+                scl[offset + 8] = extByte;
+                const { w9, w11 } = TRDLoader.encodeEntryLen(extByte, f.length, f.startAddress, f.programLength);
+                scl[offset + 9] = w9 & 0xFF; scl[offset + 10] = (w9 >> 8) & 0xFF;
+                scl[offset + 11] = w11 & 0xFF; scl[offset + 12] = (w11 >> 8) & 0xFF;
+                scl[offset + 13] = f.sectors;
+                offset += 14;
+            }
+            for (const f of active) { scl.set(f.data.subarray(0, f.sectors * 256), offset); offset += f.sectors * 256; }
+            const sum = sclChecksum(scl, offset);
+            scl[offset] = sum & 0xFF; scl[offset + 1] = (sum >> 8) & 0xFF;
+            scl[offset + 2] = (sum >> 16) & 0xFF; scl[offset + 3] = (sum >>> 24) & 0xFF;
+            return scl;
         }
     }
 
@@ -4593,47 +4715,114 @@ export function sclChecksum(data, length = data.length) {
         }
 
         /**
-         * Extract raw sector data from MGT image (full 512-byte sectors).
-         * Used by disk editor for round-trip read/write.
+         * Build an MGT (+D/DISCiPLE G+DOS) disk image from a list of files.
+         * Uses the G+DOS chain format that extractFile expects (and real +D uses):
+         * each 512-byte sector holds 510 data bytes + a 2-byte chain pointer
+         * (next track | side<<7, next sector; 0,0 = end of chain).
+         *
+         * files: [{ name, mgtType (1-11/16-20) | type, tapeType, length,
+         *           data (Uint8Array, first `length` bytes used), startAddress,
+         *           bodyLength, autostart, deleted }]
+         *
+         * Directory occupies cylinders 0-1 (4 logical tracks, 80 slots); data
+         * starts at cylinder 2 (matching the reader's `firstCyl >= 2` check).
+         * The sector-allocation map (bytes 15-209) is written as a best-effort
+         * 1560-bit bitmap over the data area — note: the reader follows the chain
+         * and ignores this map, and the exact real-+D bit ordering is not
+         * spec-verified, so it is informational for external tools only.
          */
-        static extractFileRaw(data, fileInfo) {
-            const bytes = new Uint8Array(data);
-            const sectorSize = 512;
-            const result = new Uint8Array(fileInfo.sectors * sectorSize);
-            let destPos = 0;
+        static buildMGT(files, diskLabel = '') {
+            const img = new Uint8Array(819200); // 80 cyl x 2 sides x 10 sec x 512 (DS)
+            let curCyl = 4, curSide = 0, curSec = 1; // data starts at cyl 4 (cyl 0-3 reserved), per real +D
+            const advance = () => {
+                // +D allocation order: fill side 0 of every cylinder (track byte 4,5,…,79) first,
+                // then side 1 — matching real +D images (see tests/pristine/ref-mgt-80ds.mgt).
+                if (++curSec > 10) { curSec = 1; if (++curCyl > 79) { curCyl = 4; curSide++; } }
+            };
 
-            let curTrack = fileInfo.firstTrack;
-            let curSector = fileInfo.firstSector;
-            const isContig = fileInfo.type === 8;
+            let slot = 0;
+            for (const f of (files || [])) {
+                if (!f || f.deleted) continue;
+                if (slot >= 80) break;
+                const length = (f.length != null) ? f.length : (f.data ? f.data.length : 0);
+                const raw = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data || 0);
+                const mgtType = f.mgtType || f.type || 4;
 
-            for (let i = 0; i < fileInfo.sectors; i++) {
-                // firstTrack and chain pointers use G+DOS track encoding (cyl | side<<7)
-                const offset = MGTLoader.logicalTrackOffset(curTrack, curSector);
+                // File-type metadata, mirrored both in the directory (bytes 211-219) and in the
+                // 9-byte header that prefixes the file DATA on real +D disks.
+                const GDOS_TO_TAPE = { 1: 0, 2: 1, 3: 2, 4: 3, 7: 3 };
+                const hdrTape = GDOS_TO_TAPE[mgtType];
+                const tapeType = (f.tapeType != null) ? f.tapeType : (hdrTape != null ? hdrTape : 3);
+                const startAddr = f.startAddress || 0;
+                const isBASIC = mgtType === 1 || mgtType === 16;
+                const param2 = isBASIC ? (f.bodyLength || length) : 0x8000;
+                const autostart = isBASIC
+                    ? ((f.autostart != null && f.autostart >= 0 && f.autostart < 0x8000) ? f.autostart : 0x8000)
+                    : 0;
 
-                if (offset >= 0 && offset + sectorSize <= bytes.length) {
-                    result.set(bytes.slice(offset, offset + sectorSize), destPos);
+                // Real +D/G+DOS stores a 9-byte file header at the START of the data for standard
+                // BASIC/array/CODE/SCREEN$ files (extractFile strips it on read). Re-add it here so
+                // the saved image is readable by real +D and other tools. Other types (snapshots,
+                // Opentype, …) carry no data header, so their content is written as-is.
+                let payload = raw.subarray(0, length);
+                if (hdrTape != null) {
+                    const withHdr = new Uint8Array(9 + length);
+                    withHdr[0] = hdrTape;
+                    withHdr[1] = length & 0xFF; withHdr[2] = (length >> 8) & 0xFF;
+                    withHdr[3] = startAddr & 0xFF; withHdr[4] = (startAddr >> 8) & 0xFF;
+                    withHdr[5] = param2 & 0xFF; withHdr[6] = (param2 >> 8) & 0xFF;
+                    withHdr[7] = autostart & 0xFF; withHdr[8] = (autostart >> 8) & 0xFF;
+                    withHdr.set(raw.subarray(0, length), 9);
+                    payload = withHdr;
+                }
+                const sectors = Math.max(1, Math.ceil(payload.length / 510));
 
-                    if (!isContig) {
-                        curTrack = bytes[offset + 510];
-                        curSector = bytes[offset + 511];
+                const firstCyl = curCyl, firstSide = curSide, firstSec = curSec;
+                const used = [];
+                let dataPos = 0;
+                for (let s = 0; s < sectors; s++) {
+                    const off = ((curCyl * 2 + curSide) * 10 + (curSec - 1)) * 512;
+                    used.push({ cyl: curCyl, side: curSide, sector: curSec });
+                    img.set(payload.subarray(dataPos, dataPos + 510), off);
+                    dataPos += 510;
+                    advance();
+                    if (s < sectors - 1) {
+                        img[off + 510] = (curCyl & 0x7F) | (curSide << 7); // next track (G+DOS encoding)
+                        img[off + 511] = curSec;                           // next sector
+                    } else {
+                        img[off + 510] = 0; img[off + 511] = 0;            // end of chain
                     }
                 }
-                destPos += sectorSize;
 
-                if (isContig) {
-                    curSector++;
-                    if (curSector > 10) {
-                        curSector = 1;
-                        if ((curTrack & 0x80) === 0) {
-                            curTrack |= 0x80;
-                        } else {
-                            curTrack = (curTrack & 0x7F) + 1;
-                        }
-                    }
+                const dirOff = MGTLoader._slotOffset(slot);
+                img[dirOff] = mgtType;
+                const name = (f.name || '').toString();
+                for (let c = 0; c < 10; c++) img[dirOff + 1 + c] = c < name.length ? (name.charCodeAt(c) & 0xFF) : 0x20;
+                img[dirOff + 11] = (sectors >> 8) & 0xFF;   // sector count, big-endian
+                img[dirOff + 12] = sectors & 0xFF;
+                img[dirOff + 13] = (firstCyl & 0x7F) | (firstSide << 7);
+                img[dirOff + 14] = firstSec;
+                // best-effort allocation bitmap (informational; reader ignores it)
+                for (const u of used) {
+                    // Bitmap is indexed in allocation order: side-0 tracks (cyl 4-79) first, then
+                    // side-1. bit0 = cyl4 side0 sec1. (76 = data cylinders per side, cyl 4-79.)
+                    const ti = (u.side === 0) ? (u.cyl - 4) : (76 + (u.cyl - 4));
+                    const bit = ti * 10 + (u.sector - 1);
+                    if (bit >= 0 && bit < 1560) img[dirOff + 15 + (bit >> 3)] |= (1 << (bit & 7));
                 }
+                // G+DOS metadata copy (bytes 211-219)
+                img[dirOff + 211] = tapeType;
+                img[dirOff + 212] = length & 0xFF;
+                img[dirOff + 213] = (length >> 8) & 0xFF;
+                img[dirOff + 214] = startAddr & 0xFF;
+                img[dirOff + 215] = (startAddr >> 8) & 0xFF;
+                img[dirOff + 216] = param2 & 0xFF;
+                img[dirOff + 217] = (param2 >> 8) & 0xFF;
+                img[dirOff + 218] = autostart & 0xFF;
+                img[dirOff + 219] = (autostart >> 8) & 0xFF;
+                slot++;
             }
-
-            return result;
+            return img;
         }
 
         /**
@@ -5191,14 +5380,16 @@ export function sclChecksum(data, length = data.length) {
         }
 
         /**
-         * Compute mod-256 checksum
+         * Compute the Interface 1 sector checksum: the sum of the bytes modulo 255
+         * (per the IF1 ROM — this can never produce 255). Used when writing/building
+         * MDR images so the checksums match what real hardware / FUSE expect.
          */
         static mdrChecksum(data, start, len) {
             let sum = 0;
             for (let i = 0; i < len; i++) {
-                sum = (sum + data[start + i]) & 0xFF;
+                sum += data[start + i];
             }
-            return sum;
+            return sum % 255;
         }
 
         /**
@@ -5403,7 +5594,6 @@ export function sclChecksum(data, length = data.length) {
             image.fill(0);
 
             // Format each sector with proper header structure
-            const paddedName = (cartridgeName + '          ').substring(0, 10);
             for (let i = 0; i < sectorCount; i++) {
                 const off = i * MDRLoader.SECTOR_SIZE;
                 // HDFLAG = 1 (valid header block)
@@ -5413,9 +5603,7 @@ export function sclChecksum(data, length = data.length) {
                     ? sectorCount - i
                     : MDRLoader.SECTOR_COUNT - (i % MDRLoader.SECTOR_COUNT);
                 // HDNAME (10 bytes at offset 4)
-                for (let j = 0; j < 10; j++) {
-                    image[off + 4 + j] = paddedName.charCodeAt(j);
-                }
+                writeField(image, off + 4, cartridgeName, 10);
                 // HDCHK — header checksum (bytes 0-13)
                 image[off + 14] = MDRLoader.mdrChecksum(image, off, 14);
                 // Record area: all zeros = free sector (RECFLG=0, RECNUM=0, etc.)
@@ -5446,7 +5634,6 @@ export function sclChecksum(data, length = data.length) {
                     break;  // No more room
                 }
 
-                const paddedRecnam = (file.name + '          ').substring(0, 10);
 
                 for (let rec = 0; rec < numSectors; rec++) {
                     const secIdx = nextSector++;
@@ -5468,9 +5655,7 @@ export function sclChecksum(data, length = data.length) {
                     image[off + 17] = chunkLen & 0xFF;  // RECLEN low
                     image[off + 18] = (chunkLen >> 8) & 0xFF;  // RECLEN high
                     // RECNAM (10 bytes)
-                    for (let j = 0; j < 10; j++) {
-                        image[off + 19 + j] = paddedRecnam.charCodeAt(j);
-                    }
+                    writeField(image, off + 19, file.name, 10);
                     // DESCHK
                     image[off + 29] = MDRLoader.mdrChecksum(image, off + 15, 14);
 
@@ -5753,9 +5938,9 @@ export function sclChecksum(data, length = data.length) {
 
         static get SECTORS_PER_TRACK() { return 18; }
         static get BYTES_PER_SECTOR() { return 256; }
-        static get TRACKS() { return 40; }
+        // Track count is derived from image size in getDiskInfo (SS = 40, DS DD = 80).
         static get SS_SIZE() { return 184320; }   // 40 × 18 × 256
-        static get DS_SIZE() { return 368640; }   // 40 × 2 × 18 × 256
+        static get DS_SIZE() { return 737280; }   // 80 × 2 × 18 × 256 (real Opus DS DD)
 
         // Directory layout: sector 0 = disk descriptor, sectors 1-7 = directory (7 sectors)
         static get DIR_START_SECTOR() { return 1; }
@@ -5777,7 +5962,7 @@ export function sclChecksum(data, length = data.length) {
 
         static isDoubleSided(data) {
             const len = data instanceof Uint8Array ? data.length : data.byteLength;
-            return len >= OPDLoader.DS_SIZE;
+            return len > OPDLoader.SS_SIZE;
         }
 
         static getSectorOffset(track, side, sector, sides) {
@@ -5821,7 +6006,10 @@ export function sclChecksum(data, length = data.length) {
         static getDiskInfo(data) {
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
-            const totalSectors = OPDLoader.TRACKS * sides * OPDLoader.SECTORS_PER_TRACK;
+            // Total sectors from the actual image size; track count follows (SS = 40,
+            // DS DD = 80 — the real Opus DS is 80-track, not 40).
+            const totalSectors = Math.floor(bytes.length / OPDLoader.BYTES_PER_SECTOR);
+            const tracks = totalSectors / (sides * OPDLoader.SECTORS_PER_TRACK);
 
             // Read directory to count used sectors and files properly
             const files = OPDLoader.listFiles(bytes);
@@ -5838,7 +6026,7 @@ export function sclChecksum(data, length = data.length) {
             const diskLabel = entry0.name.trim();
 
             return {
-                tracks: OPDLoader.TRACKS,
+                tracks,
                 sides,
                 sectorsPerTrack: OPDLoader.SECTORS_PER_TRACK,
                 bytesPerSector: OPDLoader.BYTES_PER_SECTOR,
@@ -5928,11 +6116,10 @@ export function sclChecksum(data, length = data.length) {
          */
         static fileToTAP(fileData, fileInfo) {
             // Build a standard TAP: header block + data block
-            const name = (fileInfo.name + '          ').substring(0, 10);
             const header = new Uint8Array(21);
             header[0] = 0x00; // header flag
             header[1] = fileInfo.type >= 0 ? fileInfo.type : 3; // file type
-            for (let i = 0; i < 10; i++) header[2 + i] = name.charCodeAt(i);
+            writeField(header, 2, fileInfo.name, 10);
             const len = fileData.length;
             header[12] = len & 0xFF;
             header[13] = (len >> 8) & 0xFF;
@@ -5973,16 +6160,46 @@ export function sclChecksum(data, length = data.length) {
             return tap;
         }
 
+        // Opus boot sector (sector 0), base64-encoded, keyed by total image size.
+        // Captured from genuine blank Opus disks (geometry-specific). Real Opus tools
+        // and hardware require a valid boot sector to recognise the disk; M8XXX's own
+        // reader ignores sector 0, but strict readers (e.g. HCDisk) reject a disk
+        // without it. 184320 = 40T SS, 737280 = 80T DS.
+        static get OPD_BOOT_SECTORS() {
+            return {
+                184320: 'GAUoEkC6A37ddwAjft13Ad1+AuYvVyN+5tCy3XcCydXNYwh/ANoCCeEjZgYGPnHD5Q9GEkYSHACUHOUGIvcS8XfJzbIcd91OAt1GA91uBN1mBd1eBhYAyfUGJPcS8cnlzbIcd+HAw4AnKnhcERQA7VLYzVQVBiL3EjYBIzYDIRRA5QH3GE4MAAP1Af4BJwEAAQcBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BJwEAAQgBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BJwEAAQkBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BJwEAAQoBAQ==',
+                737280: 'GAVQElAqDn7ddwAjft13Ad1+AuYvVyN+5tCy3XcCydXNYwh/ANoCCeEjZgYGPnHD5Q9GEkYSHACUHOUGIvcS8XfJzbIcd91OAt1GA91uBN1mBd1eBhYAyfUGJPcS8cnlzbIcd+HAw4AnKnhcERQA7VLYzVQVBiL3EjYBIzYDIRRA5QH3GE4MAAP1Af4BTwEAAQUBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BTwEAAQYBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BTwEAAQcBAQH3Fk4MAAP1AftA5UDlQOVA5QH3GE4MAAP1Af4BTwEAAQgBAQ==',
+            };
+        }
+
+        // Write the Opus boot sector for this disk size into sector 0 (if available).
+        static _writeOpdBoot(disk) {
+            const b64 = OPDLoader.OPD_BOOT_SECTORS[disk.length];
+            if (!b64) return false;
+            const boot = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            disk.set(boot.subarray(0, OPDLoader.BYTES_PER_SECTOR), 0);
+            return true;
+        }
+
+        // Write a 16-byte directory entry: bytesInLast/first/last (LE) + 10-char name.
+        static _writeOpdDirEntry(disk, off, label, bytesInLast, first, last) {
+            disk[off] = bytesInLast & 0xFF; disk[off + 1] = (bytesInLast >> 8) & 0xFF;
+            disk[off + 2] = first & 0xFF; disk[off + 3] = (first >> 8) & 0xFF;
+            disk[off + 4] = last & 0xFF; disk[off + 5] = (last >> 8) & 0xFF;
+            writeField(disk, off + 6, label || '', 10);
+        }
+
         static createBlankOPD(sides = 1) {
             const size = sides >= 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE;
+            const BPS = OPDLoader.BYTES_PER_SECTOR;
             const disk = new Uint8Array(size);
-            // Fill data area with 0xE5 (standard formatted-empty marker)
-            const dataAreaStart = OPDLoader.DATA_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
-            disk.fill(0xE5, dataAreaStart);
-            // Mark end of directory: entry 1 last_block = 0xFFFF
-            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
-            disk[dirOffset + 16 + 4] = 0xFF;
-            disk[dirOffset + 16 + 5] = 0xFF;
+            OPDLoader._writeOpdBoot(disk);                                  // sector 0 (boot)
+            const dirOffset = OPDLoader.DIR_START_SECTOR * BPS;
+            disk.fill(0xE5, dirOffset);                                     // dir + data = formatted-empty
+            const totalSectors = size / BPS;
+            // entry 0 = disk label (occupies directory blocks 0..6); entry 1 = end marker
+            OPDLoader._writeOpdDirEntry(disk, dirOffset, '', 0x00FF, 0, 6);
+            OPDLoader._writeOpdDirEntry(disk, dirOffset + 16, '', 0x00FF, totalSectors - 1, 0xFFFF);
             return disk;
         }
 
@@ -5999,39 +6216,24 @@ export function sclChecksum(data, length = data.length) {
             const totalSectors = size / OPDLoader.BYTES_PER_SECTOR;
             const BPS = OPDLoader.BYTES_PER_SECTOR;
             const disk = new Uint8Array(size);
-
             if (baseImage) {
-                // Start from a full copy of the original disk image.
-                // This preserves sector 0 (descriptor/boot), any unknown
-                // directory metadata, and the exact fill pattern.
-                const copyLen = Math.min(size, baseImage.length);
-                disk.set(baseImage.subarray(0, copyLen));
+                // Editing an existing disk: preserve its real sector 0 (boot).
+                disk.set(baseImage.subarray(0, Math.min(size, baseImage.length)));
+            } else {
+                // Creating from scratch: embed the Opus boot sector for this geometry.
+                OPDLoader._writeOpdBoot(disk);
             }
 
             const dirOffset = OPDLoader.DIR_START_SECTOR * BPS;
+            // Reset directory + data area to formatted-empty (0xE5), then rewrite.
+            disk.fill(0xE5, dirOffset);
+            // entry 0 = disk label (occupies directory blocks 0..6)
+            OPDLoader._writeOpdDirEntry(disk, dirOffset, diskName, 0x00FF, 0, 6);
 
-            // Clear directory entries 1..111 (preserve entry 0 = label)
-            for (let i = 1; i < OPDLoader.MAX_DIR_ENTRIES; i++) {
-                const off = dirOffset + i * 16;
-                for (let b = 0; b < 16; b++) disk[off + b] = 0;
-            }
-
-            // Update label name in entry 0 (only the name field, bytes 6-15)
-            if (diskName !== undefined && diskName !== null) {
-                const labelName = ((diskName || '') + '          ').substring(0, 10);
-                for (let i = 0; i < 10; i++) {
-                    disk[dirOffset + 6 + i] = labelName.charCodeAt(i);
-                }
-            }
-
-            // Fill data area (sector 8+) with 0xE5 (formatted-empty marker)
-            const dataAreaStart = OPDLoader.DATA_START_SECTOR * BPS;
-            disk.fill(0xE5, dataAreaStart);
-
-            // Allocate files starting at DATA_START_SECTOR
+            // Allocate files into entries 1..N starting at the data area
             let nextSector = OPDLoader.DATA_START_SECTOR;
-
-            for (let fi = 0; fi < files.length && fi < OPDLoader.MAX_DIR_ENTRIES - 1; fi++) {
+            let written = 0;
+            for (let fi = 0; fi < files.length && fi < OPDLoader.MAX_DIR_ENTRIES - 2; fi++) {
                 const f = files[fi];
                 const fileData = f.data;
                 const headerLen = OPDLoader.FILE_HEADER_SIZE;
@@ -6047,18 +6249,15 @@ export function sclChecksum(data, length = data.length) {
                 // bytesInLast stores (actual bytes in last sector) - 1
                 const bytesInLast = totalBytes - (sectorsNeeded - 1) * BPS - 1;
 
-                // Write directory entry (entry fi+1, since entry 0 is label)
-                const entryOff = dirOffset + (fi + 1) * 16;
+                // Write directory entry (entry written+1, since entry 0 is the label)
+                const entryOff = dirOffset + (written + 1) * 16;
                 disk[entryOff + 0] = bytesInLast & 0xFF;
                 disk[entryOff + 1] = (bytesInLast >> 8) & 0xFF;
                 disk[entryOff + 2] = firstBlock & 0xFF;
                 disk[entryOff + 3] = (firstBlock >> 8) & 0xFF;
                 disk[entryOff + 4] = lastBlock & 0xFF;
                 disk[entryOff + 5] = (lastBlock >> 8) & 0xFF;
-                const name = ((f.name || '') + '          ').substring(0, 10);
-                for (let i = 0; i < 10; i++) {
-                    disk[entryOff + 6 + i] = name.charCodeAt(i);
-                }
+                writeField(disk, entryOff + 6, f.name || '', 10);
 
                 // Write file header (7 bytes) at the image sector
                 // Layout: type(1), length(2 LE), param1(2 LE), param2(2 LE)
@@ -6081,17 +6280,474 @@ export function sclChecksum(data, length = data.length) {
                 disk.set(fileData, dataOff + headerLen);
 
                 nextSector += sectorsNeeded;
+                written++;
             }
 
-            // Write end sentinel: next entry's last_block = 0xFFFF
-            const endEntryIdx = Math.min(files.length + 1, OPDLoader.MAX_DIR_ENTRIES);
-            if (endEntryIdx < OPDLoader.MAX_DIR_ENTRIES) {
-                const endOff = dirOffset + endEntryIdx * 16;
-                disk[endOff + 4] = 0xFF;
-                disk[endOff + 5] = 0xFF;
-            }
+            // End-of-directory terminator after the last file (last_block=0xFFFF;
+            // free pointer = last block, matching a real blank Opus disk)
+            OPDLoader._writeOpdDirEntry(disk, dirOffset + (written + 1) * 16, diskName, 0x00FF, totalSectors - 1, 0xFFFF);
 
             return disk;
+        }
+    }
+
+    /**
+     * Didaktik 40/80 MDOS disk loader (read-only).
+     * D40/D80 images are raw, header-less sector dumps (sector N at offset
+     * N*512). Algorithms ported from the zxspectrumutils tools d802tap.cpp /
+     * dird80.c. Supported: list catalog, extract files.
+     */
+    export class DidaktikLoader {
+        static get VERSION() { return VERSION; }
+
+        static get SECTOR_SIZE() { return 512; }
+        static get FAT_OFFSET() { return 512; }          // FAT starts at sector 1
+        static get FAT_ENTRIES_PER_SECTOR() { return 341; }
+        // Directory occupies these physical sectors, in catalog order
+        static get DIR_SECTORS() { return [6, 8, 10, 12, 7, 9, 11, 13]; }
+        static get DIR_ENTRY_SIZE() { return 32; }
+        static get TYPE_NAMES() {
+            return { P: 'BASIC', B: 'Code', N: 'Num array', C: 'Char array', S: 'Snapshot', Q: 'Sequence' };
+        }
+
+        // Known raw image sizes (track × sides × sectors × 512)
+        static isDidaktik(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            if (bytes.length < 14 * 512) return false;
+            // MDOS boot sector carries an "SDOS" identifier at offset 204
+            if (bytes[204] === 0x53 && bytes[205] === 0x44 &&
+                bytes[206] === 0x4F && bytes[207] === 0x53) {
+                return true;
+            }
+            // Fallback: a plausible D40/D80 size with a sane-looking catalog
+            const sizes = [184320, 368640, 409600, 737280, 819200];
+            if (!sizes.includes(bytes.length)) return false;
+            return DidaktikLoader.listFiles(bytes).length > 0;
+        }
+
+        // MDOS 12-bit FAT entry decode (own nibble packing, not standard FAT12)
+        static getFATnum(bytes, sector) {
+            const sec = sector % DidaktikLoader.FAT_ENTRIES_PER_SECTOR;
+            const base = DidaktikLoader.FAT_OFFSET +
+                Math.floor(sector / DidaktikLoader.FAT_ENTRIES_PER_SECTOR) * 512 +
+                Math.floor(sec * 3 / 2);
+            const b0 = bytes[base] || 0;
+            const b1 = bytes[base + 1] || 0;
+            return (sec % 2 === 0)
+                ? (b0 | ((b1 >> 4) << 8))        // even entry
+                : (b1 | ((b0 & 0x0F) << 8));     // odd entry
+        }
+
+        static _readName(bytes, off) {
+            let name = '';
+            for (let i = 0; i < 10; i++) {
+                const ch = bytes[off + i];
+                if (ch === 0 || ch === 0xE5) break;
+                if (ch >= 0x20 && ch < 0x7F) name += String.fromCharCode(ch);
+            }
+            return name.trimEnd();
+        }
+
+        static listFiles(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const files = [];
+            for (const physSec of DidaktikLoader.DIR_SECTORS) {
+                const base = physSec * 512;
+                if (base + 512 > bytes.length) break;
+                for (let i = 0; i < 16; i++) {
+                    const off = base + i * 32;
+                    const t = bytes[off];
+                    if (t === 0x00 || t === 0xE5) continue;   // empty / deleted
+                    const typeChar = (t >= 0x20 && t < 0x7F) ? String.fromCharCode(t) : '?';
+                    const name = DidaktikLoader._readName(bytes, off + 1);
+                    if (!name) continue;
+                    const length = bytes[off + 11] | (bytes[off + 12] << 8) | (bytes[off + 21] << 16);
+                    const startAddr = bytes[off + 13] | (bytes[off + 14] << 8);
+                    const basicLength = bytes[off + 15] | (bytes[off + 16] << 8);
+                    const firstSec = bytes[off + 17] | (bytes[off + 18] << 8);
+                    const attributes = bytes[off + 20];
+                    files.push({
+                        name,
+                        type: typeChar,
+                        typeName: DidaktikLoader.TYPE_NAMES[typeChar] || 'Unknown',
+                        ext: typeChar,
+                        length,
+                        startAddr,
+                        basicLength,
+                        firstSec,
+                        attributes,
+                        fullName: `${name}.${typeChar}`
+                    });
+                }
+            }
+            return files;
+        }
+
+        /**
+         * Extract a file's data by walking its FAT sector chain.
+         * Returns Uint8Array, or null on a bad/unreadable chain.
+         */
+        static extractFile(data, fileInfo) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const sectors = [];
+            let sec = fileInfo.firstSec;
+            let endVal = 0;
+            let guard = 0;
+            const maxGuard = Math.floor(bytes.length / 512) + 4;
+            while (guard++ < maxGuard) {
+                sectors.push(sec);
+                const nv = DidaktikLoader.getFATnum(bytes, sec);
+                if (nv >= 0xC00) { endVal = nv; break; }
+                sec = nv;
+            }
+            if ((endVal & 0xF00) === 0xD00) return null;   // bad/unavailable sector
+
+            let total = (sectors.length - 1) * 512;
+            if (endVal > 0xE00) {
+                total += (endVal & 0x1FF);                 // bytes used in final sector
+            } else if (endVal === 0xE00) {
+                if (total < fileInfo.length) total += 512; // 0xE00-as-EOF workaround
+            } else if (endVal === 0xC00) {
+                // proper end marker — final sector's used bytes come from the
+                // declared length (length mod 512, or a full sector)
+                const rem = fileInfo.length - total;
+                total += (rem > 0 && rem <= 512) ? rem : 512;
+            }
+            if (total <= 0) return new Uint8Array(0);
+
+            const out = new Uint8Array(total);
+            let pos = 0;
+            for (const s of sectors) {
+                if (pos >= total) break;
+                const o = s * 512;
+                const n = Math.min(512, total - pos, Math.max(0, bytes.length - o));
+                if (n <= 0) break;
+                out.set(bytes.subarray(o, o + n), pos);
+                pos += n;
+            }
+            return out;
+        }
+
+        static getDiskInfo(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const hasBoot = bytes.length > 207;
+            let diskLabel = '';
+            if (hasBoot) {
+                for (let i = 192; i < 202; i++) {
+                    const ch = bytes[i];
+                    if (ch >= 0x20 && ch < 0x7F) diskLabel += String.fromCharCode(ch);
+                }
+                diskLabel = diskLabel.trimEnd();
+            }
+            const tracksPerSide = hasBoot ? bytes[178] : 0;
+            const sectorsPerTrack = hasBoot ? bytes[179] : 0;
+            const doubleSided = hasBoot ? !!(bytes[177] & 0x10) : true;
+            const files = DidaktikLoader.listFiles(bytes);
+            return {
+                diskLabel,
+                tracks: tracksPerSide,
+                sides: doubleSided ? 2 : 1,
+                sectorsPerTrack,
+                bytesPerSector: 512,
+                totalSize: bytes.length,
+                totalSectors: Math.floor(bytes.length / 512),
+                fileCount: files.length
+            };
+        }
+
+        /**
+         * Write the 10-byte MDOS disk label into the boot sector (offset 192-201,
+         * space-padded). Returns a new array; no-op if the disk has no boot sector.
+         */
+        static setDiskLabel(data, label) {
+            const bytes = new Uint8Array(data);
+            if (bytes.length <= 207) return bytes; // no boot sector → no label area
+            writeField(bytes, 192, label || '', 10);
+            return bytes;
+        }
+
+        /**
+         * Fill a blank MDOS image's FAT + directory/data area (shared by D40/D80).
+         * The directory (sectors 6-13) and data area (14..) get the 0xE5 format
+         * byte; the FAT (image sectors 1..fatSectors) marks system sectors 0-13 and
+         * the non-existent sectors past the disk (totalSectors..fatSectors*341-1) as
+         * 0xDDD, leaving the data sectors free (0x000). The unused low nibble of each
+         * FAT sector's last byte is forced to 0xD (→ 0x0D where the high nibble is a
+         * free entry, 0xDD where it completes a 0xDDD non-existent entry).
+         */
+        static _writeMdosFatAndFill(bytes, totalSectors, fatSectors) {
+            bytes.fill(0xE5, 6 * 512);
+            for (let s = 0; s <= 13; s++) DidaktikLoader.setFATnum(bytes, s, 0xDDD);
+            for (let s = totalSectors; s <= fatSectors * 341 - 1; s++) DidaktikLoader.setFATnum(bytes, s, 0xDDD);
+            for (let s = 1; s <= fatSectors; s++) bytes[s * 512 + 511] = (bytes[s * 512 + 511] & 0xF0) | 0x0D;
+        }
+
+        /**
+         * Build a blank, MDOS-formatted Didaktik D80 image — 80 track, double-sided,
+         * 9 sectors/track, 512 B = 737280 B. Byte-reproduces a real greaseweazle/MDOS_2
+         * format (tests/pristine/ref-d80-blank.d80), parameterised only by the label.
+         * @param {string} label  up to 10 chars (null-padded, like a real format)
+         * @returns {Uint8Array}
+         */
+        static createBlankD80(label = '') {
+            const bytes = new Uint8Array(80 * 2 * 9 * 512);   // 737280
+            DidaktikLoader._writeMdosFatAndFill(bytes, 80 * 2 * 9, 5);
+
+            // Sector 0: MDOS boot/system descriptor (captured from a real MDOS_2
+            // format). Parameter blocks at 0x80/0xB0 encode the geometry MDOS reads
+            // back (byte 178=0x50 → 80 tracks, 179=0x09 → 9 sectors).
+            const sig = 'Formated with MDOS_2 (MTs edition).';
+            for (let i = 0; i < sig.length; i++) bytes[i] = sig.charCodeAt(i);
+            const PARAM_80 = [0x01, 0x18, 0x28, 0x50, 0x00, 0x18, 0x50, 0x09, 0x00, 0x00, 0x00, 0x00,
+                              0x81, 0x14, 0x50, 0x09, 0x00, 0x14, 0x50, 0x09];
+            const PARAM_B0 = [0x81, 0x14, 0x50, 0x09, 0x00, 0x14, 0x50, 0x09];
+            for (let i = 0; i < PARAM_80.length; i++) bytes[0x80 + i] = PARAM_80[i];
+            for (let i = 0; i < PARAM_B0.length; i++) bytes[0xB0 + i] = PARAM_B0[i];
+            writeField(bytes, 192, label || '', 10, 0x00);   // null-padded (real-format style)
+            bytes[202] = 0x09; bytes[203] = 0x3A;             // format/serial word
+            bytes[204] = 0x53; bytes[205] = 0x44;             // "SDOS" identifier (read by isDidaktik)
+            bytes[206] = 0x4F; bytes[207] = 0x53;
+            bytes[208] = 0x25;                                // '%'
+            return bytes;
+        }
+
+        /**
+         * Build a blank, MDOS-formatted Didaktik D40 image — 40 track, double-sided,
+         * 9 sectors/track, 512 B = 368640 B (the standard 360K D40 per FlashFloppy
+         * issue #335). Byte-reproduces a real D40 format (tests/pristine/ref-d40-blank.d40),
+         * parameterised only by the label. (A different formatter than the D80 ref:
+         * no signature string, its own parameter block and serial word.)
+         * @param {string} label  up to 10 chars (null-padded)
+         * @returns {Uint8Array}
+         */
+        static createBlankD40(label = '') {
+            const bytes = new Uint8Array(40 * 2 * 9 * 512);   // 368640
+            // FAT region is a fixed 5 image-sectors (1-5) as on D80; the
+            // non-existent sectors past the disk (720..1704) are all marked 0xDDD.
+            DidaktikLoader._writeMdosFatAndFill(bytes, 40 * 2 * 9, 5);
+
+            // Sector 0: MDOS descriptor (no signature string for this formatter).
+            // Parameter blocks at 0x80/0xB0 encode 40 tracks (0x28) / 9 sectors.
+            const PARAM_80 = [0x81, 0x18, 0x28, 0x09, 0x00, 0x18, 0x28, 0x09, 0x00, 0x00, 0x00, 0x00,
+                              0x01, 0x14, 0x50, 0x28, 0x00, 0x14, 0x28, 0x09];
+            const PARAM_B0 = [0x81, 0x18, 0x28, 0x09, 0x00, 0x18, 0x28, 0x09];
+            for (let i = 0; i < PARAM_80.length; i++) bytes[0x80 + i] = PARAM_80[i];
+            for (let i = 0; i < PARAM_B0.length; i++) bytes[0xB0 + i] = PARAM_B0[i];
+            writeField(bytes, 192, label || '', 10);  // space-padded (this formatter's style)
+            bytes[202] = 0x51; bytes[203] = 0x79;             // format/serial word
+            bytes[204] = 0x53; bytes[205] = 0x44;             // "SDOS" identifier
+            bytes[206] = 0x4F; bytes[207] = 0x53;
+            return bytes;
+        }
+
+        /**
+         * Convert an extracted MDOS file to a TAP block pair (header + data).
+         * BASIC (P) and Code (B) map to standard ZX header types.
+         */
+        static fileToTAP(fileData, fileInfo) {
+            const header = new Uint8Array(21);
+            header[0] = 0x00; // header flag
+            // type byte: 0=BASIC, 3=CODE (others approximated as CODE)
+            const tapType = fileInfo.type === 'P' ? 0 : fileInfo.type === 'N' ? 1
+                : fileInfo.type === 'C' ? 2 : 3;
+            header[1] = tapType;
+            writeField(header, 2, fileInfo.name, 10);
+            const len = fileData.length;
+            header[12] = len & 0xFF; header[13] = (len >> 8) & 0xFF;
+            const p1 = fileInfo.type === 'P' ? (fileInfo.basicLength || len) : fileInfo.startAddr;
+            const p2 = fileInfo.type === 'P' ? (fileInfo.startAddr || 0x8000) : 0x8000;
+            header[14] = p1 & 0xFF; header[15] = (p1 >> 8) & 0xFF;
+            header[16] = p2 & 0xFF; header[17] = (p2 >> 8) & 0xFF;
+            let parity = 0;
+            for (let i = 0; i < 18; i++) parity ^= header[i];
+            header[18] = parity;
+            // (TAP block = 2-byte length + flag + payload + checksum)
+            const mkBlock = (flag, payload) => {
+                const blk = new Uint8Array(2 + 1 + payload.length + 1);
+                const inner = 1 + payload.length + 1;
+                blk[0] = inner & 0xFF; blk[1] = (inner >> 8) & 0xFF;
+                blk[2] = flag;
+                blk.set(payload, 3);
+                let chk = flag;
+                for (let i = 0; i < payload.length; i++) chk ^= payload[i];
+                blk[blk.length - 1] = chk;
+                return blk;
+            };
+            const hdrBlock = mkBlock(0x00, header.subarray(1, 18));
+            const dataBlock = mkBlock(0xFF, fileData);
+            const tap = new Uint8Array(hdrBlock.length + dataBlock.length);
+            tap.set(hdrBlock, 0);
+            tap.set(dataBlock, hdrBlock.length);
+            return tap;
+        }
+
+        // ---- Write support (in-place edits; format per zxspectrumutils tap2d80.cpp) ----
+
+        // Inverse of getFATnum: write a 12-bit FAT entry, preserving the shared nibble.
+        static setFATnum(bytes, sector, value) {
+            value &= 0xFFF;
+            const sec = sector % DidaktikLoader.FAT_ENTRIES_PER_SECTOR;
+            const base = DidaktikLoader.FAT_OFFSET +
+                Math.floor(sector / DidaktikLoader.FAT_ENTRIES_PER_SECTOR) * 512 +
+                Math.floor(sec * 3 / 2);
+            if (sec % 2 === 0) {
+                bytes[base] = value & 0xFF;
+                bytes[base + 1] = (bytes[base + 1] & 0x0F) | (((value >> 8) & 0x0F) << 4);
+            } else {
+                bytes[base + 1] = value & 0xFF;
+                bytes[base] = (bytes[base] & 0xF0) | ((value >> 8) & 0x0F);
+            }
+        }
+
+        static _totalSectors(bytes) { return Math.floor(bytes.length / DidaktikLoader.SECTOR_SIZE); }
+
+        // Free data sectors (FAT entry 0x000), data area starts at sector 14.
+        static _freeSectors(bytes) {
+            const total = DidaktikLoader._totalSectors(bytes);
+            const free = [];
+            for (let s = 14; s < total; s++) {
+                if (DidaktikLoader.getFATnum(bytes, s) === 0x000) free.push(s);
+            }
+            return free;
+        }
+
+        // Find an empty directory slot offset, or -1 if the directory is full.
+        static _findFreeDirEntry(bytes) {
+            for (const physSec of DidaktikLoader.DIR_SECTORS) {
+                const base = physSec * 512;
+                if (base + 512 > bytes.length) break;
+                for (let i = 0; i < 16; i++) {
+                    const off = base + i * 32;
+                    const t = bytes[off];
+                    if (t === 0x00 || t === 0xE5) return off;
+                }
+            }
+            return -1;
+        }
+
+        // Locate a file's directory entry by its (unique) first sector, or -1.
+        static _findDirEntry(bytes, firstSec) {
+            for (const physSec of DidaktikLoader.DIR_SECTORS) {
+                const base = physSec * 512;
+                if (base + 512 > bytes.length) break;
+                for (let i = 0; i < 16; i++) {
+                    const off = base + i * 32;
+                    const t = bytes[off];
+                    if (t === 0x00 || t === 0xE5) continue;
+                    const fs = bytes[off + 17] | (bytes[off + 18] << 8);
+                    if (fs === firstSec) return off;
+                }
+            }
+            return -1;
+        }
+
+        /**
+         * Add a file to a copy of the image. Returns the new Uint8Array.
+         * file: { name, type ('P'/'B'/'N'/'C'/...), data:Uint8Array, startAddr, basicLength }
+         * Throws on a full disk or full directory.
+         */
+        static addFile(data, file) {
+            const bytes = new Uint8Array(data);
+            const payload = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
+            const len = payload.length;
+            const numSec = Math.max(1, Math.ceil(len / 512));
+            const free = DidaktikLoader._freeSectors(bytes);
+            if (free.length < numSec) throw new Error(`Disk full (need ${numSec} sectors, ${free.length} free)`);
+            const dirOff = DidaktikLoader._findFreeDirEntry(bytes);
+            if (dirOff < 0) throw new Error('Directory full (max 128 files)');
+
+            const chain = free.slice(0, numSec);
+            // Write payload across the allocated sectors, zero-padding the final one.
+            for (let i = 0; i < numSec; i++) {
+                const o = chain[i] * 512;
+                const start = i * 512;
+                const end = Math.min(start + 512, len);
+                bytes.set(payload.subarray(start, end), o);
+                for (let p = end - start; p < 512; p++) bytes[o + p] = 0;
+            }
+            // FAT links + last-sector terminator (0xE00 + length%512, per tap2d80.cpp).
+            for (let i = 0; i < numSec - 1; i++) DidaktikLoader.setFATnum(bytes, chain[i], chain[i + 1]);
+            DidaktikLoader.setFATnum(bytes, chain[numSec - 1], 0xE00 | (len % 512));
+
+            // Directory entry.
+            const typeChar = (file.type || 'B').charAt(0);
+            bytes[dirOff] = typeChar.charCodeAt(0);
+            writeField(bytes, dirOff + 1, file.name || 'untitled', 10, 0x00);
+            bytes[dirOff + 11] = len & 0xFF;
+            bytes[dirOff + 12] = (len >> 8) & 0xFF;
+            // bytes 13-14: P → autostart LINE, B/others → load address
+            const startField = file.startAddr || 0;
+            bytes[dirOff + 13] = startField & 0xFF;
+            bytes[dirOff + 14] = (startField >> 8) & 0xFF;
+            // bytes 15-16: P → BASIC program length, B/others → 0x8000 (per real disks)
+            const bl = typeChar === 'P' ? (file.basicLength || len) : 0x8000;
+            bytes[dirOff + 15] = bl & 0xFF;
+            bytes[dirOff + 16] = (bl >> 8) & 0xFF;
+            bytes[dirOff + 17] = chain[0] & 0xFF;
+            bytes[dirOff + 18] = (chain[0] >> 8) & 0xFF;
+            bytes[dirOff + 19] = 0x00;
+            bytes[dirOff + 20] = 0x0F;                 // attributes (constant on real disks)
+            bytes[dirOff + 21] = (len >> 16) & 0xFF;   // extended length (3rd byte)
+            for (let i = 22; i < 32; i++) bytes[dirOff + i] = 0xE5;  // tail fill (matches tap2d80.cpp / real disks)
+            return bytes;
+        }
+
+        /** Delete a file (free its FAT chain, clear the directory slot). Returns a new Uint8Array. */
+        static deleteFile(data, fileInfo) {
+            const bytes = new Uint8Array(data);
+            const total = DidaktikLoader._totalSectors(bytes);
+            let s = fileInfo.firstSec, guard = 0;
+            const maxGuard = total + 4;
+            while (guard++ < maxGuard && s >= 14 && s < total) {
+                const nv = DidaktikLoader.getFATnum(bytes, s);
+                DidaktikLoader.setFATnum(bytes, s, 0x000);
+                if (nv >= 0xC00) break;
+                s = nv;
+            }
+            const off = DidaktikLoader._findDirEntry(bytes, fileInfo.firstSec);
+            if (off >= 0) bytes[off] = 0x00;
+            return bytes;
+        }
+
+        /** Rename a file in place. Returns a new Uint8Array. */
+        static renameFile(data, fileInfo, newName) {
+            const bytes = new Uint8Array(data);
+            const off = DidaktikLoader._findDirEntry(bytes, fileInfo.firstSec);
+            if (off < 0) return bytes;
+            writeField(bytes, off + 1, newName || '', 10, 0x00);
+            return bytes;
+        }
+
+        /**
+         * Update a file's start-address field (dir bytes 13-14) in place: the load
+         * address for Code (B) files, or the autostart LINE for BASIC (P) files.
+         * Returns a new Uint8Array.
+         */
+        static setStartAddr(data, firstSec, value) {
+            const bytes = new Uint8Array(data);
+            const off = DidaktikLoader._findDirEntry(bytes, firstSec);
+            if (off < 0) return bytes;
+            bytes[off + 13] = value & 0xFF;
+            bytes[off + 14] = (value >> 8) & 0xFF;
+            return bytes;
+        }
+
+        /**
+         * Swap two files' 32-byte directory entries (located by their first sector),
+         * changing catalog order without touching file data or the FAT. Returns a
+         * new Uint8Array. Used to reorder files (Move Up/Down).
+         */
+        static swapDirEntries(data, firstSecA, firstSecB) {
+            const bytes = new Uint8Array(data);
+            const a = DidaktikLoader._findDirEntry(bytes, firstSecA);
+            const b = DidaktikLoader._findDirEntry(bytes, firstSecB);
+            if (a < 0 || b < 0 || a === b) return bytes;
+            for (let i = 0; i < 32; i++) {
+                const t = bytes[a + i];
+                bytes[a + i] = bytes[b + i];
+                bytes[b + i] = t;
+            }
+            return bytes;
         }
     }
 
@@ -6246,11 +6902,12 @@ export function sclChecksum(data, length = data.length) {
                     cpu.im = r[28];
                     // r[29-32] are T-states
                     cpu.tStates = r[29] | (r[30] << 8) | (r[31] << 16) | (r[32] << 24);
-                    // r[33] is halt state (chHalted) - use bit 0 only (Spectaculator writes 0x10)
-                    // Don't trust it if PC indicates interrupt execution
-                    // PC=0x38 (IM1) or PC=0x66 (NMI) means CPU is executing handler, not halted
+                    // HALT state is ZXSTZF_HALTED (bit 1, 0x02) of chFlags at offset 34
+                    // (offset 33 is chHoldIntReqCycles), per the SZX spec.
+                    // Don't trust it if PC indicates interrupt-handler execution
+                    // (PC=0x38 IM1 or PC=0x66 NMI means the CPU is in a handler, not halted).
                     const pc = cpu.pc;
-                    if ((r[33] & 1) && pc !== 0x0038 && pc !== 0x0066) {
+                    if (r.length > 34 && (r[34] & 0x02) && pc !== 0x0038 && pc !== 0x0066) {
                         cpu.halted = true;
                     } else {
                         cpu.halted = false;
@@ -6347,8 +7004,10 @@ export function sclChecksum(data, length = data.length) {
             z80rData[27] = cpu.iff2 ? 1 : 0;
             z80rData[28] = cpu.im;
             // T-states (bytes 29-32) - leave as 0
-            z80rData[33] = cpu.halted ? 1 : 0;
-            // Reserved (bytes 34-36) - leave as 0
+            // byte 33 = chHoldIntReqCycles (not tracked → 0)
+            // byte 34 = chFlags: ZXSTZF_HALTED is bit 1 (0x02), per the SZX spec
+            z80rData[34] = cpu.halted ? 0x02 : 0;
+            // bytes 35-36 = wMemPtr - leave as 0
             chunks.push(this.makeChunk('Z80R', z80rData));
 
             // SPCR chunk - Spectrum state (8 bytes)

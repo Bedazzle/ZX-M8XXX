@@ -314,8 +314,8 @@
 
         img.numTracks = 2;
         img.numSides = 1;
-        img.tracks[0] = { sectors: [{ id: 0xC1, data: new Uint8Array(512) }] };
-        img.tracks[1] = { sectors: [{ id: 0xC1, data: new Uint8Array(512) }] };
+        img.tracks[0] = { sectors: [{ id: 0x01, data: new Uint8Array(512) }] };
+        img.tracks[1] = { sectors: [{ id: 0x01, data: new Uint8Array(512) }] };
         assert(img.getTrack(0, 0) === img.tracks[0], 'getTrack(0,0) returns track 0');
         assert(img.getTrack(1, 0) === img.tracks[1], 'getTrack(1,0) returns track 1');
         assert(img.getTrack(5, 0) === null, 'getTrack(5,0) returns null for missing');
@@ -341,35 +341,35 @@
         const secData = new Uint8Array(512);
         secData[0] = 0xAA; secData[1] = 0xBB;
         imgRW.tracks[0] = { sectors: [
-            { id: 0xC1, data: new Uint8Array(secData), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 },
-            { id: 0xC2, data: new Uint8Array(512), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 }
+            { id: 0x01, data: new Uint8Array(secData), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 },
+            { id: 0x02, data: new Uint8Array(512), sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 }
         ]};
 
-        const read1 = imgRW.readSector(0, 0, 0xC1);
-        assert(read1 !== null, 'readSector finds sector 0xC1');
+        const read1 = imgRW.readSector(0, 0, 0x01);
+        assert(read1 !== null, 'readSector finds sector 0x01');
         assert(read1[0] === 0xAA && read1[1] === 0xBB, 'readSector returns correct data');
 
-        const read2 = imgRW.readSector(0, 0, 0xC2);
-        assert(read2 !== null, 'readSector finds sector 0xC2');
+        const read2 = imgRW.readSector(0, 0, 0x02);
+        assert(read2 !== null, 'readSector finds sector 0x02');
 
-        const readMissing = imgRW.readSector(0, 0, 0xC9);
+        const readMissing = imgRW.readSector(0, 0, 0x09);
         assert(readMissing === null, 'readSector returns null for missing sector ID');
 
-        const readNoTrack = imgRW.readSector(5, 0, 0xC1);
+        const readNoTrack = imgRW.readSector(5, 0, 0x01);
         assert(readNoTrack === null, 'readSector returns null for missing track');
 
         // writeSector
         const newData = new Uint8Array(512);
         newData[0] = 0xDD; newData[1] = 0xEE;
-        const writeOk = imgRW.writeSector(0, 0, 0xC2, newData);
+        const writeOk = imgRW.writeSector(0, 0, 0x02, newData);
         assert(writeOk === true, 'writeSector returns true for existing sector');
-        const readBack = imgRW.readSector(0, 0, 0xC2);
+        const readBack = imgRW.readSector(0, 0, 0x02);
         assert(readBack[0] === 0xDD && readBack[1] === 0xEE, 'writeSector data persists');
 
         const writeMissing = imgRW.writeSector(0, 0, 0xFF, newData);
         assert(writeMissing === false, 'writeSector returns false for missing sector');
 
-        const writeNoTrack = imgRW.writeSector(5, 0, 0xC1, newData);
+        const writeNoTrack = imgRW.writeSector(5, 0, 0x01, newData);
         assert(writeNoTrack === false, 'writeSector returns false for missing track');
 
         section('DSKImage - getTotalTracks');
@@ -406,8 +406,8 @@
 
         // Build a minimal standard DSK: 2 tracks, 1 side, 2 sectors (512B each)
         const sectors = [
-            { id: 0xC1, sizeCode: 2, data: new Uint8Array([0x10, 0x20, 0x30]) },
-            { id: 0xC2, sizeCode: 2, data: new Uint8Array([0x40, 0x50, 0x60]) }
+            { id: 0x01, sizeCode: 2, data: new Uint8Array([0x10, 0x20, 0x30]) },
+            { id: 0x02, sizeCode: 2, data: new Uint8Array([0x40, 0x50, 0x60]) }
         ];
         const stdBin = buildStandardDSK(2, 1, sectors);
         const stdImg = DSKLoader.parse(stdBin);
@@ -418,9 +418,9 @@
 
         const track0 = stdImg.getTrack(0, 0);
         assert(track0 !== null && track0.sectors.length === 2, 'standard: track 0 has 2 sectors');
-        assert(track0.sectors[0].id === 0xC1, 'standard: sector 0 id = 0xC1');
+        assert(track0.sectors[0].id === 0x01, 'standard: sector 0 id = 0x01');
         assert(track0.sectors[0].data[0] === 0x10, 'standard: sector 0 data correct');
-        assert(track0.sectors[1].id === 0xC2, 'standard: sector 1 id = 0xC2');
+        assert(track0.sectors[1].id === 0x02, 'standard: sector 1 id = 0x02');
         assert(track0.sectors[1].data[0] === 0x40, 'standard: sector 1 data correct');
 
         const track1 = stdImg.getTrack(1, 0);
@@ -431,11 +431,11 @@
         // Build extended DSK with variable sector sizes
         const extTracks = [
             { sectors: [
-                { id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xAA) },
-                { id: 0xC2, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xBB) }
+                { id: 0x01, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xAA) },
+                { id: 0x02, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0xBB) }
             ]},
             { sectors: [
-                { id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, data: new Uint8Array(512).fill(0xCC) }
+                { id: 0x01, sizeCode: 2, cylinder: 1, head: 0, data: new Uint8Array(512).fill(0xCC) }
             ]}
         ];
         const extBin = buildExtendedDSK(2, 1, extTracks);
@@ -455,7 +455,7 @@
 
         // Track 0 formatted, track 1 unformatted (size 0 in table)
         const mixedTracks = [
-            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0x11) }] },
+            { sectors: [{ id: 0x01, sizeCode: 2, cylinder: 0, head: 0, data: new Uint8Array(512).fill(0x11) }] },
             null // unformatted
         ];
         const mixedBin = buildExtendedDSK(2, 1, mixedTracks);
@@ -482,12 +482,12 @@
         // Check track 0 sectors
         const bt0 = blank.getTrack(0, 0);
         assert(bt0.sectors.length === 9, 'blank: track 0 has 9 sectors');
-        assert(bt0.sectors[0].id === 0xC1, 'blank: first sector ID is 0xC1');
-        assert(bt0.sectors[8].id === 0xC9, 'blank: last sector ID is 0xC9');
+        assert(bt0.sectors[0].id === 0x01, 'blank: first sector ID is 0x01');
+        assert(bt0.sectors[8].id === 0x09, 'blank: last sector ID is 0x09');
         assert(bt0.sectors[0].sizeCode === 2, 'blank: sector size code = 2 (512B)');
 
         // Check boot sector disk spec
-        const bootData = blank.readSector(0, 0, 0xC1);
+        const bootData = blank.readSector(0, 0, 0x01);
         assert(bootData[0] === 0, 'blank boot: disk type = 0');
         assert(bootData[2] === 40, 'blank boot: 40 tracks per side');
         assert(bootData[3] === 9, 'blank boot: 9 sectors per track');
@@ -502,9 +502,15 @@
         assert(sum === 3, 'blank boot: checksum = 3 (mod 256)');
 
         // Check directory track filled with 0xE5
-        const dirData = blank.readSector(1, 0, 0xC1);
+        const dirData = blank.readSector(1, 0, 0x01);
         assert(dirData[0] === 0xE5, 'blank: directory sector filled with 0xE5');
         assert(dirData[511] === 0xE5, 'blank: directory sector end filled with 0xE5');
+        // Data area sectors are also 0xE5-formatted (matches real +3/CP/M media,
+        // and the 0xE5 slack fill addFile assumes for free blocks)
+        const dataSec = blank.readSector(20, 0, 0x01);
+        assert(dataSec[0] === 0xE5 && dataSec[511] === 0xE5, 'blank: data sector filled with 0xE5');
+        // Boot-spec reserved bytes stay zero despite the 0xE5 format fill
+        assert(bootData[10] === 0 && bootData[14] === 0, 'blank boot: reserved bytes 10-14 are 0');
 
         section('DSKLoader - getDiskSpec');
 
@@ -516,12 +522,12 @@
         assert(spec.dirBlocks === 2, 'getDiskSpec: 2 directory blocks');
         assert(spec.sectorSize === 512, 'getDiskSpec: sector size = 512');
         assert(spec.sectorsPerTrack === 9, 'getDiskSpec: 9 sectors/track');
-        assert(spec.firstSectorId === 0xC1, 'getDiskSpec: first sector ID = 0xC1');
+        assert(spec.firstSectorId === 0x01, 'getDiskSpec: first sector ID = 0x01');
 
         // Test fallback when checksum is wrong — DPB fields still valid so valid=true
         // (RealSpectrum compatibility: accept disks with bad checksum if DPB is structurally sound)
         const badBoot = DSKLoader.createBlankDSK();
-        const badBootSec = badBoot.readSector(0, 0, 0xC1);
+        const badBootSec = badBoot.readSector(0, 0, 0x01);
         badBootSec[15] = 0x00; // corrupt checksum
         const fallback = DSKLoader.getDiskSpec(badBoot);
         assert(fallback.valid === true, 'getDiskSpec: DPB fallback still valid despite bad checksum');
@@ -557,7 +563,7 @@
 
         // Write a CP/M directory entry into the directory track
         const dsk1 = DSKLoader.createBlankDSK();
-        const dirSec = dsk1.readSector(1, 0, 0xC1); // first directory sector
+        const dirSec = dsk1.readSector(1, 0, 0x01); // first directory sector
 
         // Entry 0: user=0, name="HELLO   ", ext="BAS", extent=0, rc=4 (4*128=512 bytes)
         // Zero out full 32-byte entry (dir sectors are filled with 0xE5)
@@ -627,7 +633,7 @@
 
         // Create a fresh disk with a simple file
         const dsk2 = DSKLoader.createBlankDSK();
-        const dirSec2 = dsk2.readSector(1, 0, 0xC1);
+        const dirSec2 = dsk2.readSector(1, 0, 0x01);
 
         // Write directory entry: file "TEST" in block 2
         dirSec2[0] = 0;
@@ -642,11 +648,11 @@
 
         // Write data into block 2 (which is at the data area after reserved tracks)
         // Block 2: sector offset = 2 * (1024/512) = 4 sectors from start of data area
-        // Data area starts at track 1 (reserved=1), sectors sorted by ID (0xC1..0xC9)
-        // Block 0 = sectors 0,1 (0xC1,0xC2); block 1 = sectors 2,3 (0xC3,0xC4); block 2 = sectors 4,5 (0xC5,0xC6)
-        const block2sec1 = dsk2.readSector(1, 0, 0xC5);
+        // Data area starts at track 1 (reserved=1), sectors sorted by ID (0x01..0x09)
+        // Block 0 = sectors 0,1 (0x01,0x02); block 1 = sectors 2,3 (0x03,0x04); block 2 = sectors 4,5 (0x05,0x06)
+        const block2sec1 = dsk2.readSector(1, 0, 0x05);
         block2sec1[0] = 0x42; block2sec1[1] = 0x43;
-        const block2sec2 = dsk2.readSector(1, 0, 0xC6);
+        const block2sec2 = dsk2.readSector(1, 0, 0x06);
         block2sec2[0] = 0x99;
 
         const fileData = DSKLoader.readFileData(dsk2, 'TEST', '', 0, 128);
@@ -685,11 +691,31 @@
         assert(files4[0].name === 'WRITTEN', 'writeDirectory: correct filename');
         assert(files4[0].ext === 'TXT', 'writeDirectory: correct extension');
 
+        section('DSK Filesystem - get/setDiskLabel');
+
+        assert(DSKLoader.getDiskLabel(dsk3) === '', 'no label on a fresh disk');
+        // set a label — must not disturb the existing file
+        DSKLoader.setDiskLabel(dsk3, 'MYDISK');
+        assert(DSKLoader.getDiskLabel(dsk3) === 'MYDISK', 'label written and read back');
+        assert(DSKLoader.listFiles(dsk3).length === 1, 'file survives setDiskLabel');
+        // lower-case is upper-cased, >11 chars truncated
+        DSKLoader.setDiskLabel(dsk3, 'longlabelname123');
+        assert(DSKLoader.getDiskLabel(dsk3) === 'LONGLABELNA', 'label upper-cased + truncated to 11');
+        // re-setting reuses the same entry (no second label entry created)
+        const dirAfter = DSKLoader._readDirectory(dsk3, DSKLoader.getDiskSpec(dsk3)).dirData;
+        let labelEntries = 0;
+        for (let i = 0; i < Math.floor(dirAfter.length / 32); i++) if (dirAfter[i * 32] === 0x20) labelEntries++;
+        assert(labelEntries === 1, 'only one label entry after relabel');
+        // empty label removes it
+        DSKLoader.setDiskLabel(dsk3, '');
+        assert(DSKLoader.getDiskLabel(dsk3) === '', 'empty label removes the entry');
+        assert(DSKLoader.listFiles(dsk3).length === 1, 'file still present after label removed');
+
         section('DSK Filesystem - +3DOS header detection');
 
         // Create a file with +3DOS header
         const dsk4 = DSKLoader.createBlankDSK();
-        const dirSec4 = dsk4.readSector(1, 0, 0xC1);
+        const dirSec4 = dsk4.readSector(1, 0, 0x01);
 
         // Directory entry for "CODE" file in block 2
         dirSec4[0] = 0;
@@ -703,7 +729,7 @@
         dirSec4[16] = 2; // block 2
 
         // Write +3DOS header into block 2
-        const headerSec = dsk4.readSector(1, 0, 0xC5);
+        const headerSec = dsk4.readSector(1, 0, 0x05);
         // "PLUS3DOS" signature
         const p3sig = 'PLUS3DOS';
         for (let i = 0; i < 8; i++) headerSec[i] = p3sig.charCodeAt(i);
@@ -933,7 +959,7 @@
         assert(ridResult.length === 7, 'ReadID: 7 result bytes');
         assert(ridResult[3] === 0, 'ReadID: cylinder = 0');
         assert(ridResult[4] === 0, 'ReadID: head = 0');
-        assert(ridResult[5] === 0xC1, 'ReadID: first sector ID = 0xC1');
+        assert(ridResult[5] === 0x01, 'ReadID: first sector ID = 0x01');
         assert(ridResult[6] === 2, 'ReadID: size code = 2');
 
         // Read ID with no disk
@@ -949,7 +975,7 @@
         const fdc9 = new UPD765();
         fdc9.drives[0].disk = DSKLoader.createBlankDSK();
         // Scan Equal (0x11)
-        const scanCmd = [0x51, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        const scanCmd = [0x51, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of scanCmd) fdc9.writeData(b);
         assert(fdc9.phase === fdc9.PHASE_RESULT, 'Scan: enters result');
         const scanRes = [];
@@ -989,14 +1015,14 @@
 
         const fdc = new UPD765();
         const dsk = DSKLoader.createBlankDSK();
-        // Write known data to track 0, sector 0xC1
-        const testData = dsk.readSector(0, 0, 0xC1);
+        // Write known data to track 0, sector 0x01
+        const testData = dsk.readSector(0, 0, 0x01);
         testData[0] = 0x42; testData[1] = 0x43; testData[511] = 0xFE;
         fdc.drives[0].disk = dsk;
         fdc.drives[0].track = 0;
 
-        // Read Data: C=0, H=0, R=0xC1, N=2, EOT=0xC1 (single sector)
-        const readCmd = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        // Read Data: C=0, H=0, R=0x01, N=2, EOT=0x01 (single sector)
+        const readCmd = [0x46, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of readCmd) fdc.writeData(b);
 
         assert(fdc.phase === fdc.PHASE_EXECUTION, 'ReadData: enters execution phase');
@@ -1019,22 +1045,22 @@
 
         const fdc2 = new UPD765();
         const dsk2 = DSKLoader.createBlankDSK();
-        // Write data to sectors 0xC1, 0xC2, 0xC3 on track 0
-        dsk2.readSector(0, 0, 0xC1)[0] = 0x11;
-        dsk2.readSector(0, 0, 0xC2)[0] = 0x22;
-        dsk2.readSector(0, 0, 0xC3)[0] = 0x33;
+        // Write data to sectors 0x01, 0x02, 0x03 on track 0
+        dsk2.readSector(0, 0, 0x01)[0] = 0x11;
+        dsk2.readSector(0, 0, 0x02)[0] = 0x22;
+        dsk2.readSector(0, 0, 0x03)[0] = 0x33;
         fdc2.drives[0].disk = dsk2;
         fdc2.drives[0].track = 0;
 
-        // R=0xC1, EOT=0xC3 (3 sectors)
-        const readMulti = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC3, 0x4E, 0xFF];
+        // R=0x01, EOT=0x03 (3 sectors)
+        const readMulti = [0x46, 0x00, 0, 0, 0x01, 2, 0x03, 0x4E, 0xFF];
         for (const b of readMulti) fdc2.writeData(b);
 
         const multiData = fdcReadAllData(fdc2);
         assert(multiData.length === 512 * 3, 'ReadData multi: 1536 bytes (3 sectors)');
-        assert(multiData[0] === 0x11, 'ReadData multi: sector 0xC1 data');
-        assert(multiData[512] === 0x22, 'ReadData multi: sector 0xC2 data');
-        assert(multiData[1024] === 0x33, 'ReadData multi: sector 0xC3 data');
+        assert(multiData[0] === 0x11, 'ReadData multi: sector 0x01 data');
+        assert(multiData[512] === 0x22, 'ReadData multi: sector 0x02 data');
+        assert(multiData[1024] === 0x33, 'ReadData multi: sector 0x03 data');
 
         fdcCollectResult(fdc2);
 
@@ -1042,7 +1068,7 @@
 
         const fdc3 = new UPD765();
         const dsk3 = DSKLoader.createBlankDSK();
-        dsk3.readSector(5, 0, 0xC1)[0] = 0x55; // data on physical track 5
+        dsk3.readSector(5, 0, 0x01)[0] = 0x55; // data on physical track 5
         fdc3.drives[0].disk = dsk3;
 
         // Seek to track 5
@@ -1050,7 +1076,7 @@
         fdc3.writeData(0x08); fdc3.readData(); fdc3.readData(); // clear SIS
 
         // Read with C=0 in command but head on track 5
-        const readPhys = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        const readPhys = [0x46, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of readPhys) fdc3.writeData(b);
         const physData = fdcReadAllData(fdc3);
         assert(physData[0] === 0x55, 'ReadData: reads from physical track (drive.track), not C param');
@@ -1059,7 +1085,7 @@
         section('UPD765 - Read Data with no disk');
 
         const fdcNd = new UPD765();
-        const readNd = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        const readNd = [0x46, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of readNd) fdcNd.writeData(b);
         assert(fdcNd.phase === fdcNd.PHASE_RESULT, 'ReadData no disk: straight to result');
         const ndRes = fdcCollectResult(fdcNd);
@@ -1084,8 +1110,8 @@
         fdcW.drives[0].disk = dskW;
         fdcW.drives[0].track = 0;
 
-        // Write Data: C=0, H=0, R=0xC1, N=2, EOT=0xC1
-        const writeCmd = [0x45, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        // Write Data: C=0, H=0, R=0x01, N=2, EOT=0x01
+        const writeCmd = [0x45, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of writeCmd) fdcW.writeData(b);
 
         assert(fdcW.phase === fdcW.PHASE_EXECUTION, 'WriteData: enters execution');
@@ -1102,7 +1128,7 @@
         assert(wResult.length === 7, 'WriteData result: 7 bytes');
 
         // Verify data written to disk
-        const verifyData = dskW.readSector(0, 0, 0xC1);
+        const verifyData = dskW.readSector(0, 0, 0x01);
         assert(verifyData[0] === 0xAB, 'WriteData: byte 0 written to disk');
         assert(verifyData[1] === 0xCD, 'WriteData: byte 1 written to disk');
         assert(verifyData[511] === 0xEF, 'WriteData: last byte written to disk');
@@ -1114,8 +1140,8 @@
         fdcW2.drives[0].disk = dskW2;
         fdcW2.drives[0].track = 0;
 
-        // R=0xC1, EOT=0xC2 (2 sectors)
-        const writeMulti = [0x45, 0x00, 0, 0, 0xC1, 2, 0xC2, 0x4E, 0xFF];
+        // R=0x01, EOT=0x02 (2 sectors)
+        const writeMulti = [0x45, 0x00, 0, 0, 0x01, 2, 0x02, 0x4E, 0xFF];
         for (const b of writeMulti) fdcW2.writeData(b);
 
         const writeData2 = new Uint8Array(1024);
@@ -1124,8 +1150,8 @@
         fdcWriteAllData(fdcW2, writeData2);
         fdcCollectResult(fdcW2);
 
-        assert(dskW2.readSector(0, 0, 0xC1)[0] === 0x11, 'WriteData multi: sector 0xC1 written');
-        assert(dskW2.readSector(0, 0, 0xC2)[0] === 0x22, 'WriteData multi: sector 0xC2 written');
+        assert(dskW2.readSector(0, 0, 0x01)[0] === 0x11, 'WriteData multi: sector 0x01 written');
+        assert(dskW2.readSector(0, 0, 0x02)[0] === 0x22, 'WriteData multi: sector 0x02 written');
 
         section('UPD765 - Format Track');
 
@@ -1165,20 +1191,20 @@
 
         const fdcRT = new UPD765();
         const dskRT = DSKLoader.createBlankDSK();
-        dskRT.readSector(0, 0, 0xC1)[0] = 0xA1;
-        dskRT.readSector(0, 0, 0xC2)[0] = 0xA2;
+        dskRT.readSector(0, 0, 0x01)[0] = 0xA1;
+        dskRT.readSector(0, 0, 0x02)[0] = 0xA2;
         fdcRT.drives[0].disk = dskRT;
         fdcRT.drives[0].track = 0;
 
-        // Read Track: C=0, H=0, R=0xC1, N=2, EOT=0xC9
-        const rtCmd = [0x42, 0x00, 0, 0, 0xC1, 2, 0xC9, 0x4E, 0xFF];
+        // Read Track: C=0, H=0, R=0x01, N=2, EOT=0x09
+        const rtCmd = [0x42, 0x00, 0, 0, 0x01, 2, 0x09, 0x4E, 0xFF];
         for (const b of rtCmd) fdcRT.writeData(b);
 
         assert(fdcRT.phase === fdcRT.PHASE_EXECUTION, 'ReadTrack: enters execution');
         const rtData = fdcReadAllData(fdcRT);
         assert(rtData.length === 512 * 9, 'ReadTrack: reads all 9 sectors (4608 bytes)');
-        assert(rtData[0] === 0xA1, 'ReadTrack: sector 0xC1 data present');
-        assert(rtData[512] === 0xA2, 'ReadTrack: sector 0xC2 data present');
+        assert(rtData[0] === 0xA1, 'ReadTrack: sector 0x01 data present');
+        assert(rtData[512] === 0xA2, 'ReadTrack: sector 0x02 data present');
 
         fdcCollectResult(fdcRT);
 
@@ -1193,7 +1219,7 @@
         };
 
         // Read Data
-        const actRead = [0x46, 0x00, 0, 0, 0xC1, 2, 0xC1, 0x4E, 0xFF];
+        const actRead = [0x46, 0x00, 0, 0, 0x01, 2, 0x01, 0x4E, 0xFF];
         for (const b of actRead) fdcAct.writeData(b);
         fdcReadAllData(fdcAct);
         fdcCollectResult(fdcAct);
@@ -1203,7 +1229,7 @@
 
         // Write Data
         activityLog = [];
-        const actWrite = [0x45, 0x00, 0, 0, 0xC2, 2, 0xC2, 0x4E, 0xFF];
+        const actWrite = [0x45, 0x00, 0, 0, 0x02, 2, 0x02, 0x4E, 0xFF];
         for (const b of actWrite) fdcAct.writeData(b);
         fdcWriteAllData(fdcAct, new Uint8Array(512));
         fdcCollectResult(fdcAct);
@@ -1248,34 +1274,34 @@
 
         const t0 = parsed.getTrack(0, 0);
         assert(t0.sectors.length === 9, 'round-trip: track 0 has 9 sectors');
-        assert(t0.sectors[0].id === 0xC1, 'round-trip: sector IDs preserved');
+        assert(t0.sectors[0].id === 0x01, 'round-trip: sector IDs preserved');
 
         // Verify boot sector data survived
-        const bootData = parsed.readSector(0, 0, 0xC1);
+        const bootData = parsed.readSector(0, 0, 0x01);
         let sum = 0;
         for (let i = 0; i < 16; i++) sum = (sum + bootData[i]) & 0xFF;
         assert(sum === 3, 'round-trip: boot sector checksum intact');
 
         // Verify directory data survived
-        const dirData = parsed.readSector(1, 0, 0xC1);
+        const dirData = parsed.readSector(1, 0, 0x01);
         assert(dirData[0] === 0xE5, 'round-trip: directory data intact');
 
         section('Round-trip - written data survives');
 
         const dsk = DSKLoader.createBlankDSK();
         // Write test data to various sectors
-        dsk.readSector(0, 0, 0xC5)[0] = 0xDE;
-        dsk.readSector(0, 0, 0xC5)[1] = 0xAD;
-        dsk.readSector(10, 0, 0xC3)[100] = 0xBE;
-        dsk.readSector(39, 0, 0xC9)[511] = 0xEF;
+        dsk.readSector(0, 0, 0x05)[0] = 0xDE;
+        dsk.readSector(0, 0, 0x05)[1] = 0xAD;
+        dsk.readSector(10, 0, 0x03)[100] = 0xBE;
+        dsk.readSector(39, 0, 0x09)[511] = 0xEF;
 
         const buf2 = dsk.toBuffer();
         const parsed2 = DSKLoader.parse(buf2);
 
-        assert(parsed2.readSector(0, 0, 0xC5)[0] === 0xDE, 'round-trip: data sector byte 0');
-        assert(parsed2.readSector(0, 0, 0xC5)[1] === 0xAD, 'round-trip: data sector byte 1');
-        assert(parsed2.readSector(10, 0, 0xC3)[100] === 0xBE, 'round-trip: track 10 data');
-        assert(parsed2.readSector(39, 0, 0xC9)[511] === 0xEF, 'round-trip: last track data');
+        assert(parsed2.readSector(0, 0, 0x05)[0] === 0xDE, 'round-trip: data sector byte 0');
+        assert(parsed2.readSector(0, 0, 0x05)[1] === 0xAD, 'round-trip: data sector byte 1');
+        assert(parsed2.readSector(10, 0, 0x03)[100] === 0xBE, 'round-trip: track 10 data');
+        assert(parsed2.readSector(39, 0, 0x09)[511] === 0xEF, 'round-trip: last track data');
 
         section('Round-trip - disk spec survives');
 
@@ -1289,7 +1315,7 @@
 
         // Create a disk with a file, export, re-import, verify file listing
         const dskFile = DSKLoader.createBlankDSK();
-        const dirSec = dskFile.readSector(1, 0, 0xC1);
+        const dirSec = dskFile.readSector(1, 0, 0x01);
         dirSec[0] = 0; // user
         const testName = 'ROUNDTRP';
         for (let i = 0; i < 8; i++) dirSec[1 + i] = testName.charCodeAt(i);
@@ -1340,7 +1366,7 @@
         weakData[512 + 100] = 0xBB; // difference at byte 100
 
         const weakTracks = [
-            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
+            { sectors: [{ id: 0x01, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
         ];
         const weakBin = buildExtendedDSK(1, 1, weakTracks);
         const weakImg = DSKLoader.parse(weakBin);
@@ -1552,9 +1578,9 @@
         assert(DSKLoader._logicalToSectorId(tosSpec, 7) === 1, 'skew: logical 7 → physical 1');
 
         // Without skew table (normal +3), just adds firstSectorId
-        const p3Spec = { firstSectorId: 0xC1 };
-        assert(DSKLoader._logicalToSectorId(p3Spec, 0) === 0xC1, 'no skew: logical 0 → 0xC1');
-        assert(DSKLoader._logicalToSectorId(p3Spec, 3) === 0xC4, 'no skew: logical 3 → 0xC4');
+        const p3Spec = { firstSectorId: 0x01 };
+        assert(DSKLoader._logicalToSectorId(p3Spec, 0) === 0x01, 'no skew: logical 0 → 0x01');
+        assert(DSKLoader._logicalToSectorId(p3Spec, 3) === 0x04, 'no skew: logical 3 → 0x04');
 
         section('TOS - listFiles with TOS CODE file header');
 
@@ -1696,12 +1722,12 @@
         // Create a disk with one normal sector and one deleted-data sector
         const dskSK = DSKLoader.createBlankDSK();
         const track0 = dskSK.getTrack(0, 0);
-        // Mark sector 0xC2 as having Deleted Data Address Mark (DDAM)
+        // Mark sector 0x02 as having Deleted Data Address Mark (DDAM)
         // DSK ST2 bit 6 = DDAM
-        const sec2 = track0.sectors.find(s => s.id === 0xC2);
+        const sec2 = track0.sectors.find(s => s.id === 0x02);
         sec2.st2 = 0x40; // DDAM flag
         // Write recognizable data
-        const secC1 = track0.sectors.find(s => s.id === 0xC1);
+        const secC1 = track0.sectors.find(s => s.id === 0x01);
         for (let i = 0; i < secC1.data.length; i++) secC1.data[i] = 0x11;
         for (let i = 0; i < sec2.data.length; i++) sec2.data[i] = 0x22;
 
@@ -1720,9 +1746,9 @@
         fdcSK.writeData(0x00); // drive 0, head 0
         fdcSK.writeData(0x00); // C = 0
         fdcSK.writeData(0x00); // H = 0
-        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x01); // R = C1
         fdcSK.writeData(0x02); // N = 2 (512)
-        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x02); // EOT = C2
         fdcSK.writeData(0x1B); // GPL
         fdcSK.writeData(0xFF); // DTL
 
@@ -1756,9 +1782,9 @@
         fdcSK.writeData(0x00); // drive 0, head 0
         fdcSK.writeData(0x00); // C = 0
         fdcSK.writeData(0x00); // H = 0
-        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x01); // R = C1
         fdcSK.writeData(0x02); // N = 2 (512)
-        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x02); // EOT = C2
         fdcSK.writeData(0x1B); // GPL
         fdcSK.writeData(0xFF); // DTL
 
@@ -1791,9 +1817,9 @@
         fdcSK.writeData(0x00);
         fdcSK.writeData(0x00);
         fdcSK.writeData(0x00);
-        fdcSK.writeData(0xC1); // R = C1
+        fdcSK.writeData(0x01); // R = C1
         fdcSK.writeData(0x02);
-        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x02); // EOT = C2
         fdcSK.writeData(0x1B);
         fdcSK.writeData(0xFF);
 
@@ -1823,9 +1849,9 @@
         fdcSK.writeData(0x00);
         fdcSK.writeData(0x00);
         fdcSK.writeData(0x00);
-        fdcSK.writeData(0xC2); // R = C2
+        fdcSK.writeData(0x02); // R = C2
         fdcSK.writeData(0x02);
-        fdcSK.writeData(0xC2); // EOT = C2
+        fdcSK.writeData(0x02); // EOT = C2
         fdcSK.writeData(0x1B);
         fdcSK.writeData(0xFF);
 
@@ -1854,7 +1880,7 @@
         weakData[512 + 100] = 0xBB; // difference at byte 100
 
         const weakTracks = [
-            { sectors: [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
+            { sectors: [{ id: 0x01, sizeCode: 2, cylinder: 0, head: 0, data: weakData, st1: 0, st2: 0 }] }
         ];
         const weakBin = buildExtendedDSK(1, 1, weakTracks);
         const weakImg = DSKLoader.parse(weakBin);
@@ -1885,9 +1911,9 @@
             fdcW.writeData(0x00);
             fdcW.writeData(0x00);
             fdcW.writeData(0x00);
-            fdcW.writeData(0xC1);
+            fdcW.writeData(0x01);
             fdcW.writeData(0x02);
-            fdcW.writeData(0xC1);
+            fdcW.writeData(0x01);
             fdcW.writeData(0x1B);
             fdcW.writeData(0xFF);
 
@@ -1907,9 +1933,9 @@
         fdcW.writeData(0x00);
         fdcW.writeData(0x00);
         fdcW.writeData(0x00);
-        fdcW.writeData(0xC1);
+        fdcW.writeData(0x01);
         fdcW.writeData(0x02);
-        fdcW.writeData(0xC1);
+        fdcW.writeData(0x01);
         fdcW.writeData(0x1B);
         fdcW.writeData(0xFF);
         const finalData = fdcReadAllData(fdcW);
@@ -1933,9 +1959,9 @@
         fdcW.writeData(0x00);
         fdcW.writeData(0x00);
         fdcW.writeData(0x00);
-        fdcW.writeData(0xC1);
+        fdcW.writeData(0x01);
         fdcW.writeData(0x02);
-        fdcW.writeData(0xC1);
+        fdcW.writeData(0x01);
         fdcW.writeData(0x1B);
         fdcW.writeData(0xFF);
         const stableCheck = fdcReadAllData(fdcW);
@@ -2297,7 +2323,7 @@
     // Helper: create N identical sectors for a track
     function makeUniformSectors(count, sizeCode, startId) {
         const sectors = [];
-        const base = startId || 0xC1;
+        const base = startId || 0x01;
         for (let i = 0; i < count; i++) {
             sectors.push({ id: base + i, sizeCode, cylinder: 0, head: 0, st1: 0, st2: 0 });
         }
@@ -2333,7 +2359,7 @@
         const t0secs87 = [];
         for (let i = 0; i < 9; i++) {
             t0secs87.push({
-                id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0,
+                id: 0x01 + i, sizeCode: 2, cylinder: 0, head: 0,
                 st1: 0, st2: (i === 6) ? 64 : 0
             });
         }
@@ -2341,7 +2367,7 @@
         // T1: 5 sectors, 1024B
         const t1secs87 = [];
         for (let i = 0; i < 5; i++) {
-            t1secs87.push({ id: 0xC1 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
+            t1secs87.push({ id: 0x01 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
         }
         sl87Tracks.push({ sectors: t1secs87 });
         // T2-T39: uniform 9×512B
@@ -2359,14 +2385,14 @@
         const t0secs88 = [];
         for (let i = 0; i < 9; i++) {
             t0secs88.push({
-                id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0,
+                id: 0x01 + i, sizeCode: 2, cylinder: 0, head: 0,
                 st1: 0, st2: (i === 6 || i === 8) ? 64 : 0
             });
         }
         sl88Tracks.push({ sectors: t0secs88 });
         const t1secs88 = [];
         for (let i = 0; i < 5; i++) {
-            t1secs88.push({ id: 0xC1 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
+            t1secs88.push({ id: 0x01 + i, sizeCode: 3, cylinder: 1, head: 0, st1: 0, st2: 0 });
         }
         sl88Tracks.push({ sectors: t1secs88 });
         for (let t = 2; t < 40; t++) {
@@ -2394,9 +2420,9 @@
         const alkTracks = [];
         const alkSig = 'THE ALKATRAZ PROTECTION SYSTEM';
         const alkData = makeSectorData(512, alkSig, 0);
-        const alkT0Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: alkData }];
+        const alkT0Secs = [{ id: 0x01, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: alkData }];
         for (let i = 1; i < 9; i++) {
-            alkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+            alkT0Secs.push({ id: 0x01 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
         }
         alkTracks.push({ sectors: alkT0Secs });
         // T1 different sector count to trigger non-uniform
@@ -2414,9 +2440,9 @@
         hexTracks.push({ sectors: makeUniformSectors(9, 2) });
         const hexSig = 'HEXAGON DISK PROTECTION c 1989';
         const hexData = makeSectorData(512, hexSig, 10);
-        const hexT1Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: hexData }];
+        const hexT1Secs = [{ id: 0x01, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: hexData }];
         for (let i = 1; i < 8; i++) {
-            hexT1Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
+            hexT1Secs.push({ id: 0x01 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
         }
         hexTracks.push({ sectors: hexT1Secs });
         for (let t = 2; t < 40; t++) {
@@ -2431,16 +2457,16 @@
         const rkTracks = [];
         // T0: embed Remi signature
         const remiData = makeSectorData(512, 'PROTECTION      Remi HERBULOT', 0);
-        const rkT0Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: remiData }];
+        const rkT0Secs = [{ id: 0x01, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0, data: remiData }];
         for (let i = 1; i < 9; i++) {
-            rkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+            rkT0Secs.push({ id: 0x01 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
         }
         rkTracks.push({ sectors: rkT0Secs });
         // T1: embed KBI signature
         const kbiData = makeSectorData(512, '(c) 1986 for KBI ', 0);
-        const rkT1Secs = [{ id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: kbiData }];
+        const rkT1Secs = [{ id: 0x01, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0, data: kbiData }];
         for (let i = 1; i < 8; i++) {
-            rkT1Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
+            rkT1Secs.push({ id: 0x01 + i, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 });
         }
         rkTracks.push({ sectors: rkT1Secs });
         for (let t = 2; t < 40; t++) {
@@ -2456,14 +2482,14 @@
         const unkTracks = [];
         const unkT0Secs = [];
         for (let i = 0; i < 9; i++) {
-            unkT0Secs.push({ id: 0xC1 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
+            unkT0Secs.push({ id: 0x01 + i, sizeCode: 2, cylinder: 0, head: 0, st1: 0, st2: 0 });
         }
         unkTracks.push({ sectors: unkT0Secs });
         // T1: different count + errors
         unkTracks.push({ sectors: [
-            { id: 0xC1, sizeCode: 2, cylinder: 1, head: 0, st1: 0x20, st2: 0x40 },
-            { id: 0xC2, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
-            { id: 0xC3, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
+            { id: 0x01, sizeCode: 2, cylinder: 1, head: 0, st1: 0x20, st2: 0x40 },
+            { id: 0x02, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
+            { id: 0x03, sizeCode: 2, cylinder: 1, head: 0, st1: 0, st2: 0 },
         ]});
         for (let t = 2; t < 40; t++) {
             unkTracks.push({ sectors: makeUniformSectors(9, 2) });

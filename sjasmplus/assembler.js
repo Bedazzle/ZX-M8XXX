@@ -28,10 +28,12 @@ export const Assembler = {
     pass: 0,
     changed: false,       // Did any label value change this pass?
     saveCommands: [],     // Output save directives
+    tapeCapture: null,    // Active TAPOUT capture: { filename, flag, bytes:[] } between TAPOUT/TAPEND
     md5Associations: {},  // filename -> MD5 hash from MD5CHECK macro
     
-    // Reset assembler state
-    reset() {
+    // Reset per-assembly state — everything except the VFS and MD5 associations,
+    // which the multi-file project entry points preserve (files already loaded).
+    _resetState() {
         this.currentAddress = 0;
         this.physicalAddress = null;
         this.sectionStart = 0;
@@ -46,13 +48,20 @@ export const Assembler = {
         this.reptState = null;
         this.includeStack = [];
         this.saveCommands = [];
-        this.md5Associations = {};
-        
+        this.tapeCapture = null;
+
         SymbolTable.reset();
         EquTable.reset();
         ErrorCollector.reset();
         AsmMemory.reset();
         Preprocessor.reset();
+    },
+
+    // Reset all assembler state (single-file entry points): also clears the VFS
+    // and MD5 associations.
+    reset() {
+        this._resetState();
+        this.md5Associations = {};
         VFS.reset();
     },
 
@@ -89,26 +98,7 @@ export const Assembler = {
 
     // Async multi-file project assembly with progress reporting
     async assembleProjectAsync(mainFile, cmdDefines = [], options = {}) {
-        this.currentAddress = 0;
-        this.physicalAddress = null;
-        this.sectionStart = 0;
-        this.output = [];
-        this.outputStart = 0;
-        this.orgAddresses = [];
-        this.lines = [];
-        this.pass = 0;
-        this.changed = false;
-        this.macroCount = 0;
-        this.macroDefinition = null;
-        this.reptState = null;
-        this.includeStack = [];
-        this.saveCommands = [];
-
-        SymbolTable.reset();
-        EquTable.reset();
-        ErrorCollector.reset();
-        AsmMemory.reset();
-        Preprocessor.reset();
+        this._resetState();   // preserve the already-loaded VFS
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
 
         cmdDefines = cmdDefines || [];
@@ -126,27 +116,7 @@ export const Assembler = {
 
     // Assembly function for multi-file project (files already in VFS)
     assembleProject(mainFile, cmdDefines = [], options = {}) {
-        // Don't reset VFS - files are already loaded
-        this.currentAddress = 0;
-        this.physicalAddress = null;
-        this.sectionStart = 0;
-        this.output = [];
-        this.outputStart = 0;
-        this.orgAddresses = [];
-        this.lines = [];
-        this.pass = 0;
-        this.changed = false;
-        this.macroCount = 0;
-        this.macroDefinition = null;
-        this.reptState = null;
-        this.includeStack = [];
-        this.saveCommands = [];
-        
-        SymbolTable.reset();
-        EquTable.reset();
-        ErrorCollector.reset();
-        AsmMemory.reset();
-        Preprocessor.reset();
+        this._resetState();   // don't reset VFS — files are already loaded
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
 
         // Apply command-line defines
@@ -183,6 +153,7 @@ export const Assembler = {
             this.reptState = null;
             this.includeStack = [];
             this.saveCommands = [];
+            this.tapeCapture = null;
             this.linesProcessed = 0;  // Global counter including macro expansions
             this.displayMessages = [];  // DISPLAY messages (only last pass is kept)
             ErrorCollector.warnings = [];  // Only keep warnings from the final pass
@@ -266,7 +237,8 @@ export const Assembler = {
         for (const u of unused) {
             ErrorCollector.warn(`Unused label: ${u.name}`, u.line, u.file);
         }
-        
+
+        this.attachLabelsListContent();
         return {
             success: true,
             output: this.output,
@@ -297,6 +269,7 @@ export const Assembler = {
             this.reptState = null;
             this.includeStack = [];
             this.saveCommands = [];
+            this.tapeCapture = null;
             this.linesProcessed = 0;
             this.displayMessages = [];
             ErrorCollector.warnings = [];  // Only keep warnings from the final pass
@@ -381,6 +354,7 @@ export const Assembler = {
             ErrorCollector.warn(`Unused label: ${u.name}`, u.line, u.file);
         }
 
+        this.attachLabelsListContent();
         return {
             success: true,
             output: this.output,
@@ -852,6 +826,15 @@ export const Assembler = {
                 break;
             case 'SAVEHOB':
                 this.dirSAVEHOB(ops, line);
+                break;
+            case 'LABELSLIST':
+                this.dirLABELSLIST(ops, line);
+                break;
+            case 'TAPOUT':
+                this.dirTAPOUT(ops, line);
+                break;
+            case 'TAPEND':
+                this.dirTAPEND(ops, line);
                 break;
             default:
                 // Unknown directive - might be macro call; otherwise silently ignored
@@ -1986,6 +1969,115 @@ export const Assembler = {
         });
     },
 
+    // LABELSLIST "filename" - write the resolved symbol/label list to a text file
+    // (like SAVEBIN/SAVESNA, the file is produced into the VFS / download). Content
+    // is attached at result-build time, once all symbols are defined.
+    dirLABELSLIST(ops, line) {
+        if (ops.length < 1) {
+            ErrorCollector.error('LABELSLIST requires filename', line.line, line.file);
+            return;
+        }
+        const filename = this.resolveFilename(ops[0], line);
+        this.saveCommands.push({ type: 'labelslist', filename });
+    },
+
+    // Memory page for a symbol's address using the active DEVICE slot map
+    // (best-effort; non-paged projects map 1:1). Never triggers an error.
+    labelPageFor(addr) {
+        const mem = AsmMemory;
+        if (!mem || !mem.device || !Array.isArray(mem.slots)) return 0;
+        const a = addr & 0xFFFF;
+        for (const slot of mem.slots) {
+            if (a >= slot.start && a < slot.start + slot.size) return slot.page & 0xFF;
+        }
+        return 0;
+    },
+
+    // Build the LABELSLIST text from the final symbol table in the sjasmplus
+    // "unreal speccy" .l format: one "PP:AAAA name" line per defined label/EQU
+    // (PP = 2-hex memory page, AAAA = 4-hex address), sorted by address.
+    generateLabelsList() {
+        const syms = SymbolTable.symbols || {};
+        const rows = [];
+        for (const name of Object.keys(syms)) {
+            const s = syms[name];
+            if (!s || !s.defined || (s.type !== 'label' && s.type !== 'equ')) continue;
+            rows.push({ name, value: s.value >>> 0 });
+        }
+        rows.sort((a, b) => (a.value - b.value) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        const lines = rows.map(r => {
+            const page = this.labelPageFor(r.value).toString(16).toUpperCase().padStart(2, '0');
+            const addr = (r.value & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+            return `${page}:${addr} ${r.name}`;
+        });
+        return lines.join('\r\n') + (lines.length ? '\r\n' : '');
+    },
+
+    // Attach generated content to any LABELSLIST save commands (called once the
+    // final pass is complete and every symbol is resolved).
+    attachLabelsListContent() {
+        let content = null;
+        for (const c of this.saveCommands) {
+            if (c.type !== 'labelslist') continue;
+            if (content === null) content = this.generateLabelsList();
+            c.content = content;
+        }
+    },
+
+    // TAPOUT "file"[, flagbyte] - begin capturing emitted bytes into a raw tape block.
+    // All bytes emitted up to the matching TAPEND form one standard ZX tape block.
+    // Default flag byte is 0xFF (sjasmplus). Multiple TAPOUT/TAPEND pairs to the same
+    // file append blocks (handled in the UI when the file is materialised).
+    dirTAPOUT(ops, line) {
+        if (ops.length < 1) {
+            ErrorCollector.error('TAPOUT requires filename', line.line, line.file);
+            return;
+        }
+        if (this.tapeCapture) {
+            ErrorCollector.error('TAPOUT without matching TAPEND', line.line, line.file);
+            // Drop the unterminated block and start fresh
+        }
+        const filename = this.resolveFilename(ops[0], line);
+        let flag = 0xFF;
+        if (ops.length >= 2) {
+            const flagVal = this.evaluate(ops[1], line);
+            if (!flagVal.undefined) flag = flagVal.value & 0xFF;
+        }
+        this.tapeCapture = { filename, flag, bytes: [] };
+    },
+
+    // TAPEND - finalize the active TAPOUT block: wrap the captured bytes as a
+    // standard ZX tape block [len_lo][len_hi][flag][data...][checksum], where
+    // len = data + 2 (flag + checksum) and checksum = flag XOR all data bytes.
+    dirTAPEND(ops, line) {
+        if (!this.tapeCapture) {
+            ErrorCollector.error('TAPEND without TAPOUT', line.line, line.file);
+            return;
+        }
+        const cap = this.tapeCapture;
+        this.tapeCapture = null;
+
+        const n = cap.bytes.length;
+        if (n + 2 > 0xFFFF) {
+            ErrorCollector.error('TAPOUT block exceeds maximal size (65535 bytes)', line.line, line.file);
+            return;
+        }
+        const len = n + 2;
+        const block = new Uint8Array(2 + 1 + n + 1);
+        block[0] = len & 0xFF;
+        block[1] = (len >> 8) & 0xFF;
+        block[2] = cap.flag & 0xFF;
+        let parity = cap.flag & 0xFF;
+        for (let i = 0; i < n; i++) {
+            const b = cap.bytes[i] & 0xFF;
+            block[3 + i] = b;
+            parity ^= b;
+        }
+        block[3 + n] = parity & 0xFF;
+
+        this.saveCommands.push({ type: 'tapout', filename: cap.filename, blockData: block });
+    },
+
     // SAVETAP - Multiple forms:
     // Simple: SAVETAP "file", start - creates CODE block with BASIC loader
     // SAVETAP "file", BASIC, "name", start, length[, autorun[, lengthwithoutvars]]
@@ -2402,7 +2494,12 @@ export const Assembler = {
     // Emit a byte to output
     emit(byte) {
         const b = byte & 0xFF;
-        
+
+        // TAPOUT: capture emitted bytes (in emission order) into the active tape block
+        if (this.tapeCapture) {
+            this.tapeCapture.bytes.push(b);
+        }
+
         // Use physical address for output, logical address for labels
         const outputAddr = (this.physicalAddress !== null ? this.physicalAddress : this.currentAddress) & 0xFFFF;
         

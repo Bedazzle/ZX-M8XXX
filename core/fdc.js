@@ -487,6 +487,19 @@
                     use16bit: cpcSysBlockShift >= 4
                 };
             }
+            if (firstId >= 1 && firstId <= 9 && numSectors === 9 && secSize === 512) {
+                // +3/PCW format with no on-disk parameter block: sectors 1-9, 1
+                // reserved track. Block size / dir entries by capacity (SS 40T:
+                // 1024/2 dirBlocks; DS 80T: 2048/4 dirBlocks).
+                const p3TotalLogical = dskImage.numTracks * sides;
+                const p3BlockShift = (p3TotalLogical > 40) ? 4 : 3;
+                const p3DirBlocks = (p3TotalLogical > 40) ? 4 : 2;
+                return {
+                    reservedTracks: 1, blockSize: 128 << p3BlockShift, blockShift: p3BlockShift, dirBlocks: p3DirBlocks,
+                    sectorsPerTrack: 9, sectorSize: 512, firstSectorId: firstId, sides,
+                    valid: false, recognized: true, use16bit: p3BlockShift >= 4
+                };
+            }
             if (firstId >= 0xC1 && firstId <= 0xC9 && numSectors === 9 && secSize === 512) {
                 // CPC Data format: sectors 0xC1-0xC9, 0 reserved tracks
                 // Block size and dir entries depend on capacity:
@@ -728,11 +741,16 @@
                 // Skip deleted entries (0xE5) and invalid users (>15)
                 if (user === 0xE5 || user > 15) continue;
 
-                // Filename: 8 bytes (high bits are flags, mask to 7-bit)
+                // Filename: 8 bytes (high bits are flags, mask to 7-bit). A real CP/M
+                // filename is printable ASCII, space-padded — any control byte (< 0x20)
+                // means this isn't a file entry (e.g. a +3DOS disc-specification record
+                // left in the directory), so skip it.
                 let name = '';
+                let validName = true;
                 for (let j = 1; j <= 8; j++) {
                     const ch = dirData[entryBase + j] & 0x7F;
-                    if (ch >= 0x20) name += String.fromCharCode(ch);
+                    if (ch < 0x20) validName = false;
+                    else name += String.fromCharCode(ch);
                 }
                 name = name.trimEnd();
 
@@ -744,7 +762,7 @@
                 }
                 ext = ext.trimEnd();
 
-                if (name.length === 0) continue;
+                if (!validName || name.length === 0) continue;
 
                 // Extent number and size fields (layout differs for TOS vs CP/M)
                 // CP/M: byte 12=extentLo, 13=BC (bytes in last record), 14=extentHi, 15=RC (record count)
@@ -1085,8 +1103,12 @@
          */
         static createBlankDSK(format = 'p3-ss40') {
             const FORMATS = {
-                'p3-ss40':     { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 1, blockShift: 3, dirBlocks: 2, diskType: 0, gaps: [0x2A, 0x52], bootSpec: true },
-                'p3-ds80':     { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 1, blockShift: 4, dirBlocks: 4, diskType: 3, gaps: [0x2A, 0x52], bootSpec: true },
+                // +3/PCW disks use sector IDs 1-9 (verified against greaseweazle/
+                // FlashFloppy and other-tool +3 images) — NOT the Amstrad CPC *data*
+                // format's 0xC1-0xC9. The emulated +3 ROM reads by sector ID, so a
+                // 0xC1 disk would not be readable as a +3 disk.
+                'p3-ss40':     { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0x01, reserved: 1, blockShift: 3, dirBlocks: 2, diskType: 0, gaps: [0x2A, 0x52], bootSpec: true },
+                'p3-ds80':     { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0x01, reserved: 1, blockShift: 4, dirBlocks: 4, diskType: 3, gaps: [0x2A, 0x52], bootSpec: true },
                 'cpc-sys-ss':  { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0x41, reserved: 2, blockShift: 3, dirBlocks: 2, diskType: 1, gaps: [0x0E, 0x17], bootSpec: true },
                 'cpc-sys-ds':  { tracks: 80, sides: 2, sectors: 9, secSize: 512, secBase: 0x41, reserved: 2, blockShift: 4, dirBlocks: 4, diskType: 1, gaps: [0x0E, 0x17], bootSpec: true },
                 'cpc-data-ss': { tracks: 40, sides: 1, sectors: 9, secSize: 512, secBase: 0xC1, reserved: 0, blockShift: 3, dirBlocks: 2, bootSpec: false },
@@ -1102,23 +1124,15 @@
             dsk.numSides = fmt.sides;
             dsk.isExtended = true;
 
-            // Calculate which logical tracks are directory tracks
-            const blockSize = 128 << fmt.blockShift;
-            const dirBytes = fmt.dirBlocks * blockSize;
-            const dirSectors = Math.ceil(dirBytes / fmt.secSize);
-            const dirLogicalTrackStart = fmt.reserved;
-            const dirLogicalTrackCount = Math.ceil(dirSectors / fmt.sectors);
             const sizeCode = Math.log2(fmt.secSize) - 7; // 2 for 512, 1 for 256
 
             for (let cyl = 0; cyl < fmt.tracks; cyl++) {
                 for (let head = 0; head < fmt.sides; head++) {
-                    const logicalTrack = cyl * fmt.sides + head;
-                    const isDir = logicalTrack >= dirLogicalTrackStart &&
-                                  logicalTrack < dirLogicalTrackStart + dirLogicalTrackCount;
                     const sectors = [];
                     for (let s = 0; s < fmt.sectors; s++) {
-                        const data = new Uint8Array(fmt.secSize);
-                        if (isDir) data.fill(0xE5);
+                        // A formatted disk's sectors hold the 0xE5 fill byte
+                        // (matches real +3/CP/M media and addFile's slack fill).
+                        const data = new Uint8Array(fmt.secSize).fill(0xE5);
                         sectors.push({
                             cylinder: cyl,
                             head: head,
@@ -1146,7 +1160,9 @@
                 bootSector[7] = fmt.dirBlocks;
                 bootSector[8] = fmt.gaps[0];
                 bootSector[9] = fmt.gaps[1];
-                // Bytes 10-14: reserved (0)
+                // Bytes 10-14: reserved (0) — clear the 0xE5 format fill here so
+                // the 16-byte spec is clean; 0xE5 resumes from byte 16.
+                for (let i = 10; i < 15; i++) bootSector[i] = 0;
                 // Byte 15: checksum — sum of all 16 bytes must equal 3 mod 256
                 let sum = 0;
                 for (let i = 0; i < 15; i++) sum = (sum + bootSector[i]) & 0xFF;
@@ -1245,6 +1261,311 @@
                 }
                 logicalSector++;
             }
+        }
+
+        /**
+         * Read the CP/M Plus / +3DOS volume label, if present. The label lives in a directory
+         * entry whose status byte is 0x20; its text occupies bytes 1-11 (8+3, space-padded).
+         * @param {DSKImage} dskImage
+         * @returns {string} the label (trimmed), or '' if the disk has none.
+         */
+        static getDiskLabel(dskImage) {
+            const spec = DSKLoader.getDiskSpec(dskImage);
+            const dir = DSKLoader._readDirectory(dskImage, spec);
+            if (!dir) return '';
+            const { dirData } = dir;
+            const maxEntries = Math.floor(dirData.length / 32);
+            for (let i = 0; i < maxEntries; i++) {
+                const base = i * 32;
+                if (dirData[base] !== 0x20) continue;
+                let label = '';
+                for (let j = 1; j <= 11; j++) label += String.fromCharCode(dirData[base + j] & 0x7F);
+                return label.trimEnd();
+            }
+            return '';
+        }
+
+        /**
+         * Set (or clear) the CP/M Plus / +3DOS volume label in place. Reuses the existing
+         * label entry (status 0x20) or claims the first free directory slot; an empty label
+         * removes the entry. Label entries carry no allocation blocks, so listFiles and the
+         * block map ignore them (status byte > 15). Returns true if the directory changed.
+         * @param {DSKImage} dskImage
+         * @param {string} label - up to 11 chars; upper-cased and space-padded
+         */
+        static setDiskLabel(dskImage, label) {
+            const spec = DSKLoader.getDiskSpec(dskImage);
+            const dir = DSKLoader._readDirectory(dskImage, spec);
+            if (!dir) return false;
+            const { dirData } = dir;
+            const maxEntries = Math.floor(dirData.length / 32);
+            const text = (label || '').toUpperCase().substring(0, 11);
+
+            let slot = -1;
+            for (let i = 0; i < maxEntries; i++) {
+                if (dirData[i * 32] === 0x20) { slot = i; break; }
+            }
+            if (text.length === 0) {
+                if (slot < 0) return false;       // nothing to remove
+                dirData[slot * 32] = 0xE5;        // free the label entry
+                DSKLoader.writeDirectory(dskImage, spec, dirData);
+                return true;
+            }
+            if (slot < 0) {
+                for (let i = 0; i < maxEntries; i++) {
+                    if (dirData[i * 32] === 0xE5) { slot = i; break; }
+                }
+            }
+            if (slot < 0) return false;           // directory full
+            const base = slot * 32;
+            for (let j = 0; j < 32; j++) dirData[base + j] = 0;
+            dirData[base] = 0x20;                 // label status byte
+            const padded = (text + '           ').substring(0, 11);
+            for (let j = 0; j < 11; j++) dirData[base + 1 + j] = padded.charCodeAt(j);
+            dirData[base + 12] = 0x01;            // label data byte: bit 0 = label exists
+            DSKLoader.writeDirectory(dskImage, spec, dirData);
+            return true;
+        }
+
+        // Add a file to a DSK image in place. `file` = { data, name, ext, type,
+        // addr, autostart, varsOffset }. type < 0 = raw (no header), else wraps
+        // in a TOS (5/7-byte) or +3DOS (128-byte) header. Returns null on
+        // success or an error string. Deterministic first-fit block/slot alloc.
+        static addFile(dskImage, file) {
+            const { data, name, ext, type, addr, autostart, varsOffset } = file;
+            const spec = DSKLoader.getDiskSpec(dskImage);
+
+            const blockSize = spec.blockSize;
+            const sectorSize = spec.sectorSize || 512;
+            const sectorsPerBlock = Math.max(1, Math.round(blockSize / sectorSize));
+            const sectorsPerTrack = spec.sectorsPerTrack || 9;
+            const reservedTracks = spec.reservedTracks;
+
+            let fullData;
+            if (type >= 0 && spec.isTOS) {
+                // TOS header: BASIC (type 0) = 7 bytes, Code/arrays (types 1-3) = 5 bytes
+                // BASIC: type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE)
+                // Code/arrays: type(1) + dataLen(2LE) + address(2LE)
+                const hdrSize = (type === 0) ? 7 : 5;
+                const header = new Uint8Array(hdrSize);
+                header[0] = type & 0xFF;
+                if (type === 0) {
+                    const auto = (autostart !== undefined && autostart !== null && autostart !== '') ?
+                        (parseInt(autostart) & 0xFFFF) : 0x8000;
+                    header[1] = auto & 0xFF;
+                    header[2] = (auto >> 8) & 0xFF;
+                    header[3] = data.length & 0xFF;
+                    header[4] = (data.length >> 8) & 0xFF;
+                    const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
+                    header[5] = basLen & 0xFF;
+                    header[6] = (basLen >> 8) & 0xFF;
+                } else {
+                    header[1] = data.length & 0xFF;
+                    header[2] = (data.length >> 8) & 0xFF;
+                    header[3] = addr & 0xFF;
+                    header[4] = (addr >> 8) & 0xFF;
+                }
+                fullData = new Uint8Array(hdrSize + data.length);
+                fullData.set(header);
+                fullData.set(data, hdrSize);
+            } else if (type >= 0) {
+                // +3DOS 128-byte header
+                const header = new Uint8Array(128);
+                const sig = 'PLUS3DOS';
+                for (let i = 0; i < sig.length; i++) header[i] = sig.charCodeAt(i);
+                header[8] = 0x1A;
+                header[9] = 1;
+                header[10] = 0;
+                const totalLen = data.length + 128;
+                header[11] = totalLen & 0xFF;
+                header[12] = (totalLen >> 8) & 0xFF;
+                header[13] = (totalLen >> 16) & 0xFF;
+                header[14] = (totalLen >> 24) & 0xFF;
+                header[15] = type & 0xFF;
+                // +3DOS header data (tape-style): +16/17 = length, +18/19 = param1
+                // (load address for CODE, autostart for BASIC), +20/21 = param2.
+                if (type === 3) {
+                    header[16] = data.length & 0xFF;
+                    header[17] = (data.length >> 8) & 0xFF;
+                    header[18] = addr & 0xFF;
+                    header[19] = (addr >> 8) & 0xFF;
+                    // param2: the ZX tape-header "unused" word for CODE is 32768
+                    // (0x8000) — real +3 SAVE writes it, so mirror it for fidelity.
+                    header[20] = 0x00;
+                    header[21] = 0x80;
+                } else if (type === 0) {
+                    header[16] = data.length & 0xFF;
+                    header[17] = (data.length >> 8) & 0xFF;
+                    const auto = (autostart !== undefined && autostart !== null && autostart !== '') ?
+                        (parseInt(autostart) & 0xFFFF) : 0x8000;
+                    header[18] = auto & 0xFF;
+                    header[19] = (auto >> 8) & 0xFF;
+                    const basLen = (varsOffset != null) ? Math.min(varsOffset, data.length) : data.length;
+                    header[20] = basLen & 0xFF;
+                    header[21] = (basLen >> 8) & 0xFF;
+                }
+                let hdrSum = 0;
+                for (let i = 0; i < 127; i++) hdrSum = (hdrSum + header[i]) & 0xFF;
+                header[127] = hdrSum;
+
+                fullData = new Uint8Array(128 + data.length);
+                fullData.set(header);
+                fullData.set(data, 128);
+            } else {
+                fullData = data;
+            }
+
+            const requiredBlocks = Math.ceil(fullData.length / blockSize);
+            if (requiredBlocks === 0) return 'File is empty';
+
+            const allocMap = DSKLoader.getBlockAllocationMap(dskImage, spec);
+            if (requiredBlocks > allocMap.freeBlocks) {
+                return `Not enough space: need ${requiredBlocks} blocks, ${allocMap.freeBlocks} free`;
+            }
+
+            const dir = DSKLoader._readDirectory(dskImage, spec);
+            if (!dir) return 'Cannot read directory';
+            const { dirData } = dir;
+            const maxEntries = Math.floor(dirData.length / 32);
+
+            const blocksPerExtent = spec.use16bit ? 8 : 16;
+            const requiredExtents = Math.ceil(requiredBlocks / blocksPerExtent);
+            let freeSlots = 0;
+            for (let i = 0; i < maxEntries; i++) {
+                if (dirData[i * 32] === 0xE5) freeSlots++;
+            }
+            if (requiredExtents > freeSlots) {
+                return `Directory full: need ${requiredExtents} entries, ${freeSlots} free`;
+            }
+
+            const freeBlockNums = [];
+            for (let b = 0; b < allocMap.totalBlocks && freeBlockNums.length < requiredBlocks; b++) {
+                if (!allocMap.used.has(b)) freeBlockNums.push(b);
+            }
+
+            for (let bi = 0; bi < freeBlockNums.length; bi++) {
+                const blockNum = freeBlockNums[bi];
+                const absoluteSector = blockNum * sectorsPerBlock;
+                const dataOffset = bi * blockSize;
+
+                for (let s = 0; s < sectorsPerBlock; s++) {
+                    const curSectorInTrack = (absoluteSector + s) % sectorsPerTrack;
+                    const curTrack = reservedTracks + Math.floor((absoluteSector + s) / sectorsPerTrack);
+                    const sectorId = DSKLoader._logicalToSectorId(spec, curSectorInTrack);
+                    const phys = DSKLoader._logicalTrackToPhysical(spec, curTrack);
+
+                    // Fill with 0xE5 (the +3/CP/M format byte): a free block is
+                    // formatted to 0xE5, and real +3DOS leaves the unused tail of
+                    // a file's last block untouched — so slack must be 0xE5, not 0.
+                    const sectorData = new Uint8Array(sectorSize).fill(0xE5);
+                    const srcOffset = dataOffset + s * sectorSize;
+                    if (srcOffset < fullData.length) {
+                        const copyLen = Math.min(sectorSize, fullData.length - srcOffset);
+                        sectorData.set(fullData.subarray(srcOffset, srcOffset + copyLen));
+                    }
+                    dskImage.writeSector(phys.cylinder, phys.head, sectorId, sectorData);
+                }
+            }
+
+            const paddedName = (name + '        ').substring(0, 8);
+            const paddedExt = (ext + '   ').substring(0, 3);
+            let freeSlotIdx = 0;
+            for (let extNum = 0; extNum < requiredExtents; extNum++) {
+                while (freeSlotIdx < maxEntries && dirData[freeSlotIdx * 32] !== 0xE5) freeSlotIdx++;
+                if (freeSlotIdx >= maxEntries) return 'Directory full (internal error)';
+
+                const entryBase = freeSlotIdx * 32;
+                dirData[entryBase] = 0;
+
+                for (let j = 0; j < 8; j++) {
+                    dirData[entryBase + 1 + j] = j < paddedName.length ? paddedName.charCodeAt(j) & 0x7F : 0x20;
+                }
+                for (let j = 0; j < 3; j++) {
+                    dirData[entryBase + 9 + j] = j < paddedExt.length ? paddedExt.charCodeAt(j) & 0x7F : 0x20;
+                }
+
+                const startBlock = extNum * blocksPerExtent;
+                const endBlock = Math.min(startBlock + blocksPerExtent, requiredBlocks);
+                const blocksInExtent = endBlock - startBlock;
+
+                if (spec.use16bit) {
+                    for (let j = 0; j < 8; j++) {
+                        const blk = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
+                        dirData[entryBase + 16 + j * 2] = blk & 0xFF;
+                        dirData[entryBase + 16 + j * 2 + 1] = (blk >> 8) & 0xFF;
+                    }
+                } else {
+                    for (let j = 0; j < 16; j++) {
+                        dirData[entryBase + 16 + j] = (j < blocksInExtent) ? freeBlockNums[startBlock + j] : 0;
+                    }
+                }
+
+                if (spec.isTOS) {
+                    // TOS directory: byte 12=part, 13=tail, 14=sizeHi, 15=sizeLo
+                    dirData[entryBase + 12] = extNum;
+                    if (extNum === requiredExtents - 1) {
+                        const bytesInExtent = fullData.length - startBlock * blockSize;
+                        const sectors = Math.ceil(bytesInExtent / 256) * 2;
+                        dirData[entryBase + 13] = bytesInExtent & 0xFF;          // tail
+                        dirData[entryBase + 14] = (sectors >> 8) & 0xFF;         // sizeHi
+                        dirData[entryBase + 15] = sectors & 0xFF;                // sizeLo
+                    } else {
+                        dirData[entryBase + 13] = 0;                              // tail
+                        dirData[entryBase + 14] = 0;                              // sizeHi
+                        dirData[entryBase + 15] = 0x80;                           // sizeLo = 128
+                    }
+                } else {
+                    // CP/M directory: byte 12=extentLo, 13=BC, 14=extentHi, 15=RC
+                    dirData[entryBase + 12] = extNum & 0x1F;
+                    dirData[entryBase + 13] = 0;
+                    dirData[entryBase + 14] = (extNum >> 5) & 0x3F;
+                    if (extNum === requiredExtents - 1) {
+                        const bytesInExtent = fullData.length - startBlock * blockSize;
+                        const records = Math.ceil(bytesInExtent / 128);
+                        dirData[entryBase + 15] = Math.min(records, 128);
+                    } else {
+                        dirData[entryBase + 15] = 128;
+                    }
+                }
+
+                freeSlotIdx++;
+            }
+
+            DSKLoader.writeDirectory(dskImage, spec, dirData);
+            return null;
+        }
+
+        // Delete files from a DSK image in place. `files` is an array of descriptors
+        // (each with user/name/ext, as returned by listFiles); every directory entry
+        // matching one (across all extents) is marked 0xE5 (CP/M deleted), which frees
+        // its blocks — getBlockAllocationMap recomputes free space from the directory.
+        // Returns the number of directory entries cleared.
+        static deleteFiles(dskImage, files) {
+            const spec = DSKLoader.getDiskSpec(dskImage);
+            const dir = DSKLoader._readDirectory(dskImage, spec);
+            if (!dir) return 0;
+            const { dirData } = dir;
+            const maxEntries = Math.floor(dirData.length / 32);
+            const keys = new Set((files || []).map(f =>
+                `${f.user || 0}:${(f.name || '').trim()}:${(f.ext || '').trim()}`));
+            let cleared = 0;
+            for (let i = 0; i < maxEntries; i++) {
+                const base = i * 32;
+                const user = dirData[base];
+                if (user === 0xE5 || user > 15) continue;   // empty/deleted or non-file (label/spec)
+                let name = '';
+                for (let j = 1; j <= 8; j++) { const ch = dirData[base + j] & 0x7F; if (ch >= 0x20) name += String.fromCharCode(ch); }
+                let ext = '';
+                for (let j = 9; j <= 11; j++) { const ch = dirData[base + j] & 0x7F; if (ch >= 0x20) ext += String.fromCharCode(ch); }
+                if (keys.has(`${user}:${name.trimEnd()}:${ext.trimEnd()}`)) { dirData[base] = 0xE5; cleared++; }
+            }
+            if (cleared) DSKLoader.writeDirectory(dskImage, spec, dirData);
+            return cleared;
+        }
+
+        // Delete a single file (all its extents). file = a listFiles descriptor.
+        static deleteFile(dskImage, file) {
+            return DSKLoader.deleteFiles(dskImage, [file]);
         }
     }
 

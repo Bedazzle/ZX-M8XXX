@@ -1,4 +1,4 @@
-# Peripherals: +D/MGT, IF1/Microdrive, Opus Discovery, +3/FDC
+# Peripherals: +D/MGT, IF1/Microdrive, Opus Discovery, Didaktik 40/80, +3/FDC
 
 ## DISCiPLE/+D Interface (MGT Disks)
 
@@ -82,6 +82,7 @@ External Interface 1 with Microdrive tape-loop cartridge support. Supports .mdr 
 - `fileToTAP(fileData, fileInfo)` -- convert to TAP block
 - `createBlankMDR(name)` -- create empty formatted cartridge image
 - `buildMDR(files, cartridgeName)` -- serialize file list into MDR image
+- `mdrChecksum(data, start, len)` -- Interface 1 sector checksum: sum of bytes **modulo 255** (per the IF1 ROM — never produces 255). Used for the header (bytes 0-13), record-descriptor (15-28), and data (30-541) checksums when writing/building MDR images so they're accepted by real hardware. Not validated on read.
 
 **Memory paging (`core/memory.js`):**
 - `if1Active` flag: when true, 0x0000-0x1FFF reads from IF1 ROM (8KB only, unlike +D which shadows 0x0000-0x3FFF)
@@ -107,22 +108,23 @@ External Interface 1 with Microdrive tape-loop cartridge support. Supports .mdr 
 External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports .opd/.opu disk images.
 
 **OPD Disk Format:**
-- SS: 184,320 bytes (40 tracks x 18 sectors x 256 bytes), DS: 368,640 bytes (40 x 2 x 18 x 256)
+- SS: 184,320 bytes (40 tracks x 18 sectors x 256 bytes), DS: 737,280 bytes (80 x 2 x 18 x 256 — the real Opus DS DD is 80-track, not 40). Track count is derived from the image size, not assumed.
 - Sector IDs 0-17 (0-based, unlike MGT/TRD)
 - Sector offset: `((track * sides + side) * 18 + sector) * 256`
-- Raw sector dump, no header or magic bytes
-- Directory at sectors 1-7 (16-byte entries), data from sector 8+. Entry 0 = disk label, entries 1+ = files, terminated by `lastBlock == 0xFFFF`.
+- Raw sector dump, no container header or magic bytes
+- Sector 0 = Opus **boot sector** (Z80 boot code / disk descriptor, geometry-specific). M8XXX's reader ignores it, but real Opus tools/hardware require it (HCDisk rejects a disk without it) — so the writer embeds a known-good boot sector per geometry (`OPD_BOOT_SECTORS`).
+- Directory at sectors 1-7 (16-byte entries), data from sector 8+. Entry 0 = disk label (`bytesInLast=0xFF, first=0, last=6`), entries 1+ = files, then an end terminator (`bytesInLast=0xFF, first=totalSectors-1, lastBlock=0xFFFF`); unused entries are `0xE5`.
 - Directory entry (16 bytes): `bytesInLast(2 LE) + firstBlock(2 LE) + lastBlock(2 LE) + name(10)`. `bytesInLast`: low 12 bits = bytes used in last sector **minus 1** (per Opus manual), top 4 bits = system flags. Block numbers are 0-based from sector 1 (image sector = block + 1). Raw file length = `(lastBlock - firstBlock) * 256 + (bytesInLast & 0x0FFF) + 1`.
 - File data has a 7-byte header: `type(1) + datalen(2 LE) + param1(2 LE) + param2(2 LE)`. BASIC: param1=autostart, param2=progLength. CODE: param1=startAddr, param2=32768.
 
 **OPDLoader class (`core/loaders.js`):**
-- `isOPD(data)` -- detect by size (184320 or 368640)
+- `isOPD(data)` -- detect by size (184320 SS or 737280 DS)
 - `getDiskInfo(data)` -- geometry, sector usage (non-zero = used)
 - `listFiles(data)` -- parse directory entries (name, type, length, startAddr, autostart)
 - `extractFile(data, fileInfo)` -- extract file data (skips 7-byte header)
 - `fileToTAP(fileData, fileInfo)` -- convert to TAP block
-- `buildOPD(files, label, sides)` -- serialize file list into OPD image
-- `createBlankOPD(sides)` -- create empty disk image
+- `buildOPD(files, label, sides)` -- serialize file list into OPD image (writes the boot sector + directory skeleton; preserves an existing disk's sector 0 when given a `baseImage`)
+- `createBlankOPD(sides)` -- create empty formatted disk image (boot sector + label entry + terminator)
 
 **OpusDisk class (`core/loaders.js`):**
 - WD1770 FDC + MC6821 PIA emulation via composition (wraps PlusDDisk internally)
@@ -153,6 +155,21 @@ External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports 
 - Mutual exclusion: enabling Opus disables +D (and vice versa)
 - Persisted in localStorage key `zxm8_opus`
 
+## Didaktik 40/80 (MDOS D40/D80 images)
+
+`DidaktikLoader` (`core/loaders.js`) reads and writes Didaktik 40/80 MDOS disk images — raw, header-less sector dumps (sector N at offset N×512). It lists/extracts catalog files, creates blank disks (`createBlankD40`/`createBlankD80` — byte-reproduce real 360K/720K MDOS formats), and supports in-place editing (add/delete/rename) for the Explorer/file-analysis tool; it does **not** emulate the Didaktik interface, so disks don't boot. Read algorithms ported from the zxspectrumutils tools (`d802tap.cpp`, `dird80.c`); the write path follows `tap2d80.cpp` from the same source.
+
+Format:
+- **Detection**: `"SDOS"` identifier at boot-sector offset 204, or a known D40/D80 size with a valid-looking catalog.
+- **Directory**: physical sectors 6,8,10,12,7,9,11,13 (that interleave is the catalog order), 128 × 32-byte entries — byte 0 type char (`P` BASIC, `B` Code, `N`/`C` arrays, `S` snapshot, `Q` sequence; `0xE5`=deleted), 10-char name, 24-bit length (`len[0..1]` + `len2` at byte 21), start address, FAT first-sector index.
+- **FAT** at sector 1, MDOS's own 12-bit packing (`getFATnum`): even entry `B0|((B1>>4)<<8)`, odd `B1|((B0&0x0F)<<8)`, 341 entries/sector. A file's sectors are chained until a value ≥0xC00; the final sector's low 9 bits give its used byte count (0xE00 special; 0xDxx = bad).
+- **Geometry** (`getDiskInfo`) from boot sector: byte 177 flags (bit 4 double-sided), 178 tracks/side, 179 sectors/track; disk name at 192–201.
+- **Write** (`addFile`/`deleteFile`/`renameFile`/`setStartAddr`, helper `setFATnum`): all edits mutate a copy of the image **in place** (boot sector and other files preserved) — there is no full rebuild, and free space is FAT-derived (no counter to maintain). `addFile` finds free sectors (FAT `0x000`, data area starts at sector 14) and a free directory slot, writes the payload, links the FAT chain, and sets the terminator `0xE00 | (length % 512)` (full last sector → `0xE00`). Directory fields match real disks: byte 20 attributes `0x0F`, B files store `0x8000` in the basicLength field, P files store program length there and the autostart LINE in the start-address field. `deleteFile` frees the chain (→ `0x000`) and clears the slot; reserved system sectors 0–13 stay `0xDDD`.
+
+Explorer integration (`ui/explorer.js`): `.d40`/`.d80` open as `type: 'didaktik'` — directly, or drilled from a `.zip` (single-file ZIPs auto-open; multi-file ZIPs list for selection). The info panel shows geometry/label/catalog, files are clickable (P→BASIC view, B→disasm, others→hex), the BASIC/disasm/hex source selectors extract via `DidaktikLoader.extractFile`, and the Disk Map sub-tab renders sector allocation by walking each file's FAT chain (`buildDidaktikSectorMap`).
+
+The Edit sub-tab is a full read-write editor for Didaktik (`didaktikEditorRenderFileList` + `didaktikEditorAddFile`/`didaktikEditorDeleteSelection`/`didaktikEditorApplyInlineEdit`/`didaktikEditorMoveSelection`/`didaktikEditorSave`): Add File (the shared disk-add dialog; dialog `B`=BASIC→MDOS `P`, `C`/other=Code→MDOS `B`), Delete (multi-select), inline Rename + start-address/LINE edit (double-click a row → Apply), reorder (Move Up/Down — `DidaktikLoader.swapDirEntries` swaps directory entries in place, data/FAT untouched), and Save (downloads the edited `.d40`/`.d80`). Extract (selected files out as Hobeta `.$X` via `buildHobeta`, or raw binary; multi-select → zip) and Copy also work. Copy is bidirectional: Didaktik files copy *out* to the other pane via `extractFilesFromPanel`, and files from any other format (TAP/TZX/TRD/SCL/MGT/MDR/OPD/DSK/snapshots) copy *into* a Didaktik disk via `addConvertedFile` (BASIC→MDOS `P` with autostart/vars metadata, Code→`B` with load address; a per-file "Disk full" / "Directory full" error is reported if it doesn't fit). Each edit mutates `panel.rawData` in place and re-derives the view via `didaktikEditorRefresh`. P files map to TAP BASIC (header type 0, autostart from the catalog LINE), B files to TAP Code (type 3, load address from `startAddr`).
+
 ## ZX Spectrum +3 / uPD765 FDC
 
 The +3 uses the same memory banking as +2A (`pagingModel: '+2a'`) plus a built-in uPD765 floppy disk controller.
@@ -169,7 +186,7 @@ The +3 uses the same memory banking as +2A (`pagingModel: '+2a'`) plus a built-i
 **DSK Format (`fdc.js`):**
 - `DSKImage` class: In-memory representation of parsed DSK disk
 - `DSKLoader` class: Parses standard ("MV - CPC") and extended ("EXTENDED CPC DSK") formats
-- `DSKLoader.getDiskSpec(dskImage)`: Reads +3DOS 16-byte boot spec (checksum=3) for disk parameters. When no valid boot spec exists, detects format from sector IDs and geometry: CPC System (sectors 0x41–0x49, 2 reserved tracks), CPC Data (sectors 0xC1–0xC9, 0 reserved tracks), Timex FDD3000 (16×256-byte sectors, `isTOS: true`, sector skew table). Three FDD3000 variants are auto-detected by probing for valid CP/M directory entries (user 0-15, 0xE5, or 0xFF) at tracks 0, 2, and 4: TOS variant (`fdd3000` diskdef: 4 reserved tracks, skew 7), CP/M variant (`fdd3000_2` diskdef: 2 reserved tracks, skew 5), and disk label variant (0 reserved tracks, no skew — directory at track 0 with disk label entries user=0xFF, sectors in sequential order). Block size scales with capacity (1024/2048/4096 for 40T-SS/80T-SS/80T-DS). Unknown formats fall back to +3-style 1 reserved track.
+- `DSKLoader.getDiskSpec(dskImage)`: Reads +3DOS 16-byte boot spec (checksum=3) for disk parameters. When no valid boot spec exists, detects format from sector IDs and geometry: +3/PCW (sectors 1–9, 1 reserved track), CPC System (sectors 0x41–0x49, 2 reserved tracks), CPC Data (sectors 0xC1–0xC9, 0 reserved tracks), Timex FDD3000 (16×256-byte sectors, `isTOS: true`, sector skew table). Three FDD3000 variants are auto-detected by probing for valid CP/M directory entries (user 0-15, 0xE5, or 0xFF) at tracks 0, 2, and 4: TOS variant (`fdd3000` diskdef: 4 reserved tracks, skew 7), CP/M variant (`fdd3000_2` diskdef: 2 reserved tracks, skew 5), and disk label variant (0 reserved tracks, no skew — directory at track 0 with disk label entries user=0xFF, sectors in sequential order). Block size scales with capacity (1024/2048/4096 for 40T-SS/80T-SS/80T-DS). Unknown formats fall back to +3-style 1 reserved track.
 - `DSKLoader._logicalToSectorId(spec, logicalSector)`: Maps a logical sector index (0-based within track) to a physical sector ID. Applies `spec.skewTable` if present (Timex FDD3000 DSK images store sectors in physical/interleaved order), otherwise adds `spec.firstSectorId` directly. Used by `_readDirectory`, `listFiles`, `readFileData`, and `writeDirectory`.
 - `DSKLoader.listFiles(dskImage)`: CP/M directory parser. Detects file headers and sets `headerSize` and type fields. For TOS disks (`spec.isTOS`), directory entry bytes 12-15 are interpreted differently: byte 12 = part (extent), byte 13 = tail (bytes in last sector), byte 14 = sizeHi, byte 15 = sizeLo — giving exact file sizes via `(sizeHi*256+sizeLo)/2` sectors (per [Tomato FDD3000 tool](https://sourceforge.net/projects/fdd3000e/) `tos_image.hpp`). Supports two header formats:
   - **+3DOS**: 128-byte header with "PLUS3DOS" signature, file length, type, load address/autostart
@@ -177,7 +194,7 @@ The +3 uses the same memory banking as +2A (`pagingModel: '+2a'`) plus a built-i
 - `DSKLoader.readFileData(dskImage, name, ext, user, size)`: Reads file data from allocation blocks across extents. For TOS disks, uses `part` (byte 12) as extent number instead of the CP/M `extentLo + extentHi*32` formula.
 - `DSKLoader._readDirectory(dskImage, spec)`: Reads directory data from correct track (after reserved tracks), using `_logicalToSectorId()` for sector ordering.
 - `DSKLoader.writeDirectory(dskImage, spec, dirData)`: Writes directory data back to disk using `_logicalToSectorId()` for sector ordering.
-- Standard +3 geometry: 40 tracks, 1 side, 9 sectors/track, 512 bytes/sector, sector IDs from 0xC1
+- Standard +3 geometry: 40 tracks, 1 side, 9 sectors/track, 512 bytes/sector, sector IDs **1–9** (the +3 uses the Amstrad PCW format; 0xC1–0xC9 is the CPC *data* format, a different system)
 - Non-standard disks: Some games use custom formats (e.g. 1 x 4096-byte sector per track, no CP/M directory). These have a boot loader in sector 1 of track 0 that the +3 ROM executes directly.
 
 **Copy Protection / Weak Sectors (`fdc.js`):**

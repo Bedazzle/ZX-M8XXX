@@ -143,8 +143,15 @@ export class AsmDetok {
         }
         const type = String.fromCharCode(bytes[8]);
         if (!/^[A-Za-z0-9#!$]$/.test(type)) return null;
-        const start = bytes[9] | (bytes[10] << 8);
-        const length = bytes[11] | (bytes[12] << 8);
+        const w9 = bytes[9] | (bytes[10] << 8);
+        const w11 = bytes[11] | (bytes[12] << 8);
+        // BASIC (B): 9-10 = total length (program + variables), 11-12 = program
+        // length (offset where variables begin). CODE/others: 9-10 = start address,
+        // 11-12 = data length. (TR-DOS catalogue convention.)
+        const isBasic = (type === 'B');
+        const start = isBasic ? 0 : w9;
+        const length = isBasic ? w9 : w11;
+        const programLength = isBasic ? w11 : null;
         const sectors = bytes[14];
         if (length === 0 || length > bytes.length - 17) return null;
         // Occupied sectors must cover the declared length
@@ -154,6 +161,7 @@ export class AsmDetok {
             type,
             start,
             length,
+            programLength,
             data: bytes.slice(17, 17 + length)
         };
     }

@@ -402,25 +402,6 @@ export class Lexer {
         return new Token(TokenType.IDENTIFIER, value, startLine, startCol);
     }
 
-    readTemporaryLabel() {
-        // Numeric temporary labels: 1:, 1B, 1F
-        const startLine = this.line;
-        const startCol = this.column;
-        let value = '';
-
-        while (/[0-9]/.test(this.peek())) {
-            value += this.advance();
-        }
-
-        // Check for B (backward) or F (forward) suffix
-        if (this.peek() === 'B' || this.peek() === 'b' || 
-            this.peek() === 'F' || this.peek() === 'f') {
-            value += this.advance().toUpperCase();
-        }
-
-        return new Token(TokenType.IDENTIFIER, value, startLine, startCol);
-    }
-
     nextToken() {
         this.skipWhitespace();
         
@@ -602,17 +583,5 @@ export class Lexer {
         return tokens;
     }
 
-    // Tokenize single line (useful for incremental parsing)
-    tokenizeLine() {
-        const tokens = [];
-        while (true) {
-            const token = this.nextToken();
-            tokens.push(token);
-            if (token.type === TokenType.EOF || token.type === TokenType.NEWLINE) {
-                break;
-            }
-        }
-        return tokens;
-    }
 }
 

@@ -839,11 +839,6 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         if (e.key === 'Enter') compareGoPage.click();
     });
 
-    // Keep old function as alias for backward compatibility
-    function compareSnaFiles(dataA, dataB) {
-        compareSnapshotFiles(dataA, dataB);
-    }
-
     function compareBinaryFiles(dataA, dataB) {
         const showEqual = chkCompareShowEqual.checked;
         const showHexDump = chkCompareHexDump.checked;
@@ -944,11 +939,6 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             compareDataTable.innerHTML = result.html || '<div style="color:var(--green)">Memory is identical</div>';
             updateComparePagination();
         }
-    }
-
-    // Keep old function as alias
-    function compareSnaVsEmulator(data) {
-        compareSnapshotVsEmulator(data);
     }
 
     function compareMemoryVsBinary(binData) {

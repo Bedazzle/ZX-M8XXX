@@ -446,32 +446,33 @@ const ExpressionParser = {
                 return { value: 0, undefined: true };
             }
 
-            // Look up in symbol table - try direct name first
-            if (this.symbols && name in this.symbols) {
-                const sym = this.symbols[name];
-                // Mark as used in the actual SymbolTable (not the copy)
-                if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[name]) {
-                    SymbolTable.symbols[name].used = true;
-                }
-                if (typeof sym === 'object') {
-                    return { value: sym.value, undefined: sym.undefined || false };
-                }
-                return { value: sym, undefined: false };
-            }
-
-            // Try with module prefix (e.g. "probs.c" → "upkr.probs.c" inside MODULE upkr)
-            if (!isAbsolute && typeof SymbolTable !== 'undefined' && SymbolTable.modules && SymbolTable.modules.length > 0) {
-                const modulePrefix = SymbolTable.getModulePrefix();
-                const moduleName = modulePrefix + name;
-                if (this.symbols && moduleName in this.symbols) {
-                    const sym = this.symbols[moduleName];
-                    if (SymbolTable.symbols && SymbolTable.symbols[moduleName]) {
-                        SymbolTable.symbols[moduleName].used = true;
+            // Resolve via module scope: innermost MODULE prefix → outer → global
+            // (depth 0 = the raw name, i.e. global or an already-qualified name).
+            // A module-local symbol shadows an outer/global one of the same name
+            // (matching sjasmplus). Undefined forward-reference placeholders are
+            // skipped so the walk keeps looking outward for a DEFINED symbol; a
+            // genuine forward ref (only placeholders exist) stays undefined.
+            // @-absolute and .local names skip the prefix walk.
+            if (this.symbols) {
+                const mods = (!isAbsolute && !name.startsWith('.') &&
+                    typeof SymbolTable !== 'undefined' && SymbolTable.modules) ? SymbolTable.modules : [];
+                let pendingUndef = null;
+                for (let depth = mods.length; depth >= 0; depth--) {
+                    const fn = (depth > 0 ? mods.slice(0, depth).join('.') + '.' : '') + name;
+                    if (!(fn in this.symbols)) continue;
+                    const sym = this.symbols[fn];
+                    const isUndef = (typeof sym === 'object') && (sym.undefined || false);
+                    if (isUndef) { if (pendingUndef === null) pendingUndef = fn; continue; }
+                    if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[fn]) {
+                        SymbolTable.symbols[fn].used = true;
                     }
-                    if (typeof sym === 'object') {
-                        return { value: sym.value, undefined: sym.undefined || false };
+                    return (typeof sym === 'object') ? { value: sym.value, undefined: false } : { value: sym, undefined: false };
+                }
+                if (pendingUndef !== null) {
+                    if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[pendingUndef]) {
+                        SymbolTable.symbols[pendingUndef].used = true;
                     }
-                    return { value: sym, undefined: false };
+                    return { value: 0, undefined: true, symbol: name };
                 }
             }
 

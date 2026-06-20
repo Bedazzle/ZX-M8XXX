@@ -187,6 +187,25 @@ export class AY {
     }
 
     /**
+     * Apply a register value during audio replay (timestamped per-write playback).
+     * Same effect as writeRegister (incl. envelope restart on R13) but performs NO
+     * PSG logging and does not touch selectedRegister — the caller supplies the
+     * target register captured at the original write time.
+     */
+    setRegisterForReplay(reg, value) {
+        const r = reg & 0x0F;
+        const maskedValue = value & this.registerMasks[r];
+        this.registers[r] = maskedValue;
+        if (r === 13) {
+            this.envelopePosition = 0;
+            this.envelopeCounter = 0;
+            this.envelopeHolding = false;
+            this.envelopeShape = maskedValue;
+            this.envelopeAttacking = AY.ENVELOPE_SHAPES[maskedValue].attack;
+        }
+    }
+
+    /**
      * Get tone period for a channel (12-bit value)
      */
     getTonePeriod(channel) {

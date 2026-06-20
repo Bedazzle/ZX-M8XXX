@@ -3613,7 +3613,7 @@ export function initAssemblerUI({
                 const saveCommands = assembledSaveCommands.filter(c =>
                     c.type === 'bin' || c.type === 'sna' || c.type === 'tap' ||
                     c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd' ||
-                    c.type === 'hobeta'
+                    c.type === 'hobeta' || c.type === 'labelslist' || c.type === 'tapout'
                 );
                 // Group by filename
                 const fileMap = new Map();
@@ -3626,6 +3626,8 @@ export function initAssemblerUI({
                     const entry = fileMap.get(fn);
                     entry.commands.push(cmd);
                     if (cmd.capturedData) entry.totalSize += cmd.capturedData.length;
+                    else if (cmd.blockData) entry.totalSize += cmd.blockData.length;
+                    else if (typeof cmd.content === 'string') entry.totalSize += labelsListBytes(cmd.content).length;
                     else if (cmd.length) entry.totalSize += cmd.length;
                     // Update type if we have a real command (not empty)
                     if (cmd.type !== 'emptytap' && cmd.type !== 'emptytrd') {
@@ -3683,13 +3685,26 @@ export function initAssemblerUI({
                                 fileSize = snaData.length;
                                 md5Hash = MD5.hash(snaData);
                             }
+                        } else if (info.type === 'labelslist') {
+                            const cmd = info.commands.find(c => c.type === 'labelslist');
+                            if (cmd) {
+                                const data = labelsListBytes(cmd.content);
+                                fileSize = data.length;
+                                md5Hash = MD5.hash(data);
+                            }
+                        } else if (info.type === 'tapout') {
+                            const tapoutCmds = info.commands.filter(c => c.type === 'tapout');
+                            blockCount = tapoutCmds.length;
+                            const data = concatTapoutBlocks(tapoutCmds);
+                            fileSize = data.length;
+                            md5Hash = MD5.hash(data);
                         } else {
                             fileSize = info.totalSize;
                         }
 
                         // Format details
                         let details = '';
-                        if (info.type === 'tap' && blockCount > 1) {
+                        if ((info.type === 'tap' || info.type === 'tapout') && blockCount > 1) {
                             details = `${blockCount} blocks, ${fileSize} bytes`;
                         } else if (fileSize > 0) {
                             details = `${fileSize} bytes`;
@@ -4072,7 +4087,7 @@ export function initAssemblerUI({
             const saveCommands = assembledSaveCommands.filter(c =>
                 c.type === 'bin' || c.type === 'sna' || c.type === 'tap' ||
                 c.type === 'emptytap' || c.type === 'trd' || c.type === 'emptytrd' ||
-                c.type === 'hobeta'
+                c.type === 'hobeta' || c.type === 'labelslist' || c.type === 'tapout'
             );
 
             if (saveCommands.length === 0) {
@@ -4133,6 +4148,12 @@ export function initAssemblerUI({
                 } else if (fileType === 'hobeta') {
                     // Hobeta file - 17-byte header + raw data
                     data = generateHobetaFile(firstCmd);
+                } else if (fileType === 'labelslist') {
+                    // LABELSLIST - plain-text label list (sjasmplus .l format)
+                    data = labelsListBytes(firstCmd.content);
+                } else if (fileType === 'tapout') {
+                    // TAPOUT/TAPEND - concatenate raw tape blocks in declaration order
+                    data = concatTapoutBlocks(commands.filter(c => c.type === 'tapout'));
                 }
 
                 if (data && data.length > 0) {
@@ -4159,6 +4180,26 @@ export function initAssemblerUI({
                 showMessage(`Downloaded ${files.length} files as ${zipName}`);
             }
         });
+    }
+
+    // Concatenate the raw tape blocks produced by TAPOUT/TAPEND (in declaration
+    // order) into a single TAP file payload.
+    function concatTapoutBlocks(tapoutCmds) {
+        const total = tapoutCmds.reduce((s, c) => s + (c.blockData ? c.blockData.length : 0), 0);
+        const data = new Uint8Array(total);
+        let off = 0;
+        for (const c of tapoutCmds) {
+            if (c.blockData) { data.set(c.blockData, off); off += c.blockData.length; }
+        }
+        return data;
+    }
+
+    // Encode a LABELSLIST text payload (already assembled by the engine) to bytes.
+    function labelsListBytes(content) {
+        const text = typeof content === 'string' ? content : '';
+        const out = new Uint8Array(text.length);
+        for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xFF;
+        return out;
     }
 
     // Generate SNA file from assembler memory state

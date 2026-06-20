@@ -1280,6 +1280,55 @@
         const [emptyL, emptyR] = ay7.getAveragedSample();
         assert(emptyL === 0 && emptyR === 0, 'empty accumulator returns [0,0]');
 
+        section('AY - setRegisterForReplay');
+
+        const ayr = new AY();
+        ayr.startLogging();
+        ayr.setRegisterForReplay(8, 10);
+        assert(ayr.getLog().length === 0, 'setRegisterForReplay does not write PSG log');
+        assert(ayr.registers[8] === 10, 'setRegisterForReplay applies masked value');
+        // R13 restarts the envelope (same as a real register write)
+        const aye = new AY();
+        aye.envelopePosition = 15;
+        aye.envelopeHolding = true;
+        aye.setRegisterForReplay(13, 0x08);
+        assert(aye.envelopePosition === 0 && aye.envelopeHolding === false,
+            'setRegisterForReplay(R13) restarts envelope');
+
+        section('AY - intra-frame volume replay (digitized speech)');
+
+        // Drive channel A as a DAC: tone + noise disabled (output forced high), so
+        // the channel level follows R8 directly. Replay a square-wave volume pattern
+        // across one frame exactly like processFrame, and confirm the output VARIES.
+        // Before the fix, the whole frame rendered with the final R8 value (constant).
+        const ayd = new AY();
+        ayd.writeRegisterDirect(7, 0x3F);   // all tone + noise disabled
+        ayd.writeRegisterDirect(9, 0);
+        ayd.writeRegisterDirect(10, 0);
+        const frameT = 70000;
+        const changes = [];
+        const N = 40;
+        for (let k = 0; k < N; k++) {
+            changes.push({ tStates: Math.floor(k * frameT / N), reg: 8, value: (k % 2) ? 15 : 0 });
+        }
+        const samples = 200, cps = frameT / samples, stepsPer = Math.max(1, Math.round(cps * 0.5));
+        let idx = 0; const outs = [];
+        for (let i = 0; i < samples; i++) {
+            const st = (i + 0.5) * cps;
+            while (idx < changes.length && changes[idx].tStates <= st) {
+                ayd.setRegisterForReplay(changes[idx].reg, changes[idx].value);
+                idx++;
+            }
+            ayd.stepMultiple(stepsPer);
+            const [l, r] = ayd.getAveragedSample();
+            outs.push(l + r);
+        }
+        const mx = Math.max(...outs), mn = Math.min(...outs);
+        assert(mx - mn > 0.1, 'intra-frame volume changes produce a varying waveform',
+            `min=${mn.toFixed(3)} max=${mx.toFixed(3)}`);
+        assert(mx > 0.1, 'loud samples are audible');
+        assert(mn < 0.05, 'quiet samples are near silent');
+
         updateSummary();
     }
 
