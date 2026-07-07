@@ -3341,7 +3341,9 @@ export function initAssemblerUI({
         return defines;
     }
 
-    // Update defines dropdown based on @define markers in source
+    // Render the detected @define markers as checkbox chips. Ticked = the define
+    // is passed to the assembler (IFDEF true); unticked = left undefined. Chips
+    // make the on/off state obvious, unlike a native multi-select highlight.
     function updateDefinesDropdown() {
         if (!asmDetectedDefines) return;
 
@@ -3349,27 +3351,45 @@ export function initAssemblerUI({
 
         if (defines.length === 0) {
             asmDetectedDefines.style.display = 'none';
+            asmDetectedDefines.innerHTML = '';
             return;
         }
 
-        // Build options
-        asmDetectedDefines.innerHTML = defines.map(d =>
-            `<option value="${d.name}" data-value="${d.value}">${d.name}${d.value !== '1' ? '=' + d.value : ''}</option>`
-        ).join('');
+        // Preserve which defines are currently ticked across rebuilds (source
+        // edits re-run this; a native <select multiple> lost the selection here).
+        const wasChecked = new Set(
+            [...asmDetectedDefines.querySelectorAll('input:checked')].map(i => i.value)
+        );
 
-        // Adjust size based on count
-        asmDetectedDefines.size = Math.min(defines.length, 4);
-        asmDetectedDefines.style.display = 'inline-block';
-        asmDetectedDefines.title = `Available defines from @define markers (${defines.length})\nCtrl+click to select multiple`;
+        asmDetectedDefines.innerHTML = '';
+        for (const d of defines) {
+            const label = document.createElement('label');
+            label.className = 'asm-define-chip' + (wasChecked.has(d.name) ? ' on' : '');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = d.name;
+            cb.dataset.value = d.value;
+            cb.checked = wasChecked.has(d.name);
+            cb.addEventListener('change', () => {
+                label.classList.toggle('on', cb.checked);
+            });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(
+                d.name + (d.value !== '1' ? '=' + d.value : '')
+            ));
+            asmDetectedDefines.appendChild(label);
+        }
+
+        asmDetectedDefines.style.display = 'inline-flex';
     }
 
-    // Get selected defines from dropdown
+    // Get the ticked defines (name + parsed value) to pass to the assembler.
     function getSelectedDefinesFromDropdown() {
         if (!asmDetectedDefines) return [];
 
         const selected = [];
-        for (const opt of asmDetectedDefines.selectedOptions) {
-            const valueStr = opt.dataset.value;
+        for (const cb of asmDetectedDefines.querySelectorAll('input:checked')) {
+            const valueStr = cb.dataset.value;
             // Parse value
             let value = 1;
             if (valueStr && valueStr !== '1') {
@@ -3381,7 +3401,7 @@ export function initAssemblerUI({
                     value = valueStr; // Keep as string
                 }
             }
-            selected.push({ name: opt.value, value });
+            selected.push({ name: cb.value, value });
         }
         return selected;
     }
@@ -3841,15 +3861,17 @@ export function initAssemblerUI({
                     }
                 }
 
-                // Reset paging state to match assembler's slot configuration
+                // Reset paging to the same USR-0 state the 128K SNA save produces,
+                // so inject/debug behaves identically to loading the generated .sna:
+                // 7FFD = bit 4 (ROM 1 = 48K BASIC) | current bank; screen bank 5;
+                // paging enabled. (Previously this forced romBank 0 = the 128K editor
+                // ROM, so the game's ROM calls and the IM1 vector at 0x0038 hit the
+                // wrong ROM → white screen / runaway code.) Mirrors generateSNAFile's
+                // `0x10 | (currentBank & 7)` and loadSNA128's writePaging().
                 if (emulatorIs128K) {
-                    const asmBank = AsmMemory.slots[3].page;
-                    spectrum.memory.setPagingState({
-                        ramBank: asmBank & 0x07,
-                        romBank: 0,
-                        screenBank: 5,
-                        pagingDisabled: false
-                    });
+                    const asmBank = AsmMemory.slots[3].page & 0x07;
+                    spectrum.memory.pagingDisabled = false;
+                    spectrum.memory.writePaging(0x10 | asmBank);
                 }
 
                 if (pagesInjected.length > 0) {
@@ -3986,7 +4008,10 @@ export function initAssemblerUI({
             spectrum.cpu.i = 0x3F;
             spectrum.cpu.r = 0x00;
             spectrum.cpu.im = 1;
-            spectrum.cpu.iff1 = 1;
+            // Interrupts disabled at entry, matching the SNA (byte 19 IFF2=0 →
+            // loadSNA sets iff1=iff2=0). The old iff1=1 let a frame INT fire into
+            // the freshly-injected code before the game set up its own handler.
+            spectrum.cpu.iff1 = 0;
             spectrum.cpu.iff2 = 0;
             spectrum.cpu.iy = 0x5C3A;
             spectrum.cpu.ix = 0xFF3C;
@@ -4725,6 +4750,25 @@ export function initAssemblerUI({
         // For checking if there's content to save
         hasContent: () => !!(asmEditor && (asmEditor.value || Object.keys(VFS.files).length > 0)),
         getEditorValue: () => asmEditor ? asmEditor.value : '',
+        // Snippets: which textarea is the last-focused, editable pane
+        _snippetPane: () => (asmActivePane === 'split' && splitPaneVisible()) ? asmEditor2 : asmEditor,
+        // Insert text at the caret of the last-focused pane (used by Snippets).
+        // Checkpoints undo (main pane) and fires 'input' so highlight/VFS sync run.
+        insertAtCursor(text) {
+            const ed = this._snippetPane();
+            if (!ed) return;
+            if (ed === asmEditor) asmUndoPushImmediate();
+            const s = ed.selectionStart, e = ed.selectionEnd;
+            ed.value = ed.value.slice(0, s) + text + ed.value.slice(e);
+            ed.selectionStart = ed.selectionEnd = s + text.length;
+            ed.focus();
+            ed.dispatchEvent(new Event('input'));
+        },
+        // Selected text of the last-focused pane (for "Add selection as snippet")
+        getSelectedText() {
+            const ed = this._snippetPane();
+            return ed ? ed.value.substring(ed.selectionStart, ed.selectionEnd) : '';
+        },
         // For the Ctrl+G palette: label definitions across all source files
         getSourceSymbols: () => {
             syncEditorToVFS();

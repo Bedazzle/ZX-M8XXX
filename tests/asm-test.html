@@ -98,6 +98,7 @@
 
     <script type="module">
     import { Assembler } from '../sjasmplus/assembler.js';
+    import snippetsData from '../data/asm-snippets.json' with { type: 'json' };
         const TEST_VERSION = '0.6.2';
 
         const logEl = document.getElementById('log');
@@ -1239,10 +1240,32 @@ VAL:            EQU 42
 
         // ==================== RUN ALL ====================
 
+        // Assemble every built-in editor snippet (data/asm-snippets.json) so they
+        // stay compilable. Each snippet is wrapped with an ORG to give address-using
+        // ones a base.
+        async function runSnippetTests() {
+            section('Built-in Snippets');
+            const snippets = snippetsData;
+            assert(Array.isArray(snippets) && snippets.length > 0, 'snippets file is a non-empty array');
+            for (const s of snippets) {
+                const name = (s && s.name) || '(unnamed)';
+                let ok = false, info = '';
+                try {
+                    const res = Assembler.assemble('    org $8000\n' + (s.code || ''));
+                    ok = !!(res && res.success);
+                    if (!ok) info = (res && res.errors && res.errors[0] && res.errors[0].message) || 'assembly failed';
+                } catch (e) {
+                    info = e.message;
+                }
+                assert(ok, `snippet assembles: ${name}`, info);
+            }
+        }
+
         async function runAllTests() {
             clearLog();
             log('Running all assembler tests...', 'info');
 
+            await runSnippetTests();
             await runInstructionTests();
             await runDirectiveTests();
             await runLabelTests();

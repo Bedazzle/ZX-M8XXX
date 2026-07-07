@@ -1,5 +1,6 @@
 // input-settings.js — Input & Mouse Settings (extracted from index.html)
 import { storageGet, storageSet } from '../core/utils.js';
+import { MODIFIER_KEY_OPTIONS, DEFAULT_CAPS_SHIFT_OPTION, DEFAULT_SYMBOL_SHIFT_OPTION } from '../core/ula.js';
 
 export function initInputSettings({
     getSpectrum,
@@ -30,6 +31,9 @@ export function initInputSettings({
     const btnNmiPlusD = document.getElementById('btnNmiPlusD');
     const chkIF1 = document.getElementById('chkIF1');
     const if1Status = document.getElementById('if1Status');
+    const selCapsShiftKey = document.getElementById('selCapsShiftKey');
+    const selSymbolShiftKey = document.getElementById('selSymbolShiftKey');
+    const modKeysHint = document.getElementById('modKeysHint');
 
     let mouseCaptured = false;
 
@@ -41,9 +45,66 @@ export function initInputSettings({
             kempstonMouse: chkKempstonMouse.checked,
             mouseWheel: chkMouseWheel.checked,
             mouseSwap: chkMouseSwap.checked,
-            mouseWheelSwap: chkMouseWheelSwap.checked
+            mouseWheelSwap: chkMouseWheelSwap.checked,
+            capsShiftKey: selCapsShiftKey.value,
+            symbolShiftKey: selSymbolShiftKey.value
         }));
     }
+
+    // ===== Caps Shift / Symbol Shift PC key selection =====
+
+    for (const sel of [selCapsShiftKey, selSymbolShiftKey]) {
+        for (const [id, opt] of Object.entries(MODIFIER_KEY_OPTIONS)) {
+            const o = document.createElement('option');
+            o.value = id;
+            o.textContent = opt.label;
+            sel.appendChild(o);
+        }
+    }
+    selCapsShiftKey.value = DEFAULT_CAPS_SHIFT_OPTION;
+    selSymbolShiftKey.value = DEFAULT_SYMBOL_SHIFT_OPTION;
+
+    function modifierCodesOverlap(a, b) {
+        return MODIFIER_KEY_OPTIONS[a].codes.some(c => MODIFIER_KEY_OPTIONS[b].codes.includes(c));
+    }
+
+    function updateModKeysHint() {
+        const usesCtrl = [selCapsShiftKey.value, selSymbolShiftKey.value]
+            .some(id => MODIFIER_KEY_OPTIONS[id].codes.some(c => c.startsWith('Control')));
+        modKeysHint.textContent = usesCtrl ?
+            '(browser reserves Ctrl+W/T/N — those can\'t reach the Spectrum)' : '';
+    }
+
+    function applyModifierKeys() {
+        getSpectrum().ula.setModifierKeys(selCapsShiftKey.value, selSymbolShiftKey.value);
+        updateModKeysHint();
+        saveInputSettings();
+    }
+
+    // On collision the other dropdown takes this one's previous value (swap),
+    // so Caps and Symbol Shift can never share a PC key. If the previous value
+    // also overlaps the new pick (e.g. Both Shifts → Left Shift), the other
+    // dropdown falls back to the first non-overlapping option instead.
+    const modPrev = new Map([[selCapsShiftKey, selCapsShiftKey.value],
+                             [selSymbolShiftKey, selSymbolShiftKey.value]]);
+    function wireModifierSelect(sel, other) {
+        sel.addEventListener('change', () => {
+            if (modifierCodesOverlap(sel.value, other.value)) {
+                let replacement = modPrev.get(sel);
+                if (modifierCodesOverlap(replacement, sel.value)) {
+                    replacement = Object.keys(MODIFIER_KEY_OPTIONS)
+                        .find(id => !modifierCodesOverlap(id, sel.value));
+                }
+                other.value = replacement;
+                modPrev.set(other, replacement);
+                showMessage('Caps and Symbol Shift can\'t share a key — the other one was reassigned');
+            }
+            modPrev.set(sel, sel.value);
+            applyModifierKeys();
+        });
+    }
+    wireModifierSelect(selCapsShiftKey, selSymbolShiftKey);
+    wireModifierSelect(selSymbolShiftKey, selCapsShiftKey);
 
     // Restore input settings from localStorage
     {
@@ -79,11 +140,28 @@ export function initInputSettings({
                     chkMouseWheelSwap.checked = savedInput.mouseWheelSwap;
                     spectrum.kempstonMouseSwapWheel = savedInput.mouseWheelSwap;
                 }
+                if (MODIFIER_KEY_OPTIONS[savedInput.capsShiftKey]) {
+                    selCapsShiftKey.value = savedInput.capsShiftKey;
+                }
+                if (MODIFIER_KEY_OPTIONS[savedInput.symbolShiftKey] &&
+                    !modifierCodesOverlap(selCapsShiftKey.value, savedInput.symbolShiftKey)) {
+                    selSymbolShiftKey.value = savedInput.symbolShiftKey;
+                }
             }
         } catch (e) { console.warn('Failed to load input settings:', e); }
 
         // Apply default for Swap L/R if no saved state
         spectrum.kempstonMouseSwapButtons = chkMouseSwap.checked;
+
+        // Apply the restored (or default) Caps/Symbol Shift key choices
+        if (modifierCodesOverlap(selCapsShiftKey.value, selSymbolShiftKey.value)) {
+            selSymbolShiftKey.value = Object.keys(MODIFIER_KEY_OPTIONS)
+                .find(id => !modifierCodesOverlap(id, selCapsShiftKey.value));
+        }
+        modPrev.set(selCapsShiftKey, selCapsShiftKey.value);
+        modPrev.set(selSymbolShiftKey, selSymbolShiftKey.value);
+        spectrum.ula.setModifierKeys(selCapsShiftKey.value, selSymbolShiftKey.value);
+        updateModKeysHint();
     }
 
     chkKempston.addEventListener('change', () => {

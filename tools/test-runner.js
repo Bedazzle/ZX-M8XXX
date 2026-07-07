@@ -273,6 +273,12 @@ export class TestRunner {
         const audioWasEnabled = audio && audio.enabled;
         if (audio) audio.enabled = false;
 
+        // Remember the shadow-screen mode so it can be restored after the batch —
+        // a 48K test forces unsupported modes (Full/Bitmap) off via the
+        // machine-switch fallback, and we don't want to leave it off afterwards.
+        const savedShadowMode = (typeof this._callbacks.getSecondScreenMode === 'function')
+            ? this._callbacks.getSecondScreenMode() : null;
+
         try {
             // UI updates
             this.elements.btnRunSelected.disabled = true;
@@ -363,6 +369,13 @@ export class TestRunner {
 
             // Refresh main canvas after tests complete
             this.spectrum.redraw();
+
+            // Restore the shadow-screen mode (the machine is back to its pre-batch
+            // state now, so a mode like Full is valid again). setSecondScreenMode
+            // falls it back itself if the restored machine doesn't support it.
+            if (savedShadowMode != null && typeof this._callbacks.setSecondScreenMode === 'function') {
+                this._callbacks.setSecondScreenMode(savedShadowMode);
+            }
         }
     }
 
@@ -395,6 +408,7 @@ export class TestRunner {
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
+        const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const wasRunning = this.spectrum.running;
         if (wasRunning) this.spectrum.stop();
 
@@ -439,6 +453,11 @@ export class TestRunner {
             if (typeof this._callbacks.updateULAplusStatus === 'function') {
                 this._callbacks.updateULAplusStatus();
             }
+
+            // Kempston Mouse: off by default so the global Settings toggle can't
+            // change a test's port reads (FADF/FBDF/FFDF); a test that needs it
+            // sets "kempstonMouse": true.
+            this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
 
             // Apply palette if specified
             if (test.palette && typeof this._callbacks.applyPalette === 'function') {
@@ -493,6 +512,8 @@ export class TestRunner {
             }
             // Restore timing settings
             this.spectrum.setLateTimings(savedLateTimings);
+            // Restore Kempston Mouse enable (the global Settings state)
+            this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
         }
     }
 
@@ -528,6 +549,20 @@ export class TestRunner {
             // Update ULAplus status UI
             if (typeof this._callbacks.updateULAplusStatus === 'function') {
                 this._callbacks.updateULAplusStatus();
+            }
+
+            // Re-sync the on-screen canvas to the new machine's dimensions.
+            // setMachineType reset the drawing buffer (canvas.width/height); without
+            // this the CSS box keeps the previous machine's size and the image is
+            // stretched to the wrong aspect ratio while tests run.
+            if (typeof this._callbacks.updateCanvasSize === 'function') {
+                this._callbacks.updateCanvasSize();
+            }
+
+            // Refresh shadow-screen options for the new machine (hide/disable
+            // unsupported modes, e.g. Full/Bitmap on 48K).
+            if (typeof this._callbacks.updateSecondScreenOptions === 'function') {
+                this._callbacks.updateSecondScreenOptions();
             }
         }
     }
@@ -1468,6 +1503,7 @@ export class TestRunner {
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
+        const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const wasRunning = this.spectrum.running;
 
         this.previewing = true;
@@ -1527,6 +1563,10 @@ export class TestRunner {
             if (typeof this._callbacks.updateULAplusStatus === 'function') {
                 this._callbacks.updateULAplusStatus();
             }
+
+            // Kempston Mouse: off by default so the global Settings toggle can't
+            // change the test's port reads; a test sets "kempstonMouse": true to use it.
+            this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
 
             // Recreate tape trap to ensure clean state
             this.spectrum.tapeTrap = new this._TapeTrapHandler(
@@ -1603,6 +1643,8 @@ export class TestRunner {
             }
             // Restore timing settings
             this.spectrum.setLateTimings(savedLateTimings);
+            // Restore Kempston Mouse enable (the global Settings state)
+            this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
 
             // Always update canvas size after preview (in case dimensions changed)
             if (typeof this._callbacks.updateCanvasSize === 'function') {

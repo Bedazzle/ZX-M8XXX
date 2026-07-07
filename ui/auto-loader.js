@@ -1,18 +1,32 @@
 // auto-loader.js — Auto-load engine for tape and disk media (extracted from index.html)
+//
+// Timing is driven by EMULATED FRAMES, not wall-clock. The ZX keyboard is scanned
+// once per maskable interrupt (one per frame), so key debounce / auto-repeat are
+// counted in frames. Scheduling the typed LOAD sequence by emulated frame makes it
+// behave identically at any emulation speed (10% … Max) and on any machine
+// regardless of T-states-per-frame, and it pauses naturally when the emulator is
+// paused. The schedule is pumped from the spectrum `onFrame` hook (fires once per
+// emulated frame, even at Max) — an external rAF poll would batch many frames at
+// high speed and skip a key's down→up window. Frame numbers use spectrum.totalFrames
+// (monotonic).
 
-const AUTO_LOAD_ROM_WAIT     = 3000;
-const AUTO_LOAD_128K_WAIT    = 1500;
-const AUTO_LOAD_KEY_HOLD     = 200;
-const AUTO_LOAD_KEY_GAP      = 150;
-const AUTO_LOAD_KEY_HOLD_FAST = 100;
-const AUTO_LOAD_KEY_GAP_FAST  = 100;
+// Frame-based timing constants (~50 frames/sec)
+const AUTO_LOAD_ROM_WAIT      = 150; // ~3.0s  wait for ROM boot to the cursor
+const AUTO_LOAD_128K_WAIT     = 75;  // ~1.5s  after choosing BASIC from the 128K menu
+const AUTO_LOAD_SCORPION_WAIT = 200; // ~4.0s  Scorpion 256K RAM test on boot
+const AUTO_LOAD_KEY_HOLD      = 10;  // ~200ms key held down
+const AUTO_LOAD_KEY_GAP       = 8;   // ~150ms between keys
+const AUTO_LOAD_KEY_HOLD_FAST = 5;   // ~100ms
+const AUTO_LOAD_KEY_GAP_FAST  = 5;   // ~100ms
 
 export function initAutoLoader({ getSpectrum }) {
     const chkAutoLoad = document.getElementById('chkAutoLoad');
     const chkFlashLoad = document.getElementById('chkFlashLoad');
     const tapeLoadModeEl = document.getElementById('tapeLoadMode');
-    let autoLoadTimers = [];
+    let autoLoadQueue = [];          // pending [{frame, fn}], sorted by absolute frame
+    let autoLoadStartFrame = 0;      // spectrum.totalFrames when the sequence began
     let autoLoadActive = false;
+    let autoLoadHooked = false;      // whether our frame listener is registered
 
     // The Disk tab mirrors the Auto Load checkbox; keep both in sync.
     // project-io dispatches 'change' on chkAutoLoad when restoring projects.
@@ -27,29 +41,60 @@ export function initAutoLoader({ getSpectrum }) {
         });
     }
 
+    // Register our per-frame pump (only while a sequence is active). Uses the
+    // spectrum's multi-listener registry so it never clobbers other onFrame
+    // consumers (second screen, profiler, …).
+    function hookAutoLoadFrame() {
+        if (autoLoadHooked) return;
+        getSpectrum().addFrameListener(autoLoadTick);
+        autoLoadHooked = true;
+    }
+
+    function unhookAutoLoadFrame() {
+        if (!autoLoadHooked) return;
+        getSpectrum().removeFrameListener(autoLoadTick);
+        autoLoadHooked = false;
+    }
+
+    // Run every emulated frame: fire all actions whose target frame has been
+    // reached. At high speed several frames elapse per tick, so more than one may
+    // fire; each key still spans the intended number of frames because down/up are
+    // scheduled at distinct frames and applied in order as those frames arrive.
+    function autoLoadTick() {
+        if (!autoLoadActive) return;
+        const cur = getSpectrum().totalFrames;
+        while (autoLoadQueue.length && autoLoadQueue[0].frame <= cur) {
+            autoLoadQueue.shift().fn();
+        }
+        if (autoLoadQueue.length === 0) unhookAutoLoadFrame();
+    }
+
+    function beginAutoLoad() {
+        autoLoadActive = true;
+        autoLoadQueue = [];
+        autoLoadStartFrame = getSpectrum().totalFrames;
+        hookAutoLoadFrame();
+    }
+
     function cancelAutoLoad() {
         const spectrum = getSpectrum();
-        for (const id of autoLoadTimers) clearTimeout(id);
-        autoLoadTimers = [];
+        unhookAutoLoadFrame();
+        autoLoadQueue = [];
         if (autoLoadActive) {
             spectrum.ula.keyboardState.fill(0xFF);
             autoLoadActive = false;
         }
     }
 
-    function autoLoadTimeout(fn, delay) {
-        const id = setTimeout(() => {
-            const idx = autoLoadTimers.indexOf(id);
-            if (idx >= 0) autoLoadTimers.splice(idx, 1);
-            fn();
-        }, delay);
-        autoLoadTimers.push(id);
+    // Schedule fn to run when the emulator reaches (sequence start + frameOffset).
+    function autoLoadAt(fn, frameOffset) {
+        autoLoadQueue.push({ frame: autoLoadStartFrame + frameOffset, fn });
+        autoLoadQueue.sort((a, b) => a.frame - b.frame);
     }
 
     function startAutoLoadTape(isTzx) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
-        autoLoadActive = true;
         const machType = spectrum.machineType;
         const isAmsMenu = machType === '+2' || machType === '+2a' || machType === '+3';
         const is128K = machType !== '48k';
@@ -59,6 +104,7 @@ export function initAutoLoader({ getSpectrum }) {
         spectrum.stop();
         spectrum.reset();
         spectrum.start();
+        beginAutoLoad();
 
         let t = 0;
 
@@ -85,9 +131,9 @@ export function initAutoLoader({ getSpectrum }) {
             // cleared by the caller before invoking this function so the ROM
             // Loader falls through to tape.
             t += AUTO_LOAD_ROM_WAIT;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => {
+            autoLoadAt(() => {
                 if (!autoLoadActive) return;
                 ula.keyUp('Enter');
                 ula.keyboardState.fill(0xFF);
@@ -104,41 +150,41 @@ export function initAutoLoader({ getSpectrum }) {
         if (machType === 'scorpion') {
             // Scorpion menu: "128 TR-DOS" is first, "128 BASIC" is second.
             // Scorpion ROM does a 256KB RAM test on boot — needs extra wait.
-            t += 4000;
+            t += AUTO_LOAD_SCORPION_WAIT;
             // Down arrow to move from "128 TR-DOS" to "128 BASIC"
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('ArrowDown'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('ArrowDown'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('ArrowDown'); ula.keyboardState.fill(0xFF); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('ArrowDown'); ula.keyboardState.fill(0xFF); }, t);
             t += AUTO_LOAD_KEY_GAP;
             // Enter to select "128 BASIC"
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('Enter'); ula.keyboardState.fill(0xFF); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('Enter'); ula.keyboardState.fill(0xFF); }, t);
             t += AUTO_LOAD_128K_WAIT;
 
             // 128K BASIC uses letter-by-letter input (not 48K token mode)
             // Type: L, O, A, D, ", ", Enter
             const loadKeys = ['l', 'o', 'a', 'd'];
             for (const key of loadKeys) {
-                autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown(key); }, t);
+                autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown(key); }, t);
                 t += AUTO_LOAD_KEY_HOLD;
-                autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyboardState.fill(0xFF); }, t);
+                autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyboardState.fill(0xFF); }, t);
                 t += AUTO_LOAD_KEY_GAP;
             }
             // Symbol+P = first "
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
             t += AUTO_LOAD_KEY_GAP;
             // Symbol+P = second "
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
             t += AUTO_LOAD_KEY_GAP;
             // Enter
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => {
+            autoLoadAt(() => {
                 if (!autoLoadActive) return;
                 ula.keyUp('Enter');
                 ula.keyboardState.fill(0xFF);
@@ -153,36 +199,36 @@ export function initAutoLoader({ getSpectrum }) {
         } else if (is128K) {
             // Sinclair 128K/Pentagon menu: press "1" for BASIC
             t += AUTO_LOAD_ROM_WAIT;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('1'); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('1'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
-            autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('1'); ula.keyboardState.fill(0xFF); }, t);
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('1'); ula.keyboardState.fill(0xFF); }, t);
             t += AUTO_LOAD_128K_WAIT;
         } else {
             t += AUTO_LOAD_ROM_WAIT;
         }
 
         // J = LOAD
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('j'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('j'); }, t);
         t += AUTO_LOAD_KEY_HOLD;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('j'); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('j'); ula.keyboardState.fill(0xFF); }, t);
         t += AUTO_LOAD_KEY_GAP;
 
         // Symbol+P = first "
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
         t += AUTO_LOAD_KEY_HOLD;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
         t += AUTO_LOAD_KEY_GAP;
 
         // Symbol+P = second "
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
         t += AUTO_LOAD_KEY_HOLD;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
         t += AUTO_LOAD_KEY_GAP;
 
         // Enter
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
         t += AUTO_LOAD_KEY_HOLD;
-        autoLoadTimeout(() => {
+        autoLoadAt(() => {
             if (!autoLoadActive) return;
             ula.keyUp('Enter');
             ula.keyboardState.fill(0xFF);
@@ -198,25 +244,25 @@ export function initAutoLoader({ getSpectrum }) {
         }, t);
     }
 
-    // Timer-based key press helpers for typing sequences
+    // Frame-based key press helpers for typing sequences
     function pressKeyTimed(ula, key, t, hold = AUTO_LOAD_KEY_HOLD, gap = AUTO_LOAD_KEY_GAP) {
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown(key); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown(key); }, t);
         t += hold;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyboardState.fill(0xFF); }, t);
         return t + gap;
     }
 
     function pressSymbolKeyTimed(ula, key, t, hold = AUTO_LOAD_KEY_HOLD, gap = AUTO_LOAD_KEY_GAP) {
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown(key); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown(key); }, t);
         t += hold;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
         return t + gap;
     }
 
     function pressShiftKeyTimed(ula, key, t, hold = AUTO_LOAD_KEY_HOLD, gap = AUTO_LOAD_KEY_GAP) {
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Shift'); ula.keyDown(key); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Shift'); ula.keyDown(key); }, t);
         t += hold;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyUp('Shift'); ula.keyboardState.fill(0xFF); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyUp('Shift'); ula.keyboardState.fill(0xFF); }, t);
         return t + gap;
     }
 
@@ -251,14 +297,14 @@ export function initAutoLoader({ getSpectrum }) {
             return;
         }
         spectrum.start();
-        autoLoadActive = true;
+        beginAutoLoad();
         const ula = spectrum.ula;
 
         let t = AUTO_LOAD_ROM_WAIT;
 
         // Restore boot entry after TR-DOS has finished initialization
         if (bootEntryOffset >= 0) {
-            autoLoadTimeout(() => { diskData[bootEntryOffset] = savedBootByte; }, t - 500);
+            autoLoadAt(() => { diskData[bootEntryOffset] = savedBootByte; }, t - 25);
         }
 
         const H = AUTO_LOAD_KEY_HOLD_FAST, G = AUTO_LOAD_KEY_GAP_FAST;
@@ -295,9 +341,9 @@ export function initAutoLoader({ getSpectrum }) {
         t = pressSymbolKeyTimed(ula, 'p', t, H, G);
 
         // Enter
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
         t += H;
-        autoLoadTimeout(() => {
+        autoLoadAt(() => {
             if (!autoLoadActive) return;
             ula.keyUp('Enter');
             ula.keyboardState.fill(0xFF);
@@ -316,7 +362,6 @@ export function initAutoLoader({ getSpectrum }) {
     function startAutoLoadPlus3Disk() {
         const spectrum = getSpectrum();
         cancelAutoLoad();
-        autoLoadActive = true;
         const ula = spectrum.ula;
 
         // Save all FDC drive disks before reset
@@ -334,13 +379,14 @@ export function initAutoLoader({ getSpectrum }) {
         }
 
         spectrum.start();
+        beginAutoLoad();
 
         // +3 Amstrad menu: press Enter to select "Loader" (default option)
         // The +3 ROM's Loader routine auto-detects disk and boots from it
         let t = AUTO_LOAD_ROM_WAIT;
-        autoLoadTimeout(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
         t += AUTO_LOAD_KEY_HOLD;
-        autoLoadTimeout(() => {
+        autoLoadAt(() => {
             if (!autoLoadActive) return;
             ula.keyUp('Enter');
             ula.keyboardState.fill(0xFF);

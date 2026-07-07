@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.11</title>
+    <title>ZX-M8XXX v0.15.14</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -475,6 +475,104 @@
             font-size: 13px;
             height: 26px;
         }
+        /* Virtual ZX Spectrum keyboard — legends placed like the physical key faces:
+           keyword/colour above the key, green-ext top-left + red symbol top-right
+           inside the key, secondary word below the key. */
+        .vkbd {
+            position: fixed;
+            left: 50%;
+            bottom: 10px;
+            transform: translateX(-50%);
+            width: min(720px, 97vw);
+            z-index: 600;
+            padding: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-primary);
+            border-radius: 6px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+            user-select: none;
+            font-family: sans-serif;
+        }
+        .vkbd-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: move;
+            margin: -2px 0 5px;
+            padding: 2px 4px 5px;
+            border-bottom: 1px solid var(--border-primary);
+            color: var(--text-secondary);
+            font-size: 11px;
+            touch-action: none;
+        }
+        .vkbd-title { font-weight: bold; pointer-events: none; }
+        .vkbd-close { cursor: pointer; font-size: 15px; line-height: 1; padding: 0 5px; }
+        .vkbd-close:hover { color: var(--accent); }
+        .vkbd-row {
+            display: flex;
+            gap: 5px;
+            justify-content: center;
+            align-items: flex-start;
+            margin-bottom: 4px;
+        }
+        .vkbd-row:last-child { margin-bottom: 0; }
+        .vkbd-cell {
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .vkbd-cell.wide { flex: 1.7 1 0; }
+        .vk-above {
+            height: 19px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: center;
+            line-height: 1.05;
+            overflow: hidden;
+        }
+        .vk-keyword { font-size: 8px; color: var(--text-primary); }
+        .vk-aboveext { font-size: 8px; color: #7CFC79; }
+        .vk-colour { font-size: 8px; font-weight: bold; }
+        .vk-below {
+            height: 11px;
+            font-size: 8px;
+            text-align: center;
+            color: #d0d0d0;
+            line-height: 1.1;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        .vk-below.vk-extsym { color: #ff6b6b; }
+        .vkbd-key {
+            position: relative;
+            height: 34px;
+            background: var(--bg-button);
+            border: 1px solid var(--border-primary);
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .vkbd-key:hover { background: var(--bg-button-hover); }
+        .vkbd-key:active, .vkbd-key.pressed { background: var(--accent); color: #fff; }
+        .vkbd-key.armed { outline: 2px solid var(--cyan); outline-offset: -2px; }
+        .vk-main { font-size: 15px; font-weight: bold; }
+        .vk-main.vk-word { font-size: 10px; text-align: center; line-height: 1.05; }
+        .vk-corner { position: absolute; top: 1px; font-size: 8px; line-height: 1; }
+        .vk-kw { color: var(--text-primary); left: 3px; }
+        .vk-sym { color: #ff6b6b; right: 3px; }
+        .vkbd-key.mod { filter: brightness(0.92); }
+        /* Light theme: darken the bright legends so they read on light keys, and
+           outline the colour names (WHITE/YELLOW would vanish otherwise). */
+        body.light-theme .vk-aboveext { color: #1a7d1a; }
+        body.light-theme .vk-sym,
+        body.light-theme .vk-below.vk-extsym { color: #b3261e; }
+        body.light-theme .vk-colour { text-shadow: 0 0 2px rgba(0,0,0,0.85); }
         button {
             background: var(--bg-button);
             color: var(--text-primary);
@@ -794,31 +892,39 @@
             color: var(--text-secondary);
             opacity: 0.6;
         }
+        /* Detected @define toggles: a row of checkbox chips so each define's
+           on/off (defined/not-defined) state is unambiguous at a glance. */
         #asmDetectedDefines {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 3px;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        #asmDetectedDefines .asm-define-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
             background-color: var(--bg-secondary);
-            color: var(--text-primary);
+            color: var(--text-secondary);
             border: 1px solid var(--border-color);
             border-radius: 3px;
-            padding: 2px;
+            padding: 1px 5px 1px 3px;
             font-family: monospace;
             font-size: 11px;
-            margin-left: 6px;
-            min-width: 100px;
-            max-width: 200px;
-            height: auto;
-            max-height: 60px;
+            cursor: pointer;
+            user-select: none;
         }
-        #asmDetectedDefines option {
-            padding: 2px 4px;
-            background-color: var(--bg-secondary);
-            color: var(--text-primary);
-        }
-        #asmDetectedDefines option:checked {
+        /* Checked = the define is passed to the assembler (IFDEF true) */
+        #asmDetectedDefines .asm-define-chip.on {
             background-color: var(--accent);
             color: var(--bg-primary);
+            border-color: var(--accent);
         }
-        #asmDetectedDefines option:hover {
-            background-color: var(--bg-button);
+        #asmDetectedDefines .asm-define-chip input {
+            margin: 0;
+            cursor: pointer;
         }
         .assembler-body {
             flex: 1;
@@ -1177,6 +1283,43 @@
         }
         #asmFilesList:not(:empty) {
             border-top: 1px solid var(--bg-button);
+        }
+        /* Snippets dropdown */
+        #asmSnippetsList {
+            border-top: 1px solid var(--bg-button);
+        }
+        .asm-snippet-section {
+            padding: 4px 10px;
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            background: var(--bg-primary);
+        }
+        .asm-snippet-empty {
+            padding: 4px 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+        .asm-snippet-row {
+            display: flex;
+            align-items: stretch;
+        }
+        .asm-snippet-row .asm-snippet-item {
+            flex: 1;
+        }
+        .asm-snippet-del {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 0 10px;
+            font-size: 14px;
+        }
+        .asm-snippet-del:hover {
+            color: var(--accent);
         }
         .asm-files-list-item {
             padding: 6px 10px;
@@ -2856,6 +2999,14 @@
             display: flex;
             align-items: center;
             gap: 10px;
+        }
+        /* Right-aligned group label column (same pattern as .tools-row .search-label) */
+        .settings-row .settings-row-label {
+            color: var(--text-secondary);
+            font-size: 11px;
+            min-width: 64px;
+            text-align: right;
+            flex: none;
         }
         .settings-row label:not(.checkbox-label) {
             min-width: 100px;
@@ -7401,7 +7552,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.11 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.14 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -7468,8 +7619,10 @@
             </select>
             <button id="btnSound" title="Toggle sound (AY-3-8910)">🔇</button>
             <button id="btnFullscreen" title="Toggle fullscreen (F11)">⛶</button>
+            <button id="btnVKbd" title="Show/hide the clickable ZX Spectrum keyboard">⌨</button>
             <button id="btnMouse" title="Capture mouse (Kempston Mouse)" style="display: none;">🖱️</button>
         </div>
+        <div id="virtualKeyboard" class="vkbd hidden"></div>
         <input type="file" id="rom48Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="rom128Input" class="file-input" accept=".rom,.bin">
         <input type="file" id="romPlus2Input" class="file-input" accept=".rom,.bin">
@@ -8231,12 +8384,25 @@
                                 <div id="asmFilesList"></div>
                             </div>
                         </div>
+                        <div class="asm-files-dropdown">
+                            <button id="btnAsmSnippets" title="Insert a code snippet at the cursor">Snippets ▼</button>
+                            <div class="asm-files-list" id="asmSnippetsMenu">
+                                <div class="asm-menu-actions">
+                                    <button class="asm-menu-item" id="btnSnippetAdd" title="Save the selected editor text as a named snippet">+ Add selection as snippet…</button>
+                                    <button class="asm-menu-item" id="btnSnippetImport" title="Import snippets from a JSON file (merged into your snippets)">Import my snippets…</button>
+                                    <button class="asm-menu-item" id="btnSnippetExport" title="Export your snippets to a JSON file">Export my snippets…</button>
+                                    <button class="asm-menu-item" id="btnSnippetClear" title="Delete all your saved snippets (built-in stay)">Clear my snippets</button>
+                                    <input type="file" id="snippetImportFile" accept=".json,application/json" style="display:none">
+                                </div>
+                                <div id="asmSnippetsList"></div>
+                            </div>
+                        </div>
                         <button id="btnAsmAssemble" title="Assemble code (F9)" disabled>Assemble</button>
                         <button id="btnAsmDebug" title="Inject code and start debugging at entry point (Ctrl+F9)" disabled>Debug</button>
                         <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
                         <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
                         <label class="asm-option asm-defines-label" title="Command-line defines for IFDEF/IFNDEF (e.g., DEBUG,VERSION=5)">Defines: <input type="text" id="asmDefines" placeholder="NAME,NAME=value" spellcheck="false"></label>
-                        <select id="asmDetectedDefines" multiple size="1" title="Defines from @define markers in source (click to toggle)" style="display:none"></select>
+                        <span id="asmDetectedDefines" title="Defines from @define markers in source — tick to define (IFDEF true), untick to leave undefined" style="display:none"></span>
                         <span id="asmMainFileLabel" class="asm-main-label" style="display:none" title="Click to change main file"></span>
                         <button id="btnAsmSplit" style="margin-left: auto;" title="Split editor: edit two files (or the same file) side by side">◫</button>
                         <span class="disasm-opts-wrap">
@@ -8488,8 +8654,9 @@ start:
             <div class="settings-tab-content">
                 <div class="settings-section">
                     <div class="settings-row">
+                        <span class="settings-row-label">Joystick:</span>
                         <label class="checkbox-label">
-                            <input type="checkbox" id="chkKempston"> Kempston Joystick (Numpad)
+                            <input type="checkbox" id="chkKempston"> Kempston (Numpad)
                         </label>
                         <label class="checkbox-label" title="Extended buttons: [ = C, ] = A, \ = Start" style="margin-left: 15px;">
                             <input type="checkbox" id="chkKempstonExtended"> Extended
@@ -8501,8 +8668,9 @@ start:
                         <span id="gamepadStatus" style="margin-left: 5px; color: var(--text-dim); font-size: 11px;"></span>
                     </div>
                     <div class="settings-row">
+                        <span class="settings-row-label">Mouse:</span>
                         <label class="checkbox-label" title="Click screen to capture mouse, Escape to release">
-                            <input type="checkbox" id="chkKempstonMouse"> Kempston Mouse
+                            <input type="checkbox" id="chkKempstonMouse"> Kempston
                         </label>
                         <label class="checkbox-label" title="Mouse wheel on bits 7:4 of button port" style="margin-left: 15px;">
                             <input type="checkbox" id="chkMouseWheel"> Wheel
@@ -8514,6 +8682,14 @@ start:
                             <input type="checkbox" id="chkMouseWheelSwap"> Swap Wheel
                         </label>
                         <span id="mouseStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row" style="gap: 3px;">
+                        <span class="settings-row-label" style="margin-right: 7px;">ZX shifts:</span>
+                        <label style="font-size: 11px; min-width: auto;" title="PC key acting as the ZX CAPS SHIFT key">Caps:</label>
+                        <select id="selCapsShiftKey" style="width: 108px; font-size: 11px; flex: none;"></select>
+                        <label style="font-size: 11px; min-width: auto; margin-left: 10px;" title="PC key acting as the ZX SYMBOL SHIFT key">Symbol:</label>
+                        <select id="selSymbolShiftKey" style="width: 108px; font-size: 11px; flex: none;"></select>
+                        <span id="modKeysHint" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
                     </div>
                     <hr style="border: none; border-top: 1px solid var(--border-color); margin: 10px 0 0 0;">
                     <div style="padding: 6px 0 0 0;">
@@ -9181,13 +9357,16 @@ start:
                                 <option value="hobeta">Extract Hobeta</option>
                             </select>
                             <button id="btnEditorCopy" class="explorer-btn" disabled title="Copy selected files to other panel">Copy &#9654;</button>
+                            <button id="btnEditorToTurbo" class="explorer-btn" disabled style="display:none" title="View / set the pulse timing of the selected TZX block(s): convert standard↔turbo or re-time a turbo block">Turbo</button>
+                            <button id="btnEditorSplit" class="explorer-btn" disabled style="display:none" title="Split a monoloader: keep the loader (its declared length) and add the appended CODE as a separate entry for reverse-engineering">Split</button>
+                            <button id="btnEditorBanner" class="explorer-btn" style="display:none" title="View or attach a SPECSCII catalogue banner — fake directory entries drawn by TR-DOS LIST">Banner</button>
                             <label id="editorKeepSlackLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Carry the unused bytes in each file's last sector to the destination">
                                 <input type="checkbox" id="editorKeepSlack" style="vertical-align:middle;margin-right:2px">Keep slack
                             </label>
                             <label id="editorLinkLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Select header+data blocks together">
                                 <input type="checkbox" id="editorPairLock" checked style="vertical-align:middle;margin-right:2px">Link header
                             </label>
-                            <input type="file" id="editorPanelFileInput" style="display:none">
+                            <input type="file" id="editorPanelFileInput" multiple style="display:none">
                         </div>
 
                         <!-- Dual panel container -->
@@ -9264,6 +9443,54 @@ start:
                         <button id="btnTapAddOk" class="explorer-btn primary">Add</button>
                         <button id="btnTapAddCancel" class="explorer-btn">Cancel</button>
                     </div>
+                </div>
+            </div>
+
+            <!-- Convert to Turbo Dialog -->
+            <div id="tzxTurboDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:360px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:6px">Turbo block timing</h2>
+                    <div style="color:var(--text-secondary);font-size:11px;margin-bottom:12px">Pulse lengths in T-states (3.5&nbsp;MHz). Shows the selected block's current timing — edit to convert standard→turbo or re-time a turbo block.</div>
+                    <div style="display:grid;grid-template-columns:auto 80px;gap:6px 10px;align-items:center;font-size:12px">
+                        <label>Pilot pulse:</label><input type="number" id="tzxTbPilot" value="2168" min="0" max="65535">
+                        <label>Sync 1 pulse:</label><input type="number" id="tzxTbSync1" value="667" min="0" max="65535">
+                        <label>Sync 2 pulse:</label><input type="number" id="tzxTbSync2" value="735" min="0" max="65535">
+                        <label>Zero-bit pulse:</label><input type="number" id="tzxTbZero" value="855" min="0" max="65535">
+                        <label>One-bit pulse:</label><input type="number" id="tzxTbOne" value="1710" min="0" max="65535">
+                        <label>Pilot tone (pulses):</label><input type="number" id="tzxTbPilotLen" value="3223" min="0" max="65535">
+                        <label>Used bits (last byte):</label><input type="number" id="tzxTbUsedBits" value="8" min="1" max="8">
+                        <label>Pause after (ms):</label><input type="number" id="tzxTbPause" value="1000" min="0" max="65535">
+                    </div>
+                    <div id="tzxTurboInfo" style="color:var(--text-secondary);font-size:11px;margin-top:10px"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                        <button id="btnTzxTurboOk" class="explorer-btn primary">Apply</button>
+                        <button id="btnTzxTurboCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPECSCII Catalogue Banner Dialog -->
+            <div id="bannerDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:560px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:6px">SPECSCII catalogue banner</h2>
+                    <div style="color:var(--text-secondary);font-size:11px;margin-bottom:10px">
+                        A picture drawn by TR-DOS <b>LIST</b>: fake directory entries whose names hold print control codes.
+                        Load a <b>.specscii</b> file (SpectraLab / zxart.ee) and it becomes catalogue entries before the real files.
+                        One leftover column row appears under the banner — real banner disks show it too.
+                    </div>
+                    <canvas id="bannerCanvas" width="256" height="192" style="width:min(512px,80vw);image-rendering:pixelated;border:1px solid var(--border-color);background:#000;display:block;margin:0 auto"></canvas>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">
+                        <button id="btnBannerLoad" class="explorer-btn">Load .specscii…</button>
+                        <label style="font-size:11px" title="Banner height in character rows — rows below are cut off (max 21, the AT print limit)">Rows:</label>
+                        <input type="number" id="bannerRows" min="1" max="21" value="10" style="width:52px;font-size:11px">
+                        <span id="bannerInfo" style="font-size:11px;color:var(--text-dim)"></span>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                        <button id="btnBannerRemove" class="explorer-btn" style="display:none">Remove banner</button>
+                        <button id="btnBannerApply" class="explorer-btn primary" disabled>Apply</button>
+                        <button id="btnBannerClose" class="explorer-btn">Close</button>
+                    </div>
+                    <input type="file" id="bannerFileInput" accept=".specscii" style="display:none">
                 </div>
             </div>
 
@@ -9493,6 +9720,9 @@ start:
                         <button id="btnBinExport" class="frame-grab-btn" title="Export memory range to .bin file">Export</button>
                         <button id="btnBinLoad" class="frame-grab-btn" title="Import .bin file into memory at start address">Import</button>
                         <input type="file" id="binLoadFile" accept=".bin,.dat,*" style="display: none;">
+                        <label style="font-size: 11px; min-width: 24px;">Byte</label>
+                        <input type="text" id="binFillByte" maxlength="2" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte (hex)">
+                        <button id="btnBinFill" class="frame-grab-btn" title="Fill the Start..End range with the fill byte (default 00 clears it)">Fill</button>
                     </div>
                     <div class="frame-grab-status" id="binStatus"></div>
                 </div>
@@ -10992,6 +11222,8 @@ start:
     import { initAnalysisTools } from './ui/analysis-tools.js';
     import { initDisplaySettings } from './ui/display-settings.js';
     import { initAssemblerUI } from './ui/assembler-ui.js';
+    import { initAsmSnippets } from './ui/asm-snippets.js';
+    import { initVirtualKeyboard } from './ui/virtual-keyboard.js';
     import { initSignaturePacksUI } from './ui/signature-packs-ui.js';
     import { initBootManager } from './ui/boot-manager.js';
     import { initAutoLoader } from './ui/auto-loader.js';
@@ -11038,7 +11270,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.11';
+        const APP_VERSION = '0.15.14';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -11272,12 +11504,22 @@ start:
             const inkC = 0xFFFFFFFF; // white
             const papC = 0xFF000000; // black
 
+            // Paint the shadow canvas solid black — used when the current mode has
+            // nothing valid to show (e.g. a shadow mode on a 48K machine), so we
+            // never leave a previous machine's image lingering on screen.
+            const blankSecondScreen = (label) => {
+                fb.fill(papC);
+                secondScreenCtx.putImageData(secondScreenImageData, 0, 0);
+                if (label !== undefined) document.getElementById('secondScreenLabel').textContent = label;
+            };
+
             if (secondScreenMode === 'full' || secondScreenMode === 'bitmap') {
-                // Shadow modes — require 128K+ (two screen banks)
-                if (mem.profile.ramPages <= 1) return;
+                // Shadow modes — require 128K+ (two screen banks). On 48K (or if the
+                // inactive bank isn't available) show black, not stale pixels.
+                if (mem.profile.ramPages <= 1) { blankSecondScreen('n/a (48K)'); return; }
                 const inactiveBank = (mem.screenBank === 5) ? 7 : 5;
                 const ram = mem.getRamBank(inactiveBank);
-                if (!ram) return;
+                if (!ram) { blankSecondScreen('n/a'); return; }
 
                 if (secondScreenMode === 'bitmap') {
                     for (let y = 0; y < 192; y++) {
@@ -11499,7 +11741,17 @@ start:
             updateMediaIndicator: (...args) => updateMediaIndicator(...args),
             loadRomsForMachineType,
             getPaletteValue: () => displayAPI.getPaletteValue(),
-            onDisasmReset: () => { disasm = null; }
+            onDisasmReset: () => { disasm = null; },
+            updateSecondScreenOptions: () => { updateSecondScreenOptions(); updateSecondScreenVisibility(); },
+            getSecondScreenMode: () => secondScreenMode,
+            setSecondScreenMode: (mode) => {
+                secondScreenMode = mode;
+                const sel = document.getElementById('secondScreenMode');
+                if (sel) sel.value = mode;
+                storageSet('zxm8_secondScreen', mode);
+                updateSecondScreenOptions();    // falls back to none if unsupported here
+                updateSecondScreenVisibility(); // show/hide container + render
+            }
         });
 
 
@@ -11515,8 +11767,10 @@ start:
             })
         });
 
-        // Apply default full border mode
-        spectrum.ula.setFullBorder(true);
+        // Restore the last-used border size preset (defaults to full border)
+        const savedBorderPreset = storageGet('zxm8_border', 'full');
+        borderSizeSelect.value = savedBorderPreset;
+        spectrum.ula.setBorderPreset(savedBorderPreset);
         spectrum.updateDisplayDimensions();
 
         // Restore saved zoom level (after spectrum is created)
@@ -11622,6 +11876,10 @@ start:
         let debuggerDisplayAPI = null;
         function updateDebugger() {
             if (debuggerDisplayAPI) debuggerDisplayAPI.renderDebugger();
+            // While stepping the emulator isn't running frames, so the onFrame hook
+            // that normally refreshes the shadow screen never fires. Re-render it here
+            // so a byte changed by a single step is reflected immediately.
+            if (secondScreenMode !== 'none') renderSecondScreen();
         }
         
         // Panel navigator (extracted to ui/panel-navigator.js)
@@ -11950,7 +12208,15 @@ start:
             DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader,
             pako: window.pako,
             getPalette: () => spectrum?.ula?.palette || null,
-            getRomLabels: () => labelManager?.romLabels || {}
+            getRomLabels: () => labelManager?.romLabels || {},
+            // 768-byte ROM font (glyphs 0x20-0x7F) from the BASIC ROM bank, for
+            // the SPECSCII banner preview; null before a ROM is loaded
+            getRomCharset: () => {
+                if (!spectrum?.romLoaded || !spectrum.memory?.rom) return null;
+                const base = (spectrum.profile?.basicRomBank || 0) * 0x4000 + 0x3D00;
+                const rom = spectrum.memory.rom;
+                return rom.length >= base + 768 ? rom.subarray(base, base + 768) : null;
+            }
         });
 
 
@@ -12062,6 +12328,15 @@ start:
             getLeftPanelType: () => leftPanelType,
             getRightPanelType: () => rightPanelType,
             switchLeftPanelType
+        });
+
+        // ASM editor snippets (extracted to ui/asm-snippets.js)
+        initAsmSnippets({
+            insertAtCursor: (text) => asmAPI.insertAtCursor(text),
+            getSelectedText: () => asmAPI.getSelectedText(),
+            showMessage,
+            downloadFile,
+            escapeHtml
         });
 
 
@@ -12278,6 +12553,11 @@ start:
             if (!confirm('Reset machine? This will lose current state.')) return;
             stopActiveTools();
             spectrum.reset();
+            // Keep the chosen border size preset across a reset
+            if (spectrum.ula.setBorderPreset(borderSizeSelect.value)) {
+                spectrum.updateDisplayDimensions();
+                updateCanvasSize();
+            }
             // Hide media indicators (tape/disk cleared on reset)
             document.getElementById('diskActivity').style.display = 'none';
             document.getElementById('tapeInfo').style.display = 'none';
@@ -12707,6 +12987,7 @@ start:
         loadSelect.addEventListener('change', (e) => {
             const action = e.target.value;
             e.target.selectedIndex = 0; // Reset dropdown
+            e.target.blur(); // release focus so typing doesn't navigate the dropdown
             if (!action) return;
 
             if (action === 'file') {
@@ -12722,6 +13003,7 @@ start:
         saveSelect.addEventListener('change', (e) => {
             const action = e.target.value;
             e.target.selectedIndex = 0; // Reset dropdown
+            e.target.blur(); // release focus so typing doesn't navigate the dropdown
             if (!action) return;
 
             if (action === 'project') {
@@ -12873,6 +13155,7 @@ start:
             spectrum.setSpeed(speed);
             const label = speed === 0 ? 'Max' : speed + '%';
             showMessage(`Speed: ${label}`);
+            speedSelect.blur(); // release focus so typing goes to the emulator, not the dropdown
         });
         
         // Input & Mouse Settings (extracted to ui/input-settings.js)
@@ -12929,6 +13212,9 @@ start:
 
         // Auto-Loader (extracted to ui/auto-loader.js)
         const autoLoaderAPI = initAutoLoader({ getSpectrum: () => spectrum });
+
+        // Clickable on-screen ZX keyboard (extracted to ui/virtual-keyboard.js)
+        initVirtualKeyboard({ getSpectrum: () => spectrum, appVersion: APP_VERSION });
 
         // Stop all active debug/analysis tools (used on project load, file load, reset, machine change)
         function stopActiveTools() {
@@ -13169,6 +13455,35 @@ start:
                 };
                 reader.readAsArrayBuffer(file);
                 binLoadFile.value = '';
+            });
+
+            // Fill the Start..End range with a single byte (default 00 — clears memory)
+            const binFillByte = document.getElementById('binFillByte');
+            document.getElementById('btnBinFill').addEventListener('click', () => {
+                const start = parseBinHex(binStart);
+                const end = parseBinHex(binEnd);
+                const len = parseBinHex(binLength);
+                if (start < 0 || start > 0xFFFF) {
+                    binStatus.textContent = 'Invalid start address';
+                    return;
+                }
+                if (end < 0 || end > 0xFFFF || end < start) {
+                    binStatus.textContent = 'End address must be >= start address';
+                    return;
+                }
+                if (len <= 0 || start + len > 0x10000) {
+                    binStatus.textContent = 'Invalid length';
+                    return;
+                }
+                const byte = parseInt(binFillByte.value, 16);
+                if (isNaN(byte) || byte < 0 || byte > 0xFF) {
+                    binStatus.textContent = 'Invalid fill byte';
+                    return;
+                }
+                spectrum.memory.setBlock(start, new Uint8Array(len).fill(byte));
+                spectrum.renderToScreen();
+                updateDebugger();
+                binStatus.textContent = 'Filled ' + len + ' bytes at $' + hex16(start) + ' with $' + hex8(byte);
             });
         }
 

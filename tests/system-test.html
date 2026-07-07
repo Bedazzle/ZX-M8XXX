@@ -97,7 +97,7 @@
     <script type="module">
     import { Memory } from '../core/memory.js';
     import { Z80 } from '../core/z80.js';
-    import { ULA } from '../core/ula.js';
+    import { ULA, MODIFIER_KEY_OPTIONS } from '../core/ula.js';
     import { Disassembler } from '../core/disasm.js';
         const TEST_VERSION = '0.6.2';
         
@@ -347,8 +347,88 @@
                 `expected bits 0,1 clear, got ${(val & 0x1F).toString(2).padStart(5, '0')}`);
             ula.keyUp('q');
             ula.keyUp('w');
+
+            // Configurable Caps Shift / Symbol Shift PC keys
+            section('Configurable Modifier Keys');
+
+            const ula2 = new ULA();
+            // Caps Shift = row 0 bit 0 (port 0xFEFE), Symbol Shift = row 7 bit 1 (port 0x7FFE)
+            const capsPressed = () => (ula2.readPort(0xFEFE) & 0x01) === 0;
+            const symPressed = () => (ula2.readPort(0x7FFE) & 0x02) === 0;
+
+            // Defaults: both Shifts = Caps, both Alts = Symbol
+            assert(ula2.capsShiftOption === 'shift-both' && ula2.symbolShiftOption === 'alt-both',
+                'Default modifier options are shift-both / alt-both',
+                `got ${ula2.capsShiftOption} / ${ula2.symbolShiftOption}`);
+            for (const code of ['ShiftLeft', 'ShiftRight']) {
+                ula2.keyDown(code);
+                assert(capsPressed(), `${code} presses Caps Shift by default`);
+                ula2.keyUp(code);
+                assert(!capsPressed(), `${code} releases Caps Shift`);
+            }
+            for (const code of ['AltLeft', 'AltRight']) {
+                ula2.keyDown(code);
+                assert(symPressed(), `${code} presses Symbol Shift by default`);
+                ula2.keyUp(code);
+                assert(!symPressed(), `${code} releases Symbol Shift`);
+            }
+
+            // Canonical tokens work regardless of configuration
+            ula2.keyDown('CAPS');
+            assert(capsPressed(), "'CAPS' token presses Caps Shift");
+            ula2.keyUp('CAPS');
+            ula2.keyDown('SYM');
+            assert(symPressed(), "'SYM' token presses Symbol Shift");
+            ula2.keyUp('SYM');
+
+            // Remap: Ctrls = Caps, Right Shift = Symbol
+            ula2.setModifierKeys('ctrl-both', 'shift-right');
+            ula2.keyDown('ControlLeft');
+            assert(capsPressed(), 'ControlLeft presses Caps Shift after remap');
+            ula2.keyUp('ControlLeft');
+            ula2.keyDown('ControlRight');
+            assert(capsPressed(), 'ControlRight presses Caps Shift after remap');
+            ula2.keyUp('ControlRight');
+            ula2.keyDown('ShiftRight');
+            assert(symPressed(), 'ShiftRight presses Symbol Shift after remap');
+            ula2.keyUp('ShiftRight');
+            // Old codes no longer act as modifiers
+            ula2.keyDown('AltLeft');
+            assert(!symPressed() && !capsPressed(), 'AltLeft unmapped after remap');
+            ula2.keyUp('AltLeft');
+            ula2.keyDown('ShiftLeft');
+            assert(!capsPressed(), 'ShiftLeft no longer Caps Shift after remap');
+            ula2.keyUp('ShiftLeft');
+            // Tokens unaffected by remap
+            ula2.keyDown('CAPS');
+            assert(capsPressed(), "'CAPS' token still works after remap");
+            ula2.keyUp('CAPS');
+
+            // Single-key options: Menu key and Tab
+            ula2.setModifierKeys('menu', 'tab');
+            ula2.keyDown('ContextMenu');
+            assert(capsPressed(), 'ContextMenu presses Caps Shift (menu option)');
+            ula2.keyUp('ContextMenu');
+            ula2.keyDown('Tab');
+            assert(symPressed(), 'Tab presses Symbol Shift (tab option)');
+            ula2.keyUp('Tab');
+            ula2.keyDown('ControlLeft');
+            assert(!capsPressed(), 'ControlLeft unmapped after second remap');
+            ula2.keyUp('ControlLeft');
+
+            // Invalid option ids fall back to defaults
+            ula2.setModifierKeys('bogus', 'nonsense');
+            assert(ula2.capsShiftOption === 'shift-both' && ula2.symbolShiftOption === 'alt-both',
+                'Invalid option ids fall back to defaults');
+            ula2.keyDown('ShiftLeft');
+            assert(capsPressed(), 'ShiftLeft is Caps Shift again after fallback');
+            ula2.keyUp('ShiftLeft');
+
+            // Option table sanity: every option has at least one e.code
+            const allValid = Object.values(MODIFIER_KEY_OPTIONS).every(o => o.codes.length >= 1 && o.label);
+            assert(allValid, 'All MODIFIER_KEY_OPTIONS entries have label and codes');
         }
-        
+
         // ==================== ULA TESTS ====================
         
         async function runULATests() {

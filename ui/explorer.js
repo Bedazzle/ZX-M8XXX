@@ -8,6 +8,8 @@ import {
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, sclChecksum } from '../core/loaders.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
+import { trdBasicAutostartLine, extractTrdFileDescriptor, shapeBasicEntry, addMetaFromDescriptor, isMonoloader, splitMonoloader } from './disk-file-copy.js';
+import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
 function isFlowBreak(mnemonic) {
     const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
     return mn.startsWith('JP') || mn.startsWith('JR') ||
@@ -16,7 +18,7 @@ function isFlowBreak(mnemonic) {
            mn === 'HALT';
 }
 
-export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader, pako, getPalette, getRomLabels }) {
+export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader, pako, getPalette, getRomLabels, getRomCharset }) {
     // ========== Explorer Tab ==========
     const explorerFileInput = document.getElementById('explorerFileInput');
     const btnExplorerLoad = document.getElementById('btnExplorerLoad');
@@ -1083,6 +1085,18 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 case 0x11: // Turbo speed data block
                     {
+                        // A $11 turbo-format block whose pulse widths match the ROM
+                        // loader's timings actually loads at normal speed (common for
+                        // the BASIC loader in modern re-releases). Report it as
+                        // Standard Speed so the name reflects the real load speed.
+                        const pilot = data[offset] | (data[offset + 1] << 8);
+                        const sync1 = data[offset + 2] | (data[offset + 3] << 8);
+                        const sync2 = data[offset + 4] | (data[offset + 5] << 8);
+                        const zero  = data[offset + 6] | (data[offset + 7] << 8);
+                        const one   = data[offset + 8] | (data[offset + 9] << 8);
+                        blockInfo.standardTiming = (pilot === 2168 && sync1 === 667 && sync2 === 735 && zero === 855 && one === 1710);
+                        if (blockInfo.standardTiming) blockInfo.name = 'Standard Speed Data';
+
                         const dataLen = data[offset + 15] | (data[offset + 16] << 8) | (data[offset + 17] << 16);
                         blockLen = 18 + dataLen;
                         blockInfo.dataLength = dataLen;
@@ -3456,15 +3470,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const fileData = file.data
             ? file.data
             : (file.offset != null ? explorerData.slice(file.offset, file.offset + file.sectors * 256) : null);
-        if (!fileData || fileData.length < 4) return -1;
-        // Scan for $80 $AA marker after the BASIC program
-        for (let i = 0; i < fileData.length - 3; i++) {
-            if (fileData[i] === 0x80 && fileData[i + 1] === 0xAA) {
-                const line = fileData[i + 2] | (fileData[i + 3] << 8);
-                return line < 32768 ? line : -1;  // >= 32768 = no autostart
-            }
-        }
-        return -1;
+        return trdBasicAutostartLine(fileData);
     }
 
     function explorerRenderTRDInfo() {
@@ -3498,11 +3504,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
                 len === 11136 || len === 12288 || len === 18432;
             const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
+            const sizeAttr = explorerFileSizeAttr(file);
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
-                <span class="explorer-file-size">${file.length}</span>
+                <span class="explorer-file-size"${sizeAttr}>${file.length}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
                 <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
@@ -3511,6 +3518,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         html += '</div></div>';
         return html;
+    }
+
+    // When a TR-DOS/SCL file occupies more sectors than its declared length needs
+    // (a monoloader: small BASIC length + CODE glued into the extra sectors), the
+    // size column is misleading. Annotate it with the real on-disk allocation.
+    function explorerFileSizeAttr(file) {
+        const needed = Math.ceil((file.length || 0) / 256);
+        if (!file.sectors || file.sectors <= needed) return '';
+        const alloc = file.sectors * 256;
+        return ` title="${alloc} B on disk (${file.sectors} sectors)"`;
     }
 
     function explorerRenderSCLInfo() {
@@ -3549,11 +3566,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 len === 2048 || len === SCREEN_ATTR_SIZE || len === 9216 ||
                 len === 11136 || len === 12288 || len === 18432;
             const previewIcon = !previewable ? '' : len === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
+            const sizeAttr = explorerFileSizeAttr(file);
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
-                <span class="explorer-file-size">${file.length}</span>
+                <span class="explorer-file-size"${sizeAttr}>${file.length}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
                 <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
@@ -5691,7 +5709,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             document.querySelector('.explorer-subtab[data-subtab="hexdump"]').click();
             explorerHexSource.value = idx.toString();
-            explorerHexLen.value = Math.min(file.length, 65536);
+            // TR-DOS/SCL: default to the full sector allocation so monoloaders
+            // (BASIC loader + appended CODE) show their whole payload, not just
+            // the declared BASIC length.
+            const hexFullLen = (explorerParsed.type === 'trd' || explorerParsed.type === 'scl')
+                ? file.sectors * 256 : file.length;
+            explorerHexLen.value = Math.min(hexFullLen, 65536);
             explorerHexAddr.value = '0000';
             explorerRenderHexDump();
         }
@@ -6219,7 +6242,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         const fullSize = file.sectors * 256;
                         data = explorerData.slice(file.offset, file.offset + fullSize);
                     }
-                    baseAddr = 0x5D3B;
+                    // Match the address field set by the source-change handler and the
+                    // option label ("@ 5CCB" = 48K PROG). The previous 0x5D3B disagreed
+                    // with the 0x5CCB in the field, making (addr - baseAddr) negative so
+                    // the disassembly loop emitted nothing.
+                    baseAddr = 0x5CCB;
                 }
             } else {
                 const fileIdx = parseInt(source);
@@ -6245,7 +6272,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 if (file) {
                     const raw = OPDLoader.extractFile(explorerData, file);
                     data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
-                    baseAddr = 0x5D3B;
+                    baseAddr = 0x5CCB;
                 }
             } else {
                 const fileIdx = parseInt(source);
@@ -6263,7 +6290,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (file) {
                 const raw = DidaktikLoader.extractFile(explorerData, file);
                 data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
-                baseAddr = source.startsWith('basic:') ? 0x5D3B : (file.startAddr || 0);
+                baseAddr = source.startsWith('basic:') ? 0x5CCB : (file.startAddr || 0);
                 if (!source.startsWith('basic:')) explorerDisasmAddr.value = hex16(baseAddr);
             }
         } else if (source && explorerParsed.type === 'hobeta') {
@@ -6701,11 +6728,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const fileIdx = parseInt(source);
             const file = explorerParsed.files[fileIdx];
             if (file) {
+                // TR-DOS/SCL: dump the full sector allocation, not just the declared
+                // length. Monoloaders (a small BASIC loader + CODE glued into the
+                // file's extra sectors) declare length = BASIC length only; the real
+                // payload lives in sectors*256.
                 data = explorerParsed.type === 'mgt'
                     ? MGTLoader.extractFile(explorerData, file)
                     : explorerParsed.type === 'mdr'
                     ? MDRLoader.extractFile(explorerData, file)
-                    : explorerData.slice(file.offset, file.offset + file.length);
+                    : explorerData.slice(file.offset, file.offset + file.sectors * 256);
                 if (explorerParsed.type === 'mdr' && data && data.length > 9 && !file.isPrint) data = data.slice(9);
                 baseAddr = 0;
             }
@@ -6822,7 +6853,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     ? MGTLoader.extractFile(explorerData, file)
                     : explorerParsed.type === 'mdr'
                     ? MDRLoader.extractFile(explorerData, file)
-                    : explorerData.slice(file.offset, file.offset + file.length);
+                    : explorerData.slice(file.offset, file.offset + file.sectors * 256);
                 if (explorerParsed.type === 'mdr' && result && result.length > 9 && !file.isPrint) result = result.slice(9);
                 return result;
             }
@@ -7280,7 +7311,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 for (let i = 0; i < explorerParsed.files.length; i++) {
                     const file = explorerParsed.files[i];
                     if (file.ext === 'B') {
-                        const basicBase = 0x5D3B;
+                        const basicBase = 0x5CCB;
                         const fullSize = file.sectors * 256;
                         const endAddr = basicBase + fullSize;
                         if (addr >= basicBase && addr < endAddr) {
@@ -7344,6 +7375,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const btnEditorExtract = document.getElementById('btnEditorExtract');
     const editorExtractDisk = document.getElementById('editorExtractDisk');
     const btnEditorCopy = document.getElementById('btnEditorCopy');
+    const btnEditorToTurbo = document.getElementById('btnEditorToTurbo');
+    const btnEditorSplit = document.getElementById('btnEditorSplit');
+    const btnEditorBanner = document.getElementById('btnEditorBanner');
     const editorKeepSlack = document.getElementById('editorKeepSlack');
     const editorKeepSlackLabel = document.getElementById('editorKeepSlackLabel');
     const editorExtractFullOpt = editorExtractDisk
@@ -7373,6 +7407,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const tapAddFileInfo = document.getElementById('tapAddFileInfo');
     const btnTapAddOk = document.getElementById('btnTapAddOk');
     const btnTapAddCancel = document.getElementById('btnTapAddCancel');
+    const tzxTurboDialog = document.getElementById('tzxTurboDialog');
+    const tzxTurboInfo = document.getElementById('tzxTurboInfo');
+    const btnTzxTurboOk = document.getElementById('btnTzxTurboOk');
+    const btnTzxTurboCancel = document.getElementById('btnTzxTurboCancel');
     const editorPairLock = document.getElementById('editorPairLock');
     // Toggling "Link header" switches tape panels between the combined and raw views — redraw both.
     if (editorPairLock) editorPairLock.addEventListener('change', () => {
@@ -8102,6 +8140,35 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         btnEditorCopy.disabled = !hasSel || !t;
         btnEditorCopy.innerHTML = activePanel === 'left' ? 'Copy &#9654;' : '&#9664; Copy';
 
+        // "Turbo": view / set the pulse timing of the selected block(s) — convert a
+        // standard block to turbo, re-time a turbo block, or just inspect its params.
+        // TZX only (TAP can't carry timing).
+        if (btnEditorToTurbo) {
+            const canTurbo = t === 'tzx' && hasSel && [...panel.selection].some(i => editorBlockTurboable(panel.blocks[i]));
+            btnEditorToTurbo.style.display = t === 'tzx' ? '' : 'none';
+            btnEditorToTurbo.disabled = !canTurbo;
+        }
+
+        // "Split": isolate a monoloader's appended CODE as its own entry for RE.
+        // TR-DOS/SCL only (where the editor model carries full sectors + declared
+        // length); enabled when exactly one selected file is a monoloader.
+        if (btnEditorSplit) {
+            const isTrdScl = t === 'trd' || t === 'scl';
+            const sel = [...panel.selection];
+            const canSplit = isTrdScl && sel.length === 1 &&
+                panel.diskFiles[sel[0]] && isMonoloader(panel.diskFiles[sel[0]].length, panel.diskFiles[sel[0]].sectors);
+            btnEditorSplit.style.display = isTrdScl ? '' : 'none';
+            btnEditorSplit.disabled = !canSplit;
+        }
+
+        // "Banner": SPECSCII catalogue banner viewer/injector — TR-DOS/SCL only.
+        // A tick marks a disk that already carries one.
+        if (btnEditorBanner) {
+            const isTrdScl = t === 'trd' || t === 'scl';
+            btnEditorBanner.style.display = isTrdScl ? '' : 'none';
+            btnEditorBanner.textContent = diskEditorBannerCount(panel) ? 'Banner ✓' : 'Banner';
+        }
+
         // "Keep slack" / "full sectors" only apply where the model holds full sectors,
         // so show them only then (never as silent no-ops). Extract reads the source, so
         // it needs only the source to qualify; Copy fills the destination too, so it
@@ -8306,10 +8373,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // Summary row mirrors the disk panel's info row (keeps the two panels row-synced).
         // Total size counts file data only — headers don't count toward size on disk.
+        const isRawTurboBlock = (b) => b.blockType === 'nonstandard' && (b.tzxId === 0x11 || b.tzxId === 0x14) && !!b.rawBytes;
+        const rawTurboDataLen = (b) => Math.max(0, b.rawBytes.length - (b.tzxId === 0x11 ? 18 : 10));
         let tapeFiles = 0, tapeBytes = 0, tapeDeleted = 0;
         for (const b of panel.blocks) {
-            if (b.deleted) { if (b.blockType === 'data') tapeDeleted++; continue; }
+            if (b.deleted) { if (b.blockType === 'data' || isRawTurboBlock(b)) tapeDeleted++; continue; }
             if (b.blockType === 'data' && b.data) { tapeFiles++; tapeBytes += Math.max(0, b.data.length - 2); }
+            else if (isRawTurboBlock(b)) { tapeFiles++; tapeBytes += rawTurboDataLen(b); }
         }
         editorRenderLabelBar(panel);
         let html = editorColHeaderHtml();
@@ -8320,11 +8390,27 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             // TZX metadata/control blocks (Archive Info, Text Description, Pause/Stop, …) aren't
             // files — hidden in edit mode, but kept in panel.blocks so they survive on save.
-            if (block.blockType === 'nonstandard') continue;
+            // Raw turbo ($11) / pure-data ($14) blocks ARE shown — they carry copyable data.
+            const isRawTurbo = isRawTurboBlock(block);
+            if (block.blockType === 'nonstandard' && !isRawTurbo) continue;
 
             const isHeader = block.blockType === 'header';
             const isSel = panel.selection.has(i);
             const isExpanded = panel.expandedBlock === i;
+
+            // Raw turbo / pure-data block: a selectable, copyable row (no header → no
+            // name/address; the load address lives in the game's own loader).
+            if (isRawTurbo) {
+                const hdr = block.tzxId === 0x11 ? 18 : 10;
+                const tflag = block.rawBytes.length > hdr ? `$${hex8(block.rawBytes[hdr])}` : '';
+                const kind = block.tzxId === 0x11 ? 'Turbo' : 'Pure data';
+                let rc = 'editor-block-row data-row';
+                if (block.deleted) rc += ' disk-deleted';
+                if (isSel) rc += ' selected';
+                html += `<div class="${rc}" data-block-idx="${i}">`;
+                html += `<span class="editor-block-info"><span class="dim">${++rowNum}:</span><span class="file-name"></span><span class="file-flag">${tflag}</span><span class="file-ext">${kind}</span><span class="file-addr"></span><span class="file-size">${rawTurboDataLen(block)}</span></span></div>`;
+                continue;
+            }
 
             // Combined view (Link header on): fold a matched header+data pair into one
             // disk-shaped row (same file-ext/file-name/file-addr/file-size classes as disk
@@ -8336,7 +8422,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 else if (block.headerType === 0 && block.autostart !== null) addrText = `LINE ${block.autostart}`;
                 const pairDeleted = block.deleted || (panel.blocks[i + 1] && panel.blocks[i + 1].deleted);
                 html += `<div class="editor-block-row disk-row${pairDeleted ? ' disk-deleted' : ''}${isPairSel ? ' selected' : ''}" data-block-idx="${i}">`;
-                html += `<span class="editor-block-info"><span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(panel.blocks[i + 1])}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}</span><span class="file-addr">${addrText}</span><span class="file-size">${block.dataLength}</span></span></div>`;
+                const pairTurbo = (editorBlockIsTurbo(block) || editorBlockIsTurbo(panel.blocks[i + 1])) ? ' <span class="dim" title="Turbo timing ($11)">⚡</span>' : '';
+                html += `<span class="editor-block-info"><span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(panel.blocks[i + 1])}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}${pairTurbo}</span><span class="file-addr">${addrText}</span><span class="file-size">${block.dataLength}</span></span></div>`;
                 if (isExpanded) html += editorTapeHeaderEditHtml(panel, block, i);
                 i++;   // consumed the matching data block
                 continue;
@@ -8354,10 +8441,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 let hAddr = '';
                 if (block.headerType === 3) hAddr = `${block.startAddress} ($${hex16(block.startAddress)})`;
                 else if (block.headerType === 0 && block.autostart !== null) hAddr = `LINE ${block.autostart}`;
-                html += `<span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}</span><span class="file-addr">${hAddr}</span><span class="file-size">${block.data ? block.data.length - 2 : 17}</span>`;
+                const hTurbo = editorBlockIsTurbo(block) ? ' <span class="dim" title="Turbo timing ($11)">\u26a1</span>' : '';
+                html += `<span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}${hTurbo}</span><span class="file-addr">${hAddr}</span><span class="file-size">${block.data ? block.data.length - 2 : 17}</span>`;
             } else {
                 // Headerless / leftover data \u2014 empty type/name/addr cells keep the size column aligned
-                html += `<span class="dim">${++rowNum}:</span><span class="file-name"></span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">Data</span><span class="file-addr"></span><span class="file-size">${block.data.length - 2}</span>`;
+                const dTurbo = editorBlockIsTurbo(block) ? ' <span class="dim" title="Turbo timing ($11)">\u26a1</span>' : '';
+                html += `<span class="dim">${++rowNum}:</span><span class="file-name"></span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">Data${dTurbo}</span><span class="file-addr"></span><span class="file-size">${block.data.length - 2}</span>`;
             }
             html += '</span></div>';
 
@@ -8564,6 +8653,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function editorExtractRaw(panel, block, idx) {
         const num = String(idx + 1).padStart(3, '0');
+        if (block.blockType === 'nonstandard' && (block.tzxId === 0x11 || block.tzxId === 0x14) && block.rawBytes) {
+            // Raw turbo / pure-data block: dump the encoded byte stream verbatim.
+            const hdr = block.tzxId === 0x11 ? 18 : 10;
+            return { name: `${num}_turbo.bin`, data: block.rawBytes.slice(hdr) };
+        }
         if (block.blockType === 'header') {
             const safe = editorSanitizeFilename(block.name);
             return { name: `${num}_${safe}_header.bin`, data: block.data };
@@ -8585,6 +8679,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function editorExtractHobeta(panel, block, idx) {
         // Only data blocks can be exported as Hobeta
         if (block.blockType === 'header') return null;
+        if (block.blockType === 'nonstandard' && (block.tzxId === 0x11 || block.tzxId === 0x14) && block.rawBytes) {
+            // Raw turbo / pure-data block → Hobeta as Code at address 0 (raw stream).
+            const hdr = block.tzxId === 0x11 ? 18 : 10;
+            const raw = block.rawBytes.slice(hdr);
+            const hob = buildHobetaGeneric('turbo', 3, 0, raw);
+            return { name: 'turbo.' + trdExtToHobetaExt(headerTypeToTrdExt(3)), data: hob };
+        }
         const rawData = block.data.slice(1, block.data.length - 1); // strip flag + checksum
         const prev = idx > 0 ? panel.blocks[idx - 1] : null;
         let fileName = 'data';
@@ -8902,13 +9003,64 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
                 blockInfo._tzxOriginalIndex = blockIndex;
                 panel.blocks.push(blockInfo);
+            } else if (id === 0x11) {
+                // Turbo speed data block. If its pulse timings are standard ROM speed
+                // AND the payload is a ROM-format header/data block, treat it as a
+                // first-class standard block (selectable, editable, and copyable to
+                // other media) while remembering tzxId + timing params so it is
+                // re-saved losslessly as $11. Genuine turbo blocks (custom timing) or
+                // non-ROM payloads stay opaque/non-standard.
+                if (offset + 0x12 > tzxData.length) { offset = tzxData.length; blockIndex++; continue; }
+                const blockStart = offset - 1; // includes ID byte
+                const params = new Uint8Array(tzxData.slice(offset, offset + 18));
+                const dataLen = params[15] | (params[16] << 8) | (params[17] << 16);
+                const blockEnd = Math.min(offset + 18 + dataLen, tzxData.length);
+                const innerData = new Uint8Array(tzxData.slice(offset + 18, blockEnd));
+                offset = blockEnd;
+                const pilot = params[0] | (params[1] << 8), sync1 = params[2] | (params[3] << 8),
+                      sync2 = params[4] | (params[5] << 8), zero = params[6] | (params[7] << 8),
+                      one = params[8] | (params[9] << 8);
+                const standardTiming = (pilot === 2168 && sync1 === 667 && sync2 === 735 && zero === 855 && one === 1710);
+                const flag = innerData[0];
+                const romFormat = (flag === 0x00 && dataLen === 19) || flag === 0xFF;
+                if (standardTiming && romFormat) {
+                    const pause = params[13] | (params[14] << 8);
+                    let blockInfo = { offset: -1, length: dataLen, flag: flag, data: innerData, tzxPause: pause, tzxId: 0x11, tzxTurboParams: params };
+                    if (flag === 0 && dataLen === 19) {
+                        const type = innerData[1];
+                        const name = String.fromCharCode(...innerData.slice(2, 12)).trim();
+                        const dLen = innerData[12] | (innerData[13] << 8);
+                        const p1 = innerData[14] | (innerData[15] << 8);
+                        const p2 = innerData[16] | (innerData[17] << 8);
+                        blockInfo.blockType = 'header';
+                        blockInfo.headerType = type;
+                        blockInfo.typeName = typeNames[type] || 'Unknown';
+                        blockInfo.name = name;
+                        blockInfo.dataLength = dLen;
+                        blockInfo.param1 = p1;
+                        blockInfo.param2 = p2;
+                        if (type === 0) { blockInfo.autostart = p1 < 32768 ? p1 : null; blockInfo.varsOffset = p2; }
+                        else if (type === 3) { blockInfo.startAddress = p1; }
+                    } else {
+                        blockInfo.blockType = 'data';
+                    }
+                    blockInfo._tzxOriginalIndex = blockIndex;
+                    panel.blocks.push(blockInfo);
+                } else {
+                    const rawBytes = new Uint8Array(tzxData.slice(blockStart + 1, blockEnd));
+                    panel.blocks.push({
+                        blockType: 'nonstandard', tzxId: 0x11,
+                        typeName: TZX_BLOCK_NAMES[0x11] || 'Turbo Speed Data',
+                        rawBytes: rawBytes, dataLength: rawBytes.length, _tzxOriginalIndex: blockIndex
+                    });
+                }
             } else {
                 // Non-standard block — read its full extent, store opaquely
                 const blockStart = offset - 1; // includes ID byte
                 let blockEnd = offset;
 
                 switch (id) {
-                    case 0x11: // Turbo speed data
+                    case 0x11: // Turbo speed data (handled above; kept for safety)
                         if (offset + 0x12 > tzxData.length) { offset = tzxData.length; break; }
                         blockEnd = offset + 0x12 + (tzxData[offset + 0x0F] | (tzxData[offset + 0x10] << 8) | (tzxData[offset + 0x11] << 16));
                         break;
@@ -9032,6 +9184,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (block.deleted) continue; // flush soft-deleted blocks on save
             if (block.blockType === 'nonstandard') {
                 totalSize += 1 + block.rawBytes.length; // ID byte + raw data
+            } else if (block.tzxId === 0x11) {
+                // Standard-timed $11 kept as $11: ID + 18 param bytes + data
+                totalSize += 1 + 18 + block.data.length;
             } else {
                 // ID 0x10: 1 (ID) + 2 (pause) + 2 (len) + data.length
                 totalSize += 1 + 2 + 2 + block.data.length;
@@ -9050,6 +9205,21 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 offset++;
                 tzx.set(block.rawBytes, offset);
                 offset += block.rawBytes.length;
+            } else if (block.tzxId === 0x11 && block.tzxTurboParams) {
+                // Standard-timed $11 kept as $11: re-emit timing params (first 15 bytes:
+                // pilot/sync/zero/one/pilotCount/usedBits/pause), then the 3-byte data
+                // length (updated to the current data), then the data.
+                tzx[offset] = 0x11;
+                offset++;
+                tzx.set(block.tzxTurboParams.slice(0, 15), offset);
+                offset += 15;
+                const len = block.data.length;
+                tzx[offset] = len & 0xFF;
+                tzx[offset + 1] = (len >> 8) & 0xFF;
+                tzx[offset + 2] = (len >> 16) & 0xFF;
+                offset += 3;
+                tzx.set(block.data, offset);
+                offset += block.data.length;
             } else {
                 // Standard speed data block (ID 0x10)
                 tzx[offset] = 0x10;
@@ -9084,6 +9254,69 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         downloadFile(baseName + '.tzx', tzx);
     }
 
+    // Build an 18-byte $11 turbo parameter header from pulse settings + data length.
+    function editorBuildTurboParams(p, dataLen) {
+        const a = new Uint8Array(18);
+        const w = (off, v) => { a[off] = v & 0xFF; a[off + 1] = (v >> 8) & 0xFF; };
+        w(0, p.pilot); w(2, p.sync1); w(4, p.sync2); w(6, p.zero); w(8, p.one);
+        w(10, p.pilotLen); a[12] = p.usedBits & 0xFF; w(13, p.pause);
+        a[15] = dataLen & 0xFF; a[16] = (dataLen >> 8) & 0xFF; a[17] = (dataLen >> 16) & 0xFF;
+        return a;
+    }
+
+    // Read the current turbo pulse parameters from a block's $11 timing header,
+    // wherever it lives: tzxTurboParams (header/data blocks) or the first 18 bytes of
+    // rawBytes (raw non-standard $11). Returns null for blocks with no $11 timing.
+    function editorReadTurboParams(b) {
+        let p = null;
+        if (b && b.tzxTurboParams && b.tzxTurboParams.length >= 15) p = b.tzxTurboParams;
+        else if (b && b.blockType === 'nonstandard' && b.tzxId === 0x11 && b.rawBytes && b.rawBytes.length >= 18) p = b.rawBytes;
+        if (!p) return null;
+        const rd = (o) => p[o] | (p[o + 1] << 8);
+        return { pilot: rd(0), sync1: rd(2), sync2: rd(4), zero: rd(6), one: rd(8), pilotLen: rd(10), usedBits: p[12], pause: rd(13) };
+    }
+
+    // True if a block can be (re)timed via the Turbo dialog: a standard/turbo
+    // header/data block, or a raw non-standard $11 block.
+    function editorBlockTurboable(b) {
+        if (!b) return false;
+        if ((b.blockType === 'header' || b.blockType === 'data') && b.data) return true;
+        return b.blockType === 'nonstandard' && b.tzxId === 0x11 && !!b.rawBytes && b.rawBytes.length >= 18;
+    }
+
+    // Is this editor block a Turbo ($11) block with non-standard (faster) timing?
+    function editorBlockIsTurbo(b) {
+        if (!b || b.tzxId !== 0x11 || !b.tzxTurboParams) return false;
+        const t = b.tzxTurboParams;
+        const std = (t[0] | (t[1] << 8)) === 2168 && (t[2] | (t[3] << 8)) === 667 &&
+                    (t[4] | (t[5] << 8)) === 735 && (t[6] | (t[7] << 8)) === 855 &&
+                    (t[8] | (t[9] << 8)) === 1710;
+        return !std;
+    }
+
+    // Convert selected standard (header/data) blocks to Turbo ($11) with the given
+    // pulse params. The blocks keep their header/data structure (still editable and
+    // copyable); only the on-tape encoding changes. editorBuildTzx emits them as $11.
+    function editorConvertSelectionToTurbo(panel, p) {
+        let count = 0;
+        for (const idx of editorSelectedSorted(panel)) {
+            const b = panel.blocks[idx];
+            if (!editorBlockTurboable(b)) continue;
+            if ((b.blockType === 'header' || b.blockType === 'data') && b.data) {
+                // Standard or $11 header/data block → (re)set its turbo timing.
+                b.tzxId = 0x11;
+                b.tzxTurboParams = editorBuildTurboParams(p, b.data.length);
+                b.tzxPause = p.pause;
+            } else {
+                // Raw non-standard $11 block → re-time in place: rewrite the 15-byte
+                // timing header (pilot…pause), keep the data-length field + data.
+                b.rawBytes.set(editorBuildTurboParams(p, 0).slice(0, 15), 0);
+            }
+            count++;
+        }
+        return count;
+    }
+
     // ========== Disk Editor Functions (parameterized) ==========
 
     function diskEditorExtractFiles(panel) {
@@ -9098,13 +9331,20 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         if (!panel.parsedFile || (panel.parsedFile.type !== 'trd' && panel.parsedFile.type !== 'scl')) return;
         if (!panel.rawData || panel.rawData.length === 0) return;
+        panel.bannerEntries = [];
 
         if (panel.parsedFile.type === 'trd') {
             for (let i = 0; i < 128; i++) {
                 const entryOffset = i * 16;
                 if (panel.rawData[entryOffset] === 0) break;
                 const deleted = panel.rawData[entryOffset] === 1;
-                const name = String.fromCharCode(...panel.rawData.slice(entryOffset, entryOffset + 8));
+                const nameBytes = panel.rawData.slice(entryOffset, entryOffset + 8);
+                if (!deleted && isBannerName(nameBytes)) {
+                    // SPECSCII banner slice, not a real file (see core/specscii.js)
+                    panel.bannerEntries.push(Uint8Array.from(nameBytes));
+                    continue;
+                }
+                const name = String.fromCharCode(...nameBytes);
                 const ext = String.fromCharCode(panel.rawData[entryOffset + 8]);
                 const w9 = panel.rawData[entryOffset + 9] | (panel.rawData[entryOffset + 10] << 8);
                 const w11 = panel.rawData[entryOffset + 11] | (panel.rawData[entryOffset + 12] << 8);
@@ -9131,6 +9371,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const files = panel.parsedFile.files;
             for (let i = 0; i < files.length; i++) {
                 const f = files[i];
+                const nameBytes = Uint8Array.from((f.name + '        ').substring(0, 8), ch => ch.charCodeAt(0) & 0xFF);
+                if (isBannerName(nameBytes)) {
+                    panel.bannerEntries.push(nameBytes);
+                    continue;
+                }
                 const sectors = f.sectors;
                 const dataSize = sectors * 256;
                 const data = new Uint8Array(dataSize);
@@ -9283,6 +9528,155 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         else diskEditorRefreshExplorer(panel);
     }
 
+    // Split a monoloader (the single selected TR-DOS/SCL file) in place: replace
+    // it with the loader (trimmed to its declared length) + the appended CODE as a
+    // new 'C' entry, then select the CODE for immediate RE. Opt-in, non-lossy.
+    function editorSplitMonoloader(panel) {
+        if (panel.fileType !== 'trd' && panel.fileType !== 'scl') return;
+        const sel = [...panel.selection];
+        if (sel.length !== 1) return;
+        const idx = sel[0];
+        const f = panel.diskFiles[idx];
+        if (!f || !isMonoloader(f.length, f.sectors)) return;
+
+        const { loader, payload } = splitMonoloader(f);
+        const newTotal = diskEditorTotalSectors(panel) - f.sectors + loader.sectors + payload.sectors;
+        if (newTotal > TRD_TOTAL_SECTORS) { panel.dom.statusSpan.textContent = 'Split: not enough free sectors'; return; }
+        if (diskEditorBannerCount(panel) + panel.diskFiles.length + 1 > 128) { panel.dom.statusSpan.textContent = 'Split: directory full (max 128)'; return; }
+
+        panel.diskFiles.splice(idx, 1, loader, payload);
+        panel.selection.clear();
+        panel.selection.add(idx + 1);   // the new CODE payload — ready to disasm
+        panel.expandedBlock = -1;
+        editorRenderBlockList(panel);
+        diskEditorRefreshExplorer(panel);
+        panel.dom.statusSpan.textContent = `Split: loader ${loader.length} B + CODE ${payload.length} B (start addr unknown)`;
+    }
+
+    // ========== SPECSCII Catalogue Banner Dialog ==========
+    // View a disk's existing banner or attach a new one from a .specscii file
+    // (SpectraLab / zxart.ee). See core/specscii.js for the encoding model.
+
+    const bannerDialog = document.getElementById('bannerDialog');
+    const bannerCanvas = document.getElementById('bannerCanvas');
+    const bannerRowsInput = document.getElementById('bannerRows');
+    const bannerInfo = document.getElementById('bannerInfo');
+    const btnBannerLoad = document.getElementById('btnBannerLoad');
+    const btnBannerApply = document.getElementById('btnBannerApply');
+    const btnBannerRemove = document.getElementById('btnBannerRemove');
+    const btnBannerClose = document.getElementById('btnBannerClose');
+    const bannerFileInput = document.getElementById('bannerFileInput');
+
+    // Dialog state: the panel it operates on, the loaded picture and the
+    // entries computed for the current row selection.
+    const bannerDlg = { panel: null, grid: null, names: null };
+
+    function bannerRenderPreview(grid, shadeFromRow) {
+        const ctx = bannerCanvas.getContext('2d');
+        renderGrid(grid, ctx, getRomCharset ? getRomCharset() : null,
+            getPalette ? (getPalette() || undefined) : undefined);
+        if (shadeFromRow != null && shadeFromRow < 24) {
+            ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            ctx.fillRect(0, shadeFromRow * 8, 256, 192 - shadeFromRow * 8);
+        }
+    }
+
+    // Recompute entries + capacity for the loaded picture and rows choice
+    function bannerUpdateFromGrid() {
+        const panel = bannerDlg.panel;
+        const rows = Math.max(1, Math.min(BANNER_MAX_ROWS, parseInt(bannerRowsInput.value, 10) || 1));
+        bannerRowsInput.value = rows;
+        bannerRenderPreview(bannerDlg.grid, rows);
+        let names = null, err = null;
+        try {
+            names = encodeBannerEntries(bannerDlg.grid, rows).names;
+        } catch (e) { err = e.message; }
+        bannerDlg.names = names;
+        const freeEntries = 128 - panel.diskFiles.length;
+        if (err) {
+            bannerInfo.textContent = err;
+            btnBannerApply.disabled = true;
+        } else {
+            const fits = names.length <= freeEntries;
+            bannerInfo.textContent = `${names.length} catalogue entries (${freeEntries} free)` + (fits ? '' : ' — does not fit');
+            btnBannerApply.disabled = !fits;
+        }
+    }
+
+    function editorOpenBannerDialog(panel) {
+        if (panel.fileType !== 'trd' && panel.fileType !== 'scl') return;
+        diskEditorExtractFiles(panel);
+        bannerDlg.panel = panel;
+        bannerDlg.grid = null;
+        bannerDlg.names = null;
+        btnBannerApply.disabled = true;
+        const existing = diskEditorBannerCount(panel);
+        btnBannerRemove.style.display = existing ? '' : 'none';
+        if (existing) {
+            const { grid } = decodeBannerNames(panel.bannerEntries);
+            bannerRenderPreview(grid, null);
+            bannerInfo.textContent = `Current banner: ${existing} entries — load a .specscii to replace it`;
+        } else {
+            const ctx = bannerCanvas.getContext('2d');
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, 256, 192);
+            bannerInfo.textContent = 'No banner on this disk — load a .specscii file';
+        }
+        bannerDialog.classList.remove('hidden');
+    }
+
+    function bannerCloseDialog() {
+        bannerDialog.classList.add('hidden');
+        bannerDlg.panel = null;
+        bannerDlg.grid = null;
+        bannerDlg.names = null;
+    }
+
+    if (btnBannerLoad) {
+        btnBannerLoad.addEventListener('click', () => bannerFileInput.click());
+        bannerFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            e.target.value = '';
+            if (!file || !bannerDlg.panel) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const bytes = new Uint8Array(ev.target.result);
+                const { grid, cellCount, warnings } = parseSpecscii(bytes);
+                if (!cellCount) { bannerInfo.textContent = 'Not a SPECSCII stream (no printable cells)'; return; }
+                bannerDlg.grid = grid;
+                const auto = Math.max(1, Math.min(BANNER_MAX_ROWS, lastContentRow(grid) + 1));
+                bannerRowsInput.value = auto;
+                bannerUpdateFromGrid();
+                if (warnings.length) bannerInfo.textContent += ` — ${warnings.length} warning(s), see console`;
+                if (warnings.length) console.warn('[specscii]', warnings);
+            };
+            reader.readAsArrayBuffer(file);
+        });
+        bannerRowsInput.addEventListener('change', () => { if (bannerDlg.grid) bannerUpdateFromGrid(); });
+        btnBannerApply.addEventListener('click', () => {
+            const panel = bannerDlg.panel;
+            if (!panel || !bannerDlg.names) return;
+            panel.bannerEntries = bannerDlg.names;
+            editorRenderBlockList(panel);
+            diskEditorRefreshExplorer(panel);
+            editorUpdateToolbar();
+            panel.dom.statusSpan.textContent = `Banner attached: ${bannerDlg.names.length} catalogue entries — save the disk to keep it`;
+            bannerCloseDialog();
+        });
+        btnBannerRemove.addEventListener('click', () => {
+            const panel = bannerDlg.panel;
+            if (!panel) return;
+            panel.bannerEntries = [];
+            editorRenderBlockList(panel);
+            diskEditorRefreshExplorer(panel);
+            editorUpdateToolbar();
+            panel.dom.statusSpan.textContent = 'Banner removed';
+            bannerCloseDialog();
+        });
+        btnBannerClose.addEventListener('click', bannerCloseDialog);
+        bannerDialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') bannerCloseDialog(); });
+    }
+
     function diskEditorMarkDeletedSelection(panel) {
         if (panel.selection.size === 0) return;
         const sorted = editorSelectedSorted(panel);
@@ -9378,6 +9772,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function diskEditorNewTrd(panel) {
         panel.diskFiles = [];
+        panel.bannerEntries = [];
         panel.diskLabel = '        ';
         panel.blocks = [];
         panel.parsedFile = { type: 'trd', files: [], diskTitle: '', freeSectors: TRD_TOTAL_SECTORS, size: 0 };
@@ -9402,33 +9797,24 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         let progLenField = null;
 
         if (ext === 'B') {
-            // TR-DOS BASIC layout (per TR-DOS SAVE): file data = program+variables,
-            // then 0x80 end marker, 0xAA, and the autostart line as LE16 (0x8000 = none).
-            // length = program+variables (excluding that trailer); programLength =
-            // variables offset (program length without variables).
-            let progVars = data;
-            if (progVars.length > 0 && progVars[progVars.length - 1] === 0x80) {
-                progVars = progVars.slice(0, progVars.length - 1); // 0x80 re-added below
-            }
-            const line = (basicInfo && basicInfo.autostart != null &&
-                          basicInfo.autostart >= 0 && basicInfo.autostart < 32768)
-                ? basicInfo.autostart : 0x8000;
-            fileData = new Uint8Array(progVars.length + 4);
-            fileData.set(progVars, 0);
-            fileData[progVars.length] = 0x80;
-            fileData[progVars.length + 1] = 0xAA;
-            fileData[progVars.length + 2] = line & 0xFF;
-            fileData[progVars.length + 3] = (line >> 8) & 0xFF;
+            // Monoloader-aware shaping (see ui/disk-file-copy.js): verbatim copy
+            // for monoloaders, else build the program+vars + autostart trailer.
+            const shaped = shapeBasicEntry(data, basicInfo);
+            fileData = shaped.data;
             startField = 0;
-            lengthField = progVars.length;
-            progLenField = (basicInfo && basicInfo.varsOffset != null)
-                ? Math.min(basicInfo.varsOffset, progVars.length)
-                : progVars.length;
+            lengthField = shaped.length;
+            progLenField = shaped.programLength;
+        } else if (basicInfo && basicInfo.verbatim) {
+            // Monoloader of a non-BASIC type: store the data exactly and keep the
+            // source catalogue length/start — the appended payload lives past the
+            // declared length, so re-measuring to the full allocation would lie.
+            startField = (basicInfo.startAddress != null) ? basicInfo.startAddress : addr;
+            lengthField = (basicInfo.length != null) ? basicInfo.length : data.length;
         }
 
         const sectors = Math.ceil(fileData.length / 256);
         if (sectors > 255) return 'File too large (max 255 sectors / 65,280 bytes)';
-        if (panel.diskFiles.length >= 128) return 'Directory full (max 128 files)';
+        if (diskEditorBannerCount(panel) + panel.diskFiles.length >= 128) return 'Directory full (max 128 entries)';
         if (diskEditorTotalSectors(panel) + sectors > TRD_TOTAL_SECTORS) return 'Disk full (not enough free sectors)';
 
         const paddedData = new Uint8Array(sectors * 256);
@@ -9500,7 +9886,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         let skipped = 0;
         for (const f of files) {
-            if (panel.diskFiles.length >= 128) { skipped++; continue; }
+            if (diskEditorBannerCount(panel) + panel.diskFiles.length >= 128) { skipped++; continue; }
             if (diskEditorTotalSectors(panel) + f.sectors > TRD_TOTAL_SECTORS) { skipped++; continue; }
             panel.diskFiles.push({
                 name: (f.name + '        ').substring(0, 8),
@@ -9518,16 +9904,23 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     // Build TRD/SCL via the core loaders (so create/add/delete/compaction is shared
     // with the test suite). Rebuilding from the surviving files compacts the disk.
+    // A SPECSCII banner (panel.bannerEntries) goes in front of the real files.
+    function diskEditorBannerCount(panel) {
+        return panel.bannerEntries ? panel.bannerEntries.length : 0;
+    }
+
     function diskEditorBuildTrd(panel) {
-        return TRDLoader.buildTRD(panel.diskFiles, panel.diskLabel);
+        return TRDLoader.buildTRD(panel.diskFiles, panel.diskLabel,
+            diskEditorBannerCount(panel) ? panel.bannerEntries : null);
     }
 
     function diskEditorBuildScl(panel) {
-        return SCLLoader.buildSCL(panel.diskFiles);
+        return SCLLoader.buildSCL(panel.diskFiles,
+            diskEditorBannerCount(panel) ? panel.bannerEntries : null);
     }
 
     function diskEditorSaveDisk(panel) {
-        if (panel.diskFiles.length === 0) return;
+        if (panel.diskFiles.length === 0 && diskEditorBannerCount(panel) === 0) return;
         const isSCL = panel.fileType === 'scl';
         const data = isSCL ? diskEditorBuildScl(panel) : diskEditorBuildTrd(panel);
         const ext = isSCL ? '.scl' : '.trd';
@@ -10978,9 +11371,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function zipParseInnerFile(innerData, innerExt) {
         let parsed = null;
         if (innerExt === 'tap') {
-            parsed = { type: 'tap', blocks: [], size: innerData.length };
+            // Parse fully so File Info (which uses parsed.blocks) shows the block list,
+            // not just the Edit tab (which re-parses the raw data itself).
+            parsed = explorerParseTAP(innerData);
         } else if (innerExt === 'tzx') {
-            parsed = { type: 'tzx', blocks: [], nonStandardBlocks: [], size: innerData.length };
+            parsed = explorerParseTZX(innerData);
         } else if (innerExt === 'trd') {
             parsed = explorerParseTRD(innerData);
         } else if (innerExt === 'scl') {
@@ -11420,44 +11815,32 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         rawData: block.data.slice(1, block.data.length - 1)
                     });
                     processed.add(idx);
+                } else if (block.blockType === 'nonstandard' && (block.tzxId === 0x11 || block.tzxId === 0x14) && block.rawBytes) {
+                    // Raw turbo ($11) / pure-data ($14) block: copy the encoded byte
+                    // stream verbatim (after the timing-parameter header) as a CODE
+                    // file with start address 0. The load address / framing is known
+                    // only to the game's own loader, so we don't guess — the user
+                    // takes responsibility for what the raw turbo data means.
+                    const hdr = block.tzxId === 0x11 ? 18 : 10; // $11: 18-byte params, $14: 10-byte params
+                    result.push({
+                        name: `turbo${idx + 1}`,
+                        ext: '',
+                        type: 3,        // Code
+                        addr: 0,        // raw stream — true address lives in the loader
+                        autostart: null,
+                        rawData: block.rawBytes.slice(hdr)
+                    });
+                    processed.add(idx);
                 }
             }
         } else if (panel.fileType === 'trd' || panel.fileType === 'scl') {
             for (const idx of sorted) {
                 if (idx < 0 || idx >= panel.diskFiles.length) continue;
                 const f = panel.diskFiles[idx];
-                const isBASIC = f.ext === 'B';
-                if (isBASIC) {
-                    // TR-DOS BASIC: dir bytes 9-10 (startAddress field) = program+vars
-                    // total, bytes 11-12 (length field) = vars offset. Autostart is
-                    // embedded after the 0x80 marker. Extract the full program+vars
-                    // (previously only the program-only part was copied, losing vars).
-                    const total = (f.startAddress >= f.length && f.startAddress <= f.sectors * 256)
-                        ? f.startAddress : f.length;
-                    const line = trdGetBasicAutostart(f);
-                    result.push({
-                        name: f.name.replace(/\s+$/, ''),
-                        ext: f.ext,
-                        type: 0,
-                        addr: 0,
-                        autostart: (line >= 0 && line < 32768) ? line : null,
-                        varsOffset: Math.min(f.length, total),
-                        rawData: f.data.slice(0, total)
-                    });
-                } else {
-                    const desc = {
-                        name: f.name.replace(/\s+$/, ''),
-                        ext: f.ext,
-                        type: 3,
-                        addr: f.startAddress || 0,
-                        autostart: null,
-                        rawData: f.data.slice(0, f.length)
-                    };
-                    if (keepSlack && f.data && f.data.length > f.length) {
-                        desc.slack = f.data.slice(f.length, f.sectors * 256);
-                    }
-                    result.push(desc);
-                }
+                // Monoloader-aware extract for any type (see ui/disk-file-copy.js):
+                // carries the full sector allocation + verbatim metadata when the
+                // file's declared length is smaller than its allocation.
+                result.push(extractTrdFileDescriptor(f, { keepSlack }));
             }
         } else if (panel.fileType === 'mgt') {
             for (const idx of sorted) {
@@ -11813,8 +12196,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             editorAddFileBlocks(panel, file.rawData, file.name, file.type, file.addr, file.autostart, null, undefined, file.varsOffset);
             return null;
         } else if (panel.fileType === 'trd' || panel.fileType === 'scl') {
-            const err = diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr,
-                { autostart: file.autostart, varsOffset: file.varsOffset });
+            const err = diskEditorAddFile(panel, file.rawData, file.name, file.ext || 'C', file.addr, addMetaFromDescriptor(file));
             if (!err) applyKeptSlack(panel.diskFiles[panel.diskFiles.length - 1], file);
             return err;
         } else if (panel.fileType === 'mgt') {
@@ -12189,9 +12571,121 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         editorPanelFileInput.click();
     });
 
+    // Add one file to the active container with metadata auto-derived from its
+    // filename / Hobeta header — the dialog-free path used when several files are
+    // selected at once. Mirrors the prefill defaults of the single-file dialog.
+    // Returns null on success or an error string (prefixed with the filename).
+    function editorAutoAddOneFile(panel, rawBytes, fileName) {
+        if (panel.fileType === 'zip') {
+            const zext = fileName.split('.').pop().toLowerCase();
+            const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk'];
+            if (!supported.includes(zext)) return `${fileName}: unsupported container type`;
+            zipEditorAddFile(panel, rawBytes, fileName);
+            return null;
+        }
+
+        // Universal Hobeta recognition: strip the 17-byte header and adopt its
+        // name / type / start address (mirrors the single-file handler).
+        const inputExt = fileName.split('.').pop().toLowerCase();
+        const hobetaFile = isHobetaExt(inputExt) ? parseHobeta(rawBytes) : null;
+        const data = hobetaFile ? hobetaFile.data : rawBytes;
+        const programLength = (hobetaFile && hobetaFile.programLength != null) ? hobetaFile.programLength : null;
+        const hobName = hobetaFile ? hobetaFile.name.replace(/\s+$/, '') : fileName.replace(/\.[^.]+$/, '');
+        const addr = hobetaFile ? hobetaFile.startAddress : 0x8000;
+        const ext = hobetaFile ? hobetaFile.ext : 'C';
+        const tag = (e) => e ? `${fileName}: ${e}` : null;
+
+        if (panel.fileType === 'trd' || panel.fileType === 'scl') {
+            if (data.length > 65280) return `${fileName}: too large (max 65,280 bytes)`;
+            const basicInfo = (ext === 'B' && programLength != null) ? { varsOffset: programLength } : null;
+            return tag(diskEditorAddFile(panel, data, hobName.substring(0, 8), ext, addr, basicInfo));
+        }
+        if (panel.fileType === 'mgt') {
+            const mgtTypeMap = { 'B': 1, 'C': 4, 'D': 2, '#': 10 };
+            return tag(diskEditorAddMgtFile(panel, data, hobName.substring(0, 10), mgtTypeMap[ext] || 4, addr));
+        }
+        if (panel.fileType === 'mdr') {
+            return tag(diskEditorAddMdrFile(panel, data, hobName.substring(0, 10), false));
+        }
+        if (panel.fileType === 'opd') {
+            return tag(diskEditorAddOpdFile(panel, data, hobName.substring(0, 10), ext === 'B' ? 0 : 3, addr, 0));
+        }
+        if (panel.fileType === 'didaktik') {
+            try { didaktikEditorAddFile(panel, data, hobName.substring(0, 10), ext, addr); return null; }
+            catch (err) { return `${fileName}: ${err.message}`; }
+        }
+        if (panel.fileType === 'dsk') {
+            const hobToDsk = { B: ['0', 'BAS'], C: ['3', 'BIN'], D: ['1', 'DAT'], '#': ['3', 'SEQ'] };
+            const dmap = hobetaFile ? (hobToDsk[hobetaFile.ext] || ['3', 'BIN']) : null;
+            const dskExt = dmap ? dmap[1] : (fileName.includes('.') ? fileName.split('.').pop().substring(0, 3) : '');
+            return tag(dskEditorAddFile(panel, data, hobName.substring(0, 8), dskExt, dmap ? parseInt(dmap[0]) : 3, addr, ''));
+        }
+        // TAP/TZX (panel made into a TAP up front if it was empty)
+        if (data.length > 65533) return `${fileName}: too large (max 65,533 bytes)`;
+        const hobToTap = { B: 0, C: 3, D: 1, '#': 3 };
+        const type = hobetaFile ? (hobToTap[hobetaFile.ext] ?? 3) : 3;
+        const pause = panel.fileType === 'tzx' ? 1000 : undefined;
+        const varsOffset = (type === 0 && programLength != null) ? programLength : undefined;
+        editorAddFileBlocks(panel, data, hobName.substring(0, 10), type, addr, '', 'A', pause, varsOffset);
+        return null;
+    }
+
+    // Re-render the file list once after a bulk add. TAP/TZX, Didaktik and ZIP
+    // adds already re-render per file, so only the disk formats need a final pass.
+    function editorRefreshAfterBulkAdd(panel) {
+        switch (panel.fileType) {
+            case 'trd': case 'scl':
+                panel.selection.clear(); panel.expandedBlock = -1;
+                diskEditorRenderFileList(panel); diskEditorRefreshExplorer(panel); break;
+            case 'mgt':
+                panel.selection.clear(); panel.expandedBlock = -1;
+                mgtEditorRenderFileList(panel); mgtEditorRefreshExplorer(panel); break;
+            case 'mdr': {
+                panel.selection.clear(); panel.expandedBlock = -1;
+                const mdr = diskEditorBuildMdr(panel);
+                panel.rawData = mdr;
+                panel.parsedFile = explorerParseMDR(mdr);
+                mdrEditorRenderFileList(panel); mdrEditorRefreshExplorer(panel); break;
+            }
+            case 'opd':
+                panel.selection.clear(); panel.expandedBlock = -1;
+                opdEditorRenderFileList(panel); opdEditorRefreshExplorer(panel); break;
+            case 'dsk':
+                panel.selection.clear(); panel.expandedBlock = -1;
+                dskEditorRefreshState(panel); dskEditorRenderFileList(panel); break;
+        }
+    }
+
+    // Read every selected file, add them in order, then refresh once and report a
+    // summary. Files that don't fit (disk/dir full, oversized) are skipped, not fatal.
+    function editorAddMultipleFiles(panel, files) {
+        if (!panel.fileType) editorNewTap(panel); // empty editor → create a TAP container
+        Promise.all(files.map(f => f.arrayBuffer())).then(buffers => {
+            let added = 0;
+            const errors = [];
+            for (let i = 0; i < files.length; i++) {
+                let err;
+                try { err = editorAutoAddOneFile(panel, new Uint8Array(buffers[i]), files[i].name); }
+                catch (ex) { err = `${files[i].name}: ${ex.message}`; }
+                if (err) errors.push(err); else added++;
+            }
+            editorRefreshAfterBulkAdd(panel);
+            if (panel === editorPanels.left) explorerRenderFileInfo(false);
+            const msg = `Added ${added}/${files.length} files` + (errors.length ? ` — ${errors.length} skipped` : '');
+            if (panel.dom && panel.dom.statusSpan) panel.dom.statusSpan.textContent = msg;
+            if (errors.length) console.warn('Add files — skipped:\n' + errors.join('\n'));
+        });
+    }
+
     editorPanelFileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
+        const files = Array.from(e.target.files);
+        e.target.value = '';
+        if (!files.length) return;
+        // Multiple files: auto-add each with metadata derived from the filename /
+        // Hobeta header, no per-file dialog. A single file keeps the prefill dialog
+        // so name / type / address can still be tweaked.
+        if (files.length > 1) { editorAddMultipleFiles(editorPanels[dialogTargetPanel], files); return; }
+        const file = files[0];
         file.arrayBuffer().then(buf => {
             const panel = editorPanels[dialogTargetPanel];
             panel.pendingFileData = new Uint8Array(buf);
@@ -12354,7 +12848,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 tapAddDialog.classList.remove('hidden');
             }
         });
-        e.target.value = '';
     });
 
     btnEditorSave.addEventListener('click', () => {
@@ -12419,6 +12912,68 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     });
 
     btnEditorCopy.addEventListener('click', () => editorCopySelection());
+
+    if (btnEditorSplit) btnEditorSplit.addEventListener('click', () => editorSplitMonoloader(getActivePanel()));
+    if (btnEditorBanner) btnEditorBanner.addEventListener('click', () => editorOpenBannerDialog(getActivePanel()));
+
+    let tzxTurboPanel = null;
+    if (btnEditorToTurbo) btnEditorToTurbo.addEventListener('click', () => {
+        const panel = getActivePanel();
+        if (panel.fileType !== 'tzx') return;
+        const sel = editorSelectedSorted(panel).filter(i => editorBlockTurboable(panel.blocks[i]));
+        if (sel.length === 0) return;
+        tzxTurboPanel = panel;
+
+        // Pre-fill from the first selected block's current timing: a turbo block shows
+        // its own pulses (so the user can see what it uses); a standard block shows
+        // standard ROM defaults (header pilot 8063, data 3223).
+        const first = panel.blocks[sel[0]];
+        const cur = editorReadTurboParams(first);
+        const isHeaderBlk = first.blockType === 'header' || (first.data && first.data[0] === 0x00 && first.data.length === 19);
+        const vals = cur || {
+            pilot: 2168, sync1: 667, sync2: 735, zero: 855, one: 1710,
+            pilotLen: isHeaderBlk ? 8063 : 3223, usedBits: 8,
+            pause: (first.tzxPause != null ? first.tzxPause : 1000)
+        };
+        const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+        setVal('tzxTbPilot', vals.pilot); setVal('tzxTbSync1', vals.sync1); setVal('tzxTbSync2', vals.sync2);
+        setVal('tzxTbZero', vals.zero); setVal('tzxTbOne', vals.one); setVal('tzxTbPilotLen', vals.pilotLen);
+        setVal('tzxTbUsedBits', vals.usedBits); setVal('tzxTbPause', vals.pause);
+
+        if (tzxTurboInfo) {
+            const state = cur ? (editorBlockIsTurbo(first) || (first.blockType === 'nonstandard') ? 'turbo' : 'standard-timed') : 'standard';
+            tzxTurboInfo.textContent = `${sel.length} block${sel.length !== 1 ? 's' : ''} selected — first is ${state}. Apply to (re)set timing.`;
+        }
+        tzxTurboDialog.classList.remove('hidden');
+    });
+
+    function tzxTurboReadParam(id, def, min, max) {
+        const el = document.getElementById(id);
+        let v = parseInt(el && el.value, 10);
+        if (!Number.isFinite(v)) v = def;
+        return Math.max(min, Math.min(max, v));
+    }
+
+    if (btnTzxTurboOk) btnTzxTurboOk.addEventListener('click', () => {
+        const panel = tzxTurboPanel || getActivePanel();
+        const p = {
+            pilot:    tzxTurboReadParam('tzxTbPilot', 2168, 0, 65535),
+            sync1:    tzxTurboReadParam('tzxTbSync1', 667, 0, 65535),
+            sync2:    tzxTurboReadParam('tzxTbSync2', 735, 0, 65535),
+            zero:     tzxTurboReadParam('tzxTbZero', 855, 0, 65535),
+            one:      tzxTurboReadParam('tzxTbOne', 1710, 0, 65535),
+            pilotLen: tzxTurboReadParam('tzxTbPilotLen', 3223, 0, 65535),
+            usedBits: tzxTurboReadParam('tzxTbUsedBits', 8, 1, 8),
+            pause:    tzxTurboReadParam('tzxTbPause', 1000, 0, 65535)
+        };
+        const n = editorConvertSelectionToTurbo(panel, p);
+        tzxTurboDialog.classList.add('hidden');
+        editorRenderBlockList(panel);
+        syncPanelToExplorer(panel);
+        if (panel.dom && panel.dom.statusSpan) panel.dom.statusSpan.textContent = `Applied turbo timing to ${n} block${n !== 1 ? 's' : ''}`;
+    });
+
+    if (btnTzxTurboCancel) btnTzxTurboCancel.addEventListener('click', () => tzxTurboDialog.classList.add('hidden'));
 
     // ========== Dialog handlers (target dialogTargetPanel) ==========
 

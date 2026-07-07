@@ -375,6 +375,13 @@ export function initFileLoader({
             updateStatus();
             updateDebugger();
         }
+
+        // Move focus to the emulator canvas so the keyboard works immediately.
+        // Otherwise focus lingers on the Load <select> (or the hidden file input):
+        // the ZX keyboard handler ignores keys while a SELECT/INPUT is focused, and
+        // typing would navigate the dropdown's options (e.g. "q" → Quick → reload).
+        const screenCanvas = document.getElementById('screen');
+        if (screenCanvas) screenCanvas.focus({ preventScroll: true });
     }
 
     // Show file selection modal (ZIP or disk image)

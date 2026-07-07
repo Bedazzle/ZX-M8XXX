@@ -1,0 +1,22 @@
+[
+    {
+        "name": "Clear screen bitmap (LDIR)",
+        "code": "    ld hl,$4000\n    ld (hl),0\n    ld de,$4001\n    ld bc,6143\n    ldir\n"
+    },
+    {
+        "name": "Set all attributes",
+        "code": "    ld hl,$5800\n    ld (hl),%00111000   ; white paper, black ink\n    ld de,$5801\n    ld bc,767\n    ldir\n"
+    },
+    {
+        "name": "Random border stripes",
+        "code": "stripes:\n    ld a,r\n    and 7\n    out ($FE),a\n    jr stripes\n"
+    },
+    {
+        "name": "Install bold font",
+        "code": "; Embolden the ROM font into fontbuf, then point CHARS at it\n    ld hl,$3D00          ; ROM character set\n    ld de,fontbuf\nboldloop:\n    ld a,(hl)\n    ld c,a\n    srl a                ; copy each set pixel to the one on its right\n    or c\n    ld (de),a\n    inc hl\n    inc de\n    ld a,h\n    cp $40               ; stop at $4000 (768 bytes done)\n    jr nz,boldloop\n    ld hl,fontbuf-256    ; CHARS = font base - 256 (space is code 32)\n    ld ($5C36),hl\n    ret\nfontbuf:\n    ds 768\n"
+    },
+    {
+        "name": "Wait for any key",
+        "code": "waitkey:\n    xor a                ; scan all keyboard half-rows\n    in a,($FE)\n    and 31\n    cp 31                ; 31 = nothing pressed\n    jr z,waitkey\n"
+    }
+]

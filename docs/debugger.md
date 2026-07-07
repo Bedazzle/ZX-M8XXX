@@ -117,6 +117,8 @@ Displays an alternate screen view below the main canvas. Supports shadow bank di
 - `updateSecondScreenVisibility()` -- shows container for any non-none mode (no ramPages gate for linear/spectrum), shows address input for linear/spectrum, SCR indicator for 128K+ only
 - `updateSecondScreenSize()` -- syncs canvas CSS size to current zoom level
 - `onFrame` hook -- updates SCR indicator on every frame (128K+), renders shadow screen if mode is not `'none'` (regardless of ramPages). Chains previous `onFrame` handler.
+- `updateDebugger()` -- also re-renders the shadow screen (if mode is not `'none'`) so a byte changed by a single step is reflected immediately; while stepping the emulator runs no frames, so `onFrame` doesn't fire.
+- `renderSecondScreen()` -- when a Full/Bitmap shadow mode has nothing valid to show (48K machine, `ramPages <= 1`, or the inactive bank is unavailable) it paints the canvas solid black via `blankSecondScreen(label)` instead of returning early, so a previous machine's image never lingers (e.g. when machines switch during the test run).
 
 **Persistence**: localStorage key `zxm8_secondScreen` (stores mode string; legacy `'true'` auto-migrated to `'full'`). localStorage key `zxm8_secondScreenAddr` (hex address string).
 

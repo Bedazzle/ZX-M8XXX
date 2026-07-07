@@ -119,7 +119,8 @@ import { Disassembler } from './disasm.js';
 
             this.romLoaded = false;
             this.overlayMode = 'none';  // Overlay mode: none, grid, screen, reveal
-            this.onFrame = null;
+            this.onFrame = null;        // Single primary per-frame callback (legacy)
+            this.frameListeners = [];   // Additional per-frame listeners (addFrameListener)
             this.onRomLoaded = null;
             this.onError = null;
             this.onBreakpoint = null; // Called when breakpoint hit
@@ -2342,6 +2343,7 @@ import { Disassembler } from './disasm.js';
             this.totalFrames++;
             this.micRecorder.onFrameEnd(this.cpu.tStates);
             if (this.onFrame) this.onFrame(this.frameCount);
+            for (let i = 0; i < this.frameListeners.length; i++) this.frameListeners[i](this.frameCount);
 
             // Profiler: count down frames
             if (this.profiler.enabled) {
@@ -3619,6 +3621,22 @@ import { Disassembler } from './disasm.js';
             this.scheduleNextFrame();
         }
         
+        // Register an additional per-frame listener fn(frameCount), called once per
+        // emulated frame after onFrame (at every speed including Max). Multiple
+        // consumers can coexist without clobbering each other's onFrame. Returns an
+        // unsubscribe function; removeFrameListener(fn) also works.
+        addFrameListener(fn) {
+            if (typeof fn === 'function' && !this.frameListeners.includes(fn)) {
+                this.frameListeners.push(fn);
+            }
+            return () => this.removeFrameListener(fn);
+        }
+
+        removeFrameListener(fn) {
+            const i = this.frameListeners.indexOf(fn);
+            if (i >= 0) this.frameListeners.splice(i, 1);
+        }
+
         scheduleNextFrame() {
             if (!this.running) return;
 
@@ -6402,12 +6420,19 @@ import { Disassembler } from './disasm.js';
                 return;
             }
 
-            // Prevent browser shortcuts when emulator should capture them
-            // Alt+key combinations for ZX Spectrum Symbol Shift
-            if (e.altKey && !e.ctrlKey && !e.metaKey) {
-                const key = e.key.toLowerCase();
-                // Prevent Alt+key browser shortcuts for Symbol Shift combinations
-                if (['p', 's', 'o', 'n', 'w', 'r', 'f', 'h', 'j', 'k', 'l', 'u', 'i', 'b', 'd', 'g', 'a', 'z', 'x', 'c', 'v', 'e', 't', 'y', 'm', 'q', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'].includes(key)) {
+            // Prevent browser shortcuts when a held Alt/Ctrl acts as a ZX modifier
+            // (e.g. Alt+P for Symbol+P, or Ctrl+S when Ctrl is Symbol Shift).
+            // AltGr reports Ctrl+Alt together: only prevent then if BOTH families are
+            // mapped, so AltGr national-character typing keeps working otherwise.
+            // Note: the browser reserves some Ctrl combos (Ctrl+W/T/N) at a level
+            // preventDefault can't reach.
+            if (!e.metaKey && (e.altKey || e.ctrlKey)) {
+                const codes = this.ula.capsShiftCodes.concat(this.ula.symbolShiftCodes);
+                const altMapped = codes.some(c => c.startsWith('Alt'));
+                const ctrlMapped = codes.some(c => c.startsWith('Control'));
+                const altActs = e.altKey && altMapped && (!e.ctrlKey || ctrlMapped);
+                const ctrlActs = e.ctrlKey && ctrlMapped && (!e.altKey || altMapped);
+                if ((altActs || ctrlActs) && /^[a-z0-9]$/.test(e.key.toLowerCase())) {
                     e.preventDefault();
                 }
             }
@@ -6418,9 +6443,11 @@ import { Disassembler } from './disasm.js';
                 const mapping = this.ula.getKeyMapping(e.key);
                 if (mapping) {
                     e.preventDefault();
-                    // If PC Shift is held and mapping is a Symbol Shift compound (e.g. Shift+1 → '!'),
-                    // temporarily release Caps Shift to avoid Extended Mode (Caps+Symbol+key)
-                    if (e.shiftKey && Array.isArray(mapping[0])) {
+                    // If PC Shift is held, acts as Caps Shift, and mapping is a Symbol Shift
+                    // compound (e.g. Shift+1 → '!'), temporarily release Caps Shift to
+                    // avoid Extended Mode (Caps+Symbol+key)
+                    if (e.shiftKey && Array.isArray(mapping[0]) &&
+                        this.ula.capsShiftCodes.some(c => c.startsWith('Shift'))) {
                         this.ula.keyboardState[0] |= (1 << 0); // Release Caps Shift
                     }
                     this.pressedKeys.set(e.code, e.key); // Track for proper release
@@ -6477,10 +6504,10 @@ import { Disassembler } from './disasm.js';
                 e.preventDefault();
                 this.ula.keyUp(trackedKey);
                 this.pressedKeys.delete(e.code);
-                // Re-press Caps Shift if PC Shift is still held.
+                // Re-press Caps Shift if PC Shift is still held and acts as Caps Shift.
                 // Handles: Shift+1 (!) suppressed Caps Shift → release 1 → Caps Shift must return
                 // for subsequent Shift+letter to produce uppercase.
-                if (e.shiftKey) {
+                if (e.shiftKey && this.ula.capsShiftCodes.some(c => c.startsWith('Shift'))) {
                     this.ula.keyboardState[0] &= ~(1 << 0); // Caps Shift
                 }
                 return;
@@ -6783,7 +6810,15 @@ import { Disassembler } from './disasm.js';
             const files = TRDLoader.listFiles(processedData);
 
             if (files.length === 0) {
-                throw new Error('No files found in disk image');
+                // A catalogue can legitimately list no real files and still be a
+                // valid TR-DOS disk — e.g. one holding only SPECSCII banner
+                // entries (fake zero-length names of print control codes, like
+                // Adventurer #13 disk 2). Accept it if the sysinfo sector
+                // carries the TR-DOS id byte; reject anything else as garbage.
+                const u8 = processedData instanceof Uint8Array ? processedData : new Uint8Array(processedData);
+                if (u8.length <= 0x8E7 || u8[0x800 + 0xE7] !== 0x10) {
+                    throw new Error('No files found in disk image');
+                }
             }
 
             // Store disk image for project save (per-drive)
@@ -7935,6 +7970,8 @@ import { Disassembler } from './disasm.js';
             const oldFullBorderMode = this.ula ? this.ula.fullBorderMode : false;
             const oldPalette = this.ula ? this.ula.palette : null;
             const oldPaletteId = this.ula ? this.ula.paletteId : null;
+            const oldCapsOption = this.ula ? this.ula.capsShiftOption : null;
+            const oldSymbolOption = this.ula ? this.ula.symbolShiftOption : null;
             // Use persistent setting, not runtime state (which may be modified by test runner)
             const ulaplusSetting = storageGet('zxm8_ulaplus') === 'true';
 
@@ -7955,6 +7992,9 @@ import { Disassembler } from './disasm.js';
             this.micRecorder.reset();
 
             // Restore ULA settings to new ULA
+            if (oldCapsOption) {
+                this.ula.setModifierKeys(oldCapsOption, oldSymbolOption);
+            }
             if (this.lateTimings !== undefined) {
                 this.ula.setLateTimings(this.lateTimings);
             }

@@ -391,6 +391,7 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             updateCanvasSize();
             spectrum.redraw();
         }
+        storageSet('zxm8_border', borderSizeSelect.value);
         const option = borderSizeSelect.options[borderSizeSelect.selectedIndex];
         showMessage('Border: ' + option.text);
     });

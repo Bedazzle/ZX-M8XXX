@@ -4244,13 +4244,27 @@ export function sclChecksum(data, length = data.length) {
          * A `deleted` file keeps its slot/data but its dir entry is marked 0x01 and it
          * is excluded from the file count (TR-DOS soft delete).
          */
-        static buildTRD(files, diskLabel = '') {
+        // bannerNames: optional array of 8-byte name buffers, written as fake
+        // zero-length catalogue entries BEFORE the real files — a SPECSCII
+        // banner drawn by TR-DOS LIST (see core/specscii.js).
+        static buildTRD(files, diskLabel = '', bannerNames = null) {
             const trd = new Uint8Array(655360);
             let trdSector = 16;          // data starts at logical track 1
             let activeFileCount = 0;
+            let entryBase = 0;
+            if (bannerNames) {
+                for (const nm of bannerNames) {
+                    const off = entryBase * 16;
+                    for (let c = 0; c < 8; c++) trd[off + c] = nm[c];
+                    trd[off + 8] = 0x20;   // type: space, like real banner disks
+                    // length/start address/sectors/position stay zero
+                    entryBase++;
+                    activeFileCount++;     // counted like Deja Vu #0A does
+                }
+            }
             for (let i = 0; i < files.length; i++) {
                 const f = files[i];
-                const off = i * 16;
+                const off = (entryBase + i) * 16;
                 writeField(trd, off, f.name || '', 8, 0x20);
                 if (f.deleted) trd[off] = 0x01;
                 else activeFileCount++;
@@ -4384,15 +4398,23 @@ export function sclChecksum(data, length = data.length) {
          * erase marker, so rebuilding compacts). Same per-file fields as buildTRD; uses
          * the TR-DOS catalogue convention for the 9-10/11-12 words (BASIC-aware).
          */
-        static buildSCL(files) {
+        static buildSCL(files, bannerNames = null) {
             const active = files.filter(f => !f.deleted);
+            const bannerCount = bannerNames ? bannerNames.length : 0;
             let totalData = 0;
             for (const f of active) totalData += f.sectors * 256;
-            const scl = new Uint8Array(9 + active.length * 14 + totalData + 4);
+            const scl = new Uint8Array(9 + (bannerCount + active.length) * 14 + totalData + 4);
             const sig = 'SINCLAIR';
             for (let i = 0; i < 8; i++) scl[i] = sig.charCodeAt(i);
-            scl[8] = active.length;
+            scl[8] = bannerCount + active.length;
             let offset = 9;
+            if (bannerNames) {
+                for (const nm of bannerNames) {
+                    for (let c = 0; c < 8; c++) scl[offset + c] = nm[c];
+                    scl[offset + 8] = 0x20; // fake banner entry: type space, no data
+                    offset += 14;
+                }
+            }
             for (const f of active) {
                 const name = ((f.name || '') + '        ').substring(0, 8);
                 for (let c = 0; c < 8; c++) scl[offset + c] = name.charCodeAt(c) || 0x20;

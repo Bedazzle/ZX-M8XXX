@@ -14,12 +14,14 @@ Automatic load-and-run for tape and disk files. Controlled via checkbox in Setti
 
 **Disk auto-load requirements:** Beta Disk must be available (Pentagon mode, or Beta Disk enabled in settings with TR-DOS ROM loaded). If not available, disk is inserted but only a message is shown -- no automatic machine switch.
 
-**Implementation (`index.html`):**
-- `startAutoLoadTape(isTzx)` -- setTimeout-based key injection (J, Sym+P, Sym+P, Enter)
+**Implementation (`ui/auto-loader.js`):**
+- `startAutoLoadTape(isTzx)` -- key injection (J, Sym+P, Sym+P, Enter); 128K/Pentagon pick BASIC then type letter-by-letter; Scorpion navigates its menu first
 - `startAutoLoadDisk()` -- calls `spectrum.bootTrdos()` then `spectrum.start()`
+- `startAutoLoadDiskRun(filename)` -- TR-DOS `RUN "filename"` (hides the boot entry so it doesn't auto-run, restores it after init)
 - `startAutoLoadPlus3Disk()` -- reset, preserve disk, press Enter at Amstrad menu (same pattern as +2/+2A tape)
-- `cancelAutoLoad()` -- clears all pending timers, resets keyboard state
-- Timing constants: `AUTO_LOAD_ROM_WAIT` (3000ms), `AUTO_LOAD_KEY_HOLD` (300ms), `AUTO_LOAD_KEY_GAP` (200ms), `AUTO_LOAD_128K_WAIT` (2000ms)
+- `cancelAutoLoad()` -- clears the pending queue, restores keyboard state, unhooks the frame pump
+- **Frame-driven timing**: the ZX keyboard is scanned once per maskable interrupt (one per frame), so key debounce/auto-repeat are counted in **frames**, not wall-clock. The typed sequence is scheduled by emulated-frame offset (`autoLoadAt(fn, frameOffset)`, absolute frame = `spectrum.totalFrames` at start + offset) and pumped by a per-frame listener (`autoLoadTick`) registered via `spectrum.addFrameListener()` — which fires once per emulated frame at every speed including Max. This makes auto-load behave identically at any emulation speed (10% … Max) and on any machine regardless of T-states/frame, and it pauses with the emulator. An external rAF poll would batch many frames at high speed and skip a key's down→up window, so the per-frame listener is required. The listener is removed (`removeFrameListener`) when the queue drains or on cancel. Using the multi-listener registry (rather than wrapping `spectrum.onFrame`) keeps it decoupled from other per-frame consumers (second screen, profiler)
+- Timing constants (frames, ~50/sec): `AUTO_LOAD_ROM_WAIT` (150), `AUTO_LOAD_128K_WAIT` (75), `AUTO_LOAD_SCORPION_WAIT` (200), `AUTO_LOAD_KEY_HOLD` (10), `AUTO_LOAD_KEY_GAP` (8), `AUTO_LOAD_KEY_HOLD_FAST`/`AUTO_LOAD_KEY_GAP_FAST` (5)
 - Amstrad menu machines (+2/+2A/+3): just press Enter -- "Tape Loader" is the default menu item, runs LOAD "" automatically
 - Cancellation hooks: machine change, reset button, new file load
 

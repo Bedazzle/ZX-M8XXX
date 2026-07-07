@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.15.11</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.15.14</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -69,8 +69,8 @@
                     <table>
                         <tr><th>PC Key</th><th>Spectrum Key</th></tr>
                         <tr><td>A-Z, 0-9</td><td>Standard keys</td></tr>
-                        <tr><td>Shift</td><td>Caps Shift</td></tr>
-                        <tr><td>Alt</td><td>Symbol Shift</td></tr>
+                        <tr><td>Shift</td><td>Caps Shift (configurable)</td></tr>
+                        <tr><td>Alt</td><td>Symbol Shift (configurable)</td></tr>
                         <tr><td>Enter</td><td>Enter</td></tr>
                         <tr><td>Space</td><td>Space / Break</td></tr>
                         <tr><td>Backspace</td><td>Delete (Caps+0)</td></tr>
@@ -78,6 +78,9 @@
                     </table>
                     <p style="font-size: 11px; color: var(--text-dim);">Shift+letter = uppercase, Shift+digit = symbols (!@#$%^&amp;*etc)<br>
                     Keys use physical QWERTY positions - works with any keyboard layout.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">The PC keys acting as <b>Caps Shift</b> and <b>Symbol Shift</b> are chosen in
+                    Settings &rarr; Input: both/left/right Shift, Ctrl or Alt, the Menu key, or Tab (e.g. Ctrl as Symbol Shift, like Fuse or Spectaculator).
+                    The two can't share a key. Note the browser reserves Ctrl+W/T/N &mdash; those combinations can't reach the Spectrum.</p>
                     <h5>Symbol Shift Combinations (Alt + Key)</h5>
                     <table>
                         <tr><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th></tr>
@@ -138,6 +141,14 @@
                         <tr><td>Profiles</td><td>Named presets (e.g. per game). Click to activate; + to add, &#x270E; to rename, &times; to delete</td></tr>
                     </table>
                     <p style="margin-top: 5px; font-size: 11px; color: var(--text-dim);">Fire option uses Kempston joystick fire bit. Autofire stops on machine reset. Profiles and settings saved to localStorage.</p>
+                    <h5>On-screen Keyboard</h5>
+                    <p>The <strong>&#9000;</strong> button below the screen toggles a clickable ZX Spectrum keyboard &mdash; handy for finding where a BASIC command lives and for typing without a real keyboard.</p>
+                    <ul>
+                        <li>Each key shows its <strong>BASIC keyword</strong> (entered in the <code>K</code> cursor mode), the <span style="color:#ff6b6b">symbol-shift</span> character, the <span style="color:#7CFC79">green extended-mode</span> word (E mode — SIN, PEEK, BIN…), and the <span style="color:#ff6b6b">red extended + symbol-shift</span> command below the key (ASN, VERIFY, CIRCLE, IN/OUT, the colour/sound words INK/PAPER/BEEP…, and DEF FN/OPEN#/CAT/FORMAT on the numbers). The number keys also show their INK/PAPER <strong>colour value</strong> (1 = blue … 7 = white, 0 = black). Clicking a key types it &mdash; in <code>K</code> mode you get the keyword (P &rarr; PRINT), exactly like the real machine.</li>
+                        <li><strong>CAPS SHIFT</strong> / <strong>SYMBOL SHIFT</strong> latch: click to hold one down (highlighted) and it stays held across as many keys as you like &mdash; type a run of uppercase letters or symbols, then click the shift again to release. Hold <strong>both</strong> to enter extended mode (the <span style="color:#7CFC79">green</span> functions); from there add SYMBOL SHIFT for the <span style="color:#ff6b6b">red</span> colour/sound words.</li>
+                        <li>Keys highlight as they are pressed &mdash; by mouse or by your real keyboard.</li>
+                        <li>The keyboard floats above the page; <strong>drag its title bar</strong> to reposition it (the spot is remembered), and the <strong>×</strong> in the title bar (or the ⌨ button again) hides it. Shown/hidden state is remembered between sessions.</li>
+                    </ul>
                     <h5>Debugger Hotkeys</h5>
                     <table>
                         <tr><td>F6 / Pause</td><td>Pause/Resume emulation</td></tr>
@@ -941,6 +952,7 @@
                     <ul>
                         <li><strong>Export</strong> &mdash; Save a memory range to a .bin file. Enter start address, length or end address (hex). Length and End are mutually synced; End is clamped to never fall below Start</li>
                         <li><strong>Import</strong> &mdash; Load a .bin file into emulator memory at the specified start address. Screen refreshes immediately (works while paused). Accepts .bin, .dat, or any file</li>
+                        <li><strong>Fill</strong> &mdash; Fill the Start..End range with the <strong>Byte</strong> value (hex). Defaults to 00, i.e. clear the range to zeros</li>
                     </ul>
                     <p>Both operations respect the current banking state (128K page, TR-DOS, +2A special paging, etc.).</p>
                 </div>
@@ -961,6 +973,7 @@
                     <h5>Toolbar</h5>
                     <ul>
                         <li><strong>Project ▼</strong> - Project menu: file actions on top, project file list below (click a file to open it in a tab)</li>
+                        <li><strong>Snippets ▼</strong> - Insert a predefined code snippet at the cursor (see Snippets below)</li>
                         <li><strong>Assemble</strong> - Compile the assembly code (F9)</li>
                         <li><strong>Debug</strong> (Ctrl+F9) - Inject code, set PC to entry point, switch to debugger. Entry point priority: <code>; @entry</code> marker &gt; SAVESNA address &gt; single ORG &gt; prompt if multiple ORGs. Also injects assembler labels into the debugger (visible in disassembly, Calls panel, etc.); internal labels prefixed with <code>__</code> are skipped. Old assembler labels are cleared on each Debug run and replaced with current symbols; user-defined labels are preserved</li>
                         <li><strong>Download</strong> - Download generated output files (.bin, .sna, .tap). If multiple files, downloads as ZIP archive</li>
@@ -976,6 +989,16 @@
                         <li><strong>Share to clipboard</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
                         <li><strong>Inject into memory</strong> - Write assembled bytes to emulator memory without starting the debugger</li>
                         <li><strong>Clear all</strong> - Clear editor and reset project</li>
+                    </ul>
+                    <h5>Snippets</h5>
+                    <p>The <strong>Snippets ▼</strong> dropdown holds small pieces of reusable code. Clicking a snippet inserts it at the cursor of the last-focused editor pane (one Ctrl+Z undoes the insert).</p>
+                    <ul>
+                        <li><strong>Built-in</strong> - A shipped set loaded from <code>data/asm-snippets.json</code> (clear screen, set attributes, random border stripes, install bold font, wait for key, …)</li>
+                        <li><strong>Add selection as snippet…</strong> - Select code in the editor, then choose this and type a short name to save it. Your snippets are stored in the browser (localStorage) and listed under "My snippets"</li>
+                        <li><strong>Import my snippets…</strong> - Load snippets from a JSON file and merge them into your snippets (same-named entries are overwritten, new ones added). Useful for moving your snippets to another browser or machine</li>
+                        <li><strong>Export my snippets…</strong> - Save your snippets to a JSON file (the same <code>[{name, code}]</code> format as the built-in file)</li>
+                        <li><strong>Delete (×)</strong> - Remove a single one of your snippets (hover a "My snippets" row)</li>
+                        <li><strong>Clear my snippets</strong> - Delete all your saved snippets (built-in snippets are unaffected)</li>
                     </ul>
                     <h5>Drag & Drop</h5>
                     <ul>
@@ -1314,6 +1337,7 @@ start:  ...</pre>
                         <li><strong>Resizable panels</strong> - Drag the bar between the panels to resize the split; in the side-by-side layout a second bar at the right edge sizes the right panel. Double-click a bar to reset</li>
                         <li><strong>New</strong> - Dropdown to create an empty file in the active panel: New TAP, New TZX, New TRD, New MGT, New DSK, or New OPD</li>
                         <li><strong>Load File</strong> - Loads a file into the active panel (and into the Explorer for analysis). Supports loading from local files and from ZIP archives</li>
+                        <li><strong>Add File (multiple)</strong> - Pick several files at once (Ctrl/Shift-click). One file opens the usual dialog; several add without prompting, name/type/address taken from the filename or Hobeta header. Files that don't fit are skipped (status line shows the count)</li>
                         <li><strong>Copy &raquo; / &laquo; Copy</strong> - Copy selected blocks/files from the active panel to the other panel. Works across different formats &mdash; tape blocks can be copied to disk and vice versa, with automatic format conversion (header fields mapped to disk attributes, filenames truncated to fit). If the destination panel is empty, a matching format is auto-created</li>
                         <li><strong>Link Header</strong> - For tape panels (TAP/TZX): auto-selects header+data block pairs together for all operations</li>
                     </ul>
@@ -1356,8 +1380,9 @@ start:  ...</pre>
                         <li><strong>Add File (Hobeta)</strong> - Hobeta files (.$B, .$C, .$D, .$#, .hobeta) are auto-detected when adding &mdash; the header is stripped and filename, extension, and start address are pre-filled</li>
                         <li><strong>Inline edit</strong> - Double-click a file to edit name, extension, and start address</li>
                         <li><strong>Label edit</strong> - Double-click the disk label row to edit the 8-character disk label</li>
+                        <li><strong>Banner</strong> - Attach or view a <em>SPECSCII catalogue banner</em>: a picture drawn by TR-DOS <code>CAT</code> using fake directory entries whose 8-character names are print control codes (as on the Deja Vu / Body Orgasm / Adventurer disks). Load a <code>.specscii</code> file (SpectraLab / zxart.ee), choose how many character rows it should span (max 21), preview it, and Apply &mdash; the banner entries are written before the real files, so the saved disk is byte-valid, boots, and shows the picture when catalogued. A <strong>Banner &#10003;</strong> label marks a disk that already carries one (with a live preview and a Remove option). Note: one leftover row of catalogue columns prints below the banner, exactly as on real banner disks. Banner entries count toward the 128-entry directory limit.</li>
                     </ul>
-                    <p>Capacity limits: 128 files, 2544 data sectors, 255 sectors (65,280 bytes) per file.</p>
+                    <p>Capacity limits: 128 directory entries (files + any banner entries), 2544 data sectors, 255 sectors (65,280 bytes) per file.</p>
                     <h5>DSK Editor (Edit tab)</h5>
                     <p>Edit +3 DSK disk images: add, delete files, rename, and save. The toolbar switches automatically when a DSK file is loaded.</p>
                     <ul>

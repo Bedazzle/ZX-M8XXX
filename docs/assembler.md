@@ -130,6 +130,16 @@ The file list section (`updateFilesList()`, container `asmFilesList` inside the 
 - `removeVfsFile(path)` — remove file from VFS, close its tab, update UI
 - `removeVfsDirectory(dirPath)` — remove all files in directory, close their tabs, update UI
 
+## Snippets (`ui/asm-snippets.js`)
+
+A **Snippets ▼** dropdown next to **Project ▼** (same `.asm-files-dropdown` / `.asm-files-list` markup, ids `btnAsmSnippets` / `asmSnippetsMenu` / `asmSnippetsList`). Clicking a snippet inserts its code at the caret of the last-focused editor pane.
+
+**Two sources:**
+- **Built-in** — loaded once from `data/asm-snippets.json` via `fetch` at startup (non-fatal if missing). Format: `[{ "name": "...", "code": "..." }]`.
+- **User** — localStorage key `zxm8_asmSnippets`, same `[{name, code}]` shape. Add from the current editor selection (prompts for a name; replacing an existing name asks to confirm), per-item delete (× on hover), **Clear my snippets** (built-ins untouched), **Export my snippets…** (downloads the user array as JSON), **Import my snippets…** (merges a JSON file into the user array — same-named entries overwritten, new ones added; for moving snippets between browsers/machines).
+
+**Insertion** goes through the assembler API (`assembler-ui.js`): `getSelectedText()` reads the selection and `insertAtCursor(text)` writes at the caret. Both target the last-focused pane (`asmEditor` or split `asmEditor2`, via `_snippetPane()` → `asmActivePane` + `splitPaneVisible()`); `insertAtCursor` checkpoints undo on the main pane (`asmUndoPushImmediate`) and dispatches an `input` event so highlight / line numbers / VFS sync run. One Ctrl+Z undoes an insert into the main pane.
+
 ## Import Foreign Sources
 
 **Project ▼ → Import foreign…** (`ui/import-foreign.js`, dialog `importForeignDialog`) imports sources written for other ZX Spectrum assemblers and converts them to sjasmplus syntax so they assemble in the normal workflow.

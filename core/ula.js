@@ -7,6 +7,27 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 
+    // PC keys that can act as the ZX modifiers (Caps Shift / Symbol Shift).
+    // Option id → { label, codes: e.code values }. CapsLock and the Windows key are
+    // deliberately absent: the browser can't suppress the OS caps-lock toggle or
+    // intercept the Windows key reliably.
+    export const MODIFIER_KEY_OPTIONS = {
+        'shift-both':  { label: 'Both Shifts', codes: ['ShiftLeft', 'ShiftRight'] },
+        'ctrl-both':   { label: 'Both Ctrls',  codes: ['ControlLeft', 'ControlRight'] },
+        'alt-both':    { label: 'Both Alts',   codes: ['AltLeft', 'AltRight'] },
+        'shift-left':  { label: 'Left Shift',  codes: ['ShiftLeft'] },
+        'shift-right': { label: 'Right Shift', codes: ['ShiftRight'] },
+        'ctrl-left':   { label: 'Left Ctrl',   codes: ['ControlLeft'] },
+        'ctrl-right':  { label: 'Right Ctrl',  codes: ['ControlRight'] },
+        'alt-left':    { label: 'Left Alt',    codes: ['AltLeft'] },
+        'alt-right':   { label: 'Right Alt',   codes: ['AltRight'] },
+        'menu':        { label: 'Menu key',    codes: ['ContextMenu'] },
+        'tab':         { label: 'Tab',         codes: ['Tab'] }
+    };
+
+    export const DEFAULT_CAPS_SHIFT_OPTION = 'shift-both';
+    export const DEFAULT_SYMBOL_SHIFT_OPTION = 'alt-both';
+
     export class ULA {
 
         constructor(memory, machineType = '48k') {
@@ -246,13 +267,16 @@ import { getMachineProfile, is128kCompat } from './machines.js';
 
             // Keyboard mapping: e.code → [row, bit]
             // Uses physical key positions - works with any keyboard layout
-            // Shift = Caps Shift, Alt = Symbol Shift
             // Shift+letter = uppercase (Caps Shift + letter)
             // Shift+digit = symbols via e.key punctuation handler (Caps Shift temporarily suppressed)
-            // Ctrl is NOT mapped — reserved for browser shortcuts (Ctrl+C/V/Z etc.)
+            // The PC keys acting as Caps Shift / Symbol Shift are configurable via
+            // setModifierKeys() (defaults: both Shifts = Caps, both Alts = Symbol).
+            // 'CAPS'/'SYM' are canonical tokens for direct injection (virtual keyboard),
+            // independent of the configured PC keys.
             this.keyMap = {
+                // Canonical modifier tokens (always present, not PC key codes)
+                'CAPS': [0, 0], 'SYM': [7, 1],
                 // Row 0: Caps Shift, Z, X, C, V
-                'ShiftLeft': [0, 0], 'ShiftRight': [0, 0],
                 'KeyZ': [0, 1], 'KeyX': [0, 2], 'KeyC': [0, 3], 'KeyV': [0, 4],
                 // Row 1: A, S, D, F, G
                 'KeyA': [1, 0], 'KeyS': [1, 1], 'KeyD': [1, 2], 'KeyF': [1, 3], 'KeyG': [1, 4],
@@ -267,7 +291,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 // Row 6: Enter, L, K, J, H
                 'Enter': [6, 0], 'KeyL': [6, 1], 'KeyK': [6, 2], 'KeyJ': [6, 3], 'KeyH': [6, 4],
                 // Row 7: Space, Symbol Shift, M, N, B
-                'Space': [7, 0], 'AltLeft': [7, 1], 'AltRight': [7, 1],
+                'Space': [7, 0],
                 'KeyM': [7, 2], 'KeyN': [7, 3], 'KeyB': [7, 4],
                 // Compound keys (Caps Shift + key)
                 'Backspace': [[0, 0], [4, 0]],    // Caps + 0 = Delete
@@ -291,6 +315,27 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 'BracketRight': [[0, 0], [7, 1], [5, 3]], // Caps + Symbol + U = ]
                 'Backquote': [[0, 0], [7, 1], [1, 0]]     // Caps + Symbol + A = ~
             };
+
+            // Install the default PC keys for Caps Shift / Symbol Shift
+            this.capsShiftCodes = [];
+            this.symbolShiftCodes = [];
+            this.setModifierKeys(DEFAULT_CAPS_SHIFT_OPTION, DEFAULT_SYMBOL_SHIFT_OPTION);
+        }
+
+        // Configure which PC keys act as Caps Shift / Symbol Shift.
+        // Takes MODIFIER_KEY_OPTIONS ids; invalid/unknown ids fall back to defaults.
+        setModifierKeys(capsOption, symbolOption) {
+            if (!MODIFIER_KEY_OPTIONS[capsOption]) capsOption = DEFAULT_CAPS_SHIFT_OPTION;
+            if (!MODIFIER_KEY_OPTIONS[symbolOption]) symbolOption = DEFAULT_SYMBOL_SHIFT_OPTION;
+            // Remove previously configured codes from the key map
+            for (const code of this.capsShiftCodes) delete this.keyMap[code];
+            for (const code of this.symbolShiftCodes) delete this.keyMap[code];
+            this.capsShiftOption = capsOption;
+            this.symbolShiftOption = symbolOption;
+            this.capsShiftCodes = MODIFIER_KEY_OPTIONS[capsOption].codes.slice();
+            this.symbolShiftCodes = MODIFIER_KEY_OPTIONS[symbolOption].codes.slice();
+            for (const code of this.capsShiftCodes) this.keyMap[code] = [0, 0];
+            for (const code of this.symbolShiftCodes) this.keyMap[code] = [7, 1];
         }
 
         // Update border dimensions based on current preset and machine type

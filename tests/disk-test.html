@@ -91,11 +91,15 @@
         <button onclick="runMDRLoaderTests()">MDRLoader</button>
         <button onclick="runOPDLoaderTests()">OPDLoader</button>
         <button onclick="runDidaktikLoaderTests()">DidaktikLoader</button>
+        <button onclick="runMonoloaderCopyTests()">Monoloader Copy</button>
+        <button onclick="runBannerTests()">Banner</button>
     </div>
     <div id="log"></div>
 
 <script type="module">
     import { TRDLoader, SCLLoader, TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
+    import { extractTrdFileDescriptor, addMetaFromDescriptor, shapeBasicEntry, isMonoloader, trdBasicAutostartLine, splitMonoloader } from '../ui/disk-file-copy.js';
+    import { parseSpecscii, encodeBannerEntries, decodeBannerNames, isBannerName, lastContentRow, simulateListPrint, BANNER_MAX_ROWS } from '../core/specscii.js';
 
     const logEl = document.getElementById('log');
     const summaryEl = document.getElementById('summary');
@@ -2093,6 +2097,237 @@
         }
     }
 
+    // ========== TR-DOS/SCL file copy (monoloader, any type) ==========
+    // Drives the real Edit-tab copy helpers (ui/disk-file-copy.js): the path that
+    // copies a file from one disk panel to another. Mirrors diskEditorAddFile's
+    // field assembly (sector count + zero-pad) so the monoloader logic itself is
+    // the real code; the rule is type-agnostic — CODE/DATA tails count too.
+    function copyTrdEntry(srcFile, opts = {}) {
+        const desc = extractTrdFileDescriptor(srcFile, opts); // src model -> descriptor (scl->trd is identity)
+        const meta = addMetaFromDescriptor(desc);
+        let fileData = desc.rawData, startField = desc.addr, lengthField = desc.rawData.length, progLenField = null;
+        if (desc.ext === 'B') {
+            const shaped = shapeBasicEntry(desc.rawData, meta);
+            fileData = shaped.data; startField = 0; lengthField = shaped.length; progLenField = shaped.programLength;
+        } else if (meta.verbatim) {
+            startField = (meta.startAddress != null) ? meta.startAddress : desc.addr;
+            lengthField = (meta.length != null) ? meta.length : desc.rawData.length;
+        }
+        const sectors = Math.ceil(fileData.length / 256);
+        const data = new Uint8Array(sectors * 256);
+        data.set(fileData);
+        return { ext: desc.ext, startAddress: startField, length: lengthField,
+                 programLength: progLenField, sectors, data, desc };
+    }
+
+    function bytesEqual(a, b) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    }
+
+    function runMonoloaderCopyTests() {
+        section('TR-DOS/SCL file copy — monoloader (any type)');
+
+        // BASIC monoloader: 89-byte BASIC loader declared, but 23 sectors
+        // allocated (5888 B) with appended CODE. The user's ASC2_9.SCL shape.
+        const monoData = new Uint8Array(23 * 256);
+        for (let i = 0; i < monoData.length; i++) monoData[i] = (i * 7 + 13) & 0xFF; // recognisable pattern
+        monoData[80] = 0x80; monoData[81] = 0xAA; monoData[82] = 10; monoData[83] = 0; // autostart trailer (line 10)
+        const monoSrc = { name: 'ASCREEN!', ext: 'B', startAddress: 0, length: 89, programLength: 89, sectors: 23, data: monoData };
+
+        assert(isMonoloader(89, 23), 'monoloader detected (89 B declared, 23 sectors)');
+        const m = copyTrdEntry(monoSrc);
+        assert(!!m.desc.verbatim, 'BASIC monoloader extracted with verbatim flag');
+        assert(m.sectors === 23, `copy keeps all 23 sectors (got ${m.sectors})`);
+        assert(m.length === 89, `copy keeps catalogue length 89 (got ${m.length})`);
+        assert(m.programLength === 89, `copy keeps programLength 89 (got ${m.programLength})`);
+        assert(bytesEqual(m.data, monoData), 'BASIC copy is byte-identical to the source allocation (payload preserved)');
+
+        // CODE monoloader: a 'C' file declaring 89 B at 0x8000 but allocating 23
+        // sectors with an appended payload — must also copy whole + keep start/len.
+        const codeData = new Uint8Array(23 * 256);
+        for (let i = 0; i < codeData.length; i++) codeData[i] = (i * 11 + 5) & 0xFF;
+        const codeSrc = { name: 'GAME', ext: 'C', startAddress: 0x8000, length: 89, programLength: null, sectors: 23, data: codeData };
+
+        const c = copyTrdEntry(codeSrc);
+        assert(!!c.desc.verbatim, 'CODE monoloader extracted with verbatim flag');
+        assert(c.ext === 'C', 'CODE monoloader keeps its C type');
+        assert(c.sectors === 23, `CODE copy keeps all 23 sectors (got ${c.sectors})`);
+        assert(c.length === 89, `CODE copy keeps catalogue length 89 (got ${c.length})`);
+        assert(c.startAddress === 0x8000, `CODE copy keeps start address 0x8000 (got ${c.startAddress.toString(16)})`);
+        assert(bytesEqual(c.data, codeData), 'CODE copy is byte-identical to the source allocation (payload preserved)');
+
+        // Negative: a normal BASIC file (length fits its sectors) must NOT be
+        // treated as a monoloader, and round-trips program+vars + trailer.
+        const progVars = new Uint8Array(300); // 2 sectors, no appended CODE
+        for (let i = 0; i < progVars.length; i++) progVars[i] = (i * 3 + 1) & 0xFF;
+        progVars[300 - 4] = 0x80; progVars[300 - 3] = 0xAA; progVars[300 - 2] = 20; progVars[300 - 1] = 0;
+        const normData = new Uint8Array(2 * 256); normData.set(progVars);
+        const normSrc = { name: 'LOADER', ext: 'B', startAddress: 0, length: 300, programLength: 200, sectors: 2, data: normData };
+
+        assert(!isMonoloader(300, 2), 'normal BASIC not flagged as monoloader (300 B in 2 sectors)');
+        const n = copyTrdEntry(normSrc);
+        assert(!n.desc.verbatim, 'normal BASIC extracted without verbatim');
+        assert(n.length === 300, `normal BASIC length preserved (got ${n.length})`);
+        assert(n.programLength === 200, `normal BASIC vars offset preserved (got ${n.programLength})`);
+        assert(trdBasicAutostartLine(n.data) === 20, 'normal BASIC autostart trailer survives the round-trip');
+
+        // Negative: a normal CODE file slices to its declared length as before.
+        const ncData = new Uint8Array(2 * 256);
+        for (let i = 0; i < ncData.length; i++) ncData[i] = (i + 1) & 0xFF;
+        const ncSrc = { name: 'CHUNK', ext: 'C', startAddress: 0x6000, length: 400, programLength: null, sectors: 2, data: ncData };
+        const nc = copyTrdEntry(ncSrc);
+        assert(!nc.desc.verbatim, 'normal CODE extracted without verbatim');
+        assert(nc.length === 400, `normal CODE length preserved (got ${nc.length})`);
+        assert(nc.startAddress === 0x6000, 'normal CODE start address preserved');
+
+        // Edge: declared length exactly fills its sectors (boundary, not mono).
+        assert(!isMonoloader(512, 2), 'length on exact sector boundary is not a monoloader');
+        assert(isMonoloader(89, 2), 'one extra empty sector still counts as monoloader (carried verbatim)');
+
+        // Split (RE helper): monoloader -> loader (declared length) + appended CODE.
+        const sp = splitMonoloader(monoSrc); // BASIC, length 89, 23 sectors
+        assert(sp.loader.ext === 'B' && sp.loader.length === 89, 'split loader keeps BASIC type + declared length 89');
+        assert(sp.loader.sectors === 1, `split loader is 1 sector (got ${sp.loader.sectors})`);
+        assert(sp.payload.ext === 'C', 'split payload is a CODE entry');
+        assert(sp.payload.startAddress === 0, 'split payload start address is unknown (0)');
+        assert(sp.payload.length === 23 * 256 - 89, `split payload length = allocation - declared (got ${sp.payload.length})`);
+        const recon = new Uint8Array(23 * 256);
+        recon.set(sp.loader.data.subarray(0, sp.loader.length), 0);
+        recon.set(sp.payload.data.subarray(0, sp.payload.length), sp.loader.length);
+        assert(bytesEqual(recon, monoData), 'loader + payload reconstruct the source allocation (split is lossless)');
+
+        // Split a CODE monoloader too: payload keeps type C, loader keeps its start.
+        const spc = splitMonoloader(codeSrc); // CODE @0x8000, length 89, 23 sectors
+        assert(spc.loader.ext === 'C' && spc.loader.startAddress === 0x8000, 'split CODE loader keeps C type + start 0x8000');
+        assert(spc.payload.ext === 'C' && spc.payload.length === 23 * 256 - 89, 'split CODE payload is the remaining allocation');
+    }
+
+    function runBannerTests() {
+        section('SPECSCII catalogue banner (core/specscii.js)');
+
+        // ---- Stream parsing ----
+        const stream = Uint8Array.from([
+            0x10, 2, 0x11, 6, 0x13, 1,   // INK 2, PAPER 6, BRIGHT 1
+            0x41, 0x42,                  // "AB" at (0,0),(0,1)
+            0x16, 5, 0, 0x8F,            // AT 5,0 + solid block
+            0x0D,                        // newline -> (6,0)
+            0x14, 1, 0x43                // INVERSE 1, "C" (ink/paper swapped)
+        ]);
+        const parsed = parseSpecscii(stream);
+        assert(parsed.cellCount === 4, `parse: 4 cells (got ${parsed.cellCount})`);
+        const a = parsed.grid[0][0];
+        assert(a && a.ch === 0x41 && a.ink === 2 && a.paper === 6 && a.bright === 1,
+            'parse: "A" carries INK 2 PAPER 6 BRIGHT 1');
+        assert(parsed.grid[5][0] && parsed.grid[5][0].ch === 0x8F, 'parse: AT 5,0 places the block');
+        const cInv = parsed.grid[6][0];
+        assert(cInv && cInv.ch === 0x43 && cInv.ink === 6 && cInv.paper === 2,
+            'parse: ENTER breaks the line, INVERSE swaps ink/paper');
+
+        // ---- isBannerName ----
+        assert(isBannerName(Uint8Array.from([0x16, 0, 0, 0x11, 2, 0x8B, 0x83, 0x83])), 'isBannerName: Deja Vu style entry detected');
+        assert(!isBannerName(Uint8Array.from('boot    '.split('').map(c => c.charCodeAt(0)))), 'isBannerName: plain filename passes');
+
+        // ---- Encoder round-trip through a simulated TR-DOS LIST ----
+        // Torture grid: 5 rows of text/blocks with heavy attribute churn.
+        const ROWS = 5;
+        const grid = [];
+        for (let r = 0; r < 24; r++) grid.push(new Array(32).fill(null));
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < 32; c++) {
+                const kind = (r * 13 + c * 7) % 4;
+                const ch = kind === 0 ? 0x20 : kind === 1 ? 0x41 + ((r * 7 + c) % 26) : kind === 2 ? 0x80 + ((r + c) & 15) : 0x8F;
+                grid[r][c] = { ch, ink: (r * 3 + c) & 7, paper: (c >> 2) & 7, bright: r & 1, flash: ((r * c) % 13 === 0) ? 1 : 0 };
+            }
+        }
+        assert(lastContentRow(grid) === ROWS - 1, `lastContentRow finds row ${ROWS - 1}`);
+
+        const { names } = encodeBannerEntries(grid, ROWS);
+        assert(names.every(n => n.length === 8), 'encode: every entry name is exactly 8 bytes');
+        assert(names.every(n => n[0] === 0x16), 'encode: every entry starts with AT');
+        assert(names.every(n => n[1] <= BANNER_MAX_ROWS), 'encode: AT rows stay in the upper screen');
+        assert(names.length <= 126, `encode: ${names.length} entries for a 5-row banner (leaves room for files)`);
+        log(`  5-row torture banner: ${names.length} entries`, 'info');
+
+        // Simulate what LIST paints, including the junk columns after each entry
+        const sim = simulateListPrint(names);
+        const relevant = (ch) => ch === 0x20 ? ['paper', 'bright', 'flash'] : ch === 0x8F ? ['ink', 'bright', 'flash'] : ['ink', 'paper', 'bright', 'flash'];
+        let mismatches = 0;
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < 32; c++) {
+                const want = grid[r][c];
+                const got = sim.grid[r][c];
+                if (!got || got.ch !== want.ch) { mismatches++; continue; }
+                for (const k of relevant(want.ch)) if (got[k] !== want[k]) { mismatches++; break; }
+            }
+        }
+        assert(mismatches === 0, `simulated LIST reproduces all ${ROWS * 32} banner cells (${mismatches} mismatches)`);
+        // Reset entries: the junk row prints black-on-white, rows below stay clean
+        const junkRow = sim.grid[ROWS];
+        const junkCells = junkRow.filter(Boolean);
+        assert(junkCells.length > 0, 'junk row exists below the banner (authentic LIST leftover)');
+        assert(junkCells.every(cell => cell.ink === 0 && cell.paper === 7 && cell.bright === 0 && cell.flash === 0),
+            'reset entries: junk row prints ink 0 / paper 7, flash+bright off');
+        assert(sim.grid[ROWS + 1].every(cell => cell === null), 'nothing painted below the junk row');
+
+        // Row limit is enforced (AT upper-screen limit)
+        let threw = false;
+        try { encodeBannerEntries(grid, BANNER_MAX_ROWS + 1); } catch (e) { threw = true; }
+        assert(threw, `encode rejects more than ${BANNER_MAX_ROWS} rows`);
+
+        // ---- TRD build round-trip ----
+        const fdata = new Uint8Array(512).fill(0xAB);
+        const files = [{ name: 'boot    ', ext: 'B', length: 300, startAddress: 0, programLength: 300, sectors: 2, data: fdata, deleted: false }];
+        const trd = TRDLoader.buildTRD(files, 'BANNER', names);
+        let ok = true;
+        for (let i = 0; i < names.length; i++) {
+            for (let b = 0; b < 8; b++) if (trd[i * 16 + b] !== names[i][b]) ok = false;
+            if (trd[i * 16 + 8] !== 0x20) ok = false;             // type: space
+            if (trd[i * 16 + 13] !== 0) ok = false;               // zero sectors
+        }
+        assert(ok, 'buildTRD: banner entries verbatim before the files, type space, zero sectors');
+        const bootOff = names.length * 16;
+        assert(String.fromCharCode(...trd.slice(bootOff, bootOff + 8)) === 'boot    ' && trd[bootOff + 8] === 0x42,
+            'buildTRD: real file entry follows the banner');
+        assert(trd[bootOff + 14] === 0 && trd[bootOff + 15] === 1, 'buildTRD: file data still starts at track 1');
+        assert(trd[16 * 256] === 0xAB, 'buildTRD: file data written at track 1');
+        assert(trd[0x800 + 0xE4] === names.length + 1, 'buildTRD: sysinfo counts banner entries (like Deja Vu #0A)');
+        assert((trd[0x800 + 0xE5] | (trd[0x800 + 0xE6] << 8)) === 2560 - 16 - 2, 'buildTRD: banner consumes no free sectors');
+
+        // Reconstruct the banner from the raw catalogue and compare pictures
+        const namesBack = [];
+        for (let i = 0; i < 128; i++) {
+            if (trd[i * 16] === 0) break;
+            const nm = trd.slice(i * 16, i * 16 + 8);
+            if (isBannerName(nm)) namesBack.push(Uint8Array.from(nm));
+        }
+        assert(namesBack.length === names.length, 'TRD catalogue: all banner entries recognised by isBannerName');
+        const back = decodeBannerNames(namesBack).grid;
+        const orig = decodeBannerNames(names).grid;
+        let backOk = true;
+        for (let r = 0; r < 24; r++) for (let c = 0; c < 32; c++) {
+            const x = orig[r][c], y = back[r][c];
+            if ((x === null) !== (y === null)) { backOk = false; continue; }
+            if (x && (x.ch !== y.ch || x.ink !== y.ink || x.paper !== y.paper || x.bright !== y.bright || x.flash !== y.flash)) backOk = false;
+        }
+        assert(backOk, 'banner decoded from the built TRD matches the encoded picture');
+
+        // ---- SCL build ----
+        const scl = SCLLoader.buildSCL(files, names);
+        assert(scl[8] === names.length + 1, 'buildSCL: header counts banner + files');
+        let sclOk = true;
+        for (let i = 0; i < names.length; i++) {
+            const off = 9 + i * 14;
+            for (let b = 0; b < 8; b++) if (scl[off + b] !== names[i][b]) sclOk = false;
+            if (scl[off + 8] !== 0x20 || scl[off + 13] !== 0) sclOk = false;
+        }
+        assert(sclOk, 'buildSCL: banner entries verbatim, type space, zero sectors');
+        const fileOff = 9 + names.length * 14;
+        assert(String.fromCharCode(...scl.slice(fileOff, fileOff + 8)) === 'boot    ', 'buildSCL: file entry follows the banner');
+        assert(scl.length === 9 + (names.length + 1) * 14 + 512 + 4, 'buildSCL: banner adds headers only, no data blocks');
+    }
+
     function runAll() {
         logEl.innerHTML = '';
         passed = 0;
@@ -2109,6 +2344,8 @@
         try { runDidaktikLoaderTests(); } catch(e) { log(`ERROR in DidaktikLoader: ${e.message}`, 'fail'); }
         try { runDeleteCompactionTests(); } catch(e) { log(`ERROR in Delete/Compaction: ${e.message}`, 'fail'); }
         try { runSlackTests(); } catch(e) { log(`ERROR in Keep-slack: ${e.message}`, 'fail'); }
+        try { runMonoloaderCopyTests(); } catch(e) { log(`ERROR in Monoloader copy: ${e.message}`, 'fail'); }
+        try { runBannerTests(); } catch(e) { log(`ERROR in Banner: ${e.message}`, 'fail'); }
         updateSummary();
     }
 
@@ -2124,6 +2361,8 @@
     window.runMDRLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMDRLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
     window.runOPDLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runOPDLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
     window.runDidaktikLoaderTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runDidaktikLoaderTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runMonoloaderCopyTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runMonoloaderCopyTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
+    window.runBannerTests = () => { logEl.innerHTML = ''; passed = 0; failed = 0; try { runBannerTests(); } catch(e) { log(`ERROR: ${e.message}`, 'fail'); } updateSummary(); };
 
     // Auto-run
     runAll();
