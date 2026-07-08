@@ -65,6 +65,27 @@ const DEFAULT_OPTS = {
     hexPrefix: 'leave',     // 'leave' | '#' | '$' | '0x' | 'h' - unify hex notation
     binFormat: 'leave',     // 'leave' | '%' | '0b' | 'b' - unify binary notation
     octFormat: 'leave',     // 'leave' | 'o' | 'q' - unify octal notation
+    // Annotate each numeric operand in the trailing comment with its value in
+    // the *other* base: a decimal literal gets a hex note, a hex/binary/octal
+    // literal gets a decimal note (e.g. LD HL,1234 → "; 1234=$04D2";
+    // OUT ($FE),A → "; $FE=254"). Hex output follows hexPrefix (else '$') and
+    // is padded to 2/4 digits. Decimal literals ≤ 9 are skipped (dec and hex
+    // coincide). Idempotent (a prior note is stripped before re-adding).
+    // The value is the mode, which also governs lines that ALREADY have a
+    // comment:
+    //   'off'     - feature disabled
+    //   'add'     - append the note in parentheses after the existing comment
+    //   'replace' - discard the existing comment, keep only the note
+    //   'skip'    - leave a commented line alone (bare lines still annotated)
+    annotateBase: 'off',
+    // Generate labels for current-address-relative jumps (JR/JP/DJNZ/… $±N).
+    // Resolves the target line by summing instruction byte sizes, inserts a
+    // label there (reusing an existing global label if present), and rewrites
+    // the operand. Backward JR/JP/DJNZ → 'back_N', forward → 'fwd_N', any
+    // other instruction (CALL, LD, …) → 'addr_N'. Only resolves when every
+    // line in the span has a known size and the target lands on an instruction
+    // boundary; anything uncertain is left as-is. Idempotent.
+    genJumpLabels: false,
     expandMulti: true,      // PUSH AF,HL → one per line; LD H,D,L,E → LD pairs
     indent: true,           // align instructions to indentCol
     indentCol: 8,
@@ -80,7 +101,10 @@ const DEFAULT_OPTS = {
 
 export function beautify(text, options = {}) {
     const opts = { ...DEFAULT_OPTS, ...options };
-    const src = text.replace(/\r\n|\r/g, '\n').split('\n');
+    // Pre-pass: turn $±N relative jumps into named labels before the operand
+    // transforms (base conversion etc.) run, so offsets aren't rewritten.
+    let input = opts.genJumpLabels ? generateJumpLabels(text, opts) : text;
+    const src = input.replace(/\r\n|\r/g, '\n').split('\n');
     let out = [];
 
     for (const raw of src) {
@@ -141,7 +165,12 @@ export function beautify(text, options = {}) {
             const lbl = (!used && labelForFirst) ? labelForFirst : null;
             used = used || !!lbl;
             const isData = isDataLine(realStmts[i]);
-            out.push(composeLine(lbl, parts, isLast ? cmt : '', opts, isData));
+            let lineComment = isLast ? cmt : '';
+            if (opts.annotateBase && opts.annotateBase !== 'off') {
+                const note = buildBaseNote(parts.ops, opts);
+                lineComment = mergeBaseNote(stripBaseNote(lineComment), note, opts.annotateBase);
+            }
+            out.push(composeLine(lbl, parts, lineComment, opts, isData));
 
             if (isLast && ((opts.blankAfterFlow && isBlockEnd(realStmts[i])) ||
                 (opts.blankAfterBlock && BLOCK_REPEAT.has(mnemonicOf(realStmts[i]))))) {
@@ -376,6 +405,15 @@ function processOperands(ops, opts) {
             while (i < ops.length && (ops[i] === ' ' || ops[i] === '\t')) i++;
             continue;
         }
+        // current-address-relative offset ($+n / $-n) — never a convertible
+        // literal, so copy the whole token verbatim (protects jump offsets).
+        if (ch === '$' && (ops[i + 1] === '+' || ops[i + 1] === '-')) {
+            let j = i + 2;
+            while (j < ops.length && /[$#%0-9A-Za-z_]/.test(ops[j])) j++;
+            out += ops.slice(i, j);
+            i = j;
+            continue;
+        }
         // $-prefixed / #-prefixed hex (followed by at least one hex digit).
         // Bare $ (current address) and $+n / $-n are left alone.
         if ((ch === '$' || ch === '#') && /[0-9a-fA-F]/.test(ops[i + 1] || '')) {
@@ -481,6 +519,142 @@ function emitOct(digits, target) {
     return digits + target;
 }
 
+// ---- base annotation (other-system note in the comment) -------------------
+
+// Scan an operand string for numeric literals, using the same recognition
+// rules as processOperands (strings, $ current-address, % modulo, temp labels
+// and AF' are all skipped). Returns [{ value, kind, token }] in order, where
+// `kind` is the source base ('hex'|'bin'|'oct'|'dec') and `token` is the
+// literal exactly as it appears.
+function scanLiterals(ops) {
+    const lits = [];
+    let i = 0, prev = '';
+    while (i < ops.length) {
+        const ch = ops[i];
+        // string literal - skip verbatim
+        if (ch === '"' || (ch === "'" && !/[A-Za-z0-9_')]/.test(ops[i - 1] || ''))) {
+            const q = ch; let j = i + 1;
+            while (j < ops.length && ops[j] !== q) j++;
+            i = j + 1; prev = q; continue;
+        }
+        // current-address-relative offset ($+n / $-n) — not a literal, skip it
+        if (ch === '$' && (ops[i + 1] === '+' || ops[i + 1] === '-')) {
+            let j = i + 2;
+            while (j < ops.length && /[$#%0-9A-Za-z_]/.test(ops[j])) j++;
+            prev = ops[j - 1] || ''; i = j; continue;
+        }
+        // $-prefixed / #-prefixed hex (bare $ and $+n are left alone)
+        if ((ch === '$' || ch === '#') && /[0-9a-fA-F]/.test(ops[i + 1] || '')) {
+            let j = i + 1;
+            while (j < ops.length && /[0-9a-fA-F]/.test(ops[j])) j++;
+            const digits = ops.slice(i + 1, j);
+            lits.push({ value: parseInt(digits, 16), kind: 'hex', token: ops.slice(i, j) });
+            prev = ops[j - 1]; i = j; continue;
+        }
+        // %-prefixed binary - not the modulo operator
+        if (ch === '%' && /[01]/.test(ops[i + 1] || '') && !/[A-Za-z0-9_)$]/.test(prev)) {
+            let j = i + 1;
+            while (j < ops.length && /[01]/.test(ops[j])) j++;
+            const digits = ops.slice(i + 1, j);
+            lits.push({ value: parseInt(digits, 2), kind: 'bin', token: ops.slice(i, j) });
+            prev = ops[j - 1]; i = j; continue;
+        }
+        // digit-led token: 0x/0b prefixes, h/b/o/q/d suffixes, or plain decimal
+        if (/[0-9]/.test(ch)) {
+            let j = i;
+            while (j < ops.length && /[0-9a-zA-Z_]/.test(ops[j])) j++;
+            const tok = ops.slice(i, j);
+            let m, dg;
+            if (m = tok.match(/^0[xX]([0-9a-fA-F]+)$/)) lits.push({ value: parseInt(m[1], 16), kind: 'hex', token: tok });
+            else if (m = tok.match(/^([0-9][0-9a-fA-F]*)[hH]$/)) { dg = stripGuardZero(m[1]); lits.push({ value: parseInt(dg, 16), kind: 'hex', token: tok }); }
+            else if (m = tok.match(/^0[bB]([01]+)$/)) lits.push({ value: parseInt(m[1], 2), kind: 'bin', token: tok });
+            else if (m = tok.match(/^([01]{3,})[bB]$/)) lits.push({ value: parseInt(m[1], 2), kind: 'bin', token: tok });
+            else if (m = tok.match(/^([0-7]+)[oOqQ]$/)) lits.push({ value: parseInt(m[1], 8), kind: 'oct', token: tok });
+            else if (m = tok.match(/^([0-9]+)[dD]?$/)) lits.push({ value: parseInt(m[1], 10), kind: 'dec', token: tok });
+            // else: temp label / mixed identifier - not a literal
+            prev = ops[j - 1] || ''; i = j; continue;
+        }
+        // identifier word (incl. trailing AF')
+        if (/[A-Za-z_]/.test(ch)) {
+            let j = i;
+            while (j < ops.length && /[\w]/.test(ops[j])) j++;
+            if (ops[j] === "'") j++;
+            prev = ops[j - 1] || ''; i = j; continue;
+        }
+        if (!/\s/.test(ch)) prev = ch;
+        i++;
+    }
+    return lits;
+}
+
+// Hex notation used inside annotation comments: follow the hexPrefix option,
+// defaulting to '$' when it's 'leave'.
+function commentHexNotation(opts) {
+    return (opts.hexPrefix && opts.hexPrefix !== 'leave') ? opts.hexPrefix : '$';
+}
+
+// Uppercase hex digits, padded to the natural width (byte→2, word→4) so
+// annotation values line up regardless of the hexPad* code options.
+function commentPadHex(value) {
+    let h = value.toString(16).toUpperCase();
+    if (value <= 0xFF) h = h.padStart(2, '0');
+    else if (value <= 0xFFFF) h = h.padStart(4, '0');
+    return h;
+}
+
+// Convert one literal to its "other" base as a display string, or null when it
+// should be skipped: decimal → hex; hex/binary/octal → decimal. A value ≤ 9
+// coming from decimal or hex is skipped (the two bases coincide there).
+function convertOtherBase(lit, opts) {
+    if (lit.kind === 'dec') {
+        if (lit.value <= 9) return null;
+        return emitHex(commentPadHex(lit.value), commentHexNotation(opts));
+    }
+    if (lit.kind === 'hex' && lit.value <= 9) return null;
+    return lit.value.toString(10);
+}
+
+// Build the "other base" note for a line's operands, e.g. "1234=$04D2" or
+// "$FE=254, %1010=10". Empty string when nothing is annotatable.
+function buildBaseNote(ops, opts) {
+    if (!ops) return '';
+    const items = [];
+    for (const lit of scanLiterals(ops)) {
+        const conv = convertOtherBase(lit, opts);
+        if (conv !== null) items.push(lit.token + '=' + conv);
+    }
+    return items.join(', ');
+}
+
+// Recognizer for a previously generated note so it can be stripped before a
+// fresh one is added (keeps the transform idempotent). Matches only our own
+// "<literal>=<value>" shape, so ordinary prose parentheticals are left intact.
+const BASE_NOTE_LIT = '(?:\\$[0-9A-Fa-f]+|#[0-9A-Fa-f]+|0[xX][0-9A-Fa-f]+|%[01]+|[0-9][0-9A-Fa-f]*[hHbBoOqQdD]?)';
+const BASE_NOTE_CONV = '(?:\\$[0-9A-Fa-f]+|#[0-9A-Fa-f]+|0[xX][0-9A-Fa-f]+|[0-9A-Fa-f]+[hH]|[0-9]+)';
+const BASE_NOTE_ITEMS = BASE_NOTE_LIT + '=' + BASE_NOTE_CONV + '(?:,\\s*' + BASE_NOTE_LIT + '=' + BASE_NOTE_CONV + ')*';
+const BASE_NOTE_WHOLE = new RegExp('^;+\\s*' + BASE_NOTE_ITEMS + '\\s*$');
+const BASE_NOTE_TRAIL = new RegExp('\\s*\\(' + BASE_NOTE_ITEMS + '\\)\\s*$');
+
+// Remove a prior annotation note, recovering the user's own comment (or '' if
+// the whole comment was just a note). Leaves non-note comments untouched.
+function stripBaseNote(comment) {
+    if (!comment) return comment;
+    if (BASE_NOTE_WHOLE.test(comment)) return '';
+    return comment.replace(BASE_NOTE_TRAIL, '');
+}
+
+// Merge a freshly built note into a comment. `mode` governs the case where a
+// (user) comment is already present: 'add' appends in parentheses, 'replace'
+// drops it for the note, 'skip' leaves the comment as-is. A line with no
+// comment always gets a plain "; note".
+function mergeBaseNote(comment, note, mode) {
+    if (!note) return comment;
+    if (!comment) return '; ' + note;
+    if (mode === 'skip') return comment;
+    if (mode === 'replace') return '; ' + note;
+    return comment + '  (' + note + ')';
+}
+
 // ---- line composition -----------------------------------------------------
 
 function formatLabelLine(label) {
@@ -563,4 +737,364 @@ function isBlockEnd(stmt) {
         return true;
     }
     return false;
+}
+
+// ---- relative-jump label generation ---------------------------------------
+// Turn current-address-relative jumps (JR/JP/… $±N) into named labels. The
+// target line is found by summing instruction byte sizes across the span; a
+// label is inserted there (or an existing global label reused) and the operand
+// rewritten. Directional names for JR/JP/DJNZ (back_/fwd_), neutral addr_ for
+// everything else. Conservative: only resolves when every intervening line has
+// a known size and the target lands exactly on an instruction boundary.
+
+const BRANCH_MNEMS = new Set(['JR', 'JP', 'DJNZ']);
+// Directives that emit no bytes (safe to cross); anything else unknown is a
+// barrier so a span containing it won't resolve.
+const ZERO_DIRECTIVES = new Set(['EQU', 'DEFL', '=', 'EQUZ']);
+
+// Parse a bare numeric token (dec/hex/bin/oct) to a value, or null.
+function parseIntToken(tok) {
+    if (tok == null) return null;
+    const t = tok.trim();
+    let m;
+    if (m = t.match(/^\$([0-9a-fA-F]+)$/)) return parseInt(m[1], 16);
+    if (m = t.match(/^#([0-9a-fA-F]+)$/)) return parseInt(m[1], 16);
+    if (m = t.match(/^0[xX]([0-9a-fA-F]+)$/)) return parseInt(m[1], 16);
+    if (m = t.match(/^([0-9][0-9a-fA-F]*)[hH]$/)) return parseInt(stripGuardZero(m[1]), 16);
+    if (m = t.match(/^%([01]+)$/)) return parseInt(m[1], 2);
+    if (m = t.match(/^0[bB]([01]+)$/)) return parseInt(m[1], 2);
+    if (m = t.match(/^([01]+)[bB]$/)) return parseInt(m[1], 2);
+    if (m = t.match(/^([0-7]+)[oOqQ]$/)) return parseInt(m[1], 8);
+    if (m = t.match(/^([0-9]+)[dD]?$/)) return parseInt(m[1], 10);
+    return null;
+}
+
+// If an operand list contains a single $ / $±N term, return its signed offset,
+// which comma-separated operand it is, and whether it was parenthesized.
+function relTargetOffset(ops) {
+    const parts = ops === '' ? [] : splitTopLevelCommas(ops);
+    for (let k = 0; k < parts.length; k++) {
+        let t = parts[k].trim();
+        let paren = false, inner = t;
+        if (/^\(.*\)$/.test(t)) { inner = t.slice(1, -1).trim(); paren = true; }
+        if (inner === '$') return { offset: 0, operandIndex: k, paren };
+        const m = inner.match(/^\$\s*([+\-])\s*(\S+)$/);
+        if (m) {
+            const v = parseIntToken(m[2]);
+            if (v == null) continue;
+            return { offset: m[1] === '-' ? -v : v, operandIndex: k, paren };
+        }
+    }
+    return null;
+}
+
+// Classify a single operand token for instruction sizing.
+function classifyOperand(tok) {
+    const t = tok.trim();
+    const up = t.toUpperCase();
+    if (/^\(.*\)$/.test(t)) {
+        const inner = t.slice(1, -1).trim();
+        const iu = inner.toUpperCase();
+        if (iu === 'HL') return 'mem_hl';
+        if (iu === 'BC') return 'mem_bc';
+        if (iu === 'DE') return 'mem_de';
+        if (iu === 'SP') return 'mem_sp';
+        if (iu === 'C') return 'mem_c';
+        if (iu === 'IX' || iu === 'IY') return 'mem_idx';
+        if (/^(IX|IY)\s*[+\-]/i.test(inner)) return 'mem_idxd';
+        return 'mem_nn';
+    }
+    if (up === 'A') return 'A';
+    if (['B', 'C', 'D', 'E', 'H', 'L'].includes(up)) return 'r8';
+    if (['IXH', 'IXL', 'IYH', 'IYL', 'XH', 'XL', 'YH', 'LY', 'HX', 'LX', 'HY'].includes(up)) return 'r8x';
+    if (up === 'BC' || up === 'DE') return 'r16';
+    if (up === 'HL') return 'hl';
+    if (up === 'SP') return 'sp';
+    if (up === 'IX' || up === 'IY') return 'r16x';
+    if (up === 'AF' || up === "AF'") return 'af';
+    if (up === 'I') return 'I';
+    if (up === 'R') return 'R';
+    return 'imm';
+}
+
+// Byte size of an LD, or null if the form isn't recognized.
+function ldSize(parts, c) {
+    if (parts.length !== 2) return null;
+    const d = c[0], s = c[1];
+    const reg8 = t => (t === 'A' || t === 'r8');
+    if (reg8(d) && reg8(s)) return 1;
+    if (reg8(d) && s === 'mem_hl') return 1;
+    if (d === 'mem_hl' && reg8(s)) return 1;
+    if (reg8(d) && s === 'imm') return 2;
+    if (d === 'mem_hl' && s === 'imm') return 2;
+    if (d === 'r8x' || s === 'r8x') {
+        if (reg8(d) && s === 'r8x') return 2;
+        if (d === 'r8x' && reg8(s)) return 2;
+        if (d === 'r8x' && s === 'r8x') return 2;
+        if (d === 'r8x' && s === 'imm') return 3;
+        return null;
+    }
+    if (d === 'mem_idxd' && reg8(s)) return 3;
+    if (reg8(d) && s === 'mem_idxd') return 3;
+    if (d === 'mem_idxd' && s === 'imm') return 4;
+    if (d === 'A' && (s === 'mem_bc' || s === 'mem_de')) return 1;
+    if ((d === 'mem_bc' || d === 'mem_de') && s === 'A') return 1;
+    if (d === 'A' && s === 'mem_nn') return 3;
+    if (d === 'mem_nn' && s === 'A') return 3;
+    if (d === 'A' && (s === 'I' || s === 'R')) return 2;
+    if ((d === 'I' || d === 'R') && s === 'A') return 2;
+    if ((d === 'r16' || d === 'hl' || d === 'sp') && s === 'imm') return 3;
+    if (d === 'r16x' && s === 'imm') return 4;
+    if (d === 'hl' && s === 'mem_nn') return 3;
+    if (d === 'mem_nn' && s === 'hl') return 3;
+    if ((d === 'r16' || d === 'sp') && s === 'mem_nn') return 4;
+    if (d === 'mem_nn' && (s === 'r16' || s === 'sp')) return 4;
+    if (d === 'r16x' && s === 'mem_nn') return 4;
+    if (d === 'mem_nn' && s === 'r16x') return 4;
+    if (d === 'sp' && s === 'hl') return 1;
+    if (d === 'sp' && s === 'r16x') return 2;
+    return null;
+}
+
+// Byte size of one Z80 instruction from its mnemonic + operand text, or null
+// when the form isn't confidently known (caller then skips the span).
+function z80Size(mnem, opsRaw) {
+    const M = mnem.toUpperCase();
+    const ops = opsRaw.trim();
+    const parts = ops === '' ? [] : splitTopLevelCommas(ops).map(s => s.trim());
+    const c = parts.map(classifyOperand);
+
+    if (parts.length === 0 &&
+        ['NOP', 'HALT', 'DI', 'EI', 'EXX', 'RLCA', 'RRCA', 'RLA', 'RRA', 'DAA', 'CPL', 'SCF', 'CCF'].includes(M)) return 1;
+    if (['NEG', 'RETN', 'RETI', 'RRD', 'RLD', 'LDI', 'LDD', 'LDIR', 'LDDR', 'CPI', 'CPD', 'CPIR', 'CPDR',
+        'INI', 'IND', 'INIR', 'INDR', 'OUTI', 'OUTD', 'OTIR', 'OTDR'].includes(M)) return 2;
+    if (M === 'IM') return 2;
+    if (M === 'RET') return 1;
+    if (M === 'RST') return 1;
+    if (M === 'DJNZ' || M === 'JR') return 2;
+    if (M === 'CALL') return 3;
+    if (M === 'JP') {
+        const last = c[c.length - 1];
+        if (last === 'mem_hl') return 1;
+        if (last === 'mem_idx') return 2;
+        return 3;
+    }
+    if (M === 'EX') {
+        if (parts.length === 2) {
+            const a = parts[0].toUpperCase(), b = parts[1].toUpperCase();
+            if (a === 'AF' && (b === "AF'" || b === 'AF')) return 1;
+            if (a === 'DE' && b === 'HL') return 1;
+            if (a === '(SP)' && b === 'HL') return 1;
+            if (a === '(SP)' && (b === 'IX' || b === 'IY')) return 2;
+        }
+        return null;
+    }
+    if (M === 'PUSH' || M === 'POP') {
+        if (parts.length === 1) {
+            const t = parts[0].toUpperCase();
+            if (['AF', 'BC', 'DE', 'HL'].includes(t)) return 1;
+            if (t === 'IX' || t === 'IY') return 2;
+        }
+        return null;
+    }
+    if (M === 'INC' || M === 'DEC') {
+        if (parts.length !== 1) return null;
+        const t = c[0];
+        if (t === 'A' || t === 'r8' || t === 'mem_hl' || t === 'r16' || t === 'hl' || t === 'sp') return 1;
+        if (t === 'r16x' || t === 'r8x') return 2;
+        if (t === 'mem_idxd') return 3;
+        return null;
+    }
+    if (['ADD', 'ADC', 'SUB', 'SBC', 'AND', 'OR', 'XOR', 'CP'].includes(M)) {
+        if (parts.length === 2 && c[0] === 'hl' && M === 'ADD') return 1;
+        if (parts.length === 2 && c[0] === 'hl' && (M === 'ADC' || M === 'SBC')) return 2;
+        if (parts.length === 2 && c[0] === 'r16x' && M === 'ADD') return 2;
+        const opnd = c[c.length - 1];
+        if (opnd === 'A' || opnd === 'r8' || opnd === 'mem_hl') return 1;
+        if (opnd === 'r8x') return 2;
+        if (opnd === 'mem_idxd') return 3;
+        if (opnd === 'imm') return 2;
+        return null;
+    }
+    if (['RLC', 'RRC', 'RL', 'RR', 'SLA', 'SRA', 'SLL', 'SLI', 'SRL'].includes(M)) {
+        if (parts.length === 1) {
+            const t = c[0];
+            if (t === 'A' || t === 'r8' || t === 'mem_hl') return 2;
+            if (t === 'mem_idxd') return 4;
+        }
+        return null;
+    }
+    if (M === 'BIT' || M === 'RES' || M === 'SET') {
+        if (parts.length === 2) {
+            const t = c[1];
+            if (t === 'A' || t === 'r8' || t === 'mem_hl') return 2;
+            if (t === 'mem_idxd') return 4;
+        }
+        return null;
+    }
+    if (M === 'IN' || M === 'OUT') return 2;
+    if (M === 'LD') return ldSize(parts, c);
+    return null;
+}
+
+// Byte size of a data directive (DB/DW/DS…), or null if uncertain.
+function dataSize(M, ops) {
+    if (['DB', 'DEFB', 'DM', 'DEFM', 'BYTE'].includes(M)) {
+        const items = splitTopLevelCommas(ops);
+        let n = 0;
+        for (let it of items) {
+            it = it.trim();
+            if (it === '') return null;
+            if (/^["']/.test(it)) {
+                const q = it[0];
+                if (it.length >= 2 && it[it.length - 1] === q && it.slice(1, -1).length === 1) { n += 1; continue; }
+                return null;   // multi-char string: don't risk a miscount
+            }
+            n += 1;
+        }
+        return n;
+    }
+    if (['DW', 'DEFW', 'WORD'].includes(M)) {
+        const items = splitTopLevelCommas(ops);
+        if (items.some(x => x.trim() === '')) return null;
+        return items.length * 2;
+    }
+    if (['DS', 'DEFS', 'BLOCK'].includes(M)) {
+        const v = parseIntToken((splitTopLevelCommas(ops)[0] || '').trim());
+        return v == null ? null : v;
+    }
+    return null;
+}
+
+// Size of one parsed statement (instruction / data / zero-byte directive), or
+// null (a barrier the span can't cross).
+function statementSize(mnem, ops) {
+    const M = mnem.toUpperCase();
+    if (INSTRUCTIONS.has(M)) return z80Size(M, ops);
+    if (DATA_DIRS.has(M)) return dataSize(M, ops);
+    if (ZERO_DIRECTIVES.has(M)) return 0;
+    return null;
+}
+
+// Walk from srcIdx by `offset` bytes; return the line index that lands exactly
+// on an instruction boundary, or -1 (overshoot / unknown size / off the ends).
+function walkTarget(recs, srcIdx, offset) {
+    if (offset === 0) return srcIdx;
+    if (offset > 0) {
+        let acc = 0, j = srcIdx;
+        while (true) {
+            if (acc === offset) return j;
+            if (acc > offset) return -1;
+            const s = recs[j].size;
+            if (s == null) return -1;
+            acc += s; j++;
+            if (j >= recs.length) return -1;
+        }
+    }
+    let rel = 0, j = srcIdx;
+    while (true) {
+        if (rel === offset) return j;
+        if (rel < offset) return -1;
+        if (j - 1 < 0) return -1;
+        const s = recs[j - 1].size;
+        if (s == null) return -1;
+        rel -= s; j--;
+    }
+}
+
+// Skip blank/comment-only lines (same address) so the label lands on the code.
+function normalizeTarget(recs, t) {
+    let k = t;
+    while (k < recs.length) {
+        if (recs[k].kind === 'blank' && !recs[k].labelWord) { k++; continue; }
+        return k;
+    }
+    return -1;
+}
+
+export function generateJumpLabels(text, opts = {}) {
+    const rawLines = text.replace(/\r\n|\r/g, '\n').split('\n');
+    const N = rawLines.length;
+    const recs = [];
+    const allLabels = new Set();
+
+    for (let i = 0; i < N; i++) {
+        const raw = rawLines[i];
+        const { code, comment } = splitComment(raw);
+        if (code.trim() === '') { recs.push({ size: 0, kind: 'blank', raw, labelWord: '' }); continue; }
+        const { label, rest } = extractLabel(code);
+        const labelWord = label ? label.replace(/:$/, '') : '';
+        if (labelWord) allLabels.add(labelWord);
+        const stmts = splitStatements(rest).map(s => s.trim()).filter(s => s !== '')
+            .map(s => { const m = s.match(/^(\S+)(?:\s+([\s\S]*))?$/); return { mnem: m[1], ops: (m[2] || '').trim() }; });
+        let size = 0;
+        for (const st of stmts) { const z = statementSize(st.mnem, st.ops); if (z == null) { size = null; break; } size += z; }
+        let jump = null;
+        if (stmts.length === 1 && INSTRUCTIONS.has(stmts[0].mnem.toUpperCase())) {
+            const rel = relTargetOffset(stmts[0].ops);
+            if (rel) jump = { ...rel, mnem: stmts[0].mnem, ops: stmts[0].ops };
+        }
+        recs.push({
+            size, kind: stmts.length ? 'code' : 'labelonly', raw, label, comment,
+            labelWord, statements: stmts, jump,
+            globalLabel: (labelWord && !labelWord.startsWith('.')) ? labelWord : ''
+        });
+    }
+
+    // Resolve each jump to a target line.
+    const resolutions = [];
+    for (let i = 0; i < N; i++) {
+        const r = recs[i];
+        if (!r.jump) continue;
+        const t = walkTarget(recs, i, r.jump.offset);
+        if (t < 0) continue;
+        const tn = normalizeTarget(recs, t);
+        if (tn < 0) continue;
+        resolutions.push({ src: i, target: tn, offset: r.jump.offset, isBranch: BRANCH_MNEMS.has(r.jump.mnem.toUpperCase()) });
+    }
+    if (resolutions.length === 0) return text;
+
+    // Assign a name per target (reusing an existing global label if present),
+    // numbering back_/fwd_/addr_ independently in target order.
+    const byTarget = new Map();
+    for (const res of resolutions) {
+        if (!byTarget.has(res.target)) byTarget.set(res.target, []);
+        byTarget.get(res.target).push(res);
+    }
+    const counters = { back: 0, fwd: 0, addr: 0 };
+    const nameFor = new Map();
+    const insertAt = new Map();
+    for (const t of [...byTarget.keys()].sort((a, b) => a - b)) {
+        const refs = byTarget.get(t);
+        if (recs[t].globalLabel) { nameFor.set(t, recs[t].globalLabel); continue; }
+        let prefix = 'addr';
+        if (refs.some(x => x.isBranch && x.offset <= 0)) prefix = 'back';
+        else if (refs.some(x => x.isBranch && x.offset > 0)) prefix = 'fwd';
+        let name;
+        do { counters[prefix]++; name = `${prefix}_${counters[prefix]}`; } while (allLabels.has(name));
+        allLabels.add(name);
+        nameFor.set(t, name);
+        insertAt.set(t, name);
+    }
+
+    // Rewrite the operand on each source line.
+    const modified = new Map();
+    for (const res of resolutions) {
+        const r = recs[res.src];
+        const name = nameFor.get(res.target);
+        const st = r.statements[0];
+        const parts = splitTopLevelCommas(st.ops);
+        parts[r.jump.operandIndex] = r.jump.paren ? `(${name})` : name;
+        const newOps = parts.join(',');
+        const labelPart = r.label ? r.label + ' ' : '';
+        const code2 = labelPart + st.mnem + (newOps ? ' ' + newOps : '');
+        modified.set(res.src, code2 + (r.comment ? ' ' + r.comment : ''));
+    }
+
+    const out = [];
+    for (let i = 0; i < N; i++) {
+        if (insertAt.has(i)) out.push(insertAt.get(i) + ':');
+        out.push(modified.has(i) ? modified.get(i) : recs[i].raw);
+    }
+    return out.join('\n');
 }

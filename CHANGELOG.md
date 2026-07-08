@@ -2,6 +2,10 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.16
+- **Beautify: two new options.** *Generate labels for `$±N` jumps* resolves each relative jump's target by instruction sizes and names it (`back_`/`fwd_` for `JR`/`JP`/`DJNZ`, `addr_` otherwise), reusing an existing label and leaving anything it can't resolve exactly untouched. *Value → comment* annotates each operand with its value in the other base (`LD HL,1234` → `; 1234=$04D2`), with Add/Replace/Skip handling of existing comments. Both idempotent; base conversion no longer rewrites `$±N` offsets.
+- **Beautify dialog reorganized** into **Layout** and **Numbers & code** tabs with grouped, labelled options, so you can find the setting you want instead of hunting through one long list. The dialog no longer resizes when switching tabs, and the mouse wheel stays inside it instead of scrolling the emulator behind.
+
 ## v0.15.15
 - **Explorer: extract a SPECSCII catalogue banner as `.specscii`**: the Banner dialog gains a **Save .specscii** button to pull a disk's banner back out as a reusable file. Also fixed the preview not rendering text.
 - **Beautify: per-width number base conversion (hex ↔ decimal)**: independent **Byte** (≤ `$FF`) and **Word** (larger) selectors set each width's base separately — e.g. 8-bit values decimal while addresses go hex (`LD A,$FF`→`255`, `LD HL,$8000` stays hex). Optional byte/word hex padding (`$5`→`$05`, `$100`→`$0100`). Temp labels, `$` current-address, and modulo left alone.

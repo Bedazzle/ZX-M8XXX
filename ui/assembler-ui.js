@@ -2184,6 +2184,8 @@ export function initAssemblerUI({
             hexPrefix: document.getElementById('bfHexPrefix'),
             binFormat: document.getElementById('bfBinFormat'),
             octFormat: document.getElementById('bfOctFormat'),
+            annotateBase: document.getElementById('bfAnnotateBase'),
+            genJumpLabels: document.getElementById('bfGenLabels'),
             indent: document.getElementById('bfIndent'),
             align: document.getElementById('bfAlign'),
             alignComments: document.getElementById('bfAlignComments'),
@@ -2214,6 +2216,8 @@ export function initAssemblerUI({
                 hexPrefix: bf.hexPrefix.value,
                 binFormat: bf.binFormat.value,
                 octFormat: bf.octFormat.value,
+                annotateBase: bf.annotateBase.value,
+                genJumpLabels: bf.genJumpLabels.checked,
                 indent: bf.indent.checked,
                 align: bf.align.checked,
                 alignComments: bf.alignComments.checked,
@@ -2237,10 +2241,11 @@ export function initAssemblerUI({
             if (o.hexPrefix) bf.hexPrefix.value = o.hexPrefix;
             if (o.binFormat) bf.binFormat.value = o.binFormat;
             if (o.octFormat) bf.octFormat.value = o.octFormat;
+            if (o.annotateBase) bf.annotateBase.value = o.annotateBase;
             for (const k of ['spaceAfterComma', 'splitColon', 'labelOwnLine', 'blankAfterFlow',
                 'blankAfterBlock', 'normalizePseudo', 'expandMulti', 'blankBeforeLabel',
                 'commentSpace', 'indent', 'align', 'alignComments', 'collapseBlanks',
-                'hexPadBytes', 'hexPadWords']) {
+                'hexPadBytes', 'hexPadWords', 'genJumpLabels']) {
                 if (k in o) bf[k].checked = !!o[k];
             }
             if ('trimTrailing' in o) bf.trimTrailing.checked = !!o.trimTrailing;
@@ -2257,8 +2262,32 @@ export function initAssemblerUI({
             }
         }
 
+        // Option tabs (Layout / Numbers & code)
+        const bfTabs = [...beautifyDialog.querySelectorAll('.bf-tab')];
+        const bfPanels = [...beautifyDialog.querySelectorAll('.bf-tab-panel')];
+        function bfSetTab(name) {
+            bfTabs.forEach(t => t.classList.toggle('active', t.dataset.bftab === name));
+            bfPanels.forEach(p => p.classList.toggle('hidden', p.dataset.bfpanel !== name));
+            storageSet('zxm8_beautifyTab', name);
+        }
+        bfTabs.forEach(t => t.addEventListener('click', () => bfSetTab(t.dataset.bftab)));
+
+        // Keep the mouse wheel inside the dialog — don't scroll the emulator
+        // page behind it. Inner scroll areas (options list, preview) still
+        // scroll, but not past their edges.
+        beautifyDialog.addEventListener('wheel', (e) => {
+            const pane = e.target.closest('.bf-opts, .bf-preview');
+            if (pane && pane.scrollHeight > pane.clientHeight) {
+                const atTop = pane.scrollTop <= 0 && e.deltaY < 0;
+                const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight && e.deltaY > 0;
+                if (!atTop && !atBottom) return;   // let the pane scroll
+            }
+            e.preventDefault();   // over non-scrollable area or at an edge
+        }, { passive: false });
+
         function bfOpen() {
             bfLoadOpts();
+            bfSetTab(storageGet('zxm8_beautifyTab') || 'layout');
             bfRenderPreview();
             beautifyDialog.classList.remove('hidden');
         }

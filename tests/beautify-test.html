@@ -189,6 +189,96 @@
             assertEq(only('  LD A,77q', { octFormat: 'o' }), '\tLD A,77o', 'q -> o');
             assertEq(only('  LD A,17', { octFormat: 'o' }), '\tLD A,17', 'decimal 17 not octal');
 
+            section('Annotate value in other base');
+            // decimal operand → hex note; hex/bin/oct operand → decimal note
+            assertEq(only('  LD HL,1234', { annotateBase: 'add' }), '\tLD HL,1234 ; 1234=$04D2', 'decimal word → hex note (padded to 4)');
+            assertEq(only('  OUT ($FE),A', { annotateBase: 'add' }), '\tOUT ($FE),A ; $FE=254', 'hex byte → decimal note');
+            assertEq(only('  LD A,200', { annotateBase: 'add' }), '\tLD A,200 ; 200=$C8', 'decimal byte → hex note (padded to 2)');
+            assertEq(only('  LD A,%1010', { annotateBase: 'add' }), '\tLD A,%1010 ; %1010=10', 'binary → decimal note');
+            assertEq(only('  LD A,77o', { annotateBase: 'add' }), '\tLD A,77o ; 77o=63', 'octal → decimal note');
+            // off: feature disabled
+            assertEq(only('  LD HL,1234', { annotateBase: 'off' }), '\tLD HL,1234', 'off: no note');
+            // 0–9 skipped for dec and hex (bases coincide there)
+            assertEq(only('  LD A,5', { annotateBase: 'add' }), '\tLD A,5', 'decimal 5 (≤9) not annotated');
+            assertEq(only('  LD A,$5', { annotateBase: 'add' }), '\tLD A,$5', 'hex $5 (≤9) not annotated');
+            assertEq(only('  LD A,10', { annotateBase: 'add' }), '\tLD A,10 ; 10=$0A', 'decimal 10 annotated (>9)');
+            // multiple literals on one line
+            assertEq(only('  LD (IX+200),1234', { annotateBase: 'add' }), '\tLD (IX+200),1234 ; 200=$C8, 1234=$04D2', 'both literals annotated');
+            // hex notation follows the Hex setting
+            assertEq(only('  LD HL,1234', { annotateBase: 'add', hexPrefix: 'h' }), '\tLD HL,1234 ; 1234=04D2h', 'note honours hexPrefix h');
+            assertEq(only('  LD HL,1234', { annotateBase: 'add', hexPrefix: '0x' }), '\tLD HL,1234 ; 1234=0x04D2', 'note honours hexPrefix 0x');
+            // existing-comment behaviour: add / replace / skip
+            assertEq(only('  LD HL,1234 ; count', { annotateBase: 'add' }),
+                '\tLD HL,1234 ; count  (1234=$04D2)', 'add: append note in parentheses');
+            assertEq(only('  LD HL,1234 ; count', { annotateBase: 'replace' }),
+                '\tLD HL,1234 ; 1234=$04D2', 'replace: overwrite comment with note');
+            assertEq(only('  LD HL,1234 ; count', { annotateBase: 'skip' }),
+                '\tLD HL,1234 ; count', 'skip: commented line left alone');
+            assertEq(only('  LD HL,1234', { annotateBase: 'skip' }),
+                '\tLD HL,1234 ; 1234=$04D2', 'skip: bare line still annotated');
+            // data directives and non-literals
+            assertEq(only('  DEFW 4660,32768', { annotateBase: 'add' }), '\tDEFW 4660,32768 ; 4660=$1234, 32768=$8000', 'data words annotated');
+            assertEq(only('  JR $-2', { annotateBase: 'add' }), '\tJR $-2', '$-2 relative: no note (bare $, 2≤9)');
+            assertEq(only('  LD A,LABEL', { annotateBase: 'add' }), '\tLD A,LABEL', 'no literal → no note');
+            // idempotency for each comment mode
+            {
+                const a1 = only('  LD HL,1234 ; count', { annotateBase: 'add' });
+                assertEq(only(a1, { annotateBase: 'add' }), a1, 'add-mode annotation idempotent');
+                const r1 = only('  LD HL,1234', { annotateBase: 'replace' });
+                assertEq(only(r1, { annotateBase: 'replace' }), r1, 'replace-mode annotation idempotent');
+                const n1 = only('  LD HL,1234', { annotateBase: 'add' });
+                assertEq(only(n1, { annotateBase: 'add' }), n1, 'bare-line annotation idempotent');
+            }
+            // annotated source still assembles
+            assert(Assembler.assemble(beautify('  ld hl,1234\n  out ($fe),a', { annotateBase: 'add', indent: true })).success,
+                'annotated source assembles');
+
+            section('Generate labels for $±N jumps');
+            // disassembly-style formatting for predictable output
+            function lg(text, extra) {
+                return beautify(text, {
+                    case: 'upper', spaceAfterComma: true, splitColon: true, labelOwnLine: true,
+                    indent: true, indentCol: 8, blankAfterFlow: false, blankAfterBlock: false,
+                    normalizePseudo: false, expandMulti: false, blankBeforeLabel: false,
+                    commentSpace: false, align: false, alignComments: false, trimTrailing: true,
+                    collapseBlanks: true, genJumpLabels: true, ...(extra || {})
+                });
+            }
+            // backward JR/DJNZ → back_N
+            assertEq(lg('  xor a\n  inc a\n  djnz $-2'),
+                'back_1:\n        XOR A\n        INC A\n        DJNZ back_1', 'backward DJNZ → back_1 at target');
+            // forward conditional JR → fwd_N
+            assertEq(lg('  jr z,$+4\n  inc a\n  inc a\n  ret'),
+                '        JR Z, fwd_1\n        INC A\n        INC A\nfwd_1:\n        RET', 'forward JR Z → fwd_1');
+            // non-branch (CALL) → addr_N
+            assertEq(lg('  call $+3\n  ret'),
+                '        CALL addr_1\naddr_1:\n        RET', 'CALL → addr_1 (not a branch)');
+            // any operand (LD) → addr_N
+            assertEq(lg('  ld hl,$+4\n  inc a\n  inc a\n  ret'),
+                '        LD HL, addr_1\n        INC A\naddr_1:\n        INC A\n        RET', 'LD HL,$+4 → addr_1');
+            // existing global label at the target is reused, not duplicated
+            assertEq(lg('target: inc a\n  jr $-1'),
+                'target:\n        INC A\n        JR target', 'reuse existing label at target');
+            // name collision with an existing label is avoided
+            assertEq(lg('back_1: nop\n  xor a\n  inc a\n  djnz $-2'),
+                'back_1:\n        NOP\nback_2:\n        XOR A\n        INC A\n        DJNZ back_2', 'collision → back_2');
+            // unresolvable span (unknown-size line) is left untouched
+            {
+                const r = lg('  jr $+5\n  foobar\n  ret');
+                assert(r.includes('$+5') && !/back_|fwd_|addr_/.test(r), 'unknown size in span → $+5 left alone');
+            }
+            // idempotent
+            {
+                const once = lg('  xor a\n  inc a\n  djnz $-2');
+                assertEq(lg(once), once, 'jump-label generation idempotent');
+            }
+            // generated output assembles
+            assert(Assembler.assemble(lg('  xor a\n  inc a\n  djnz $-2')).success, 'generated back_ label assembles');
+            assert(Assembler.assemble(lg('  call $+3\n  ret')).success, 'generated addr_ label assembles');
+            // offset protection: base conversion / annotation must not rewrite $±N
+            assertEq(only('  LD A,$+16', { byteBase: 'hex' }), '\tLD A,$+16', 'byteBase hex leaves $+16 offset alone');
+            assertEq(only('  JR $+16', { annotateBase: 'add' }), '\tJR $+16', 'annotate leaves $+16 offset alone (no note)');
+
             section('Bases assemble');
             assert(Assembler.assemble(beautify('  ld a,$ff', { hexPrefix: 'h', indent: true })).success, '$ff->0ffh assembles');
             assert(Assembler.assemble(beautify('  ld a,%1010', { binFormat: 'b', indent: true })).success, '%1010->1010b assembles');

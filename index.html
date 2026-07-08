@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.15</title>
+    <title>ZX-M8XXX v0.15.16</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -7299,81 +7299,117 @@
     </div>
 
     <div id="beautifyDialog" class="modal-overlay hidden">
-        <div class="modal" style="max-width: 920px; width: 92vw;">
+        <div class="modal bf-modal" style="max-width: 920px; width: 92vw;">
             <h2>Beautify Source</h2>
             <div class="bf-cols">
                 <div class="bf-opts">
                     <label id="bfScopeRow" title="Reformat every text file in the project, not just the open file"><input type="checkbox" id="bfAllFiles"> <span>📁 Apply to <b>all project files</b></span></label>
-                    <div class="bf-selects">
-                        <div class="bf-sel-row">
-                            <label class="bf-sel-half" title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case"><span>Case</span>
-                                <select id="bfCase">
-                                    <option value="upper" selected>UPPERCASE</option>
-                                    <option value="lower">lowercase</option>
-                                    <option value="none">as-is</option>
-                                </select>
-                            </label>
+                    <div class="bf-tabs">
+                        <button type="button" class="bf-tab active" data-bftab="layout">Layout</button>
+                        <button type="button" class="bf-tab" data-bftab="code">Numbers &amp; code</button>
+                    </div>
+                    <div class="bf-tab-panel" data-bfpanel="layout">
+                        <div class="bf-group">
+                            <div class="bf-group-title">Case</div>
+                            <div class="bf-sel-row">
+                                <label class="bf-sel-solo" title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case">
+                                    <select id="bfCase">
+                                        <option value="upper" selected>UPPERCASE</option>
+                                        <option value="lower">lowercase</option>
+                                        <option value="none">as-is</option>
+                                    </select>
+                                </label>
+                            </div>
                         </div>
-                        <div class="bf-sel-row">
-                            <label title="Byte = 8-bit values (≤ $FF). 'To hex' → hex (in the Hex notation below, else $); 'To decimal' → decimal. Independent of the Word setting, so you can keep bytes decimal while addresses go hex. Temp labels (1b/2f) and $ current-address left alone"><span>Byte</span>
-                                <select id="bfByteBase">
-                                    <option value="leave" selected>as-is</option>
-                                    <option value="hex">To hex</option>
-                                    <option value="dec">To decimal</option>
-                                </select>
-                            </label>
-                            <label title="Word = 16-bit values ($100–$FFFF, i.e. addresses). 'To hex' → hex; 'To decimal' → decimal. Independent of the Byte setting"><span>Word</span>
-                                <select id="bfWordBase">
-                                    <option value="leave" selected>as-is</option>
-                                    <option value="hex">To hex</option>
-                                    <option value="dec">To decimal</option>
-                                </select>
-                            </label>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Layout</div>
+                            <label><input type="checkbox" id="bfSplitColon" checked> One statement per line</label>
+                            <label><input type="checkbox" id="bfLabelOwnLine" checked> Label on its own line</label>
+                            <label><input type="checkbox" id="bfIndent" checked> Indent instructions to column 8</label>
+                            <label><input type="checkbox" id="bfSpaceComma" checked> Space after commas</label>
+                            <label title="Align operands into a column so a routine lines up vertically"><input type="checkbox" id="bfAlign"> Align operands into columns</label>
                         </div>
-                        <div class="bf-sel-row">
-                            <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
-                                <select id="bfHexPrefix">
-                                    <option value="leave" selected>as-is</option>
-                                    <option value="#">#FF</option>
-                                    <option value="$">$FF</option>
-                                    <option value="0x">0xFF</option>
-                                    <option value="h">0FFh</option>
-                                </select>
-                            </label>
-                            <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
-                                <select id="bfBinFormat">
-                                    <option value="leave" selected>as-is</option>
-                                    <option value="%">%1010</option>
-                                    <option value="0b">0b1010</option>
-                                    <option value="b">1010b</option>
-                                </select>
-                            </label>
-                            <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
-                                <select id="bfOctFormat">
-                                    <option value="leave" selected>as-is</option>
-                                    <option value="o">77o</option>
-                                    <option value="q">77q</option>
-                                </select>
-                            </label>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Blank lines</div>
+                            <label title="Blank line after unconditional RET, JP nn, JR nn, RST"><input type="checkbox" id="bfBlankFlow" checked> Blank line after flow control</label>
+                            <label title="Blank line after LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR"><input type="checkbox" id="bfBlankBlock"> Blank line after block ops</label>
+                            <label title="Blank line before each top-level routine label (not local .labels)"><input type="checkbox" id="bfBlankBeforeLabel"> Blank line before routines</label>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Comments</div>
+                            <label title="Ensure a space after ';' in comments (;text → ; text)"><input type="checkbox" id="bfCommentSpace" checked> Space after ';' in comments</label>
+                            <label title="Line up trailing ; comments to a common column"><input type="checkbox" id="bfAlignComments"> Align trailing comments</label>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Cleanup</div>
+                            <label title="Trim spaces/tabs at the end of each line"><input type="checkbox" id="bfTrim" checked> Trim trailing whitespace</label>
+                            <label title="Collapse runs of blank lines into one"><input type="checkbox" id="bfCollapse" checked> Collapse blank lines</label>
                         </div>
                     </div>
-                    <div class="bf-checks">
-                        <label title="Pad byte-range hex (≤ $FF) to 2 digits when converting/unifying hex: $5 → $05. 'Byte' = 8-bit (DB/DEFB)"><input type="checkbox" id="bfPadBytes"> Pad byte hex to 2 digits ($05)</label>
-                        <label title="Pad word-range hex ($100–$FFFF) to 4 digits when converting/unifying hex: $100 → $0100. 'Word' = 16-bit (DW/DEFW)"><input type="checkbox" id="bfPadWords"> Pad word hex to 4 digits ($0100)</label>
-                        <label><input type="checkbox" id="bfSpaceComma" checked> Space after commas</label>
-                        <label><input type="checkbox" id="bfSplitColon" checked> One statement per line</label>
-                        <label><input type="checkbox" id="bfLabelOwnLine" checked> Label on its own line</label>
-                        <label title="Blank line after unconditional RET, JP nn, JR nn, RST"><input type="checkbox" id="bfBlankFlow" checked> Blank line after flow control</label>
-                        <label title="Blank line after LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR"><input type="checkbox" id="bfBlankBlock"> Blank line after block ops</label>
-                        <label title="EXA → EX AF,AF', SLI → SLL"><input type="checkbox" id="bfNormalize" checked> Normalize pseudo-ops</label>
-                        <label title="PUSH AF,HL,BC → one PUSH per line; chained LD H,D,L,E → LD H,D / LD L,E"><input type="checkbox" id="bfExpandMulti" checked> Expand multi-register PUSH/POP/LD</label>
-                        <label title="Blank line before each top-level routine label (not local .labels)"><input type="checkbox" id="bfBlankBeforeLabel"> Blank line before routines</label>
-                        <label title="Ensure a space after ';' in comments (;text → ; text)"><input type="checkbox" id="bfCommentSpace" checked> Space after ';' in comments</label>
-                        <label><input type="checkbox" id="bfIndent" checked> Indent instructions to column 8</label>
-                        <label title="Align operands into a column so a routine lines up vertically"><input type="checkbox" id="bfAlign"> Align operands into columns</label>
-                        <label title="Line up trailing ; comments to a common column"><input type="checkbox" id="bfAlignComments"> Align trailing comments</label>
-                        <label><input type="checkbox" id="bfTrim" checked> Trim trailing whitespace</label>
-                        <label><input type="checkbox" id="bfCollapse" checked> Collapse blank lines</label>
+                    <div class="bf-tab-panel hidden" data-bfpanel="code">
+                        <div class="bf-group">
+                            <div class="bf-group-title">Numbers</div>
+                            <div class="bf-sel-row">
+                                <label title="Byte = 8-bit values (≤ $FF). 'To hex' → hex (in the Hex notation below, else $); 'To decimal' → decimal. Independent of the Word setting, so you can keep bytes decimal while addresses go hex. Temp labels (1b/2f) and $ current-address left alone"><span>Byte</span>
+                                    <select id="bfByteBase">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="hex">To hex</option>
+                                        <option value="dec">To decimal</option>
+                                    </select>
+                                </label>
+                                <label title="Word = 16-bit values ($100–$FFFF, i.e. addresses). 'To hex' → hex; 'To decimal' → decimal. Independent of the Byte setting"><span>Word</span>
+                                    <select id="bfWordBase">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="hex">To hex</option>
+                                        <option value="dec">To decimal</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="bf-sel-row">
+                                <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
+                                    <select id="bfHexPrefix">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="#">#FF</option>
+                                        <option value="$">$FF</option>
+                                        <option value="0x">0xFF</option>
+                                        <option value="h">0FFh</option>
+                                    </select>
+                                </label>
+                                <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
+                                    <select id="bfBinFormat">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="%">%1010</option>
+                                        <option value="0b">0b1010</option>
+                                        <option value="b">1010b</option>
+                                    </select>
+                                </label>
+                                <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
+                                    <select id="bfOctFormat">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="o">77o</option>
+                                        <option value="q">77q</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <label title="Pad byte-range hex (≤ $FF) to 2 digits when converting/unifying hex: $5 → $05. 'Byte' = 8-bit (DB/DEFB)"><input type="checkbox" id="bfPadBytes"> Pad byte hex to 2 digits ($05)</label>
+                            <label title="Pad word-range hex ($100–$FFFF) to 4 digits when converting/unifying hex: $100 → $0100. 'Word' = 16-bit (DW/DEFW)"><input type="checkbox" id="bfPadWords"> Pad word hex to 4 digits ($0100)</label>
+                            <div class="bf-sel-row">
+                                <label class="bf-sel-solo" title="Note each operand's value in the other base in the comment: dec→hex, hex/bin/oct→dec (LD HL,1234 → ; 1234=$04D2). Add: after any comment. Replace: overwrite it. Skip: bare lines only"><span>Value →</span>
+                                    <select id="bfAnnotateBase">
+                                        <option value="off" selected>Off</option>
+                                        <option value="add">Add (other base)</option>
+                                        <option value="replace">Replace comment</option>
+                                        <option value="skip">Skip commented</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Code rewrites</div>
+                            <label title="EXA → EX AF,AF', SLI → SLL"><input type="checkbox" id="bfNormalize" checked> Normalize pseudo-ops</label>
+                            <label title="PUSH AF,HL,BC → one PUSH per line; chained LD H,D,L,E → LD H,D / LD L,E"><input type="checkbox" id="bfExpandMulti" checked> Expand multi-register PUSH/POP/LD</label>
+                            <label title="Turn current-address-relative jumps (JR/JP/DJNZ/… $±N) into named labels, resolving the target by instruction sizes. Backward JR/JP/DJNZ → back_N, forward → fwd_N, other instructions (CALL, LD, …) → addr_N. Reuses an existing label at the target; leaves a jump alone if it can't resolve it exactly"><input type="checkbox" id="bfGenLabels"> Generate labels for $±N jumps</label>
+                        </div>
                     </div>
                 </div>
                 <div class="bf-preview-wrap">
@@ -7410,23 +7446,28 @@
 
     <style>
         /* Beautify dialog layout */
-        .bf-cols { display: flex; gap: 16px; min-height: 440px; max-height: 72vh; }
-        .bf-opts { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; overflow-y: auto; min-height: 0; }
-        .bf-checks { display: flex; flex-direction: column; gap: 7px; }
+        .bf-modal { display: flex; flex-direction: column; max-height: 90vh; }
+        /* Fixed height so switching tabs doesn't resize the dialog */
+        .bf-cols { display: flex; gap: 16px; height: 600px; max-height: 82vh; }
+        .bf-opts { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; min-height: 0; }
+        /* Folder tabs — matches .settings-subtab-btn / .panel-tab-btn house style */
+        .bf-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--bg-button); }
+        .bf-tab { padding: 6px 16px; background: var(--bg-tertiary); border: 1px solid var(--bg-button); border-bottom: none; border-radius: 4px 4px 0 0; color: var(--text-secondary); font-size: 12px; cursor: pointer; margin-bottom: -1px; }
+        .bf-tab:hover { background: var(--bg-button); color: var(--text-primary); }
+        .bf-tab.active { background: var(--bg-secondary); color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); }
+        .bf-tab-panel { display: flex; flex-direction: column; gap: 12px; }
+        .bf-tab-panel.hidden { display: none; }
+        .bf-group { display: flex; flex-direction: column; gap: 7px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+        .bf-tab-panel > .bf-group:first-child { padding-top: 0; border-top: none; }
+        .bf-group-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); }
         .bf-opts label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
         .bf-opts input[type=checkbox] { width: 14px; height: 14px; }
-        .bf-selects {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid var(--border-color);
-        }
         .bf-sel-row { display: flex; gap: 10px; }
         .bf-sel-row > label { flex: 1; justify-content: space-between; gap: 5px; }
-        .bf-sel-row > label.bf-sel-half { flex: 0 1 50%; }   /* Case: half width */
-        .bf-selects label > span { color: var(--text-secondary); white-space: nowrap; }
-        .bf-selects select { flex: 1; min-width: 0; padding: 3px; font-size: 13px; }
+        .bf-sel-row > label.bf-sel-solo { flex: 0 1 auto; justify-content: flex-start; }
+        .bf-sel-row > label.bf-sel-solo select { flex: 0 0 150px; }
+        .bf-sel-row label > span { color: var(--text-secondary); white-space: nowrap; }
+        .bf-sel-row select { flex: 1; min-width: 0; padding: 3px; font-size: 13px; }
         .bf-preview-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         .bf-preview-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
         .bf-preview {
@@ -7435,6 +7476,7 @@
             margin: 0;
             padding: 8px;
             overflow: auto;
+            overscroll-behavior: contain;
             border: 1px solid var(--border-color);
             background: var(--bg-primary);
             color: var(--text-primary);
@@ -7576,7 +7618,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.15 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.16 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -11304,7 +11346,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.15';
+        const APP_VERSION = '0.15.16';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
