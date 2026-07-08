@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.14</title>
+    <title>ZX-M8XXX v0.15.15</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -7305,39 +7305,61 @@
                 <div class="bf-opts">
                     <label id="bfScopeRow" title="Reformat every text file in the project, not just the open file"><input type="checkbox" id="bfAllFiles"> <span>📁 Apply to <b>all project files</b></span></label>
                     <div class="bf-selects">
-                        <label title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case"><span>Case</span>
-                            <select id="bfCase">
-                                <option value="upper" selected>UPPERCASE</option>
-                                <option value="lower">lowercase</option>
-                                <option value="none">Leave as-is</option>
-                            </select>
-                        </label>
-                        <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
-                            <select id="bfHexPrefix">
-                                <option value="leave" selected>Leave as-is</option>
-                                <option value="#">#FF</option>
-                                <option value="$">$FF</option>
-                                <option value="0x">0xFF</option>
-                                <option value="h">0FFh</option>
-                            </select>
-                        </label>
-                        <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
-                            <select id="bfBinFormat">
-                                <option value="leave" selected>Leave as-is</option>
-                                <option value="%">%1010</option>
-                                <option value="0b">0b1010</option>
-                                <option value="b">1010b</option>
-                            </select>
-                        </label>
-                        <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
-                            <select id="bfOctFormat">
-                                <option value="leave" selected>Leave as-is</option>
-                                <option value="o">77o</option>
-                                <option value="q">77q</option>
-                            </select>
-                        </label>
+                        <div class="bf-sel-row">
+                            <label class="bf-sel-half" title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case"><span>Case</span>
+                                <select id="bfCase">
+                                    <option value="upper" selected>UPPERCASE</option>
+                                    <option value="lower">lowercase</option>
+                                    <option value="none">as-is</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="bf-sel-row">
+                            <label title="Byte = 8-bit values (≤ $FF). 'To hex' → hex (in the Hex notation below, else $); 'To decimal' → decimal. Independent of the Word setting, so you can keep bytes decimal while addresses go hex. Temp labels (1b/2f) and $ current-address left alone"><span>Byte</span>
+                                <select id="bfByteBase">
+                                    <option value="leave" selected>as-is</option>
+                                    <option value="hex">To hex</option>
+                                    <option value="dec">To decimal</option>
+                                </select>
+                            </label>
+                            <label title="Word = 16-bit values ($100–$FFFF, i.e. addresses). 'To hex' → hex; 'To decimal' → decimal. Independent of the Byte setting"><span>Word</span>
+                                <select id="bfWordBase">
+                                    <option value="leave" selected>as-is</option>
+                                    <option value="hex">To hex</option>
+                                    <option value="dec">To decimal</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="bf-sel-row">
+                            <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
+                                <select id="bfHexPrefix">
+                                    <option value="leave" selected>as-is</option>
+                                    <option value="#">#FF</option>
+                                    <option value="$">$FF</option>
+                                    <option value="0x">0xFF</option>
+                                    <option value="h">0FFh</option>
+                                </select>
+                            </label>
+                            <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
+                                <select id="bfBinFormat">
+                                    <option value="leave" selected>as-is</option>
+                                    <option value="%">%1010</option>
+                                    <option value="0b">0b1010</option>
+                                    <option value="b">1010b</option>
+                                </select>
+                            </label>
+                            <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
+                                <select id="bfOctFormat">
+                                    <option value="leave" selected>as-is</option>
+                                    <option value="o">77o</option>
+                                    <option value="q">77q</option>
+                                </select>
+                            </label>
+                        </div>
                     </div>
                     <div class="bf-checks">
+                        <label title="Pad byte-range hex (≤ $FF) to 2 digits when converting/unifying hex: $5 → $05. 'Byte' = 8-bit (DB/DEFB)"><input type="checkbox" id="bfPadBytes"> Pad byte hex to 2 digits ($05)</label>
+                        <label title="Pad word-range hex ($100–$FFFF) to 4 digits when converting/unifying hex: $100 → $0100. 'Word' = 16-bit (DW/DEFW)"><input type="checkbox" id="bfPadWords"> Pad word hex to 4 digits ($0100)</label>
                         <label><input type="checkbox" id="bfSpaceComma" checked> Space after commas</label>
                         <label><input type="checkbox" id="bfSplitColon" checked> One statement per line</label>
                         <label><input type="checkbox" id="bfLabelOwnLine" checked> Label on its own line</label>
@@ -7394,14 +7416,16 @@
         .bf-opts label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
         .bf-opts input[type=checkbox] { width: 14px; height: 14px; }
         .bf-selects {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 7px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
             padding-bottom: 10px;
             border-bottom: 1px solid var(--border-color);
         }
-        .bf-selects label { justify-content: space-between; gap: 5px; }
-        .bf-selects label > span { color: var(--text-secondary); }
+        .bf-sel-row { display: flex; gap: 10px; }
+        .bf-sel-row > label { flex: 1; justify-content: space-between; gap: 5px; }
+        .bf-sel-row > label.bf-sel-half { flex: 0 1 50%; }   /* Case: half width */
+        .bf-selects label > span { color: var(--text-secondary); white-space: nowrap; }
         .bf-selects select { flex: 1; min-width: 0; padding: 3px; font-size: 13px; }
         .bf-preview-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         .bf-preview-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
@@ -7552,7 +7576,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.14 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.15 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -9486,6 +9510,7 @@ start:
                         <span id="bannerInfo" style="font-size:11px;color:var(--text-dim)"></span>
                     </div>
                     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                        <button id="btnBannerSave" class="explorer-btn" style="display:none" title="Extract this disk's banner as a .specscii file">Save .specscii</button>
                         <button id="btnBannerRemove" class="explorer-btn" style="display:none">Remove banner</button>
                         <button id="btnBannerApply" class="explorer-btn primary" disabled>Apply</button>
                         <button id="btnBannerClose" class="explorer-btn">Close</button>
@@ -10875,6 +10900,13 @@ start:
                             <button id="btnHeatmapExportFree" title="Export unaccessed address ranges (free memory)">Free</button>
                             <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipRom" checked> Skip ROM</label>
                             <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipScreen" checked> Skip screen</label>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <span style="width:1px;height:16px;background:var(--border-color)"></span>
+                                <span style="font-size:11px;color:var(--text-secondary)">Disasm:</span>
+                                <button id="btnMapExportCtl" title="Export SkoolKit control file (.ctl): executed = code, read/written = data, plus labels &amp; comments">.ctl</button>
+                                <button id="btnMapExportCsv" title="Export Ghidra CSV (address,name,comment) — for the ZX-disasm apply_labels.py">.csv</button>
+                                <button id="btnMapExportSym" title="Export sjasmplus symbols (.sym): NAME: EQU 0x…">.sym</button>
+                            </div>
                         </div>
                     </div>
                     <div class="memmap-stats" id="memmapStats"></div>
@@ -11218,6 +11250,8 @@ start:
     import { initMapperUI } from './ui/mapper-ui.js';
     import { initGamepad } from './ui/gamepad.js';
     import { initMemoryMap } from './ui/memory-map.js';
+    import { buildRanges, buildRangesFromBits, exportCtl, exportGhidraCsv, exportSym, exportIndirectCsv,
+             findSmcRanges, exportSmcCsv, exportCallGraphCsv } from './core/map-export.js';
     import { initExportAsm } from './ui/export-asm.js';
     import { initAnalysisTools } from './ui/analysis-tools.js';
     import { initDisplaySettings } from './ui/display-settings.js';
@@ -11270,7 +11304,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.14';
+        const APP_VERSION = '0.15.15';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -11466,6 +11500,104 @@ start:
             overlayCanvas: overlayCanvas
         });
         window.spectrum = spectrum;
+
+        // ========== Headless automation API (window.zxDebug) ==========
+        // A documented, stable surface for external drivers (the ZX-disasm skill)
+        // so they don't reach into emulator internals (which the planned Spectrum
+        // refactor would break). Covers the execution map, the debug managers, the
+        // disassembly-toolchain exporters, and write provenance. See docs/automation.md.
+        window.zxDebug = {
+            version: APP_VERSION,
+            get spectrum() { return spectrum; },
+
+            // Debug managers (read or add labels / regions / comments / xrefs)
+            labels: labelManager,
+            regions: regionManager,
+            comments: commentManager,
+            xrefs: xrefManager,
+
+            // ---- Execution-based code/data map ----
+            // enableMap(true, {fast:true}) → cheap touched-bitsets for long RZX;
+            // fast omitted → the rich Map<key,count> (per-address counts + pages).
+            enableMap(on = true, { fast = false } = {}) {
+                spectrum.setAutoMapFast(fast);
+                spectrum.setAutoMapEnabled(on);
+            },
+            clearMap() { spectrum.clearAutoMap(); },
+            mapData() { return spectrum.getAutoMapData(); },   // rich mode Maps
+            mapBits() { return spectrum.getAutoMapBits(); },   // fast mode Uint8Arrays
+
+            // Coalesced { ranges:[{start,end,type}], pages } from the active mode.
+            ranges(opts = {}) {
+                const o = { readByte: (a) => spectrum.memory.read(a), ...opts };
+                return spectrum.autoMap.fast
+                    ? buildRangesFromBits(spectrum.getAutoMapBits(), o)
+                    : buildRanges(spectrum.getAutoMapData(), o);
+            },
+
+            // ---- Disassembly-toolchain exports (strings; wired to live managers) ----
+            exportCtl(opts = {}) {
+                const { ranges, pages } = this.ranges();
+                return exportCtl({
+                    ranges, pages,
+                    regions: regionManager.getAll(),
+                    labels: labelManager.getAll(),
+                    comments: commentManager.getAll(),
+                    readByte: (a) => spectrum.memory.read(a),
+                    ...opts
+                });
+            },
+            exportCsv() {
+                return exportGhidraCsv({ labels: labelManager.getAll(), comments: commentManager.getAll() });
+            },
+            exportSym() {
+                return exportSym({ labels: labelManager.getAll() });
+            },
+
+            // ---- Write provenance (which instruction writes into a range) ----
+            // Replaces hand-wrapping the memory write callback. watchWrites → run
+            // frames / replay an RZX → getWrites() returns [{pc,count,callers}].
+            watchWrites(lo, hi) { spectrum.startWriteProvenance(lo, hi); },
+            getWrites() { return spectrum.getWriteProvenance(); },
+            stopWrites() { return spectrum.stopWriteProvenance(); },
+
+            // ---- Resolved indirect jumps (JP (HL)/(IX)/(IY) dispatch targets) ----
+            // The edges Ghidra can't recover. watchIndirect → run frames / replay
+            // an RZX → getIndirect() = [{site,kind,targets:[{target,count}]}];
+            // exportIndirectCsv() → Ghidra address,name,comment (one row per site).
+            watchIndirect() { spectrum.startIndirectJumps(); },
+            getIndirect() { return spectrum.getIndirectJumps(); },
+            stopIndirect() { return spectrum.stopIndirectJumps(); },
+            exportIndirectCsv() { return exportIndirectCsv(spectrum.getIndirectJumps()); },
+
+            // ---- Self-modifying code (executed AND written at runtime) ----
+            // Computed from the active auto-map (fast bitsets or rich Maps).
+            getSmc() {
+                if (spectrum.autoMap.fast) {
+                    const b = spectrum.getAutoMapBits();
+                    return findSmcRanges(b.execBits, b.writeBits);
+                }
+                const m = spectrum.getAutoMapData();
+                return findSmcRanges(m.executed, m.written);
+            },
+            exportSmcCsv() { return exportSmcCsv(this.getSmc()); },
+
+            // ---- Runtime call graph (observed CALL/RST edges) ----
+            // watchCalls → run frames / replay an RZX → getCalls() =
+            // [{caller, callees:[{callee,count}]}]; exportCallGraphCsv() is
+            // callee-indexed ("who calls this") for the naming workflow.
+            watchCalls() { spectrum.startCallGraph(); },
+            getCalls() { return spectrum.getCallGraph(); },
+            stopCalls() { return spectrum.stopCallGraph(); },
+            exportCallGraphCsv() { return exportCallGraphCsv(spectrum.getCallGraph()); },
+
+            // ---- Convenience ----
+            runFrames(n) { for (let i = 0; i < n; i++) spectrum.runFrame(); },
+            async loadFile(fileOrBytes, name) {
+                const f = (fileOrBytes instanceof File) ? fileOrBytes : new File([fileOrBytes], name || 'file.bin');
+                return spectrum.loadFile(f);
+            }
+        };
 
         // ========== Second Screen (Shadow Screen) ==========
         let secondScreenCtx = null;
@@ -12209,13 +12341,14 @@ start:
             pako: window.pako,
             getPalette: () => spectrum?.ula?.palette || null,
             getRomLabels: () => labelManager?.romLabels || {},
-            // 768-byte ROM font (glyphs 0x20-0x7F) from the BASIC ROM bank, for
-            // the SPECSCII banner preview; null before a ROM is loaded
-            getRomCharset: () => {
-                if (!spectrum?.romLoaded || !spectrum.memory?.rom) return null;
-                const base = (spectrum.profile?.basicRomBank || 0) * 0x4000 + 0x3D00;
-                const rom = spectrum.memory.rom;
-                return rom.length >= base + 768 ? rom.subarray(base, base + 768) : null;
+            // ZX charset (chars 0x20-0x7F at 0x3D00) from the always-loaded 48.rom —
+            // machine-independent (romData holds loaded ROM files, not paged memory),
+            // so the Explorer's banner text preview works on any current machine.
+            getZxCharset: () => {
+                const r = romData && romData['48.rom'];
+                if (!r) return null;
+                const u8 = r instanceof Uint8Array ? r : new Uint8Array(r);
+                return u8.length >= 0x3D00 + 768 ? u8.subarray(0x3D00, 0x3D00 + 768) : null;
             }
         });
 
@@ -12429,6 +12562,7 @@ start:
             downloadFile,
             regionManager,
             labelManager,
+            commentManager,
             goToAddress,
             goToMemoryAddress,
             updateDebugger
@@ -13212,6 +13346,36 @@ start:
 
         // Auto-Loader (extracted to ui/auto-loader.js)
         const autoLoaderAPI = initAutoLoader({ getSpectrum: () => spectrum });
+
+        // Deterministic headless auto-load/boot for window.zxDebug (see docs/automation.md).
+        // Reuses the frame-driven auto-loader but skips its rAF start() and pumps
+        // runFrame() itself, so it advances step-for-step under a headless harness.
+        // A tape/disk must already be loaded (e.g. via zxDebug.loadFile). Resolves
+        // once the typed sequence finishes plus a settle window for the load to run.
+        window.zxDebug.autoLoad = async function (opts = {}) {
+            const {
+                type = 'tape',          // 'tape' | 'trd' | 'dsk'
+                isTzx = false,
+                diskRun = null,          // TR-DOS: filename to RUN, or null → boot file
+                maxFrames = 3000,
+                settleFrames = 400
+            } = opts;
+            spectrum.stop();
+            if (type === 'trd') {
+                if (diskRun) autoLoaderAPI.startAutoLoadDiskRun(diskRun, { headless: true });
+                else autoLoaderAPI.startAutoLoadDisk({ headless: true });
+            } else if (type === 'dsk') {
+                autoLoaderAPI.startAutoLoadPlus3Disk({ headless: true });
+            } else {
+                autoLoaderAPI.startAutoLoadTape(isTzx, { headless: true });
+            }
+            let f = 0;
+            // Pump until the typed key sequence has finished...
+            while (autoLoaderAPI.isActive() && f < maxFrames) { spectrum.runFrame(); f++; }
+            // ...then a settle window so the ROM actually executes LOAD / boots.
+            for (let i = 0; i < settleFrames && f < maxFrames; i++, f++) spectrum.runFrame();
+            return { frames: f, pc: spectrum.cpu.pc, timedOut: f >= maxFrames };
+        };
 
         // Clickable on-screen ZX keyboard (extracted to ui/virtual-keyboard.js)
         initVirtualKeyboard({ getSpectrum: () => spectrum, appVersion: APP_VERSION });

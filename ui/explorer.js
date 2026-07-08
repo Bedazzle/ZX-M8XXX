@@ -9,7 +9,7 @@ import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, 
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
 import { trdBasicAutostartLine, extractTrdFileDescriptor, shapeBasicEntry, addMetaFromDescriptor, isMonoloader, splitMonoloader } from './disk-file-copy.js';
-import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
+import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames, bannerNamesToSpecscii, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
 function isFlowBreak(mnemonic) {
     const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
     return mn.startsWith('JP') || mn.startsWith('JR') ||
@@ -18,7 +18,7 @@ function isFlowBreak(mnemonic) {
            mn === 'HALT';
 }
 
-export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader, pako, getPalette, getRomLabels, getRomCharset }) {
+export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader, pako, getPalette, getRomLabels, getZxCharset }) {
     // ========== Explorer Tab ==========
     const explorerFileInput = document.getElementById('explorerFileInput');
     const btnExplorerLoad = document.getElementById('btnExplorerLoad');
@@ -3509,7 +3509,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
-                <span class="explorer-file-size"${sizeAttr}>${file.length}</span>
+                <span class="explorer-file-size"${sizeAttr}>${explorerFileSizeText(file)}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
                 <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
@@ -3520,14 +3520,25 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return html;
     }
 
-    // When a TR-DOS/SCL file occupies more sectors than its declared length needs
-    // (a monoloader: small BASIC length + CODE glued into the extra sectors), the
-    // size column is misleading. Annotate it with the real on-disk allocation.
-    function explorerFileSizeAttr(file) {
+    // A monoloader occupies more sectors than its declared length needs — a small
+    // BASIC loader with CODE glued into the extra sectors. Its declared catalogue
+    // length is then a misleading "size" (it's just the loader stub).
+    function explorerIsMonoloader(file) {
         const needed = Math.ceil((file.length || 0) / 256);
-        if (!file.sectors || file.sectors <= needed) return '';
-        const alloc = file.sectors * 256;
-        return ` title="${alloc} B on disk (${file.sectors} sectors)"`;
+        return !!file.sectors && file.sectors > needed;
+    }
+
+    // Size to show in the catalogue: the full on-disk allocation for a monoloader
+    // (what's actually stored), else the declared length.
+    function explorerFileSizeText(file) {
+        return explorerIsMonoloader(file) ? file.sectors * 256 : (file.length || 0);
+    }
+
+    // Tooltip: for a monoloader, note the small declared loader length behind the
+    // full size we now display.
+    function explorerFileSizeAttr(file) {
+        if (!explorerIsMonoloader(file)) return '';
+        return ` title="${file.sectors} sectors on disk; declared length ${file.length} B (BASIC loader stub)"`;
     }
 
     function explorerRenderSCLInfo() {
@@ -3571,7 +3582,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
                 <span class="explorer-file-name">${file.name}</span>
-                <span class="explorer-file-size"${sizeAttr}>${file.length}</span>
+                <span class="explorer-file-size"${sizeAttr}>${explorerFileSizeText(file)}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
                 <span class="explorer-file-sectors">${file.sectors} sector${file.sectors !== 1 ? 's' : ''}</span>
@@ -9463,7 +9474,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<span class="file-flag"></span>`;
             html += `<span class="file-ext">${typeName}</span>`;
             html += `<span class="file-addr">${addrText}</span>`;
-            html += `<span class="file-size">${file.length}</span>`;
+            html += `<span class="file-size"${explorerFileSizeAttr(file)}>${explorerFileSizeText(file)}</span>`;
             html += `<span class="file-sectors">${file.sectors}</span>`;
             if (file.deleted) html += ' <span class="bad">[DEL]</span>';
             html += '</span></div>';
@@ -9564,6 +9575,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const btnBannerLoad = document.getElementById('btnBannerLoad');
     const btnBannerApply = document.getElementById('btnBannerApply');
     const btnBannerRemove = document.getElementById('btnBannerRemove');
+    const btnBannerSave = document.getElementById('btnBannerSave');
     const btnBannerClose = document.getElementById('btnBannerClose');
     const bannerFileInput = document.getElementById('bannerFileInput');
 
@@ -9573,8 +9585,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
     function bannerRenderPreview(grid, shadeFromRow) {
         const ctx = bannerCanvas.getContext('2d');
-        renderGrid(grid, ctx, getRomCharset ? getRomCharset() : null,
-            getPalette ? (getPalette() || undefined) : undefined);
+        // Font comes from the always-loaded 48.rom (via romData), NOT the current
+        // machine's paged memory — so the Explorer edits any disk on any machine.
+        renderGrid(grid, ctx, getZxCharset ? getZxCharset() : null);
         if (shadeFromRow != null && shadeFromRow < 24) {
             ctx.fillStyle = 'rgba(0,0,0,0.65)';
             ctx.fillRect(0, shadeFromRow * 8, 256, 192 - shadeFromRow * 8);
@@ -9612,6 +9625,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         btnBannerApply.disabled = true;
         const existing = diskEditorBannerCount(panel);
         btnBannerRemove.style.display = existing ? '' : 'none';
+        if (btnBannerSave) btnBannerSave.style.display = existing ? '' : 'none';
         if (existing) {
             const { grid } = decodeBannerNames(panel.bannerEntries);
             bannerRenderPreview(grid, null);
@@ -9672,6 +9686,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             editorUpdateToolbar();
             panel.dom.statusSpan.textContent = 'Banner removed';
             bannerCloseDialog();
+        });
+        if (btnBannerSave) btnBannerSave.addEventListener('click', () => {
+            const panel = bannerDlg.panel;
+            if (!panel || !diskEditorBannerCount(panel)) return;
+            const bytes = bannerNamesToSpecscii(panel.bannerEntries);
+            const base = (panel.fileName || 'banner').replace(/\.(trd|scl)$/i, '');
+            downloadFile(base + '.specscii', bytes);
+            panel.dom.statusSpan.textContent = `Banner extracted → ${base}.specscii (${bytes.length} B)`;
         });
         btnBannerClose.addEventListener('click', bannerCloseDialog);
         bannerDialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') bannerCloseDialog(); });

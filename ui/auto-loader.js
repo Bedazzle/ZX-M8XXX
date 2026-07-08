@@ -92,7 +92,10 @@ export function initAutoLoader({ getSpectrum }) {
         autoLoadQueue.sort((a, b) => a.frame - b.frame);
     }
 
-    function startAutoLoadTape(isTzx) {
+    // opts.headless: don't call spectrum.start() — the caller pumps runFrame()
+    // itself (deterministic headless driving). The frame-scheduled key sequence
+    // still fires because autoLoadTick runs inside runFrame via the listener.
+    function startAutoLoadTape(isTzx, { headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
         const machType = spectrum.machineType;
@@ -103,7 +106,7 @@ export function initAutoLoader({ getSpectrum }) {
         // Reset (tape data survives reset - only rewinds)
         spectrum.stop();
         spectrum.reset();
-        spectrum.start();
+        if (!headless) spectrum.start();
         beginAutoLoad();
 
         let t = 0;
@@ -266,7 +269,7 @@ export function initAutoLoader({ getSpectrum }) {
         return t + gap;
     }
 
-    function startAutoLoadDiskRun(filename) {
+    function startAutoLoadDiskRun(filename, { headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
 
@@ -296,7 +299,7 @@ export function initAutoLoader({ getSpectrum }) {
             if (bootEntryOffset >= 0) diskData[bootEntryOffset] = savedBootByte;
             return;
         }
-        spectrum.start();
+        if (!headless) spectrum.start();
         beginAutoLoad();
         const ula = spectrum.ula;
 
@@ -351,15 +354,15 @@ export function initAutoLoader({ getSpectrum }) {
         }, t);
     }
 
-    function startAutoLoadDisk() {
+    function startAutoLoadDisk({ headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
         if (spectrum.bootTrdos()) {
-            spectrum.start();
+            if (!headless) spectrum.start();
         }
     }
 
-    function startAutoLoadPlus3Disk() {
+    function startAutoLoadPlus3Disk({ headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
         const ula = spectrum.ula;
@@ -378,7 +381,7 @@ export function initAutoLoader({ getSpectrum }) {
             }
         }
 
-        spectrum.start();
+        if (!headless) spectrum.start();
         beginAutoLoad();
 
         // +3 Amstrad menu: press Enter to select "Loader" (default option)
@@ -400,6 +403,7 @@ export function initAutoLoader({ getSpectrum }) {
         startAutoLoadDisk,
         startAutoLoadDiskRun,
         startAutoLoadPlus3Disk,
-        isAutoLoadEnabled: () => chkAutoLoad.checked
+        isAutoLoadEnabled: () => chkAutoLoad.checked,
+        isActive: () => autoLoadActive
     };
 }

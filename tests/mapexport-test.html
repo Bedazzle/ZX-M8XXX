@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Map Export Tests</title>
+<style>
+  body { font-family: monospace; background: #1a1a1a; color: #ddd; padding: 12px; }
+  .pass { color: #5bd75b; } .fail { color: #ff6b6b; } .sec { color: #6a8bff; margin-top: 10px; }
+  #summary { font-size: 14px; margin: 8px 0; }
+  pre { background: #111; padding: 6px; border: 1px solid #333; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h2>core/map-export.js tests</h2>
+<div id="summary"></div>
+<div id="log"></div>
+<script type="module">
+import { parseAutoMapKey, buildRanges, buildRangesFromBits, applyRegions, exportCtl, exportGhidraCsv, exportSym,
+  exportIndirectCsv, findSmcRanges, exportSmcCsv, exportCallGraphCsv }
+  from '../core/map-export.js';
+
+const TEST_VERSION = '0.15.15';
+let passed = 0, failed = 0;
+const logEl = document.getElementById('log');
+function log(msg, cls) { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = msg; logEl.appendChild(d); }
+function section(t) { log('═══ ' + t + ' ═══', 'sec'); }
+function assert(cond, name, detail) {
+  if (cond) { passed++; log('✓ ' + name, 'pass'); }
+  else { failed++; log('✗ ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+}
+function show(label, text) { log(label + ':'); const p = document.createElement('pre'); p.textContent = text; logEl.appendChild(p); }
+
+function run() {
+  // ---- key parsing ----
+  section('parseAutoMapKey');
+  assert(parseAutoMapKey('49152').addr === 0xC000 && parseAutoMapKey('49152').page === null, '48K decimal key → addr, no page');
+  { const k = parseAutoMapKey('49152:3'); assert(k.addr === 0xC000 && k.page === '3', '128K key → addr + page'); }
+
+  // ---- buildRanges: classification + coalescing ----
+  section('buildRanges');
+  // Executed 0x8000-0x8002 (code), read 0x8003-0x8004 (data), written 0x9000 (data).
+  const mapData = {
+    executed: new Map([['32768', 5], ['32769', 5], ['32770', 5]]),
+    read:     new Map([['32771', 2], ['32772', 2]]),
+    written:  new Map([['36864', 1]])
+  };
+  const { ranges } = buildRanges(mapData);
+  assert(ranges.length === 3, 'three coalesced ranges', 'got ' + ranges.length);
+  assert(ranges[0].start === 0x8000 && ranges[0].end === 0x8002 && ranges[0].type === 'code', 'executed run → one code range');
+  assert(ranges[1].start === 0x8003 && ranges[1].end === 0x8004 && ranges[1].type === 'db', 'read run → data range');
+  assert(ranges[2].start === 0x9000 && ranges[2].type === 'db', 'written addr → data');
+
+  // executed wins over read at the same address
+  const both = buildRanges({ executed: new Map([['100', 1]]), read: new Map([['100', 9]]) });
+  assert(both.ranges.length === 1 && both.ranges[0].type === 'code', 'executed beats read at same addr');
+
+  // pages surfaced
+  const paged = buildRanges({ executed: new Map([['16384:5', 1], ['16385:2', 1]]) });
+  assert(paged.pages.join(',') === '2,5', 'pages seen reported (sorted)', paged.pages.join(','));
+
+  // ---- buildRangesFromBits (fast mode) ----
+  section('buildRangesFromBits');
+  const execBits = new Uint8Array(0x10000), readBits = new Uint8Array(0x10000), writeBits = new Uint8Array(0x10000);
+  execBits[0x8000] = execBits[0x8001] = execBits[0x8002] = 1;
+  readBits[0x8003] = 1; writeBits[0x9000] = 1;
+  const fb = buildRangesFromBits({ execBits, readBits, writeBits });
+  assert(fb.ranges.length === 3, 'bits → three ranges', 'got ' + fb.ranges.length);
+  assert(fb.ranges[0].start === 0x8000 && fb.ranges[0].end === 0x8002 && fb.ranges[0].type === 'code', 'bits: exec run → code range');
+  assert(fb.ranges.some(r => r.start === 0x9000 && r.type === 'db'), 'bits: write → data');
+  // exportCtl accepts pre-built ranges (the fast-mode path zxDebug uses)
+  const fastCtl = exportCtl({ ranges: fb.ranges, pages: fb.pages, labels: [{ address: 0x8000, name: 'entry' }] });
+  assert(fastCtl.split('\n').includes('c $8000'), 'exportCtl from pre-built (bits) ranges');
+  assert(fastCtl.includes('@ $8000 label=entry'), 'exportCtl(ranges) still folds labels');
+
+  // ---- text detection ----
+  section('text detection');
+  // 0x6000-0x6007 read; bytes spell "HELLO!!!" (printable) → should become text.
+  const textBytes = { 0x6000:0x48,0x6001:0x45,0x6002:0x4C,0x6003:0x4C,0x6004:0x4F,0x6005:0x21,0x6006:0x21,0x6007:0x21 };
+  const rmap = new Map(); for (let a=0x6000;a<=0x6007;a++) rmap.set(String(a),1);
+  const tr = buildRanges({ read: rmap }, { readByte: a => textBytes[a] ?? 0 });
+  assert(tr.ranges.length === 1 && tr.ranges[0].type === 'text', 'printable run of 8 → text range', JSON.stringify(tr.ranges));
+  // A short printable run (< minRun) stays data.
+  const short = new Map(); for (let a=0x7000;a<=0x7002;a++) short.set(String(a),1);
+  const sr = buildRanges({ read: short }, { readByte: a => 0x41 });
+  assert(sr.ranges[0].type === 'db', '3-byte printable run stays db (below minRun)');
+
+  // ---- applyRegions overlay ----
+  section('applyRegions');
+  // Auto map says 0x8000-0x800F is code; user marks 0x8004-0x8007 as dw (words).
+  const auto = [{ start:0x8000, end:0x800F, type:'code' }];
+  const withReg = applyRegions(auto, [{ start:0x8004, end:0x8007, type:'dw' }]);
+  const dw = withReg.find(r => r.type === 'dw');
+  assert(dw && dw.start === 0x8004 && dw.end === 0x8007, 'user dw region carved out of code', JSON.stringify(withReg));
+  assert(withReg.some(r => r.start===0x8000 && r.end===0x8003 && r.type==='code'), 'left code slice kept');
+  assert(withReg.some(r => r.start===0x8008 && r.end===0x800F && r.type==='code'), 'right code slice kept');
+
+  // ---- exportSym ----
+  section('exportSym');
+  const labels = [
+    { address: 0x8000, name: 'main_loop' },
+    { address: 0x5800, name: 'ATTRIB' },
+    { address: 0x9100, name: 'game_start' }
+  ];
+  const sym = exportSym({ labels });
+  show('.sym', sym);
+  assert(sym.includes('ATTRIB: EQU 0x00005800'), 'sym line format NAME: EQU 0x<8hex>');
+  assert(sym.indexOf('ATTRIB') < sym.indexOf('game_start') && sym.indexOf('game_start') < sym.indexOf('main_loop'),
+    'sym sorted by name (case-insensitive)');
+
+  // ---- exportGhidraCsv ----
+  section('exportGhidraCsv');
+  const comments = new Map([[0x8000, { inline: 'main game loop' }], [0x9100, { before: 'entry, with, comma' }]]);
+  const csv = exportGhidraCsv({ labels, comments });
+  show('.csv', csv);
+  const csvLines = csv.trim().split('\n');
+  assert(csvLines[0] === 'address,name,comment', 'CSV header');
+  assert(csvLines.some(l => l.startsWith('$8000,main_loop,main game loop')), 'CSV row: addr,name,comment');
+  assert(csvLines.some(l => l.includes('"entry, with, comma"')), 'CSV quotes a comment containing commas');
+  assert(csvLines.some(l => l.startsWith('$5800,ATTRIB,')), 'CSV label with no comment');
+
+  // ---- exportCtl ----
+  section('exportCtl');
+  const ctl = exportCtl({
+    mapData,
+    labels: [{ address: 0x8000, name: 'main_loop' }],
+    comments: new Map([[0x8001, { inline: 'inner step' }]]),
+    regions: [{ start: 0x8003, end: 0x8004, type: 'dw' }],
+    title: 'unit test'
+  });
+  show('.ctl', ctl);
+  const ctlLines = ctl.split('\n');
+  assert(ctlLines.some(l => l === 'c $8000'), 'ctl code block at executed range');
+  assert(ctlLines.some(l => l === '@ $8000 label=main_loop'), 'ctl label directive inside block');
+  assert(ctlLines.some(l => l === 'N $8001 inner step'), 'ctl comment directive inside block');
+  assert(ctlLines.some(l => l === 'w $8003'), 'ctl word block from user dw region overlay');
+  assert(ctlLines.some(l => l === 'b $9000'), 'ctl data block from written addr');
+  assert(ctlLines[0].startsWith('> $8000 ; unit test'), 'ctl header comment with title');
+
+  // ---- exportIndirectCsv (resolved dispatch targets) ----
+  section('exportIndirectCsv');
+  const jumps = [
+    { site: 0x9250, kind: 'JP (IX)', targets: [{ target: 0xA000, count: 1 }] },
+    { site: 0x9234, kind: 'JP (HL)', targets: [{ target: 0x9300, count: 5 }, { target: 0x9400, count: 2 }] }
+  ];
+  const icsv = exportIndirectCsv(jumps);
+  show('indirect.csv', icsv);
+  const ilines = icsv.trim().split('\n');
+  assert(ilines[0] === 'address,name,comment', 'indirect CSV header (apply_labels shape)');
+  assert(ilines[1].startsWith('$9234,,'), 'sites sorted, name column blank');
+  assert(ilines[1].includes('JP (HL) → $9300(5) $9400(2)') && ilines[1].includes('[2 targets]'),
+    'site comment lists resolved targets + counts', ilines[1]);
+  assert(ilines.some(l => l.startsWith('$9250,,') && l.includes('JP (IX)') && l.includes('[1 target]')),
+    'single-target site reads "[1 target]"');
+  assert(exportIndirectCsv([]).trim() === 'address,name,comment', 'empty jumps → header only');
+
+  // ---- SMC detection ----
+  section('findSmcRanges / exportSmcCsv');
+  { // bitset inputs
+    const ex = new Uint8Array(0x10000), wr = new Uint8Array(0x10000);
+    ex[0x8000]=ex[0x8001]=ex[0x8002]=1;
+    wr[0x8001]=wr[0x8002]=wr[0x9000]=1;   // 0x8001-8002 executed AND written; 0x9000 only written
+    const smc = findSmcRanges(ex, wr);
+    assert(smc.length===1 && smc[0].start===0x8001 && smc[0].end===0x8002, 'SMC = exec ∩ write, coalesced', JSON.stringify(smc));
+  }
+  { // key-array inputs (rich mode shape)
+    const smc = findSmcRanges(['100','101'], ['101','200']);
+    assert(smc.length===1 && smc[0].start===101 && smc[0].end===101, 'SMC from key arrays');
+  }
+  const smcCsv = exportSmcCsv([{start:0x8001,end:0x8002}]);
+  assert(smcCsv.split('\n')[0]==='address,name,comment', 'SMC CSV header');
+  assert(smcCsv.includes('$8001,,self-modifying code: 2 bytes executed & written'), 'SMC CSV row', smcCsv.split('\n')[1]);
+
+  // ---- call graph ----
+  section('exportCallGraphCsv');
+  const cg = [
+    { caller:0x8005, callees:[{callee:0x9000,count:3}] },
+    { caller:0x8008, callees:[{callee:0x9000,count:1}, {callee:0x9100,count:2}] }
+  ];
+  const cgCsv = exportCallGraphCsv(cg);
+  show('callgraph.csv', cgCsv);
+  const cgLines = cgCsv.trim().split('\n');
+  assert(cgLines[0]==='address,name,comment', 'call-graph CSV header');
+  // callee-indexed: 0x9000 called from 0x8005(3) and 0x8008 → [2 callers]
+  assert(cgLines.some(l=>l.startsWith('$9000,,called from $8005(3) $8008') && l.includes('[2 callers]')),
+    'callee 0x9000: both callers listed with counts', cgLines[1]);
+  assert(cgLines.some(l=>l.startsWith('$9100,,called from $8008(2)') && l.includes('[1 caller]')),
+    'callee 0x9100: single caller');
+  assert(exportCallGraphCsv([]).trim()==='address,name,comment', 'empty call graph → header only');
+
+  // ---- empty inputs are safe ----
+  section('empty / robustness');
+  assert(exportSym({}) === '', 'empty labels → empty sym');
+  assert(exportGhidraCsv({}).trim() === 'address,name,comment', 'empty → CSV header only');
+  assert(typeof exportCtl({ mapData: {} }) === 'string', 'empty map → still a string');
+
+  // ---- summary ----
+  const total = passed + failed;
+  document.getElementById('summary').innerHTML =
+    `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | <span class="fail">Fail: ${failed}</span> | Total: ${total}`;
+  log('');
+  log(`Tests complete: ${passed} passed, ${failed} failed`, failed === 0 ? 'pass' : 'fail');
+}
+run();
+</script>
+</body>
+</html>

@@ -130,6 +130,50 @@
             assertEq(only('  LD A,$1A', { hexPrefix: 'h' }), '\tLD A,1Ah', '$1A -> 1Ah (no guard needed)');
             assertEq(only('  LD A,0FFh', { hexPrefix: 'h' }), '\tLD A,0FFh', 'h suffix idempotent');
 
+            section('Per-width base conversion');
+            // The headline use case: addresses (words) as hex, 8-bit values as decimal
+            assertEq(only('  LD A,$FF\n  LD HL,$8000', { byteBase: 'dec', wordBase: 'hex' }),
+                '\tLD A,255\n\tLD HL,$8000', 'byteBase=dec, wordBase=hex: byte→dec, address stays hex');
+            assertEq(only('  LD A,255\n  LD HL,32768', { byteBase: 'dec', wordBase: 'hex' }),
+                '\tLD A,255\n\tLD HL,$8000', 'same, from decimal source: byte stays dec, word→hex');
+            // byte width → decimal (all source notations)
+            assertEq(only('  LD A,$FF', { byteBase: 'dec' }), '\tLD A,255', '$FF -> 255');
+            assertEq(only('  LD A,#FF', { byteBase: 'dec' }), '\tLD A,255', '#FF -> 255');
+            assertEq(only('  LD A,0xFF', { byteBase: 'dec' }), '\tLD A,255', '0xFF -> 255');
+            assertEq(only('  LD A,0FFh', { byteBase: 'dec' }), '\tLD A,255', '0FFh -> 255 (guard zero handled)');
+            assertEq(only('  LD A,%1010', { byteBase: 'dec' }), '\tLD A,10', 'binary byte -> dec');
+            assertEq(only('  LD A,77o', { byteBase: 'dec' }), '\tLD A,63', 'octal byte -> dec');
+            assertEq(only('  DEFB $0A,$FF', { byteBase: 'dec' }), '\tDEFB 10,255', 'data directive bytes -> dec');
+            // word width → decimal / hex
+            assertEq(only('  LD HL,$8000', { wordBase: 'dec' }), '\tLD HL,32768', 'word hex -> dec');
+            assertEq(only('  LD A,255', { byteBase: 'hex' }), '\tLD A,$FF', 'byte dec -> $FF (default $)');
+            assertEq(only('  LD HL,32768', { wordBase: 'hex' }), '\tLD HL,$8000', 'word dec -> $8000');
+            assertEq(only('  LD A,255', { byteBase: 'hex', hexPrefix: 'h' }), '\tLD A,0FFh', 'byte dec -> hex honours notation (h)');
+            assertEq(only('  LD A,10d', { byteBase: 'hex' }), '\tLD A,$A', 'explicit Nd byte -> hex');
+            // the width classification is by VALUE, independent of source width
+            assertEq(only('  LD A,$FF', { byteBase: 'leave', wordBase: 'hex' }), '\tLD A,$FF', '$FF is a byte → untouched by wordBase');
+            assertEq(only('  LD HL,$40', { byteBase: 'dec', wordBase: 'leave' }), '\tLD HL,64', '$40 (=64) is a byte value → byteBase applies even in HL');
+            // safety: things that must NOT convert
+            assertEq(only('  LD A,$', { byteBase: 'dec', wordBase: 'dec' }), '\tLD A,$', 'bare $ (current address) left alone');
+            assertEq(only('  JR $-2', { byteBase: 'dec', wordBase: 'dec' }), '\tJR $-2', '$-2 relative left alone');
+            assertEq(only('  JR NZ,1b', { byteBase: 'dec', wordBase: 'dec' }), '\tJR NZ,1b', 'temp label 1b (not binary) left alone');
+            assertEq(only('  LD A,COUNT%10', { byteBase: 'dec', wordBase: 'dec' }), '\tLD A,COUNT%10', 'modulo operator left alone');
+            assertEq(only('  DB "$FF"', { byteBase: 'dec', wordBase: 'dec' }), '\tDB "$FF"', 'hex inside string untouched');
+            assertEq(only('  LD A,5', { byteBase: 'dec' }), '\tLD A,5', 'decimal byte stays decimal');
+
+            section('Hex byte/word padding');
+            assertEq(only('  LD A,5', { byteBase: 'hex', hexPadBytes: true }), '\tLD A,$05', 'byte pad: 5 → $05');
+            assertEq(only('  LD A,255', { byteBase: 'hex', hexPadBytes: true }), '\tLD A,$FF', 'byte pad: 255 → $FF (already 2)');
+            assertEq(only('  LD HL,256', { wordBase: 'hex', hexPadWords: true }), '\tLD HL,$0100', 'word pad: 256 → $0100');
+            assertEq(only('  LD HL,32768', { wordBase: 'hex', hexPadWords: true }), '\tLD HL,$8000', 'word pad: 32768 → $8000 (already 4)');
+            assertEq(only('  LD HL,256', { wordBase: 'hex', hexPadBytes: true }), '\tLD HL,$100', 'byte pad only affects ≤$FF (256 stays $100)');
+            assertEq(only('  LD A,5', { byteBase: 'hex', hexPadWords: true }), '\tLD A,$5', 'word pad only affects $100+ (5 stays $5)');
+            assertEq(only('  DEFB 1,255\n  DEFW 256', { byteBase: 'hex', wordBase: 'hex', hexPadBytes: true, hexPadWords: true }),
+                '\tDEFB $01,$FF\n\tDEFW $0100', 'byte+word pad on a data block');
+            assertEq(only('  LD A,$5', { hexPrefix: '$', hexPadBytes: true }), '\tLD A,$05', 'unify+pad: $5 → $05');
+            assertEq(only('  LD HL,$100', { hexPrefix: '$', hexPadWords: true }), '\tLD HL,$0100', 'unify+pad: $100 → $0100');
+            assertEq(only('  LD A,10', { byteBase: 'hex', hexPrefix: 'h', hexPadBytes: true }), '\tLD A,0Ah', 'byte pad + h suffix: 10 → 0Ah');
+
             section('Binary normalization');
             assertEq(only('  LD A,%1010', { binFormat: '0b' }), '\tLD A,0b1010', '% -> 0b');
             assertEq(only('  LD A,0b1010', { binFormat: '%' }), '\tLD A,%1010', '0b -> %');

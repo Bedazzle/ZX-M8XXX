@@ -99,7 +99,7 @@
 <script type="module">
     import { TRDLoader, SCLLoader, TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
     import { extractTrdFileDescriptor, addMetaFromDescriptor, shapeBasicEntry, isMonoloader, trdBasicAutostartLine, splitMonoloader } from '../ui/disk-file-copy.js';
-    import { parseSpecscii, encodeBannerEntries, decodeBannerNames, isBannerName, lastContentRow, simulateListPrint, BANNER_MAX_ROWS } from '../core/specscii.js';
+    import { parseSpecscii, encodeBannerEntries, decodeBannerNames, gridToSpecscii, bannerNamesToSpecscii, isBannerName, lastContentRow, simulateListPrint, BANNER_MAX_ROWS } from '../core/specscii.js';
 
     const logEl = document.getElementById('log');
     const summaryEl = document.getElementById('summary');
@@ -2270,6 +2270,26 @@
         assert(junkCells.every(cell => cell.ink === 0 && cell.paper === 7 && cell.bright === 0 && cell.flash === 0),
             'reset entries: junk row prints ink 0 / paper 7, flash+bright off');
         assert(sim.grid[ROWS + 1].every(cell => cell === null), 'nothing painted below the junk row');
+
+        // gridToSpecscii round-trip: grid → .specscii stream → parse → same content
+        const spec = gridToSpecscii(grid);
+        assert(spec instanceof Uint8Array && spec.length > 0, 'gridToSpecscii produces a byte stream');
+        const reparsed = parseSpecscii(spec).grid;
+        let rtMismatch = 0;
+        for (let r = 0; r < ROWS; r++) for (let c = 0; c < 32; c++) {
+            const a = grid[r][c], b = reparsed[r][c];
+            const abg = !a || (a.ch === 0x20 && a.paper === 7 && !a.bright && !a.flash);
+            const bbg = !b || (b.ch === 0x20 && b.paper === 7 && !b.bright && !b.flash);
+            if (abg && bbg) continue;
+            if (!a || !b || a.ch !== b.ch) { rtMismatch++; continue; }
+            for (const k of relevant(a.ch)) if (a[k] !== b[k]) { rtMismatch++; break; }
+        }
+        assert(rtMismatch === 0, `gridToSpecscii round-trips every visible cell (${rtMismatch} mismatches)`);
+        // Extract a built banner back to .specscii and confirm it re-decodes to the picture
+        const extracted = bannerNamesToSpecscii(names);
+        assert(extracted instanceof Uint8Array && extracted.length > 0, 'bannerNamesToSpecscii extracts a stream from entry names');
+        const exGrid = parseSpecscii(extracted).grid;
+        assert(exGrid[0][0] !== null || grid[0][0] === null, 'extracted .specscii decodes to a non-empty grid');
 
         // Row limit is enforced (AT upper-screen limit)
         let threw = false;

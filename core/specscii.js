@@ -117,6 +117,38 @@ export function decodeBannerNames(names) {
     return { grid, warnings };
 }
 
+// Serialize a cell grid back to a clean .specscii print-code stream (the inverse
+// of parseSpecscii): one AT per used row, attribute controls emitted only on
+// change, trailing background cells trimmed. Round-trips: parseSpecscii of the
+// output reproduces the content cells. Used to extract a catalogue banner as a
+// reusable .specscii file.
+export function gridToSpecscii(grid) {
+    const out = [];
+    const isBg = (c) => !c || (c.ch === 0x20 && c.paper === 7 && !c.bright && !c.flash);
+    const rows = lastContentRow(grid) + 1;
+    let ink = -1, paper = -1, bright = -1, flash = -1;
+    for (let r = 0; r < rows; r++) {
+        let end = SPECSCII_COLS - 1;
+        while (end >= 0 && isBg(grid[r][end])) end--;
+        out.push(0x16, r, 0);   // AT row, 0
+        for (let c = 0; c <= end; c++) {
+            const cell = grid[r][c] || { ch: 0x20, ink: 0, paper: 7, bright: 0, flash: 0 };
+            if (cell.ink !== ink) { out.push(0x10, cell.ink); ink = cell.ink; }
+            if (cell.paper !== paper) { out.push(0x11, cell.paper); paper = cell.paper; }
+            if (cell.flash !== flash) { out.push(0x12, cell.flash); flash = cell.flash; }
+            if (cell.bright !== bright) { out.push(0x13, cell.bright); bright = cell.bright; }
+            out.push(cell.ch);
+        }
+    }
+    return new Uint8Array(out);
+}
+
+// Extract a catalogue banner (array of 8-byte entry names) as a clean .specscii
+// byte stream — decode → grid → re-serialize.
+export function bannerNamesToSpecscii(names) {
+    return gridToSpecscii(decodeBannerNames(names).grid);
+}
+
 // True if an 8-byte catalogue name looks like a banner slice (print controls)
 export function isBannerName(nameBytes) {
     for (let i = 0; i < 8; i++) {

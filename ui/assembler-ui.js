@@ -2177,6 +2177,10 @@ export function initAssemblerUI({
             expandMulti: document.getElementById('bfExpandMulti'),
             blankBeforeLabel: document.getElementById('bfBlankBeforeLabel'),
             commentSpace: document.getElementById('bfCommentSpace'),
+            byteBase: document.getElementById('bfByteBase'),
+            wordBase: document.getElementById('bfWordBase'),
+            hexPadBytes: document.getElementById('bfPadBytes'),
+            hexPadWords: document.getElementById('bfPadWords'),
             hexPrefix: document.getElementById('bfHexPrefix'),
             binFormat: document.getElementById('bfBinFormat'),
             octFormat: document.getElementById('bfOctFormat'),
@@ -2203,6 +2207,10 @@ export function initAssemblerUI({
                 expandMulti: bf.expandMulti.checked,
                 blankBeforeLabel: bf.blankBeforeLabel.checked,
                 commentSpace: bf.commentSpace.checked,
+                byteBase: bf.byteBase.value,
+                wordBase: bf.wordBase.value,
+                hexPadBytes: bf.hexPadBytes.checked,
+                hexPadWords: bf.hexPadWords.checked,
                 hexPrefix: bf.hexPrefix.value,
                 binFormat: bf.binFormat.value,
                 octFormat: bf.octFormat.value,
@@ -2224,12 +2232,15 @@ export function initAssemblerUI({
             let o;
             try { o = JSON.parse(storageGet('zxm8_beautify') || '{}'); } catch (e) { o = {}; }
             if (o.case) bf.case.value = o.case;
+            if (o.byteBase) bf.byteBase.value = o.byteBase;
+            if (o.wordBase) bf.wordBase.value = o.wordBase;
             if (o.hexPrefix) bf.hexPrefix.value = o.hexPrefix;
             if (o.binFormat) bf.binFormat.value = o.binFormat;
             if (o.octFormat) bf.octFormat.value = o.octFormat;
             for (const k of ['spaceAfterComma', 'splitColon', 'labelOwnLine', 'blankAfterFlow',
                 'blankAfterBlock', 'normalizePseudo', 'expandMulti', 'blankBeforeLabel',
-                'commentSpace', 'indent', 'align', 'alignComments', 'collapseBlanks']) {
+                'commentSpace', 'indent', 'align', 'alignComments', 'collapseBlanks',
+                'hexPadBytes', 'hexPadWords']) {
                 if (k in o) bf[k].checked = !!o[k];
             }
             if ('trimTrailing' in o) bf.trimTrailing.checked = !!o.trimTrailing;

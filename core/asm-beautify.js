@@ -54,6 +54,14 @@ const DEFAULT_OPTS = {
     blankAfterFlow: true,
     blankAfterBlock: false,
     normalizePseudo: true,
+    // Per-width base conversion (precedence over the notation options below).
+    // A literal is a "byte" if its value ≤ $FF, else a "word". Each width picks
+    // its target base independently — e.g. byteBase 'dec' + wordBase 'hex' keeps
+    // 8-bit values decimal while turning addresses into hex.
+    byteBase: 'leave',      // 'leave' | 'hex' | 'dec' - base for values ≤ $FF
+    wordBase: 'leave',      // 'leave' | 'hex' | 'dec' - base for values $100..$FFFF+
+    hexPadBytes: false,     // pad byte-range hex (≤ $FF) to 2 digits: $5 → $05
+    hexPadWords: false,     // pad word-range hex ($100..$FFFF) to 4 digits: $100 → $0100
     hexPrefix: 'leave',     // 'leave' | '#' | '$' | '0x' | 'h' - unify hex notation
     binFormat: 'leave',     // 'leave' | '%' | '0b' | 'b' - unify binary notation
     octFormat: 'leave',     // 'leave' | 'o' | 'q' - unify octal notation
@@ -328,6 +336,25 @@ function processOperands(ops, opts) {
     const hp = opts.hexPrefix && opts.hexPrefix !== 'leave' ? opts.hexPrefix : null;
     const bp = opts.binFormat && opts.binFormat !== 'leave' ? opts.binFormat : null;
     const op = opts.octFormat && opts.octFormat !== 'leave' ? opts.octFormat : null;
+    // Per-width base conversion: a literal's target base is byteBase (value ≤ $FF)
+    // or wordBase (larger). Notation for hex output: the chosen hex prefix, else '$'.
+    const byteBase = opts.byteBase || 'leave';
+    const wordBase = opts.wordBase || 'leave';
+    const hexNotation = hp || '$';
+    // Convert one recognised numeric literal to its width's target base. `kind` is
+    // the source base ('hex'|'bin'|'oct'|'dec'); `digits` the bare digits; `tok`
+    // the original text (returned verbatim when the target base is 'leave' and no
+    // notation change applies to it).
+    const convNum = (value, kind, digits, tok) => {
+        const target = value <= 0xFF ? byteBase : wordBase;
+        if (target === 'dec') return value.toString(10);
+        if (target === 'hex') return emitHex(padHex(value.toString(16).toUpperCase(), opts), hexNotation);
+        // target === 'leave': keep the source base, apply notation unification for it
+        if (kind === 'hex') return hp ? emitHex(padHex(digits, opts), hp) : tok;
+        if (kind === 'bin') return bp ? emitBin(digits, bp) : tok;
+        if (kind === 'oct') return op ? emitOct(digits, op) : tok;
+        return tok;   // decimal stays decimal
+    };
     let out = '';
     let i = 0;
     while (i < ops.length) {
@@ -351,21 +378,23 @@ function processOperands(ops, opts) {
         }
         // $-prefixed / #-prefixed hex (followed by at least one hex digit).
         // Bare $ (current address) and $+n / $-n are left alone.
-        if ((ch === '$' || ch === '#') && hp && /[0-9a-fA-F]/.test(ops[i + 1] || '')) {
+        if ((ch === '$' || ch === '#') && /[0-9a-fA-F]/.test(ops[i + 1] || '')) {
             let j = i + 1;
             while (j < ops.length && /[0-9a-fA-F]/.test(ops[j])) j++;
-            out += emitHex(ops.slice(i + 1, j), hp);
+            const digits = ops.slice(i + 1, j);
+            out += convNum(parseInt(digits, 16), 'hex', digits, ops.slice(i, j));
             i = j;
             continue;
         }
         // %-prefixed binary - but only when % starts a value, not as the
         // modulo operator (COUNT%10 must stay modulo)
-        if (ch === '%' && bp && /[01]/.test(ops[i + 1] || '')) {
+        if (ch === '%' && /[01]/.test(ops[i + 1] || '')) {
             const prev = out.replace(/\s+$/, '').slice(-1);
             if (!/[A-Za-z0-9_)$]/.test(prev)) {
                 let j = i + 1;
                 while (j < ops.length && /[01]/.test(ops[j])) j++;
-                out += emitBin(ops.slice(i + 1, j), bp);
+                const digits = ops.slice(i + 1, j);
+                out += convNum(parseInt(digits, 2), 'bin', digits, ops.slice(i, j));
                 i = j;
                 continue;
             }
@@ -375,13 +404,14 @@ function processOperands(ops, opts) {
             let j = i;
             while (j < ops.length && /[0-9a-zA-Z_]/.test(ops[j])) j++;
             const tok = ops.slice(i, j);
-            let m;
-            if (hp && (m = tok.match(/^0[xX]([0-9a-fA-F]+)$/))) out += emitHex(m[1], hp);
-            else if (hp && (m = tok.match(/^([0-9][0-9a-fA-F]*)[hH]$/))) out += emitHex(stripGuardZero(m[1]), hp);
-            else if (bp && (m = tok.match(/^0[bB]([01]+)$/))) out += emitBin(m[1], bp);
-            else if (bp && (m = tok.match(/^([01]{3,})[bB]$/))) out += emitBin(m[1], bp);   // 1-2 digit Nb is a temp label
-            else if (op && (m = tok.match(/^([0-7]+)[oOqQ]$/))) out += emitOct(m[1], op);
-            else out += tok;   // decimal, decimal-d, temp labels - untouched
+            let m, dg;
+            if (m = tok.match(/^0[xX]([0-9a-fA-F]+)$/)) out += convNum(parseInt(m[1], 16), 'hex', m[1], tok);
+            else if (m = tok.match(/^([0-9][0-9a-fA-F]*)[hH]$/)) { dg = stripGuardZero(m[1]); out += convNum(parseInt(dg, 16), 'hex', dg, tok); }
+            else if (m = tok.match(/^0[bB]([01]+)$/)) out += convNum(parseInt(m[1], 2), 'bin', m[1], tok);
+            else if (m = tok.match(/^([01]{3,})[bB]$/)) out += convNum(parseInt(m[1], 2), 'bin', m[1], tok);   // 1-2 digit Nb is a temp label
+            else if (m = tok.match(/^([0-7]+)[oOqQ]$/)) out += convNum(parseInt(m[1], 8), 'oct', m[1], tok);
+            else if (m = tok.match(/^([0-9]+)[dD]?$/)) out += convNum(parseInt(m[1], 10), 'dec', m[1], tok);   // decimal or explicit Nd
+            else out += tok;   // temp labels, mixed identifiers - untouched
             i = j;
             continue;
         }
@@ -406,6 +436,20 @@ function processOperands(ops, opts) {
 function stripGuardZero(digits) {
     return (digits.length > 1 && digits[0] === '0' && /[a-fA-F]/.test(digits[1]))
         ? digits.slice(1) : digits;
+}
+
+// Base conversion helpers (value-preserving). hexToDec parses hex digits to a
+// decimal string; decToHex emits a decimal string as uppercase hex in the given
+// notation (reusing emitHex for the guard-zero / prefix rules).
+// Pad hex digits to a fixed width by value class when the matching option is on:
+// a byte value (≤ $FF) to 2 digits, a word value ($100..$FFFF) to 4. Values over
+// $FFFF are left as-is. 'byte' and 'word' are the standard Z80 terms (DB/DW).
+function padHex(digits, opts) {
+    const val = parseInt(digits, 16);
+    let w = 0;
+    if (val <= 0xFF) { if (opts.hexPadBytes) w = 2; }
+    else if (val <= 0xFFFF) { if (opts.hexPadWords) w = 4; }
+    return (w && digits.length < w) ? digits.padStart(w, '0') : digits;
 }
 
 // Emit hex digits in the target notation: '#' / '$' / '0x' / 'h' (suffix).

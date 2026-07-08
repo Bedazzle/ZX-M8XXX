@@ -242,7 +242,41 @@ import { Disassembler } from './disasm.js';
                 executed: new Map(),   // Instruction fetch addresses
                 read: new Map(),       // Non-fetch read addresses
                 written: new Map(),    // Written addresses
-                currentFetchAddrs: new Set() // Addresses fetched in current instruction
+                currentFetchAddrs: new Set(), // Addresses fetched in current instruction
+                // Fast mode: flat 16-bit touched bitsets instead of the Map<key,count>.
+                // ~10x cheaper per access (a byte write vs Map.set of a string key), at
+                // the cost of counts and page granularity — for long RZX playthroughs
+                // where only coverage (code vs data) matters. Allocated on demand.
+                fast: false,
+                execBits: null,        // Uint8Array(0x10000) | null
+                readBits: null,
+                writeBits: null
+            };
+
+            // Indirect-jump resolution: records the runtime targets of `JP (HL)` /
+            // `JP (IX)` / `JP (IY)` — the dispatch-table / state-machine edges that
+            // static disassembly (Ghidra) can't resolve. site PC → {kind, targets}.
+            this.indirectJumps = {
+                enabled: false,
+                sites: new Map()   // sitePC -> { kind, targets: Map<targetPC, count> }
+            };
+
+            // Runtime call graph: observed caller→callee edges from CALL/RST (incl.
+            // self-modified CALL targets and remapped RST vectors static tools miss).
+            this.callGraph = {
+                enabled: false,
+                edges: new Map()   // callerPC -> Map<calleePC, count>
+            };
+
+            // Write provenance: records, for writes landing in a watched range,
+            // which instruction PC did the write (+ its call stack) and how often.
+            // A first-class, range-scoped replacement for hand-wrapping the write
+            // callback — fast enough for a full RZX replay (work only in-range).
+            this.writeProvenance = {
+                enabled: false,
+                lo: 0,
+                hi: -1,
+                byPc: new Map()        // pc -> { count, callers:[addr] }
             };
 
             // Runtime behavior profiler - tracks per-subroutine behavior for auto-labeling
@@ -359,9 +393,13 @@ import { Disassembler } from './disasm.js';
             // Memory/CPU callback functions (stored for enable/disable)
             this._memoryReadCallback = (addr, val) => {
                 // Auto-map: track non-fetch reads (only during CPU execution)
-                if (this.autoMap.enabled && this.autoMap.inExecution && !this.autoMap.currentFetchAddrs.has(addr)) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
+                if (this.autoMap.enabled && this.autoMap.inExecution) {
+                    if (this.autoMap.fast) {
+                        this.autoMap.readBits[addr & 0xFFFF] = 1;
+                    } else if (!this.autoMap.currentFetchAddrs.has(addr)) {
+                        const key = this.getAutoMapKey(addr);
+                        this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
+                    }
                 }
                 // Profiler: track screen reads
                 if (this.profiler.enabled && (addr >= SCREEN_BITMAP && addr <= SCREEN_END)) {
@@ -400,8 +438,22 @@ import { Disassembler } from './disasm.js';
             this._memoryWriteCallback = (addr, val) => {
                 // Auto-map: track writes (only during CPU execution)
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
+                    if (this.autoMap.fast) {
+                        this.autoMap.writeBits[addr & 0xFFFF] = 1;
+                    } else {
+                        const key = this.getAutoMapKey(addr);
+                        this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
+                    }
+                }
+                // Write provenance: which instruction wrote into the watched range
+                if (this.writeProvenance.enabled && addr >= this.writeProvenance.lo && addr <= this.writeProvenance.hi) {
+                    const pc = this._currentInstrPC;
+                    let e = this.writeProvenance.byPc.get(pc);
+                    if (!e) {
+                        e = { count: 0, callers: this._debugCallStack.map(x => x.addr) };
+                        this.writeProvenance.byPc.set(pc, e);
+                    }
+                    e.count++;
                 }
                 // Profiler: track screen writes
                 if (this.profiler.enabled && (addr >= SCREEN_BITMAP && addr <= SCREEN_END)) {
@@ -464,9 +516,13 @@ import { Disassembler } from './disasm.js';
             };
             this._cpuFetchCallback = (addr) => {
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    const key = this.getAutoMapKey(addr);
-                    this.autoMap.executed.set(key, (this.autoMap.executed.get(key) || 0) + 1);
-                    this.autoMap.currentFetchAddrs.add(addr);
+                    if (this.autoMap.fast) {
+                        this.autoMap.execBits[addr & 0xFFFF] = 1;
+                    } else {
+                        const key = this.getAutoMapKey(addr);
+                        this.autoMap.executed.set(key, (this.autoMap.executed.get(key) || 0) + 1);
+                        this.autoMap.currentFetchAddrs.add(addr);
+                    }
                 }
                 if (this.codePath.enabled) {
                     this.codePath.executed.add(this.getAutoMapKey(addr));
@@ -2072,6 +2128,7 @@ import { Disassembler } from './disasm.js';
                         this._if1PageOutPending = false;
                     }
                     this._trackCallStack(_csOldPC, _csOldSP);
+                    if (this.indirectJumps.enabled) this._trackIndirectJump(_csOldPC);
                     // Profiler: track CALL/RST entries and per-PC T-states
                     if (this.profiler.enabled) {
                         this._profilerTrackCallRet(_csOldPC, _csOldSP);
@@ -2647,6 +2704,7 @@ import { Disassembler } from './disasm.js';
                         this._if1PageOutPending = false;
                     }
                     this._trackCallStack(_hlCsOldPC, _hlCsOldSP);
+                    if (this.indirectJumps.enabled) this._trackIndirectJump(_hlCsOldPC);
                     // Profiler: track CALL/RST entries and per-PC T-states
                     if (this.profiler.enabled) {
                         this._profilerTrackCallRet(_hlCsOldPC, _hlCsOldSP);
@@ -3897,7 +3955,12 @@ import { Disassembler } from './disasm.js';
                 // PUSH reg pushes register values, not return addresses — filtered out here
                 const diff = (pushed - oldPC) & 0xFFFF;
                 if (diff >= 1 && diff <= 4) {
-                    // CALL/RST detected — newPC is the target
+                    // CALL/RST detected — newPC is the target, oldPC the call site
+                    if (this.callGraph.enabled) {
+                        let e = this.callGraph.edges.get(oldPC);
+                        if (!e) { e = new Map(); this.callGraph.edges.set(oldPC, e); }
+                        e.set(newPC, (e.get(newPC) || 0) + 1);
+                    }
                     if (this._debugCallStack.length < this._debugCallStackMaxDepth) {
                         this._debugCallStack.push({ addr: newPC, caller: oldPC });
                     }
@@ -5729,7 +5792,8 @@ import { Disassembler } from './disasm.js';
                 this.writeMonitor.enabled ||
                 this.readMonitor.enabled ||
                 this.comparisonBreakpoint.enabled ||
-                this.structMapper.enabled;
+                this.structMapper.enabled ||
+                this.writeProvenance.enabled;
 
             // Set callbacks to null when not needed (eliminates function call overhead)
             this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
@@ -8826,12 +8890,123 @@ import { Disassembler } from './disasm.js';
             return this.autoMap.enabled;
         }
 
-        // Clear all auto-map tracking data
+        // Enable/disable fast bitset recording (see autoMap struct). Allocates the
+        // exec/read/write bitsets on first enable. Recording still requires
+        // setAutoMapEnabled(true); when both are on, the hot callbacks set a bit
+        // instead of updating the Map (much cheaper for long RZX replays).
+        setAutoMapFast(enabled) {
+            if (enabled && !this.autoMap.execBits) {
+                this.autoMap.execBits = new Uint8Array(0x10000);
+                this.autoMap.readBits = new Uint8Array(0x10000);
+                this.autoMap.writeBits = new Uint8Array(0x10000);
+            }
+            this.autoMap.fast = !!enabled;
+        }
+
+        // Live fast-mode bitsets (Uint8Array(0x10000) each; 1 = touched). null
+        // until setAutoMapFast(true) has been called.
+        getAutoMapBits() {
+            return {
+                execBits: this.autoMap.execBits,
+                readBits: this.autoMap.readBits,
+                writeBits: this.autoMap.writeBits
+            };
+        }
+
+        // Clear all auto-map tracking data (both Map and fast bitset modes)
         clearAutoMap() {
             this.autoMap.executed.clear();
             this.autoMap.read.clear();
             this.autoMap.written.clear();
             this.autoMap.currentFetchAddrs.clear();
+            if (this.autoMap.execBits) this.autoMap.execBits.fill(0);
+            if (this.autoMap.readBits) this.autoMap.readBits.fill(0);
+            if (this.autoMap.writeBits) this.autoMap.writeBits.fill(0);
+        }
+
+        // Record which instructions write into [lo, hi] (inclusive). Cheap enough
+        // for a full RZX replay (work happens only for in-range writes).
+        startWriteProvenance(lo, hi) {
+            this.writeProvenance.lo = lo & 0xFFFF;
+            this.writeProvenance.hi = hi & 0xFFFF;
+            this.writeProvenance.byPc = new Map();
+            this.writeProvenance.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopWriteProvenance() {
+            this.writeProvenance.enabled = false;
+            this.updateMemoryCallbacksFlag();
+            return this.getWriteProvenance();
+        }
+
+        // [{ pc, count, callers:[addr] }], most-frequent writer first.
+        getWriteProvenance() {
+            const out = [];
+            for (const [pc, e] of this.writeProvenance.byPc) {
+                out.push({ pc, count: e.count, callers: e.callers.slice() });
+            }
+            return out.sort((a, b) => b.count - a.count);
+        }
+
+        // Called after each instruction (when indirectJumps.enabled): if the just-
+        // executed instruction at sitePC was JP (HL)/(IX)/(IY), record where it went.
+        // cpu.pc now holds the resolved target (the jump doesn't touch the reg).
+        _trackIndirectJump(sitePC) {
+            const op = this.memory.read(sitePC);
+            let kind;
+            if (op === 0xE9) kind = 'JP (HL)';
+            else if (op === 0xDD && this.memory.read((sitePC + 1) & 0xFFFF) === 0xE9) kind = 'JP (IX)';
+            else if (op === 0xFD && this.memory.read((sitePC + 1) & 0xFFFF) === 0xE9) kind = 'JP (IY)';
+            else return;
+            let e = this.indirectJumps.sites.get(sitePC);
+            if (!e) { e = { kind, targets: new Map() }; this.indirectJumps.sites.set(sitePC, e); }
+            const t = this.cpu.pc & 0xFFFF;
+            e.targets.set(t, (e.targets.get(t) || 0) + 1);
+        }
+
+        startIndirectJumps() {
+            this.indirectJumps.sites = new Map();
+            this.indirectJumps.enabled = true;
+        }
+
+        stopIndirectJumps() {
+            this.indirectJumps.enabled = false;
+            return this.getIndirectJumps();
+        }
+
+        // [{ site, kind, targets:[{target, count}] }], sorted by site.
+        getIndirectJumps() {
+            const out = [];
+            for (const [site, e] of this.indirectJumps.sites) {
+                const targets = [...e.targets.entries()]
+                    .map(([target, count]) => ({ target, count }))
+                    .sort((a, b) => a.target - b.target);
+                out.push({ site, kind: e.kind, targets });
+            }
+            return out.sort((a, b) => a.site - b.site);
+        }
+
+        startCallGraph() {
+            this.callGraph.edges = new Map();
+            this.callGraph.enabled = true;
+        }
+
+        stopCallGraph() {
+            this.callGraph.enabled = false;
+            return this.getCallGraph();
+        }
+
+        // [{ caller, callees:[{callee, count}] }], sorted by caller.
+        getCallGraph() {
+            const out = [];
+            for (const [caller, m] of this.callGraph.edges) {
+                const callees = [...m.entries()]
+                    .map(([callee, count]) => ({ callee, count }))
+                    .sort((a, b) => a.callee - b.callee);
+                out.push({ caller, callees });
+            }
+            return out.sort((a, b) => a.caller - b.caller);
         }
 
         // Get auto-map statistics

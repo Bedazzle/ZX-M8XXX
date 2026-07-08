@@ -2,6 +2,17 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.15
+- **Explorer: extract a SPECSCII catalogue banner as `.specscii`**: the Banner dialog gains a **Save .specscii** button to pull a disk's banner back out as a reusable file. Also fixed the preview not rendering text.
+- **Beautify: per-width number base conversion (hex ↔ decimal)**: independent **Byte** (≤ `$FF`) and **Word** (larger) selectors set each width's base separately — e.g. 8-bit values decimal while addresses go hex (`LD A,$FF`→`255`, `LD HL,$8000` stays hex). Optional byte/word hex padding (`$5`→`$05`, `$100`→`$0100`). Temp labels, `$` current-address, and modulo left alone.
+- **Explorer: TR-DOS/SCL monoloader size shows the full file**: a monoloader (short BASIC loader with CODE glued into its extra sectors) listed its tiny declared length as the size; it now shows the full on-disk allocation (sectors × 256), with the declared length in the tooltip.
+- **Self-modifying-code detection + runtime call graph**: `zxDebug.getSmc()`/`exportSmcCsv()` flag addresses that were both executed and written (SMC — breaks byte-exact rebuilds and confuses static disassembly), and `zxDebug.watchCalls()`/`exportCallGraphCsv()` capture the observed `CALL`/`RST` graph (callee-indexed "who calls this", incl. self-modified targets static xrefs miss). Both export as Ghidra CSV. Off by default.
+- **Resolved indirect-jump export**: records the runtime targets of `JP (HL)`/`(IX)`/`(IY)` — the dispatch-table edges a static disassembler can't recover — and exports them as a Ghidra `address,name,comment` CSV (each site's comment lists its targets) via `zxDebug.exportIndirectCsv()`. Off by default.
+- **Deterministic headless boot / auto-load (`zxDebug.autoLoad`)**: boots a loaded tape or disk to the running game from a headless harness by pumping frames through the frame-driven auto-loader itself — no scripted-keyboard fragility, no hand-built snapshot.
+- **Headless automation API (`window.zxDebug`)**: a documented surface for driving M8XXX from an external harness — the execution map, the debug managers, the `.ctl`/`.csv`/`.sym` exporters, and write provenance (which instruction wrote into a range) — so drivers stop reaching into internals. See `docs/automation.md`.
+- **Fast auto-map recording**: an opt-in mode that records executed/read/written into touched-bitsets instead of a counting map — ~10× cheaper per access, so a full RZX playthrough can be mapped (at the cost of counts and 128K page detail).
+- **Export the execution map for disassembly tools**: the Memory Map dialog exports the Auto-Map (executed = code, read/written = data) plus labels and comments as SkoolKit `.ctl`, Ghidra CSV (for the ZX-disasm `apply_labels.py`), and sjasmplus `.sym`.
+
 ## v0.15.14
 - **Keyboard works right after changing emulation speed**: focus used to stay on the speed dropdown, so typing did nothing until you clicked the page. Focus is now released to the emulator after a speed change.
 - **Assembler: `@define` toggles are now checkboxes**: each detected `@define` shows as a checkbox chip — plainly ticked (defined) or unticked — instead of an ambiguous multi-select list, and editing the source no longer clears your selection.
