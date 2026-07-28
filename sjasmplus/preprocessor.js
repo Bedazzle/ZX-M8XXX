@@ -153,12 +153,18 @@ export const Preprocessor = {
         let body = macro.body.slice();
         const localPrefix = `__macro_${macroCount}_`;
 
-        // Substitute parameters (case-insensitive - sjasmplus treats params case-insensitively)
+        // Substitute parameters (case-insensitive - sjasmplus treats params case-insensitively).
+        // Parameter names conventionally end in '?' (sjasmplus style: "MACRO m file_path?"),
+        // which is a regex quantifier and not a word character — so the name has to be
+        // escaped, and the trailing \b replaced by "not followed by more name characters".
         for (let i = 0; i < macro.params.length; i++) {
             const param = macro.params[i];
             const arg = args[i] !== undefined ? args[i] : '';
-            const regex = new RegExp('\\b' + param + '\\b', 'gi');  // Case-insensitive
-            body = body.map(line => line.replace(regex, arg));
+            const escaped = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const head = /^[\w$.]/.test(param) ? '\\b' : '';
+            const tail = /[\w$.]$/.test(param) ? '\\b' : '(?![\\w?])';
+            const regex = new RegExp(head + escaped + tail, 'gi');
+            body = body.map(line => line.replace(regex, () => arg));
         }
 
         // Handle # (stringize) and ## (concatenate) operators

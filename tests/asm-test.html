@@ -99,7 +99,7 @@
     <script type="module">
     import { Assembler } from '../sjasmplus/assembler.js';
     import snippetsData from '../data/asm-snippets.json' with { type: 'json' };
-        const TEST_VERSION = '0.6.2';
+        const TEST_VERSION = '0.6.4';
 
         const logEl = document.getElementById('log');
         const summaryEl = document.getElementById('summary');
@@ -1261,11 +1261,252 @@ VAL:            EQU 42
             }
         }
 
+        // Wrong source must be reported, not silently assembled
+        async function runOperandValidationTests() {
+            section('Operand Validation');
+
+            // Helpers: does this source fail / warn?
+            function fails(src) {
+                try {
+                    const r = Assembler.assemble(src);
+                    return !(r && r.success);
+                } catch (e) {
+                    return true;
+                }
+            }
+            function warningsOf(src) {
+                let r = null;
+                try { r = Assembler.assemble(src); } catch (e) { return []; }
+                return ((r && r.warnings) || []).map(w => w.message || String(w))
+                    .filter(m => !m.startsWith('Unused label:'));
+            }
+
+            // Instructions that take no operands must reject them
+            assert(fails("exx af,af'"), "EXX with operands rejected");
+            assert(fails('nop 5'), 'NOP with operand rejected');
+            assert(fails('halt 1'), 'HALT with operand rejected');
+            assert(fails('di 1'), 'DI with operand rejected');
+            assert(fails('ldir bc,de'), 'LDIR with operands rejected');
+            assert(fails('neg a'), 'NEG with operand rejected');
+            assert(fails('reti 5'), 'RETI with operand rejected');
+            assert(fails("exa af,af'"), "EXA with operands rejected");
+
+            // ...but still assemble bare, including with a colon separator
+            assertBytes(bytes('exx'), [0xD9], 'EXX alone still assembles');
+            assertBytes(bytes('    ldir'), [0xED, 0xB0], 'LDIR alone still assembles');
+            assertBytes(bytes('    nop : ret'), [0x00, 0xC9], 'NOP : RET still assembles');
+            assertBytes(bytes('    exa : ld a,b'), [0x08, 0x78], 'EXA : LD A,B still assembles');
+            assertBytes(bytes('    ldir ; copy'), [0xED, 0xB0], 'LDIR with comment still assembles');
+
+            // A missing operand must not assemble as zero
+            assert(fails('ld a,'), 'LD with trailing comma rejected');
+            assert(fails('push bc,'), 'PUSH with trailing comma rejected');
+            assert(fails('ld ,a'), 'LD with empty first operand rejected');
+
+            // Values that don't fit are truncated, but must say so
+            assert(warningsOf('ld a,300').length === 1, 'LD A,300 warns (8-bit range)');
+            assert(warningsOf('db 300').length === 1, 'DB 300 warns (8-bit range)');
+            assert(warningsOf('db -200').length === 1, 'DB -200 warns (8-bit range)');
+            assert(warningsOf('ld hl,70000').length === 1, 'LD HL,70000 warns (16-bit range)');
+            assert(warningsOf('ld b,(ix+200)').length === 1, 'IX displacement +200 warns');
+            assertBytes(bytes('ld a,300'), [0x3E, 0x2C], 'LD A,300 still emits the low byte');
+
+            // In-range values (incl. negatives) stay silent
+            assert(warningsOf('ld a,255').length === 0, 'LD A,255 silent');
+            assert(warningsOf('ld a,-128').length === 0, 'LD A,-128 silent');
+            assert(warningsOf('db -1').length === 0, 'DB -1 silent');
+            assert(warningsOf('ld hl,-1').length === 0, 'LD HL,-1 silent');
+            assert(warningsOf('ld b,(ix+127)').length === 0, 'IX displacement +127 silent');
+            assert(warningsOf('    org $8000\n    jr $').length === 0, 'in-range JR silent');
+            assert(warningsOf('    org $8000\n    jr $+300').length === 1, 'out-of-range JR warns once');
+
+            // A directive that needs operands is a mistake when bare, not a label
+            assert(fails('org'), 'bare ORG rejected');
+            assert(fails('include'), 'bare INCLUDE rejected');
+            assert(fails('incbin'), 'bare INCBIN rejected');
+            assert(fails('align'), 'bare ALIGN rejected');
+            assert(fails('macro'), 'bare MACRO rejected');
+
+            // ...but words real sources use as labels still work
+            assert(!fails('slot\n    nop'), 'SLOT alone still a label');
+            assert(!fails('page\n    nop'), 'PAGE alone still a label');
+            assert(!fails('byte\n    nop'), 'BYTE alone still a label');
+        }
+
+        // Malformed source must be reported, not quietly turned into something else
+        async function runSourceValidationTests() {
+            section('Source Validation');
+
+            function fails(src) {
+                try {
+                    const r = Assembler.assemble(src);
+                    return !(r && r.success);
+                } catch (e) {
+                    return true;
+                }
+            }
+            function warningsOf(src) {
+                let r = null;
+                try { r = Assembler.assemble(src); } catch (e) { return []; }
+                return ((r && r.warnings) || []).map(w => w.message || String(w))
+                    .filter(m => !m.startsWith('Unused label:'));
+            }
+
+            // Junk after / missing part of an expression
+            assert(fails('ld a,1+'), 'dangling operator rejected');
+            assert(fails('ld a,1 2'), 'junk after expression rejected');
+            assert(fails('ld a,1)'), 'stray closing paren rejected');
+            assert(fails('ld a,0b12'), 'bad binary literal rejected');
+            assert(fails('ld a,(ix+)'), 'missing IX displacement rejected');
+
+            // Operands that are not immediates must not be evaluated as numbers
+            assert(fails('ld (ix+5),(iy+5)'), 'LD (IX+d),(IY+d) rejected');
+            assert(fails('ld (ix+5),(hl)'), 'LD (IX+d),(HL) rejected');
+            assert(fails('ld b,(bc)'), 'LD B,(BC) rejected');
+            assert(fails('add a,(bc)'), 'ADD A,(BC) rejected');
+            assert(fails('cp (de)'), 'CP (DE) rejected');
+
+            // H/L and the index halves can't meet — the prefix rewrites them
+            assert(fails('ld ixl,h'), 'LD IXL,H rejected');
+            assert(fails('ld h,ixl'), 'LD H,IXL rejected');
+            assert(fails('ld ixh,iyl'), 'mixing IX and IY halves rejected');
+            assertBytes(bytes('ld ixl,ixh'), [0xDD, 0x6C], 'LD IXL,IXH = DD 6C');
+            assertBytes(bytes('ld ixh,ixl'), [0xDD, 0x65], 'LD IXH,IXL = DD 65');
+            assertBytes(bytes('ld iyl,iyh'), [0xFD, 0x6C], 'LD IYL,IYH = FD 6C');
+
+            // Blocks left open swallow the rest of the file
+            assert(fails('    if 1\n    nop'), 'IF without ENDIF rejected');
+            assert(fails('    macro m\n    nop'), 'MACRO without ENDM rejected');
+            assert(fails('    rept 3\n    nop'), 'REPT without ENDR rejected');
+            assert(!fails('    if 1\n    nop\n    endif'), 'closed IF still assembles');
+            assert(!fails('    rept 2\n    nop\n    endr'), 'closed REPT still assembles');
+
+            // Duplicate label: say so instead of "failed to converge"
+            let dupMsg = '';
+            try {
+                const r = Assembler.assemble('start: nop\nstart: nop');
+                dupMsg = (r && r.errors && r.errors[0] && r.errors[0].message) || '';
+            } catch (e) {
+                dupMsg = e.message;
+            }
+            assert(/already defined/i.test(dupMsg), 'duplicate label names the label', dupMsg);
+            assert(!fails('    module m1\nstart: nop\n    endmodule\n' +
+                          '    module m2\nstart: nop\n    endmodule'),
+                   'same label in two modules is not a duplicate');
+            assert(!fails('mac macro\n    nop\n    endm\n    mac\n    mac'),
+                   'macro expanded twice is not a duplicate');
+
+            // Nonsense sizes/alignments warn
+            assert(warningsOf('    ds -5').length === 1, 'negative DS warns');
+            assert(warningsOf('    align 3').length === 1, 'non-power-of-2 ALIGN warns');
+            assert(warningsOf('    align 4').length === 0, 'ALIGN 4 silent');
+        }
+
+        // Directive and macro forms that real sjasmplus projects use. These were all
+        // broken until Lua-using sources exposed them, but none of them need Lua.
+        async function runProjectFormTests() {
+            section('EXPORT');
+
+            function build(src) {
+                let r = null, threw = null;
+                try { r = Assembler.assemble(src); } catch (e) { threw = e.message; }
+                return {
+                    ok: !threw && !!(r && r.success),
+                    err: threw || '',
+                    output: (r && r.output) || [],
+                    cmds: (r && r.saveCommands) || [],
+                };
+            }
+
+            let b = build([
+                '    ORG $8000',
+                'start:',
+                '    ret',
+                '    EXPORT start',
+            ].join('\n'));
+            assert(b.ok, 'EXPORT assembles', b.err);
+            const exp = b.cmds.find(c => c.type === 'export');
+            assert(!!exp, 'EXPORT produces an export file');
+            assert(!!exp && /^start: EQU 0x8000$/m.test(exp.content || ''),
+                   'exported symbol carries its address', exp ? String(exp.content) : '');
+
+            // Forward reference: the value is read after assembly, not at EXPORT time
+            b = build([
+                '    ORG $9000',
+                '    EXPORT later',
+                '    nop',
+                'later:',
+                '    ret',
+            ].join('\n'));
+            const exp2 = b.cmds.find(c => c.type === 'export');
+            assert(b.ok && !!exp2 && /^later: EQU 0x9001$/m.test(exp2.content || ''),
+                   'a forward-declared label exports its final value',
+                   exp2 ? String(exp2.content) : b.err);
+
+            // Several names, one file
+            b = build(['    ORG $8000', 'a:', '    nop', 'b:', '    ret', '    EXPORT a, b'].join('\n'));
+            const exp3 = b.cmds.find(c => c.type === 'export');
+            assert(b.ok && !!exp3 && /a: EQU/.test(exp3.content || '') && /b: EQU/.test(exp3.content || ''),
+                   'EXPORT takes a list', exp3 ? String(exp3.content) : b.err);
+            assert(b.cmds.filter(c => c.type === 'export').length === 1, 'one .exp per build');
+
+            section('Labels marked "!" (not exported)');
+            {
+                // sjasmplus writes "!label = value"; without the marker handled, the
+                // line isn't a label at all and later references fail
+                const r = build(['    ORG $8000', '!saved = $', '    ld hl,saved', '    ORG saved'].join('\n'));
+                assert(r.ok, '"!label = $" defines a usable label', r.err);
+                assertBytes(r.output, [0x21, 0x00, 0x80], '"!label" resolves to its address');
+
+                const r2 = build(['!flag: equ 5', '    ld a,flag'].join('\n'));
+                assert(r2.ok && r2.output[1] === 5, '"!label:" with EQU works too', r2.err);
+            }
+
+            section('Macro parameters written the sjasmplus way (name?)');
+            {
+                let r = build([
+                    'SETB MACRO value?',
+                    '    db value?',
+                    '  ENDM',
+                    '    ORG $8000',
+                    '    SETB 7',
+                ].join('\n'));
+                assert(r.ok && r.output[0] === 7, '"?" parameter is substituted', r.err);
+
+                r = build([
+                    'RANGE MACRO from?, to?',
+                    '    db to? - from?',
+                    '  ENDM',
+                    '    ORG $8000',
+                    '    RANGE 2, 9',
+                ].join('\n'));
+                assert(r.ok && r.output[0] === 7, 'several "?" parameters in one expression', r.err);
+
+                // A longer name starting with the same text must not be clobbered
+                r = build([
+                    'PAIR MACRO a?, ab?',
+                    '    db a?, ab?',
+                    '  ENDM',
+                    '    ORG $8000',
+                    '    PAIR 1, 2',
+                ].join('\n'));
+                assert(r.ok && r.output[0] === 1 && r.output[1] === 2,
+                       'a? does not match inside ab?', r.err + ' ' + JSON.stringify(Array.from(r.output)));
+
+                // Parameters without "?" keep working
+                r = build(['OLD MACRO value', '    db value', '  ENDM', '    ORG $8000', '    OLD 3'].join('\n'));
+                assert(r.ok && r.output[0] === 3, 'parameters without "?" still substitute', r.err);
+            }
+        }
+
         async function runAllTests() {
             clearLog();
             log('Running all assembler tests...', 'info');
 
             await runSnippetTests();
+            await runOperandValidationTests();
+            await runSourceValidationTests();
+            await runProjectFormTests();
             await runInstructionTests();
             await runDirectiveTests();
             await runLabelTests();

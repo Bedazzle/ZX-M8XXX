@@ -541,6 +541,7 @@ export class AsmDetok {
         const bin8 = (b) => b.toString(2).padStart(8, '0');
 
         let result = '';
+        let stormBail = 0;   // expression decoder hit a depth/bounds guard
 
         for (const { start, len } of lineList) {
             if (start < 0) continue;
@@ -583,15 +584,20 @@ export class AsmDetok {
             };
 
             // recursive expression decoder: alternates number and operator
-            // phases; bit 3 of the descriptor marks the last element
-            const printExpr = (j, op, number) => {
+            // phases; bit 3 of the descriptor marks the last element.
+            // depth/bounds guarded: misdetected or corrupt data (e.g. a run of
+            // 0x00 bytes, each decoding as another '(' subexpression) would
+            // otherwise recurse until the stack overflows.
+            const printExpr = (j, op, number, depth = 0) => {
+                if (depth > 64) { stormBail++; return j; }
                 while (true) {
                     if (number) {
                         switch (op & 0x07) {
                             case 0: {                       // parenthesized subexpression
                                 out += '(';
+                                if (j >= bytes.length) { stormBail++; return j; }
                                 const b = bytes[j++];
-                                j = printExpr(j, b, !(op & 0x10));
+                                j = printExpr(j, b, !(op & 0x10), depth + 1);
                                 out += ')';
                                 break;
                             }
@@ -638,6 +644,7 @@ export class AsmDetok {
                         }
                         number = false;
                         if (op & 0x08) break;
+                        if (j >= bytes.length) { stormBail++; return j; }
                         op = bytes[j++];
                     } else {
                         const saved = op;
@@ -649,6 +656,7 @@ export class AsmDetok {
                             out += AR[0x0F + (op & 0x07)];   // postfix operator
                             number = false;
                             if (saved & 0x08) break;
+                            if (j >= bytes.length) { stormBail++; return j; }
                             op = bytes[j++];
                         }
                     }
@@ -790,6 +798,10 @@ export class AsmDetok {
             }
 
             result += out + '\n';
+        }
+
+        if (stormBail > 0) {
+            warnings.push(`STORM expression decoding stopped early on ${stormBail} element(s) - the file may not be STORM format or may be corrupt`);
         }
 
         return { text: result, warnings };

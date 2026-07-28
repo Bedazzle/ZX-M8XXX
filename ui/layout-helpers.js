@@ -1,3 +1,4 @@
+import { isFlowBreak } from './mnemonic-format.js';
 // layout-helpers.js — Layout detection and flow break utilities (extracted from index.html)
 
 export function initLayoutHelpers() {
@@ -24,15 +25,6 @@ export function initLayoutHelpers() {
     // Check on page load and resize
     checkLandscapeMode();
     window.addEventListener('resize', checkLandscapeMode);
-
-    // Check if instruction should have a blank line after it
-    function isFlowBreak(mnemonic) {
-        const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
-        return mn.startsWith('JP') || mn.startsWith('JR') ||
-               mn.startsWith('RET') || mn.startsWith('DJNZ') ||
-               mn.startsWith('RST') || mn.startsWith('CALL') ||
-               mn === 'HALT';
-    }
 
     return { isDebuggerVisible, isFlowBreak };
 }

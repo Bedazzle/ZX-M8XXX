@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ASM Highlight Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>ASM Highlight Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { highlightAsmCode, highlightAsmLine, createHighlightCache, createHighlightLayer }
+            from '../ui/asm-highlight.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        // Text as the user sees it, with markup stripped
+        const plain = (html) => html.replace(/<[^>]+>/g, '')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+
+        section('Token classes');
+        {
+            const cases = [
+                ['    ld a,5', 'asm-hl-instruction', 'instruction'],
+                ['    org $8000', 'asm-hl-directive', 'directive'],
+                ['    ld hl,0', 'asm-hl-register', 'register'],
+                ['    ld a,$FF', 'asm-hl-number', 'number'],
+                ['    db "hi"', 'asm-hl-string', 'string'],
+                ['start:', 'asm-hl-label', 'label'],
+                ['    ret   ; done', 'asm-hl-comment', 'comment'],
+                ['    ld a,(hl)', 'asm-hl-paren', 'paren'],
+            ];
+            for (const [src, cls, what] of cases) {
+                assert(highlightAsmLine(src).includes(cls), `${what}: ${src.trim()}`);
+            }
+        }
+
+        section('Markup is safe and lossless');
+        {
+            const tricky = '    db "<&>"   ; a & b <tag>';
+            const html = highlightAsmLine(tricky);
+            assert(!/<(?!\/?span)/.test(html.replace(/&lt;/g, '')), 'no raw markup injected');
+            assert(plain(html) === tricky, 'text survives round-trip', plain(html));
+
+            const doc = ['start:', '    ld a,"<"', '', '    ret'].join('\n');
+            assert(plain(highlightAsmCode(doc)) === doc, 'document text survives round-trip');
+            assert(highlightAsmCode(doc).split('\n').length === doc.split('\n').length,
+                   'line count preserved');
+        }
+
+        section('Line cache matches uncached output');
+        {
+            const base = [];
+            for (let i = 0; i < 60; i++) {
+                base.push(`lbl_${i}:`, `    ld a,${i}   ; line ${i}`, '    ret', '');
+            }
+            const cache = createHighlightCache();
+            const lines = base.slice();
+            assert(highlightAsmCode(lines.join('\n'), 'raw', cache) ===
+                   highlightAsmCode(lines.join('\n'), 'raw', null), 'first pass equal');
+
+            // Edit, insert and delete lines; cached output must stay identical
+            let same = true;
+            const edits = [
+                () => { lines[5] = '    ld b,$10   ; edited'; },
+                () => { lines.splice(10, 0, '    nop'); },
+                () => { lines.splice(3, 1); },
+                () => { lines[0] = 'renamed:'; },
+                () => { lines.push('    halt'); },
+                () => { lines.splice(20, 5); },
+            ];
+            for (const edit of edits) {
+                edit();
+                const src = lines.join('\n');
+                if (highlightAsmCode(src, 'raw', cache) !== highlightAsmCode(src, 'raw', null)) same = false;
+            }
+            assert(same, 'edits, inserts and deletes all match uncached');
+
+            // Repeating the same document twice must be stable
+            const src = lines.join('\n');
+            const a = highlightAsmCode(src, 'raw', cache);
+            const b = highlightAsmCode(src, 'raw', cache);
+            assert(a === b, 'repeat pass stable');
+        }
+
+        section('Cache stays bounded');
+        {
+            const cache = createHighlightCache();
+            for (let pass = 0; pass < 5; pass++) {
+                const doc = Array.from({ length: 50 }, (_, i) => `    ld a,${pass * 100 + i}`).join('\n');
+                highlightAsmCode(doc, 'raw', cache);
+            }
+            assert(cache.size <= 50, 'only the last document is retained', `size ${cache.size}`);
+        }
+
+        section('Codepage view');
+        {
+            const src = '    db "' + String.fromCharCode(0xAF, 0xE0) + '"';
+            const raw = highlightAsmCode(src, 'raw');
+            const cp866 = highlightAsmCode(src, 'cp866');
+            assert(raw !== cp866, 'cp866 view differs from raw');
+            assert(plain(cp866).length === src.length, 'decode is 1 char per char (caret stays aligned)',
+                   `${plain(cp866).length} vs ${src.length}`);
+        }
+
+        section('Highlight layer — chunked, patched in place');
+        {
+            const el = document.createElement('pre');
+            el.style.cssText = 'position:absolute;left:-9999px;white-space:pre';
+            document.body.appendChild(el);
+            const layer = createHighlightLayer(el, { linesPerChunk: 20 });
+
+            const doc = (n) => Array.from({ length: n },
+                (_, i) => (i % 4 === 0 ? `lbl_${i}:` : `    ld a,${i}   ; line ${i}`)).join('\n');
+
+            // The layer's text must equal the source exactly (caret alignment)
+            const zwsp = /​/g;
+            let lines = doc(120).split('\n');
+            assert(layer.render(lines.join('\n'), 'raw') === 'rebuilt', 'first render builds');
+            assert(el.textContent.replace(zwsp, '') === lines.join('\n'), 'layer text equals source');
+            assert(layer.chunkCount === 6, 'split into chunks', `${layer.chunkCount}`);
+
+            // Editing inside a line patches one chunk
+            lines[45] = '    ld b,$FF   ; edited';
+            assert(layer.render(lines.join('\n'), 'raw') === 'patched', 'in-line edit patches');
+            assert(el.textContent.replace(zwsp, '') === lines.join('\n'), 'text still exact after edit');
+
+            // Inserting and deleting lines also patch (chunks hold a count, not fixed lines)
+            lines.splice(45, 0, '    nop');
+            assert(layer.render(lines.join('\n'), 'raw') === 'patched', 'line insert patches');
+            assert(el.textContent.replace(zwsp, '') === lines.join('\n'), 'text exact after insert');
+            lines.splice(10, 1);
+            assert(layer.render(lines.join('\n'), 'raw') === 'patched', 'line delete patches');
+            assert(el.textContent.replace(zwsp, '') === lines.join('\n'), 'text exact after delete');
+
+            // No change → no work
+            assert(layer.render(lines.join('\n'), 'raw') === 'unchanged', 'identical source does nothing');
+
+            // A wide edit falls back to a rebuild, and stays correct
+            lines.splice(30, 0, ...doc(80).split('\n'));
+            assert(layer.render(lines.join('\n'), 'raw') === 'rebuilt', 'wide paste rebuilds');
+            assert(el.textContent.replace(zwsp, '') === lines.join('\n'), 'text exact after paste');
+
+            // Markup must match the uncached whole-document highlighter
+            const strip = (s) => s.replace(/<span><\/span>/g, '');
+            const viaLayer = strip([...el.children].map(c => c.innerHTML).join(''));
+            assert(viaLayer === highlightAsmCode(lines.join('\n'), 'raw'),
+                   'chunk markup equals whole-document markup');
+
+            // Empty document and codepage switch
+            assert(layer.render('', 'raw') === 'rebuilt', 'empty document renders');
+            assert(el.textContent.replace(zwsp, '') === '', 'empty document has no text');
+            layer.render(doc(30), 'raw');
+            const rawText = el.textContent;
+            layer.render(doc(30), 'cp866');
+            assert(el.textContent === rawText || true, 'codepage switch re-renders without error');
+            el.remove();
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

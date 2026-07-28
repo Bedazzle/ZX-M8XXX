@@ -1,5 +1,6 @@
 // explorer.js — File analysis tool (extracted from index.html)
 import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
+import { isFlowBreak } from './mnemonic-format.js';
 import {
     SLOT1_START,
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
@@ -10,14 +11,6 @@ import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
 import { trdBasicAutostartLine, extractTrdFileDescriptor, shapeBasicEntry, addMetaFromDescriptor, isMonoloader, splitMonoloader } from './disk-file-copy.js';
 import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames, bannerNamesToSpecscii, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
-function isFlowBreak(mnemonic) {
-    const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
-    return mn.startsWith('JP') || mn.startsWith('JR') ||
-           mn.startsWith('RET') || mn.startsWith('DJNZ') ||
-           mn.startsWith('RST') || mn.startsWith('CALL') ||
-           mn === 'HALT';
-}
-
 export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader, pako, getPalette, getRomLabels, getZxCharset }) {
     // ========== Explorer Tab ==========
     const explorerFileInput = document.getElementById('explorerFileInput');
@@ -1569,14 +1562,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function trdEntryFields(extByte, w9, w11) {
         if (extByte === 0x42) return { startAddress: 0, length: w9, programLength: w11 };
         return { startAddress: w9, length: w11, programLength: null };
-    }
-
-    // Inverse of trdEntryFields: pack a file's metadata into the 9-10 / 11-12 words.
-    function trdEntryWords(extChar, length, startAddress, programLength) {
-        if (extChar === 'B' || extChar === 'b') {
-            return { w9: length, w11: (programLength != null ? programLength : length) };
-        }
-        return { w9: startAddress || 0, w11: length };
     }
 
     // TRD file parser
@@ -7508,7 +7493,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     initPanelDom(editorPanels.right, 'right');
 
     function getActivePanel() { return editorPanels[activePanel]; }
-    function getOtherPanel() { return editorPanels[activePanel === 'left' ? 'right' : 'left']; }
 
     // --- Pair logic (parameterized on panel) ---
 
@@ -8262,24 +8246,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     function editorLabelRowHtml(inner, editable) {
         const content = inner || ' ';
         return `<div class="editor-block-row disk-label-row"${editable ? ' data-label-row="1"' : ' style="cursor:default"'}><span class="editor-block-info">${content}</span></div>`;
-    }
-
-    // Editable disk-label row (double-click to expand) — shared by formats that carry a
-    // volume label (TR-DOS, Opus, Didaktik, Microdrive). `panel.diskLabel` holds the value.
-    function editorDiskLabelRow(panel, deletedFiles) {
-        const lbl = (panel.diskLabel || '').replace(/\s+$/, '');
-        const del = deletedFiles > 0 ? ` <span class="dim">(+${deletedFiles} deleted)</span>` : '';
-        return editorLabelRowHtml(`Label: <span class="name">"${lbl}"</span>${del}`, true);
-    }
-
-    // Inline label-edit form, rendered below the column header when the label row is expanded
-    // (expandedBlock === -2). `applyAction` is the data-action wired to the format's Apply handler.
-    function editorDiskLabelForm(panel, maxLen, applyAction) {
-        if (panel.expandedBlock !== -2) return '';
-        const lbl = (panel.diskLabel || '').replace(/\s+$/, '');
-        return `<div class="editor-inline-edit" data-edit-idx="-2"><label>Label:</label>`
-            + `<input type="text" maxlength="${maxLen}" value="${lbl}" data-field="label" style="width:100px">`
-            + `<button class="editor-apply-btn" data-action="${applyAction}" data-idx="-2">Apply</button></div>`;
     }
 
     // ===== Volume-label strip (panel metadata, shown above the file table, not inside it) =====
@@ -9856,74 +9822,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         return null;
     }
 
-    function diskEditorImportDisk(panel, data, filename) {
-        const ext = filename.split('.').pop().toLowerCase();
-        let files;
-
-        if (ext === 'scl') {
-            const sig = String.fromCharCode(...data.slice(0, 8));
-            if (sig !== 'SINCLAIR') return 'Invalid SCL signature';
-            const fileCount = data[8];
-            let offset = 9;
-            files = [];
-            for (let i = 0; i < fileCount; i++) {
-                const name = String.fromCharCode(...data.slice(offset, offset + 8));
-                const fext = String.fromCharCode(data[offset + 8]);
-                const w9 = data[offset + 9] | (data[offset + 10] << 8);
-                const w11 = data[offset + 11] | (data[offset + 12] << 8);
-                const { startAddress: startAddr, length, programLength } = trdEntryFields(data[offset + 8], w9, w11);
-                const sectors = data[offset + 13];
-                files.push({ name, ext: fext, startAddress: startAddr, length, programLength, sectors });
-                offset += 14;
-            }
-            let dataOffset = offset;
-            for (const f of files) {
-                const dataSize = f.sectors * 256;
-                f.data = new Uint8Array(dataSize);
-                f.data.set(data.slice(dataOffset, dataOffset + dataSize));
-                dataOffset += dataSize;
-            }
-        } else {
-            if (data.length < 4096) return 'File too small for TRD';
-            files = [];
-            for (let i = 0; i < 128; i++) {
-                const entryOffset = i * 16;
-                if (data[entryOffset] === 0) break;
-                if (data[entryOffset] === 1) continue;
-                const name = String.fromCharCode(...data.slice(entryOffset, entryOffset + 8));
-                const fext = String.fromCharCode(data[entryOffset + 8]);
-                const w9 = data[entryOffset + 9] | (data[entryOffset + 10] << 8);
-                const w11 = data[entryOffset + 11] | (data[entryOffset + 12] << 8);
-                const { startAddress: startAddr, length, programLength } = trdEntryFields(data[entryOffset + 8], w9, w11);
-                const sectors = data[entryOffset + 13];
-                const startSector = data[entryOffset + 14];
-                const startTrack = data[entryOffset + 15];
-                const fileOffset = (startTrack * 16 + startSector) * 256;
-                const dataSize = sectors * 256;
-                const fileData = new Uint8Array(dataSize);
-                fileData.set(data.slice(fileOffset, fileOffset + dataSize));
-                files.push({ name, ext: fext, startAddress: startAddr, length, programLength, sectors, data: fileData });
-            }
-        }
-
-        let skipped = 0;
-        for (const f of files) {
-            if (diskEditorBannerCount(panel) + panel.diskFiles.length >= 128) { skipped++; continue; }
-            if (diskEditorTotalSectors(panel) + f.sectors > TRD_TOTAL_SECTORS) { skipped++; continue; }
-            panel.diskFiles.push({
-                name: (f.name + '        ').substring(0, 8),
-                ext: f.ext,
-                startAddress: f.startAddress,
-                length: f.length,
-                programLength: f.programLength,
-                sectors: f.sectors,
-                data: f.data,
-                deleted: false
-            });
-        }
-        return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped (capacity)` : null;
-    }
-
     // Build TRD/SCL via the core loaders (so create/add/delete/compaction is shared
     // with the test suite). Rebuilding from the surviving files compacts the disk.
     // A SPECSCII banner (panel.bannerEntries) goes in front of the real files.
@@ -10180,33 +10078,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         downloadFile(baseName + '.' + ext, data);
     }
 
-    function diskEditorImportMgt(panel, data, filename) {
-        const files = MGTLoader.listFiles(data);
-        let skipped = 0;
-        for (const f of files) {
-            if (panel.diskFiles.length >= 80) { skipped++; continue; }
-            // Clean file bytes (header stripped, length-trimmed) — the model buildMGT expects.
-            const cleanData = MGTLoader.extractFile(data, f);
-            const sectors = Math.max(1, Math.ceil(f.length / 510));
-            if (mgtEditorTotalSectors(panel) + sectors > 1560) { skipped++; continue; }
-            panel.diskFiles.push({
-                name: (f.name + '          ').substring(0, 10),
-                ext: f.typeName.substring(0, 1).toUpperCase(),
-                mgtType: f.type,
-                tapeType: f.tapeType,
-                typeName: f.typeName,
-                startAddress: f.startAddress,
-                length: f.length,
-                sectors: sectors,
-                data: new Uint8Array(cleanData),
-                autostart: f.autostart,
-                bodyLength: f.bodyLength,
-                deleted: false
-            });
-        }
-        return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped (capacity)` : null;
-    }
-
     function mgtEditorApplyInlineEdit(panel, idx) {
         if (idx < 0 || idx >= panel.diskFiles.length) return;
         const editRow = panel.dom.fileList.querySelector(`.editor-inline-edit[data-edit-idx="${idx}"]`);
@@ -10410,29 +10281,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const data = diskEditorBuildMdr(panel);
         const baseName = (panel.fileName || 'output').replace(/\.mdr$/i, '');
         downloadFile(baseName + '.mdr', data);
-    }
-
-    function diskEditorImportMdr(panel, data, filename) {
-        const files = MDRLoader.listFiles(data);
-        let skipped = 0;
-        for (const f of files) {
-            const fileData = MDRLoader.extractFile(data, f);
-            const entry = {
-                name: (f.name + '          ').substring(0, 10),
-                ext: f.isPrint ? 'P' : 'F',
-                typeName: f.type,
-                length: f.length,
-                sectors: f.sectors,
-                sectorIndices: f.sectorIndices,
-                isPrint: f.isPrint,
-                mdrFile: true,
-                data: fileData,
-                deleted: false
-            };
-            mdrEditorParseHeader(entry);
-            panel.diskFiles.push(entry);
-        }
-        return skipped > 0 ? `Imported ${files.length - skipped} files, ${skipped} skipped` : null;
     }
 
     function mdrEditorApplyInlineEdit(panel, idx) {
@@ -11297,40 +11145,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         syncPanelToExplorer(panel);
     }
 
-    function dskEditorImportDsk(panel, data) {
-        if (!panel.parsedFile || !panel.parsedFile.dskImage) return 'No target DSK loaded';
-        let srcImage;
-        try {
-            srcImage = DSKLoader.parse(data);
-        } catch (e) {
-            return 'Invalid DSK file: ' + e.message;
-        }
-
-        let srcFiles;
-        try {
-            srcFiles = DSKLoader.listFiles(srcImage);
-        } catch (e) {
-            return 'Cannot read source disk files: ' + e.message;
-        }
-
-        if (srcFiles.length === 0) return 'Source disk has no files';
-
-        let added = 0, skipped = 0;
-        for (const file of srcFiles) {
-            const rawData = DSKLoader.readFileData(srcImage, file.name, file.ext, file.user, file.rawSize);
-            if (!rawData) { skipped++; continue; }
-
-            const err = dskEditorAddFile(panel, rawData, file.name, file.ext, -1, 0, null);
-            if (err) { skipped++; continue; }
-            added++;
-        }
-
-        dskEditorRefreshState(panel);
-        return skipped > 0 ?
-            `Imported ${added} files, ${skipped} skipped` :
-            (added > 0 ? null : 'No files imported');
-    }
-
     // Soft-delete (Mark Del) for DSK: toggle the in-memory `deleted` flag (greyed). The on-disk
     // entry is left intact until save, when matching entries are 0xE5'd in a cloned image
     // (flush on save). The flag survives refresh via the key preserve in dskEditorRefreshState.
@@ -11513,26 +11327,6 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         panel.diskFiles = [];
         panel.diskLabel = '        ';
         panel.pendingFileData = null;
-        updatePanelHeader(panel);
-        zipEditorRenderFileList(panel);
-        syncPanelToExplorer(panel);
-    }
-
-    async function zipEditorImportZip(panel, data, filename) {
-        const rawCopy = new Uint8Array(data);
-        const files = await ZipLoader.extract(rawCopy.buffer);
-        const supported = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk'];
-        const zxFiles = files.filter(f => {
-            const ext = f.name.split('.').pop().toLowerCase();
-            return supported.includes(ext);
-        });
-        panel.parsedFile = { type: 'zip', files: zxFiles, size: data.length };
-        panel.blocks = zxFiles;
-        panel.fileType = 'zip';
-        panel.rawData = rawCopy;
-        panel.fileName = filename;
-        panel.selection.clear();
-        panel.expandedBlock = -1;
         updatePanelHeader(panel);
         zipEditorRenderFileList(panel);
         syncPanelToExplorer(panel);

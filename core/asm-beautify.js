@@ -221,7 +221,10 @@ export function beautify(text, options = {}) {
 // Split a line into code and comment. ';' starts a comment unless inside a
 // quoted string. Double quotes always delimit; a single quote opens a string
 // only when not preceded by an identifier char (so AF' is safe).
-export function splitComment(line) {
+// Split a source line into code and trailing comment, ignoring ';' inside
+// strings. trimBefore: drop the whitespace between code and comment (what the
+// dialect converter wants; the beautifier keeps it and re-aligns later).
+export function splitComment(line, { trimBefore = false } = {}) {
     let inStr = false, q = '';
     for (let i = 0; i < line.length; i++) {
         const ch = line[i];
@@ -229,7 +232,13 @@ export function splitComment(line) {
             if (ch === q) inStr = false;
         } else if (ch === '"') { inStr = true; q = '"'; }
         else if (ch === "'" && !/[A-Za-z0-9_')]/.test(line[i - 1] || '')) { inStr = true; q = "'"; }
-        else if (ch === ';') return { code: line.slice(0, i), comment: line.slice(i) };
+        else if (ch === ';') {
+            let cut = i;
+            if (trimBefore) {
+                while (cut > 0 && (line[cut - 1] === ' ' || line[cut - 1] === '	')) cut--;
+            }
+            return { code: line.slice(0, cut), comment: line.slice(cut) };
+        }
     }
     return { code: line, comment: '' };
 }

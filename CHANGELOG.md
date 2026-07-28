@@ -2,6 +2,41 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.23
+- **Assembler: LUA scripting, as sjasmplus does it.** `LUA` … `ENDLUA` blocks run real Lua at assembly time with sjasmplus's bindings — `_c`/`_pc`/`_pl` and the `sj` table (`calc`, `parse_code`, `parse_line`, `add_byte`/`add_word`, `get_label`/`insert_label`, `get_define`/`insert_define`, `current_address`, `pass`, `error`/`warning`, …) — plus the `PASS1`/`PASS2`/`PASS3`/`ALLPASS` argument (default PASS3), one script state kept across passes, and blocks inside macros seeing the macro's arguments. The engine (fengari, Lua 5.3) is fetched only when a source actually uses LUA, so nothing else pays for it. sjasmplus's own `examples/BasicLib` assembles to byte-identical BASIC.
+- **Assembler: EXPORT, and four fixes real Lua projects needed.** `EXPORT` (which writes the `.exp` symbol file) was missing entirely. `NAME MACRO param` defined a macro named after its first *parameter*, so every call reported "Unknown instruction"; macro parameters written the sjasmplus way (`file_path?`) were never substituted, because `?` is a regex quantifier; a label marked `!name` wasn't recognised as a label at all; and `DEFINE tape my-file.tap` evaluated the text as arithmetic (`my` − `file.tap`) instead of keeping it as text.
+
+## v0.15.22
+- **Headless: map a game in one call.** `zxDebug.mapRun({url|file|rzxUrl})` boots the media (or replays an RZX), records a page-aware execution map, and returns the coalesced ranges plus the SkoolKit `.ctl`, Ghidra `.csv` and sjasmplus `.sym` exports together — optionally posting the lot to `serve.py`. `zxDebug.loadUrl(url)` fetches media with the HTTP cache bypassed and reports its `last-modified`, so a rebuilt tape can't silently replay the previous build.
+- **Headless: call a routine, and see who reads or runs a range.** `zxDebug.callRoutine(addr,{regs})` invokes a routine and returns what it changed — for effects gameplay can't reach from a harness — reporting a runaway routine as a timeout rather than a wrong answer. `watchReads`/`watchExec` join `watchWrites`, so "who consumes this data block?" and "is this block code, and who calls it?" no longer need hand-wrapped internals; all three now report the call sites as well as the routine chain.
+- **Headless drivers get a proper start signal and a way to report back.** `zxDebug.ready()` resolves once the machine's ROM is actually in memory (ROMs load asynchronously, and driving before they land silently runs a blank `$0000-$3FFF`), optionally switching machine first; `zxDebug.report(data)` posts a result or progress to `serve.py`, which writes `headless/result.json` — `--dump-dom` only prints at exit, so long runs had no way to hand anything back. Loading a file that's really a server error page now says so instead of "Failed to parse TAP file". See `docs/automation.md`.
+- **Typing in a large ASM file is no longer delayed.** The highlight layer is the text you see, and it was rebuilt on a timer, so the caret moved before the character appeared. It now repaints at once, rewriting only the ~100-line chunk you edited: ~44 ms to 1.7 ms per keystroke at 3000 lines.
+- **The Compare tool reads snapshots through the emulator's own loader** instead of its private `.sna`/`.z80` parser, which had drifted and mis-read compressed 128K pages. `AF` also fills in for `.z80` files, where it used to show blank.
+- **The standalone profiler page shares the profiler's analysis code** rather than its own copy of hotspot classification and label generation.
+
+## v0.15.21
+- **Assembler: wrong source is reported instead of quietly assembled.** Instructions that take no operands reject them (`EXX AF,AF'`, `NOP 5`); a missing or malformed operand is an error, not a zero (`LD A,`, `LD A,1+`); and `LD (IX+5),(IY+5)` no longer becomes `LD (IX+5),5`. Out-of-range values warn, unterminated `MACRO`/`REPT`/`IF` and bare `ORG`/`INCLUDE` are errors, and a duplicate label names itself instead of "failed to converge".
+- **Auto Load starts sooner.** The fixed 3-second pause after reset is now a wait for the ROM to start scanning the keyboard, so it adapts to whatever ROM is loaded. On 128K/Pentagon one Enter on the menu does the load; Scorpion and TR-DOS `RUN` keep their old timing.
+- **TZX: a final loop-end block is no longer dropped.** Blocks with no payload were skipped when last in the file.
+- **Shared helpers de-duplicated**: `crc32`, `isFlowBreak`, the `.z80` block decompressor and `splitComment` each have one home now.
+
+## v0.15.20
+- **Headless automation API — three additions for external RE drivers** (all on `zxDebug`, see `docs/automation.md`):
+  - **Page-aware fast map** (`enableMap(true, {fast:true, paged:true})`) keeps a touched-bitset per memory bank, so a bank-switching game maps correctly instead of collapsing all banks into one address space. `rangesByPage()` gives each bank's code/data separately.
+  - **Raw access hooks** (`onAccess({onFetch, onRead, onWrite})`) let a driver watch every opcode fetch and memory read/write without turning on a monitor — a proper registration point instead of wrapping the internal callbacks.
+  - **Checkpointing** (`checkpoint()`/`getCheckpoint()`/`emuClock()`) writes progress into the page so a long run that's killed can be picked up again, and reports emulated time when the real clock is frozen under `--virtual-time-budget`.
+
+## v0.15.19
+- **RZX playback now stops at the end of the recording.** The frame counter saturated one frame short, so the end-of-playback check never fired: `rzxPlaying` stayed true and `onRZXEnd` never ran, and a headless driver looping on `rzxPlaying` would run forever.
+- **One-call RZX replay for headless drivers**: `zxDebug.replayRZX(bytes, {onProgress})` loads an RZX and plays it to the end, resolving `{frames, played, atEnd}` — no hand-rolled frame loop. Added `zxDebug.rzxPlaying`/`rzxFrame`/`rzxFrameCount`. `docs/automation.md` also gains a **Running headlessly** section covering harness setup and the sharp edges (ROM bootstrap, readiness timing, frozen `--virtual-time-budget` clock, `--dump-dom`-on-exit) for anyone driving M8XXX from outside.
+
+## v0.15.18
+- **Binary Export/Import: screen fill** (Utils → Export/Import → Binary). A **Screen** dropdown writes **Clear** (black on white), **Grid** (8×8), or **Diagonal** (45°) into the display. On machines with a shadow screen (128K, Pentagon, Scorpion, …) a **Main/Shadow** selector picks the target.
+
+## v0.15.17
+- **STORM → sjasmplus conversion is more faithful.** Index-register halves `LX/HX/LY/HY` (and `XL/XH/YL/YH`) → `IXL/IXH/IYL/IYH`; the `_` "not-tabulated" line prefix is dropped and the instruction indented; two-address `ORG run,load` becomes `ORG load` + `DISP run` (was silently misread as a fill byte); STORM's bitwise operators are remapped to sjasmplus (`!` OR → `|`, `|` XOR → `^`); the postfix byte selectors `[` (high) / `]` (low) become `HIGH`/`LOW`; and multi-operand forms expand — `PUSH BC,DE,HL` → one `PUSH` each, `LD HL,BC` → `LD H,B`/`LD L,C`, `ADD A,A,A,B` → pairs, `EX HL,DE` → `EX DE,HL`, `ADD DE,HL` → `EX`/`ADD`/`EX`, `OUT (n)` → `OUT (n),A`.
+- **Import Foreign: reads Hrust-packed sources, plus a crash fix and progress feedback.** Hrust-packed (`HR`) sources are now auto-unpacked before detection, so they import as readable text. Forcing a non-STORM file to STORM no longer crashes the tab; a decode failure becomes a warning. The dialog shows "Loading…" and per-file "Converting…" progress.
+
 ## v0.15.16
 - **Beautify: two new options.** *Generate labels for `$±N` jumps* resolves each relative jump's target by instruction sizes and names it (`back_`/`fwd_` for `JR`/`JP`/`DJNZ`, `addr_` otherwise), reusing an existing label and leaving anything it can't resolve exactly untouched. *Value → comment* annotates each operand with its value in the other base (`LD HL,1234` → `; 1234=$04D2`), with Add/Replace/Skip handling of existing comments. Both idempotent; base conversion no longer rewrites `$±N` offsets.
 - **Beautify dialog reorganized** into **Layout** and **Numbers & code** tabs with grouped, labelled options, so you can find the setting you want instead of hunting through one long list. The dialog no longer resizes when switching tabs, and the mouse wheel stays inside it instead of scrolling the emulator behind.

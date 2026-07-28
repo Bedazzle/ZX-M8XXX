@@ -10,6 +10,7 @@ import { VFS } from './vfs.js';
 import { Parser } from './parser.js';
 import { InstructionEncoder, Z80Asm } from './instructions.js';
 import { parseExpression } from './expression.js';
+import { createLuaRuntime, isLuaEngineLoaded, parseLuaPass, luaPassMatches, sourceUsesLua } from './lua.js';
 import './instructions2.js';
 import './instructions3.js';
 
@@ -55,6 +56,25 @@ export const Assembler = {
         ErrorCollector.reset();
         AsmMemory.reset();
         Preprocessor.reset();
+        // Lua: one state per assembly (sjasmplus keeps script variables across
+        // passes, so it is created on first use and closed here, not per pass)
+        if (this.lua) { this.lua.close(); this.lua = null; }
+        this.exportedSymbols = [];
+        this.luaBlocks = [];
+        this.luaFinalPass = false;
+        this.luaLine = null;
+    },
+
+    // Load the Lua engine (fengari). Await this before assembling a source that
+    // uses LUA blocks — assembly itself is synchronous.
+    async loadLua() {
+        const { loadLuaEngine } = await import('./lua.js');
+        return loadLuaEngine();
+    },
+
+    // Does this source need the Lua engine?
+    usesLua(source) {
+        return sourceUsesLua(source);
     },
 
     // Reset all assembler state (single-file entry points): also clears the VFS
@@ -79,7 +99,7 @@ export const Assembler = {
         VFS.addFile(filename, source);
         
         // Parse source
-        this.lines = Parser.parse(source, filename);
+        this.lines = Parser.parse(this.extractLuaBlocks(source, filename), filename);
         
         return this.runPasses();
     },
@@ -92,7 +112,7 @@ export const Assembler = {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
         VFS.addFile(filename, source);
-        this.lines = Parser.parse(source, filename);
+        this.lines = Parser.parse(this.extractLuaBlocks(source, filename), filename);
         return this.runPassesAsync();
     },
 
@@ -110,7 +130,7 @@ export const Assembler = {
         if (!file || file.error) {
             throw new AssemblerError(file ? file.error : `Main file not found: ${mainFile}`);
         }
-        this.lines = Parser.parse(file.content, file.path);
+        this.lines = Parser.parse(this.extractLuaBlocks(file.content, file.path), file.path);
         return this.runPassesAsync();
     },
 
@@ -132,7 +152,7 @@ export const Assembler = {
         }
 
         // Parse main source
-        this.lines = Parser.parse(file.content, file.path);
+        this.lines = Parser.parse(this.extractLuaBlocks(file.content, file.path), file.path);
 
         return this.runPasses();
     },
@@ -151,6 +171,8 @@ export const Assembler = {
             this.macroDefinition = null;
             this.macroCount = 0;
             this.reptState = null;
+            this.labelsThisPass = new Map();  // detects a label defined twice in one pass
+            this.luaLine = null;
             this.includeStack = [];
             this.saveCommands = [];
             this.tapeCapture = null;
@@ -190,12 +212,23 @@ export const Assembler = {
                     ErrorCollector.error(e.message, line.line, line.file);
                 }
             }
-            
+
+            this.checkUnterminatedBlocks();
+
             // Check for undefined symbols
             const undefinedSyms = SymbolTable.checkUndefined();
             
-            // If no undefined symbols and no changes, we're done
+            // If no undefined symbols and no changes, we're done — except that a
+            // source with LUA blocks still owes one final pass: sjasmplus numbers
+            // the last pass 3, and that's where default-filter blocks run.
             if (undefinedSyms.length === 0 && !this.changed) {
+                if (this.luaBlocks && this.luaBlocks.length) {
+                    // sjasmplus always runs three passes, and scripts rely on it:
+                    // LUA PASS2 blocks must get a pass 2 even when the code
+                    // converged immediately, and PASS3 needs the final pass.
+                    if (this.pass < 2) continue;
+                    if (!this.luaFinalPass) { this.luaFinalPass = true; continue; }
+                }
                 break;
             }
             
@@ -232,6 +265,13 @@ export const Assembler = {
             ErrorCollector.warn('DISPLAY: ' + msg.message, msg.line, msg.file);
         }
 
+        // Errors reported without throwing (sj.error from a Lua script keeps the
+        // assembly going, as sjasmplus does) still have to fail the build.
+        if (ErrorCollector.errorCount > 0) {
+            const first = ErrorCollector.errors[0];
+            throw new AssemblerError(first.message, first.line, first.file);
+        }
+
         // Generate warnings for unused labels
         const unused = SymbolTable.checkUnused();
         for (const u of unused) {
@@ -239,6 +279,7 @@ export const Assembler = {
         }
 
         this.attachLabelsListContent();
+        this.attachExportContent();
         return {
             success: true,
             output: this.output,
@@ -267,6 +308,8 @@ export const Assembler = {
             this.macroDefinition = null;
             this.macroCount = 0;
             this.reptState = null;
+            this.labelsThisPass = new Map();  // detects a label defined twice in one pass
+            this.luaLine = null;
             this.includeStack = [];
             this.saveCommands = [];
             this.tapeCapture = null;
@@ -314,9 +357,18 @@ export const Assembler = {
             // Yield between passes
             await new Promise(r => setTimeout(r, 0));
 
+            this.checkUnterminatedBlocks();
+
             const undefinedSyms = SymbolTable.checkUndefined();
 
             if (undefinedSyms.length === 0 && !this.changed) {
+                if (this.luaBlocks && this.luaBlocks.length) {
+                    // sjasmplus always runs three passes, and scripts rely on it:
+                    // LUA PASS2 blocks must get a pass 2 even when the code
+                    // converged immediately, and PASS3 needs the final pass.
+                    if (this.pass < 2) continue;
+                    if (!this.luaFinalPass) { this.luaFinalPass = true; continue; }
+                }
                 break;
             }
 
@@ -349,12 +401,20 @@ export const Assembler = {
             ErrorCollector.warn('DISPLAY: ' + msg.message, msg.line, msg.file);
         }
 
+        // Errors reported without throwing (sj.error from a Lua script keeps the
+        // assembly going, as sjasmplus does) still have to fail the build.
+        if (ErrorCollector.errorCount > 0) {
+            const first = ErrorCollector.errors[0];
+            throw new AssemblerError(first.message, first.line, first.file);
+        }
+
         const unused = SymbolTable.checkUnused();
         for (const u of unused) {
             ErrorCollector.warn(`Unused label: ${u.name}`, u.line, u.file);
         }
 
         this.attachLabelsListContent();
+        this.attachExportContent();
         return {
             success: true,
             output: this.output,
@@ -364,6 +424,241 @@ export const Assembler = {
             passes: this.pass,
             warnings: ErrorCollector.warnings,
             saveCommands: this.saveCommands
+        };
+    },
+
+    // A block left open at the end of the source swallows everything after it —
+    // the missing ENDM/ENDR/ENDIF is the mistake to report, not the silence
+    checkUnterminatedBlocks() {
+        if (this.macroDefinition) {
+            ErrorCollector.error(`MACRO ${this.macroDefinition.name} without ENDM`);
+        }
+        if (this.reptState) {
+            ErrorCollector.error('REPT/DUP without ENDR/EDUP');
+        }
+        if (Preprocessor.ifStack && Preprocessor.ifStack.length > 0) {
+            ErrorCollector.error('IF without ENDIF');
+        }
+    },
+
+
+    // Lift LUA ... ENDLUA bodies out of a source before it is parsed: what's
+    // between them is Lua, and the assembler's tokenizer would mangle it. Each
+    // block becomes a one-line `LUA <index>` directive; the raw body is kept in
+    // this.luaBlocks. Applied to every source that reaches Parser.parse (main
+    // file and INCLUDEs alike).
+    extractLuaBlocks(source, filename) {
+        if (!source || !sourceUsesLua(source)) return source;
+        if (!this.luaBlocks) this.luaBlocks = [];
+        const lines = source.split('\n');
+        const out = [];
+        for (let i = 0; i < lines.length; i++) {
+            // \r? throughout: sources are commonly CRLF, and without it the block
+            // start never matches and the Lua body is fed to the asm parser
+            const m = /^([ \t]*)LUA\b[ \t]*([A-Za-z0-9]*)[ \t]*(;.*)?\r?$/i.exec(lines[i]);
+            if (!m) { out.push(lines[i]); continue; }
+            const indent = m[1], passArg = m[2] || '';
+            const startLine = i + 1;
+            const body = [];
+            let closed = false;
+            for (i++; i < lines.length; i++) {
+                if (/^[ \t]*ENDLUA\b/i.test(lines[i])) { closed = true; break; }
+                body.push(lines[i]);
+            }
+            const filter = parseLuaPass(passArg);
+            if (filter === null) {
+                ErrorCollector.error(`Unknown LUA pass: ${passArg}`, startLine, filename);
+            }
+            if (!closed) {
+                ErrorCollector.error('LUA without ENDLUA', startLine, filename);
+            }
+            const idx = this.luaBlocks.length;
+            this.luaBlocks.push({
+                code: body.join('\n'),
+                filter: filter || 'PASS3',
+                file: filename,
+                line: startLine,
+            });
+            // Keep the line count identical so error locations stay true
+            out.push(`${indent}LUA ${idx}`);
+            for (let k = 0; k < body.length; k++) out.push('');
+            if (closed) out.push('');
+        }
+        return out.join('\n');
+    },
+
+
+    // LUA <index> — the body was lifted out by extractLuaBlocks(); run it if this
+    // pass matches the block's filter (default PASS3 = the final, emitting pass).
+    dirLUA(ops, line) {
+        const idx = parseInt((ops[0] || '').trim(), 10);
+        const block = this.luaBlocks && this.luaBlocks[idx];
+        if (!block) {
+            ErrorCollector.error('LUA block not found (internal)', line.line, line.file);
+            return;
+        }
+        const sjPass = this.luaPassNumber();
+        if (!luaPassMatches(block.filter, sjPass, this.luaFinalPass)) return;
+
+        if (!isLuaEngineLoaded()) {
+            ErrorCollector.error(
+                'LUA needs the Lua engine — await Assembler.loadLua() before assembling',
+                line.line, line.file);
+            return;
+        }
+        if (!this.lua) this.lua = createLuaRuntime(this.luaHost());
+        this.luaLine = line;
+        const err = this.lua.run(block.code, `${block.file}:${block.line}`);
+        if (err) ErrorCollector.error(`[LUA] ${err}`, line.line, line.file);
+    },
+
+    // While a macro is expanding, remember its parameter → argument mapping so a
+    // LUA block inside the body sees the arguments. sjasmplus substitutes macro
+    // arguments into the raw source before Lua ever runs; our Lua bodies are
+    // lifted out before expansion, so we apply the same substitution at run time.
+    pushMacroArgs(macroName, args) {
+        if (!this.macroArgStack) this.macroArgStack = [];
+        const macro = Preprocessor.macros && Preprocessor.macros[String(macroName).toUpperCase()];
+        const params = (macro && macro.params) || [];
+        const map = {};
+        for (let i = 0; i < params.length; i++) {
+            map[params[i]] = (args[i] !== undefined ? String(args[i]).trim() : '');
+        }
+        this.macroArgStack.push(map);
+    },
+
+    popMacroArgs() {
+        if (this.macroArgStack) this.macroArgStack.pop();
+    },
+
+    // Replace macro parameter names in Lua source, innermost expansion last so
+    // nested macros resolve like sjasmplus's textual substitution.
+    substituteMacroArgs(code) {
+        if (!this.macroArgStack || !this.macroArgStack.length) return code;
+        let out = code;
+        for (const map of this.macroArgStack) {
+            for (const [param, value] of Object.entries(map)) {
+                if (!param) continue;
+                // Same boundary rules as the preprocessor: '?' ends a parameter
+                // name but is not a word character, so \b can't close the match
+                const escaped = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const head = /^[\w$.]/.test(param) ? '\\b' : '';
+                const tail = /[\w$.]$/.test(param) ? '\\b' : '(?![\\w?])';
+                out = out.replace(new RegExp(head + escaped + tail, 'g'), () => value);
+            }
+        }
+        return out;
+    },
+
+    // sjasmplus numbers passes 1..3: first, layout, final(emitting). Ours may run
+    // more, so report 1 for the first, 3 for the final, 2 for anything between.
+    luaPassNumber() {
+        if (this.luaFinalPass) return 3;
+        return this.pass === 1 ? 1 : 2;
+    },
+
+    // Everything the Lua bindings are allowed to touch (see sjasmplus/lua.js)
+    luaHost() {
+        const self = this;
+        const lineOf = () => self.luaLine || { line: 0, file: '<lua>' };
+        // Feed a line of assembly back through the normal path
+        const feed = (text, keepLabel) => {
+            const src = keepLabel ? text : '    ' + text;
+            const parsed = Parser.parse(src, lineOf().file || '<lua>');
+            for (const pl of parsed) {
+                pl.line = lineOf().line;
+                pl.file = lineOf().file;
+                self.processLine(pl);
+            }
+        };
+        return {
+            calc: (expr) => {
+                // A Lua block inside a macro is passed to Lua verbatim (that is why
+                // sj.get_define(name, true) exists), so macro arguments are resolved
+                // here, where the expression is evaluated: sj.calc("value") inside
+                // "MACRO m value" sees the argument.
+                const v = self.evaluate(self.substituteMacroArgs(expr), lineOf());
+                return v.undefined ? 0 : v.value;
+            },
+            parseCode: (text) => feed(text, false),
+            parseLine: (text) => feed(text, true),
+            error: (msg, bad) => {
+                // Report without throwing: sjasmplus keeps going after sj.error
+                const text = bad ? `${msg}: ${bad}` : msg;
+                ErrorCollector.errorCount++;
+                ErrorCollector.errors.push({ message: `[LUA] ${text}`, line: lineOf().line, file: lineOf().file });
+            },
+            warning: (msg, bad) => ErrorCollector.warn(`[LUA] ${bad ? msg + ': ' + bad : msg}`,
+                                                       lineOf().line, lineOf().file),
+            print: (text) => self.displayMessages.push(
+                { message: text, line: lineOf().line, file: lineOf().file }),
+            fileExists: (name) => !!VFS.exists(name),
+            getLabel: (name) => {
+                if (!name) return -1;
+                const v = SymbolTable.getValue(name);
+                if (!v || v.undefined) return 0;
+                return v.value | 0;
+            },
+            insertLabel: (name, addr) => {
+                try { SymbolTable.define(name, addr & 0xFFFF, lineOf().line, lineOf().file); return true; }
+                catch (e) { return false; }
+            },
+            // sj.get_define(name, include_macro_args) — with the flag set, the
+            // current macro's arguments are searched first (higher priority than
+            // defines), which is how scripts read `MACRO f file_path?` arguments.
+            getDefine: (name, includeMacroArgs) => {
+                if (includeMacroArgs && self.macroArgStack) {
+                    for (let i = self.macroArgStack.length - 1; i >= 0; i--) {
+                        const map = self.macroArgStack[i];
+                        if (Object.prototype.hasOwnProperty.call(map, name)) return String(map[name]);
+                    }
+                }
+                const v = EquTable.getValue(name);
+                if (v === undefined || v === null) return null;
+                return String(typeof v === 'object' ? v.value : v);
+            },
+            insertDefine: (id, value) => {
+                const isNew = EquTable.getValue(id) === undefined;
+                EquTable.define(id, value, lineOf().line, lineOf().file);
+                return isNew;
+            },
+            getAddress: () => self.currentAddress,
+            setAddress: (a) => { self.currentAddress = a & 0xFFFF; self.sectionStart = self.currentAddress; },
+            addByte: (b) => self.emit(b & 0xFF),
+            addWord: (w) => { self.emit(w & 0xFF); self.emit((w >> 8) & 0xFF); },
+            getByte: (a) => (AsmMemory.readByte ? AsmMemory.readByte(a & 0xFFFF) & 0xFF : 0),
+            getWord: (a) => {
+                if (!AsmMemory.readByte) return 0;
+                return (AsmMemory.readByte(a & 0xFFFF) | (AsmMemory.readByte((a + 1) & 0xFFFF) << 8)) & 0xFFFF;
+            },
+            getPass: () => self.luaPassNumber(),
+            errorCount: () => ErrorCollector.errorCount,
+            warningCount: () => ErrorCollector.warnings.length,
+            getDevice: () => (AsmMemory.deviceName || 'NONE'),
+            setDevice: (id, ramtop) => {
+                try { self.dirDEVICE([id, String(ramtop || 0)], lineOf()); return true; }
+                catch (e) { return false; }
+            },
+            setPage: (n) => { try { self.dirPAGE([String(n)], lineOf()); return true; } catch (e) { return false; } },
+            setSlot: (n) => { try { self.dirSLOT([String(n)], lineOf()); return true; } catch (e) { return false; } },
+            getPageAt: (a) => (AsmMemory.getPageAt ? AsmMemory.getPageAt(a & 0xFFFF) : -1),
+            getModules: () => (SymbolTable.modules || []).join('.'),
+            exit: (code) => { throw new AssemblerError(`sj.exit(${code}) — assembly stopped by Lua`); },
+            // VFS.getBinaryFile answers { path, content } or { error } — the Lua io
+            // shim wants the bytes themselves (or null when there's no such file)
+            vfsRead: (name) => {
+                try {
+                    const hit = VFS.getBinaryFile(name);
+                    if (!hit || hit.error || !hit.content) return null;
+                    return hit.content;
+                } catch (e) { return null; }
+            },
+            vfsWrite: (name, data) => { VFS.addBinaryFile(name, data); },
+            vfsRemove: (name) => {
+                if (!VFS.exists(name)) return false;
+                if (VFS.removeFile) VFS.removeFile(name);
+                return true;
+            },
         };
     },
 
@@ -642,7 +937,18 @@ export const Assembler = {
 
         // Regular label
         const oldValue = SymbolTable.getValue(label);
-        SymbolTable.define(label, this.currentAddress, lineNum, file);
+        const fullName = SymbolTable.define(label, this.currentAddress, lineNum, file);
+
+        // Two definitions of the same label in one pass: the symbol table can't tell
+        // that from a new pass re-defining it, so it used to surface only as a
+        // baffling "failed to converge". Same line = re-run body (REPT/INCLUDE), fine.
+        if (this.labelsThisPass) {
+            const prev = this.labelsThisPass.get(fullName);
+            if (prev !== undefined && prev.line !== lineNum) {
+                ErrorCollector.error(`Label already defined: ${label} (line ${prev.line})`, lineNum, file);
+            }
+            this.labelsThisPass.set(fullName, { line: lineNum });
+        }
 
         // Check if value changed (for multi-pass convergence)
         if (oldValue.value !== this.currentAddress) {
@@ -665,6 +971,12 @@ export const Assembler = {
             case '=':
             case 'DEFL':
                 this.dirDEFL(line);
+                break;
+            case 'LUA':
+                this.dirLUA(ops, line);
+                break;
+            case 'ENDLUA':
+                ErrorCollector.error('ENDLUA without LUA', line.line, line.file);
                 break;
             case 'DEFINE':
                 this.dirDEFINE(line);
@@ -827,6 +1139,9 @@ export const Assembler = {
             case 'SAVEHOB':
                 this.dirSAVEHOB(ops, line);
                 break;
+            case 'EXPORT':
+                this.dirEXPORT(ops, line);
+                break;
             case 'LABELSLIST':
                 this.dirLABELSLIST(ops, line);
                 break;
@@ -938,9 +1253,20 @@ export const Assembler = {
             (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
             return trimmed.slice(1, -1); // Return unquoted string
         }
-        // Otherwise evaluate as expression
+        // A DEFINE is a text substitution in sjasmplus: `DEFINE tape my-file.tap`
+        // is a filename, not the expression `my - file.tap`. Evaluate it, but if
+        // that only works by inventing symbols, keep the text instead — and drop
+        // the phantom references so they don't surface as "undefined symbol".
+        const before = Object.keys(SymbolTable.symbols);
         const val = this.evaluate(trimmed, line);
-        return val.undefined ? 1 : val.value;
+        if (val.undefined) {
+            for (const name of Object.keys(SymbolTable.symbols)) {
+                const sym = SymbolTable.symbols[name];
+                if (!sym.defined && !before.includes(name)) delete SymbolTable.symbols[name];
+            }
+            return trimmed;
+        }
+        return val.value;
     },
     
     // Resolve filename - can be quoted string or symbol reference
@@ -1028,6 +1354,11 @@ export const Assembler = {
         const fill = ops.length > 1 ? this.evaluate(ops[1], line).value : 0;
         
         if (!size.undefined) {
+            // Warn rather than error: a forward reference can be negative on an
+            // early pass and correct on the last one (warnings are per-pass)
+            if (size.value < 0) {
+                ErrorCollector.warn(`DS size ${size.value} is negative, nothing reserved`, line.line, line.file);
+            }
             for (let i = 0; i < size.value; i++) {
                 this.emit(fill & 0xFF);
             }
@@ -1170,6 +1501,9 @@ export const Assembler = {
         const fill = ops.length > 1 ? this.evaluate(ops[1], line).value : 0;
         
         if (!align.undefined && align.value > 0) {
+            if ((align.value & (align.value - 1)) !== 0) {
+                ErrorCollector.warn(`ALIGN ${align.value} is not a power of 2`, line.line, line.file);
+            }
             while (this.currentAddress % align.value !== 0) {
                 this.emit(fill & 0xFF);
             }
@@ -1366,9 +1700,14 @@ export const Assembler = {
     startMacroDefinition(ops, line) {
         let name, params = [];
         
-        // Format 1: "label MACRO" - name is in line.label
-        if (ops.length === 0 && line.label) {
+        // Format 1: "label MACRO [params]" — the label is the name, and anything
+        // after MACRO are its parameters (BasicLib's "NUM MACRO value" form; with
+        // the old ops.length===0 test that defined a macro called "value")
+        if (line.label) {
             name = line.label;
+            for (const op of ops) {
+                params.push(...op.trim().split(/[\s,]+/).filter(Boolean));
+            }
         }
         // Format 2: "MACRO name, params" - name is first operand
         else if (ops.length >= 1) {
@@ -1589,7 +1928,7 @@ export const Assembler = {
         this.includeStack.push(file.path);
 
         // Parse the included file
-        const includedLines = Parser.parse(file.content, file.path);
+        const includedLines = Parser.parse(this.extractLuaBlocks(file.content, file.path), file.path);
 
         // Process included lines
         if (includedLines) {
@@ -1972,6 +2311,40 @@ export const Assembler = {
     // LABELSLIST "filename" - write the resolved symbol/label list to a text file
     // (like SAVEBIN/SAVESNA, the file is produced into the VFS / download). Content
     // is attached at result-build time, once all symbols are defined.
+    // EXPORT <label>[, <label>…] — collect symbols for the .exp file, which
+    // sjasmplus writes as "NAME: EQU value" lines. Values are read at the end of
+    // assembly, so exporting a forward-declared label works.
+    dirEXPORT(ops, line) {
+        if (ops.length < 1) {
+            ErrorCollector.error('EXPORT requires a label name', line.line, line.file);
+            return;
+        }
+        if (!this.exportedSymbols) this.exportedSymbols = [];
+        for (const op of ops) {
+            for (const name of op.trim().split(/[\s,]+/).filter(Boolean)) {
+                if (!this.exportedSymbols.includes(name)) this.exportedSymbols.push(name);
+            }
+        }
+        // One .exp per build, named after the main source (sjasmplus behaviour)
+        if (!this.saveCommands.some(c => c.type === 'export')) {
+            const base = (this.mainFileName || 'output').replace(/\.[^.]*$/, '');
+            this.saveCommands.push({ type: 'export', filename: base + '.exp' });
+        }
+    },
+
+    // Fill in the .exp content once every symbol has its final value
+    attachExportContent() {
+        const cmd = this.saveCommands.find(c => c.type === 'export');
+        if (!cmd || !this.exportedSymbols) return;
+        const lines = [];
+        for (const name of this.exportedSymbols) {
+            const v = SymbolTable.getValue(name);
+            const value = (v && !v.undefined) ? v.value : 0;
+            lines.push(`${name}: EQU 0x${(value >>> 0).toString(16).toUpperCase().padStart(4, '0')}`);
+        }
+        cmd.content = lines.join('\n') + (lines.length ? '\n' : '');
+    },
+
     dirLABELSLIST(ops, line) {
         if (ops.length < 1) {
             ErrorCollector.error('LABELSLIST requires filename', line.line, line.file);
@@ -2358,6 +2731,7 @@ export const Assembler = {
             }
             
             this.macroCount++;
+            this.pushMacroArgs(macroName, line.operands);
             const expanded = Preprocessor.expandMacro(macroName, line.operands, this.macroCount);
             if (expanded) {
                 for (const expandedLine of expanded) {
@@ -2370,6 +2744,7 @@ export const Assembler = {
                     }
                 }
             }
+            this.popMacroArgs();
             return;
         }
 

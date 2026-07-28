@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Snapshot Parse Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Snapshot Parse Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script src="../lib/pako.min.js"></script>
+    <script type="module">
+        // Round-trips a known machine state through the real snapshot writers and
+        // back through ui/snapshot-parse.js — so the Compare tool's view of a
+        // snapshot is checked against the emulator's own, not against a copy of it.
+        import { Memory } from '../core/memory.js';
+        import { SnapshotLoader } from '../core/loaders.js';
+        import { parseSnapshotFile } from '../ui/snapshot-parse.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // A CPU state with every register distinct, so a mis-mapped pair shows up
+        function makeCpu() {
+            return {
+                a: 0x12, f: 0x34, b: 0x56, c: 0x78, d: 0x9A, e: 0xBC, h: 0xDE, l: 0xF0,
+                a_: 0x11, f_: 0x22, b_: 0x33, c_: 0x44, d_: 0x55, e_: 0x66, h_: 0x77, l_: 0x88,
+                ix: 0xA5A5, iy: 0x5A5A, sp: 0x7F00, pc: 0x8123,
+                i: 0x3F, rFull: 0x6D, im: 2, iff1: true, iff2: true,
+                halted: false, eiPending: false,
+            };
+        }
+
+        // Fill RAM with an address-dependent pattern plus a few markers
+        function fillRam(memory, seed) {
+            for (let a = 0x4000; a < 0x10000; a += 7) {
+                memory.write(a, (a ^ seed) & 0xFF);
+            }
+            memory.write(0x4000, 0xAA);
+            memory.write(0x8000, 0x55);
+            memory.write(0xFFFF, 0xC3);
+            // A compressible run — exercises the .z80 RLE path
+            for (let a = 0x9000; a < 0x9400; a++) memory.write(a, 0xED);
+        }
+
+        function checkRegisters(parsed, cpu, label) {
+            const r = parsed.registers;
+            assert(r.AF === ((cpu.a << 8) | cpu.f), label + ': AF', `${r.AF}`);
+            assert(r.BC === ((cpu.b << 8) | cpu.c), label + ': BC', `${r.BC}`);
+            assert(r.DE === ((cpu.d << 8) | cpu.e), label + ': DE', `${r.DE}`);
+            assert(r.HL === ((cpu.h << 8) | cpu.l), label + ': HL', `${r.HL}`);
+            assert(r["AF'"] === ((cpu.a_ << 8) | cpu.f_), label + ": AF'", `${r["AF'"]}`);
+            assert(r["BC'"] === ((cpu.b_ << 8) | cpu.c_), label + ": BC'", `${r["BC'"]}`);
+            assert(r["DE'"] === ((cpu.d_ << 8) | cpu.e_), label + ": DE'", `${r["DE'"]}`);
+            assert(r["HL'"] === ((cpu.h_ << 8) | cpu.l_), label + ": HL'", `${r["HL'"]}`);
+            assert(r.IX === cpu.ix, label + ': IX', `${r.IX}`);
+            assert(r.IY === cpu.iy, label + ': IY', `${r.IY}`);
+            assert(r.PC === cpu.pc, label + ': PC', `${r.PC}`);
+            assert(r.I === cpu.i, label + ': I', `${r.I}`);
+            assert(r.IM === cpu.im, label + ': IM', `${r.IM}`);
+            assert(r.IFF1 === 1, label + ': IFF1');
+        }
+
+        function compareRam(parsed, memory, label, from = 0x4000, to = 0x10000) {
+            let diffs = 0, firstAt = -1;
+            for (let a = from; a < to; a++) {
+                if (parsed.memory[a] !== memory.read(a)) {
+                    if (firstAt < 0) firstAt = a;
+                    diffs++;
+                }
+            }
+            assert(diffs === 0, label + ': RAM matches',
+                   diffs ? `${diffs} bytes differ, first at $${firstAt.toString(16)}` : '');
+        }
+
+        function run() {
+            const loader = new SnapshotLoader();
+
+            section('SNA 48K');
+            {
+                const mem = new Memory('48k');
+                const cpu = makeCpu();
+                fillRam(mem, 0x5A);
+                // SNA keeps PC on the stack, so point SP at RAM we control
+                cpu.sp = 0x8000;
+                mem.write(0x7FFE, cpu.pc & 0xFF);
+                mem.write(0x7FFF, cpu.pc >> 8);
+                const sna = loader.createSNA(cpu, mem, 4);
+                const parsed = parseSnapshotFile(sna);
+                assert(!!parsed, 'parses');
+                if (parsed) {
+                    assert(parsed.is128K === false, 'detected as 48K');
+                    assert(parsed.border === 4, 'border', `${parsed.border}`);
+                    checkRegisters(parsed, cpu, 'SNA48');
+                    compareRam(parsed, mem, 'SNA48');
+                }
+            }
+
+            section('SNA 128K');
+            {
+                const mem = new Memory('128k');
+                const cpu = makeCpu();
+                mem.pagingDisabled = false;
+                mem.writePaging(0x01);           // bank 1 at $C000
+                fillRam(mem, 0x3C);
+                const sna = loader.createSNA(cpu, mem, 2);
+                const parsed = parseSnapshotFile(sna);
+                assert(!!parsed, 'parses');
+                if (parsed) {
+                    assert(parsed.is128K === true, 'detected as 128K');
+                    assert((parsed.port7FFD & 0x07) === 1, 'port 7FFD bank', `${parsed.port7FFD}`);
+                    checkRegisters(parsed, cpu, 'SNA128');
+                    compareRam(parsed, mem, 'SNA128');
+                }
+            }
+
+            section('Z80 48K');
+            {
+                const mem = new Memory('48k');
+                const cpu = makeCpu();
+                fillRam(mem, 0x77);
+                const z80 = loader.createZ80(cpu, mem, 5);
+                const parsed = parseSnapshotFile(z80);
+                assert(!!parsed, 'parses');
+                if (parsed) {
+                    assert(parsed.is128K === false, 'detected as 48K');
+                    assert(parsed.border === 5, 'border', `${parsed.border}`);
+                    checkRegisters(parsed, cpu, 'Z80-48');
+                    compareRam(parsed, mem, 'Z80-48');
+                }
+            }
+
+            section('Z80 128K (compressed pages)');
+            {
+                const mem = new Memory('128k');
+                const cpu = makeCpu();
+                mem.pagingDisabled = false;
+                mem.writePaging(0x03);           // bank 3 at $C000
+                fillRam(mem, 0x18);
+                const z80 = loader.createZ80(cpu, mem, 1);
+                const parsed = parseSnapshotFile(z80);
+                assert(!!parsed, 'parses');
+                if (parsed) {
+                    assert(parsed.is128K === true, 'detected as 128K');
+                    assert((parsed.port7FFD & 0x07) === 3, 'port 7FFD bank', `${parsed.port7FFD}`);
+                    checkRegisters(parsed, cpu, 'Z80-128');
+                    compareRam(parsed, mem, 'Z80-128');
+                }
+            }
+
+            section('Rejects non-snapshots');
+            {
+                assert(parseSnapshotFile(new Uint8Array(4)) === null, 'too short → null');
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        }
+
+        run();
+    </script>
+</body>
+</html>

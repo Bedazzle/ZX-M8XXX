@@ -2,6 +2,7 @@
 // sjasmplus syntax accepted by the built-in assembler (sjasmplus/).
 
 import { Parser } from '../sjasmplus/parser.js';
+import { splitComment } from './asm-beautify.js';
 //
 // Works line by line with string/comment awareness; lines that need no
 // change pass through untouched so the original formatting is preserved.
@@ -63,6 +64,13 @@ const STORM_DIRECTIVES = {
     'EIF':  'ENDIF',
     'IFD':  'IFDEF',
     'IFND': 'IFNDEF'
+};
+
+// STORM index-register half spellings (LX/HX/LY/HY and the XL/XH/YL/YH form)
+// -> sjasmplus IXL/IXH/IYL/IYH.
+const STORM_REG_HALVES = {
+    'LX': 'IXL', 'HX': 'IXH', 'LY': 'IYL', 'HY': 'IYH',
+    'XL': 'IXL', 'XH': 'IXH', 'YL': 'IYL', 'YH': 'IYH'
 };
 
 // ALASM constructs with no sjasmplus equivalent - commented out with a warning
@@ -356,6 +364,17 @@ export class AsmDialectConverter {
             }
         }
 
+        if (dialect === 'storm') {
+            // STORM '_' prefix = "not tabulated": an instruction kept at column
+            // 0 instead of indented. sjasmplus doesn't need it — drop the '_'
+            // and indent like a normal instruction line so output stays uniform.
+            const m = code.match(/^_([A-Za-z][A-Za-z0-9']*)/);
+            if (m && (Parser.isInstruction(m[1]) || Parser.isDirective(m[1].toUpperCase()))) {
+                code = '        ' + code.slice(1);
+                line = code + comment;
+            }
+        }
+
         const parsed = this.parseCode(code);
 
         // A column-0 label that collides with an instruction or directive
@@ -487,6 +506,23 @@ export class AsmDialectConverter {
         }
 
         if (dialect === 'storm') {
+            // Multi-operand / macro expansion (PUSH BC,DE,HL; LD HL,BC; etc.)
+            const expanded = this.stormExpand(parsed, upper, comment, warn);
+            if (expanded !== null) return expanded;
+
+            // Two-address ORG: STORM "ORG run,load" — run = address the code is
+            // assembled for, load = where the bytes are placed. sjasmplus does
+            // this with ORG load + DISP run. (sjasmplus would otherwise read the
+            // second operand as a fill byte, silently wrong.)
+            if (upper === 'ORG') {
+                const parts = this.splitTopLevel(parsed.operands);
+                if (parts.length === 2) {
+                    const runAddr = this.stormOperands(parts[0].trim(), warn);
+                    const loadAddr = this.stormOperands(parts[1].trim(), warn);
+                    warn(`STORM two-address ORG (run ${parts[0].trim()}, load ${parts[1].trim()}) mapped to ORG + DISP - verify (may need DEPHASE at block end)`);
+                    return this.rebuild(parsed, 'ORG', loadAddr) + comment + '\n        DISP ' + runAddr;
+                }
+            }
             if (upper in STORM_DIRECTIVES) {
                 const newDir = STORM_DIRECTIVES[upper];
                 let ops = this.stormOperands(parsed.operands, warn);
@@ -567,37 +603,165 @@ export class AsmDialectConverter {
 
     // ---- helpers ------------------------------------------------------------
 
-    // STORM operand rewriting outside strings: \ (modulo) -> %, and =N
-    // local-label references -> .N (matching the .N declarations)
+    // STORM operand rewriting outside strings: \ (modulo) -> %, =N local-label
+    // references -> .N (matching the .N declarations), and the index-register
+    // halves LX/HX/LY/HY (and the XL/XH/YL/YH spelling) -> IXL/IXH/IYL/IYH.
     static stormOperands(operands, warn) {
         let out = '';
         let inString = false;
-        for (let i = 0; i < operands.length; i++) {
+        let i = 0;
+        while (i < operands.length) {
             const ch = operands[i];
-            if (ch === '"') {
-                inString = !inString;
-                out += ch;
+            if (ch === '"') { inString = !inString; out += ch; i++; continue; }
+            if (inString) { out += ch; i++; continue; }
+            // identifier word: map a register-half spelling, else copy verbatim
+            if (/[A-Za-z_]/.test(ch)) {
+                let j = i;
+                while (j < operands.length && /[\w']/.test(operands[j])) j++;
+                const word = operands.slice(i, j);
+                out += (word.length === 2 && STORM_REG_HALVES[word.toUpperCase()]) || word;
+                i = j;
                 continue;
             }
-            if (!inString) {
-                if (ch === '\\') {
-                    out += '%';
-                    continue;
-                }
-                // =N where a term starts is a local-label reference; after an
-                // identifier/value or comparison char it is the = operator
-                if (ch === '=' && /\d/.test(operands[i + 1] || '') &&
-                    !/[\w)$=<>!]/.test(out.slice(-1))) {
-                    out += '.';
-                    continue;
-                }
-                if (ch === '`' || ch === '?' || ch === '@') {
-                    warn(`STORM operator "${ch}" has no direct equivalent - verify expression`);
-                }
+            if (ch === '\\') { out += '%'; i++; continue; }   // remainder -> %
+            // STORM bitwise operators use different symbols from sjasmplus:
+            //   STORM  &=AND  !=OR   |=XOR
+            //   sjasm  &=AND  |=OR   ^=XOR
+            if (ch === '!') { out += '|'; i++; continue; }    // OR
+            if (ch === '|') { out += '^'; i++; continue; }    // XOR
+            // =N where a term starts is a local-label reference; after an
+            // identifier/value or comparison char it is the = operator
+            if (ch === '=' && /\d/.test(operands[i + 1] || '') &&
+                !/[\w)$=<>!]/.test(out.slice(-1))) {
+                out += '.';
+                i++;
+                continue;
+            }
+            // Postfix high/low byte: N[ -> HIGH (N), N] -> LOW (N). Highest
+            // priority, so each binds to the immediately-preceding term.
+            if (ch === '[' || ch === ']') {
+                out = this.stormWrapByteOp(out, ch === '[' ? 'HIGH' : 'LOW', warn);
+                i++;
+                continue;
+            }
+            // Other postfix operators with no sjasmplus equivalent (` round-down,
+            // ^ round-up, ~ NEG, @ NOT, ? unknown).
+            if ('`^~@?'.includes(ch)) {
+                warn(`STORM operator "${ch}" has no direct sjasmplus equivalent - verify expression`);
             }
             out += ch;
+            i++;
         }
         return out;
+    }
+
+    // Expand STORM's multi-operand and macro forms into one sjasmplus
+    // instruction per operand (group). Returns the joined lines, or null when
+    // the line is an ordinary single instruction. Per the STORM manual:
+    //   PUSH BC,DE,HL -> one PUSH each; LD H,D,L,E -> LD pairs;
+    //   LD HL,BC -> LD H,B / LD L,C; ADD A,A,A,B -> pairs;
+    //   EX HL,DE -> EX DE,HL; ADD DE,HL -> EX/ADD/EX; OUT (n) -> OUT (n),A.
+    static stormExpand(parsed, upper, comment, warn) {
+        const parts = this.splitTopLevel(parsed.operands).map(p => p.trim()).filter(p => p !== '');
+        const mn = parsed.mnemonic;
+
+        // First line keeps the parsed head (label/indent) + trailing comment;
+        // the rest are plain indented instructions.
+        const build = (instrs) => instrs.map((ins, idx) => {
+            const ops = this.stormOperands(ins.ops, warn);
+            return idx === 0
+                ? this.rebuild(parsed, ins.mnem, ops) + comment
+                : '        ' + ins.mnem + (ops ? ' ' + ops : '');
+        }).join('\n');
+
+        // PUSH/POP reg,reg,... -> one per register
+        if ((upper === 'PUSH' || upper === 'POP') && parts.length > 1) {
+            return build(parts.map(p => ({ mnem: mn, ops: p })));
+        }
+
+        // OUT (n) -> OUT (n),A ; IN (n) -> IN A,(n)   (implicit accumulator)
+        if (upper === 'OUT' && parts.length === 1 && /^\(.*\)$/.test(parts[0])) {
+            return build([{ mnem: mn, ops: parts[0] + ',A' }]);
+        }
+        if (upper === 'IN' && parts.length === 1 && /^\(.*\)$/.test(parts[0])) {
+            return build([{ mnem: mn, ops: 'A,' + parts[0] }]);
+        }
+
+        // EX HL,DE -> EX DE,HL (sjasmplus only accepts EX DE,HL)
+        if (upper === 'EX' && parts.length === 2 &&
+            parts[0].toUpperCase() === 'HL' && parts[1].toUpperCase() === 'DE') {
+            return build([{ mnem: mn, ops: 'DE,HL' }]);
+        }
+
+        // ADD DE,HL (the Z80 lacks it) -> EX DE,HL / ADD HL,DE / EX DE,HL
+        if (upper === 'ADD' && parts.length === 2 &&
+            parts[0].toUpperCase() === 'DE' && parts[1].toUpperCase() === 'HL') {
+            return build([{ mnem: 'EX', ops: 'DE,HL' }, { mnem: 'ADD', ops: 'HL,DE' }, { mnem: 'EX', ops: 'DE,HL' }]);
+        }
+
+        // LD and 2-operand ALU with many operands -> operand pairs
+        const PAIRED = ['LD', 'ADD', 'ADC', 'SUB', 'SBC', 'AND', 'OR', 'XOR', 'CP'];
+        if (PAIRED.includes(upper) && parts.length > 2) {
+            if (parts.length % 2 !== 0) {
+                warn(`STORM ${upper} with ${parts.length} operands can't be split into pairs - verify`);
+                return null;
+            }
+            const instrs = [];
+            for (let k = 0; k < parts.length; k += 2) instrs.push({ mnem: mn, ops: parts[k] + ',' + parts[k + 1] });
+            return build(instrs);
+        }
+
+        // 16-bit register move: LD rr,rr' -> two 8-bit LDs
+        if (upper === 'LD' && parts.length === 2) {
+            const pair = this.stormLd16(parts[0], parts[1]);
+            if (pair) return build(pair.map(ops => ({ mnem: mn, ops })));
+        }
+
+        return null;
+    }
+
+    // LD <rr>,<rr'> (16-bit register move, which the Z80 lacks) -> the two
+    // 8-bit LDs. Returns [ops1, ops2] or null when not such a move. SP and
+    // immediates never match, so real LDs (LD SP,HL / LD HL,nn) are untouched.
+    static stormLd16(dst, src) {
+        const HALVES = { BC: ['B', 'C'], DE: ['D', 'E'], HL: ['H', 'L'], IX: ['IXH', 'IXL'], IY: ['IYH', 'IYL'] };
+        const d = dst.trim().toUpperCase(), s = src.trim().toUpperCase();
+        if (!(d in HALVES) || !(s in HALVES) || d === s) return null;
+        const dIdx = (d === 'IX' || d === 'IY'), sIdx = (s === 'IX' || s === 'IY');
+        // H/L become IXH/IXL under a DD/FD prefix, so HL can't pair with IX/IY
+        if (dIdx && sIdx) return null;
+        if ((dIdx && s === 'HL') || (sIdx && d === 'HL')) return null;
+        const [dh, dl] = HALVES[d], [sh, sl] = HALVES[s];
+        return [dh + ',' + sh, dl + ',' + sl];
+    }
+
+    // Wrap the term already emitted at the end of `out` with a HIGH/LOW unary
+    // operator, for STORM's postfix byte selectors ( [ = high, ] = low ). The
+    // term is a parenthesized group or a single operand (identifier, decimal,
+    // or a #/$/% -prefixed number) - postfix [ ] bind tighter than any binary
+    // operator, so only that immediate term is taken.
+    static stormWrapByteOp(out, op, warn) {
+        let end = out.length;
+        let ws = '';
+        while (end > 0 && /\s/.test(out[end - 1])) { ws = out[end - 1] + ws; end--; }
+        let start = end;
+        if (out[end - 1] === ')') {
+            let depth = 0;
+            while (start > 0) {
+                start--;
+                if (out[start] === ')') depth++;
+                else if (out[start] === '(') { depth--; if (depth === 0) break; }
+            }
+        } else {
+            while (start > 0 && /[A-Za-z0-9_.]/.test(out[start - 1])) start--;
+            if (start > 0 && (out[start - 1] === '#' || out[start - 1] === '$')) start--;
+            else if (start > 0 && out[start - 1] === '%' && /^[01]+$/.test(out.slice(start, end))) start--;
+        }
+        if (start >= end) {
+            warn(`STORM postfix "${op === 'HIGH' ? '[' : ']'}" with no preceding term - verify`);
+            return out + (op === 'HIGH' ? '[' : ']');
+        }
+        return out.slice(0, start) + op + ' (' + out.slice(start, end) + ')' + ws;
     }
 
     // Pasmo operand rewriting: word operators -> symbols, b-suffix binary
@@ -705,26 +869,10 @@ export class AsmDialectConverter {
     // high-byte operator don't swallow the rest of the line).
     // The comment part includes the ';' and the whitespace just before it,
     // so rebuilt lines keep their original comment spacing.
+    // Delegates to the shared splitter (core/asm-beautify.js), trimming the
+    // whitespace before the comment as this converter expects.
     static splitComment(line) {
-        let inString = false;
-        let quote = '';
-        for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (inString) {
-                if (ch === quote) inString = false;
-            } else if (ch === '"') {
-                inString = true;
-                quote = '"';
-            } else if (ch === "'" && !/[A-Za-z0-9_')]/.test(line[i - 1] || '')) {
-                inString = true;
-                quote = "'";
-            } else if (ch === ';') {
-                let j = i;
-                while (j > 0 && (line[j - 1] === ' ' || line[j - 1] === '\t')) j--;
-                return { code: line.slice(0, j), comment: line.slice(j) };
-            }
-        }
-        return { code: line, comment: '' };
+        return splitComment(line, { trimBefore: true });
     }
 
     // Parse the code part into label / mnemonic / operands while keeping

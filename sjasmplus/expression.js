@@ -25,7 +25,14 @@ const ExpressionParser = {
         }
 
         const result = this.parseLogicalOr();
-        
+
+        // Anything left over is junk after the expression ("LD A,1 2", "LD A,1)"),
+        // which used to be dropped silently along with whatever it meant
+        if (this.pos < this.tokens.length) {
+            const token = this.tokens[this.pos];
+            ErrorCollector.error(`Unexpected '${token.value}' after expression`);
+        }
+
         return result;
     },
 
@@ -498,12 +505,15 @@ const ExpressionParser = {
             return { value: 0, undefined: true, symbol: name };
         }
 
-        // If we get here, unexpected token
+        // If we get here, unexpected token — or nothing at all, which means the
+        // expression stopped mid-way ("LD A,1+") and must not evaluate to 0
         const token = this.peek();
         if (token) {
             ErrorCollector.error(`Unexpected token: ${token.type} (${token.value})`);
+        } else {
+            ErrorCollector.error('Incomplete expression');
         }
-        
+
         return { value: 0, undefined: true };
     }
 };

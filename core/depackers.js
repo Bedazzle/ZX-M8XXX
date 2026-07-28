@@ -562,3 +562,172 @@ export function findPackedScreenInBlock(bytes, loadAddr = 0, { entropyMax = 7.0 
     }
     return null;
 }
+
+// ---- Hrust 1.3 depacker ----------------------------------------------------
+// Decompress-only port of hrust-js (format by Dmitry Pyankov; reimplemented per
+// OHC by Eugene Larchenko; JS port by Bedazzle, MIT — github.com/Bedazzle/
+// Compressors-JS), including the 0xE0-escape ("copy with break" / D-change)
+// handling. Used to unpack `HR`-signed blocks, e.g. assembler sources stored
+// packed on TR-DOS disks. Header: 'HR', u16 unpacked size, u16 packed size,
+// 6-byte tail backup, then a 16-bit MSB-first LZ bitstream. The loop always
+// advances outPos toward endPos, so it terminates on any input.
+
+const HRUST_INITIAL_D = 2;
+function hrustNextD(d) { return (d & 7) + 1; }
+
+function HrustBitReader(data, pos) {
+    this.data = data; this.pos = pos; this.bits = 0; this.bitsLeft = 0;
+}
+HrustBitReader.prototype.loadWord = function () {
+    this.bits = this.data[this.pos] | (this.data[this.pos + 1] << 8);
+    this.pos += 2; this.bitsLeft = 16;
+};
+HrustBitReader.prototype.readBit = function () {
+    if (this.bitsLeft === 0) this.loadWord();
+    this.bitsLeft--;
+    const bit = (this.bits >>> this.bitsLeft) & 1;
+    if (this.bitsLeft === 0) this.loadWord();
+    return bit;
+};
+HrustBitReader.prototype.readByte = function () { return this.data[this.pos++]; };
+HrustBitReader.prototype.readBits = function (n) {
+    let val = 0; for (let i = 0; i < n; i++) val = (val << 1) | this.readBit(); return val;
+};
+
+// Count token (after the leading "01"): a count, -1 = end, or an object flag.
+function hrustReadLargeCntAfter01(br) {
+    if (br.readBit() === 0) return 3;                 // "10" -> cnt = 3
+    let sum = 3;
+    for (let pairs = 1; pairs < 5; pairs++) {
+        const t = br.readBit() * 2 + br.readBit();
+        if (t < 3) {
+            sum += t;
+            if (sum === 3) {                          // "1100…" extended prefix
+                if (br.readBit() === 1) return { rirShort: true, firstBit: br.readBit() };
+                if (br.readBit() === 1) return { multiLit: true };
+                const val = br.readBits(7);
+                if (val === 15) return -1;            // end of stream
+                if (val >= 16) return val;            // direct count 16..127
+                return (val << 8) | br.readByte();
+            }
+            return sum;
+        }
+        sum += 3;
+    }
+    return sum;
+}
+
+// Long-distance for count>=3; a number, or { rirDist } for the E0 escape.
+function hrustReadLongDist(br, D) {
+    const b0 = br.readBit(), b1 = br.readBit();
+    if (b0 === 1 && b1 === 0) return br.readBits(5) - 32;
+    if (b0 === 0 && b1 === 1) {
+        const bv = br.readByte();
+        if (bv >= 0xE0) return { rirDist: ((((bv << 1) + 1) ^ 3) & 0xFF) - 0x10F };
+        return bv - 256;
+    }
+    if (b0 === 0 && b1 === 0) return (0xFFFFFE00 | br.readByte()) >> 0;
+    let H = br.readBits(D);
+    const lo = br.readByte();
+    H -= (1 << D);
+    return ((H << 8) | lo) >> 0;
+}
+
+// True if `data` is plausibly a Hrust 'HR' container (signature + sane sizes).
+export function isHrust(data) {
+    if (!data || data.length < 12) return false;
+    if (data[0] !== 0x48 || data[1] !== 0x52) return false;
+    const orig = data[2] | (data[3] << 8);
+    const packed = data[4] | (data[5] << 8);
+    return orig >= 7 && packed >= 12 && packed <= data.length + 4 && orig >= (packed >> 1);
+}
+
+// Decompress a Hrust 1.3 block; throws only on a bad/short header.
+export function hrustDecompress(data) {
+    if (!(data instanceof Uint8Array)) data = new Uint8Array(data);
+    if (data.length < 12) throw new Error('Hrust: data too short');
+    if (data[0] !== 0x48 || data[1] !== 0x52) throw new Error('Hrust: missing HR signature');
+
+    const origSize = data[2] | (data[3] << 8);
+    if (origSize < 7) throw new Error('Hrust: original size too small');
+
+    const output = new Uint8Array(origSize);
+    const endPos = origSize - 6;
+    for (let i = 0; i < 6; i++) output[origSize - 6 + i] = data[6 + i];   // tail backup
+
+    const br = new HrustBitReader(data, 12);
+    br.loadWord();
+    let outPos = 0;
+    output[outPos++] = br.readByte();            // first byte copied verbatim
+    let D = HRUST_INITIAL_D;
+
+    while (outPos < endPos) {
+        if (br.readBit() === 1) { output[outPos++] = br.readByte(); continue; }   // literal
+        if (br.readBit() === 0) {
+            if (br.readBit() === 0) {            // "000": count-1 match
+                const d = br.readBits(3) - 8;
+                output[outPos] = output[outPos + d];
+                outPos++;
+            } else {                             // "001": count-2 / D-change / RIR
+                const r0 = br.readBit(), r1 = br.readBit();
+                if (r0 === 1 && r1 === 0) {
+                    const bv = br.readByte();
+                    if (bv >= 0xE0) {            // 0xE0-group escape
+                        const tb = (((bv << 1) + 1) ^ 2) & 0xFF;
+                        if (tb === 0xFF) { D = hrustNextD(D); continue; }   // D-change
+                        const rd = tb - 0x10F;   // "copy with break" (3 bytes)
+                        output[outPos] = output[outPos + rd];
+                        output[outPos + 1] = br.readByte();
+                        output[outPos + 2] = output[outPos + rd + 2];
+                        outPos += 3;
+                        continue;
+                    }
+                    const src = outPos + ((bv | 0xFFFFFF00) >> 0);
+                    output[outPos] = output[src]; output[outPos + 1] = output[src + 1];
+                    outPos += 2;
+                } else {
+                    let dist;
+                    if (r0 === 1 && r1 === 1) dist = br.readBits(5) - 32;
+                    else if (r0 === 0 && r1 === 1) dist = (0xFFFFFE00 | br.readByte()) >> 0;
+                    else dist = (0xFFFFFD00 | br.readByte()) >> 0;
+                    const src = outPos + dist;
+                    output[outPos] = output[src]; output[outPos + 1] = output[src + 1];
+                    outPos += 2;
+                }
+            }
+        } else {                                 // "01": count>=3 / special / end
+            const result = hrustReadLargeCntAfter01(br);
+            if (result === -1) break;
+            if (typeof result === 'object') {
+                if (result.rirShort) {
+                    const dist = ((result.firstBit << 3) | br.readBits(3)) - 16;
+                    const mid = br.readByte();
+                    const src = outPos + dist;
+                    output[outPos] = output[src];
+                    output[outPos + 1] = mid;
+                    output[outPos + 2] = output[src + 2];
+                    outPos += 3;
+                } else if (result.multiLit) {
+                    const cnt = br.readBits(4) * 2 + 12;
+                    for (let j = 0; j < cnt; j++) output[outPos++] = br.readByte();
+                }
+                continue;
+            }
+            const cnt = result;
+            const dist = hrustReadLongDist(br, D);
+            if (typeof dist === 'object') {      // E0 escape (count must be 3)
+                if (cnt !== 3) throw new Error('Hrust: E0 escape with count>3');
+                const rd = dist.rirDist;
+                output[outPos] = output[outPos + rd];
+                output[outPos + 1] = br.readByte();
+                output[outPos + 2] = output[outPos + rd + 2];
+                outPos += 3;
+                continue;
+            }
+            const src = outPos + dist;
+            for (let j = 0; j < cnt; j++) output[outPos + j] = output[src + j];
+            outPos += cnt;
+        }
+    }
+    return output;
+}

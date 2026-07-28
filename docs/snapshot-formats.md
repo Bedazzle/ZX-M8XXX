@@ -44,6 +44,10 @@ Export memory ranges to `.bin` files or import `.bin` files into memory. Located
 
 **Import**: Start address (hex) + file picker (`.bin`, `.dat`, or any). Reads file as `ArrayBuffer`, writes to memory at start address via `memory.setBlock()`, calls `renderToScreen()` to refresh display while paused, then refreshes debugger.
 
+**Fill**: Fills the Start..End range with the **Byte** value (hex, default `00` = clear to zeros) via `memory.setBlock()`.
+
+**Screen fill**: a **Screen** pattern dropdown + **Apply** button writes a full 6912-byte screen image (bitmap + attributes) into the display. Patterns live in a small `SCREEN_PATTERNS` registry (each `build()` returns the 6912 bytes), so new variants are one entry: currently **Clear** (bitmap 0, attributes `$38` = black ink on white paper, no bright/flash), **Grid** (an 8×8 character-cell grid) and **Diagonal** (a 45° diamond grid — both diagonals every 8 px), the latter two black pixels on the same `$38` attributes. On any machine with a shadow screen (i.e. one with a RAM bank 7 — 128K/+2/+2A/+3, Pentagon, Pentagon 1024, Scorpion; the check is `spectrum.memory.ram[7]`, not `is128kCompat`, so Pentagon/Scorpion are included) a **Main/Shadow** selector chooses the target (main = RAM bank 5, shadow = RAM bank 7), written directly. On 48K the selector is hidden and the fixed `$4000` screen is written via `setBlock()`. Refreshes the display and debugger.
+
 **Validation**: End >= Start enforced on commit. Length clamped to minimum 1 and maximum `0x10000 - start`. Export also validates before download. Field sync uses `change` events (fires on blur/Enter) so the user can freely type without mid-edit reformatting.
 
 **Compare** (Utils -> Compare tab): "Memory vs Binary" mode compares a loaded binary file against current emulator memory at a specified start address. Uses `memory.read()` per byte so banking is respected. File is shown as "File A", emulator memory as "Memory". Truncates comparison if file would overflow past $FFFF (with warning).

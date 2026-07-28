@@ -1,9 +1,10 @@
 // assembler-ui.js — Assembler UI module (extracted from index.html)
 // ES module with init-function pattern
-import { escapeHtml, hex8, hex16, storageGet, storageSet } from '../core/utils.js';
+import { escapeHtml, hex8, hex16, storageGet, storageSet, crc32 } from '../core/utils.js';
 import { z80Opcodes } from '../debug/opcodes-data.js';
 import { decodeViewCodepage, AsmDetok, DETOK_FORMAT_NAMES } from '../core/asm-detok.js';
 import { beautify } from '../core/asm-beautify.js';
+import { createHighlightLayer } from './asm-highlight.js';
 
 export function initAssemblerUI({
     VFS,
@@ -824,10 +825,20 @@ export function initAssemblerUI({
     }
 
     // Show/hide buttons based on project state
+    // "Is there anything but whitespace?" without copying the buffer — this runs on
+    // every keystroke, and .trim() on a 200 KB source allocates 200 KB each time
+    function hasNonWhitespace(text) {
+        for (let i = 0; i < text.length; i++) {
+            const c = text.charCodeAt(i);
+            if (c > 32) return true;
+        }
+        return false;
+    }
+
     function updateProjectButtons() {
         const fileCount = Object.keys(VFS.files).length;
         const hasFiles = fileCount > 0;
-        const hasContent = asmEditor && asmEditor.value.trim().length > 0;
+        const hasContent = asmEditor && hasNonWhitespace(asmEditor.value);
 
         // Export/Share are menu items: gray out when there is nothing to export
         if (btnAsmExport) {
@@ -1199,200 +1210,32 @@ export function initAssemblerUI({
         });
     }
 
-    // Z80 instructions set for highlighting
-    const Z80_INSTRUCTIONS = new Set([
-        'ADC', 'ADD', 'AND', 'BIT', 'CALL', 'CCF', 'CP', 'CPD', 'CPDR', 'CPI', 'CPIR',
-        'CPL', 'DAA', 'DEC', 'DI', 'DJNZ', 'EI', 'EX', 'EXX', 'HALT', 'IM', 'IN',
-        'INC', 'IND', 'INDR', 'INI', 'INIR', 'JP', 'JR', 'LD', 'LDD', 'LDDR', 'LDI',
-        'LDIR', 'NEG', 'NOP', 'OR', 'OTDR', 'OTIR', 'OUT', 'OUTD', 'OUTI', 'POP',
-        'PUSH', 'RES', 'RET', 'RETI', 'RETN', 'RL', 'RLA', 'RLC', 'RLCA', 'RLD',
-        'RR', 'RRA', 'RRC', 'RRCA', 'RRD', 'RST', 'SBC', 'SCF', 'SET', 'SLA', 'SLL',
-        'SRA', 'SRL', 'SUB', 'XOR', 'DEFB', 'DEFW', 'DEFS', 'DB', 'DW', 'DS', 'DEFM',
-        'DM', 'BYTE', 'WORD', 'BLOCK'
-    ]);
+    // How long after the last keystroke the highlight layer is rebuilt. Every
+    // repaint path uses this, so typing never triggers a synchronous re-highlight.
+    const ASM_HIGHLIGHT_DEBOUNCE_MS = 80;
 
-    const Z80_DIRECTIVES = new Set([
-        'ORG', 'EQU', 'INCLUDE', 'INCBIN', 'MACRO', 'ENDM', 'REPT', 'ENDR',
-        'IF', 'ELSE', 'ENDIF', 'IFDEF', 'IFNDEF', 'ALIGN', 'PHASE', 'DEPHASE',
-        'END', 'ASSERT', 'DEVICE', 'SLOT', 'PAGE', 'MODULE', 'ENDMODULE',
-        'STRUCT', 'ENDS', 'SECTION', 'ENDSECTION', 'OUTPUT', 'LABELSLIST',
-        'DISPLAY', 'SHELLEXEC', 'DEFINE', 'UNDEFINE', 'DUP', 'EDUP', 'PROC', 'ENDP'
-    ]);
-
-    const Z80_REGISTERS = new Set([
-        'A', 'B', 'C', 'D', 'E', 'H', 'L', 'F', 'I', 'R',
-        'AF', 'BC', 'DE', 'HL', 'IX', 'IY', 'SP', 'PC',
-        'IXH', 'IXL', 'IYH', 'IYL', "AF'"
-    ]);
-
-    // Simple tokenizer for syntax highlighting
-    function tokenizeAsmLine(line) {
-        const tokens = [];
-        let pos = 0;
-
-        while (pos < line.length) {
-            const ch = line[pos];
-
-            // Whitespace
-            if (ch === ' ' || ch === '\t') {
-                let start = pos;
-                while (pos < line.length && (line[pos] === ' ' || line[pos] === '\t')) {
-                    pos++;
-                }
-                tokens.push({ type: 'whitespace', value: line.slice(start, pos) });
-                continue;
-            }
-
-            // Comment (;)
-            if (ch === ';') {
-                tokens.push({ type: 'comment', value: line.slice(pos) });
-                break;
-            }
-
-            // String
-            if (ch === '"' || ch === "'") {
-                const quote = ch;
-                let start = pos;
-                pos++;
-                while (pos < line.length && line[pos] !== quote) {
-                    if (line[pos] === '\\' && pos + 1 < line.length) pos++;
-                    pos++;
-                }
-                if (pos < line.length) pos++; // closing quote
-                tokens.push({ type: 'string', value: line.slice(start, pos) });
-                continue;
-            }
-
-            // Number: $hex, #hex, 0x, %, binary, decimal, or suffix-based
-            if (/[0-9$#%]/.test(ch)) {
-                let start = pos;
-                if (ch === '$' || ch === '#') {
-                    pos++;
-                    while (pos < line.length && /[0-9a-fA-F_]/.test(line[pos])) pos++;
-                } else if (ch === '%') {
-                    pos++;
-                    while (pos < line.length && /[01_]/.test(line[pos])) pos++;
-                } else if (ch === '0' && pos + 1 < line.length && (line[pos + 1] === 'x' || line[pos + 1] === 'X')) {
-                    pos += 2;
-                    while (pos < line.length && /[0-9a-fA-F_]/.test(line[pos])) pos++;
-                } else {
-                    while (pos < line.length && /[0-9a-fA-F_]/.test(line[pos])) pos++;
-                    if (pos < line.length && /[hHbBoOdDqQ]/.test(line[pos])) pos++;
-                }
-                tokens.push({ type: 'number', value: line.slice(start, pos) });
-                continue;
-            }
-
-            // Identifier (label, instruction, register)
-            if (/[a-zA-Z_.]/.test(ch) || ch === '@') {
-                let start = pos;
-                pos++;
-                while (pos < line.length && /[a-zA-Z0-9_]/.test(line[pos])) pos++;
-                if (pos < line.length && line[pos] === "'") pos++; // AF'
-                const value = line.slice(start, pos);
-                const upper = value.toUpperCase();
-
-                // Check for colon after (label definition)
-                let isLabel = false;
-                let colonPos = pos;
-                while (colonPos < line.length && (line[colonPos] === ' ' || line[colonPos] === '\t')) colonPos++;
-                if (colonPos < line.length && line[colonPos] === ':') {
-                    isLabel = true;
-                }
-                // Also check if starts with . (local label)
-                if (value.startsWith('.')) isLabel = true;
-
-                if (Z80_INSTRUCTIONS.has(upper)) {
-                    tokens.push({ type: 'instruction', value });
-                } else if (Z80_DIRECTIVES.has(upper)) {
-                    tokens.push({ type: 'directive', value });
-                } else if (Z80_REGISTERS.has(upper) || Z80_CONDITIONS.has(upper)) {
-                    tokens.push({ type: 'register', value });
-                } else if (isLabel || start === 0) {
-                    tokens.push({ type: 'label', value });
-                } else {
-                    tokens.push({ type: 'identifier', value });
-                }
-                continue;
-            }
-
-            // Operators and punctuation
-            if (ch === '(' || ch === ')' || ch === '[' || ch === ']') {
-                tokens.push({ type: 'paren', value: ch });
-                pos++;
-                continue;
-            }
-
-            if (ch === ':') {
-                tokens.push({ type: 'colon', value: ch });
-                pos++;
-                continue;
-            }
-
-            if (ch === ',') {
-                tokens.push({ type: 'comma', value: ch });
-                pos++;
-                continue;
-            }
-
-            if (/[+\-*\/%&|^~<>=!]/.test(ch)) {
-                let start = pos;
-                pos++;
-                // Handle two-char operators
-                if (pos < line.length && /[<>=&|]/.test(line[pos])) pos++;
-                tokens.push({ type: 'operator', value: line.slice(start, pos) });
-                continue;
-            }
-
-            // Unknown char
-            tokens.push({ type: 'text', value: ch });
-            pos++;
-        }
-
-        return tokens;
+    // The textarea's own text is transparent — the highlight layer is what the
+    // user reads — so repaints happen synchronously on input, and the layer patches
+    // just the chunk holding the edit instead of rebuilding the whole document.
+    const highlightLayer = asmHighlight ? createHighlightLayer(asmHighlight) : null;
+    // The split pane's element is looked up further down, so bind its layer lazily
+    let highlightLayer2 = null;
+    function splitLayer() {
+        if (!highlightLayer2 && asmHighlight2) highlightLayer2 = createHighlightLayer(asmHighlight2);
+        return highlightLayer2;
     }
+    let lastLineCount = -1;
 
-    function highlightAsmCode(code) {
-        // View-only codepage: the highlight layer paints the visible text (the
-        // textarea text is transparent), and the mapping is 1 char -> 1 char,
-        // so caret/selection positions stay aligned with the raw content
-        if (asmViewCodepage && asmViewCodepage.value !== 'raw') {
-            code = decodeViewCodepage(code, asmViewCodepage.value);
-        }
-        const lines = code.split('\n');
-        return lines.map(line => {
-            const tokens = tokenizeAsmLine(line);
-            return tokens.map(token => {
-                const escaped = escapeHtml(token.value);
-                switch (token.type) {
-                    case 'instruction':
-                        return `<span class="asm-hl-instruction">${escaped}</span>`;
-                    case 'directive':
-                        return `<span class="asm-hl-directive">${escaped}</span>`;
-                    case 'register':
-                        return `<span class="asm-hl-register">${escaped}</span>`;
-                    case 'number':
-                        return `<span class="asm-hl-number">${escaped}</span>`;
-                    case 'string':
-                        return `<span class="asm-hl-string">${escaped}</span>`;
-                    case 'label':
-                        return `<span class="asm-hl-label">${escaped}</span>`;
-                    case 'comment':
-                        return `<span class="asm-hl-comment">${escaped}</span>`;
-                    case 'paren':
-                        return `<span class="asm-hl-paren">${escaped}</span>`;
-                    case 'operator':
-                        return `<span class="asm-hl-operator">${escaped}</span>`;
-                    default:
-                        return escaped;
-                }
-            }).join('');
-        }).join('\n');
+    function countLines(text) {
+        let n = 1;
+        for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) n++;
+        return n;
     }
 
     function updateLineNumbers() {
-        const lines = asmEditor.value.split('\n');
-        const lineCount = lines.length;
+        const lineCount = countLines(asmEditor.value);
+        if (lineCount === lastLineCount) return;   // only the count drives this
+        lastLineCount = lineCount;
         // Build line numbers without trailing newline to match textarea height
         const numbers = [];
         for (let i = 1; i <= lineCount; i++) {
@@ -1401,12 +1244,14 @@ export function initAssemblerUI({
         asmLineNumbers.textContent = numbers.join('\n');
     }
 
+    function viewCodepage() {
+        return asmViewCodepage ? asmViewCodepage.value : 'raw';
+    }
+
     function updateHighlight() {
+        if (!highlightLayer) return;
         try {
-            // Use exact same content as textarea - no extra newline
-            // Add a zero-width space at end to prevent collapse if needed
-            const code = asmEditor.value;
-            asmHighlight.innerHTML = highlightAsmCode(code) + '\u200B';
+            highlightLayer.render(asmEditor.value, viewCodepage());
             asmEditor.classList.add('highlighting');
         } catch (e) {
             console.error('Highlight error:', e);
@@ -1431,8 +1276,6 @@ export function initAssemblerUI({
     if (asmEditor) {
         // Debounce timer for defines detection
         let definesUpdateTimer = null;
-        // Debounce timer for syntax highlighting (avoids lag on large files)
-        let highlightTimer = null;
 
         // Capture pre-edit baseline at the start of each typing burst
         asmEditor.addEventListener('beforeinput', () => {
@@ -1447,12 +1290,11 @@ export function initAssemblerUI({
             syncEditorToVFS();
             updateProjectButtons();
 
-            // Debounced highlighting and line numbers (avoids lag on large files)
-            clearTimeout(highlightTimer);
-            highlightTimer = setTimeout(() => {
-                updateLineNumbers();
-                updateHighlight();
-            }, 80);
+            // Repaint now, not on a timer: the typed character is only visible
+            // once the layer is updated. The layer patches one chunk, so this is
+            // cheap even in a several-thousand-line file.
+            updateLineNumbers();
+            updateHighlight();
 
             // Debounced update of defines dropdown (only when editing main file)
             if (!currentOpenFile || currentOpenFile === currentProjectMainFile) {
@@ -2429,11 +2271,35 @@ export function initAssemblerUI({
         return pane2Path === null || pane2Path === currentOpenFile;
     }
 
+    let lastLineCount2 = -1;
+
     function pane2Render() {
-        asmHighlight2.innerHTML = highlightAsmCode(asmEditor2.value) + '\u200B';
+        const layer2 = splitLayer();
+        if (layer2) layer2.render(asmEditor2.value, viewCodepage());
         asmEditor2.classList.add('highlighting');  // make the textarea text transparent, like the main editor
-        const count = asmEditor2.value.split('\n').length;
-        asmLineNumbers2.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
+        const count = countLines(asmEditor2.value);
+        if (count !== lastLineCount2) {
+            lastLineCount2 = count;
+            asmLineNumbers2.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
+        }
+    }
+
+    // Typing in either pane repaints both when they mirror the same file; do that
+    // on the same debounce as the main editor instead of on every keystroke.
+    let pane2RenderTimer = null;
+    function pane2RenderSoon() {
+        clearTimeout(pane2RenderTimer);
+        pane2RenderTimer = setTimeout(pane2Render, ASM_HIGHLIGHT_DEBOUNCE_MS);
+    }
+
+    // Both panes show the same file: repaint main + split together, once.
+    let mirrorRenderTimer = null;
+    function mirrorRenderSoon() {
+        clearTimeout(mirrorRenderTimer);
+        mirrorRenderTimer = setTimeout(() => {
+            updateHighlight();
+            updateLineNumbers();
+        }, ASM_HIGHLIGHT_DEBOUNCE_MS);
     }
 
     function pane2FillFileList() {
@@ -2502,8 +2368,7 @@ export function initAssemblerUI({
             if (pane2Path && !VFS.files[pane2Path]) pane2Path = null;  // file was removed
             if (pane2IsMirror()) {
                 asmEditor.value = asmEditor2.value;
-                updateHighlight();
-                updateLineNumbers();
+                mirrorRenderSoon();
                 if (currentOpenFile) fileModified[currentOpenFile] = true;
             } else {
                 VFS.files[pane2Path].content = asmEditor2.value;
@@ -2519,7 +2384,7 @@ export function initAssemblerUI({
             if (asmPane2.classList.contains('hidden')) return;
             if (pane2IsMirror()) {
                 asmEditor2.value = asmEditor.value;
-                pane2Render();
+                pane2RenderSoon();
             }
         });
 
@@ -3455,6 +3320,9 @@ export function initAssemblerUI({
             spectrum.stop();
             updateStatus();
         }
+        // Load the Lua engine first if any source uses LUA — both paths below
+        // assemble synchronously and can't wait for it themselves.
+        await ensureLuaEngine();
         if (sync) {
             // Synchronous path for doDebug (needs result immediately)
             Assembler.progressCallback = null;
@@ -3532,9 +3400,27 @@ export function initAssemblerUI({
         return { filename, normalizedFilename, hasProject, cmdDefines, asmOptions };
     }
 
+    // A source with LUA blocks needs the Lua engine in the page first — assembly
+    // itself is synchronous, so it can't load it on demand. Costs nothing for the
+    // sources (the vast majority) that don't use LUA.
+    async function ensureLuaEngine() {
+        const sources = [asmEditor ? asmEditor.value : ''];
+        for (const path of VFS.listFiles()) {
+            const f = VFS.files[path];
+            if (f && !f.binary && typeof f.content === 'string') sources.push(f.content);
+        }
+        if (!sources.some(s => Assembler.usesLua(s))) return;
+        try {
+            await Assembler.loadLua();
+        } catch (e) {
+            showMessage('Lua engine failed to load: ' + e.message, 'error');
+        }
+    }
+
     // Async assembly with progress reporting
     async function doAssembleAsync() {
         const { filename, normalizedFilename, hasProject, cmdDefines, asmOptions } = prepareAssembly();
+        await ensureLuaEngine();
 
         Assembler.progressCallback = (pass, linesDone, totalLines) => {
             const pct = totalLines > 0 ? Math.round(linesDone / totalLines * 100) : 0;
@@ -4507,18 +4393,6 @@ export function initAssemblerUI({
         }
         block[block.length - 1] = checksum;
         return block;
-    }
-
-    // CRC-32 calculation for ZIP creation
-    function crc32(data) {
-        let crc = 0xFFFFFFFF;
-        for (let i = 0; i < data.length; i++) {
-            crc ^= data[i];
-            for (let j = 0; j < 8; j++) {
-                crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
-            }
-        }
-        return (crc ^ 0xFFFFFFFF) >>> 0;
     }
 
     // Create ZIP file from multiple files

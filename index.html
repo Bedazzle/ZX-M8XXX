@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" id="metaColorScheme" content="dark">
     <script>if(localStorage.getItem('zxm8_theme')==='light')document.getElementById('metaColorScheme').content='light';</script>
-    <title>ZX-M8XXX v0.15.16</title>
+    <title>ZX-M8XXX v0.15.23</title>
     <style>
         @font-face {
             font-family: 'ZX82 System';
@@ -7618,7 +7618,7 @@
                 <option value="project">Project</option>
                 <option value="quick">Quick (F2)</option>
             </select>
-            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.16 — Help">Help</button>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.23 — Help">Help</button>
             <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
 
         </div>
@@ -9782,14 +9782,29 @@ start:
                         <input type="text" id="binExportLength" maxlength="4" value="1B00" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Length in bytes (hex)">
                         <label style="font-size: 11px; min-width: 18px;">End</label>
                         <input type="text" id="binExportEnd" maxlength="4" value="5AFF" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="End address inclusive (hex)">
+                        <label style="font-size: 11px; min-width: auto;">Byte</label>
+                        <input type="text" id="binFillByte" maxlength="2" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte (hex)">
+                        <button id="btnBinFill" class="frame-grab-btn" title="Fill the Start..End range with the fill byte (default 00 clears it)">Fill</button>
                     </div>
                     <div class="settings-row frame-export-controls" style="margin-top: 2px;">
                         <button id="btnBinExport" class="frame-grab-btn" title="Export memory range to .bin file">Export</button>
                         <button id="btnBinLoad" class="frame-grab-btn" title="Import .bin file into memory at start address">Import</button>
                         <input type="file" id="binLoadFile" accept=".bin,.dat,*" style="display: none;">
-                        <label style="font-size: 11px; min-width: 24px;">Byte</label>
-                        <input type="text" id="binFillByte" maxlength="2" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte (hex)">
-                        <button id="btnBinFill" class="frame-grab-btn" title="Fill the Start..End range with the fill byte (default 00 clears it)">Fill</button>
+                    </div>
+                    <div class="settings-row frame-export-controls" style="margin-top: 2px;">
+                        <label style="font-size: 11px; min-width: auto;">Screen</label>
+                        <select id="binPatternSel" style="font-size: 11px; flex: 0 0 auto; width: 128px;" title="What to write into the screen">
+                            <option value="clear">Clear</option>
+                            <option value="grid">Grid (8×8)</option>
+                            <option value="diag">Diagonal (45°)</option>
+                        </select>
+                        <span id="binScreenSelWrap" style="display: none; align-items: center; gap: 4px;">
+                            <select id="binScreenSel" style="font-size: 11px; flex: 0 0 auto; width: 74px;" title="Main or shadow screen (128K-style machines have both)">
+                                <option value="main">Main</option>
+                                <option value="shadow">Shadow</option>
+                            </select>
+                        </span>
+                        <button id="btnBinScreenApply" class="frame-grab-btn" title="Write the selected pattern into the chosen screen">Apply</button>
                     </div>
                     <div class="frame-grab-status" id="binStatus"></div>
                 </div>
@@ -11292,7 +11307,7 @@ start:
     import { initMapperUI } from './ui/mapper-ui.js';
     import { initGamepad } from './ui/gamepad.js';
     import { initMemoryMap } from './ui/memory-map.js';
-    import { buildRanges, buildRangesFromBits, exportCtl, exportGhidraCsv, exportSym, exportIndirectCsv,
+    import { buildRanges, buildRangesFromBits, buildRangesFromPagedBits, exportCtl, exportGhidraCsv, exportSym, exportIndirectCsv,
              findSmcRanges, exportSmcCsv, exportCallGraphCsv } from './core/map-export.js';
     import { initExportAsm } from './ui/export-asm.js';
     import { initAnalysisTools } from './ui/analysis-tools.js';
@@ -11346,7 +11361,7 @@ start:
     import { initLabelsPanel } from './ui/labels-panel.js';
     import { initPsgPlayer } from './ui/psg-player.js';
     import { initBasicEditor } from './ui/basic-editor.js';
-        const APP_VERSION = '0.15.16';
+        const APP_VERSION = '0.15.23';
         console.log('ZX-M8XXX v' + APP_VERSION);
 
 
@@ -11552,6 +11567,78 @@ start:
             version: APP_VERSION,
             get spectrum() { return spectrum; },
 
+            // ---- Readiness ----
+            // The page fetches its ROMs asynchronously at startup. A driver that
+            // grabs `spectrum` and starts running before they land executes a blank
+            // $0000-$3FFF: every ROM call and RST vector is a NOP sled, the game
+            // wanders off, and nothing on screen moves — which looks like a much
+            // deeper problem than "the ROM isn't in yet". Await this first.
+            //
+            //   await zxDebug.ready();                 // current machine
+            //   await zxDebug.ready({ machine: '128k' });
+            //
+            // Resolves { machineType, romLoaded, running } once the machine's ROM is
+            // actually in memory; rejects on timeout rather than hanging.
+            async ready({ machine = null, timeoutMs = 15000, pollMs = 25 } = {}) {
+                if (machine && spectrum.machineType !== machine) {
+                    await this.ensureRom(machine);   // so the selector's ROM check passes
+                    // Drive the real selector so every side effect (paging, palette,
+                    // canvas, reset) matches a user switch. Machines hidden from the
+                    // dropdown aren't selectable that way, so fall back to the core.
+                    machineSelect.value = machine;
+                    if (machineSelect.value === machine) {
+                        machineSelect.dispatchEvent(new Event('change'));
+                    } else {
+                        spectrum.setMachineType(machine);
+                        applyRomsToEmulator();
+                        spectrum.reset();
+                    }
+                }
+                const deadline = Date.now() + timeoutMs;
+                let triedLoad = false;
+                for (;;) {
+                    // ROM present? byte 0 of a Spectrum ROM is DI ($F3); a blank
+                    // (unloaded) ROM area reads back as $00.
+                    const romIn = spectrum.romLoaded && spectrum.memory.read(0) !== 0x00;
+                    if (romIn) {
+                        return {
+                            machineType: spectrum.machineType,
+                            romLoaded: true,
+                            running: spectrum.isRunning ? spectrum.isRunning() : !!spectrum.running,
+                        };
+                    }
+                    if (!triedLoad && Date.now() > deadline - timeoutMs / 2) {
+                        // Startup fetch may have failed (or never ran) — try once here
+                        triedLoad = true;
+                        try { await this.ensureRom(spectrum.machineType); } catch (e) { /* report below */ }
+                    }
+                    if (Date.now() > deadline) {
+                        throw new Error(
+                            `zxDebug.ready: no ROM for '${spectrum.machineType}' after ${timeoutMs} ms — ` +
+                            `is roms/${getMachineProfile(spectrum.machineType).romFile} being served?`);
+                    }
+                    await new Promise(r => setTimeout(r, pollMs));
+                }
+            },
+
+            // Load a machine's ROM file if it isn't loaded yet, and page it in when
+            // it belongs to the current machine. Returns true if the ROM is present.
+            async ensureRom(machineType = spectrum.machineType) {
+                const profile = getMachineProfile(machineType);
+                if (!profile) throw new Error(`Unknown machine: ${machineType}`);
+                if (!romData[profile.romFile]) {
+                    const res = await fetch('roms/' + profile.romFile);
+                    if (!res.ok) {
+                        throw new Error(`roms/${profile.romFile} not available (HTTP ${res.status})`);
+                    }
+                    romData[profile.romFile] = await res.arrayBuffer();
+                }
+                if (machineType === spectrum.machineType) {
+                    loadRomsForMachineType(spectrum, machineType);
+                }
+                return !!romData[profile.romFile];
+            },
+
             // Debug managers (read or add labels / regions / comments / xrefs)
             labels: labelManager,
             regions: regionManager,
@@ -11559,22 +11646,33 @@ start:
             xrefs: xrefManager,
 
             // ---- Execution-based code/data map ----
-            // enableMap(true, {fast:true}) → cheap touched-bitsets for long RZX;
+            // enableMap(true, {fast:true})        → cheap flat touched-bitsets for long RZX;
+            // enableMap(true, {fast:true,paged:true}) → per-page touched-bitsets (bank-switch
+            //                                        correct — banks don't union together);
             // fast omitted → the rich Map<key,count> (per-address counts + pages).
-            enableMap(on = true, { fast = false } = {}) {
-                spectrum.setAutoMapFast(fast);
+            enableMap(on = true, { fast = false, paged = false } = {}) {
+                spectrum.setAutoMapFast(fast || paged, paged);
                 spectrum.setAutoMapEnabled(on);
             },
             clearMap() { spectrum.clearAutoMap(); },
             mapData() { return spectrum.getAutoMapData(); },   // rich mode Maps
-            mapBits() { return spectrum.getAutoMapBits(); },   // fast mode Uint8Arrays
+            mapBits() { return spectrum.getAutoMapBits(); },   // fast mode Uint8Arrays (+ paged/pagedBits)
 
             // Coalesced { ranges:[{start,end,type}], pages } from the active mode.
+            // In paged fast mode the result also carries `byPage` (per-page ranges).
             ranges(opts = {}) {
                 const o = { readByte: (a) => spectrum.memory.read(a), ...opts };
+                if (spectrum.autoMap.paged) return buildRangesFromPagedBits(spectrum.autoMap.pagedBits, o);
                 return spectrum.autoMap.fast
                     ? buildRangesFromBits(spectrum.getAutoMapBits(), o)
                     : buildRanges(spectrum.getAutoMapData(), o);
+            },
+            // Per-page coalesced ranges { [pageLabel]: { ranges, pages } } — only
+            // meaningful in paged fast mode (empty object otherwise).
+            rangesByPage(opts = {}) {
+                const o = { readByte: (a) => spectrum.memory.read(a), ...opts };
+                if (!spectrum.autoMap.paged) return {};
+                return buildRangesFromPagedBits(spectrum.autoMap.pagedBits, o).byPage;
             },
 
             // ---- Disassembly-toolchain exports (strings; wired to live managers) ----
@@ -11603,6 +11701,107 @@ start:
             getWrites() { return spectrum.getWriteProvenance(); },
             stopWrites() { return spectrum.stopWriteProvenance(); },
 
+            // Who READS a block (classify an unreferenced data block by its consumer)
+            // and what EXECUTES inside a range (is this block code, and who calls it).
+            // Same shape as the write side: [{pc, count, callers:[addr]}].
+            // For reads, `pc` is the reading instruction; for exec it's the executed
+            // address itself. Both only do work in-range, so an RZX replay is fine.
+            watchReads(lo, hi) { spectrum.startReadProvenance(lo, hi); },
+            getReads() { return spectrum.getReadProvenance(); },
+            stopReads() { return spectrum.stopReadProvenance(); },
+            watchExec(lo, hi) { spectrum.startExecProvenance(lo, hi); },
+            getExec() { return spectrum.getExecProvenance(); },
+            stopExec() { return spectrum.stopExecProvenance(); },
+
+            // ---- Call a routine directly ----
+            // For effects normally reachable only through menus or movement the
+            // harness can't drive: set the registers, call the routine, read what it
+            // changed. Instead of poking a HALT sentinel and pumping frames by hand,
+            // this pushes a return marker, runs instructions until the routine returns
+            // to it, and restores the CPU state afterwards.
+            //
+            //   const r = zxDebug.callRoutine(0x8F20, { regs: { a: 3, hl: 0x5C00 } });
+            //   // r = { returned, halted, steps, regs:{...}, tStates }
+            //
+            // Notes: interrupts are off during the call (deterministic, and the ISR
+            // can't disturb the routine) unless you pass `interrupts: true`. The
+            // routine is stepped through the CPU directly, which read/write/exec
+            // provenance still sees, but auto-map does not (it only records inside
+            // runFrame) — pass `frames: true` when you want it mapped, or when the
+            // routine waits for an interrupt. Trust the state you peek afterwards over
+            // `returned`: a print or pause tail may not complete, but state changes
+            // land before it.
+            callRoutine(addr, { regs = {}, sp = null, maxSteps = 5000000,
+                                interrupts = false, frames = false, maxFrames = 600 } = {}) {
+                const cpu = spectrum.cpu;
+                const saved = {};
+                for (const k of ['a', 'f', 'b', 'c', 'd', 'e', 'h', 'l', 'ix', 'iy', 'sp', 'pc',
+                                 'iff1', 'iff2', 'halted']) saved[k] = cpu[k];
+
+                // A return marker the routine can't plausibly execute: RET lands on it,
+                // and we stop before executing anything there.
+                const MARKER = 0xFFFF;
+                const set16 = (name, v) => {
+                    if (v === undefined) return;
+                    if (name === 'bc') { cpu.b = (v >> 8) & 0xFF; cpu.c = v & 0xFF; }
+                    else if (name === 'de') { cpu.d = (v >> 8) & 0xFF; cpu.e = v & 0xFF; }
+                    else if (name === 'hl') { cpu.h = (v >> 8) & 0xFF; cpu.l = v & 0xFF; }
+                    else if (name === 'af') { cpu.a = (v >> 8) & 0xFF; cpu.f = v & 0xFF; }
+                    else cpu[name] = v;
+                };
+                try {
+                    if (sp !== null) cpu.sp = sp & 0xFFFF;
+                    for (const [k, v] of Object.entries(regs)) {
+                        if (['bc', 'de', 'hl', 'af', 'ix', 'iy', 'sp'].includes(k)) set16(k, v);
+                        else cpu[k] = v;
+                    }
+                    // Push the marker as the return address
+                    cpu.sp = (cpu.sp - 2) & 0xFFFF;
+                    spectrum.memory.write(cpu.sp, MARKER & 0xFF);
+                    spectrum.memory.write((cpu.sp + 1) & 0xFFFF, (MARKER >> 8) & 0xFF);
+                    if (!interrupts) { cpu.iff1 = false; cpu.iff2 = false; }
+                    cpu.halted = false;
+                    cpu.pc = addr & 0xFFFF;
+
+                    const t0 = cpu.tStates;
+                    let steps = 0, returned = false;
+                    if (frames) {
+                        for (let f = 0; f < maxFrames; f++) {
+                            spectrum.runFrame();
+                            if (cpu.pc === MARKER || cpu.halted) { returned = cpu.pc === MARKER; break; }
+                        }
+                    } else {
+                        while (steps < maxSteps) {
+                            if (cpu.pc === MARKER) { returned = true; break; }
+                            if (cpu.halted) break;
+                            // Keep the "which instruction did this" marker current, so
+                            // read/write provenance attributes accesses to the right
+                            // instruction here too (runFrame normally maintains it).
+                            spectrum._currentInstrPC = cpu.pc;
+                            cpu.step();
+                            steps++;
+                        }
+                    }
+                    const result = {
+                        returned,
+                        halted: !!cpu.halted,
+                        steps,
+                        tStates: cpu.tStates - t0,
+                        regs: {
+                            a: cpu.a, f: cpu.f,
+                            bc: (cpu.b << 8) | cpu.c, de: (cpu.d << 8) | cpu.e,
+                            hl: (cpu.h << 8) | cpu.l, ix: cpu.ix, iy: cpu.iy,
+                        },
+                    };
+                    if (!returned && !result.halted) {
+                        result.timedOut = true;   // budget ran out — not a wrong answer
+                    }
+                    return result;
+                } finally {
+                    for (const k of Object.keys(saved)) cpu[k] = saved[k];
+                }
+            },
+
             // ---- Resolved indirect jumps (JP (HL)/(IX)/(IY) dispatch targets) ----
             // The edges Ghidra can't recover. watchIndirect → run frames / replay
             // an RZX → getIndirect() = [{site,kind,targets:[{target,count}]}];
@@ -11615,6 +11814,23 @@ start:
             // ---- Self-modifying code (executed AND written at runtime) ----
             // Computed from the active auto-map (fast bitsets or rich Maps).
             getSmc() {
+                if (spectrum.autoMap.paged) {
+                    // Intersect exec∩write PER PAGE (unioning first would falsely pair
+                    // exec in one bank with a write to another at the same address),
+                    // then coalesce the per-page ranges into one sorted list.
+                    const all = [];
+                    for (const t of spectrum.autoMap.pagedBits.values()) {
+                        for (const r of findSmcRanges(t.execBits, t.writeBits)) all.push(r);
+                    }
+                    all.sort((a, b) => a.start - b.start);
+                    const out = [];
+                    for (const r of all) {
+                        const last = out[out.length - 1];
+                        if (last && r.start <= last.end + 1) last.end = Math.max(last.end, r.end);
+                        else out.push({ ...r });
+                    }
+                    return out;
+                }
                 if (spectrum.autoMap.fast) {
                     const b = spectrum.getAutoMapBits();
                     return findSmcRanges(b.execBits, b.writeBits);
@@ -11633,11 +11849,224 @@ start:
             stopCalls() { return spectrum.stopCallGraph(); },
             exportCallGraphCsv() { return exportCallGraphCsv(spectrum.getCallGraph()); },
 
+            // ---- Raw access hooks (custom recorders) ----
+            // Register callbacks fired on every opcode fetch / memory read / write,
+            // without enabling a monitor and without wrapping the managed cpu.onFetch
+            // (which is null unless a feature needs it). Fetch gets (addr); read/write
+            // get (addr, val). Inside a hook read spectrum state synchronously — e.g.
+            // spectrum.memory.currentRamBank for per-page coverage. Returns a disposer.
+            onAccess(hooks = {}) {
+                spectrum.setAccessHooks(hooks);
+                return () => spectrum.clearAccessHooks();
+            },
+            offAccess() { spectrum.clearAccessHooks(); },
+
+            // ---- Checkpointing (survives --virtual-time-budget / a killed run) ----
+            // Under headless Edge --virtual-time-budget the real clock freezes
+            // (Date.now/performance.now read ~0) and --dump-dom only emits on process
+            // exit, so a killed long run loses everything. checkpoint() writes the
+            // latest progress into a hidden DOM node (#zxDebugCheckpoint) the harness
+            // can poll mid-run (DevTools) or recover from the final --dump-dom.
+            // emuClock() gives an emulated-time estimate (frame/T-state based) since
+            // the wall clock is unavailable.
+            emuClock() {
+                const tpf = (spectrum.timing && spectrum.timing.tstatesPerFrame) || 69888;
+                const hz = spectrum.cpuClock || 3500000;
+                const tStates = spectrum.totalFrames * tpf + (spectrum.cpu ? spectrum.cpu.tStates : 0);
+                return { frames: spectrum.totalFrames, tStates, seconds: tStates / hz };
+            },
+            // Hand a result (or progress) back to whoever launched the browser, by
+            // posting it to serve.py's sink — `--dump-dom` only prints at exit, so a
+            // long run otherwise has no way to report anything until it finishes.
+            //   await zxDebug.report({ ranges }, 'result');   -> headless/result.json
+            //   await zxDebug.report(state, 'progress');      -> headless/progress.json
+            //   await zxDebug.report(x, 'result', 'venom')    -> headless/venom.json
+            async report(data, kind = 'result', name = null) {
+                const clk = this.emuClock();
+                const body = JSON.stringify({ kind, frames: clk.frames, seconds: clk.seconds, data });
+                const url = '/' + (kind === 'progress' ? 'progress' : 'result') +
+                            (name ? '?name=' + encodeURIComponent(name) : '');
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                });
+                if (!res.ok) {
+                    throw new Error(`report failed: HTTP ${res.status} — is this served by serve.py?`);
+                }
+                return res.json();
+            },
+
+            checkpoint(data) {
+                let el = document.getElementById('zxDebugCheckpoint');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'zxDebugCheckpoint';
+                    el.style.display = 'none';
+                    document.body.appendChild(el);
+                }
+                const clk = this.emuClock();
+                this._cpSeq = (this._cpSeq || 0) + 1;
+                const payload = { seq: this._cpSeq, frames: clk.frames, tStates: clk.tStates, seconds: clk.seconds, data };
+                el.textContent = JSON.stringify(payload);
+                return payload;
+            },
+            getCheckpoint() {
+                const el = document.getElementById('zxDebugCheckpoint');
+                if (!el || !el.textContent) return null;
+                try { return JSON.parse(el.textContent); } catch (e) { return null; }
+            },
+
+            // ---- RZX replay (headless drivers) ----
+            // One call: load the RZX, play to its true end, resolve when done.
+            // No hand-rolled frame loop and no need to know the frame count — the
+            // loop is bounded by rzxPlaying (now that playback terminates correctly)
+            // with maxFrames only as a safety backstop (default = length + 16).
+            // onProgress(frame, total) fires every progressEvery frames; a checkpoint
+            // is also emitted at each tick and at the end, so a killed replay leaves
+            // its last position recoverable.
+            async replayRZX(fileOrBytes, { onProgress, maxFrames, progressEvery = 1000, headless = true } = {}) {
+                const bytes = (fileOrBytes instanceof File)
+                    ? new Uint8Array(await fileOrBytes.arrayBuffer())
+                    : fileOrBytes;
+                const info = await spectrum.loadRZX(bytes);
+                const total = info.frames;
+                const cap = (maxFrames == null) ? total + 16 : maxFrames;
+                const step = (headless && spectrum.runFrameHeadless)
+                    ? () => spectrum.runFrameHeadless()
+                    : () => spectrum.runFrame();
+                let played = 0;
+                while (spectrum.isRZXPlaying() && played < cap) {
+                    step();
+                    played++;
+                    if (played % progressEvery === 0) {
+                        const fr = spectrum.getRZXFrame();
+                        if (onProgress) onProgress(fr, total);
+                        this.checkpoint({ phase: 'replayRZX', rzxFrame: fr, rzxTotal: total, played });
+                    }
+                }
+                const result = { frames: total, played, atEnd: !spectrum.isRZXPlaying() };
+                this.checkpoint({ phase: 'replayRZX', done: true, ...result });
+                return result;
+            },
+            get rzxPlaying() { return spectrum.isRZXPlaying(); },
+            get rzxFrame() { return spectrum.getRZXFrame(); },
+            get rzxFrameCount() { return spectrum.getRZXTotalFrames(); },
+
             // ---- Convenience ----
             runFrames(n) { for (let i = 0; i < n; i++) spectrum.runFrame(); },
             async loadFile(fileOrBytes, name) {
                 const f = (fileOrBytes instanceof File) ? fileOrBytes : new File([fileOrBytes], name || 'file.bin');
                 return spectrum.loadFile(f);
+            },
+
+            // Fetch a tape/snapshot/disk and load it, bypassing the HTTP cache.
+            // The browser's cache persists across runs via --user-data-dir, so a
+            // rebuilt tape at the same URL silently replays the OLD bytes — a decode
+            // that looks byte-shifted between two builds is usually this, not a real
+            // shift. Returns { name, bytes, lastModified, result } so a driver can log
+            // exactly which build it measured.
+            async loadUrl(url, { name = null, cache = 'no-store' } = {}) {
+                const res = await fetch(url, { cache });
+                if (!res.ok) {
+                    throw new Error(`loadUrl: ${url} returned HTTP ${res.status}`);
+                }
+                const buf = new Uint8Array(await res.arrayBuffer());
+                const file = name || url.split('/').pop().split('?')[0] || 'file.bin';
+                const loaded = await this.loadFile(buf, file);
+                return {
+                    name: file,
+                    bytes: buf.length,
+                    lastModified: res.headers.get('last-modified'),
+                    result: loaded,
+                };
+            },
+
+            // ---- One-call execution map ----
+            // Boot media, run (or replay an RZX), and hand back the map plus every
+            // export in one object — the boot → run → export sequence every harness
+            // otherwise rebuilds by hand.
+            //
+            //   const m = await zxDebug.mapRun({ url: 'game.tzx', frames: 3000 });
+            //   const m = await zxDebug.mapRun({ rzxUrl: 'walkthrough.rzx' });
+            //   fs.writeFileSync('game.ctl', m.ctl);
+            //
+            // Returns { machineType, frames, played?, atEnd?, ranges, byPage, ctl,
+            //           csv, sym, smcCsv?, indirectCsv?, callGraphCsv? }.
+            async mapRun({
+                url = null, file = null, name = null, rzxUrl = null, rzx = null,
+                machine = null, frames = 2000, settleFrames = 200,
+                paged = true, autoLoad = true, isTzx = false, diskRun = null, type = 'tape',
+                indirect = false, calls = false, smc = false,
+                onProgress = null, progressEvery = 1000, report = null,
+            } = {}) {
+                await this.ready(machine ? { machine } : {});
+
+                let media = null;
+                if (rzxUrl || rzx) {
+                    // RZX carries its own snapshot — no separate media to boot
+                    if (rzxUrl) {
+                        const res = await fetch(rzxUrl, { cache: 'no-store' });
+                        if (!res.ok) throw new Error(`mapRun: ${rzxUrl} returned HTTP ${res.status}`);
+                        rzx = new Uint8Array(await res.arrayBuffer());
+                    }
+                } else if (url) {
+                    media = await this.loadUrl(url, { name });
+                } else if (file) {
+                    media = { name: name || 'file.bin', result: await this.loadFile(file, name) };
+                } else {
+                    throw new Error('mapRun: pass url, file, rzxUrl or rzx');
+                }
+
+                this.clearMap();
+                this.enableMap(true, { fast: true, paged });
+                if (indirect) this.watchIndirect();
+                if (calls) this.watchCalls();
+
+                let played = null, atEnd = null, ran = 0;
+                if (rzx) {
+                    const r = await this.replayRZX(rzx, { onProgress, progressEvery });
+                    played = r.played;
+                    atEnd = r.atEnd;
+                    ran = r.played;
+                } else {
+                    if (autoLoad) {
+                        await this.autoLoad({ type, isTzx, diskRun });
+                    }
+                    for (let i = 0; i < frames; i++) {
+                        spectrum.runFrame();
+                        ran++;
+                        if (onProgress && ran % progressEvery === 0) onProgress(ran, frames);
+                    }
+                }
+                for (let i = 0; i < settleFrames; i++) spectrum.runFrame();
+
+                const rangesResult = this.ranges();
+                const out = {
+                    machineType: spectrum.machineType,
+                    media: media ? media.name : (rzxUrl || 'rzx'),
+                    frames: ran,
+                    ranges: rangesResult.ranges,
+                    pages: rangesResult.pages,
+                    byPage: paged ? this.rangesByPage() : null,
+                    ctl: this.exportCtl(),
+                    csv: this.exportCsv(),
+                    sym: this.exportSym(),
+                };
+                if (played !== null) { out.played = played; out.atEnd = atEnd; }
+                if (smc) out.smcCsv = this.exportSmcCsv();
+                if (indirect) out.indirectCsv = this.exportIndirectCsv();
+                if (calls) out.callGraphCsv = this.exportCallGraphCsv();
+
+                this.enableMap(false);
+                if (indirect) this.stopIndirect();
+                if (calls) this.stopCalls();
+
+                if (report) {
+                    // Post the exports straight to serve.py's sink
+                    await this.report(out, 'result', typeof report === 'string' ? report : null);
+                }
+                return out;
             }
         };
 
@@ -13690,6 +14119,67 @@ start:
                 spectrum.renderToScreen();
                 updateDebugger();
                 binStatus.textContent = 'Filled ' + len + ' bytes at $' + hex16(start) + ' with $' + hex8(byte);
+            });
+
+            // Screen fill patterns (Binary section). Extensible — add an entry to
+            // offer a new variant in the dropdown. Each build() returns a full
+            // 6912-byte screen image (6144-byte bitmap + 768-byte attributes).
+            // CLEAR_ATTR = black ink on white paper, no bright/flash ($38).
+            const CLEAR_ATTR = 0x38;
+            // ZX bitmap byte offset of pixel (x,y) within the 6144-byte display.
+            const scrOffset = (x, y) =>
+                ((y & 0xC0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2) | (x >> 3);
+            function makeScreen(bitmapFn, attr) {
+                const scr = new Uint8Array(0x1B00);   // bitmap stays 0 unless filled
+                if (bitmapFn) bitmapFn(scr);
+                scr.fill(attr, 0x1800);
+                return scr;
+            }
+            function fillGrid(scr) {   // 8×8 character-cell grid, black pixels
+                for (let y = 0; y < 192; y++) {
+                    for (let x = 0; x < 256; x++) {
+                        if ((x & 7) === 0 || (y & 7) === 0) scr[scrOffset(x, y)] |= (0x80 >> (x & 7));
+                    }
+                }
+            }
+            function fillDiagGrid(scr) {   // grid rotated 45°: both diagonals every 8px
+                for (let y = 0; y < 192; y++) {
+                    for (let x = 0; x < 256; x++) {
+                        if (((x + y) & 7) === 0 || ((x - y) & 7) === 0) scr[scrOffset(x, y)] |= (0x80 >> (x & 7));
+                    }
+                }
+            }
+            const SCREEN_PATTERNS = {
+                clear: { label: 'Clear',    build: () => makeScreen(null, CLEAR_ATTR) },
+                grid:  { label: 'Grid',     build: () => makeScreen(fillGrid, CLEAR_ATTR) },
+                diag:  { label: 'Diagonal', build: () => makeScreen(fillDiagGrid, CLEAR_ATTR) }
+            };
+
+            const binScreenSelWrap = document.getElementById('binScreenSelWrap');
+            const binScreenSel = document.getElementById('binScreenSel');
+            const binPatternSel = document.getElementById('binPatternSel');
+            // A machine has a shadow screen if it has a RAM bank 7 — i.e. every
+            // 128K-style machine (128K/+2/+2A/+3, Pentagon, Pentagon 1024,
+            // Scorpion), NOT only is128kCompat (which excludes Pentagon/Scorpion).
+            const hasShadowScreen = () => !!(spectrum.memory.ram && spectrum.memory.ram[7]);
+            function updateBinScreenSel() {
+                binScreenSelWrap.style.display = hasShadowScreen() ? 'inline-flex' : 'none';
+            }
+            updateBinScreenSel();
+            machineSelect.addEventListener('change', updateBinScreenSel);
+
+            document.getElementById('btnBinScreenApply').addEventListener('click', () => {
+                const pat = SCREEN_PATTERNS[binPatternSel.value];
+                if (!pat) return;
+                const scr = pat.build();
+                const shadow = hasShadowScreen() && binScreenSel.value === 'shadow';
+                // Main screen is RAM bank 5 (128K-style) or the fixed $4000
+                // display (48K); shadow screen is RAM bank 7.
+                const target = shadow ? spectrum.memory.ram[7] : (spectrum.memory.ram[5] || null);
+                if (target) target.set(scr, 0);
+                else spectrum.memory.setBlock(0x4000, scr);
+                spectrum.renderToScreen();
+                updateDebugger();
             });
         }
 

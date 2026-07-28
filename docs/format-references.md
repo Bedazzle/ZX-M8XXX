@@ -33,7 +33,7 @@ So for a BASIC file the number of data bytes to extract is in **9-10**, and the
 variables area is `total − programLength` bytes after the program. Reading 11-12
 as the length (the CODE rule) **truncates the variables** — a real bug M8XXX had
 until it was fixed across `TRDLoader`/`SCLLoader`, `fileToTAP`, both `parseHobeta`
-and `buildHobeta`, and the Explorer editor (`trdEntryFields`/`trdEntryWords`).
+and `buildHobeta`, and the Explorer editor (`trdEntryFields`).
 Confirmed against the Sinclair Wiki *TR-DOS filesystem* page and the Kaitai
 `tr_dos_image` spec (`program_and_data_length` @9-10, `program_length` @11-12);
 covered by a round-trip test (`loader-test` TRD BASIC-with-vars, `convert-test`

@@ -4,7 +4,7 @@ import {
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
-import { hex8 } from '../core/utils.js';
+import { hex8, crc32 } from '../core/utils.js';
 
 export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage, getRAMPage, getRamPages, getActiveScreenData }) {
 
@@ -584,26 +584,6 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
         result.set(endRecord, pos);
 
         return result;
-    }
-
-    function crc32(data) {
-        let crc = 0xFFFFFFFF;
-        const table = crc32.table || (crc32.table = (() => {
-            const t = new Uint32Array(256);
-            for (let i = 0; i < 256; i++) {
-                let c = i;
-                for (let j = 0; j < 8; j++) {
-                    c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-                }
-                t[i] = c;
-            }
-            return t;
-        })());
-
-        for (let i = 0; i < data.length; i++) {
-            crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
-        }
-        return (crc ^ 0xFFFFFFFF) >>> 0;
     }
 
     // ========== Loop Detection Algorithm ==========

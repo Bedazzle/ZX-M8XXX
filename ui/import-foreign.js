@@ -6,6 +6,7 @@
 
 import { AsmDetok, DETOK_FORMAT_NAMES, cp866Char } from '../core/asm-detok.js';
 import { AsmDialectConverter } from '../core/asm-convert.js';
+import { isHrust, hrustDecompress } from '../core/depackers.js';
 import { escapeHtml } from '../core/utils.js';
 
 export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage, addProjectFiles }) {
@@ -52,6 +53,9 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
 
     async function loadSource(file) {
         try {
+            setStatus(`Loading ${file.name} …`);
+            if (srcName) srcName.textContent = `Loading ${file.name} …`;
+            await new Promise(r => setTimeout(r, 0));   // let the status paint
             const buffer = await file.arrayBuffer();
             const bytes = new Uint8Array(buffer);
             const lower = file.name.toLowerCase();
@@ -168,16 +172,33 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
         renderPreview();
     }
 
+    // If the payload is a Hrust ('HR') packed block, transparently unpack it so
+    // the real (usually text) source is what gets detected and imported. The
+    // TR-DOS catalog meta describes the packed file, so it no longer applies.
+    function maybeDepackHrust(data) {
+        if (!isHrust(data)) return { data, note: '', depacked: false };
+        try {
+            const unpacked = hrustDecompress(data);
+            return { data: unpacked, depacked: true,
+                note: `Hrust-depacked (${data.length} → ${unpacked.length} bytes)` };
+        } catch (e) {
+            return { data, note: '', depacked: false };
+        }
+    }
+
     function addEntry(name, typeChar, data, meta) {
-        const det = AsmDetok.detect(data, meta);
-        let format, note = '';
+        const dp = maybeDepackHrust(data);
+        data = dp.data;
+        const det = AsmDetok.detect(data, dp.depacked ? null : meta);
+        let format, note = dp.note;
         if (det && det.supported && det.format !== 'text') {
             format = det.format;
         } else if (det && !det.supported) {
             format = 'binary';
-            note = DETOK_FORMAT_NAMES[det.format] + ' — not supported yet';
-        } else if (det && det.format === 'text') {
-            format = suggestTextDialect(data);
+            note = note ? note + '; ' + DETOK_FORMAT_NAMES[det.format] + ' — not supported yet'
+                        : DETOK_FORMAT_NAMES[det.format] + ' — not supported yet';
+        } else if ((det && det.format === 'text') || dp.depacked) {
+            format = suggestTextDialect(data);   // a depacked payload is almost always text
         } else {
             format = 'binary';
         }
@@ -201,19 +222,25 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
             addEntry(hobeta.name, hobeta.type, hobeta.data, { type: hobeta.type, start: hobeta.start });
             return;
         }
+        const dp = maybeDepackHrust(data);
+        data = dp.data;
         const det = AsmDetok.detect(data, null);
-        let format;
+        let format, note = dp.note;
         if (det && det.supported && det.format !== 'text') format = det.format;
-        else if (TEXT_EXTS.includes(ext) || (det && det.format === 'text')) {
+        else if (TEXT_EXTS.includes(ext) || (det && det.format === 'text') || dp.depacked) {
             format = suggestTextDialect(data);
         } else format = 'binary';
+        if (det && !det.supported) {
+            note = note ? note + '; ' + DETOK_FORMAT_NAMES[det.format] + ' — not supported yet'
+                        : DETOK_FORMAT_NAMES[det.format] + ' — not supported yet';
+        }
         entries.push({
             name: base.replace(/\.[^.]*$/, ''),
             typeChar: ext,
             vfsName: format === 'binary' || format === 'text' ? path : makeVfsName(base.replace(/\.[^.]*$/, ''), ext, format),
             data,
             format,
-            note: det && !det.supported ? DETOK_FORMAT_NAMES[det.format] + ' — not supported yet' : '',
+            note,
             include: true
         });
     }
@@ -286,22 +313,29 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
     // Convert one entry. Returns { text, warnings } or { data } for binary.
     // ctx is the result of buildFileMap(): { fileMap, binaryTargets }
     function convertEntry(entry, ctx) {
-        if (entry.format === 'binary') {
-            return { data: entry.data };
+        try {
+            if (entry.format === 'binary') {
+                return { data: entry.data };
+            }
+            if (entry.format === 'text') {
+                return { text: bytesToText(entry.data), warnings: [] };
+            }
+            if (TEXT_DIALECTS[entry.format]) {
+                const r = AsmDialectConverter.convert(bytesToText(entry.data), TEXT_DIALECTS[entry.format], ctx);
+                return { text: r.text, warnings: r.warnings };
+            }
+            const detok = AsmDetok.detokenize(entry.data, entry.format);
+            if (detok.text === null) {
+                return { text: '; [import] could not detokenize: ' + detok.warnings.join('; '), warnings: detok.warnings };
+            }
+            const conv = AsmDialectConverter.convert(detok.text, entry.format, ctx);
+            return { text: conv.text, warnings: detok.warnings.concat(conv.warnings) };
+        } catch (err) {
+            // A malformed file forced to the wrong format can throw deep in a
+            // decoder — never let that abort the preview or the whole import.
+            const msg = (err && err.message) ? err.message : String(err);
+            return { text: `; [import] decode failed (wrong format?): ${msg}`, warnings: ['decode failed: ' + msg] };
         }
-        if (entry.format === 'text') {
-            return { text: bytesToText(entry.data), warnings: [] };
-        }
-        if (TEXT_DIALECTS[entry.format]) {
-            const r = AsmDialectConverter.convert(bytesToText(entry.data), TEXT_DIALECTS[entry.format], ctx);
-            return { text: r.text, warnings: r.warnings };
-        }
-        const detok = AsmDetok.detokenize(entry.data, entry.format);
-        if (detok.text === null) {
-            return { text: '; [import] could not detokenize: ' + detok.warnings.join('; '), warnings: detok.warnings };
-        }
-        const conv = AsmDialectConverter.convert(detok.text, entry.format, ctx);
-        return { text: conv.text, warnings: detok.warnings.concat(conv.warnings) };
     }
 
     // Decode source text: high bytes outside double-quoted strings are CP866
@@ -376,6 +410,7 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
         updateOkButton();
     }
 
+    let previewToken = 0;
     function renderPreview() {
         if (!previewEl) return;
         const e = entries[selectedRow];
@@ -388,14 +423,25 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
                 `Binary file — ${e.data.length} bytes (imported as "${e.vfsName}")`;
             return;
         }
-        const r = convertEntry(e, buildFileMap());
-        let head = '';
-        if (r.warnings && r.warnings.length) {
-            head = '; ===== ' + r.warnings.length + ' warning(s) =====\n' +
-                r.warnings.slice(0, 20).map(w => '; ' + w).join('\n') +
-                (r.warnings.length > 20 ? '\n; …' : '') + '\n; =====\n\n';
-        }
-        previewEl.textContent = head + (r.text || '');
+        const showPreview = (r) => {
+            let head = '';
+            if (r.warnings && r.warnings.length) {
+                head = '; ===== ' + r.warnings.length + ' warning(s) =====\n' +
+                    r.warnings.slice(0, 20).map(w => '; ' + w).join('\n') +
+                    (r.warnings.length > 20 ? '\n; …' : '') + '\n; =====\n\n';
+            }
+            previewEl.textContent = head + (r.text || '');
+        };
+        // Large files can take a moment to decode/convert — show a placeholder
+        // and do the work on the next tick so it actually paints. Small files
+        // (the common case) render synchronously with no flicker.
+        if (e.data.length <= 16384) { showPreview(convertEntry(e, buildFileMap())); return; }
+        const token = ++previewToken;
+        previewEl.textContent = `⏳ Decoding ${e.vfsName} …`;
+        setTimeout(() => {
+            if (token !== previewToken) return;   // selection moved on
+            showPreview(convertEntry(e, buildFileMap()));
+        }, 0);
     }
 
     function setStatus(msg) {
@@ -408,14 +454,25 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
 
     // ---- import ---------------------------------------------------------------
 
-    function doImport() {
+    let importing = false;
+    async function doImport() {
+        if (importing) return;
         const ctx = buildFileMap();
+        const included = entries.filter(e => e.include);
+        if (included.length === 0) return;
+
+        importing = true;
+        if (btnOk) btnOk.disabled = true;
         const files = [];
         let totalWarnings = 0;
         let mainHint = null;
 
-        for (const e of entries) {
-            if (!e.include) continue;
+        for (let i = 0; i < included.length; i++) {
+            const e = included[i];
+            setStatus(`Converting ${i + 1}/${included.length}: ${e.vfsName} …`);
+            // Yield so the status line repaints (and the UI doesn't look frozen)
+            // before each decode, which can be the slow part.
+            await new Promise(r => setTimeout(r, 0));
             const r = convertEntry(e, ctx);
             if (r.data !== undefined) {
                 files.push({ path: e.vfsName, data: r.data });
@@ -426,7 +483,8 @@ export function initImportForeign({ TRDLoader, SCLLoader, ZipLoader, showMessage
             }
         }
 
-        if (files.length === 0) return;
+        importing = false;
+        if (files.length === 0) { updateOkButton(); return; }
         close();
         addProjectFiles(files, mainHint);
         showMessage(`Imported ${files.length} file(s)` +

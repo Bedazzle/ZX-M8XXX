@@ -4,6 +4,7 @@
  */
 
 import { getMachineProfile, is128kCompat } from './machines.js';
+import { looksLikeMarkup } from './utils.js';
 import {
     SCREEN_BITMAP, SCREEN_ATTR, SCREEN_END,
     SLOT1_START, SLOT2_START, SLOT3_START,
@@ -250,7 +251,17 @@ import { Disassembler } from './disasm.js';
                 fast: false,
                 execBits: null,        // Uint8Array(0x10000) | null
                 readBits: null,
-                writeBits: null
+                writeBits: null,
+                // Paged fast mode: like fast, but keeps a separate touched-bitset triple
+                // per memory page (keyed by the same label getAutoMapKey uses), so a
+                // bank-switching game maps correctly instead of unioning all banks into
+                // one flat 16-bit space. Still counts-free. The hot path resolves the
+                // current page via a cheap paging signature cache (_pgSig/_pgSlots) so it
+                // only builds a label / touches the Map when paging actually changes.
+                paged: false,
+                pagedBits: new Map(),  // label -> { execBits, readBits, writeBits } (lazy)
+                _pgSig: -1,            // last paging signature (invalidates _pgSlots)
+                _pgSlots: [null, null, null, null] // cached triple per 16K slot
             };
 
             // Indirect-jump resolution: records the runtime targets of `JP (HL)` /
@@ -278,6 +289,11 @@ import { Disassembler } from './disasm.js';
                 hi: -1,
                 byPc: new Map()        // pc -> { count, callers:[addr] }
             };
+
+            // Same, for reads of a range ("who consumes this data block?") and for
+            // execution inside a range ("what runs here, and who called it?").
+            this.readProvenance = { enabled: false, lo: 0, hi: -1, byPc: new Map() };
+            this.execProvenance = { enabled: false, lo: 0, hi: -1, byPc: new Map() };
 
             // Runtime behavior profiler - tracks per-subroutine behavior for auto-labeling
             this.profiler = {
@@ -390,16 +406,32 @@ import { Disassembler } from './disasm.js';
             // Custom gamepad mapping (null = use default, otherwise { up: {type, index, threshold}, ... })
             this.gamepadMapping = null;
 
+            // External access hooks (headless automation): fire on every CPU opcode
+            // fetch / memory read / memory write, independent of any monitor. A
+            // documented registration point (setAccessHooks) so drivers don't have to
+            // wrap the live cpu.onFetch / memory.onRead — those are managed and null
+            // unless a feature needs them (see updateMemoryCallbacksFlag). Each hook
+            // gets (addr[, val]) and may read spectrum state (cpu.pc, memory
+            // currentRamBank, …) synchronously.
+            this._accessHooks = { fetch: null, read: null, write: null };
+
             // Memory/CPU callback functions (stored for enable/disable)
             this._memoryReadCallback = (addr, val) => {
+                if (this._accessHooks.read) this._accessHooks.read(addr, val);
                 // Auto-map: track non-fetch reads (only during CPU execution)
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    if (this.autoMap.fast) {
+                    if (this.autoMap.paged) {
+                        this._pagedTripleForAddr(addr).readBits[addr & 0xFFFF] = 1;
+                    } else if (this.autoMap.fast) {
                         this.autoMap.readBits[addr & 0xFFFF] = 1;
                     } else if (!this.autoMap.currentFetchAddrs.has(addr)) {
                         const key = this.getAutoMapKey(addr);
                         this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
                     }
+                }
+                // Read provenance: which instruction read from the watched range
+                if (this.readProvenance.enabled && addr >= this.readProvenance.lo && addr <= this.readProvenance.hi) {
+                    this._noteProvenance(this.readProvenance, this._currentInstrPC);
                 }
                 // Profiler: track screen reads
                 if (this.profiler.enabled && (addr >= SCREEN_BITMAP && addr <= SCREEN_END)) {
@@ -436,9 +468,12 @@ import { Disassembler } from './disasm.js';
                 if (this.triggers.length > 0 && this._inCpuExecution && !this.cpu.isFetching && !this._suppressWatchpoints) this.checkReadWatchpoint(addr, val);
             };
             this._memoryWriteCallback = (addr, val) => {
+                if (this._accessHooks.write) this._accessHooks.write(addr, val);
                 // Auto-map: track writes (only during CPU execution)
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    if (this.autoMap.fast) {
+                    if (this.autoMap.paged) {
+                        this._pagedTripleForAddr(addr).writeBits[addr & 0xFFFF] = 1;
+                    } else if (this.autoMap.fast) {
                         this.autoMap.writeBits[addr & 0xFFFF] = 1;
                     } else {
                         const key = this.getAutoMapKey(addr);
@@ -447,13 +482,7 @@ import { Disassembler } from './disasm.js';
                 }
                 // Write provenance: which instruction wrote into the watched range
                 if (this.writeProvenance.enabled && addr >= this.writeProvenance.lo && addr <= this.writeProvenance.hi) {
-                    const pc = this._currentInstrPC;
-                    let e = this.writeProvenance.byPc.get(pc);
-                    if (!e) {
-                        e = { count: 0, callers: this._debugCallStack.map(x => x.addr) };
-                        this.writeProvenance.byPc.set(pc, e);
-                    }
-                    e.count++;
+                    this._noteProvenance(this.writeProvenance, this._currentInstrPC);
                 }
                 // Profiler: track screen writes
                 if (this.profiler.enabled && (addr >= SCREEN_BITMAP && addr <= SCREEN_END)) {
@@ -515,8 +544,16 @@ import { Disassembler } from './disasm.js';
                 if (this.triggers.length > 0 && !this._suppressWatchpoints) this.checkWriteWatchpoint(addr, val);
             };
             this._cpuFetchCallback = (addr) => {
+                if (this._accessHooks.fetch) this._accessHooks.fetch(addr);
+                // Exec provenance: an instruction fetched inside the watched range —
+                // record the instruction's own address and who called it
+                if (this.execProvenance.enabled && addr >= this.execProvenance.lo && addr <= this.execProvenance.hi) {
+                    this._noteProvenance(this.execProvenance, addr);
+                }
                 if (this.autoMap.enabled && this.autoMap.inExecution) {
-                    if (this.autoMap.fast) {
+                    if (this.autoMap.paged) {
+                        this._pagedTripleForAddr(addr).execBits[addr & 0xFFFF] = 1;
+                    } else if (this.autoMap.fast) {
                         this.autoMap.execBits[addr & 0xFFFF] = 1;
                     } else {
                         const key = this.getAutoMapKey(addr);
@@ -2472,9 +2509,7 @@ import { Disassembler } from './disasm.js';
 
                 this.rzxFrameStartInstr = this.cpu.instructionCount;
 
-                if (this.rzxFrame < this.rzxPlayer.getFrameCount() - 1) {
-                    this.rzxFrame++;
-                }
+                this.rzxFrame++;
 
                 if (this.rzxFrame >= this.rzxPlayer.getFrameCount()) {
                     this.rzxStop();
@@ -2818,9 +2853,7 @@ import { Disassembler } from './disasm.js';
             if (this.rzxPlaying && this.rzxPlayer) {
                 this.rzxFrameStartInstr = this.cpu.instructionCount;
 
-                if (this.rzxFrame < this.rzxPlayer.getFrameCount() - 1) {
-                    this.rzxFrame++;
-                }
+                this.rzxFrame++;
 
                 if (this.rzxFrame >= this.rzxPlayer.getFrameCount()) {
                     this.rzxStop();
@@ -5782,7 +5815,7 @@ import { Disassembler } from './disasm.js';
          * Call this when triggers, autoMap, or runtimeTraceEnabled changes
          */
         updateMemoryCallbacksFlag() {
-            const needsMemoryCallbacks =
+            const needsRead =
                 this.triggers.length > 0 ||
                 this.autoMap.enabled ||
                 this.runtimeTraceEnabled ||
@@ -5793,14 +5826,42 @@ import { Disassembler } from './disasm.js';
                 this.readMonitor.enabled ||
                 this.comparisonBreakpoint.enabled ||
                 this.structMapper.enabled ||
-                this.writeProvenance.enabled;
+                this.writeProvenance.enabled ||
+                this.readProvenance.enabled;
 
-            // Set callbacks to null when not needed (eliminates function call overhead)
-            this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
-            this.memory.onWrite = needsMemoryCallbacks ? this._memoryWriteCallback : null;
+            // Set callbacks to null when not needed (eliminates function call overhead).
+            // External access hooks keep the relevant callback live on their own.
+            this.memory.onRead = (needsRead || this._accessHooks.read) ? this._memoryReadCallback : null;
+            this.memory.onWrite = (needsRead || this._accessHooks.write) ? this._memoryWriteCallback : null;
 
-            // CPU fetch callback needed for autoMap, codePath recording/tracing, and register tracker
-            this.cpu.onFetch = (this.autoMap.enabled || this.codePath.enabled || this.codePath.tracing || this.registerTracker.enabled) ? this._cpuFetchCallback : null;
+            // CPU fetch callback needed for autoMap, codePath recording/tracing, register tracker, or a fetch hook
+            this.cpu.onFetch = (this.autoMap.enabled || this.codePath.enabled || this.codePath.tracing || this.registerTracker.enabled || this.execProvenance.enabled || this._accessHooks.fetch) ? this._cpuFetchCallback : null;
+        }
+
+        // ========== External access hooks (headless automation) ==========
+
+        /**
+         * Register hooks fired on every CPU opcode fetch / memory read / memory write,
+         * independent of any monitor or the auto-map. A documented, stable registration
+         * point so external drivers don't wrap the managed cpu.onFetch / memory.onRead
+         * (which are null unless a feature needs them). Any subset may be supplied;
+         * omitted keys are cleared. Each hook receives (addr) for fetch and (addr, val)
+         * for read/write, and may read spectrum state (cpu.pc, memory.currentRamBank, …)
+         * synchronously. Fetch fires for opcode M1 fetches; read/write fire for ALL
+         * reads/writes (gate on cpu.isFetching / _inCpuExecution if you need CPU-only).
+         * @param {{onFetch?:Function, onRead?:Function, onWrite?:Function}} hooks
+         */
+        setAccessHooks(hooks = {}) {
+            this._accessHooks.fetch = hooks.onFetch || null;
+            this._accessHooks.read = hooks.onRead || null;
+            this._accessHooks.write = hooks.onWrite || null;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        // Remove all external access hooks.
+        clearAccessHooks() {
+            this._accessHooks.fetch = this._accessHooks.read = this._accessHooks.write = null;
+            this.updateMemoryCallbacksFlag();
         }
 
         // ========== Unified Trigger System ==========
@@ -6802,6 +6863,16 @@ import { Disassembler } from './disasm.js';
         async loadFile(file, driveIndex = 0) {
             let data = await file.arrayBuffer();
             let fileName = file.name;
+
+            // A headless driver that fetches a path that isn't there gets the
+            // server's 404 page, and "Failed to parse TAP file" sends people
+            // hunting for a format bug. Say what the bytes actually are.
+            const htmlKind = looksLikeMarkup(data);
+            if (htmlKind) {
+                throw new Error(
+                    `${fileName || 'File'} is ${htmlKind}, not a Spectrum file — ` +
+                    `if it was fetched, the URL probably returned an error page (404)`);
+            }
 
             // Check if it's a ZIP file
             if (ZipLoader.isZip(data)) {
@@ -8846,30 +8917,75 @@ import { Disassembler } from './disasm.js';
 
         // ========== Auto-Mapping ==========
 
-        getAutoMapKey(addr) {
-            addr &= 0xffff;
-            if (this.memory.machineType === '48k') {
-                return addr.toString();
-            }
+        // Page label for an address under the current paging (or null = unpaged, i.e.
+        // fixed RAM 0x4000-0xBFFF and all of 48K). The single source of truth shared by
+        // getAutoMapKey (rich mode) and the paged fast bitsets, so their page identity
+        // can never diverge. ROM banks are prefixed 'R'; RAM pages are bare numbers.
+        _autoMapPage(addr) {
+            if (this.memory.machineType === '48k') return null;
             // 128K/Pentagon: track pages for ROM and paged RAM
             if (addr < SLOT1_START) {
                 const mem = this.memory;
                 // +2A/+3 special paging: all 4 slots are RAM
-                if (mem.specialPagingMode) {
-                    return `${addr}:${mem.specialBanks[0]}`;
-                }
+                if (mem.specialPagingMode) return String(mem.specialBanks[0]);
                 // Pentagon 1024 / Scorpion: RAM page 0 mapped over ROM
-                if (mem.ramInRomMode || mem.scorpionRamInRomMode) {
-                    return `${addr}:0`;
-                }
+                if (mem.ramInRomMode || mem.scorpionRamInRomMode) return '0';
                 // ROM (includes TR-DOS, IF1, +D, Opus overlays — all are ROM code)
-                return `${addr}:R${mem.currentRomBank}`;
+                return 'R' + mem.currentRomBank;
             } else if (addr >= SLOT3_START) {
                 // Paged RAM at slot 3
-                return `${addr}:${this.memory.currentRamBank}`;
+                return String(this.memory.currentRamBank);
             }
             // Fixed RAM (4000-BFFF) - no page suffix
-            return addr.toString();
+            return null;
+        }
+
+        getAutoMapKey(addr) {
+            addr &= 0xffff;
+            const p = this._autoMapPage(addr);
+            return p === null ? addr.toString() : addr + ':' + p;
+        }
+
+        // Cheap paging signature — everything _autoMapPage depends on, packed into one
+        // int. Changes only on a paging port write, so the paged fast path recomputes
+        // the per-slot bitset pointers (below) only when this changes.
+        _pagingSignature() {
+            const m = this.memory;
+            return (m.currentRamBank & 63)
+                | ((m.currentRomBank & 15) << 6)
+                | ((m.specialPagingMode ? 1 : 0) << 10)
+                | ((m.ramInRomMode ? 1 : 0) << 11)
+                | ((m.scorpionRamInRomMode ? 1 : 0) << 12)
+                | ((m.specialBanks[0] & 63) << 13);
+        }
+
+        // Lazily allocate + return the touched-bitset triple for a page label.
+        _pagedTriple(label) {
+            let t = this.autoMap.pagedBits.get(label);
+            if (!t) {
+                t = {
+                    execBits: new Uint8Array(0x10000),
+                    readBits: new Uint8Array(0x10000),
+                    writeBits: new Uint8Array(0x10000)
+                };
+                this.autoMap.pagedBits.set(label, t);
+            }
+            return t;
+        }
+
+        // Hot path for paged fast mode: return the triple the given address currently
+        // maps to, rebuilding the per-slot cache only when paging changed.
+        _pagedTripleForAddr(addr) {
+            const am = this.autoMap;
+            const sig = this._pagingSignature();
+            if (sig !== am._pgSig) {
+                am._pgSig = sig;
+                for (let slot = 0; slot < 4; slot++) {
+                    const p = this._autoMapPage(slot << 14);
+                    am._pgSlots[slot] = this._pagedTriple(p === null ? '' : p);
+                }
+            }
+            return am._pgSlots[addr >> 14];
         }
 
         // Parse auto-map key back to {addr, page}
@@ -8894,26 +9010,38 @@ import { Disassembler } from './disasm.js';
         // exec/read/write bitsets on first enable. Recording still requires
         // setAutoMapEnabled(true); when both are on, the hot callbacks set a bit
         // instead of updating the Map (much cheaper for long RZX replays).
-        setAutoMapFast(enabled) {
-            if (enabled && !this.autoMap.execBits) {
+        //
+        // paged = true selects the per-page variant: one bitset triple per memory
+        // page (keyed like getAutoMapKey), so a bank-switching game maps correctly
+        // instead of unioning all banks into one flat 16-bit space. Per-page bitsets
+        // are allocated lazily as pages are touched.
+        setAutoMapFast(enabled, paged = false) {
+            this.autoMap.paged = !!(enabled && paged);
+            this.autoMap.fast = !!enabled;
+            this.autoMap._pgSig = -1;   // force the per-slot cache to rebuild
+            if (enabled && !paged && !this.autoMap.execBits) {
                 this.autoMap.execBits = new Uint8Array(0x10000);
                 this.autoMap.readBits = new Uint8Array(0x10000);
                 this.autoMap.writeBits = new Uint8Array(0x10000);
             }
-            this.autoMap.fast = !!enabled;
         }
 
-        // Live fast-mode bitsets (Uint8Array(0x10000) each; 1 = touched). null
-        // until setAutoMapFast(true) has been called.
+        // Live fast-mode bitsets (Uint8Array(0x10000) each; 1 = touched). The flat
+        // exec/read/write are null until setAutoMapFast(true) with paged=false. In
+        // paged mode, `paged` is true and `pagedBits` is a Map<label,{execBits,
+        // readBits,writeBits}> — one flat-16-bit triple per page (label per
+        // getAutoMapKey; '' = unpaged fixed RAM / 48K).
         getAutoMapBits() {
             return {
                 execBits: this.autoMap.execBits,
                 readBits: this.autoMap.readBits,
-                writeBits: this.autoMap.writeBits
+                writeBits: this.autoMap.writeBits,
+                paged: this.autoMap.paged,
+                pagedBits: this.autoMap.pagedBits
             };
         }
 
-        // Clear all auto-map tracking data (both Map and fast bitset modes)
+        // Clear all auto-map tracking data (Map, flat bitset, and paged bitset modes)
         clearAutoMap() {
             this.autoMap.executed.clear();
             this.autoMap.read.clear();
@@ -8922,6 +9050,79 @@ import { Disassembler } from './disasm.js';
             if (this.autoMap.execBits) this.autoMap.execBits.fill(0);
             if (this.autoMap.readBits) this.autoMap.readBits.fill(0);
             if (this.autoMap.writeBits) this.autoMap.writeBits.fill(0);
+            this.autoMap.pagedBits.clear();
+            this.autoMap._pgSig = -1;
+        }
+
+        // One provenance hit: count it against `pc`, remembering the call stack the
+        // first time we see that pc (the callers rarely differ, and copying the stack
+        // on every hit would cost more than the recording itself).
+        _noteProvenance(prov, pc) {
+            let e = prov.byPc.get(pc);
+            if (!e) {
+                e = {
+                    count: 0,
+                    // Routines entered to get here, outermost first…
+                    callers: this._debugCallStack.map(x => x.addr),
+                    // …and the CALL/RST instruction that entered each of them
+                    callSites: this._debugCallStack.map(x => x.caller),
+                };
+                prov.byPc.set(pc, e);
+            }
+            e.count++;
+        }
+
+        _provenanceList(prov) {
+            const out = [];
+            for (const [pc, e] of prov.byPc) {
+                out.push({
+                    pc, count: e.count,
+                    callers: e.callers.slice(),
+                    callSites: (e.callSites || []).slice(),
+                });
+            }
+            return out.sort((a, b) => b.count - a.count);
+        }
+
+        // Record which instructions READ from [lo, hi] — "who consumes this block?",
+        // the counterpart of write provenance. Same cost profile: in-range work only.
+        startReadProvenance(lo, hi) {
+            this.readProvenance.lo = lo & 0xFFFF;
+            this.readProvenance.hi = hi & 0xFFFF;
+            this.readProvenance.byPc = new Map();
+            this.readProvenance.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopReadProvenance() {
+            this.readProvenance.enabled = false;
+            this.updateMemoryCallbacksFlag();
+            return this.getReadProvenance();
+        }
+
+        // [{ pc, count, callers:[addr] }], most-frequent reader first.
+        getReadProvenance() {
+            return this._provenanceList(this.readProvenance);
+        }
+
+        // Record which addresses inside [lo, hi] were EXECUTED, and who called them —
+        // "is this block code, and who runs it?". `pc` here is the executed address.
+        startExecProvenance(lo, hi) {
+            this.execProvenance.lo = lo & 0xFFFF;
+            this.execProvenance.hi = hi & 0xFFFF;
+            this.execProvenance.byPc = new Map();
+            this.execProvenance.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopExecProvenance() {
+            this.execProvenance.enabled = false;
+            this.updateMemoryCallbacksFlag();
+            return this.getExecProvenance();
+        }
+
+        getExecProvenance() {
+            return this._provenanceList(this.execProvenance);
         }
 
         // Record which instructions write into [lo, hi] (inclusive). Cheap enough
@@ -8942,11 +9143,7 @@ import { Disassembler } from './disasm.js';
 
         // [{ pc, count, callers:[addr] }], most-frequent writer first.
         getWriteProvenance() {
-            const out = [];
-            for (const [pc, e] of this.writeProvenance.byPc) {
-                out.push({ pc, count: e.count, callers: e.callers.slice() });
-            }
-            return out.sort((a, b) => b.count - a.count);
+            return this._provenanceList(this.writeProvenance);
         }
 
         // Called after each instruction (when indirectJumps.enabled): if the just-

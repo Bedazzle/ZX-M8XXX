@@ -116,16 +116,56 @@ export function buildRanges(mapData, opts = {}) {
 // Coalesce ranges from fast-mode bitsets (Uint8Array(0x10000), 1 = touched):
 // bits = { execBits, readBits, writeBits }. Same output as buildRanges.
 export function buildRangesFromBits(bits, opts = {}) {
-    const toKeys = (b) => {
-        const out = [];
-        if (b) for (let a = 0; a < 0x10000; a++) if (b[a]) out.push(a);
-        return out;
-    };
     return buildRanges({
-        executed: toKeys(bits.execBits),
-        read: toKeys(bits.readBits),
-        written: toKeys(bits.writeBits)
+        executed: bitsToKeys(bits.execBits),
+        read: bitsToKeys(bits.readBits),
+        written: bitsToKeys(bits.writeBits)
     }, opts);
+}
+
+function bitsToKeys(b) {
+    const out = [];
+    if (b) for (let a = 0; a < 0x10000; a++) if (b[a]) out.push(a);
+    return out;
+}
+
+// Coalesce ranges from paged fast-mode bitsets, where each page keeps its own
+// flat-16-bit triple (see Spectrum.getAutoMapBits paged mode). pagedBits is a
+// Map<label,{execBits,readBits,writeBits}> or a plain object of the same shape.
+// Returns:
+//   { ranges, pages }         — pages unioned into one 16-bit space (as buildRanges),
+//                               for the single-address-space .ctl/.sym/CSV exports,
+//   byPage: { [label]: { ranges } } — per-page ranges, so a bank-switching game's
+//                               overlapping banks stay distinct.
+// A page's readByte defaults to the flat opts.readByte; pass opts.readByteForPage(label)
+// to supply page-accurate bytes for text detection (optional).
+export function buildRangesFromPagedBits(pagedBits, opts = {}) {
+    const entries = pagedBits instanceof Map
+        ? [...pagedBits.entries()]
+        : Object.entries(pagedBits || {});
+
+    // Union everything for the flat exports (executed wins, same as buildRanges).
+    const execAll = new Set(), readAll = new Set(), writeAll = new Set();
+    const byPage = {};
+    for (const [label, t] of entries) {
+        const exec = bitsToKeys(t.execBits);
+        const read = bitsToKeys(t.readBits);
+        const written = bitsToKeys(t.writeBits);
+        for (const a of exec) execAll.add(a);
+        for (const a of read) readAll.add(a);
+        for (const a of written) writeAll.add(a);
+        const pageOpts = (typeof opts.readByteForPage === 'function')
+            ? { ...opts, readByte: opts.readByteForPage(label) }
+            : opts;
+        byPage[label] = buildRanges({ executed: exec, read, written }, pageOpts);
+    }
+
+    const flat = buildRanges({
+        executed: [...execAll], read: [...readAll], written: [...writeAll]
+    }, opts);
+    // Report the actual page labels touched (buildRanges only sees bare addrs here).
+    const pages = entries.map(([label]) => label).filter(l => l !== '').sort();
+    return { ranges: flat.ranges, pages, byPage };
 }
 
 // Overlay user-defined regions on top of auto-map ranges. A region fully

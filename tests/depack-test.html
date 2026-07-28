@@ -15,7 +15,7 @@
 <div id="summary">Running…</div>
 <div id="log"></div>
 <script type="module">
-import { zx0Compress, zx0Decompress, zx7Compress, zx7Decompress, detectPackedScreen, attributeEntropy, rcsToScr, findDepackerSignature, findPackedScreenInBlock, screenCoherence, looksRcsEncoded } from '../core/depackers.js';
+import { zx0Compress, zx0Decompress, zx7Compress, zx7Decompress, detectPackedScreen, attributeEntropy, rcsToScr, findDepackerSignature, findPackedScreenInBlock, screenCoherence, looksRcsEncoded, isHrust, hrustDecompress } from '../core/depackers.js';
 
 const logEl = document.getElementById('log');
 let passed = 0, failed = 0;
@@ -201,6 +201,33 @@ function run() {
         assert(screenCoherence(flat) < screenCoherence(scrambled), 'coherent screen is smoother than its scrambled form');
         assert(looksRcsEncoded(flat) === false, 'non-RCS screen → RCS auto-off');
         assert(looksRcsEncoded(scrambled) === true, 'RCS screen → RCS auto-on');
+    }
+
+    section('Hrust depacker');
+    {
+        // Fixture: the text below, Hrust-compressed (level 9) by Compressors-JS
+        // (hrust-js), base64-encoded. Exercises literals, matches and D-changes.
+        let expected = '';
+        for (let i = 0; i < 16; i++) expected += 'row ' + i + ': ld a,' + i + ' : call sub_' + (i % 4) + ' ; note\n';
+        const B64 = 'SFIsAqQAIG5vdGUKuPhyb3cgMDpsZAK4YSzwHmOHY2yc53N1Yl87tW9ub3RlCkC93jHeiX/e/uZQb94y3uIf3r951JveM974B2+e3vXm3jSBAd71lng1gQHe9ZZ4NoEB3vWWeDeBAd71lng4gQHe9ZZ4OYEB3viWeDHYPatvGXYxdsCpWwZ0Mffgp2hgHnxipQ3sgy9wo4Hd8KVwob97gPVwAPA=';
+        const bin = atob(B64);
+        const packed = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) packed[i] = bin.charCodeAt(i);
+
+        assert(isHrust(packed) === true, 'isHrust: recognizes HR container');
+        assert(isHrust(new Uint8Array([0x50, 0x4B, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) === false, 'isHrust: rejects non-HR data');
+        assert(isHrust(new Uint8Array([0x48, 0x52])) === false, 'isHrust: rejects a too-short HR');
+
+        const unpacked = hrustDecompress(packed);
+        const expBytes = new TextEncoder().encode(expected);
+        assert(unpacked.length === expBytes.length, `hrustDecompress: length ${unpacked.length} === ${expBytes.length}`);
+        let same = unpacked.length === expBytes.length;
+        for (let i = 0; i < expBytes.length && same; i++) if (unpacked[i] !== expBytes[i]) same = false;
+        assert(same, 'hrustDecompress: round-trips to the original source text');
+
+        let threw = false;
+        try { hrustDecompress(new Uint8Array([0x48, 0x52, 1])); } catch (e) { threw = true; }
+        assert(threw, 'hrustDecompress: throws on a truncated header');
     }
 
     const sum = document.getElementById('summary');

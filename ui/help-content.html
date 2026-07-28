@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.15.16</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.15.23</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -960,6 +960,7 @@
                         <li><strong>Export</strong> &mdash; Save a memory range to a .bin file. Enter start address, length or end address (hex). Length and End are mutually synced; End is clamped to never fall below Start</li>
                         <li><strong>Import</strong> &mdash; Load a .bin file into emulator memory at the specified start address. Screen refreshes immediately (works while paused). Accepts .bin, .dat, or any file</li>
                         <li><strong>Fill</strong> &mdash; Fill the Start..End range with the <strong>Byte</strong> value (hex). Defaults to 00, i.e. clear the range to zeros</li>
+                        <li><strong>Screen</strong> &mdash; Write a pattern into the display and press <strong>Apply</strong>: <em>Clear</em> (bitmap 0, black ink on white paper, no bright), <em>Grid</em> (8&times;8 character-cell grid), or <em>Diagonal</em> (a 45&deg; diamond grid). On machines with a shadow screen (128K, Pentagon, Scorpion, &hellip;) a <strong>Main/Shadow</strong> selector chooses which screen (RAM bank 5 or 7)</li>
                     </ul>
                     <p>Both operations respect the current banking state (128K page, TR-DOS, +2A special paging, etc.).</p>
                 </div>
@@ -1717,11 +1718,13 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     <h5>Acknowledgements</h5>
                     <ul>
                         <li><strong>xLook</strong> by Dmitry Kozlov (HalfElf) &amp; Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author</li>
+                        <li><strong>introspec</strong> — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support (EXPORT, <code>!label</code>, <code>param?</code> macro arguments)</li>
                         <li><strong>dcorp80</strong> — ES module extraction approach</li>
                     </ul>
                     <h5>Libraries &amp; Fonts</h5>
                     <ul>
                         <li><strong>pako</strong> — zlib decompression library (<a href="https://github.com/nodeca/pako" target="_blank" style="color: var(--cyan);">github.com/nodeca/pako</a>, MIT + Zlib license)</li>
+                        <li><strong>fengari</strong> — Lua 5.3 VM in JavaScript, powering the assembler's LUA/ENDLUA blocks (<a href="https://fengari.io" target="_blank" style="color: var(--cyan);">fengari.io</a>, MIT license)</li>
                         <li><strong>ZX82 System</strong> — ZX Spectrum display font by Paul van der Laan (<a href="https://type-invaders.com/sinclair/zx82system/" target="_blank" style="color: var(--cyan);">type-invaders.com</a>)</li>
                     </ul>
                     <h5>Known Limitations</h5>

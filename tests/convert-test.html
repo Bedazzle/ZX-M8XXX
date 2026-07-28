@@ -644,6 +644,95 @@
             assert(r.warnings.length === 1, 'unknown STORM operator warns');
             assertEq(conv1('        SLI A', 'storm').text, '        SLL A', 'SLI -> SLL (common map)');
 
+            // STORM bitwise operators use different symbols from sjasmplus
+            assertEq(conv1('        LD A,X!Y', 'storm').text, '        LD A,X|Y', 'STORM ! (OR) -> |');
+            assertEq(conv1('        LD A,X|Y', 'storm').text, '        LD A,X^Y', 'STORM | (XOR) -> ^');
+            assertEq(conv1('        LD A,X&Y', 'storm').text, '        LD A,X&Y', 'STORM & (AND) unchanged');
+            assertEq(conv1('        DB "A|B"', 'storm').text, '        DB "A|B"', 'operator inside a string untouched');
+            r = conv1('        LD A,LABEL^', 'storm');
+            assert(r.warnings.some(w => /no direct sjasmplus/.test(w)), 'STORM ^ (round-up) postfix warns');
+
+            // postfix byte selectors: [ = high byte, ] = low byte -> HIGH/LOW
+            assertEq(conv1('        LD A,LABEL[', 'storm').text, '        LD A,HIGH (LABEL)', 'STORM [ (high byte) -> HIGH');
+            assertEq(conv1('        LD A,LABEL]', 'storm').text, '        LD A,LOW (LABEL)', 'STORM ] (low byte) -> LOW');
+            assertEq(conv1('        LD HL,#1234[', 'storm').text, '        LD HL,HIGH (#1234)', 'STORM [ on a hex literal');
+            assertEq(conv1('        LD A,X+B[', 'storm').text, '        LD A,X+HIGH (B)', 'STORM [ binds to the immediate term only');
+            assertEq(conv1('        LD A,(X+Y)[', 'storm').text, '        LD A,HIGH ((X+Y))', 'STORM [ on a parenthesized group');
+            assertEq(conv1('        DB "[]"', 'storm').text, '        DB "[]"', '[ ] inside a string untouched');
+            {
+                const src = '        DEVICE ZXSPECTRUM48\n        ORG #8000\nLBL      EQU #ABCD\n' +
+                    conv1('        LD A,LBL[', 'storm').text + '\n' +
+                    conv1('        LD B,LBL]', 'storm').text + '\n        RET';
+                const res = Assembler.assemble(src);
+                assert(res.success && res.output[1] === 0xAB && res.output[3] === 0xCD,
+                    'STORM byte selectors assemble (HIGH #ABCD=#AB, LOW=#CD)',
+                    res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+            }
+
+            // index-register halves LX/HX/LY/HY (and XL/XH/YL/YH) -> IXL/IXH/IYL/IYH
+            assertEq(conv1('        LD A,LX', 'storm').text, '        LD A,IXL', 'LX -> IXL');
+            assertEq(conv1('        LD HX,B', 'storm').text, '        LD IXH,B', 'HX -> IXH');
+            assertEq(conv1('        INC LY', 'storm').text, '        INC IYL', 'LY -> IYL');
+            assertEq(conv1('        ADD A,HY', 'storm').text, '        ADD A,IYH', 'HY -> IYH');
+            assertEq(conv1('        LD XL,XH', 'storm').text, '        LD IXL,IXH', 'XL/XH spelling -> IXL/IXH');
+            assertEq(conv1('        DB "LX"', 'storm').text, '        DB "LX"', 'LX inside a string untouched');
+            assertEq(conv1('        CALL LXtable', 'storm').text, '        CALL LXtable', 'LX inside a longer name untouched');
+
+            // '_' = not-tabulated marker: drop it and indent the instruction
+            assertEq(conv1('_LD A,5', 'storm').text, '        LD A,5', '_ marker -> indented instruction');
+            assertEq(conv1('_DB "ABC"', 'storm').text, '        DB "ABC"', '_ marker before a directive -> indented');
+            assertEq(conv1('_start  LD A,5', 'storm').text, '_start  LD A,5', '_ label (not an instruction) left alone');
+
+            // two-address ORG run,load -> ORG load + DISP run (+ warning)
+            r = conv1('        ORG #8000,#C000', 'storm');
+            assertEq(r.text, '        ORG #C000\n        DISP #8000', 'ORG run,load -> ORG load + DISP run');
+            assert(r.warnings.some(w => /two-address ORG/.test(w)), 'two-address ORG warns');
+            assertEq(conv1('        ORG #8000', 'storm').text, '        ORG #8000', 'single-arg ORG unchanged');
+
+            // sjasmplus accepts the mapped register halves
+            {
+                const src = '        DEVICE ZXSPECTRUM48\n        ORG #8000\n' +
+                    conv1('        LD A,LX', 'storm').text + '\n' +
+                    conv1('        LD HX,B', 'storm').text + '\n' +
+                    conv1('        INC LY', 'storm').text + '\n        RET';
+                const res = Assembler.assemble(src);
+                assert(res.success, 'STORM register halves assemble (IXL/IXH/IYL)',
+                    res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+            }
+
+            // ---- multi-operand / macro expansion ----
+            assertEq(conv1('        PUSH BC,DE,HL', 'storm').text, '        PUSH BC\n        PUSH DE\n        PUSH HL', 'PUSH multi -> one per reg');
+            assertEq(conv1('        POP HL,DE,BC', 'storm').text, '        POP HL\n        POP DE\n        POP BC', 'POP multi -> one per reg');
+            assertEq(conv1('LAB PUSH BC,DE', 'storm').text, 'LAB PUSH BC\n        PUSH DE', 'label kept on first of a multi-PUSH');
+            assertEq(conv1('        PUSH BC', 'storm').text, '        PUSH BC', 'single PUSH unchanged');
+            assertEq(conv1('        LD HL,BC', 'storm').text, '        LD H,B\n        LD L,C', '16-bit LD HL,BC -> LD H,B / LD L,C');
+            assertEq(conv1('        LD BC,IX', 'storm').text, '        LD B,IXH\n        LD C,IXL', 'LD BC,IX -> LD B,IXH / LD C,IXL');
+            assertEq(conv1('        LD DE,HL', 'storm').text, '        LD D,H\n        LD E,L', 'LD DE,HL -> LD D,H / LD E,L');
+            assertEq(conv1('        LD SP,HL', 'storm').text, '        LD SP,HL', 'real LD SP,HL not expanded');
+            assertEq(conv1('        LD HL,#1234', 'storm').text, '        LD HL,#1234', 'LD HL,immediate not expanded');
+            assertEq(conv1('        LD H,D,L,E', 'storm').text, '        LD H,D\n        LD L,E', 'chained LD pairs');
+            assertEq(conv1('        ADD A,A,A,B,HL,DE', 'storm').text, '        ADD A,A\n        ADD A,B\n        ADD HL,DE', 'ADD multi -> pairs');
+            assertEq(conv1('        ADD A,B', 'storm').text, '        ADD A,B', 'normal ADD A,B unchanged');
+            assertEq(conv1('        EX HL,DE', 'storm').text, '        EX DE,HL', 'EX HL,DE -> EX DE,HL');
+            assertEq(conv1('        ADD DE,HL', 'storm').text, '        EX DE,HL\n        ADD HL,DE\n        EX DE,HL', 'ADD DE,HL -> EX/ADD/EX');
+            assertEq(conv1('        ADD HL,DE', 'storm').text, '        ADD HL,DE', 'real ADD HL,DE unchanged');
+            assertEq(conv1('        OUT (#FE)', 'storm').text, '        OUT (#FE),A', 'OUT (n) -> OUT (n),A');
+            assertEq(conv1('        IN (#FE)', 'storm').text, '        IN A,(#FE)', 'IN (n) -> IN A,(#FE)');
+            assertEq(conv1('        OUT (C),A', 'storm').text, '        OUT (C),A', 'normal OUT (C),A unchanged');
+            {
+                const src = '        DEVICE ZXSPECTRUM48\n        ORG #8000\n' +
+                    conv1('        PUSH BC,DE,HL', 'storm').text + '\n' +
+                    conv1('        LD HL,BC', 'storm').text + '\n' +
+                    conv1('        LD BC,IX', 'storm').text + '\n' +
+                    conv1('        ADD A,A,A,B', 'storm').text + '\n' +
+                    conv1('        EX HL,DE', 'storm').text + '\n' +
+                    conv1('        ADD DE,HL', 'storm').text + '\n' +
+                    conv1('        OUT (#FE)', 'storm').text + '\n        RET';
+                const res = Assembler.assemble(src);
+                assert(res.success, 'expanded STORM multi-operand block assembles',
+                    res.success ? '' : JSON.stringify(res.errors && res.errors.slice(0, 3)));
+            }
+
             // INCL rename must still apply the fileMap remap
             const sMap = {};
             AsmDialectConverter.addFileMapEntries(sMap, 'RCWORK', 'C', 'rcwork.a80');

@@ -48,7 +48,7 @@ InstructionEncoder.encodeJR = function(ops, addr, syms) {
         if (offset < -128 || offset > 127) {
             ErrorCollector.warn(`JR offset ${offset} out of range`);
         }
-        return Z80Asm.checkByte(offset, true);
+        return Z80Asm.checkByte(offset, true, false); // range already reported above
     };
 
     if (ops.length === 1) {
@@ -84,7 +84,7 @@ InstructionEncoder.encodeDJNZ = function(ops, addr, syms) {
     if (!val.undefined && (offset < -128 || offset > 127)) {
         ErrorCollector.warn(`DJNZ offset ${offset} out of range`);
     }
-    return { bytes: [0x10, Z80Asm.checkByte(offset, true)], size: 2, undefined: val.undefined };
+    return { bytes: [0x10, Z80Asm.checkByte(offset, true, false)], size: 2, undefined: val.undefined };
 };
 
 // CALL encoder

@@ -208,6 +208,11 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             this.keyboardState = new Uint8Array(8);
             this.keyboardState.fill(0xff);
 
+            // Counts keyboard matrix reads. A ROM only scans the keyboard once it
+            // has booted to an input loop, so a rising count is how the auto-loader
+            // knows the machine is ready for typed keys (ui/auto-loader.js).
+            this.keyboardReads = 0;
+
             // Extended mode key sequence support
             // Extended mode requires: Caps+Symbol first, then Symbol+letter
             this.extendedModeActive = false;
@@ -768,6 +773,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             this.lastRenderedLine = -1;
             this.lastRenderedBeamT = 0;
             this.keyboardState.fill(0xff);
+            this.keyboardReads = 0;
         }
 
         // Convert frame T-state to visible pixel coordinates
@@ -2027,6 +2033,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
         }
         
         readKeyboard(highByte) {
+            this.keyboardReads++;
             let result = 0xff;
             for (let row = 0; row < 8; row++) {
                 if ((highByte & (1 << row)) === 0) {

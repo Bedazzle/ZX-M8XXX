@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>LUA Scripting Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>LUA Scripting Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        // LUA/ENDLUA support, as sjasmplus implements it (sjasmplus/lua.js +
+        // the LUA directive in the assembler). Needs lib/fengari-web.js; if that
+        // isn't present the suite reports skips rather than failures.
+        import { Assembler } from '../sjasmplus/assembler.js';
+        import { VFS } from '../sjasmplus/vfs.js';
+        import { parseLuaPass, luaPassMatches, sourceUsesLua } from '../sjasmplus/lua.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            updateSummary();
+        }
+        function skip(name, why) { skipped++; log('  ' + name + ' — skipped: ' + why, 'skip'); updateSummary(); }
+        function updateSummary() {
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | ` +
+                `<span class="skip">Skip: ${skipped}</span> | Total: ${passed + failed}`;
+        }
+
+        const hex = (a) => Array.from(a || []).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+        // Assemble a source, never throwing: everything lands in one shape
+        function asm(src) {
+            let r = null, threw = null;
+            try { r = Assembler.assemble(src); } catch (e) { threw = e.message; }
+            const warnings = ((r && r.warnings) || []).map(w => w.message);
+            return {
+                ok: !threw && !!(r && r.success),
+                bytes: r && r.output ? hex(r.output) : '',
+                output: (r && r.output) || [],
+                err: threw || (((r && r.errors) || [])[0] || {}).message || '',
+                display: warnings.filter(m => m.startsWith('DISPLAY: ')).map(m => m.slice(9)),
+                warnings: warnings.filter(m => !m.startsWith('Unused label:') && !m.startsWith('DISPLAY: ')),
+            };
+        }
+
+        async function run() {
+            section('Pass-argument parsing (pure)');
+            {
+                assert(parseLuaPass('') === 'PASS3', 'no argument means PASS3 (sjasmplus default)');
+                assert(parseLuaPass('ALLPASS') === 'ALLPASS', 'ALLPASS');
+                assert(parseLuaPass('pass1') === 'PASS1', 'PASS1, case-insensitive');
+                assert(parseLuaPass('PASS9') === null, 'unknown pass rejected');
+                assert(luaPassMatches('ALLPASS', 2, false) === true, 'ALLPASS runs in every pass');
+                assert(luaPassMatches('PASS1', 1, false) === true, 'PASS1 in pass 1');
+                assert(luaPassMatches('PASS1', 2, false) === false, 'PASS1 not in pass 2');
+                assert(luaPassMatches('PASS3', 2, false) === false, 'PASS3 not before the last pass');
+                assert(luaPassMatches('PASS3', 3, true) === true, 'PASS3 in the final pass');
+                assert(sourceUsesLua('  ld a,1\n  LUA\n  ENDLUA') === true, 'source with LUA detected');
+                assert(sourceUsesLua('  ld a,1\n  ; lua is mentioned') === false, 'mention in a comment is not a block');
+            }
+
+            let engine = false;
+            try { await Assembler.loadLua(); engine = true; } catch (e) { /* reported below */ }
+            if (!engine) {
+                skip('all engine-backed tests', 'lib/fengari-web.js not available');
+                log('\n=== COMPLETE ===', 'section');
+                return;
+            }
+
+            section('Emitting code');
+            {
+                let r = asm('    org $8000\n    LUA ALLPASS\n_pc("ld a,5")\n_pc("ret")\n    ENDLUA\n');
+                assert(r.ok && r.bytes === '3e 05 c9', '_pc assembles instructions', r.err || r.bytes);
+
+                r = asm('    org $8000\n    LUA ALLPASS\n_pl("luaLabel ld a,1")\n_pc("ret")\n    ENDLUA\n    ld hl,luaLabel\n');
+                assert(r.ok && r.bytes === '3e 01 c9 21 00 80', '_pl defines a label that resolves', r.err || r.bytes);
+
+                r = asm('    org $8000\n    LUA ALLPASS\nfor i = 1, 4 do _pc("db " .. (i * 16)) end\nsj.add_byte(0xAB)\nsj.add_word(0x1234)\n    ENDLUA\n');
+                assert(r.ok && r.bytes === '10 20 30 40 ab 34 12', 'loop + add_byte + add_word', r.err || r.bytes);
+
+                r = asm('    org $8000\n    LUA ALLPASS\nsj.current_address = 0x9000\nsj.add_byte(1)\n    ENDLUA\n');
+                assert(r.ok, 'writing sj.current_address works like ORG', r.err);
+            }
+
+            section('Reading the assembler');
+            {
+                let r = asm('    org $9000\nvalue: equ 42\n    LUA\nprint("addr=" .. _c("$") .. " value=" .. _c("value"))\n    ENDLUA\n');
+                assert(r.display.join() === 'addr=36864 value=42', '_c evaluates expressions; print reaches output',
+                       JSON.stringify(r.display));
+
+                r = asm('    LUA\nprint("pass=" .. sj.pass)\n    ENDLUA\n');
+                assert(r.display.join() === 'pass=3', 'default block runs in the final pass (3)', JSON.stringify(r.display));
+
+                r = asm('    org $8000\n    LUA ALLPASS\nsj.insert_label("from_lua", 0x1234)\n    ENDLUA\n    ld hl,from_lua\n' +
+                        '    LUA ALLPASS\n_pc("db " .. (sj.get_label("from_lua") & 0xFF))\n    ENDLUA\n');
+                assert(r.ok && r.bytes === '21 34 12 34', 'insert_label / get_label round-trip', r.err || r.bytes);
+
+                r = asm('    LUA\nsj.insert_define("BUILD", "7")\n    ENDLUA\n    LUA\nprint("d=" .. tostring(sj.get_define("BUILD")))\n    ENDLUA\n');
+                assert(r.display.join() === 'd=7', 'insert_define / get_define', JSON.stringify(r.display));
+
+                r = asm('    LUA\nprint("m=" .. tostring(sj.get_modules()) .. "|" .. sj.get_device())\n    ENDLUA\n');
+                assert(r.display.join().startsWith('m='), 'get_modules / get_device answer', JSON.stringify(r.display));
+            }
+
+            section('One state, three passes');
+            {
+                const r = asm('    LUA PASS1\nv = 1\n    ENDLUA\n    LUA PASS2\nv = v + 1\n    ENDLUA\n' +
+                              '    LUA PASS3\nprint("v=" .. v)\n    ENDLUA\n');
+                assert(r.display.join() === 'v=2', 'variables survive across passes, PASS2 really runs',
+                       JSON.stringify(r.display) + ' ' + r.err);
+            }
+
+            section('Inside macros');
+            {
+                let r = asm('NUM MACRO value\n    LUA ALLPASS\nsj.parse_code("db " .. tostring(sj.calc("value")))\n    ENDLUA\n' +
+                            '  ENDM\n    org $8000\n    NUM 7\n');
+                assert(r.ok && r.bytes === '07', 'macro argument reaches the Lua block', r.err || r.bytes);
+
+                r = asm('NUM MACRO value\n    LUA ALLPASS\nsj.parse_code("db " .. tostring(sj.calc("value")))\n    ENDLUA\n' +
+                        '  ENDM\n    org $8000\n    db 1 : NUM 7\n');
+                assert(r.ok && r.bytes === '01 07', 'macro with LUA called after a colon separator', r.err || r.bytes);
+
+                r = asm('A MACRO v\n    LUA ALLPASS\nsj.parse_code("db " .. tostring(sj.calc("v")))\n    ENDLUA\n  ENDM\n' +
+                        'B MACRO w\n    A w\n  ENDM\n    org $8000\n    B 9\n');
+                assert(r.ok && r.bytes === '09', 'nested macro expansion substitutes correctly', r.err || r.bytes);
+
+                r = asm('EMIT MACRO n\n    LUA ALLPASS\nfor i = 1, sj.calc("n") do sj.add_byte(i) end\n    ENDLUA\n  ENDM\n' +
+                        '    org $8000\n    EMIT 3\n    EMIT 2\n');
+                assert(r.ok && r.bytes === '01 02 03 01 02', 'the same block re-runs per expansion', r.err || r.bytes);
+            }
+
+            section('Errors are reported, not swallowed');
+            {
+                let r = asm('    LUA\nthis is not lua\n    ENDLUA\n');
+                assert(!r.ok && /syntax error/i.test(r.err), 'Lua syntax error fails the build', r.err);
+
+                r = asm('    LUA\nerror("boom")\n    ENDLUA\n');
+                assert(!r.ok && /boom/.test(r.err), 'Lua runtime error fails the build', r.err);
+
+                r = asm('    LUA\nsj.error("bad thing", "42")\n    ENDLUA\n');
+                assert(!r.ok && /bad thing/.test(r.err), 'sj.error fails the build', r.err);
+
+                r = asm('    LUA\nsj.warning("just a note")\n    ENDLUA\n');
+                assert(r.ok && r.warnings.some(w => /just a note/.test(w)), 'sj.warning warns but assembles', r.err);
+
+                r = asm('    org $8000\n    LUA ALLPASS\n_pc("nop")\n');
+                assert(!r.ok && /without ENDLUA/i.test(r.err), 'missing ENDLUA reported', r.err);
+
+                r = asm('    LUA PASS9\n    ENDLUA\n');
+                assert(!r.ok && /Unknown LUA pass/i.test(r.err), 'unknown pass argument reported', r.err);
+
+                r = asm('    org $8000\n    ld a,1\n    LUA\n    ENDLUA\n    ld b,2\n');
+                assert(r.ok && r.bytes === '3e 01 06 02', 'an empty block assembles and keeps surrounding code',
+                       r.err || r.bytes);
+            }
+
+            section('Files (io over the VFS)');
+            {
+                VFS.reset();
+                VFS.addBinaryFile('data.bin', new Uint8Array(64).fill(0xAA));
+                VFS.addFile('main.asm', [
+                    '    LUA',
+                    '      local f = io.open("data.bin", "rb")',
+                    '      print("open=" .. tostring(f ~= nil))',
+                    '      print("len=" .. tostring(f:seek("end")))',
+                    '      print("dot=" .. tostring(f.seek(f, "end")))',
+                    '      f:close()',
+                    '      local g = io.open("missing.bin", "rb")',
+                    '      print("missing=" .. tostring(g == nil))',
+                    '    ENDLUA',
+                ].join('\n'));
+                let r = null, threw = null;
+                try { r = Assembler.assembleProject('main.asm'); } catch (e) { threw = e.message; }
+                const disp = ((r && r.warnings) || []).map(w => w.message)
+                    .filter(m => m.startsWith('DISPLAY: ')).map(m => m.slice(9));
+                assert(!threw, 'a block using io assembles', threw);
+                assert(disp.includes('open=true'), 'io.open finds a VFS file', JSON.stringify(disp));
+                assert(disp.includes('len=64'), 'f:seek("end") gives the file size', JSON.stringify(disp));
+                assert(disp.includes('dot=64'), 'f.seek(f,"end") works too', JSON.stringify(disp));
+                assert(disp.includes('missing=true'), 'opening a missing file returns nil');
+                // Closing a read handle must not truncate the file — an ALLPASS
+                // block re-opens it every pass, so this used to zero it on pass 1
+                const still = VFS.getBinaryFile('data.bin');
+                assert(still && still.content && still.content.length === 64,
+                       'closing a "rb" handle leaves the file intact',
+                       still && still.content ? String(still.content.length) : 'gone');
+            }
+
+            section('CRLF sources');
+            {
+                const crlf = ['    org $8000', '    LUA ALLPASS', '_pc("ld a,7")', '    ENDLUA', ''].join('\r\n');
+                const r = asm(crlf);
+                assert(r.ok && r.bytes === '3e 07', 'a CRLF source runs its LUA block', r.err || r.bytes);
+            }
+
+            section('BasicLib (sjasmplus example) — byte-for-byte');
+            {
+                // The BASIC program sjasmplus 1.21.1 itself produces for
+                // examples/BasicLib/Example-simple-loader.asm, read out of its .tap
+                const expected = [
+                    0x00, 0x0a, 0x08, 0x00, 0xfd, 0xb0, 0x22, 0x33, 0x65, 0x34, 0x22, 0x0d,
+                    0x00, 0x14, 0x09, 0x00, 0xef, 0x22, 0x63, 0x6f, 0x64, 0x65, 0x22, 0xaf,
+                    0x0d, 0x00, 0x1e, 0x0b, 0x00, 0xf9, 0xc0, 0xb0, 0x22, 0x33, 0x32, 0x37,
+                    0x36, 0x38, 0x22, 0x0d,
+                ];
+                let lib = null, main = null;
+                try {
+                    lib = await (await fetch('lua/BasicLib.asm')).text();
+                    main = await (await fetch('lua/Example-simple-loader.asm')).text();
+                } catch (e) { /* handled below */ }
+                if (!lib || !main || lib.startsWith('<')) {
+                    skip('BasicLib acceptance', 'tests/lua/*.asm not served');
+                } else {
+                    VFS.reset();
+                    VFS.addFile('BasicLib.asm', lib);
+                    VFS.addFile('main.asm', main);
+                    let r = null, threw = null;
+                    try { r = Assembler.assembleProject('main.asm'); } catch (e) { threw = e.message; }
+                    assert(!threw && r && r.success, 'the example assembles', threw);
+                    if (r && r.output) {
+                        const got = Array.from(r.output.slice(0, expected.length));
+                        assert(hex(got) === hex(expected), 'BASIC matches sjasmplus 1.21.1 byte for byte',
+                               '\n      got ' + hex(got) + '\n      exp ' + hex(expected));
+                        assert(r.outputStart === 23755, 'output starts at the BASIC area (23755)',
+                               String(r.outputStart));
+                    }
+                    const saves = ((r && r.saveCommands) || []).map(c => c.type);
+                    assert(saves.join(',') === 'emptytap,tap,tap', 'EMPTYTAP + two SAVETAPs recorded',
+                           JSON.stringify(saves));
+                }
+            }
+
+            section("introspec's lua_scripts.asm (real-world library)");
+            {
+                let lib = null;
+                try { lib = await (await fetch('lua/lua_scripts.asm')).text(); } catch (e) { /* below */ }
+                if (!lib || lib.startsWith('<')) {
+                    skip('lua_scripts library', 'tests/lua/lua_scripts.asm not served');
+                } else {
+                    const build = (main) => {
+                        VFS.reset();
+                        VFS.addFile('lua_scripts.asm', lib);
+                        VFS.addBinaryFile('code.bin', new Uint8Array(64).fill(0xAA));
+                        VFS.addFile('main.asm', main);
+                        let r = null, threw = null;
+                        try { r = Assembler.assembleProject('main.asm'); } catch (e) { threw = e.message; }
+                        const warns = ((r && r.warnings) || []).map(w => w.message);
+                        return {
+                            ok: !threw, err: threw,
+                            saves: ((r && r.saveCommands) || []).map(c => c.type),
+                            cmds: (r && r.saveCommands) || [],
+                            display: warns.filter(m => m.startsWith('DISPLAY: ')).map(m => m.slice(9)),
+                        };
+                    };
+
+                    let b = build('    INCLUDE lua_scripts.asm\n    ORG $8000\n    ret\n');
+                    assert(b.ok, 'the library assembles (PASS1 helpers + 5 macros)', b.err);
+
+                    b = build(['    INCLUDE lua_scripts.asm', '    ORG $8000', 'asset:',
+                               '    db 1,2,3,4', '    LUA.ExportAsset asset, "asset.bin"'].join('\n'));
+                    assert(b.ok && b.saves.includes('bin'), 'LUA.ExportAsset saves a binary ("$-label")', b.err);
+
+                    b = build(['    INCLUDE lua_scripts.asm', '    ORG $8000', 'begin:', '    db 1,2,3,4',
+                               'end:', '    LUA.SaveIfSuccessful "out.bin", begin, end, "saved it"'].join('\n'));
+                    assert(b.ok && b.display.includes('saved it'),
+                           'LUA.SaveIfSuccessful reports and saves', b.err + ' ' + JSON.stringify(b.display));
+
+                    b = build(['    INCLUDE lua_scripts.asm', '    ORG $8000',
+                               '    LUA.BinToTap "code.bin", "out.tap", "mycode", $8000'].join('\n'));
+                    assert(b.ok, 'LUA.BinToTap runs ("!label", io.open/seek, _pl)', b.err);
+                    assert(b.saves.filter(s => s === 'tapout').length === 2 && b.saves.includes('emptytap'),
+                           'LUA.BinToTap emits header + data blocks', JSON.stringify(b.saves));
+
+                    b = build(['    INCLUDE lua_scripts.asm', '    ORG $C000', 'PAGE1_BEGIN:',
+                               '    db 1,2,3,4,5,6,7,8', 'PAGE1_END:',
+                               '    LUA.ExportPageDev PAGE1, "page1.bin", 1024'].join('\n'));
+                    assert(b.ok, 'LUA.ExportPageDev runs', b.err);
+                    assert(b.display.some(d => /PAGE 1:.*1024.*bytes free/.test(d)),
+                           'DISPLAY with /D formatting', JSON.stringify(b.display));
+                    const exp = b.cmds.find(c => c.type === 'export');
+                    assert(!!exp && /PAGE1_RAW_SIZE: EQU/.test(exp.content || ''),
+                           'EXPORT writes a .exp listing the symbols', exp ? String(exp.content) : 'no export cmd');
+
+                    b = build('    INCLUDE lua_scripts.asm\n    LUA.RemoveFile "code.bin"\n');
+                    assert(b.ok && !VFS.exists('code.bin'), 'LUA.RemoveFile deletes the file', b.err);
+                }
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        }
+
+        run();
+    </script>
+</body>
+</html>

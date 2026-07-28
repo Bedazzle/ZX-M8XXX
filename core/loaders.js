@@ -809,6 +809,16 @@ export function sclChecksum(data, length = data.length) {
          */
         parseBlock(blockId, offset) {
             const data = this.data;
+
+            // Blocks with no payload are valid as the last thing in the file, where
+            // offset == data.length — so they're handled before the "any bytes left?"
+            // guard that protects the parsers which do read a payload
+            switch (blockId) {
+                case 0x22: return { length: 0 }; // Group End
+                case 0x25: return { block: { type: 'loopEnd' }, length: 0 };
+                case 0x27: return { length: 0 }; // Return from sequence
+            }
+
             if (offset >= data.length) return null;
 
             switch (blockId) {
@@ -822,12 +832,9 @@ export function sclChecksum(data, length = data.length) {
                 case 0x19: return this.parseGeneralizedData(offset);
                 case 0x20: return this.parsePause(offset);
                 case 0x21: return this.parseGroupStart(offset);
-                case 0x22: return { length: 0 }; // Group End - no data
                 case 0x23: return this.parseJump(offset);
                 case 0x24: return this.parseLoopStart(offset);
-                case 0x25: return { block: { type: 'loopEnd' }, length: 0 };
                 case 0x26: return this.parseCallSequence(offset);
-                case 0x27: return { length: 0 }; // Return
                 case 0x28: return this.parseSelect(offset);
                 case 0x2A: return { length: 4 }; // Stop if 48K
                 case 0x2B: return { length: 5 }; // Set signal level
@@ -1324,6 +1331,40 @@ export function sclChecksum(data, length = data.length) {
         getBlockCount() { return this.blocks ? this.blocks.length : 0; }
     }
 
+    // .z80 RLE decompression. `isV1` selects the version 1 end marker
+    // (00 ED ED 00) — v2/v3 blocks are length-prefixed and that byte sequence is
+    // ordinary data there, per the .z80 spec. Shared with ui/compare-tool.js.
+    export function decompressZ80Block(data, maxLen, compressed, isV1) {
+        if (!compressed) {
+            return data.slice(0, maxLen);
+        }
+
+        const result = new Uint8Array(maxLen);
+        let srcIdx = 0;
+        let dstIdx = 0;
+
+        while (srcIdx < data.length && dstIdx < maxLen) {
+            if (srcIdx + 3 < data.length &&
+                data[srcIdx] === 0xED && data[srcIdx + 1] === 0xED) {
+                // ED ED nn xx = repeat byte xx nn times
+                const count = data[srcIdx + 2];
+                const value = data[srcIdx + 3];
+                for (let i = 0; i < count && dstIdx < maxLen; i++) {
+                    result[dstIdx++] = value;
+                }
+                srcIdx += 4;
+            } else if (isV1 && data[srcIdx] === 0x00 && srcIdx + 3 < data.length &&
+                       data[srcIdx + 1] === 0xED && data[srcIdx + 2] === 0xED &&
+                       data[srcIdx + 3] === 0x00) {
+                break;
+            } else {
+                result[dstIdx++] = data[srcIdx++];
+            }
+        }
+
+        return result.slice(0, dstIdx);
+    }
+
     export class SnapshotLoader {
         static get VERSION() { return VERSION; }
         
@@ -1776,38 +1817,9 @@ export function sclChecksum(data, length = data.length) {
         }
         
         decompressZ80Block(data, maxLen, compressed, isV1) {
-            if (!compressed) {
-                return data.slice(0, maxLen);
-            }
-
-            const result = new Uint8Array(maxLen);
-            let srcIdx = 0;
-            let dstIdx = 0;
-
-            while (srcIdx < data.length && dstIdx < maxLen) {
-                if (srcIdx + 3 < data.length &&
-                    data[srcIdx] === 0xED && data[srcIdx + 1] === 0xED) {
-                    // ED ED nn xx = repeat byte xx nn times
-                    const count = data[srcIdx + 2];
-                    const value = data[srcIdx + 3];
-                    for (let i = 0; i < count && dstIdx < maxLen; i++) {
-                        result[dstIdx++] = value;
-                    }
-                    srcIdx += 4;
-                } else if (isV1 && data[srcIdx] === 0x00 && srcIdx + 3 < data.length &&
-                           data[srcIdx + 1] === 0xED && data[srcIdx + 2] === 0xED &&
-                           data[srcIdx + 3] === 0x00) {
-                    // End marker — present ONLY in version 1 (v2/v3 blocks are
-                    // length-prefixed and have no end marker, per the .z80 spec).
-                    break;
-                } else {
-                    result[dstIdx++] = data[srcIdx++];
-                }
-            }
-
-            return result.slice(0, dstIdx);
+            return decompressZ80Block(data, maxLen, compressed, isV1);
         }
-        
+
         loadZ80Page(pageNum, data, memory, machineType) {
             // Map page numbers to memory addresses/banks
             // Page numbers differ between 48K and 128K modes

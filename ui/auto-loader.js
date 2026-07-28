@@ -10,14 +10,25 @@
 // high speed and skip a key's down→up window. Frame numbers use spectrum.totalFrames
 // (monotonic).
 
+// The wait for ROM boot is not a fixed guess: typing starts once the ROM is seen
+// scanning the keyboard (ula.keyboardReads rising — a ROM only scans when it has
+// reached an input loop), plus a short settle. Measured first-scan frames:
+// 48K 83, 128K 54, Pentagon 49, +2 54 — versus the 150-frame wait this replaces.
+// It also adapts to a slower or custom ROM instead of assuming Sinclair timings.
+const AUTO_LOAD_READY_SETTLE  = 20;  // ~400ms after the ROM starts scanning
+const AUTO_LOAD_READY_TIMEOUT = 300; // ~6.0s  give up waiting and type anyway
+const AUTO_LOAD_SCORPION_FLOOR = 180; // Scorpion scans during its 256K RAM test, so
+                                      // it needs a floor too (+ settle = the old 200)
+
 // Frame-based timing constants (~50 frames/sec)
-const AUTO_LOAD_ROM_WAIT      = 150; // ~3.0s  wait for ROM boot to the cursor
-const AUTO_LOAD_128K_WAIT     = 75;  // ~1.5s  after choosing BASIC from the 128K menu
-const AUTO_LOAD_SCORPION_WAIT = 200; // ~4.0s  Scorpion 256K RAM test on boot
-const AUTO_LOAD_KEY_HOLD      = 10;  // ~200ms key held down
-const AUTO_LOAD_KEY_GAP       = 8;   // ~150ms between keys
-const AUTO_LOAD_KEY_HOLD_FAST = 5;   // ~100ms
-const AUTO_LOAD_KEY_GAP_FAST  = 5;   // ~100ms
+const AUTO_LOAD_KEY_HOLD      = 5;   // ~100ms key held down
+const AUTO_LOAD_KEY_GAP       = 5;   // ~100ms between keys
+const AUTO_LOAD_TRDOS_WAIT    = 150; // ~3.0s  TR-DOS boot before typing RUN "…"
+// Scorpion keeps its original timings throughout — its boot couldn't be exercised
+// in the timing harness, so nothing about that path is retuned on a guess.
+const AUTO_LOAD_KEY_HOLD_SLOW = 10;  // ~200ms
+const AUTO_LOAD_KEY_GAP_SLOW  = 8;   // ~150ms
+const AUTO_LOAD_SCORPION_BASIC_WAIT = 75; // ~1.5s after choosing 128 BASIC
 
 export function initAutoLoader({ getSpectrum }) {
     const chkAutoLoad = document.getElementById('chkAutoLoad');
@@ -27,6 +38,7 @@ export function initAutoLoader({ getSpectrum }) {
     let autoLoadStartFrame = 0;      // spectrum.totalFrames when the sequence began
     let autoLoadActive = false;
     let autoLoadHooked = false;      // whether our frame listener is registered
+    let autoLoadGate = null;         // pending "wait for ROM boot" check, or null
 
     // The Disk tab mirrors the Auto Load checkbox; keep both in sync.
     // project-io dispatches 'change' on chkAutoLoad when restoring projects.
@@ -62,17 +74,49 @@ export function initAutoLoader({ getSpectrum }) {
     // scheduled at distinct frames and applied in order as those frames arrive.
     function autoLoadTick() {
         if (!autoLoadActive) return;
+        if (autoLoadGate && !autoLoadGate()) return;
         const cur = getSpectrum().totalFrames;
         while (autoLoadQueue.length && autoLoadQueue[0].frame <= cur) {
             autoLoadQueue.shift().fn();
         }
-        if (autoLoadQueue.length === 0) unhookAutoLoadFrame();
+        if (autoLoadQueue.length === 0 && !autoLoadGate) unhookAutoLoadFrame();
     }
 
     function beginAutoLoad() {
         autoLoadActive = true;
         autoLoadQueue = [];
+        autoLoadGate = null;
         autoLoadStartFrame = getSpectrum().totalFrames;
+        hookAutoLoadFrame();
+    }
+
+    // Hold the key sequence back until the machine can actually receive it, then
+    // schedule it from that moment (offsets in `schedule` are relative to "ready").
+    // Ready = the ROM is scanning the keyboard, past `floor`, plus a settle. If a
+    // ROM never scans, the timeout fires the sequence anyway rather than hanging.
+    function autoLoadWhenReady(schedule, { floor = 0 } = {}) {
+        const spectrum = getSpectrum();
+        const ula = spectrum.ula;
+        const startFrame = spectrum.totalFrames;
+        let lastReads = ula.keyboardReads;
+        let readyAt = -1;
+        autoLoadGate = () => {
+            const elapsed = spectrum.totalFrames - startFrame;
+            if (readyAt < 0) {
+                const scanning = ula.keyboardReads > lastReads;
+                lastReads = ula.keyboardReads;
+                if ((scanning && elapsed >= floor) || elapsed >= AUTO_LOAD_READY_TIMEOUT) {
+                    readyAt = elapsed;
+                } else {
+                    return false;
+                }
+            }
+            if (elapsed < readyAt + AUTO_LOAD_READY_SETTLE) return false;
+            autoLoadGate = null;
+            autoLoadStartFrame = spectrum.totalFrames;
+            schedule();
+            return true;
+        };
         hookAutoLoadFrame();
     }
 
@@ -80,6 +124,7 @@ export function initAutoLoader({ getSpectrum }) {
         const spectrum = getSpectrum();
         unhookAutoLoadFrame();
         autoLoadQueue = [];
+        autoLoadGate = null;
         if (autoLoadActive) {
             spectrum.ula.keyboardState.fill(0xFF);
             autoLoadActive = false;
@@ -99,8 +144,11 @@ export function initAutoLoader({ getSpectrum }) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
         const machType = spectrum.machineType;
-        const isAmsMenu = machType === '+2' || machType === '+2a' || machType === '+3';
-        const is128K = machType !== '48k';
+        // Every menu machine (Sinclair 128, +2/+2A/+3 Amstrad menu, Pentagon) loads a
+        // tape from its menu's default entry — one Enter. The 128K path used to also
+        // type LOAD "" afterwards; measured on 128.rom/pentagon.rom, it was the Enter
+        // that started the load and the typed keys did nothing.
+        const isMenuMachine = machType !== '48k' && machType !== 'scorpion';
         const ula = spectrum.ula;
 
         // Reset (tape data survives reset - only rewinds)
@@ -108,8 +156,6 @@ export function initAutoLoader({ getSpectrum }) {
         spectrum.reset();
         if (!headless) spectrum.start();
         beginAutoLoad();
-
-        let t = 0;
 
         // For TZX + flash load: no wrapper needed. The loadTZX callback in
         // spectrum.js sets _turboBlockPending after the last standard block before
@@ -127,123 +173,79 @@ export function initAutoLoader({ getSpectrum }) {
             tapeLoadModeEl.textContent = '(real-time)';
         }
 
-        if (isAmsMenu) {
-            // +2/+2A/+3 Amstrad menu — press Enter to select "Loader" (default option)
-            // +2/+2A: runs LOAD "" automatically (tape only, no FDC)
-            // +3: Loader auto-detects disk first, then tape. FDC disks must be
-            // cleared by the caller before invoking this function so the ROM
-            // Loader falls through to tape.
-            t += AUTO_LOAD_ROM_WAIT;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => {
-                if (!autoLoadActive) return;
-                ula.keyUp('Enter');
-                ula.keyboardState.fill(0xFF);
-                if (!spectrum.getTapeFlashLoad()) {
-                    if (!spectrum.tapePlayer.isPlaying()) {
-                        spectrum.playTape();
-                    }
-                }
-                autoLoadActive = false;
-            }, t);
+        // Common tail: release everything, and start real-time playback if the
+        // flash-load trap isn't doing it for us.
+        const finishTape = () => {
+            ula.keyboardState.fill(0xFF);
+            if (!spectrum.getTapeFlashLoad() && !spectrum.tapePlayer.isPlaying()) {
+                spectrum.playTape();
+            }
+            autoLoadActive = false;
+        };
+
+        if (isMenuMachine) {
+            // Sinclair 128 / Pentagon: menu default is the tape loader.
+            // +2/+2A: "Loader" runs LOAD "" (tape only, no FDC).
+            // +3: Loader auto-detects disk first, then tape — FDC disks must be
+            // cleared by the caller so the ROM Loader falls through to tape.
+            autoLoadWhenReady(() => {
+                let t = 0;
+                autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+                t += AUTO_LOAD_KEY_HOLD;
+                autoLoadAt(() => {
+                    if (!autoLoadActive) return;
+                    ula.keyUp('Enter');
+                    finishTape();
+                }, t);
+            });
             return;
         }
 
         if (machType === 'scorpion') {
-            // Scorpion menu: "128 TR-DOS" is first, "128 BASIC" is second.
-            // Scorpion ROM does a 256KB RAM test on boot — needs extra wait.
-            t += AUTO_LOAD_SCORPION_WAIT;
-            // Down arrow to move from "128 TR-DOS" to "128 BASIC"
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('ArrowDown'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('ArrowDown'); ula.keyboardState.fill(0xFF); }, t);
-            t += AUTO_LOAD_KEY_GAP;
-            // Enter to select "128 BASIC"
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('Enter'); ula.keyboardState.fill(0xFF); }, t);
-            t += AUTO_LOAD_128K_WAIT;
+            autoLoadWhenReady(() => scheduleScorpionTape(spectrum, ula, finishTape),
+                              { floor: AUTO_LOAD_SCORPION_FLOOR });
+            return;
+        }
 
-            // 128K BASIC uses letter-by-letter input (not 48K token mode)
-            // Type: L, O, A, D, ", ", Enter
-            const loadKeys = ['l', 'o', 'a', 'd'];
-            for (const key of loadKeys) {
-                autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown(key); }, t);
-                t += AUTO_LOAD_KEY_HOLD;
-                autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp(key); ula.keyboardState.fill(0xFF); }, t);
-                t += AUTO_LOAD_KEY_GAP;
-            }
-            // Symbol+P = first "
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
-            t += AUTO_LOAD_KEY_GAP;
-            // Symbol+P = second "
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
-            t += AUTO_LOAD_KEY_GAP;
-            // Enter
+        // 48K: keyword entry — J is LOAD, then "" and Enter
+        autoLoadWhenReady(() => {
+            let t = 0;
+            t = pressKeyTimed(ula, 'j', t);
+            t = pressSymbolKeyTimed(ula, 'p', t);
+            t = pressSymbolKeyTimed(ula, 'p', t);
             autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
             t += AUTO_LOAD_KEY_HOLD;
             autoLoadAt(() => {
                 if (!autoLoadActive) return;
                 ula.keyUp('Enter');
-                ula.keyboardState.fill(0xFF);
-                if (!spectrum.getTapeFlashLoad()) {
-                    if (!spectrum.tapePlayer.isPlaying()) {
-                        spectrum.playTape();
-                    }
-                }
-                autoLoadActive = false;
+                finishTape();
             }, t);
-            return;
-        } else if (is128K) {
-            // Sinclair 128K/Pentagon menu: press "1" for BASIC
-            t += AUTO_LOAD_ROM_WAIT;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('1'); }, t);
-            t += AUTO_LOAD_KEY_HOLD;
-            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('1'); ula.keyboardState.fill(0xFF); }, t);
-            t += AUTO_LOAD_128K_WAIT;
-        } else {
-            t += AUTO_LOAD_ROM_WAIT;
-        }
+        });
+    }
 
-        // J = LOAD
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('j'); }, t);
-        t += AUTO_LOAD_KEY_HOLD;
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('j'); ula.keyboardState.fill(0xFF); }, t);
-        t += AUTO_LOAD_KEY_GAP;
+    // Scorpion menu: "128 TR-DOS" is first, "128 BASIC" is second, and 128 BASIC
+    // takes letter-by-letter input (no 48K keyword mode). Timings here are the
+    // pre-existing ones — the Scorpion boot couldn't be exercised in the timing
+    // harness, so it keeps the slower, known-good key press/gap.
+    function scheduleScorpionTape(spectrum, ula, finishTape) {
+        const H = AUTO_LOAD_KEY_HOLD_SLOW, G = AUTO_LOAD_KEY_GAP_SLOW;
+        let t = 0;
 
-        // Symbol+P = first "
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
-        t += AUTO_LOAD_KEY_HOLD;
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
-        t += AUTO_LOAD_KEY_GAP;
+        // Down arrow to move from "128 TR-DOS" to "128 BASIC", then Enter
+        t = pressKeyTimed(ula, 'ArrowDown', t, H, G);
+        t = pressKeyTimed(ula, 'Enter', t, H, G);
+        t += AUTO_LOAD_SCORPION_BASIC_WAIT;
 
-        // Symbol+P = second "
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Alt'); ula.keyDown('p'); }, t);
-        t += AUTO_LOAD_KEY_HOLD;
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyUp('p'); ula.keyUp('Alt'); ula.keyboardState.fill(0xFF); }, t);
-        t += AUTO_LOAD_KEY_GAP;
-
-        // Enter
+        // Type LOAD "" letter by letter, then Enter
+        for (const key of ['l', 'o', 'a', 'd']) t = pressKeyTimed(ula, key, t, H, G);
+        t = pressSymbolKeyTimed(ula, 'p', t, H, G);
+        t = pressSymbolKeyTimed(ula, 'p', t, H, G);
         autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
-        t += AUTO_LOAD_KEY_HOLD;
+        t += H;
         autoLoadAt(() => {
             if (!autoLoadActive) return;
             ula.keyUp('Enter');
-            ula.keyboardState.fill(0xFF);
-            if (!spectrum.getTapeFlashLoad()) {
-                // Flash load off: start real-time tape playback
-                if (!spectrum.tapePlayer.isPlaying()) {
-                    spectrum.playTape();
-                }
-            }
-            // For TZX + flash load on: standard blocks load via trap,
-            // turbo blocks auto-start via _turboBlockPending in spectrum.js
-            autoLoadActive = false;
+            finishTape();
         }, t);
     }
 
@@ -303,14 +305,17 @@ export function initAutoLoader({ getSpectrum }) {
         beginAutoLoad();
         const ula = spectrum.ula;
 
-        let t = AUTO_LOAD_ROM_WAIT;
+        // No readiness gate here: TR-DOS scans the keyboard well before it can
+        // accept a typed command, so gating on the scan types too early and the
+        // RUN is lost (verified). This path keeps its fixed, known-good wait.
+        let t = AUTO_LOAD_TRDOS_WAIT;
 
         // Restore boot entry after TR-DOS has finished initialization
         if (bootEntryOffset >= 0) {
             autoLoadAt(() => { diskData[bootEntryOffset] = savedBootByte; }, t - 25);
         }
 
-        const H = AUTO_LOAD_KEY_HOLD_FAST, G = AUTO_LOAD_KEY_GAP_FAST;
+        const H = AUTO_LOAD_KEY_HOLD, G = AUTO_LOAD_KEY_GAP;
 
         // R = RUN keyword in TR-DOS
         t = pressKeyTimed(ula, 'r', t, H, G);
@@ -386,15 +391,17 @@ export function initAutoLoader({ getSpectrum }) {
 
         // +3 Amstrad menu: press Enter to select "Loader" (default option)
         // The +3 ROM's Loader routine auto-detects disk and boots from it
-        let t = AUTO_LOAD_ROM_WAIT;
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
-        t += AUTO_LOAD_KEY_HOLD;
-        autoLoadAt(() => {
-            if (!autoLoadActive) return;
-            ula.keyUp('Enter');
-            ula.keyboardState.fill(0xFF);
-            autoLoadActive = false;
-        }, t);
+        autoLoadWhenReady(() => {
+            let t = 0;
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            t += AUTO_LOAD_KEY_HOLD;
+            autoLoadAt(() => {
+                if (!autoLoadActive) return;
+                ula.keyUp('Enter');
+                ula.keyboardState.fill(0xFF);
+                autoLoadActive = false;
+            }, t);
+        });
     }
 
     return {

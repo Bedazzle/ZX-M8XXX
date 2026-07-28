@@ -1,6 +1,7 @@
 // compare-tool.js — Snapshot/binary comparison tool (extracted from index.html)
 import { SLOT1_START, SLOT2_START, SLOT3_START, SCREEN_BITMAP, SCREEN_AFTER } from '../core/constants.js';
 import { hex8, hex16 } from '../core/utils.js';
+import { parseSnapshotFile as parseSnapshot } from './snapshot-parse.js';
 
 export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     // ========== Compare Tool ==========
@@ -66,211 +67,24 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     }
 
     // Decompress Z80 block
-    function decompressZ80Block(data, maxLen, compressed) {
-        if (!compressed) return data.slice(0, maxLen);
-        const result = new Uint8Array(maxLen);
-        let srcIdx = 0, dstIdx = 0;
-        while (srcIdx < data.length && dstIdx < maxLen) {
-            if (srcIdx + 3 < data.length && data[srcIdx] === 0xED && data[srcIdx + 1] === 0xED) {
-                const count = data[srcIdx + 2];
-                const value = data[srcIdx + 3];
-                for (let i = 0; i < count && dstIdx < maxLen; i++) result[dstIdx++] = value;
-                srcIdx += 4;
-            } else if (data[srcIdx] === 0x00 && srcIdx + 3 < data.length &&
-                       data[srcIdx + 1] === 0xED && data[srcIdx + 2] === 0xED && data[srcIdx + 3] === 0x00) {
-                break;
-            } else {
-                result[dstIdx++] = data[srcIdx++];
-            }
-        }
-        return result.slice(0, dstIdx);
+    // One byte as a printable character for a hex dump's ASCII column,
+    // HTML-escaped so the dump can be built as markup
+    function escapeHtmlChar(byte) {
+        if (byte < 32 || byte > 126) return '.';
+        const ch = String.fromCharCode(byte);
+        if (ch === '&') return '&amp;';
+        if (ch === '<') return '&lt;';
+        if (ch === '>') return '&gt;';
+        if (ch === '"') return '&quot;';
+        return ch;
     }
 
-    // Parse Z80 file into normalized format
-    function parseZ80File(data) {
-        const bytes = data;
-        if (bytes.length < 30) return null;
-
-        const result = {
-            registers: {},
-            memory: new Uint8Array(65536),
-            is128K: false,
-            border: 0,
-            port7FFD: 0
-        };
-
-        // Read header
-        result.registers.A = bytes[0];
-        result.registers.F = bytes[1];
-        result.registers.BC = bytes[2] | (bytes[3] << 8);
-        result.registers.HL = bytes[4] | (bytes[5] << 8);
-        let pc = bytes[6] | (bytes[7] << 8);
-        result.registers.SP = bytes[8] | (bytes[9] << 8);
-        result.registers.I = bytes[10];
-        result.registers.R = (bytes[11] & 0x7f) | ((bytes[12] & 0x01) << 7);
-
-        const byte12 = bytes[12];
-        result.border = (byte12 >> 1) & 0x07;
-        const compressed = (byte12 & 0x20) !== 0;
-
-        result.registers.DE = bytes[13] | (bytes[14] << 8);
-        result.registers["BC'"] = bytes[15] | (bytes[16] << 8);
-        result.registers["DE'"] = bytes[17] | (bytes[18] << 8);
-        result.registers["HL'"] = bytes[19] | (bytes[20] << 8);
-        result.registers["AF'"] = (bytes[21] << 8) | bytes[22];
-        result.registers.IY = bytes[23] | (bytes[24] << 8);
-        result.registers.IX = bytes[25] | (bytes[26] << 8);
-        result.registers.IFF1 = bytes[27] !== 0 ? 1 : 0;
-        result.registers.IFF2 = bytes[28] !== 0 ? 1 : 0;
-        result.registers.IM = bytes[29] & 0x03;
-
-        if (pc !== 0) {
-            // Version 1 - 48K only
-            result.registers.PC = pc;
-            const memData = decompressZ80Block(bytes.subarray(30), 49152, compressed);
-            for (let i = 0; i < memData.length; i++) result.memory[SLOT1_START + i] = memData[i];
-            return result;
-        }
-
-        // Version 2 or 3
-        const extHeaderLen = bytes[30] | (bytes[31] << 8);
-        result.registers.PC = bytes[32] | (bytes[33] << 8);
-        const hwMode = bytes[34];
-
-        if (extHeaderLen === 23) {
-            result.is128K = (hwMode === 3 || hwMode === 4);
-        } else {
-            result.is128K = (hwMode >= 4 && hwMode <= 6);
-        }
-
-        if (result.is128K && bytes.length > 35) {
-            result.port7FFD = bytes[35];
-        }
-
-        // Load memory pages
-        let offset = 32 + extHeaderLen;
-        while (offset < bytes.length - 3) {
-            const blockLen = bytes[offset] | (bytes[offset + 1] << 8);
-            const pageNum = bytes[offset + 2];
-            offset += 3;
-            if (blockLen === 0xffff) {
-                // Uncompressed
-                for (let i = 0; i < 16384 && offset + i < bytes.length; i++) {
-                    const addr = getZ80PageAddress(pageNum, result.is128K);
-                    if (addr >= 0) result.memory[addr + i] = bytes[offset + i];
-                }
-                offset += 16384;
-            } else {
-                const blockData = bytes.subarray(offset, offset + blockLen);
-                const pageData = decompressZ80Block(blockData, 16384, true);
-                const addr = getZ80PageAddress(pageNum, result.is128K);
-                if (addr >= 0) {
-                    for (let i = 0; i < pageData.length; i++) result.memory[addr + i] = pageData[i];
-                }
-                offset += blockLen;
-            }
-        }
-        return result;
-    }
-
-    function getZ80PageAddress(pageNum, is128K) {
-        if (is128K) {
-            // 128K: page 3=bank0, 4=bank1, 5=bank2, 6=bank3, 7=bank4, 8=bank5, 9=bank6, 10=bank7
-            // Banks 5,2,paged map to 4000,8000,C000
-            if (pageNum === 8) return SLOT1_START; // Bank 5
-            if (pageNum === 4) return SLOT2_START; // Bank 2
-            // For simplicity, we only support the main 48K view
-            return -1;
-        } else {
-            // 48K: page 4=slot2, 5=slot3, 8=slot1
-            if (pageNum === 8) return SLOT1_START;
-            if (pageNum === 4) return SLOT2_START;
-            if (pageNum === 5) return SLOT3_START;
-        }
-        return -1;
-    }
-
-    // Parse SNA file into normalized format
-    function parseSnaFile(data) {
-        const is128K = data.byteLength > 49179;
-        const result = {
-            registers: {},
-            memory: new Uint8Array(65536),
-            is128K: is128K,
-            border: data[26],
-            port7FFD: is128K ? data[49181] : 0
-        };
-
-        result.registers.I = data[0];
-        result.registers["HL'"] = data[1] | (data[2] << 8);
-        result.registers["DE'"] = data[3] | (data[4] << 8);
-        result.registers["BC'"] = data[5] | (data[6] << 8);
-        result.registers["AF'"] = data[7] | (data[8] << 8);
-        result.registers.HL = data[9] | (data[10] << 8);
-        result.registers.DE = data[11] | (data[12] << 8);
-        result.registers.BC = data[13] | (data[14] << 8);
-        result.registers.IY = data[15] | (data[16] << 8);
-        result.registers.IX = data[17] | (data[18] << 8);
-        result.registers.IFF2 = (data[19] & 0x04) ? 1 : 0;
-        result.registers.IFF1 = result.registers.IFF2;
-        result.registers.R = data[20];
-        result.registers.AF = data[21] | (data[22] << 8);
-        result.registers.A = data[22];
-        result.registers.F = data[21];
-        result.registers.SP = data[23] | (data[24] << 8);
-        result.registers.IM = data[25];
-
-        // Copy memory (48K: SLOT1_START-0xFFFF)
-        for (let i = 0; i < 49152 && 27 + i < data.length; i++) {
-            result.memory[SLOT1_START + i] = data[27 + i];
-        }
-
-        // For 48K SNA, PC is on stack
-        if (!is128K) {
-            const sp = result.registers.SP;
-            if (sp >= SLOT1_START && sp < 0xFFFF) {
-                result.registers.PC = result.memory[sp] | (result.memory[sp + 1] << 8);
-            }
-        } else {
-            result.registers.PC = data[49179] | (data[49180] << 8);
-        }
-
-        return result;
-    }
-
-    // Parse any snapshot file
+    // Parse any snapshot file (shared with the emulator's own loader)
     function parseSnapshotFile(data) {
         const type = detectSnapshotType(data);
-        if (type.startsWith('sna')) return parseSnaFile(data);
-        if (type.startsWith('z80')) return parseZ80File(data);
-        return null;
+        if (!type.startsWith('sna') && !type.startsWith('z80')) return null;
+        return parseSnapshot(data);
     }
-
-    // SNA header field definitions
-    const SNA_HEADER_48K = [
-        { offset: 0, size: 1, name: 'I' },
-        { offset: 1, size: 2, name: "HL'" },
-        { offset: 3, size: 2, name: "DE'" },
-        { offset: 5, size: 2, name: "BC'" },
-        { offset: 7, size: 2, name: "AF'" },
-        { offset: 9, size: 2, name: 'HL' },
-        { offset: 11, size: 2, name: 'DE' },
-        { offset: 13, size: 2, name: 'BC' },
-        { offset: 15, size: 2, name: 'IY' },
-        { offset: 17, size: 2, name: 'IX' },
-        { offset: 19, size: 1, name: 'IFF2', format: v => v & 0x04 ? '1' : '0' },
-        { offset: 20, size: 1, name: 'R' },
-        { offset: 21, size: 2, name: 'AF' },
-        { offset: 23, size: 2, name: 'SP' },
-        { offset: 25, size: 1, name: 'IM', format: v => v.toString() },
-        { offset: 26, size: 1, name: 'Border', format: v => v.toString() }
-    ];
-    const SNA_HEADER_128K = [
-        ...SNA_HEADER_48K,
-        { offset: 49179, size: 2, name: 'PC' },
-        { offset: 49181, size: 1, name: 'Port 7FFD' },
-        { offset: 49182, size: 1, name: 'TR-DOS ROM', format: v => v ? 'Yes' : 'No' }
-    ];
 
     // Update mode UI
     document.querySelectorAll('input[name="compareMode"]').forEach(radio => {
@@ -395,58 +209,6 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
 
     function readWord(data, offset) {
         return data[offset] | (data[offset + 1] << 8);
-    }
-
-    function parseSnaHeader(data) {
-        const is128K = data.byteLength > 49179;
-        const fields = is128K ? SNA_HEADER_128K : SNA_HEADER_48K;
-        const result = {};
-        for (const field of fields) {
-            let value;
-            if (field.size === 1) {
-                value = data[field.offset];
-            } else {
-                value = readWord(data, field.offset);
-            }
-            result[field.name] = { value, field };
-        }
-        // For 48K SNA, PC is on stack
-        if (!is128K) {
-            const sp = readWord(data, 23);
-            const stackOffset = 27 + sp - SLOT1_START;
-            if (stackOffset >= 27 && stackOffset < data.byteLength - 1) {
-                result['PC (from stack)'] = { value: readWord(data, stackOffset), field: { size: 2 } };
-            }
-        }
-        return result;
-    }
-
-    function compareHeaders(headerA, headerB, showEqual) {
-        const rows = [];
-        const allKeys = new Set([...Object.keys(headerA), ...Object.keys(headerB)]);
-        for (const key of allKeys) {
-            const a = headerA[key];
-            const b = headerB[key];
-            if (!a || !b) continue;
-            const valA = a.field.format ? a.field.format(a.value) : (a.field.size === 2 ? hex16(a.value) : hex8(a.value));
-            const valB = b.field.format ? b.field.format(b.value) : (b.field.size === 2 ? hex16(b.value) : hex8(b.value));
-            const isDiff = a.value !== b.value;
-            if (isDiff || showEqual) {
-                const color = isDiff ? 'color:var(--red)' : 'color:var(--text-secondary)';
-                rows.push(`<div style="${color}">${key.padEnd(12)}: ${valA.padEnd(6)} vs ${valB}${isDiff ? ' ◄' : ''}</div>`);
-            }
-        }
-        return rows.join('');
-    }
-
-    // Escape HTML special characters for ASCII display
-    function escapeHtmlChar(charCode) {
-        if (charCode < 32 || charCode >= 127) return '.';
-        if (charCode === 32) return '&nbsp;';  // space - use non-breaking space
-        if (charCode === 60) return '&lt;';    // <
-        if (charCode === 62) return '&gt;';    // >
-        if (charCode === 38) return '&amp;';   // &
-        return String.fromCharCode(charCode);
     }
 
     function compareBinaryData(dataA, dataB, offsetA = 0, offsetB = 0, length = null, showEqual = false, showHexDump = true) {

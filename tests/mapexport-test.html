@@ -15,7 +15,7 @@
 <div id="summary"></div>
 <div id="log"></div>
 <script type="module">
-import { parseAutoMapKey, buildRanges, buildRangesFromBits, applyRegions, exportCtl, exportGhidraCsv, exportSym,
+import { parseAutoMapKey, buildRanges, buildRangesFromBits, buildRangesFromPagedBits, applyRegions, exportCtl, exportGhidraCsv, exportSym,
   exportIndirectCsv, findSmcRanges, exportSmcCsv, exportCallGraphCsv }
   from '../core/map-export.js';
 
@@ -71,6 +71,29 @@ function run() {
   const fastCtl = exportCtl({ ranges: fb.ranges, pages: fb.pages, labels: [{ address: 0x8000, name: 'entry' }] });
   assert(fastCtl.split('\n').includes('c $8000'), 'exportCtl from pre-built (bits) ranges');
   assert(fastCtl.includes('@ $8000 label=entry'), 'exportCtl(ranges) still folds labels');
+
+  // ---- buildRangesFromPagedBits (paged fast mode) ----
+  section('buildRangesFromPagedBits');
+  {
+    const mk = () => ({ execBits: new Uint8Array(0x10000), readBits: new Uint8Array(0x10000), writeBits: new Uint8Array(0x10000) });
+    // Two different RAM banks both hold code at 0xC000 (the bank-switch case that
+    // flat fast mode unions and loses). Page '3' executes 0xC000-0xC001; page '4'
+    // executes 0xC000 and writes 0xC002.
+    const p3 = mk(); p3.execBits[0xC000] = p3.execBits[0xC001] = 1;
+    const p4 = mk(); p4.execBits[0xC000] = 1; p4.writeBits[0xC002] = 1;
+    const paged = new Map([['3', p3], ['4', p4], ['', mk()]]);
+    const r = buildRangesFromPagedBits(paged);
+    assert(r.pages.join(',') === '3,4', 'paged: page labels reported (bare "" dropped)', r.pages.join(','));
+    // Per-page ranges keep the banks distinct.
+    assert(r.byPage['3'].ranges.length === 1 && r.byPage['3'].ranges[0].end === 0xC001, 'paged: page 3 code run 0xC000-0xC001');
+    assert(r.byPage['4'].ranges.some(x => x.start === 0xC000 && x.type === 'code'), 'paged: page 4 has code at 0xC000');
+    assert(r.byPage['4'].ranges.some(x => x.start === 0xC002 && x.type === 'db'), 'paged: page 4 write → data at 0xC002');
+    // Flat union still available for single-space exports.
+    assert(r.ranges.some(x => x.start === 0xC000 && x.type === 'code'), 'paged: flat union has code at 0xC000');
+    // Plain-object form accepted too.
+    const r2 = buildRangesFromPagedBits({ '3': p3 });
+    assert(r2.byPage['3'].ranges.length === 1, 'paged: accepts plain-object pagedBits');
+  }
 
   // ---- text detection ----
   section('text detection');

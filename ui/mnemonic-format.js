@@ -1,5 +1,15 @@
 // Mnemonic Syntax Coloring — pure string transformation, no external deps
 
+// Does this instruction end a run of straight-line code? (used for blank-line
+// spacing in the disassembly views and the Explorer's disasm)
+export function isFlowBreak(mnemonic) {
+    const mn = mnemonic.replace(/<[^>]+>/g, '').toUpperCase();
+    return mn.startsWith('JP') || mn.startsWith('JR') ||
+           mn.startsWith('RET') || mn.startsWith('DJNZ') ||
+           mn.startsWith('RST') || mn.startsWith('CALL') ||
+           mn === 'HALT';
+}
+
 export function formatMnemonic(mnemonic) {
     // Split into opcode and operands
     const spaceIdx = mnemonic.indexOf(' ');

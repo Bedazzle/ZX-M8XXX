@@ -6,6 +6,13 @@ import { ErrorCollector } from './errors.js';
 
 const ALU_CODES = { ADD: 0, ADC: 1, SUB: 2, SBC: 3, AND: 4, XOR: 5, OR: 6, CP: 7 };
 
+// A memory reference through a register — (HL), (BC), (IX+d), … As a source for
+// an immediate operand it used to evaluate to 0/the displacement, silently
+// assembling the wrong instruction (the Z80 has no memory-to-memory LD)
+function isRegIndirect(op) {
+    return /^\(\s*(HL|BC|DE|SP|AF|C|IX|IY)\s*([+-][^)]*)?\)$/i.test(op);
+}
+
 // Add LD encoder to InstructionEncoder
 InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
     // Uppercase for pattern matching only - preserve original for expression evaluation
@@ -63,6 +70,9 @@ InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
 
     // LD (IX+d), n / LD (IY+d), n
     if (destIdx) {
+        if (isRegIndirect(src)) {
+            ErrorCollector.error(`Invalid LD operands: ${dest}, ${src}`);
+        }
         const prefix = destIdx.reg === 'IX' ? 0xDD : 0xFD;
         const offset = this.evalExpr(destIdx.offset, syms, addr);
         const disp = Z80Asm.checkByte(offset.value, true);
@@ -135,6 +145,26 @@ InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
     const undocDest = /^I([XY])([HL])$/.exec(d);
     const undocSrc = /^I([XY])([HL])$/.exec(s);
     
+    // LD IXH,IXL and friends — both halves of the *same* index register
+    if (undocDest && undocSrc) {
+        if (undocDest[1] !== undocSrc[1]) {
+            ErrorCollector.error(`Cannot mix I${undocDest[1]} and I${undocSrc[1]} halves: ${dest}, ${src}`);
+        }
+        const prefix = undocDest[1] === 'X' ? 0xDD : 0xFD;
+        const dr = undocDest[2] === 'H' ? 4 : 5;
+        const sr = undocSrc[2] === 'H' ? 4 : 5;
+        return { bytes: [prefix, 0x40 | (dr << 3) | sr], size: 2, undefined: false };
+    }
+
+    // H and L can't appear alongside an index half: the DD/FD prefix turns them
+    // into IXH/IXL too, so "LD IXL,H" would silently encode LD IXL,IXH
+    if (undocDest && (s === 'H' || s === 'L')) {
+        ErrorCollector.error(`Cannot use ${s} with ${d} (the index prefix makes it I${undocDest[1]}${s})`);
+    }
+    if (undocSrc && (d === 'H' || d === 'L')) {
+        ErrorCollector.error(`Cannot use ${d} with ${s} (the index prefix makes it I${undocSrc[1]}${d})`);
+    }
+
     if (undocDest && Z80Asm.isR8(s) && s !== '(HL)') {
         const prefix = undocDest[1] === 'X' ? 0xDD : 0xFD;
         const dr = undocDest[2] === 'H' ? 4 : 5;
@@ -151,6 +181,9 @@ InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
 
     // LD IXH/IXL, n  /  LD IYH/IYL, n
     if (undocDest) {
+        if (isRegIndirect(src)) {
+            ErrorCollector.error(`Invalid LD operands: ${dest}, ${src}`);
+        }
         const prefix = undocDest[1] === 'X' ? 0xDD : 0xFD;
         const dr = undocDest[2] === 'H' ? 4 : 5;
         const val = this.evalExpr(src, syms, addr);
@@ -171,6 +204,10 @@ InstructionEncoder.encodeLD = function(dest, src, addr, syms) {
 
     // LD r, n (8-bit immediate)
     if (Z80Asm.isR8(d)) {
+        // "LD B,(BC)" and friends don't exist — don't take them as immediates
+        if (isRegIndirect(src)) {
+            ErrorCollector.error(`Invalid LD operands: ${dest}, ${src}`);
+        }
         const dr = Z80Asm.getR8(d);
         const val = this.evalExpr(src, syms, addr);
         const n = Z80Asm.checkByte(val.value);
@@ -284,7 +321,10 @@ InstructionEncoder.encodeALU8 = function(op, operand, addr, syms) {
         return { bytes: [prefix, 0x86 | (code << 3), disp], size: 3, undefined: offset.undefined };
     }
 
-    // ALU n (immediate)
+    // ALU n (immediate) — but "ADD A,(BC)" is not an immediate, it's invalid
+    if (isRegIndirect(operand)) {
+        ErrorCollector.error(`Invalid ${op} operand: ${operand}`);
+    }
     const val = this.evalExpr(operand, syms, addr);
     const n = Z80Asm.checkByte(val.value);
     return { bytes: [0xC6 | (code << 3), n], size: 2, undefined: val.undefined };

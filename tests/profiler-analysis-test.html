@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Profiler Analysis Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Profiler Analysis Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { classifyHotspot, analyzeHotspots, generateHotspotLabels }
+            from '../tools/profiler-analysis.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // readByte over a sparse map of planted opcodes
+        const memOf = (bytes) => (addr) => (bytes[addr] === undefined ? 0x00 : bytes[addr]);
+
+        section('classifyHotspot — opcode patterns');
+        {
+            const cases = [
+                [{ 0x8000: 0x76 }, 'frame_sync', 'HALT'],
+                [{ 0x8000: 0x10 }, 'delay_djnz', 'DJNZ'],
+                [{ 0x8000: 0xED, 0x8001: 0xB0 }, 'block_ldir', 'LDIR'],
+                [{ 0x8000: 0xED, 0x8001: 0xB8 }, 'block_lddr', 'LDDR'],
+                [{ 0x8000: 0xED, 0x8001: 0xB3 }, 'io_block', 'OTIR'],
+                [{ 0x8000: 0xDB }, 'io_poll', 'IN A,(n)'],
+                [{ 0x8000: 0xD3 }, 'io_output', 'OUT (n),A'],
+                [{ 0x8000: 0xE3 }, 'stack_copy', 'EX (SP),HL'],
+                [{ 0x8000: 0xC5 }, 'stack_copy', 'PUSH BC'],
+                [{ 0x8000: 0x0B, 0x8001: 0x78, 0x8002: 0xB1, 0x8003: 0x20 }, 'delay_bc', 'DEC BC loop'],
+                [{ 0x8000: 0x00, 0x8001: 0x00 }, 'hotspot', 'nothing recognised'],
+            ];
+            for (const [bytes, expected, label] of cases) {
+                const got = classifyHotspot({ startAddr: 0x8000, endAddr: 0x8003 }, memOf(bytes));
+                assert(got === expected, `${label} → ${expected}`, got);
+            }
+        }
+
+        section('analyzeHotspots — clustering and filtering');
+        {
+            // One hot cluster in RAM, one in ROM, one below the 1% threshold
+            const tStatesPerPC = new Map([
+                ['32768', 5000], ['32769', 5000], ['32770', 5000],   // $8000 RAM, hot
+                ['100', 4000],                                        // ROM, hot
+                ['40000', 10],                                        // RAM, cold
+            ]);
+            const results = { tStatesPerPC, totalTStates: 100000 };
+            const readByte = memOf({ 0x8000: 0x76 });
+
+            const ramOnly = analyzeHotspots(results, { readByte, includeRom: false });
+            assert(ramOnly.length === 1, 'ROM excluded by default', `got ${ramOnly.length}`);
+            assert(ramOnly[0].startAddr === 0x8000, 'cluster starts at $8000',
+                   '$' + ramOnly[0].startAddr.toString(16));
+            assert(ramOnly[0].classification === 'frame_sync', 'cluster classified via readByte',
+                   ramOnly[0].classification);
+            assert(ramOnly[0].percentage === '15.0', 'percentage of total T-states',
+                   ramOnly[0].percentage);
+
+            const withRom = analyzeHotspots(results, { readByte, includeRom: true });
+            assert(withRom.length === 2, 'ROM included when asked', `got ${withRom.length}`);
+            assert(withRom[0].totalTStates >= withRom[1].totalTStates, 'sorted hottest first');
+
+            const empty = analyzeHotspots({ tStatesPerPC: new Map(), totalTStates: 0 },
+                                          { readByte, includeRom: true });
+            assert(Array.isArray(empty) && empty.length === 0, 'no data → empty list');
+        }
+
+        section('generateHotspotLabels — naming');
+        {
+            const hotspots = [
+                { startAddr: 0x8000, page: null, classification: 'frame_sync' },
+                { startAddr: 0x9000, page: null, classification: 'frame_sync' },
+                { startAddr: 0x0038, page: null, classification: 'io_poll' },
+            ];
+            const labels = generateHotspotLabels(hotspots, { includeRom: false });
+            assert(labels.length === 2, 'ROM hotspot skipped', `got ${labels.length}`);
+            assert(labels[0].name === 'frame_sync_8000', 'name is class + address', labels[0].name);
+            assert(labels[1].name === 'frame_sync_9000', 'second name distinct', labels[1].name);
+
+            const dupes = generateHotspotLabels(
+                [{ startAddr: 0x8000, page: null, classification: 'x' },
+                 { startAddr: 0x8000, page: '1', classification: 'x' }], { includeRom: false });
+            assert(dupes[0].name !== dupes[1].name, 'same address on two pages gets unique names',
+                   dupes.map(l => l.name).join(','));
+
+            const withRom = generateHotspotLabels(hotspots, { includeRom: true });
+            assert(withRom.length === 3, 'ROM hotspot kept when asked', `got ${withRom.length}`);
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

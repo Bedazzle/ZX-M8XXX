@@ -97,22 +97,45 @@ export const Z80Asm = {
         return args;
     },
 
-    // Truncate to 8-bit (standard assembler behavior — silently takes low byte)
-    checkByte(value, signed = false) {
+    // Truncate to 8-bit (standard assembler behavior — takes the low byte),
+    // warning when the value doesn't fit. signed = displacement/offset (-128..127).
+    // warn = false where the caller already reports the range itself (JR/DJNZ).
+    checkByte(value, signed = false, warn = true) {
+        if (warn && Number.isFinite(value)) {
+            const hi = signed ? 127 : 255;
+            if (value < -128 || value > hi) {
+                const used = signed ? ((value & 0xFF) << 24 >> 24) : (value & 0xFF);
+                ErrorCollector.warn(`Value ${value} out of 8-bit range (-128..${hi}), using ${used}`);
+            }
+        }
         return value & 0xFF;
     },
 
-    // Truncate to 16-bit (standard assembler behavior — silently takes low word)
-    checkWord(value) {
+    // Truncate to 16-bit (standard assembler behavior — takes the low word)
+    checkWord(value, warn = true) {
+        if (warn && Number.isFinite(value) && (value < -32768 || value > 65535)) {
+            ErrorCollector.warn(`Value ${value} out of 16-bit range (-32768..65535), using ${value & 0xFFFF}`);
+        }
         return value & 0xFFFF;
     },
 
     // Split word into low/high bytes
-    wordBytes(value) {
-        const w = this.checkWord(value);
+    wordBytes(value, warn = true) {
+        const w = this.checkWord(value, warn);
         return [w & 0xFF, (w >> 8) & 0xFF];
     }
 };
+
+// Mnemonics that take no operands — anything after them is an error,
+// not something to silently ignore (e.g. "EXX AF,AF'" is not EXX)
+const NO_OPERAND = new Set([
+    'EXA', 'EXX',
+    'RLCA', 'RRCA', 'RLA', 'RRA',
+    'NOP', 'HALT', 'DI', 'EI', 'SCF', 'CCF', 'CPL', 'NEG', 'DAA',
+    'RETI', 'RETN', 'RRD', 'RLD',
+    'LDI', 'LDIR', 'LDD', 'LDDR', 'CPI', 'CPIR', 'CPD', 'CPDR',
+    'INI', 'INIR', 'IND', 'INDR', 'OUTI', 'OTIR', 'OUTD', 'OTDR',
+]);
 
 // Instruction encoder
 export const InstructionEncoder = {
@@ -137,6 +160,15 @@ export const InstructionEncoder = {
         const encoder = this.encoders[mn];
         if (!encoder) {
             return null; // Unknown instruction
+        }
+
+        // Operand sanity: an instruction that takes none must get none, and an
+        // empty operand ("LD A," from a trailing comma) must not assemble as 0
+        if (NO_OPERAND.has(mn) && ops.length > 0) {
+            ErrorCollector.error(`${mn} takes no operands: ${ops.join(', ')}`);
+        }
+        if (ops.some(o => o === '')) {
+            ErrorCollector.error(`${mn}: missing operand`);
         }
 
         try {

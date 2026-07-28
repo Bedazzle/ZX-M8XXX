@@ -68,6 +68,9 @@ canvas { display: none; }
 import { Spectrum } from './core/spectrum.js';
 import { Disassembler } from './core/disasm.js';
 import { hex16 } from './core/utils.js';
+import {
+    generateProfilerLabels, analyzeHotspots, generateHotspotLabels
+} from './tools/profiler-analysis.js';
 
 // ── DOM elements ──
 const snapshotFileInput = document.getElementById('snapshotFile');
@@ -96,209 +99,6 @@ let rzxTotalFrames = 0;
 function log(msg) {
     logEl.textContent += msg + '\n';
     logEl.scrollTop = logEl.scrollHeight;
-}
-
-// ── Classification functions (from profiler-ui.js, pure logic) ──
-
-function classifyHotspot(hotspot, readByte) {
-    const start = hotspot.startAddr;
-    const end = hotspot.endAddr;
-    for (let a = start; a <= end; a++) {
-        const b0 = readByte(a);
-        const b1 = (a + 1 <= 0xFFFF) ? readByte(a + 1) : 0;
-        const b2 = (a + 2 <= 0xFFFF) ? readByte(a + 2) : 0;
-        const b3 = (a + 3 <= 0xFFFF) ? readByte(a + 3) : 0;
-        if (b0 === 0x76) return 'frame_sync';
-        if (b0 === 0x10) return 'delay_djnz';
-        if (b0 === 0xED && b1 === 0xB0) return 'block_ldir';
-        if (b0 === 0xED && b1 === 0xB8) return 'block_lddr';
-        if (b0 === 0xED && b1 === 0xA0) return 'block_copy';
-        if (b0 === 0xED && (b1 === 0xB2 || b1 === 0xB3)) return 'io_block';
-        if (b0 === 0xED && (b1 === 0xBA || b1 === 0xBB)) return 'io_block';
-        if (b0 === 0x0B && ((b1 === 0x78 && b2 === 0xB1) || (b1 === 0x79 && b2 === 0xB0)) && b3 === 0x20) return 'delay_bc';
-        if (b0 === 0xDB) return 'io_poll';
-        if (b0 === 0xED && b1 >= 0x40 && b1 <= 0x78 && (b1 & 1) === 0) return 'io_poll';
-        if (b0 === 0xD3) return 'io_output';
-        if (b0 === 0xED && b1 >= 0x41 && b1 <= 0x79 && (b1 & 1) === 1) return 'io_output';
-        if ((b0 & 0xCF) === 0xC1 || (b0 & 0xCF) === 0xC5) return 'stack_copy';
-        if (b0 === 0xE3) return 'stack_copy';
-    }
-    return 'hotspot';
-}
-
-function analyzeHotspots(results, readMemory) {
-    const tStatesPerPC = results.tStatesPerPC;
-    const totalTStates = results.totalTStates;
-    if (!tStatesPerPC || tStatesPerPC.size === 0) return [];
-
-    const entries = [];
-    for (const [key, tStates] of tStatesPerPC) {
-        const parts = key.split(':');
-        const addr = parseInt(parts[0], 10);
-        const page = parts.length > 1 ? parts[1] : null;
-        entries.push({ key, addr, page, tStates });
-    }
-
-    entries.sort((a, b) => {
-        if ((a.page || '') !== (b.page || '')) return (a.page || '') < (b.page || '') ? -1 : 1;
-        return a.addr - b.addr;
-    });
-
-    const clusters = [];
-    let cur = null;
-    for (const e of entries) {
-        if (cur && e.page === cur.page && e.addr <= cur.endAddr + 5) {
-            cur.entries.push(e);
-            cur.endAddr = e.addr;
-            cur.totalTStates += e.tStates;
-        } else {
-            if (cur) clusters.push(cur);
-            cur = { startAddr: e.addr, endAddr: e.addr, page: e.page,
-                    totalTStates: e.tStates, entries: [e] };
-        }
-    }
-    if (cur) clusters.push(cur);
-
-    const threshold = totalTStates * 0.01;
-    const hs = clusters.filter(c =>
-        c.totalTStates > threshold &&
-        (c.endAddr - c.startAddr) <= 32 &&
-        c.startAddr >= 0x4000
-    );
-
-    for (const h of hs) {
-        h.percentage = (h.totalTStates / totalTStates * 100).toFixed(1);
-        h.classification = classifyHotspot(h, readMemory);
-    }
-
-    hs.sort((a, b) => b.totalTStates - a.totalTStates);
-    return hs;
-}
-
-function generateProfilerLabels(results) {
-    const labels = [];
-    const usedNames = new Set();
-    const framesProfiled = results.framesProfiled;
-
-    function makeUniqueName(base) {
-        if (!usedNames.has(base)) { usedNames.add(base); return base; }
-        for (let i = 2; ; i++) {
-            const name = `${base}_${i}`;
-            if (!usedNames.has(name)) { usedNames.add(name); return name; }
-        }
-    }
-
-    function parseKey(key) {
-        const parts = key.split(':');
-        const addr = parseInt(parts[0], 10);
-        let page = null;
-        if (parts.length > 1) page = parts[1];
-        return { addr, page };
-    }
-
-    function hasPortMatch(portSet, mask, value) {
-        for (const p of portSet) {
-            if ((p & mask) === value) return true;
-        }
-        return false;
-    }
-
-    let mainLoopKey = null;
-    let mainLoopMaxCallees = 0;
-    for (const [key, stats] of results.subroutines) {
-        if (stats.entryAddr < 0x4000) continue;
-        const framePct = framesProfiled > 0 ? stats.framesCalled.size / framesProfiled : 0;
-        if (framePct > 0.9 && stats.callees.size > mainLoopMaxCallees) {
-            mainLoopMaxCallees = stats.callees.size;
-            mainLoopKey = key;
-        }
-    }
-
-    const im2HandlerAddr = results.im2 ? results.im2.handlerAddr : null;
-
-    for (const [key, stats] of results.subroutines) {
-        if (stats.entryAddr < 0x4000 && stats.entryAddr !== 0x0038 &&
-            stats.entryAddr !== im2HandlerAddr) continue;
-
-        const { addr, page } = parseKey(key);
-        const addrHex = hex16(addr);
-        let name = null;
-
-        if (stats.calledFromISR &&
-            (stats.entryAddr === 0x0038 || stats.entryAddr === im2HandlerAddr)) {
-            name = makeUniqueName(stats.entryAddr === 0x0038 ? 'isr_handler' : 'isr_handler_im2');
-        } else if (stats.calledFromISR && stats.entryAddr !== 0x0038 &&
-                   stats.entryAddr !== im2HandlerAddr) {
-            name = makeUniqueName('isr_routine');
-        } else if (key === mainLoopKey) {
-            name = makeUniqueName('main_loop');
-        } else if (stats.portsIn.size > 0 &&
-                   hasPortMatch(stats.portsIn, 0x01, 0x00) &&
-                   !stats.writesScreenBitmap && !stats.writesScreenAttr) {
-            name = makeUniqueName('read_keyboard');
-        } else if (stats.beeperOuts > 10) {
-            name = makeUniqueName('play_beep');
-        } else if (hasPortMatch(stats.portsOut, 0xC002, 0xC000) ||
-                   hasPortMatch(stats.portsOut, 0xC002, 0x8000)) {
-            if (stats.callCount === 1) name = makeUniqueName('ay_init');
-            else if (stats.callCount > 20) name = makeUniqueName('play_music');
-            else name = makeUniqueName('ay_write');
-        } else if (stats.writesScreenBitmap && !stats.writesScreenAttr) {
-            name = makeUniqueName('draw_sprite');
-        } else if (stats.writesScreenAttr && !stats.writesScreenBitmap) {
-            name = makeUniqueName('set_attrs');
-        } else if (stats.writesScreenBitmap && stats.writesScreenAttr) {
-            name = makeUniqueName('draw_screen');
-        } else if (hasPortMatch(stats.portsOut, 0x8002, 0x0000)) {
-            name = makeUniqueName('page_memory');
-        } else if (hasPortMatch(stats.portsIn, 0x00E3, 0x001F) ||
-                   hasPortMatch(stats.portsOut, 0x00E3, 0x001F) ||
-                   hasPortMatch(stats.portsIn, 0xF002, 0x2000) ||
-                   hasPortMatch(stats.portsOut, 0xF002, 0x3000)) {
-            if (hasPortMatch(stats.portsOut, 0x00FF, 0x007F) ||
-                hasPortMatch(stats.portsOut, 0xF002, 0x3000)) {
-                name = makeUniqueName('disk_write');
-            } else {
-                name = makeUniqueName('disk_read');
-            }
-        } else if (stats.callCount === 1 && stats.framesCalled.has(0)) {
-            name = makeUniqueName('init_' + addrHex);
-        } else if (stats.callees.size === 0 && stats.callCount > 10) {
-            name = makeUniqueName('util_' + addrHex);
-        }
-
-        if (name) {
-            labels.push({ address: addr, page: page, name: name });
-        }
-    }
-
-    if (results.im2) {
-        const vtAddr = results.im2.vectorTableAddr;
-        if (vtAddr >= 0x4000) {
-            labels.push({ address: vtAddr, page: null, name: makeUniqueName('im2_vector_table') });
-        }
-    }
-
-    return labels;
-}
-
-function generateHotspotLabels(hsList) {
-    const labels = [];
-    const usedNames = new Set();
-    for (const hs of hsList) {
-        if (hs.startAddr < 0x4000) continue;
-        const addrHex = hex16(hs.startAddr);
-        let name = `${hs.classification}_${addrHex}`;
-        if (usedNames.has(name)) {
-            for (let i = 2; ; i++) {
-                const n = `${name}_${i}`;
-                if (!usedNames.has(n)) { name = n; break; }
-            }
-        }
-        usedNames.add(name);
-        labels.push({ address: hs.startAddr, page: hs.page, name });
-    }
-    return labels;
 }
 
 // ── Key injection parsing ──
@@ -475,9 +275,16 @@ btnProfile.addEventListener('click', async () => {
 
     // Run classification
     const readMem = (addr) => spectrum.memory.read(addr);
-    classifiedLabels = generateProfilerLabels(profilerResults);
-    hotspots = analyzeHotspots(profilerResults, readMem);
-    const hotspotLabels = generateHotspotLabels(hotspots);
+    const memInfo = () => ({
+        machineType: spectrum.memory.machineType,
+        currentRomBank: spectrum.memory.currentRomBank,
+        currentRamBank: spectrum.memory.currentRamBank,
+        ramPages: spectrum.memory.ram ? spectrum.memory.ram.length : 1
+    });
+    classifiedLabels = generateProfilerLabels(profilerResults,
+        { readByte: readMem, getMemoryInfo: memInfo, includeRom: false });
+    hotspots = analyzeHotspots(profilerResults, { readByte: readMem, includeRom: false });
+    const hotspotLabels = generateHotspotLabels(hotspots, { includeRom: false });
 
     const subCount = profilerResults.subroutines.size;
     log(`Profiling complete: ${profilerResults.framesProfiled} frames`);

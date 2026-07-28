@@ -99,6 +99,7 @@
     import { Z80 } from '../core/z80.js';
     import { ULA, MODIFIER_KEY_OPTIONS } from '../core/ula.js';
     import { Disassembler } from '../core/disasm.js';
+    import { looksLikeMarkup } from '../core/utils.js';
         const TEST_VERSION = '0.6.2';
         
         // Access from global scope
@@ -508,6 +509,39 @@
             assert((attr & 0x80) === 0, 'FLASH from bit 7');
         }
 
+        // ==================== FILE LOAD DIAGNOSTICS ====================
+
+        // A headless driver that fetches a path that isn't there gets the server's
+        // 404 page; loadFile reports that instead of blaming the file format.
+        async function runLoadDiagnosticTests() {
+            section('Not-a-Spectrum-file detection (loadFile diagnostics)');
+
+            const enc = (s) => new TextEncoder().encode(s).buffer;
+
+            assert(/HTML page/i.test(looksLikeMarkup(enc('<!DOCTYPE html>\n<html>404 Not Found</html>')) || ''),
+                   'DOCTYPE page detected');
+            assert(/HTML page/i.test(looksLikeMarkup(enc('<html>\n<h1>Not Found</h1>')) || ''),
+                   'bare <html> detected');
+            assert(/HTML page/i.test(looksLikeMarkup(enc('\n   <HTML>')) || ''),
+                   'leading whitespace and case ignored');
+            assert(/XML document/i.test(looksLikeMarkup(enc('<?xml version="1.0"?><error/>')) || ''),
+                   'XML detected');
+            assert(/error message/i.test(looksLikeMarkup(enc('404: Not Found')) || ''),
+                   'plain "404: Not Found" detected');
+
+            // Binary content must never be mistaken for a document
+            const bin = new Uint8Array(64);
+            for (let i = 0; i < bin.length; i++) bin[i] = i;
+            assert(looksLikeMarkup(bin.buffer) === null, 'binary with NULs is not markup');
+
+            const tapHeader = new Uint8Array([0x13, 0x00, 0x00, 0x00, 0x03, 0x74, 0x65, 0x73, 0x74]);
+            assert(looksLikeMarkup(tapHeader.buffer) === null, 'TAP header is not markup');
+
+            assert(looksLikeMarkup(enc('PROGRAM  <not html>')) === null,
+                   'markup later in the file is not a page');
+            assert(looksLikeMarkup(new Uint8Array(0).buffer) === null, 'empty input is not markup');
+        }
+
         // ==================== CHAINED PREFIX TESTS ====================
 
         async function runPrefixTests() {
@@ -694,6 +728,7 @@
                 await runKeyboardTests();
                 await runULATests();
                 await runPrefixTests();
+                await runLoadDiagnosticTests();
             } catch (e) {
                 log(`ERROR: ${e.message}`, 'fail');
                 console.error(e);

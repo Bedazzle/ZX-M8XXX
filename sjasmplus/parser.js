@@ -90,6 +90,13 @@ export const Parser = {
             comment: this.lineComments[this.line] || ''  // Include comment from this line
         };
 
+        // A '!' before a label name marks it as not-exported in sjasmplus
+        // ("!__saved_org = $"). The name is otherwise ordinary, so drop the marker
+        // and carry on — without this the line isn't seen as a label at all.
+        if (this.check(TokenType.BANG) && this.peek(1) && this.peek(1).type === TokenType.IDENTIFIER) {
+            this.advance();
+        }
+
         // Check for label
         if (this.check(TokenType.IDENTIFIER) || this.check(TokenType.DOT)) {
             const labelStart = this.peek();
@@ -110,8 +117,8 @@ export const Parser = {
                 let putBack = false;
                 
                 // Block-end directives should never be treated as labels even with colon
-                const alwaysDirective = ['ENDM', 'ENDIF', 'ENDS', 'ENDR', 'ENDP', 'ENDMOD', 'ENDMODULE', 
-                                        'EDUP', 'ENDT', 'ENDW', 'ELSE', 'ELSEIF'];
+                const alwaysDirective = ['ENDM', 'ENDIF', 'ENDS', 'ENDR', 'ENDP', 'ENDMOD', 'ENDMODULE',
+                                        'EDUP', 'ENDT', 'ENDW', 'ELSE', 'ELSEIF', 'ENDLUA'];
                 
                 // Check if this is a block-end directive (even with colon, treat as directive)
                 if (alwaysDirective.includes(identUpper)) {
@@ -213,9 +220,12 @@ export const Parser = {
                 else if (isAtLineStart && this.isDirective(identUpper) && !this.isInstruction(ident.value) && 
                          (this.check(TokenType.NEWLINE) || this.isAtEnd())) {
                     // These directives don't take operands and should always be directives
-                    const alwaysDirective = ['ENDM', 'ENDIF', 'ENDS', 'ENDR', 'ENDP', 'ENDMOD', 'ENDMODULE', 
-                                            'EDUP', 'ENDT', 'ENDW', 'ELSE', 'ELSEIF'];
-                    if (alwaysDirective.includes(identUpper)) {
+                    const alwaysDirective = ['ENDM', 'ENDIF', 'ENDS', 'ENDR', 'ENDP', 'ENDMOD', 'ENDMODULE',
+                                            'EDUP', 'ENDT', 'ENDW', 'ELSE', 'ELSEIF', 'ENDLUA',
+                                            'END', 'DEPHASE', 'OUTEND', 'TAPEND', 'LIST', 'NOLIST'];
+                    // ...and these are meaningless without operands, so a bare one is a
+                    // mistake to report, not a label to define silently
+                    if (alwaysDirective.includes(identUpper) || this.requiresOperands(identUpper)) {
                         this.pos--; // Put it back, parse as directive
                         putBack = true;
                     } else {
@@ -248,7 +258,28 @@ export const Parser = {
         // Parse instruction or directive
         if (this.check(TokenType.IDENTIFIER)) {
             const ident = this.advance();
-            const name = ident.value.toUpperCase();
+            let name = ident.value.toUpperCase();
+            let rawName = ident.value;
+
+            // A dotted name is one identifier, not a directive plus something:
+            // "LUA.RemoveFile arg" is a macro call, not a LUA block. Join the parts
+            // back together before deciding what this line is.
+            if (this.check(TokenType.DOT) && this.peek(1) && this.peek(1).type === TokenType.IDENTIFIER) {
+                while (this.check(TokenType.DOT) && this.peek(1) && this.peek(1).type === TokenType.IDENTIFIER) {
+                    this.advance();                       // '.'
+                    const part = this.advance();          // the name after it
+                    rawName += '.' + part.value;
+                    name += '.' + part.value.toUpperCase();
+                }
+                result.instruction = name;
+                result.instructionRaw = rawName;
+                result.operands = this.parseOperands();
+                while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.COLON) && !this.isAtEnd()) {
+                    this.advance();
+                }
+                if (this.check(TokenType.COLON)) this.advance(); else this.match(TokenType.NEWLINE);
+                return result;
+            }
 
             // Check if it's a directive
             if (this.isDirective(name)) {
@@ -294,8 +325,14 @@ export const Parser = {
             return operands;
         }
 
-        // First operand
-        operands.push(this.parseOperand());
+        // First operand. An empty one with no comma after it means there was
+        // nothing to parse (e.g. "NOP : RET" — the colon ended the statement),
+        // not a missing operand, so report no operands at all
+        const first = this.parseOperand();
+        if (first === '' && !this.check(TokenType.COMMA)) {
+            return operands;
+        }
+        operands.push(first);
 
         // Additional operands separated by comma
         while (this.match(TokenType.COMMA)) {
@@ -404,6 +441,8 @@ export const Parser = {
             'ELSE', 'ELSEIF', 'ENDIF',
             // Macros
             'MACRO', 'ENDM', 'ENDMACRO', 'EXITM',
+            // Lua scripting
+            'LUA', 'ENDLUA',
             'REPT', 'ENDR', 'IRP', 'IRPC', 'DUP', 'EDUP',
             // Structures
             'STRUCT', 'ENDS', 'ENDSTRUCT',
@@ -413,6 +452,7 @@ export const Parser = {
             'INCLUDE', 'INCBIN', 'INSERT', 'INCHOB', 'INCTRD',
             // Output
             'OUTPUT', 'OUTEND',
+            'EXPORT',
             'SAVEBIN', 'SAVESNA', 'SAVETAP', 'EMPTYTAP', 'SAVETRD', 'EMPTYTRD', 'SAVEHOB',
             'LABELSLIST', 'TAPOUT', 'TAPEND',
             // Device
@@ -425,6 +465,22 @@ export const Parser = {
             'LIST', 'NOLIST',
         ];
         return directives.includes(name) || name.startsWith('.');
+    },
+
+    // Directives that are useless without operands. Deliberately excludes words
+    // that real sources use as labels (SLOT, PAGE, DS, BYTE, WORD, ENT, …)
+    requiresOperands(name) {
+        const needsOps = [
+            'ORG', 'ALIGN', 'DISP', 'PHASE',
+            'INCLUDE', 'INCBIN', 'INSERT', 'INCHOB', 'INCTRD',
+            'EQU', 'DEFL', 'DEFINE', 'UNDEFINE',
+            'IF', 'IFDEF', 'IFNDEF', 'IFUSED', 'IFNUSED',
+            'MACRO', 'REPT', 'DUP', 'IRP', 'IRPC', 'STRUCT', 'MODULE',
+            'DEVICE', 'MMU',
+            'SAVEBIN', 'SAVESNA', 'SAVETAP', 'SAVETRD', 'SAVEHOB',
+            'LABELSLIST', 'OUTPUT', 'ASSERT', 'DISPLAY', 'SHELLEXEC',
+        ];
+        return needsOps.includes(name);
     },
 
     // Check if identifier is a Z80 instruction
