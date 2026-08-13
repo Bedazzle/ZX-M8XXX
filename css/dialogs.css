@@ -1,0 +1,155 @@
+/* ZX-M8XXX - dialog styles (Beautify, ZIP list)
+   Extracted from index.html; load order is app.css then dialogs.css,
+   which is the order these blocks appeared in the document. */
+
+/* Beautify dialog layout */
+.bf-modal { display: flex; flex-direction: column; max-height: 90vh; }
+/* Fixed height so switching tabs doesn't resize the dialog */
+.bf-cols { display: flex; gap: 16px; height: 600px; max-height: 82vh; }
+.bf-opts { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; min-height: 0; }
+/* Folder tabs — matches .settings-subtab-btn / .panel-tab-btn house style */
+.bf-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--bg-button); }
+.bf-tab { padding: 6px 16px; background: var(--bg-tertiary); border: 1px solid var(--bg-button); border-bottom: none; border-radius: 4px 4px 0 0; color: var(--text-secondary); font-size: 12px; cursor: pointer; margin-bottom: -1px; }
+.bf-tab:hover { background: var(--bg-button); color: var(--text-primary); }
+.bf-tab.active { background: var(--bg-secondary); color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); }
+.bf-tab-panel { display: flex; flex-direction: column; gap: 12px; }
+.bf-tab-panel.hidden { display: none; }
+.bf-group { display: flex; flex-direction: column; gap: 7px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+.bf-tab-panel > .bf-group:first-child { padding-top: 0; border-top: none; }
+.bf-group-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); }
+.bf-opts label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.bf-opts input[type=checkbox] { width: 14px; height: 14px; }
+.bf-sel-row { display: flex; gap: 10px; }
+.bf-sel-row > label { flex: 1; justify-content: space-between; gap: 5px; }
+.bf-sel-row > label.bf-sel-solo { flex: 0 1 auto; justify-content: flex-start; }
+.bf-sel-row > label.bf-sel-solo select { flex: 0 0 150px; }
+.bf-sel-row label > span { color: var(--text-secondary); white-space: nowrap; }
+.bf-sel-row select { flex: 1; min-width: 0; padding: 3px; font-size: 13px; }
+.bf-preview-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bf-preview-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.bf-preview {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre;
+}
+
+/* Beautify scope toggle - visually separated from the per-transform options */
+#bfScopeRow {
+    margin-bottom: 2px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--yellow);
+    border-radius: 4px;
+    background: rgba(255, 255, 0, 0.06);
+    cursor: pointer;
+}
+#bfScopeRow:hover { background: rgba(255, 255, 0, 0.12); }
+#bfScopeRow:has(#bfAllFiles:checked) {
+    background: rgba(255, 255, 0, 0.18);
+    box-shadow: 0 0 0 1px var(--yellow);
+}
+#bfScopeRow span { color: var(--yellow); }
+
+.impf-list {
+    flex: 0 0 340px;
+    max-height: 380px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    font-size: 13px;
+}
+.impf-empty {
+    padding: 12px;
+    color: var(--text-secondary);
+}
+.impf-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--bg-secondary);
+}
+.impf-row:hover { background: var(--bg-secondary); }
+.impf-row.selected { background: var(--bg-button); }
+.impf-row .impf-name {
+    flex: 1;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.impf-row .impf-size {
+    color: var(--text-secondary);
+    min-width: 44px;
+    text-align: right;
+}
+.impf-row select {
+    font-size: 12px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+.impf-row.impf-back {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.impf-preview {
+    flex: 1;
+    margin: 0;
+    padding: 8px;
+    max-height: 380px;
+    overflow: auto;
+    border: 1px solid var(--border-color);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre;
+}
+.zip-file-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin: 15px 0;
+}
+.zip-file-item {
+    padding: 10px 15px;
+    margin: 5px 0;
+    background: #2a2a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.zip-file-item:hover {
+    background: #3a3a4a;
+}
+.zip-file-name {
+    color: var(--cyan);
+}
+.zip-file-type {
+    color: #888;
+    font-size: 12px;
+    text-transform: uppercase;
+    min-width: 50px;
+}
+.zip-file-info {
+    color: #666;
+    font-size: 11px;
+    font-family: monospace;
+}

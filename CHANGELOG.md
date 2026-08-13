@@ -2,6 +2,49 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.29
+- **PAL composite (RF) simulation** (Settings → Machines, off by default). A TV carries picture and colour on one wire and can't fully separate them, so fine dither at the colour subcarrier frequency comes out as colour. That is how *Chromatrons Attack* works — flat grey in every emulator, magenta and green on hardware. Stable on 128K/+2/+2A/+3, whose clock is locked to the subcarrier; on a 48K or a clone the hue drifts instead, which is their familiar dot crawl. Calibrated against a hardware photograph; costs about 9 ms a frame.
+- **Fixed: a snapshot saved on an EI/HALT loop froze in the test tab.** It ran one frame and stopped, which was easy to miss: the picture stayed on screen and only the border effects went missing. The automation API was affected too.
+- **Tests: three more Settings toggles can no longer change a result.** Pentagon attribute prefetch, late/early timing and the composite filter are set per test now (`"pentagonPrefetch"`, `"earlyTimings"`, `"palComposite"`).
+
+## v0.15.28
+- **ULA ink edge skew** (Settings → Machines, on by default). The Ferranti ULA switches into ink slightly later than back to paper, so an ink pixel comes out a touch narrower than a paper one. Ordinary graphics barely change, but a one-pixel checkerboard drawn with white ink reads darker than the same pattern drawn with white paper — which is the whole of the *Bright Miner* test. Ferranti machines only (48K/128K/+2), measured off a real +2 at about 0.03 of a pixel. Snow and the skew are per-test options now (`"ulaSnow"`, `"inkSkew"`), forced off otherwise.
+
+## v0.15.27
+- **ULA snow** (Settings → Machines, off by default). With `I` pointing into contended RAM (`$40-$7F`, or `$C0-$FF` on a 128K with an odd page at `$C000`) the ULA mistakes the Z80's refresh cycle for a display fetch, and the picture fills with moving noise made of fragments of itself. Follows Weiv's hardware measurements. Not on the +2A/+3 or the clones.
+- **Compare: memory against memory** (Utils → Compare). Compare one part of the running machine with another — a buffer against the screen it feeds, a bank against the one it should mirror — with no file involved. On 128K and up each side is either the 64K the CPU sees now or a RAM bank, paged in or not.
+- **Fixed: `INCBIN` of a data file with a source name gave wrong bytes.** A `.inc` (or `.txt`/`.def`/`.h`) holding graphics was read as text, which mangled every byte above 127 — the build reported the right size and the wrong data. Files are now kept exactly as loaded, and plain data no longer asks which codepage it is in. Sources in a Russian codepage still do.
+- **Fixed: a file you loaded vanished when you pressed Assemble.** Building failed with "File not found" and the file disappeared from the project list. A build now replaces only the editor's own text — anything you loaded stays, whatever its name and whether it's `INCLUDE`d or `INCBIN`ned.
+- **Keyboard ghosting** (Settings → Input, off by default). The real matrix has no diodes, so three keys held at the corners of a rectangle make a fourth read as pressed — the reason some games reject certain key combinations.
+
+## v0.15.26
+- **Fixed: a symbol used above its `EQU` assembled as 0.** `ld hl,BUF` with `BUF equ #4000` further down built silently as `ld hl,0`. Forward labels always worked; only `EQU` was affected.
+- **Fixed: a line typed in the wrong keyboard layout was skipped.** `щкп 25000` (for `org 25000`) lost its first word one character at a time and built as if the line were absent — at address 0, reported as OK. Characters the assembler can't read are now an error. New **Unicode labels** option (⚙, off) allows Cyrillic label names for sources ported from native assemblers; Cyrillic in comments and strings always worked.
+- **Fixed: a mistyped mnemonic assembled as OK.** `dup32` (for `dup 32`) quietly defined a label called `dup32` and built the body once, so the assembler reported success for a source that did nothing. An indented name that isn't an instruction or macro is now an error; a colon-less label in column 1 still works. `EDUP`/`ENDR` with no `DUP`/`REPT` open is an error too, instead of being ignored.
+- **Deploy: stale files after an upload are now caught.** A static server let the browser keep old JavaScript while serving the new page — the version looked right but a new feature was missing. `.htaccess` makes app files revalidate, and the app warns if the page and the scripts disagree.
+- **Explorer: Disk Map and the file views split out.** `ui/explorer.js` is down from 13,150 lines at the start of this work to 6,041. No behaviour change.
+- **Input handling split out of the machine core.** `core/spectrum.js` handed keyboard, joysticks, mouse and gamepad to `core/input.js`. No behaviour change.
+
+## v0.15.25
+- **Rename files in the ASM project.** A ✎ button next to each file's × in the Project list. It keeps the contents, follows the open tab and main-file marker, and won't overwrite an existing file.
+- **Fixed: `INCBIN` at a lower `ORG` produced nothing.** `org 25000` code followed by `org 16384` + `incbin` built as just the code — everything below the first `ORG` was dropped silently, so the screen never appeared.
+- **Fixed: a loaded binary vanished when you pressed Assemble.** Loading a `.scr`/`.bin` and then building a file that `INCBIN`s it failed with "File not found", and the file disappeared from the project list — a single-file build cleared the whole virtual filesystem, data included.
+- **Fixed: the joystick type wasn't remembered.** Settings → Input reverted to Kempston on every reload.
+- **Stylesheet split by area.** `css/app.css` was 7,243 lines; it is now an import list over one file per area. No visual change.
+- **Markup split by area.** `index.html` held every panel and dialog in one 3,900-line file; it now lives in `html/`, one file per area. No behaviour change.
+- **Snapshots carry the peripherals.** Quicksave, save slots and rewind restored CPU, RAM and paging only, so a restore mid-disk-load left the WD1793 mid-command and stale AY registers playing. SZX now saves the AY chip, both disk controllers, ULAplus and where the tape is positioned. Older snapshots still load.
+
+## v0.15.24
+- **Sinclair and Cursor joysticks.** Only Kempston was emulated, which left out every game that offers Sinclair or Cursor and nothing else. Settings → Input picks the type; the numpad and gamepad then press the right ZX keys. **Custom** binds any keys you like — QAOP+Space by default — for games that use their own layout.
+- **Nine save-state slots.** F2/F5 still save and load, but Shift+F2 picks a different slot, so one quicksave no longer overwrites the last. An existing quicksave moves into slot 1, and a full browser store is reported instead of silently losing the state. The status bar shows which slot is current and whether it holds anything.
+- **Rewind (Ctrl+← / Ctrl+→).** The last minute of play is kept as snapshots, so a mistake costs seconds instead of a reload. Tap back a few times and carry on — the abandoned future is dropped once you settle. Off switchable, ~2s granularity.
+- **Assembler: the `zx.*` Lua functions.** `zx.trdimage_create`, `zx.trdimage_add_file` and `zx.save_snapshot_sna` — the last documented sjasmplus binding we lacked. They emit the same save commands as `EMPTYTRD`/`SAVETRD`/`SAVESNA`, so scripts and directives produce identical files.
+- **POKE manager loads `.pok` cheat files.** The format the community databases ship, alongside the existing JSON. Pokes the file leaves to the user (lives, ammo) are asked for; malformed lines are skipped instead of failing the file.
+- **ASM editor: labels are one colour everywhere.** A label used as a jump target was left uncoloured, and one named after any keyword (`end:`, `push:`) was painted as that keyword.
+- **Assembler warns when a keyword is used as a label.** `end push hl` in column 0 assembles as the keyword, so no label is defined and later references fail with a confusing "Undefined symbol". Warnings now also show when assembly fails, not just the error.
+- **`run-tests.py`.** One command runs every browser suite headlessly and prints a table (4,795 asserts, ~60s). The Explorer, previously untested, gained `tests/explorer-test.html`.
+- **Big files split up.** `core/loaders.js` → `core/loaders/` (one module per format); the Explorer's info panels and editors → `ui/explorer-banks.js` / `ui/explorer-editors.js` (13,150 → 9,120 lines); index.html's CSS and app script → `css/` and `ui/app-init.js` (14,260 → 3,919); spectrum.js's auto-map and provenance → `core/debug-instrument.js`. No behaviour or API change.
+
 ## v0.15.23
 - **Assembler: LUA scripting, as sjasmplus does it.** `LUA` … `ENDLUA` blocks run real Lua at assembly time with sjasmplus's bindings — `_c`/`_pc`/`_pl` and the `sj` table (`calc`, `parse_code`, `parse_line`, `add_byte`/`add_word`, `get_label`/`insert_label`, `get_define`/`insert_define`, `current_address`, `pass`, `error`/`warning`, …) — plus the `PASS1`/`PASS2`/`PASS3`/`ALLPASS` argument (default PASS3), one script state kept across passes, and blocks inside macros seeing the macro's arguments. The engine (fengari, Lua 5.3) is fetched only when a source actually uses LUA, so nothing else pays for it. sjasmplus's own `examples/BasicLib` assembles to byte-identical BASIC.
 - **Assembler: EXPORT, and four fixes real Lua projects needed.** `EXPORT` (which writes the `.exp` symbol file) was missing entirely. `NAME MACRO param` defined a macro named after its first *parameter*, so every call reported "Unknown instruction"; macro parameters written the sjasmplus way (`file_path?`) were never substituted, because `?` is a regex quantifier; a label marked `!name` wasn't recognised as a label at all; and `DEFINE tape my-file.tap` evaluated the text as arithmetic (`my` − `file.tap`) instead of keeping it as text.

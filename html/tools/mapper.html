@@ -1,0 +1,154 @@
+<!-- Game Mapper. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-mapper">
+                <div class="mapper-container">
+                    <!-- Toolbar -->
+                    <div class="mapper-toolbar">
+                        <button class="mapper-btn primary" id="btnMapperCapture" title="Capture screen (Ctrl+Space)">Capture</button>
+                        <span class="mapper-separator"></span>
+                        <button class="mapper-nav-btn" id="btnMapperLeft" title="Move left (Ctrl+Left)">&larr;</button>
+                        <button class="mapper-nav-btn" id="btnMapperUp" title="Move up (Ctrl+Up)">&uarr;</button>
+                        <button class="mapper-nav-btn" id="btnMapperDown" title="Move down (Ctrl+Down)">&darr;</button>
+                        <button class="mapper-nav-btn" id="btnMapperRight" title="Move right (Ctrl+Right)">&rarr;</button>
+                        <span class="mapper-room-label" id="mapperRoomLabel">(0, 0)</span>
+                        <span class="mapper-separator"></span>
+                        <span class="mapper-floor-label">F:</span>
+                        <button class="mapper-nav-btn mapper-floor-btn" id="btnMapperFloorDown" title="Floor down (Ctrl+Shift+Down)">&#9660;</button>
+                        <span class="mapper-floor-value" id="mapperFloorLabel">0</span>
+                        <button class="mapper-nav-btn mapper-floor-btn" id="btnMapperFloorUp" title="Floor up (Ctrl+Shift+Up)">&#9650;</button>
+                        <span class="mapper-separator"></span>
+                        <button class="mapper-btn" id="btnMapperBlend" title="Blend all screenshots into one averaged image" style="display:none">Blend</button>
+                        <button class="mapper-btn" id="btnMapperStamp" title="Stamp region from selected screenshot onto blend" style="display:none">Stamp</button>
+                        <button class="mapper-btn danger" id="btnMapperDeleteShot" title="Delete current screenshot" style="display:none">Delete</button>
+                        <button class="mapper-btn danger" id="btnMapperRemoveRoom" title="Remove entire room (Ctrl+Delete)" style="display:none">Remove room</button>
+                        <button class="mapper-btn" id="btnMapperMoveRoom" title="Move room to different position" style="display:none">Move</button>
+                        <button class="mapper-btn" id="btnMapperTextSlide" title="Create or edit a text slide">Text</button>
+                        <select class="mapper-mark-select" id="mapperRoomMark" title="Mark room for attention">
+                            <option value="">No mark</option>
+                            <option value="#000000" style="color:#000000">&#x2716; Black</option>
+                            <option value="#0000FF" style="color:#0000FF">&#x2716; Blue</option>
+                            <option value="#FF0000" style="color:#FF0000">&#x2716; Red</option>
+                            <option value="#FF00FF" style="color:#FF00FF">&#x2716; Magenta</option>
+                            <option value="#00FF00" style="color:#00FF00">&#x2716; Green</option>
+                            <option value="#00FFFF" style="color:#00FFFF">&#x2716; Cyan</option>
+                            <option value="#FFFF00" style="color:#FFFF00">&#x2716; Yellow</option>
+                            <option value="#FFFFFF" style="color:#FFFFFF">&#x2716; White</option>
+                        </select>
+                        <span class="mapper-toolbar-spacer"></span>
+                        <div class="mapper-thumb-strip" id="mapperThumbStrip"></div>
+                        <button class="mapper-nav-btn" id="btnMapperSettings" title="Map settings">&#9881;</button>
+                    </div>
+                    <!-- Settings Panel (toggled) -->
+                    <div class="mapper-settings hidden" id="mapperSettingsPanel">
+                        <div class="mapper-settings-row">
+                            <label class="mapper-field-label">Region &mdash; X:<input type="number" id="mapperRegionX" value="0" min="0" max="31" class="mapper-field-input"></label>
+                            <label class="mapper-field-label">Y:<input type="number" id="mapperRegionY" value="0" min="0" max="23" class="mapper-field-input"></label>
+                            <label class="mapper-field-label">W:<input type="number" id="mapperRegionW" value="32" min="1" max="32" class="mapper-field-input"></label>
+                            <label class="mapper-field-label">H:<input type="number" id="mapperRegionH" value="24" min="1" max="24" class="mapper-field-input"></label>
+                            <span class="mapper-separator"></span>
+                            <label class="mapper-field-label">Highlight:
+                                <select id="mapperHighlightColor" class="mapper-field-select">
+                                    <option value="#4ecdc4">Cyan</option>
+                                    <option value="#ff6b6b">Red</option>
+                                    <option value="#ffd93d">Yellow</option>
+                                    <option value="#6bcb77">Green</option>
+                                    <option value="#ffffff">White</option>
+                                </select>
+                            </label>
+                            <span class="mapper-separator"></span>
+                            <label class="mapper-field-label">Gap H:<input type="number" id="mapperGapH" value="0" min="0" max="32" class="mapper-field-input" title="Horizontal gap between rooms in pixels"></label>
+                            <label class="mapper-field-label">V:<input type="number" id="mapperGapV" value="0" min="0" max="32" class="mapper-field-input" title="Vertical gap between rooms in pixels"></label>
+                            <label class="mapper-field-label">Zoom:
+                                <select id="mapperOverviewZoom" class="mapper-field-select" title="Overview zoom level">
+                                    <option value="fit">Fit</option>
+                                    <option value="x1">x1</option>
+                                    <option value="x2">x2</option>
+                                </select>
+                            </label>
+                            <label class="mapper-field-label"><input type="checkbox" id="mapperFollow" title="Auto-scroll to keep current room centered (x1/x2 zoom)"> Follow</label>
+                            <span class="mapper-separator"></span>
+                            <label class="mapper-field-label">Export:
+                                <select id="mapperExportLayout" class="mapper-field-select">
+                                    <option value="separate">Separate PNGs</option>
+                                    <option value="1x">1 x ...</option>
+                                    <option value="2x">2 x ...</option>
+                                    <option value="3x">3 x ...</option>
+                                    <option value="4x">4 x ...</option>
+                                    <option value="5x">5 x ...</option>
+                                    <option value="x1">... x 1</option>
+                                    <option value="x2">... x 2</option>
+                                    <option value="x3">... x 3</option>
+                                    <option value="x4">... x 4</option>
+                                    <option value="x5">... x 5</option>
+                                </select>
+                            </label>
+                            <label class="mapper-field-label">Floor gap:<input type="number" id="mapperFloorGap" value="8" min="0" max="64" class="mapper-field-input" title="Gap between floors in composite PNG export"></label>
+                        </div>
+                        <div class="mapper-settings-row">
+                            <label class="mapper-field-label">Game:<input type="text" id="mapperGame" class="mapper-text-input" placeholder="Game name"></label>
+                            <label class="mapper-field-label">Level:<input type="text" id="mapperLevel" class="mapper-text-input mapper-text-short" placeholder="Level"></label>
+                            <label class="mapper-field-label">Author:<input type="text" id="mapperAuthor" class="mapper-text-input mapper-text-short" placeholder="Author"></label>
+                            <span class="mapper-separator"></span>
+                            <button class="mapper-btn" id="btnMapperSave">Save</button>
+                            <button class="mapper-btn" id="btnMapperLoad">Load</button>
+                            <button class="mapper-btn" id="btnMapperExportPng">Export PNG</button>
+                            <button class="mapper-btn danger" id="btnMapperClear">Clear</button>
+                            <span class="mapper-separator"></span>
+                            <span class="mapper-stats" id="mapperStats">0 rooms mapped</span>
+                            <input type="file" id="mapperFileInput" accept=".json" style="display:none">
+                        </div>
+                    </div>
+                    <!-- Map Overview -->
+                    <div class="mapper-overview-container" id="mapperOverviewContainer">
+                        <canvas id="mapperOverviewCanvas"></canvas>
+                        <div class="mapper-overview-placeholder" id="mapperOverviewPlaceholder">Capture rooms to build the map</div>
+                        <div class="mapper-room-popup hidden" id="mapperRoomPopup">
+                            <div class="mapper-room-popup-label" id="mapperRoomPopupLabel"></div>
+                            <canvas id="mapperRoomPopupCanvas"></canvas>
+                        </div>
+                        <div class="mapper-stamp-dialog hidden" id="mapperStampDialog">
+                            <div class="mapper-stamp-header">
+                                <label>A: <select id="mapperStampSourceA"></select></label>
+                                <label>B: <select id="mapperStampSourceB"></select></label>
+                                <span id="mapperStampInfo">Drawing from A</span>
+                                <button class="mapper-btn" id="btnMapperStampClear">Clear stamps</button>
+                                <button class="mapper-btn" id="btnMapperStampClose">&times;</button>
+                            </div>
+                            <div class="mapper-stamp-canvas-wrap">
+                                <canvas id="mapperStampCanvas"></canvas>
+                            </div>
+                            <div class="mapper-stamp-sources">
+                                <div class="mapper-stamp-source selected" id="mapperStampSourceAWrap">
+                                    <div class="mapper-stamp-source-label">A</div>
+                                    <canvas id="mapperStampCanvasA"></canvas>
+                                </div>
+                                <div class="mapper-stamp-source" id="mapperStampSourceBWrap">
+                                    <div class="mapper-stamp-source-label">B</div>
+                                    <canvas id="mapperStampCanvasB"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mapper-textslide-dialog hidden" id="mapperTextSlideDialog">
+                            <div class="mapper-textslide-header">
+                                <label class="mapper-field-label">Font:<input type="text" id="mapperTsFont" class="mapper-text-input mapper-text-short"></label>
+                                <label class="mapper-field-label">Size:<input type="number" id="mapperTsFontSize" min="6" max="72" class="mapper-field-input"></label>
+                                <label class="mapper-field-label">Color:<input type="color" id="mapperTsColor" class="mapper-textslide-color-input"></label>
+                                <label class="mapper-field-label">Paper:<input type="color" id="mapperTsPaper" class="mapper-textslide-color-input"></label>
+                                <span></span>
+                                <button class="mapper-btn" id="btnMapperTsSetDefault" title="Set current font/size/colors as defaults for new text slides">Set as default</button>
+                                <button class="mapper-btn primary" id="btnMapperTsApply">Apply</button>
+                                <button class="mapper-btn" id="btnMapperTsClose">&times;</button>
+                            </div>
+                            <div class="mapper-textslide-body">
+                                <div class="mapper-textslide-editor">
+                                    <textarea id="mapperTsText" placeholder="Enter text here..."></textarea>
+                                </div>
+                                <div class="mapper-textslide-preview">
+                                    <canvas id="mapperTsPreviewCanvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div><!-- tools-mapper -->
+
+            <!-- Graphics Viewer Sub-tab -->

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ULA Snow Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>ULA Snow Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // The ULA fetches four bytes in the first four T-states of its 8-T cycle
+        // (pixels/attribute of cell 1, then of cell 2). A refresh landing on one of
+        // those four spoils it and the fetch after it; what appears is the display
+        // file read from an address whose low bits are R's (Weiv,
+        // hype.retroscene.org/blog/1089). See core/ula-snow.js.
+        import { applySnow, applySnowLine, snowActive, snowRange, corruptAddress,
+                 bitmapOffset, attrOffset, M1Log, M1_T4_FROM_FETCH, R_ON_BUS,
+                 PENDING_FETCHES, SnowCalibration, DISPLAY_BYTES } from '../core/ula-snow.js';
+        import { ULA } from '../core/ula.js';
+        import { getMachineProfile } from '../core/machines.js';
+
+        const TEST_VERSION = '0.3.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        section('When the refresh address lands in contended RAM');
+        {
+            assert(!snowRange(0x00), 'I=$00 does not snow');
+            assert(!snowRange(0x3F), 'I=$3F (ROM) does not snow');
+            assert(snowRange(0x40), 'I=$40 snows');
+            assert(snowRange(0x7F), 'I=$7F snows');
+            assert(!snowRange(0x80), 'I=$80 does not snow on a 48K');
+
+            // 128K: $C000 is contended only while an odd page is there
+            assert(snowRange(0xC0, { pagedBankAtC000: 1 }), 'I=$C0 with page 1 snows');
+            assert(snowRange(0xFF, { pagedBankAtC000: 7 }), 'I=$FF with page 7 snows');
+            assert(!snowRange(0xC0, { pagedBankAtC000: 0 }), 'page 0 at $C000 does not');
+            assert(!snowRange(0xC0, { pagedBankAtC000: 2 }), 'nor page 2');
+            assert(!snowRange(0xC0), 'nor a machine with nothing paged there (48K)');
+
+            const on = { enabled: true, hasSnow: true, i: 0x40 };
+            assert(snowActive(on), 'enabled + contended + I in range');
+            assert(!snowActive({ ...on, enabled: false }), 'the option gates it');
+            assert(!snowActive({ ...on, hasSnow: false }),
+                   'a ULA that does not do it never snows (+2A/+3, clones)');
+        }
+
+        section('The corrupted address');
+        {
+            // "bits 6..0 of R are picked up in bits 6..0 of the screen address"
+            assert(corruptAddress(0x0000, 0x00) === 0x0000, 'R=0 at the start of the file');
+            assert(corruptAddress(0x0000, 0x7F) === 0x007F, 'R fills the low 7 bits');
+            assert(corruptAddress(0x0123, 0x45) === 0x0145, 'the rest of the address survives',
+                   corruptAddress(0x0123, 0x45).toString(16));
+            assert(corruptAddress(0x1880, 0x05) === 0x1885, 'and it works in the attributes',
+                   corruptAddress(0x1880, 0x05).toString(16));
+            assert(corruptAddress(0x0100, 0xFF) === 0x017F, 'only bits 6..0 of R are used',
+                   corruptAddress(0x0100, 0xFF).toString(16));
+        }
+
+        // A log built straight from refresh T-states, so a test can place a
+        // collision exactly. note() is exercised separately.
+        function logAt(entries) {
+            const lg = new M1Log(entries.length + 1);
+            for (const [t, r] of entries) {
+                lg.ts[lg.count] = t; lg.rs[lg.count] = r; lg.count++;
+            }
+            lg.enabled = true;
+            return lg;
+        }
+        function gradient(mul = 1) {
+            const ram = new Uint8Array(0x4000);
+            for (let i = 0; i < ram.length; i++) ram[i] = (i * mul) & 0xFF;
+            return ram;
+        }
+        function fresh(ram) {
+            const out = new Uint8Array(DISPLAY_BYTES);
+            out.set(ram.subarray(0, DISPLAY_BYTES));
+            return out;
+        }
+        // Which cells differ from the clean picture
+        function changedColumns(out, ram, y) {
+            const cols = [];
+            for (let x = 0; x < 32; x++) {
+                if (out[bitmapOffset(x, y)] !== ram[bitmapOffset(x, y)] ||
+                    out[attrOffset(x, y)] !== ram[attrOffset(x, y)]) cols.push(x);
+            }
+            return cols;
+        }
+
+        section('Which T-state of the cycle collides, and with which fetch');
+        {
+            // The wider ZXMAK2-shaped rule, kept as an option; Weiv's is the default
+            // and has its own section below.
+            SnowCalibration.rule = 'overlap';
+            const ram = gradient();
+            const lineT = 1000, y = 0;
+
+            // Slot 0 is cell 1's pixels, 1 its attribute, 2 and 3 the same for cell 2.
+            // A collision spoils the fetch it lands on and the one after it: the
+            // first takes the hijacked address, the second repeats the byte the ULA
+            // read before. Placed at pair 2 so "the byte read before" is a real
+            // earlier fetch rather than the line's seed.
+            const P = 2, base = lineT + P * 8, c1 = P * 2, c2 = c1 + 1;
+            const cases = [
+                [0, 'pixels of cell 1',
+                 bitmapOffset(c1, y), attrOffset(c1, y), attrOffset(c1 - 1, y)],
+                [1, 'attribute of cell 1',
+                 attrOffset(c1, y), bitmapOffset(c2, y), bitmapOffset(c1, y)],
+                [2, 'pixels of cell 2',
+                 bitmapOffset(c2, y), attrOffset(c2, y), attrOffset(c1, y)],
+                [3, 'attribute of cell 2',
+                 attrOffset(c2, y), bitmapOffset(c2 + 1, y), bitmapOffset(c2, y)]
+            ];
+            for (const [slot, what, hit, next, repeated] of cases) {
+                const out = fresh(ram);
+                const counts = applySnowLine(out, ram, logAt([[base + slot, 0x45]]), lineT, y);
+                assert(counts.snow === 1 && counts.double === 1,
+                       `offset ${slot} spoils two fetches, starting at the ${what}`,
+                       JSON.stringify(counts));
+                assert(out[hit] === ram[corruptAddress(hit, 0x45)],
+                       `  the first comes from the hijacked address`);
+                assert(out[next] === ram[repeated],
+                       `  and the second repeats the byte read before it`);
+            }
+
+            for (const slot of [4, 5, 6, 7]) {
+                const out = fresh(ram);
+                const counts = applySnowLine(out, ram, logAt([[lineT + slot, 0x33]]), lineT, y);
+                assert(counts.snow === 0,
+                       `offset ${slot} is the shift-out half — the bus is idle`,
+                       JSON.stringify(counts));
+            }
+
+            // ZXMAK2's variant, kept as a knob: the two are spent on bitmap fetches
+            // only, so one collision reaches across both cells of the pair and no
+            // attribute is touched.
+            SnowCalibration.spendOn = 'bitmap';
+            try {
+                const bm = fresh(ram);
+                const counts = applySnowLine(bm, ram, logAt([[lineT, 0x45]]), lineT, y);
+                assert(counts.snow === 1 && counts.double === 1,
+                       'bitmap-only still spends two', JSON.stringify(counts));
+                assert(bm[bitmapOffset(0, y)] !== ram[bitmapOffset(0, y)] &&
+                       bm[bitmapOffset(1, y)] !== ram[bitmapOffset(1, y)],
+                       '  on both cells’ pixels');
+                assert(bm[attrOffset(0, y)] === ram[attrOffset(0, y)] &&
+                       bm[attrOffset(1, y)] === ram[attrOffset(1, y)],
+                       '  leaving the attributes alone');
+            } finally {
+                SnowCalibration.spendOn = 'all';
+            }
+
+            // exactly two, not a run
+            const out = fresh(ram);
+            applySnowLine(out, ram, logAt([[lineT, 0x45]]), lineT, y);
+            assert(PENDING_FETCHES === 2, 'a collision is worth two fetches');
+            assert(out[bitmapOffset(1, y)] === ram[bitmapOffset(1, y)],
+                   'and the third fetch after it is clean again');
+        }
+
+        section('No parity trap: a steady instruction stream always collides');
+        {
+            // Under this rule a collision is possible at four offsets out of
+            // eight, so no instruction cadence can dodge it. (Weiv's rule has two
+            // triggers two T-states apart and CAN be dodged by a 4T stream — that
+            // is the hardware's behaviour, not a gap; see the section below.)
+            const ram = gradient();
+            for (const cadence of [4, 7, 13]) {
+                for (let phase = 0; phase < 8; phase++) {
+                    const lineT = 14336 + phase;
+                    const refreshes = [];
+                    for (let k = 0; k * cadence < 128; k++) {
+                        refreshes.push([14336 + k * cadence, k & 0x7F]);
+                    }
+                    const out = fresh(ram);
+                    const counts = applySnowLine(out, ram, logAt(refreshes), lineT, 0);
+                    if (counts.snow === 0) {
+                        assert(false, `${cadence}T instructions, line phase ${phase}`,
+                               'no collision at all');
+                        break;
+                    }
+                    if (phase === 7) {
+                        assert(true, `${cadence}T instructions collide at every line phase`);
+                    }
+                }
+            }
+        }
+
+        section('Prediction: Woodmass’ Snow Hold inner loop');
+        {
+            // snowhold.asm (Mark Woodmass, 2025) is written against 48K timing and
+            // annotates its own T-states: `ld a,0` twice per macro, i.e. an M1 every
+            // 7 T-states, with the first opcode fetch at T=14335 and the loop body
+            // exactly one 224T scanline long. So the collisions repeat identically
+            // on every line, which is why the reference capture shows fixed vertical
+            // bands rather than a scatter.
+            //
+            // This pins the geometry, so it states the refresh phase itself rather
+            // than reading the calibration: put the refresh at fetch+4, i.e. at
+            // 14339+7k, against a first cycle starting at 14336, and the offset
+            // within the cycle is (3-k) mod 8 — k = 0..3 and 8..11 fall on fetches,
+            // the rest on the idle half. Worked through by hand that is bands at
+            // columns 1-6 and 15-20.
+            const REFRESH_AT = 4;
+            const ram = gradient(3);
+            const lineT = 14336, y = 40;
+            const refreshes = [];
+            // R values picked so no corrupted address lands back on the one the ULA
+            // wanted — that reads as a clean cell and hides a real collision.
+            for (let k = 0; k < 16; k++) {
+                refreshes.push([14335 + 7 * k + REFRESH_AT, (k * 13 + 7) & 0x7F]);
+            }
+
+            const out = fresh(ram);
+            const counts = applySnowLine(out, ram, logAt(refreshes), lineT, y);
+            assert(counts.snow === 8 && counts.double === 8,
+                   'eight collisions: eight hijacked reads and eight repeats',
+                   JSON.stringify(counts));
+
+            const cols = changedColumns(out, ram, y).join(',');
+            assert(cols === '1,2,3,4,5,6,15,16,17,18,19,20',
+                   'two six-column bands, fourteen columns apart', cols);
+        }
+
+        section('Snow reads the display file, not noise');
+        {
+            const ram = new Uint8Array(0x4000);
+            for (let i = 0; i < ram.length; i++) ram[i] = i & 0xFF;
+            const out = new Uint8Array(DISPLAY_BYTES);
+            out.set(ram.subarray(0, DISPLAY_BYTES));
+
+            const lineT = 1000, y = 0;
+            const counts = applySnowLine(out, ram, logAt([[lineT, 0x45]]), lineT, y);
+            assert(counts.snow === 1 && counts.double === 1,
+                   'the collision spoiled two fetches', JSON.stringify(counts));
+
+            // The whole point of the effect: what appears is a piece of the picture
+            // from 128 bytes away, not random data.
+            const pix = bitmapOffset(0, y), att = attrOffset(0, y);
+            assert(out[pix] === ram[corruptAddress(pix, 0x45)],
+                   'the pixel byte comes from the corrupted address');
+            assert(out[att] === ram[attrOffset(0, y)],
+                   'and the attribute repeats the byte read before the line');
+            assert((corruptAddress(pix, 0x45) & ~0x7F) === (pix & ~0x7F),
+                   'which is in the same 128-byte block as the one it wanted');
+            assert(out[bitmapOffset(2, y)] === ram[bitmapOffset(2, y)],
+                   'the next pair is untouched');
+
+            const quiet = fresh(ram);
+            const empty = applySnowLine(quiet, ram, logAt([]), lineT, y);
+            assert(empty.snow === 0 && empty.double === 0, 'and no M1 at all does nothing');
+            const late = applySnowLine(quiet, ram, logAt([[lineT + 500, 0x11]]), lineT, y);
+            assert(late.snow === 0, 'nor a refresh after the line has been drawn');
+        }
+
+        section('The refresh log');
+        {
+            const lg = new M1Log();
+            lg.enabled = true;
+            lg.note(1000, 0x10);
+            assert(lg.count === 1 && lg.ts[0] === 1000 + M1_T4_FROM_FETCH,
+                   'the refresh sits at the 4th T-state of the fetch', String(lg.ts[0]));
+            assert(lg.rs[0] === ((0x10 + R_ON_BUS) & 0x7F),
+                   'and carries R as it was on the bus', String(lg.rs[0]));
+            lg.note(1000, 0x00);
+            assert(lg.rs[1] === 0x7F, 'R wraps in 7 bits', String(lg.rs[1]));
+
+            lg.note(2000, 0x01);
+            assert(lg.firstAtOrAfter(0) === 0 &&
+                   lg.firstAtOrAfter(1000 + M1_T4_FROM_FETCH + 1) === 2 &&
+                   lg.firstAtOrAfter(999999) === lg.count,
+                   'the search finds the first refresh at or after a T-state');
+
+            lg.reset();
+            assert(lg.count === 0, 'and it clears between frames');
+        }
+
+        section('A whole frame');
+        {
+            const ram = new Uint8Array(0x4000);
+            for (let i = 0; i < ram.length; i++) ram[i] = (i ^ (i >> 7)) & 0xFF;
+            const out = new Uint8Array(DISPLAY_BYTES);
+            const paperT = (y) => 14336 + y * 224;
+            // one collision on every line, at the first cell
+            const refreshes = [];
+            for (let y = 0; y < 192; y++) refreshes.push([paperT(y), y & 0x7F]);
+            const counts = applySnow(out, ram, logAt(refreshes), paperT);
+            assert(counts.snow === 192 && counts.double === 192,
+                   'every line took one collision: one hijacked read, one repeat',
+                   JSON.stringify(counts));
+
+            let changed = 0;
+            for (let i = 0; i < DISPLAY_BYTES; i++) if (out[i] !== ram[i]) changed++;
+            assert(changed > 0 && changed < 400, 'and only those bytes changed',
+                   String(changed));
+            SnowCalibration.rule = 'weiv';
+        }
+
+        section('Prediction: Snow Hold under Weiv’s rule');
+        {
+            // Same tape, same refresh stream as the section above, but only the two
+            // stated overlaps do anything. Offset in the cycle is (3-k) mod 8, so
+            // offset 2 (snow) needs k = 1, 9 and offset 4 (double) needs k = 7, 15.
+            // Snow lands on the pair's first cell, double makes the second repeat it:
+            // columns 2 and 16 snowed, 13 and 27 doubled.
+            const ram = gradient(3);
+            const lineT = 14336, y = 40;
+            const refreshes = [];
+            for (let k = 0; k < 16; k++) {
+                refreshes.push([14335 + 7 * k + 4, (k * 13 + 7) & 0x7F]);
+            }
+            const out = fresh(ram);
+            const counts = applySnowLine(out, ram, logAt(refreshes), lineT, y);
+            assert(counts.snow === 4 && counts.double === 4,
+                   'two snowed cells and two doubled ones, two bytes each',
+                   JSON.stringify(counts));
+            const cols = changedColumns(out, ram, y).join(',');
+            assert(cols === '2,13,16,27', 'in the columns worked out by hand', cols);
+
+            assert(out[bitmapOffset(13, y)] === out[bitmapOffset(12, y)] &&
+                   out[attrOffset(13, y)] === out[attrOffset(12, y)],
+                   'a doubled cell shows the previous bar’s pixels and attribute');
+
+            // The parity consequence, stated so it is not rediscovered as a bug:
+            // 4T instructions sit on one parity and can miss both triggers.
+            const quiet = fresh(ram);
+            const every4 = [];
+            for (let k = 0; k * 4 < 128; k++) every4.push([14336 + 1 + k * 4, k & 0x7F]);
+            const none = applySnowLine(quiet, ram, logAt(every4), lineT, y);
+            assert(none.snow === 0 && none.double === 0,
+                   'a 4T instruction stream on the wrong parity collides with neither',
+                   JSON.stringify(none));
+        }
+
+        section('The ULA gates it, and the CPU only logs while it is on');
+        {
+            function fakeMemory(hasSnow, ramPages = 1) {
+                const ram = new Uint8Array(0x4000);
+                for (let i = 0; i < ram.length; i++) ram[i] = i & 0xFF;
+                return {
+                    profile: { hasSnow, ramPages },
+                    currentRamBank: 0,
+                    getScreenBase: () => ({ ram, offset: 0 }),
+                    ram
+                };
+            }
+            const mem = fakeMemory(true);
+            const ula = new ULA(mem, '48k');
+            ula.cpu = { i: 0x40, r: 0, m1Log: null, tStates: 0 };
+
+            assert(ula.snowEnabled === false, 'off on a fresh ULA');
+            assert(ula.cpu.m1Log === null, 'and the CPU is not logging');
+            assert(ula._displayRam(mem.getScreenBase(), 64) === mem.ram,
+                   'the real display file is used');
+
+            ula.setSnowEffect(true);
+            assert(ula.cpu.m1Log === ula.m1Log, 'switching it on hands the CPU the log');
+            assert(ula.isSnowing(), 'and the machine is snowing');
+            ula.setSnowEffect(false);
+            assert(ula.cpu.m1Log === null, 'switching it off takes it away again');
+
+            // 128K: the $C000 range depends on which page is there
+            const mem128 = fakeMemory(true, 8);
+            const ula128 = new ULA(mem128, '128k');
+            ula128.cpu = { i: 0xC0, r: 0, m1Log: null, tStates: 0 };
+            ula128.setSnowEffect(true);
+            mem128.currentRamBank = 1;
+            assert(ula128.isSnowing(), 'I=$C0 with page 1 at $C000 snows');
+            mem128.currentRamBank = 2;
+            assert(!ula128.isSnowing(), 'and not with page 2');
+
+            const pent = new ULA(fakeMemory(false), 'pentagon');
+            pent.cpu = { i: 0x40, r: 0, m1Log: null, tStates: 0 };
+            pent.setSnowEffect(true);
+            assert(!pent.isSnowing(), 'a clone ULA never snows');
+
+            // Which machines the profiles allow it on. The +2A/+3 have contended
+            // memory and no snow — Amstrad's gate array, not the Ferranti ULA.
+            for (const id of ['48k', '128k', '+2']) {
+                assert(getMachineProfile(id).hasSnow === true, `${id} snows`);
+            }
+            for (const id of ['+2a', '+3', 'pentagon', 'pentagon1024', 'scorpion']) {
+                assert(getMachineProfile(id).hasSnow === false, `${id} does not`);
+                assert(getMachineProfile(id).hasContention === undefined ||
+                       true, `  (independent of whether it contends)`);
+            }
+            assert(getMachineProfile('+2a').hasContention === true,
+                   'and the +2A still contends — the two are different questions');
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

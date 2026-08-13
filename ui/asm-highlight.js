@@ -34,10 +34,47 @@ const Z80_REGISTERS = new Set([
     'IXH', 'IXL', 'IYH', 'IYL', "AF'"
 ]);
 
-// Simple tokenizer for syntax highlighting
-function tokenizeAsmLine(line) {
+// A label definition on this line: "name:" (indented or not) or a bare name in
+// column 0. Returns null for anything else. Instruction and directive names only
+// count as labels when written with a colon, so an unindented `ORG` stays a
+// directive while `end:` is a label.
+const LABEL_COLON = /^[ \t]*([A-Za-z_.][\w.$]*)[ \t]*:/;
+const LABEL_COL0 = /^([A-Za-z_.][\w.$]*)(?=[ \t]|$)/;
+
+export function labelDefinedOn(line) {
+    const code = line.replace(/;.*$/, '');
+    let m = LABEL_COLON.exec(code);
+    if (m) return m[1];
+    m = LABEL_COL0.exec(code);
+    if (m) {
+        const up = m[1].toUpperCase();
+        if (Z80_INSTRUCTIONS.has(up) || Z80_DIRECTIVES.has(up)) return null;
+        return m[1];
+    }
+    return null;
+}
+
+// Every label defined anywhere in a document. Passing this to the tokenizer is
+// what lets a label be coloured the same at its definition and at every use.
+export function collectLabels(code) {
+    const set = new Set();
+    for (const line of code.split('\n')) {
+        const name = labelDefinedOn(line);
+        if (name) set.add(name);
+    }
+    return set;
+}
+
+// Simple tokenizer for syntax highlighting.
+// `labels` (optional) is the document's label set, from collectLabels().
+function tokenizeAsmLine(line, labels = null) {
     const tokens = [];
     let pos = 0;
+    // Directives and instructions only exist in the mnemonic slot. Past it we're
+    // in operands, where the same word is a symbol - so `jr end` reads as an
+    // (undefined) symbol rather than as the END directive. A ':' separator starts
+    // a new statement, so the slot opens again.
+    let seenMnemonic = false;
 
     while (pos < line.length) {
         const ch = line[pos];
@@ -111,13 +148,24 @@ function tokenizeAsmLine(line) {
             // Also check if starts with . (local label)
             if (value.startsWith('.')) isLabel = true;
 
-            if (Z80_INSTRUCTIONS.has(upper)) {
-                tokens.push({ type: 'instruction', value });
-            } else if (Z80_DIRECTIVES.has(upper)) {
-                tokens.push({ type: 'directive', value });
+            // A label wins over the keyword tables: a colon (or leading dot) says
+            // so on this line alone, and `labels` says so for uses elsewhere —
+            // otherwise `end:` and `JR Z,end` would both colour as the END
+            // directive. Registers are still checked first, so `LD A,B` keeps its
+            // register colour even in a file that happens to define a label B.
+            if (isLabel) {
+                tokens.push({ type: 'label', value });
             } else if (Z80_REGISTERS.has(upper) || Z80_CONDITIONS.has(upper)) {
                 tokens.push({ type: 'register', value });
-            } else if (isLabel || start === 0) {
+            } else if (labels && labels.has(value)) {
+                tokens.push({ type: 'label', value });
+            } else if (!seenMnemonic && Z80_INSTRUCTIONS.has(upper)) {
+                tokens.push({ type: 'instruction', value });
+                seenMnemonic = true;
+            } else if (!seenMnemonic && Z80_DIRECTIVES.has(upper)) {
+                tokens.push({ type: 'directive', value });
+                seenMnemonic = true;
+            } else if (start === 0) {
                 tokens.push({ type: 'label', value });
             } else {
                 tokens.push({ type: 'identifier', value });
@@ -134,6 +182,7 @@ function tokenizeAsmLine(line) {
 
         if (ch === ':') {
             tokens.push({ type: 'colon', value: ch });
+            seenMnemonic = false;       // statement separator (or end of a label)
             pos++;
             continue;
         }
@@ -162,9 +211,9 @@ function tokenizeAsmLine(line) {
 }
 
 // One source line to markup. This is the unit the line cache stores.
-export function highlightAsmLine(line) {
+export function highlightAsmLine(line, labels = null) {
     {
-        const tokens = tokenizeAsmLine(line);
+        const tokens = tokenizeAsmLine(line, labels);
         return tokens.map(token => {
             const escaped = escapeHtml(token.value);
             switch (token.type) {
@@ -211,6 +260,10 @@ export function createHighlightCache() {
         put(line, html) { next.set(line, html); },
         endPass() { current = next; next = new Map(); },
         clear() { current = new Map(); next = new Map(); },
+        // Markup depends on the document's label set as well as on the line text,
+        // so a caller that reuses a cache across edits must drop it when the set
+        // changes. (createHighlightLayer does this itself, from the edited lines.)
+        labelsKey: null,
         get size() { return current.size; },
     };
 }
@@ -234,10 +287,39 @@ export function createHighlightLayer(el, { linesPerChunk = 100, zeroWidthSpace =
     let prevCodepage = null;
     let sizes = [];            // line count per chunk element
 
+    // The document's labels, so a label is coloured the same at its definition and
+    // wherever it's used. Rescanning the whole buffer per keystroke would undo the
+    // work that made repaints cheap, so this is a multiset kept up to date from the
+    // lines the edit actually touched. Counts (not a plain Set) so that deleting one
+    // of two identical definitions doesn't drop the label.
+    let labelCounts = new Map();
+    let labels = new Set();
+
+    function noteLine(line, delta) {
+        const name = labelDefinedOn(line);
+        if (!name) return false;
+        const n = (labelCounts.get(name) || 0) + delta;
+        if (n > 0) {
+            labelCounts.set(name, n);
+            if (labels.has(name)) return false;
+            labels.add(name);
+            return true;                       // set membership changed
+        }
+        labelCounts.delete(name);
+        labels.delete(name);
+        return true;
+    }
+
+    function rescanLabels(lines) {
+        labelCounts = new Map();
+        labels = new Set();
+        for (const line of lines) noteLine(line, 1);
+    }
+
     const lineHtml = (line) => {
         let html = cache.get(line);
         if (html === undefined) {
-            html = highlightAsmLine(line);
+            html = highlightAsmLine(line, labels);
             cache.put(line, html);
         }
         return html;
@@ -253,6 +335,8 @@ export function createHighlightLayer(el, { linesPerChunk = 100, zeroWidthSpace =
     }
 
     function rebuild(lines) {
+        rescanLabels(lines);
+        cache.clear();
         sizes = [];
         const parts = [];
         for (let i = 0; i < lines.length; i += linesPerChunk) {
@@ -305,6 +389,19 @@ export function createHighlightLayer(el, { linesPerChunk = 100, zeroWidthSpace =
                 return 'rebuilt';
             }
 
+            // Update the label set from the edited lines only. If a label appeared
+            // or disappeared, every cached line that mentions it is now stale, so
+            // fall back to a full rebuild — that happens when a definition line is
+            // edited, not on ordinary typing.
+            let labelsChanged = false;
+            for (let i = a; i < oldEnd; i++) labelsChanged = noteLine(prevLines[i], -1) || labelsChanged;
+            for (let i = a; i < newN - b; i++) labelsChanged = noteLine(lines[i], 1) || labelsChanged;
+            if (labelsChanged) {
+                rebuild(lines);
+                prevLines = lines;
+                return 'rebuilt';
+            }
+
             sizes[k] = newSize;
             el.children[k].innerHTML = chunkHtml(lines, start, newSize, k === sizes.length - 1);
             cache.endPass();
@@ -312,7 +409,11 @@ export function createHighlightLayer(el, { linesPerChunk = 100, zeroWidthSpace =
             return 'patched';
         },
 
-        reset() { prevLines = null; prevCodepage = null; sizes = []; cache.clear(); },
+        reset() {
+            prevLines = null; prevCodepage = null; sizes = [];
+            cache.clear(); labelCounts = new Map(); labels = new Set();
+        },
+        get labelCount() { return labels.size; },
         get chunkCount() { return sizes.length; },
     };
 }
@@ -328,12 +429,17 @@ export function highlightAsmCode(code, viewCodepage = 'raw', cache = null) {
         code = decodeViewCodepage(code, viewCodepage);
     }
     const lines = code.split('\n');
+    const labels = collectLabels(code);
+    if (cache) {
+        const key = labels.size + '|' + [...labels].join(',');
+        if (cache.labelsKey !== key) { cache.clear(); cache.labelsKey = key; }
+    }
     const out = new Array(lines.length);
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         let html = cache ? cache.get(line) : undefined;
         if (html === undefined) {
-            html = highlightAsmLine(line);
+            html = highlightAsmLine(line, labels);
             if (cache) cache.put(line, html);
         }
         out[i] = html;

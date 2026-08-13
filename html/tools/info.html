@@ -1,0 +1,684 @@
+<!-- Info tab. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-info">
+                <div class="info-tab-content">
+                    <div class="info-subtab-bar">
+                        <button class="info-subtab-btn active" data-infotab="io">I/O</button>
+                        <button class="info-subtab-btn" data-infotab="timings">Timings</button>
+                        <button class="info-subtab-btn" data-infotab="opcodes">Opcodes</button>
+                        <button class="info-subtab-btn" data-infotab="symbols">Symbols</button>
+                    </div>
+
+                    <!-- I/O Sub-tab -->
+                    <div class="info-subtab-content active" id="info-io">
+                        <div class="keyboard-image">
+                            <img src="data/keyboard.png" alt="ZX Spectrum Keyboard Layout">
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Keyboard Port (IN #xxFE)</h4>
+                            <p>Read keyboard half-rows via port #FE. High byte selects row(s). <strong>Bit = 0 when key pressed</strong> (active low).</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>High Byte</th><th>Bit 0</th><th>Bit 1</th><th>Bit 2</th><th>Bit 3</th><th>Bit 4</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#FE (254)</td><td>Shift</td><td>Z</td><td>X</td><td>C</td><td>V</td></tr>
+                                    <tr><td>#FD (253)</td><td>A</td><td>S</td><td>D</td><td>F</td><td>G</td></tr>
+                                    <tr><td>#FB (251)</td><td>Q</td><td>W</td><td>E</td><td>R</td><td>T</td></tr>
+                                    <tr><td>#F7 (247)</td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td></tr>
+                                    <tr><td>#EF (239)</td><td>0</td><td>9</td><td>8</td><td>7</td><td>6</td></tr>
+                                    <tr><td>#DF (223)</td><td>P</td><td>O</td><td>I</td><td>U</td><td>Y</td></tr>
+                                    <tr><td>#BF (191)</td><td>Enter</td><td>L</td><td>K</td><td>J</td><td>H</td></tr>
+                                    <tr><td>#7F (127)</td><td>Space</td><td>Sym</td><td>M</td><td>N</td><td>B</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Bits 5-7 always return 1. Multiple rows can be scanned at once (AND high bytes together).</p>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Kempston Joystick (IN #1F / #DF)</h4>
+                            <p>Read joystick state via port #1F (or #DF). <strong>Bit = 1 when pressed</strong> (active high — opposite to keyboard!).</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Direction/Button</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>Right</td></tr>
+                                    <tr><td>1</td><td>Left</td></tr>
+                                    <tr><td>2</td><td>Down</td></tr>
+                                    <tr><td>3</td><td>Up</td></tr>
+                                    <tr><td>4</td><td>Fire (B)</td></tr>
+                                    <tr><td>5</td><td>C button (extended)</td></tr>
+                                    <tr><td>6</td><td>A button (extended)</td></tr>
+                                    <tr><td>7</td><td>Start button (extended)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Kempston Mouse</h4>
+                            <p>Mouse interface uses three ports:</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Port</th><th>Function</th><th>Notes</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#FBDF</td><td>Buttons</td><td>Bit 0=Right, Bit 1=Left, Bit 2=Middle (active low: 0=pressed)</td></tr>
+                                    <tr><td>#FFDF</td><td>X position</td><td>0-255, wraps around</td></tr>
+                                    <tr><td>#FADF</td><td>Y position</td><td>0-255, wraps around</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Input State Summary</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Device</th><th>Pressed State</th><th>Not Pressed</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>Keyboard</td><td><strong>0</strong> (active low)</td><td>1</td></tr>
+                                    <tr><td>Kempston Joystick</td><td><strong>1</strong> (active high)</td><td>0</td></tr>
+                                    <tr><td>Kempston Mouse buttons</td><td><strong>0</strong> (active low)</td><td>1</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Border/Attribute Colors</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Value</th><th>Color</th><th>Bright</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td style="color:#000">Black</td><td style="color:#000">Black</td></tr>
+                                    <tr><td>1</td><td style="color:#0000D7">Blue</td><td style="color:#0000FF">Bright Blue</td></tr>
+                                    <tr><td>2</td><td style="color:#D70000">Red</td><td style="color:#FF0000">Bright Red</td></tr>
+                                    <tr><td>3</td><td style="color:#D700D7">Magenta</td><td style="color:#FF00FF">Bright Magenta</td></tr>
+                                    <tr><td>4</td><td style="color:#00D700">Green</td><td style="color:#00FF00">Bright Green</td></tr>
+                                    <tr><td>5</td><td style="color:#00D7D7">Cyan</td><td style="color:#00FFFF">Bright Cyan</td></tr>
+                                    <tr><td>6</td><td style="color:#D7D700">Yellow</td><td style="color:#FFFF00">Bright Yellow</td></tr>
+                                    <tr><td>7</td><td style="color:#D7D7D7">White</td><td style="color:#FFFFFF">Bright White</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Border: bits 0-2 of port #FE. Attributes: INK (bits 0-2), PAPER (bits 3-5), BRIGHT (bit 6), FLASH (bit 7).</p>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>ULAplus (Extended Palette)</h4>
+                            <p>ULAplus extends the Spectrum to 64 simultaneous colors from a 256-color palette.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Port</th><th>Function</th><th>Access</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#BF3B</td><td>Register select</td><td>Write only</td></tr>
+                                    <tr><td>#FF3B</td><td>Data port</td><td>Read/Write</td></tr>
+                                </tbody>
+                            </table>
+                            <p><strong>Register port (#BF3B) format:</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bits</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>7-6</td><td>Group: 00=Palette, 01=Mode</td></tr>
+                                    <tr><td>5-0</td><td>Palette entry (0-63) when group=00</td></tr>
+                                </tbody>
+                            </table>
+                            <p><strong>Palette data format (GRB):</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bits</th><th>Color</th><th>Range</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>7-5</td><td>Green</td><td>0-7</td></tr>
+                                    <tr><td>4-2</td><td>Red</td><td>0-7</td></tr>
+                                    <tr><td>1-0</td><td>Blue</td><td>0-3 (expanded to 0-7)</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Blue expansion: 00→000, 01→011, 10→101, 11→111</p>
+                            <p><strong>Palette organization (4 CLUTs × 16 colors):</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Entry</th><th>CLUT</th><th>Type</th><th>Index</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0-7</td><td>0</td><td>INK</td><td>Attr bits 0-2</td></tr>
+                                    <tr><td>8-15</td><td>0</td><td>PAPER</td><td>Attr bits 3-5</td></tr>
+                                    <tr><td>16-23</td><td>1</td><td>INK</td><td>BRIGHT=1</td></tr>
+                                    <tr><td>24-31</td><td>1</td><td>PAPER</td><td>BRIGHT=1</td></tr>
+                                    <tr><td>32-39</td><td>2</td><td>INK</td><td>FLASH=1</td></tr>
+                                    <tr><td>40-47</td><td>2</td><td>PAPER</td><td>FLASH=1</td></tr>
+                                    <tr><td>48-55</td><td>3</td><td>INK</td><td>FLASH=1, BRIGHT=1</td></tr>
+                                    <tr><td>56-63</td><td>3</td><td>PAPER</td><td>FLASH=1, BRIGHT=1</td></tr>
+                                </tbody>
+                            </table>
+                            <p>CLUT selection: <code>(FLASH × 2 + BRIGHT)</code>. Border uses PAPER color from CLUT 0.</p>
+                            <p><strong>Mode register (group=01):</strong> Bit 0 = ULAplus on/off, Bit 1 = Grayscale mode.</p>
+                            <p><strong>Raster effects:</strong> HAM256 and similar demos that update palette mid-frame are fully supported. The emulator tracks palette writes with T-state timing and applies them per 16-line group.</p>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>AY-3-8910 Sound Chip (128K)</h4>
+                            <p>The AY sound chip is clocked at 1.7734 MHz on 128K models.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Port</th><th>Function</th><th>Access</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#FFFD</td><td>Register select / read</td><td>Read/Write</td></tr>
+                                    <tr><td>#BFFD</td><td>Data write</td><td>Write only</td></tr>
+                                </tbody>
+                            </table>
+                            <p><strong>Registers:</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Reg</th><th>Function</th><th>Bits</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>Channel A pitch fine</td><td>8</td></tr>
+                                    <tr><td>1</td><td>Channel A pitch coarse</td><td>4</td></tr>
+                                    <tr><td>2</td><td>Channel B pitch fine</td><td>8</td></tr>
+                                    <tr><td>3</td><td>Channel B pitch coarse</td><td>4</td></tr>
+                                    <tr><td>4</td><td>Channel C pitch fine</td><td>8</td></tr>
+                                    <tr><td>5</td><td>Channel C pitch coarse</td><td>4</td></tr>
+                                    <tr><td>6</td><td>Noise pitch</td><td>5</td></tr>
+                                    <tr><td>7</td><td>Mixer control</td><td>8</td></tr>
+                                    <tr><td>8</td><td>Channel A volume</td><td>5</td></tr>
+                                    <tr><td>9</td><td>Channel B volume</td><td>5</td></tr>
+                                    <tr><td>10</td><td>Channel C volume</td><td>5</td></tr>
+                                    <tr><td>11</td><td>Envelope period fine</td><td>8</td></tr>
+                                    <tr><td>12</td><td>Envelope period coarse</td><td>8</td></tr>
+                                    <tr><td>13</td><td>Envelope shape</td><td>4</td></tr>
+                                </tbody>
+                            </table>
+                            <p><strong>Mixer (R7):</strong> Bit 0-2 = Tone off (A,B,C), Bit 3-5 = Noise off (A,B,C)</p>
+                            <p><strong>Volume (R8-10):</strong> Bit 4 = Envelope mode, Bits 0-3 = Volume (0-15)</p>
+                            <p><strong>Envelope shapes (R13):</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Value</th><th>Shape</th><th>Description</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0-3</td><td>\___</td><td>Decay, hold low</td></tr>
+                                    <tr><td>4-7</td><td>/___</td><td>Attack, hold low</td></tr>
+                                    <tr><td>8</td><td>\\\\</td><td>Decay (sawtooth)</td></tr>
+                                    <tr><td>9</td><td>\___</td><td>Decay, hold low</td></tr>
+                                    <tr><td>10</td><td>\/\/</td><td>Decay-attack (triangle)</td></tr>
+                                    <tr><td>11</td><td>\¯¯¯</td><td>Decay, hold high</td></tr>
+                                    <tr><td>12</td><td>////</td><td>Attack (sawtooth)</td></tr>
+                                    <tr><td>13</td><td>/¯¯¯</td><td>Attack, hold high</td></tr>
+                                    <tr><td>14</td><td>/\/\</td><td>Attack-decay (triangle)</td></tr>
+                                    <tr><td>15</td><td>/___</td><td>Attack, hold low</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Memory Banking Ports (128K+)</h4>
+                            <p>All 128K-class machines use port <strong>#7FFD</strong> for primary paging. Some machines add a second port for extended features. Bit 5 of #7FFD locks paging until reset (except Pentagon 1024 in 1MB mode).</p>
+
+                            <p class="info-port-heading"><strong>Port #7FFD &mdash; Primary Paging (128K / +2 / Pentagon / Scorpion)</strong></p>
+                            <p>Decode: <code>(port &amp; #8002) == 0</code> on 128K/+2/Pentagon; <code>(port &amp; #C002) == #4000</code> on +2A/+3/Scorpion (stricter).</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0-2</td><td>RAM bank at #C000 (0-7)</td></tr>
+                                    <tr><td>3</td><td>Screen bank: 0 = bank 5, 1 = bank 7</td></tr>
+                                    <tr><td>4</td><td>ROM bank low bit: 0 = ROM 0 (128K BASIC), 1 = ROM 1 (48K BASIC)</td></tr>
+                                    <tr><td>5</td><td>Paging lock &mdash; set to disable further paging until reset</td></tr>
+                                    <tr><td>6-7</td><td>Unused on 128K/+2. Pentagon 1024: bank bits 3-4. Ignored on Scorpion.</td></tr>
+                                </tbody>
+                            </table>
+
+                            <p class="info-port-heading"><strong>Port #1FFD &mdash; +2A/+3 Special Paging</strong></p>
+                            <p>Decode: <code>(port &amp; #F002) == #1000</code>. Controls special paging mode, ROM bank high bit, and +3 FDC motor.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>Special paging mode: 1 = all-RAM, 0 = normal</td></tr>
+                                    <tr><td>1-2</td><td>Special config (when bit 0 set): 0 = banks 0,1,2,3; 1 = 4,5,6,7; 2 = 4,5,6,3; 3 = 4,7,6,3</td></tr>
+                                    <tr><td>2</td><td>ROM bank high bit (when bit 0 clear). ROM = (bit2 &lt;&lt; 1) | 7FFD bit 4 &rarr; ROMs 0-3</td></tr>
+                                    <tr><td>3</td><td>+3 FDC motor: 1 = on</td></tr>
+                                </tbody>
+                            </table>
+                            <p>+2A/+3 ROMs: 0 = 128K Editor, 1 = 128K Syntax, 2 = +3DOS, 3 = 48K BASIC.</p>
+
+                            <p class="info-port-heading"><strong>Port #1FFD &mdash; Scorpion ZS 256 Extended Paging</strong></p>
+                            <p>Decode: <code>(port &amp; #F002) == #1000</code> (same as +2A). 256KB RAM (16 pages), 4 ROM banks.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>RAM page 0 over ROM at #0000-#3FFF</td></tr>
+                                    <tr><td>1</td><td>ROM 2 select: 1 = ROM 2 (Service Monitor). 0 = ROM 0/1 via 7FFD bit 4</td></tr>
+                                    <tr><td>4</td><td>RAM page high bit (+8). Page = (bit4 &gt;&gt; 1) | 7FFD bits 0-2 &rarr; pages 0-15</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Scorpion ROMs: 0 = 128K BASIC, 1 = 48K BASIC, 2 = Service Monitor, 3 = TR-DOS.</p>
+
+                            <p class="info-port-heading"><strong>Port #EFF7 &mdash; Pentagon 1024 Extended Memory</strong></p>
+                            <p>Decode: <code>(port &amp; #F008) == #E000</code>. Controls 1MB mode and RAM-over-ROM.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bit</th><th>Function</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>2</td><td>0 = 1MB mode (bit 5 of #7FFD becomes bank bit 5). 1 = 128K compat mode</td></tr>
+                                    <tr><td>3</td><td>1 = RAM page 0 mapped at #0000-#3FFF instead of ROM</td></tr>
+                                </tbody>
+                            </table>
+                            <p>Pentagon 1024: 64 RAM pages. In 1MB mode, page = 7FFD bits 0-2 + bits 6-7 (bank 3-4) + bit 5 (bank 5). Bit 5 of #7FFD does NOT lock paging in 1MB mode.</p>
+
+                            <p><strong>Memory Map (all 128K models):</strong></p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Address</th><th>Normal Mode</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>#0000-#3FFF</td><td>ROM (switchable)</td></tr>
+                                    <tr><td>#4000-#7FFF</td><td>RAM bank 5 (screen memory)</td></tr>
+                                    <tr><td>#8000-#BFFF</td><td>RAM bank 2</td></tr>
+                                    <tr><td>#C000-#FFFF</td><td>RAM bank 0-7 (switchable via #7FFD bits 0-2)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Timings Sub-tab -->
+                    <div class="info-subtab-content" id="info-timings">
+                        <div class="info-section">
+                            <h4>Frame Timing</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Parameter</th><th>48K</th><th>128K/+2/+2A</th><th>Pentagon/Scorpion</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>T-states per line</td><td>224</td><td>228</td><td>224</td></tr>
+                                    <tr><td>Lines per frame</td><td>312</td><td>311</td><td>320</td></tr>
+                                    <tr><td>T-states per frame</td><td>69888</td><td>70908</td><td>71680</td></tr>
+                                    <tr><td>Frame rate (Hz)</td><td>50.08</td><td>50.02</td><td>48.83</td></tr>
+                                    <tr><td>CPU clock (MHz)</td><td>3.5</td><td>3.5469</td><td>3.5</td></tr>
+                                    <tr><td>First screen line</td><td>64</td><td>63</td><td>80</td></tr>
+                                    <tr><td>INT length (T)</td><td>32</td><td>32</td><td>32</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Border Sizes (pixels)</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Border</th><th>48K</th><th>128K/+2/+2A</th><th>Pentagon/Scorpion</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>Top (lines)</td><td>64</td><td>63</td><td>80</td></tr>
+                                    <tr><td>Bottom (lines)</td><td>56</td><td>56</td><td>48</td></tr>
+                                    <tr><td>Left (pixels)</td><td>48</td><td>48</td><td>48</td></tr>
+                                    <tr><td>Right (pixels)</td><td>48</td><td>48</td><td>48</td></tr>
+                                    <tr><td>Total visible width</td><td>352</td><td>352</td><td>352</td></tr>
+                                    <tr><td>Total visible height</td><td>312</td><td>311</td><td>320</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Memory Map (128K/+2/+2A/Pentagon/Scorpion)</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Address</th><th>Content</th><th>Contention (128K/+2)</th><th>Contention (+2A)</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0000-3FFF</td><td>ROM (128K: 0-1, +2A/Scorpion: 0-3)</td><td>No</td><td>No</td></tr>
+                                    <tr><td>4000-7FFF</td><td>RAM Bank 5 (Screen)</td><td class="contended">Yes (always)</td><td class="contended">Yes (always)</td></tr>
+                                    <tr><td>8000-BFFF</td><td>RAM Bank 2</td><td>No</td><td>No</td></tr>
+                                    <tr><td>C000-FFFF</td><td>RAM Bank 0-7 (paged)</td><td>Odd banks only</td><td>Banks 4-7 only</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>RAM Banks Contention</h4>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Bank</th><th>128K/+2</th><th>+2A</th><th>Notes</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>0</td><td>No</td><td>No</td><td>Default at C000</td></tr>
+                                    <tr><td>1</td><td class="contended">Yes</td><td>No</td><td></td></tr>
+                                    <tr><td>2</td><td>No</td><td>No</td><td>Always at 8000</td></tr>
+                                    <tr><td>3</td><td class="contended">Yes</td><td>No</td><td></td></tr>
+                                    <tr><td>4</td><td>No</td><td class="contended">Yes</td><td></td></tr>
+                                    <tr><td>5</td><td class="contended">Yes</td><td class="contended">Yes</td><td>Always at 4000 (screen 0)</td></tr>
+                                    <tr><td>6</td><td>No</td><td class="contended">Yes</td><td></td></tr>
+                                    <tr><td>7</td><td class="contended">Yes</td><td class="contended">Yes</td><td>Screen 1 (when selected)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Contention Pattern</h4>
+                            <p><strong>48K:</strong> Screen lines use 192 T-states for drawing. Memory contention occurs when CPU accesses 4000-7FFF during screen drawing (lines 64-255, T-states 14-126).</p>
+                            <p><strong>128K/+2:</strong> Screen lines use 196 T-states for drawing (228 total per line). Contended banks: 1, 3, 5, 7 (odd).</p>
+                            <p><strong>+2A:</strong> Same timing as 128K. Contended banks: 4, 5, 6, 7 (high). In special paging mode, contention applies per-slot based on the mapped bank.</p>
+                            <p>Pattern repeats every 8 T-states: <code>6, 5, 4, 3, 2, 1, 0, 0</code> (delay in T-states)</p>
+                            <p>I/O contention: ULA port (xxFE) also causes delays when accessed during screen time.</p>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>+2A Differences (vs 128K)</h4>
+                            <ul>
+                                <li>4 ROM banks (64KB) selected via ports 0x7FFD bit 4 + 0x1FFD bit 2</li>
+                                <li>Port 0x1FFD: special paging, ROM high bit, disk motor</li>
+                                <li>4 special all-RAM paging modes (port 0x1FFD bit 0 = 1)</li>
+                                <li>Different contended banks: 4, 5, 6, 7 (not 1, 3, 5, 7)</li>
+                                <li>48K BASIC ROM in bank 3 (not bank 1)</li>
+                            </ul>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Pentagon Differences</h4>
+                            <ul>
+                                <li>No memory or I/O contention</li>
+                                <li>320 lines per frame (more top border)</li>
+                                <li>TR-DOS ROM pages in/out via 3Dxx trigger</li>
+                                <li>Beta Disk interface at ports 1F, 3F, 5F, 7F, FF</li>
+                            </ul>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Scorpion ZS 256 Differences</h4>
+                            <ul>
+                                <li>256KB RAM (16 pages), Pentagon-compatible ULA timing</li>
+                                <li>4 ROM banks: ROM0=128 BASIC, ROM1=48 BASIC, ROM2=Service Monitor, ROM3=TR-DOS</li>
+                                <li>Port 0x7FFD: standard 128K paging (RAM 0-7, ROM 0/1, screen, lock)</li>
+                                <li>Port 0x1FFD: bit 0 = RAM over ROM, bit 1 = ROM 2 select, bit 4 = RAM page +8</li>
+                                <li>ROM selection (3-way): 1FFD.1 set → ROM 2; unset → 7FFD.4 selects ROM 0/1</li>
+                                <li>TR-DOS built into ROM bank 3 (no separate trdos.rom needed)</li>
+                                <li>No memory or I/O contention (same as Pentagon)</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Opcodes Sub-tab -->
+                    <div class="info-subtab-content" id="info-opcodes">
+                        <div class="opcodes-container">
+                            <div class="opcodes-header">
+                                <h3>Z80 Instruction Set Reference</h3>
+                                <div class="opcodes-filter">
+                                    <input type="text" id="opcodeSearch" placeholder="Search opcode..." class="opcode-search">
+                                    <select id="opcodeGroup">
+                                        <option value="all">All Groups</option>
+                                        <option value="load">Load (LD)</option>
+                                        <option value="arith">Arithmetic</option>
+                                        <option value="logic">Logic</option>
+                                        <option value="rotate">Rotate/Shift</option>
+                                        <option value="bit">Bit Operations</option>
+                                        <option value="jump">Jump/Call</option>
+                                        <option value="io">I/O</option>
+                                        <option value="block">Block</option>
+                                        <option value="misc">Misc</option>
+                                    </select>
+                                    <select id="opcodeCycles">
+                                        <option value="all">All T-states</option>
+                                    </select>
+                                    <select id="opcodeSort">
+                                        <option value="mnemonic">Sort: Mnemonic</option>
+                                        <option value="opcode">Sort: Opcode</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="opcodes-body">
+                                <table class="opcodes-table" id="opcodesTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Mnemonic</th>
+                                            <th>Opcode</th>
+                                            <th>Size</th>
+                                            <th>Cycles</th>
+                                            <th>Flags</th>
+                                            <th>Description</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="opcodesBody">
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="opcodes-footer">
+                                <div class="flags-legend">
+                                    <span><b>Flags:</b></span>
+                                    <span>S=Sign</span>
+                                    <span>Z=Zero</span>
+                                    <span>H=Half-carry</span>
+                                    <span>P=Parity/Overflow</span>
+                                    <span>N=Subtract</span>
+                                    <span>C=Carry</span>
+                                    <span class="flag-symbol">*=affected</span>
+                                    <span class="flag-symbol">-=unchanged</span>
+                                    <span class="flag-symbol">0=reset</span>
+                                    <span class="flag-symbol">1=set</span>
+                                    <span class="flag-symbol">?=undefined</span>
+                                    <span style="color:#c080ff; margin-left:10px;"><b>*</b>=undocumented</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Symbols Sub-tab -->
+                    <div class="info-subtab-content" id="info-symbols">
+                        <div class="info-section">
+                            <h4>Control Characters (0x00–0x1F)</h4>
+                            <p>Most codes below 0x20 are not used. The following have special meaning in PRINT and channel output:</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Description</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>6</td><td>$06</td><td>PRINT comma — move to next tab stop (column 0 or 16)</td></tr>
+                                    <tr><td>7</td><td>$07</td><td>EDIT — switch to edit mode (BASIC editor)</td></tr>
+                                    <tr><td>8</td><td>$08</td><td>Cursor Left (backspace)</td></tr>
+                                    <tr><td>9</td><td>$09</td><td>Cursor Right</td></tr>
+                                    <tr><td>10</td><td>$0A</td><td>Cursor Down</td></tr>
+                                    <tr><td>11</td><td>$0B</td><td>Cursor Up</td></tr>
+                                    <tr><td>12</td><td>$0C</td><td>DELETE</td></tr>
+                                    <tr><td>13</td><td>$0D</td><td>ENTER (carriage return)</td></tr>
+                                    <tr><td>14</td><td>$0E</td><td>Number — next 5 bytes are floating-point number</td></tr>
+                                    <tr><td>16</td><td>$10</td><td>INK control — next byte sets ink color (0–9)</td></tr>
+                                    <tr><td>17</td><td>$11</td><td>PAPER control — next byte sets paper color (0–9)</td></tr>
+                                    <tr><td>18</td><td>$12</td><td>FLASH control — next byte: 0=off, 1=on, 8=transparent</td></tr>
+                                    <tr><td>19</td><td>$13</td><td>BRIGHT control — next byte: 0=off, 1=on, 8=transparent</td></tr>
+                                    <tr><td>20</td><td>$14</td><td>INVERSE control — next byte: 0=off, 1=on</td></tr>
+                                    <tr><td>21</td><td>$15</td><td>OVER control — next byte: 0=off, 1=on</td></tr>
+                                    <tr><td>22</td><td>$16</td><td>AT control — next 2 bytes: row, column</td></tr>
+                                    <tr><td>23</td><td>$17</td><td>TAB control — next 2 bytes: column position</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Printable Characters (0x20–0x7F)</h4>
+                            <p>Standard ASCII with three ZX Spectrum exceptions highlighted below:</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Char</th><th>Notes</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>32</td><td>$20</td><td>(space)</td><td></td></tr>
+                                    <tr><td>33</td><td>$21</td><td>!</td><td></td></tr>
+                                    <tr><td>34</td><td>$22</td><td>"</td><td></td></tr>
+                                    <tr><td>35</td><td>$23</td><td>#</td><td></td></tr>
+                                    <tr><td>36</td><td>$24</td><td>$</td><td></td></tr>
+                                    <tr><td>37</td><td>$25</td><td>%</td><td></td></tr>
+                                    <tr><td>38</td><td>$26</td><td>&amp;</td><td></td></tr>
+                                    <tr><td>39</td><td>$27</td><td>'</td><td></td></tr>
+                                    <tr><td>40</td><td>$28</td><td>(</td><td></td></tr>
+                                    <tr><td>41</td><td>$29</td><td>)</td><td></td></tr>
+                                    <tr><td>42</td><td>$2A</td><td>*</td><td></td></tr>
+                                    <tr><td>43</td><td>$2B</td><td>+</td><td></td></tr>
+                                    <tr><td>44</td><td>$2C</td><td>,</td><td></td></tr>
+                                    <tr><td>45</td><td>$2D</td><td>-</td><td></td></tr>
+                                    <tr><td>46</td><td>$2E</td><td>.</td><td></td></tr>
+                                    <tr><td>47</td><td>$2F</td><td>/</td><td></td></tr>
+                                    <tr><td>48</td><td>$30</td><td>0</td><td></td></tr>
+                                    <tr><td>49</td><td>$31</td><td>1</td><td></td></tr>
+                                    <tr><td>50</td><td>$32</td><td>2</td><td></td></tr>
+                                    <tr><td>51</td><td>$33</td><td>3</td><td></td></tr>
+                                    <tr><td>52</td><td>$34</td><td>4</td><td></td></tr>
+                                    <tr><td>53</td><td>$35</td><td>5</td><td></td></tr>
+                                    <tr><td>54</td><td>$36</td><td>6</td><td></td></tr>
+                                    <tr><td>55</td><td>$37</td><td>7</td><td></td></tr>
+                                    <tr><td>56</td><td>$38</td><td>8</td><td></td></tr>
+                                    <tr><td>57</td><td>$39</td><td>9</td><td></td></tr>
+                                    <tr><td>58</td><td>$3A</td><td>:</td><td></td></tr>
+                                    <tr><td>59</td><td>$3B</td><td>;</td><td></td></tr>
+                                    <tr><td>60</td><td>$3C</td><td>&lt;</td><td></td></tr>
+                                    <tr><td>61</td><td>$3D</td><td>=</td><td></td></tr>
+                                    <tr><td>62</td><td>$3E</td><td>&gt;</td><td></td></tr>
+                                    <tr><td>63</td><td>$3F</td><td>?</td><td></td></tr>
+                                    <tr><td>64</td><td>$40</td><td>@</td><td></td></tr>
+                                    <tr><td>65–90</td><td>$41–$5A</td><td>A–Z</td><td></td></tr>
+                                    <tr><td>91</td><td>$5B</td><td>[</td><td></td></tr>
+                                    <tr><td>92</td><td>$5C</td><td>\</td><td></td></tr>
+                                    <tr><td>93</td><td>$5D</td><td>]</td><td></td></tr>
+                                    <tr><td>94</td><td>$5E</td><td>↑</td><td>Arrow up (not caret ^)</td></tr>
+                                    <tr><td>95</td><td>$5F</td><td>_</td><td></td></tr>
+                                    <tr><td>96</td><td>$60</td><td>£</td><td>Pound sign (not grave accent `)</td></tr>
+                                    <tr><td>97–122</td><td>$61–$7A</td><td>a–z</td><td></td></tr>
+                                    <tr><td>123</td><td>$7B</td><td>{</td><td></td></tr>
+                                    <tr><td>124</td><td>$7C</td><td>|</td><td></td></tr>
+                                    <tr><td>125</td><td>$7D</td><td>}</td><td></td></tr>
+                                    <tr><td>126</td><td>$7E</td><td>~</td><td></td></tr>
+                                    <tr><td>127</td><td>$7F</td><td>©</td><td>Copyright (not DEL)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>Block Graphics (0x80–0x8F)</h4>
+                            <p>16 mosaic characters formed by 2×2 block quadrants. Toggle quadrants with INK/PAPER inversion. Codes 0x80–0x87 are the inverse of 0x8F–0x88.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Glyph</th><th>Quadrants (TL TR BL BR)</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>128</td><td>$80</td><td style="font-size:1.4em; line-height:1"> </td><td>none (space)</td></tr>
+                                    <tr><td>129</td><td>$81</td><td style="font-size:1.4em; line-height:1">▝</td><td>TR</td></tr>
+                                    <tr><td>130</td><td>$82</td><td style="font-size:1.4em; line-height:1">▘</td><td>TL</td></tr>
+                                    <tr><td>131</td><td>$83</td><td style="font-size:1.4em; line-height:1">▀</td><td>TL TR</td></tr>
+                                    <tr><td>132</td><td>$84</td><td style="font-size:1.4em; line-height:1">▗</td><td>BR</td></tr>
+                                    <tr><td>133</td><td>$85</td><td style="font-size:1.4em; line-height:1">▐</td><td>TR BR</td></tr>
+                                    <tr><td>134</td><td>$86</td><td style="font-size:1.4em; line-height:1">▚</td><td>TL BR</td></tr>
+                                    <tr><td>135</td><td>$87</td><td style="font-size:1.4em; line-height:1">▜</td><td>TL TR BR</td></tr>
+                                    <tr><td>136</td><td>$88</td><td style="font-size:1.4em; line-height:1">▖</td><td>BL</td></tr>
+                                    <tr><td>137</td><td>$89</td><td style="font-size:1.4em; line-height:1">▞</td><td>BL TR</td></tr>
+                                    <tr><td>138</td><td>$8A</td><td style="font-size:1.4em; line-height:1">▌</td><td>TL BL</td></tr>
+                                    <tr><td>139</td><td>$8B</td><td style="font-size:1.4em; line-height:1">▛</td><td>TL TR BL</td></tr>
+                                    <tr><td>140</td><td>$8C</td><td style="font-size:1.4em; line-height:1">▄</td><td>BL BR</td></tr>
+                                    <tr><td>141</td><td>$8D</td><td style="font-size:1.4em; line-height:1">▟</td><td>TR BL BR</td></tr>
+                                    <tr><td>142</td><td>$8E</td><td style="font-size:1.4em; line-height:1">▙</td><td>TL BL BR</td></tr>
+                                    <tr><td>143</td><td>$8F</td><td style="font-size:1.4em; line-height:1">█</td><td>All (solid block)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>UDG Characters (0x90–0xA4)</h4>
+                            <p>21 user-defined graphics characters (letters A–U). Each is an 8×8 bitmap stored at the address returned by <code>USR "A"</code>, <code>USR "B"</code>, etc. Default address: 65368 ($FF58) for UDG "A".</p>
+                            <p><strong>128K mode:</strong> Only 19 UDGs (A–S). Codes 0xA3 and 0xA4 are reassigned to the keywords <code>SPECTRUM</code> and <code>PLAY</code>.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>UDG Letter</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>144</td><td>$90</td><td>A</td></tr>
+                                    <tr><td>145</td><td>$91</td><td>B</td></tr>
+                                    <tr><td>146</td><td>$92</td><td>C</td></tr>
+                                    <tr><td>147</td><td>$93</td><td>D</td></tr>
+                                    <tr><td>148</td><td>$94</td><td>E</td></tr>
+                                    <tr><td>149</td><td>$95</td><td>F</td></tr>
+                                    <tr><td>150</td><td>$96</td><td>G</td></tr>
+                                    <tr><td>151</td><td>$97</td><td>H</td></tr>
+                                    <tr><td>152</td><td>$98</td><td>I</td></tr>
+                                    <tr><td>153</td><td>$99</td><td>J</td></tr>
+                                    <tr><td>154</td><td>$9A</td><td>K</td></tr>
+                                    <tr><td>155</td><td>$9B</td><td>L</td></tr>
+                                    <tr><td>156</td><td>$9C</td><td>M</td></tr>
+                                    <tr><td>157</td><td>$9D</td><td>N</td></tr>
+                                    <tr><td>158</td><td>$9E</td><td>O</td></tr>
+                                    <tr><td>159</td><td>$9F</td><td>P</td></tr>
+                                    <tr><td>160</td><td>$A0</td><td>Q</td></tr>
+                                    <tr><td>161</td><td>$A1</td><td>R</td></tr>
+                                    <tr><td>162</td><td>$A2</td><td>S</td></tr>
+                                    <tr><td>163</td><td>$A3</td><td>T (48K) / SPECTRUM (128K)</td></tr>
+                                    <tr><td>164</td><td>$A4</td><td>U (48K) / PLAY (128K)</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="info-section">
+                            <h4>BASIC Keyword Tokens (0xA5–0xFF)</h4>
+                            <p>91 tokens for BASIC keywords. In program text, each keyword is stored as a single byte. During LIST, the token is expanded to its full keyword text.</p>
+                            <table class="info-table">
+                                <thead>
+                                    <tr><th>Code</th><th>Hex</th><th>Token</th><th></th><th>Code</th><th>Hex</th><th>Token</th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>165</td><td>$A5</td><td>RND</td><td></td><td>211</td><td>$D3</td><td>OPEN #</td></tr>
+                                    <tr><td>166</td><td>$A6</td><td>INKEY$</td><td></td><td>212</td><td>$D4</td><td>CLOSE #</td></tr>
+                                    <tr><td>167</td><td>$A7</td><td>PI</td><td></td><td>213</td><td>$D5</td><td>MERGE</td></tr>
+                                    <tr><td>168</td><td>$A8</td><td>FN</td><td></td><td>214</td><td>$D6</td><td>VERIFY</td></tr>
+                                    <tr><td>169</td><td>$A9</td><td>POINT</td><td></td><td>215</td><td>$D7</td><td>BEEP</td></tr>
+                                    <tr><td>170</td><td>$AA</td><td>SCREEN$</td><td></td><td>216</td><td>$D8</td><td>CIRCLE</td></tr>
+                                    <tr><td>171</td><td>$AB</td><td>ATTR</td><td></td><td>217</td><td>$D9</td><td>INK</td></tr>
+                                    <tr><td>172</td><td>$AC</td><td>AT</td><td></td><td>218</td><td>$DA</td><td>PAPER</td></tr>
+                                    <tr><td>173</td><td>$AD</td><td>TAB</td><td></td><td>219</td><td>$DB</td><td>FLASH</td></tr>
+                                    <tr><td>174</td><td>$AE</td><td>VAL$</td><td></td><td>220</td><td>$DC</td><td>BRIGHT</td></tr>
+                                    <tr><td>175</td><td>$AF</td><td>CODE</td><td></td><td>221</td><td>$DD</td><td>INVERSE</td></tr>
+                                    <tr><td>176</td><td>$B0</td><td>VAL</td><td></td><td>222</td><td>$DE</td><td>OVER</td></tr>
+                                    <tr><td>177</td><td>$B1</td><td>LEN</td><td></td><td>223</td><td>$DF</td><td>OUT</td></tr>
+                                    <tr><td>178</td><td>$B2</td><td>SIN</td><td></td><td>224</td><td>$E0</td><td>LPRINT</td></tr>
+                                    <tr><td>179</td><td>$B3</td><td>COS</td><td></td><td>225</td><td>$E1</td><td>LLIST</td></tr>
+                                    <tr><td>180</td><td>$B4</td><td>TAN</td><td></td><td>226</td><td>$E2</td><td>STOP</td></tr>
+                                    <tr><td>181</td><td>$B5</td><td>ASN</td><td></td><td>227</td><td>$E3</td><td>READ</td></tr>
+                                    <tr><td>182</td><td>$B6</td><td>ACS</td><td></td><td>228</td><td>$E4</td><td>DATA</td></tr>
+                                    <tr><td>183</td><td>$B7</td><td>ATN</td><td></td><td>229</td><td>$E5</td><td>RESTORE</td></tr>
+                                    <tr><td>184</td><td>$B8</td><td>LN</td><td></td><td>230</td><td>$E6</td><td>NEW</td></tr>
+                                    <tr><td>185</td><td>$B9</td><td>EXP</td><td></td><td>231</td><td>$E7</td><td>BORDER</td></tr>
+                                    <tr><td>186</td><td>$BA</td><td>INT</td><td></td><td>232</td><td>$E8</td><td>CONTINUE</td></tr>
+                                    <tr><td>187</td><td>$BB</td><td>SQR</td><td></td><td>233</td><td>$E9</td><td>DIM</td></tr>
+                                    <tr><td>188</td><td>$BC</td><td>SGN</td><td></td><td>234</td><td>$EA</td><td>REM</td></tr>
+                                    <tr><td>189</td><td>$BD</td><td>ABS</td><td></td><td>235</td><td>$EB</td><td>FOR</td></tr>
+                                    <tr><td>190</td><td>$BE</td><td>PEEK</td><td></td><td>236</td><td>$EC</td><td>GO TO</td></tr>
+                                    <tr><td>191</td><td>$BF</td><td>IN</td><td></td><td>237</td><td>$ED</td><td>GO SUB</td></tr>
+                                    <tr><td>192</td><td>$C0</td><td>USR</td><td></td><td>238</td><td>$EE</td><td>INPUT</td></tr>
+                                    <tr><td>193</td><td>$C1</td><td>STR$</td><td></td><td>239</td><td>$EF</td><td>LOAD</td></tr>
+                                    <tr><td>194</td><td>$C2</td><td>CHR$</td><td></td><td>240</td><td>$F0</td><td>LIST</td></tr>
+                                    <tr><td>195</td><td>$C3</td><td>NOT</td><td></td><td>241</td><td>$F1</td><td>LET</td></tr>
+                                    <tr><td>196</td><td>$C4</td><td>BIN</td><td></td><td>242</td><td>$F2</td><td>PAUSE</td></tr>
+                                    <tr><td>197</td><td>$C5</td><td>OR</td><td></td><td>243</td><td>$F3</td><td>NEXT</td></tr>
+                                    <tr><td>198</td><td>$C6</td><td>AND</td><td></td><td>244</td><td>$F4</td><td>POKE</td></tr>
+                                    <tr><td>199</td><td>$C7</td><td>&lt;=</td><td></td><td>245</td><td>$F5</td><td>PRINT</td></tr>
+                                    <tr><td>200</td><td>$C8</td><td>&gt;=</td><td></td><td>246</td><td>$F6</td><td>PLOT</td></tr>
+                                    <tr><td>201</td><td>$C9</td><td>&lt;&gt;</td><td></td><td>247</td><td>$F7</td><td>RUN</td></tr>
+                                    <tr><td>202</td><td>$CA</td><td>LINE</td><td></td><td>248</td><td>$F8</td><td>SAVE</td></tr>
+                                    <tr><td>203</td><td>$CB</td><td>THEN</td><td></td><td>249</td><td>$F9</td><td>RANDOMIZE</td></tr>
+                                    <tr><td>204</td><td>$CC</td><td>TO</td><td></td><td>250</td><td>$FA</td><td>IF</td></tr>
+                                    <tr><td>205</td><td>$CD</td><td>STEP</td><td></td><td>251</td><td>$FB</td><td>CLS</td></tr>
+                                    <tr><td>206</td><td>$CE</td><td>DEF FN</td><td></td><td>252</td><td>$FC</td><td>DRAW</td></tr>
+                                    <tr><td>207</td><td>$CF</td><td>CAT</td><td></td><td>253</td><td>$FD</td><td>CLEAR</td></tr>
+                                    <tr><td>208</td><td>$D0</td><td>FORMAT</td><td></td><td>254</td><td>$FE</td><td>RETURN</td></tr>
+                                    <tr><td>209</td><td>$D1</td><td>MOVE</td><td></td><td>255</td><td>$FF</td><td>COPY</td></tr>
+                                    <tr><td>210</td><td>$D2</td><td>ERASE</td><td></td><td></td><td></td><td></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </div><!-- tools-info -->

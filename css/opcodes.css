@@ -1,0 +1,127 @@
+/* ZX-M8XXX — opcodes tab
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Opcodes Tab */
+.opcodes-container {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 500px);
+    min-height: 400px;
+    max-height: 700px;
+}
+.opcodes-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+.opcodes-header h3 {
+    margin: 0;
+    color: var(--cyan);
+    font-size: 14px;
+}
+.opcodes-filter {
+    display: flex;
+    gap: 10px;
+}
+.opcode-search {
+    padding: 5px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    width: 150px;
+}
+.opcodes-filter select {
+    padding: 5px 10px;
+    font-size: 12px;
+}
+.opcodes-body {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--bg-primary);
+    border-radius: 4px;
+}
+.opcodes-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: monospace;
+}
+.opcodes-table thead {
+    position: sticky;
+    top: 0;
+    background: var(--bg-button);
+    z-index: 1;
+}
+.opcodes-table th {
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--cyan);
+    font-weight: bold;
+    border-bottom: 2px solid var(--bg-secondary);
+}
+.opcodes-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--bg-secondary);
+    vertical-align: top;
+}
+.opcodes-table tr:hover {
+    background: var(--bg-button);
+}
+.opcodes-table .op-mnemonic {
+    color: var(--accent);
+    font-weight: bold;
+    white-space: nowrap;
+}
+.opcodes-table .op-mnemonic.undoc {
+    color: #c080ff;
+}
+.opcodes-table .op-mnemonic.undoc::after {
+    content: '*';
+    color: #ff80ff;
+    font-size: 10px;
+    vertical-align: super;
+}
+.opcodes-table .op-opcode {
+    color: #80c0ff;
+    text-align: left;
+    white-space: nowrap;
+}
+.opcodes-table .op-bytes {
+    color: var(--text-secondary);
+    text-align: center;
+}
+.opcodes-table .op-cycles {
+    color: var(--cyan);
+    text-align: center;
+}
+.opcodes-table .op-flags {
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+.opcodes-table .op-desc {
+    color: var(--text-primary);
+}
+.opcodes-footer {
+    padding: 8px 15px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    margin-top: 10px;
+}
+.flags-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+.flags-legend .flag-symbol {
+    color: var(--cyan);
+}
+

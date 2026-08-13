@@ -1,0 +1,1038 @@
+/* ZX-M8XXX — pokes, watches, memory map, help, bookmarks, game browser, joystick bindings
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Poke Manager */
+.poke-manager { padding: 4px; }
+.poke-col-buttons {
+    display: flex; align-items: flex-start; gap: 6px;
+    margin-left: auto; white-space: nowrap;
+}
+.poke-game-label { flex: 1; color: var(--text-secondary); font-style: italic; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.poke-columns { display: flex; gap: 8px; }
+.poke-col-editors { min-width: 0; }
+.poke-col-pokes { flex: 1; min-width: 0; }
+.poke-toggle-all { padding: 2px 4px; border-bottom: 1px solid var(--bg-button); }
+.poke-list { max-height: var(--subpanel-list-h, none); overflow-y: auto; }
+.poke-entry {
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 4px; font-size: 11px; font-family: monospace;
+    border-bottom: 1px solid var(--bg-button);
+}
+.poke-entry:hover { background: var(--bg-button); }
+.poke-entry input[type="checkbox"] { margin: 0; cursor: pointer; }
+.poke-entry .poke-name { flex: 1; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.poke-entry .poke-detail { color: var(--text-secondary); font-size: 10px; }
+.poke-patches { padding: 0 4px 2px 22px; font-size: 10px; color: var(--text-secondary); font-family: monospace; }
+.poke-patches.hidden { display: none; }
+.poke-patch-addr { color: var(--cyan); cursor: pointer; }
+.poke-patch-addr:hover { text-decoration: underline; }
+.poke-patch-hint { color: var(--text-secondary); font-style: italic; }
+.poke-patch-edit { display: flex; gap: 2px; }
+.poke-patch-input { font-family: monospace; font-size: 10px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--accent); padding: 0 2px; outline: none; }
+.poke-rename-input { width: 100%; font-family: monospace; font-size: 11px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--accent); padding: 0 2px; outline: none; }
+.poke-editors { }
+.poke-editor-entry {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 4px; font-size: 11px; font-family: monospace;
+}
+.poke-editor-entry .poke-name { color: var(--text-secondary); min-width: 60px; }
+.poke-editor-entry input[type="text"] {
+    width: 40px; font-family: monospace; font-size: 11px;
+    background: var(--bg-primary); color: var(--text-primary);
+    border: 1px solid var(--bg-button); padding: 1px 3px; text-align: right;
+}
+.poke-editor-entry .poke-editor-addr { color: var(--cyan); font-size: 10px; }
+.poke-editor-entry button {
+    font-size: 10px; padding: 0 4px; cursor: pointer;
+}
+.poke-editor-spin {
+    display: inline-flex; flex-direction: column; gap: 0;
+}
+.poke-editor-spin button {
+    font-size: 8px; line-height: 1; padding: 0 3px;
+    background: var(--bg-button); color: var(--text-primary);
+    border: 1px solid var(--bg-button); cursor: pointer;
+}
+.poke-editor-spin button:hover { background: var(--accent); }
+.poke-add-form {
+    display: flex; align-items: center; gap: 4px;
+    margin-bottom: 4px;
+}
+.poke-add-form input[type="text"] {
+    font-family: monospace; font-size: 12px;
+    background: var(--bg-primary); color: var(--text-primary);
+    border: 1px solid var(--bg-button); border-radius: 3px;
+    padding: 4px 6px;
+}
+.poke-add-form select {
+    font-family: monospace; font-size: 12px;
+    background: var(--bg-primary); color: var(--text-primary);
+    border: 1px solid var(--bg-button); border-radius: 3px;
+    padding: 3px 4px;
+}
+.poke-add-form button,
+.poke-col-buttons button {
+    font-size: 11px; padding: 4px 10px; cursor: pointer;
+    border-radius: 3px;
+}
+.poke-remove {
+    padding: 0 4px; background: none; border: none;
+    color: var(--text-secondary); cursor: pointer; font-size: 12px;
+}
+.poke-remove:hover { color: var(--warning); }
+
+/* Watches Panel */
+.watches-controls {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 5px;
+}
+.watches-controls input {
+    padding: 2px 5px;
+    font-size: 11px;
+    font-family: monospace;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 3px;
+    color: var(--text-primary);
+}
+#watchAddrInput {
+    width: 60px;
+}
+#watchNameInput {
+    width: 80px;
+}
+.watches-controls button {
+    padding: 2px 6px;
+    font-size: 10px;
+}
+.watches-list {
+    font-family: monospace;
+    font-size: 11px;
+    max-height: var(--subpanel-list-h, 150px);
+    overflow-y: auto;
+}
+.watch-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    border-bottom: 1px solid var(--border-primary);
+}
+.watch-entry:last-child {
+    border-bottom: none;
+}
+.watch-addr {
+    color: var(--accent);
+    min-width: 45px;
+}
+.watch-name {
+    color: var(--text-secondary);
+    min-width: 60px;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.watch-name.label {
+    color: var(--cyan);
+}
+.watch-bytes {
+    color: var(--text-primary);
+}
+.watch-ascii {
+    color: var(--text-secondary);
+}
+.watch-remove {
+    padding: 0 4px;
+    font-size: 10px;
+    background: var(--bg-button);
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 2px;
+}
+.watch-remove:hover {
+    background: var(--warning);
+    color: #000;
+}
+.watch-bytes .changed {
+    color: var(--warning);
+    font-weight: bold;
+}
+
+/* Memory Map Dialog */
+.memmap-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.memmap-dialog.hidden {
+    display: none;
+}
+.memmap-content {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 10px 15px 15px 15px;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
+    min-width: 750px;
+    position: relative;
+}
+.memmap-header {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 10;
+}
+.memmap-title {
+    margin: 0;
+    margin-top: auto;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: normal;
+}
+.memmap-scale {
+    display: flex;
+    flex-direction: column;
+    width: 45px;
+    flex-shrink: 0;
+    font-size: 9px;
+    color: var(--text-secondary);
+    padding-right: 5px;
+    position: relative;
+}
+.memmap-scale-tick {
+    position: absolute;
+    right: -10px;
+    font-size: 9px;
+}
+.memmap-scale-tick::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -5px;
+    width: 10px;
+    height: 1px;
+    background: var(--text-secondary);
+}
+.memmap-scale-item {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-top: 2px;
+    height: 128px;
+    box-sizing: border-box;
+    position: relative;
+}
+.memmap-scale-item::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -15px;
+    width: 15px;
+    height: 1px;
+    background: var(--text-secondary);
+}
+.memmap-scale-addr {
+    color: var(--cyan);
+    font-family: monospace;
+}
+.memmap-scale-end {
+    position: relative;
+    font-size: 9px;
+    margin-top: -2px;
+}
+.memmap-scale-end::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -15px;
+    width: 15px;
+    height: 1px;
+    background: var(--text-secondary);
+}
+.memmap-btn {
+    background: var(--accent);
+    border: none;
+    color: var(--bg-primary);
+    padding: 5px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 8px;
+    font-weight: bold;
+}
+.memmap-btn:hover {
+    background: var(--cyan);
+}
+.memmap-close {
+    background: var(--bg-button);
+    border: none;
+    color: var(--text-primary);
+    padding: 5px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.memmap-close:hover {
+    background: var(--bg-button-hover);
+}
+.memmap-view-toggle {
+    display: flex;
+    gap: 2px;
+}
+.memmap-view-btn {
+    background: var(--bg-button);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 11px;
+}
+.memmap-view-btn:first-child {
+    border-radius: 4px 0 0 4px;
+}
+.memmap-view-btn:last-child {
+    border-radius: 0 4px 4px 0;
+}
+.memmap-view-btn.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+.memmap-view-btn:hover:not(.active) {
+    background: var(--bg-button-hover);
+}
+.memmap-heatmap-scale {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 10px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+.memmap-gradient {
+    flex: 1;
+    height: 12px;
+    background: linear-gradient(to right, #000, #0066ff, #00ff66, #ff6600, #fff);
+    border-radius: 2px;
+}
+.memmap-body {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+}
+.memmap-canvas-container {
+    position: relative;
+    width: 512px;
+    flex-shrink: 0;
+}
+#memmapCanvas {
+    border: 1px solid var(--bg-button);
+    cursor: crosshair;
+    image-rendering: pixelated;
+}
+.memmap-tooltip {
+    position: absolute;
+    background: rgba(0,0,0,0.9);
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    pointer-events: none;
+    white-space: nowrap;
+    display: none;
+}
+.memmap-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    padding-top: 5px;
+}
+.memmap-legend {
+    margin-bottom: 15px;
+}
+.memmap-legend.hidden {
+    display: none;
+}
+.memmap-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+    font-size: 12px;
+}
+.memmap-legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 2px;
+}
+.memmap-stats {
+    font-size: 12px;
+}
+.memmap-stats table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.memmap-stats td {
+    padding: 3px 5px;
+}
+.memmap-stats td:nth-child(2),
+.memmap-stats td:nth-child(3) {
+    text-align: right;
+    font-family: monospace;
+}
+.memmap-stats tr.total {
+    border-top: 1px solid var(--bg-button);
+    font-weight: bold;
+}
+.memmap-bar {
+    height: 8px;
+    background: var(--bg-button);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 10px;
+}
+.memmap-bar-fill {
+    height: 100%;
+    display: flex;
+}
+.memmap-addr-info {
+    margin-top: 15px;
+    padding: 8px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+    min-height: 80px;
+    overflow: hidden;
+    white-space: pre-wrap;
+}
+/* Full Help Dialog */
+.fullhelp-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.fullhelp-dialog.hidden {
+    display: none;
+}
+.fullhelp-content {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    width: 90vw;
+    max-width: 900px;
+    height: 90vh;
+    max-height: 800px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.fullhelp-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid var(--bg-button);
+}
+.fullhelp-header h3 {
+    margin: 0;
+    color: var(--cyan);
+}
+.help-version {
+    color: var(--text-secondary);
+    font-size: 0.8em;
+}
+.fullhelp-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+.fullhelp-close:hover {
+    color: var(--text-primary);
+}
+.fullhelp-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+.fullhelp-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px;
+    background: var(--bg-primary);
+    min-width: 130px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+.fullhelp-nav-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    text-align: left;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.fullhelp-nav-btn:hover {
+    background: var(--bg-button);
+    color: var(--text-primary);
+}
+.fullhelp-nav-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+.fullhelp-section {
+    flex: 1;
+    padding: 20px 25px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    line-height: 1.6;
+}
+.fullhelp-section.hidden {
+    display: none;
+}
+.fullhelp-section h4 {
+    margin: 0 0 15px 0;
+    color: var(--cyan);
+    font-size: 18px;
+    border-bottom: 1px solid var(--bg-button);
+    padding-bottom: 8px;
+}
+.fullhelp-section h5 {
+    margin: 20px 0 10px 0;
+    color: var(--accent);
+    font-size: 14px;
+}
+.fullhelp-section p {
+    margin: 0 0 10px 0;
+    color: var(--text-primary);
+}
+.fullhelp-section ul, .fullhelp-section ol {
+    margin: 0 0 15px 0;
+    padding-left: 25px;
+}
+.fullhelp-section li {
+    margin-bottom: 5px;
+}
+.fullhelp-section code {
+    background: var(--bg-primary);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--cyan);
+}
+.fullhelp-section pre {
+    background: var(--bg-primary);
+    padding: 15px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+    overflow-x: auto;
+    line-height: 1.4;
+    color: var(--text-primary);
+}
+.fullhelp-section table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 15px;
+}
+.fullhelp-section th, .fullhelp-section td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--bg-button);
+}
+.fullhelp-section th {
+    color: var(--cyan);
+    font-weight: bold;
+}
+.fullhelp-section td:first-child {
+    font-family: monospace;
+    color: var(--accent);
+    white-space: nowrap;
+}
+/* Bookmarks bar */
+.bookmarks-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-color);
+    font-size: 10px;
+    margin-bottom: -6px;
+}
+.bookmarks-label {
+    color: var(--text-secondary);
+    margin-right: 4px;
+}
+.bookmark-btn {
+    min-width: 40px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: 10px;
+    background: var(--bg-button);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    cursor: pointer;
+}
+.bookmark-btn:hover {
+    background: var(--bg-hover);
+}
+.bookmark-btn.set {
+    background: var(--bg-button);
+    color: var(--text-primary);
+}
+.bookmark-btn.type-mismatch {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Game Browser Dialog */
+.gamebrowser-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.gamebrowser-dialog.hidden {
+    display: none;
+}
+.gamebrowser-content {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    width: 90vw;
+    max-width: 1000px;
+    height: 90vh;
+    max-height: 700px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.gamebrowser-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--bg-button);
+    background: var(--bg-primary);
+}
+.gamebrowser-header h3 {
+    margin: 0;
+    color: var(--cyan);
+    font-size: 16px;
+}
+.gamebrowser-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+.gamebrowser-close:hover {
+    color: var(--text-primary);
+}
+.gamebrowser-search {
+    display: flex;
+    gap: 10px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--bg-button);
+    background: var(--bg-primary);
+}
+.gamebrowser-search input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+.gamebrowser-search input:focus {
+    outline: none;
+    border-color: var(--cyan);
+}
+.gamebrowser-search button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    background: var(--cyan);
+    color: var(--bg-primary);
+    cursor: pointer;
+    font-weight: 500;
+}
+.gamebrowser-search button:hover {
+    opacity: 0.9;
+}
+.gamebrowser-search button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.gamebrowser-source {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.gamebrowser-source label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+.gamebrowser-body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+.gamebrowser-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+}
+.gamebrowser-item {
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    margin-bottom: 8px;
+    background: var(--bg-primary);
+}
+.gamebrowser-item:hover {
+    background: var(--bg-hover);
+}
+.gamebrowser-item.selected {
+    border-color: var(--cyan);
+    background: var(--bg-hover);
+}
+.gamebrowser-thumb {
+    width: 80px;
+    height: 60px;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.gamebrowser-thumb img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+.gamebrowser-thumb-placeholder {
+    width: 100%;
+    height: 100%;
+    background:
+        repeating-linear-gradient(
+            45deg,
+            transparent,
+            transparent 4px,
+            rgba(128, 128, 128, 0.4) 4px,
+            rgba(128, 128, 128, 0.4) 5px
+        );
+}
+.gamebrowser-info {
+    flex: 1;
+    min-width: 0;
+}
+.gamebrowser-title {
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.gamebrowser-meta {
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.gamebrowser-meta span {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+.gamebrowser-score {
+    color: var(--yellow);
+}
+.gamebrowser-source-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-button);
+    color: var(--text-secondary);
+}
+.gamebrowser-unavailable {
+    color: var(--red);
+}
+.gamebrowser-detail {
+    width: 300px;
+    border-left: 1px solid var(--bg-button);
+    padding: 15px;
+    overflow-y: auto;
+    background: var(--bg-primary);
+}
+.gamebrowser-detail-title {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+}
+.gamebrowser-detail-screen {
+    width: 100%;
+    background: #000;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    aspect-ratio: 4/3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.gamebrowser-detail-screen img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+.gamebrowser-detail-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 15px;
+}
+.gamebrowser-detail-info p {
+    margin: 4px 0;
+}
+.gamebrowser-detail-info strong {
+    color: var(--text-primary);
+}
+.gamebrowser-releases {
+    margin-bottom: 15px;
+}
+.gamebrowser-releases-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+.gamebrowser-release {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    font-size: 11px;
+}
+.gamebrowser-release-info {
+    color: var(--text-secondary);
+}
+.gamebrowser-release button {
+    padding: 3px 10px;
+    border: none;
+    border-radius: 3px;
+    background: var(--cyan);
+    color: var(--bg-primary);
+    cursor: pointer;
+    font-size: 11px;
+}
+.gamebrowser-release button:hover {
+    opacity: 0.9;
+}
+.gamebrowser-release button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--bg-button);
+    color: var(--text-secondary);
+}
+.gamebrowser-release-note {
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 4px 8px;
+    font-style: italic;
+}
+.gamebrowser-release-format {
+    font-weight: 600;
+    color: var(--cyan);
+    min-width: 35px;
+}
+.gamebrowser-release-link {
+    background: transparent;
+    justify-content: center;
+    margin-top: 8px;
+}
+.gamebrowser-release-link a {
+    color: var(--cyan);
+    text-decoration: none;
+    font-size: 11px;
+}
+.gamebrowser-release-link a:hover {
+    text-decoration: underline;
+}
+.gamebrowser-download-btn {
+    padding: 3px 10px;
+    border: none;
+    border-radius: 3px;
+    background: var(--cyan);
+    color: var(--bg-primary);
+    cursor: pointer;
+    font-size: 11px;
+    text-decoration: none;
+}
+.gamebrowser-download-btn:hover {
+    opacity: 0.9;
+}
+.gamebrowser-source-info {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: auto;
+}
+.gamebrowser-source-info a {
+    color: var(--cyan);
+    text-decoration: none;
+}
+.gamebrowser-source-info a:hover {
+    text-decoration: underline;
+}
+.gamebrowser-external {
+    margin-top: 10px;
+}
+.gamebrowser-external a {
+    display: inline-block;
+    padding: 4px 10px;
+    background: var(--bg-button);
+    color: var(--text-primary);
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 11px;
+    margin-right: 5px;
+}
+.gamebrowser-external a:hover {
+    background: var(--bg-hover);
+}
+.gamebrowser-pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-top: 1px solid var(--bg-button);
+    background: var(--bg-primary);
+}
+.gamebrowser-pagination button {
+    padding: 5px 15px;
+    border: none;
+    border-radius: 4px;
+    background: var(--bg-button);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.gamebrowser-pagination button:hover:not(:disabled) {
+    background: var(--bg-hover);
+}
+.gamebrowser-pagination button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.gamebrowser-pagination span {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.gamebrowser-status {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-secondary);
+}
+.gamebrowser-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.gamebrowser-spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid var(--bg-button);
+    border-top-color: var(--cyan);
+    border-radius: 50%;
+    animation: gamebrowser-spin 1s linear infinite;
+}
+@keyframes gamebrowser-spin {
+    to { transform: rotate(360deg); }
+}
+.gamebrowser-error {
+    color: var(--red);
+}
+
+/* Custom joystick key bindings — one compact row inside the Input settings row,
+   not a stack: the container is inline-flex so it can't wrap the buttons. */
+#joyCustomKeys {
+    display: inline-flex;
+    margin-left: 2px;
+    align-items: center;
+    gap: 3px;
+    flex-wrap: nowrap;
+}
+#joyCustomKeys.hidden { display: none; }
+/* The Joystick row carries a lot of controls; keep each label on one line so the
+   row stays one line high instead of stacking. */
+.settings-row .checkbox-label { white-space: nowrap; }
+.joy-bind {
+    padding: 2px 7px;
+    font-size: 11px;
+    font-family: inherit;
+    white-space: nowrap;
+    min-width: 46px;
+    background: var(--bg-button);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    cursor: pointer;
+}
+.joy-bind:hover { background: var(--bg-tertiary); color: var(--cyan); }
+.joy-bind.binding {
+    background: var(--cyan);
+    color: var(--bg-primary);
+    border-color: var(--cyan);
+}

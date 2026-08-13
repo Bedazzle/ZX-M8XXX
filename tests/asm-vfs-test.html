@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ASM project VFS Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>ASM project VFS Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html" style="width:1200px;height:800px;border:1px solid #444"></iframe>
+
+    <script type="module">
+        // Assembling used to wipe the VFS whenever no text file was "open" — which
+        // is the normal state after loading only a binary. The INCBIN data vanished
+        // from the file dropdown and the build failed with "file not found".
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+        (async () => {
+            const f = document.getElementById('app');
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = f.contentWindow;
+                if (w && w.spectrum && w.zxDebug && w.zxDebug.getAsmAPI) break;
+                await wait(25);
+            }
+            assert(!!(w && w.zxDebug && w.zxDebug.getAsmAPI), 'the ASM API is reachable');
+            if (!w || !w.zxDebug || !w.zxDebug.getAsmAPI) { log('=== ABORTED ===', 'fail'); return; }
+            const d = w.document;
+            const asm = w.zxDebug.getAsmAPI();
+
+            section('A loaded binary survives assembling');
+            try {
+                // a full screen, as in the report
+                const scr = new w.Uint8Array(6912);
+                for (let i = 0; i < scr.length; i++) scr[i] = i;
+                asm.addProjectFiles([{ path: 'game.scr', data: scr }]);
+                await wait(200);
+                const bins = () => Object.entries(w.zxDebug.vfs.files)
+                    .filter(([, v]) => v && v.binary).map(([k]) => k);
+                assert(bins().some(p => /game\.scr$/i.test(p)),
+                       'the binary is in the project', JSON.stringify(bins()));
+
+                const editor = d.getElementById('asmEditor');
+                editor.value = '    org 25000\n    ret\n\n    org 16384\n    incbin "game.scr"\n';
+                editor.dispatchEvent(new w.Event('input', { bubbles: true }));
+                await wait(200);
+
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+
+                const out = (d.getElementById('asmOutput').textContent || '').replace(/\s+/g, ' ');
+                assert(!/not found|missing/i.test(out), 'the build does not report a missing file',
+                       out.slice(0, 120));
+                assert(/OK:|bytes at/i.test(out), 'and it assembles', out.slice(0, 120));
+                assert(bins().some(p => /game\.scr$/i.test(p)),
+                       'the binary is still in the project afterwards', JSON.stringify(bins()));
+
+                // and again, since the first build is the one that used to wipe it
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+                const out2 = (d.getElementById('asmOutput').textContent || '').replace(/\s+/g, ' ');
+                assert(/OK:|bytes at/i.test(out2), 'a second build still finds it', out2.slice(0, 120));
+
+                // The reported block must cover the lower ORG, not just the code:
+                // this is what "the image never appeared" looked like from outside.
+                assert(/4000h/i.test(out2), 'the build reports the lower ORG as its start',
+                       out2.slice(0, 80) + ' || editor=' + JSON.stringify(editor.value.slice(0, 70)));
+                // Same source, same module instance, straight through the assembler:
+                // tells us whether a wrong report comes from the build or the UI.
+                const direct = await w.zxDebug.assembler.assembleAsync(editor.value, 'editor.asm');
+                assert(direct.outputStart === 16384 && direct.output.length > 6912,
+                       'the app’s own assembler places it at the lower ORG',
+                       `start=${direct.outputStart} len=${direct.output.length}`);
+
+                const m = out2.match(/OK:\s*(\d+)\s*bytes/i);
+                assert(m && Number(m[1]) > 6912, 'and a size that includes the binary',
+                       m ? m[1] : out2.slice(0, 80));
+            } catch (e) {
+                assert(false, 'binary section threw', e && e.message);
+            }
+
+            section('Renaming a project file');
+            try {
+                const files = () => Object.keys(w.zxDebug.vfs.files);
+                // rename the binary the source refers to, then fix the source to match
+                let res = asm.renameProjectFile('game.scr', 'screen.scr');
+                assert(res.ok, 'the rename reports success', JSON.stringify(res));
+                assert(files().some(p => /screen\.scr$/.test(p)) &&
+                       !files().some(p => /game\.scr$/.test(p)),
+                       'the file list shows the new name only', JSON.stringify(files()));
+
+                const editor = d.getElementById('asmEditor');
+                editor.value = '    org 16384\n    incbin "screen.scr"\n';
+                editor.dispatchEvent(new w.Event('input', { bubbles: true }));
+                await wait(150);
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+                const out = (d.getElementById('asmOutput').textContent || '').replace(/\s+/g, ' ');
+                assert(/OK:/.test(out) && /4000h/i.test(out),
+                       'and the renamed binary still builds', out.slice(0, 100));
+
+                // refusals surface rather than corrupting the project
+                res = asm.renameProjectFile('screen.scr', '');
+                assert(!res.ok, 'an empty name is refused', JSON.stringify(res));
+                asm.addProjectFiles([{ path: 'other.bin', data: new w.Uint8Array(4) }]);
+                await wait(150);
+                res = asm.renameProjectFile('other.bin', 'screen.scr');
+                assert(!res.ok && /exists/.test(res.error), 'renaming onto an existing file is refused',
+                       JSON.stringify(res));
+                assert(files().some(p => /other\.bin$/.test(p)), 'and the file is untouched');
+                asm.renameProjectFile('other.bin', 'spare.bin');
+                assert(files().some(p => /spare\.bin$/.test(p)), 'a valid rename still works');
+            } catch (e) {
+                assert(false, 'rename section threw', e && e.message);
+            }
+
+            section('A loaded .inc survives assembling');
+            try {
+                // Same report as the binary above, but the file has a *source*
+                // extension, so it is stored as text — keeping only binaries across
+                // a build was not enough, and it vanished from the project.
+                const incText = 'HELLO-DATA!';                 // 11 bytes via INCBIN
+                asm.addProjectFiles([{ path: 'somefile.inc', text: incText }]);
+                await wait(200);
+                const has = () => Object.keys(w.zxDebug.vfs.files).some(p => /somefile\.inc$/i.test(p));
+                assert(has(), 'the .inc is in the project');
+
+                const editor = d.getElementById('asmEditor');
+                editor.value = '    org 32768\n    incbin "somefile.inc"\n';
+                editor.dispatchEvent(new w.Event('input', { bubbles: true }));
+                await wait(200);
+
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+                const out = (d.getElementById('asmOutput').textContent || '').replace(/\s+/g, ' ');
+                assert(!/not found|missing/i.test(out), 'the build does not report a missing file',
+                       out.slice(0, 120));
+                assert(/OK:/i.test(out), 'and it assembles', out.slice(0, 120));
+                assert(has(), 'the .inc is still in the project afterwards',
+                       JSON.stringify(Object.keys(w.zxDebug.vfs.files)));
+
+                const m = out.match(/OK:\s*(\d+)\s*bytes/i);
+                assert(m && Number(m[1]) === incText.length, 'the included bytes are in the output',
+                       m ? m[1] : out.slice(0, 80));
+
+                // the second build is where a wipe shows up as "File not found"
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+                const out2 = (d.getElementById('asmOutput').textContent || '').replace(/\s+/g, ' ');
+                assert(/OK:/i.test(out2) && !/not found/i.test(out2),
+                       'a second build still finds it', out2.slice(0, 120));
+            } catch (e) {
+                assert(false, '.inc section threw', e && e.message);
+            }
+
+            section('A binary payload loaded as .inc keeps its bytes');
+            try {
+                // Loaded through the real file input, which decodes a source
+                // extension to text: that decode is lossy above 0x7F, so INCBIN
+                // used to emit 256 bytes of the wrong data and still say OK.
+                const all256 = new w.Uint8Array(256);
+                for (let i = 0; i < 256; i++) all256[i] = i;
+
+                const input = d.getElementById('asmFileInput');
+                const dt = new w.DataTransfer();
+                dt.items.add(new w.File([all256], 'gfx.inc'));
+                input.files = dt.files;
+                input.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(600);
+
+                // "which codepage is this graphics data in?" is a question with no
+                // right answer, so plain data is taken as data and not asked about
+                const dlg = [...d.querySelectorAll('div')].find(el =>
+                    /Non-UTF-8 encoding detected/.test(el.textContent || '') &&
+                    el.style.zIndex === '10000');
+                assert(!dlg, 'no encoding dialog for data that is plainly not text');
+                if (dlg) {
+                    const imp = [...dlg.querySelectorAll('button')]
+                        .find(b => (b.textContent || '').trim() === 'Import');
+                    if (imp) imp.click();
+                    await wait(400);
+                }
+                await wait(500);
+
+                const stored = w.zxDebug.vfs.files[w.zxDebug.vfs.normalizePath('gfx.inc')];
+                assert(stored && stored.binary, 'and it is kept as bytes, not text',
+                       stored ? (stored.binary ? '' : 'stored as text') : 'missing');
+
+                const editor = d.getElementById('asmEditor');
+                editor.value = '    org 32768\n    incbin "gfx.inc"\n';
+                editor.dispatchEvent(new w.Event('input', { bubbles: true }));
+                await wait(200);
+                d.getElementById('btnAsmAssemble').click();
+                await wait(1200);
+
+                const r = await w.zxDebug.assembler.assembleAsync(editor.value, 'editor.asm');
+                assert(r.success && r.output.length === 256, 'it assembles all 256 bytes',
+                       r.success ? String(r.output.length) : 'failed');
+                const wrong = [];
+                for (let i = 0; i < Math.min(r.output.length, 256); i++) {
+                    if (r.output[i] !== i) wrong.push(i);
+                }
+                assert(wrong.length === 0, 'and every byte matches the file',
+                       wrong.length ? `${wrong.length} wrong, first at ${wrong[0]} ` +
+                                      `(${wrong[0]} -> ${r.output[wrong[0]]})` : '');
+                // The other half of that judgement: a source in a Russian codepage
+                // is also not UTF-8, but it *is* text and must still be offered the
+                // encoding dialog rather than being taken for data.
+                const cp866 = [];
+                for (const ch of '; ') cp866.push(ch.charCodeAt(0));
+                for (const b of [0x8A, 0x8E, 0x8C, 0x8C, 0x85, 0x8D, 0x92, 0x80, 0x90, 0x88, 0x99])
+                    cp866.push(b);                       // "КОММЕНТАРИЙ" in CP866
+                cp866.push(0x0D, 0x0A);
+                for (const ch of '    nop\r\n') cp866.push(ch.charCodeAt(0));
+
+                const dt2 = new w.DataTransfer();
+                dt2.items.add(new w.File([new w.Uint8Array(cp866)], 'russian.inc'));
+                input.files = dt2.files;
+                input.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(600);
+
+                const dlg2 = [...d.querySelectorAll('div')].find(el =>
+                    /Non-UTF-8 encoding detected/.test(el.textContent || '') &&
+                    el.style.zIndex === '10000');
+                assert(!!dlg2, 'a non-UTF-8 *source* still gets the encoding dialog');
+                if (dlg2) {
+                    const imp2 = [...dlg2.querySelectorAll('button')]
+                        .find(b => (b.textContent || '').trim() === 'Import');
+                    if (imp2) imp2.click();
+                    await wait(600);
+                    const ru = w.zxDebug.vfs.files[w.zxDebug.vfs.normalizePath('russian.inc')];
+                    assert(ru && !ru.binary, 'and is kept as text once imported',
+                           ru ? 'stored as binary' : 'missing');
+                }
+            } catch (e) {
+                assert(false, 'binary .inc section threw', e && e.message);
+            }
+
+            section('A scratch build sees only the editor and the data');
+            try {
+                // Nothing is "open" in this scenario, so after the build the project
+                // holds the editor's own source plus what the user loaded — and no
+                // stale copies. (Adding a .asm through addProjectFiles *opens* it,
+                // which is a project, not a scratch build.)
+                const files = Object.entries(w.zxDebug.vfs.files);
+                const sources = files.filter(([, v]) => !v.binary).map(([k]) => k);
+                const binaries = files.filter(([, v]) => v.binary).map(([k]) => k);
+                const scratch = files.filter(([, v]) => v.scratch).map(([k]) => k);
+                assert(scratch.length === 1 && /editor\.asm$/.test(scratch[0]),
+                       'exactly one scratch file: the editor buffer', JSON.stringify(scratch));
+                // everything this suite loaded, and nothing else
+                const LOADED = ['somefile.inc', 'gfx.inc', 'russian.inc', 'screen.scr', 'spare.bin'];
+                assert(sources.every(p => /editor\.asm$/.test(p) ||
+                                          LOADED.some(n => p.endsWith(n))),
+                       'the loaded files are kept, and nothing else lingers',
+                       JSON.stringify(sources));
+                // (the rename section above left screen.scr and spare.bin behind)
+                // gfx.inc is among them: a source extension holding data is stored
+                // as data, which is the point of the section above
+                assert(binaries.length >= 1 && binaries.every(p => /\.(scr|bin|inc)$/.test(p)),
+                       'and only the loaded binaries', JSON.stringify(binaries));
+            } catch (e) {
+                assert(false, 'scratch-build section threw', e && e.message);
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

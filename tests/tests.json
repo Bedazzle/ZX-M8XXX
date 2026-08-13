@@ -203,13 +203,14 @@
             "name": "Shock 128K",
             "category": "multicolor",
             "file": "tests/snapshot_128k_shock.szx",
+            "machine": "128k",			
             "earlyTimings": true,
             "palette": "default",
             "enabled": true,
             "author": "",
             "source": "",
             "steps": [
-                { "frames": 80, "screen": "tests/shock128_81.png" }
+                { "frames": 66, "screen": "tests/shock128_66.png" }
             ]
         },
 
@@ -401,6 +402,74 @@
             "source": "",
             "steps": [
                 { "frames": 786, "screen": "tests/cpd-128k.png" }
+            ]
+        },
+
+        {
+            "id": "brightminer48",
+            "name": "Bright Miner - ULA ink edge skew",
+            "category": "video",
+            "file": "tests/brightminer.tap",
+            "machine": "48k",
+            "inkSkew": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 700, "screen": "tests/brightminer48.png" }
+            ]
+        },
+
+        {
+            "id": "brightminer2a",
+            "name": "Bright Miner - ULA ink edge skew",
+            "category": "video",
+            "file": "tests/brightminer.tap",
+            "machine": "+2a",
+            "inkSkew": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "",
+            "source": "",
+            "steps": [
+                { "frames": 700, "screen": "tests/brightminer2a.png" }
+            ]
+        },
+
+        {
+            "id": "chromatrons",
+            "name": "Chromatrons attack - composite artifact",
+            "category": "video",
+            "file": "tests/ChromatronsAttack.tap.zip",
+            "zipEntry": "chromatrons.tap",
+            "machine": "128k",
+            "palComposite": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Guesser / Gasman",
+            "source": "https://spectrumcomputing.co.uk/entry/31261/ZX-Spectrum/Chromatrons_Attack",
+            "steps": [
+                { "frames": 60, "screen": "tests/chromatrons.png" },
+                { "frames": 160, "screen": "tests/chromatrons-game.png", "keys": "CAPS" }
+            ]
+        },
+
+        {
+            "id": "chromatrons-pentagon",
+            "name": "Chromatrons attack - composite artifact",
+            "category": "video",
+            "file": "tests/ChromatronsAttack.tap.zip",
+            "zipEntry": "chromatrons.tap",
+            "machine": "pentagon",
+            "palComposite": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Guesser / Gasman",
+            "source": "https://spectrumcomputing.co.uk/entry/31261/ZX-Spectrum/Chromatrons_Attack",
+            "steps": [
+                { "frames": 60, "screen": "tests/chromatrons-pentagon.png" },
+                { "frames": 160, "screen": "tests/chromatrons-pentagon-game.png", "keys": "CAPS" }
             ]
         },
 

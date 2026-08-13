@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Save Slot Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Save Slot Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { createSaveSlots } from '../core/save-slots.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // A storage we control, so quota and corruption are testable
+        function fakeStorage(limit = Infinity) {
+            const map = new Map();
+            return {
+                map,
+                get: (k) => (map.has(k) ? map.get(k) : null),
+                set: (k, v) => {
+                    const total = [...map.entries()].reduce((n, [kk, vv]) =>
+                        n + (kk === k ? 0 : vv.length), 0) + v.length;
+                    if (total > limit) {
+                        const e = new Error('QuotaExceededError: storage full');
+                        e.name = 'QuotaExceededError';
+                        throw e;
+                    }
+                    map.set(k, v);
+                },
+                remove: (k) => map.delete(k),
+            };
+        }
+        const bytes = (n, fill) => new Uint8Array(n).fill(fill);
+
+        section('Saving and loading');
+        {
+            const storage = fakeStorage();
+            const slots = createSaveSlots({ storage, count: 9 });
+            assert(slots.count === 9, 'nine slots by default');
+            assert(slots.list().length === 9, 'list covers empty slots too');
+            assert(slots.list().every(s => !s.used), 'all empty to start');
+
+            const r = slots.save(2, bytes(64, 0xAB), { machine: '128k', title: 'Manic Miner' });
+            assert(r.ok === true, 'save reports success', JSON.stringify(r));
+            assert(slots.used(2) === true, 'the slot is now used');
+            assert(slots.used(3) === false, 'other slots untouched');
+
+            const got = slots.load(2);
+            assert(!!got && got.bytes.length === 64 && got.bytes[0] === 0xAB,
+                   'the bytes come back intact', got ? String(got.bytes.length) : 'null');
+            assert(got.machine === '128k' && got.title === 'Manic Miner',
+                   'metadata comes back', JSON.stringify(got));
+            assert(!!got.time, 'a timestamp is recorded');
+
+            const entry = slots.list().find(s => s.index === 2);
+            assert(entry.used && entry.title === 'Manic Miner' && entry.bytes === 64,
+                   'list reports the slot', JSON.stringify(entry));
+
+            // overwriting
+            slots.save(2, bytes(16, 0x11), { title: 'Later' });
+            const again = slots.load(2);
+            assert(again.bytes.length === 16 && again.title === 'Later', 'saving again overwrites');
+        }
+
+        section('Clearing and empty slots');
+        {
+            const slots = createSaveSlots({ storage: fakeStorage(), count: 4 });
+            assert(slots.load(1) === null, 'loading an empty slot returns null');
+            slots.save(1, bytes(8, 1));
+            assert(slots.clear(1) === true, 'clear reports it removed something');
+            assert(slots.used(1) === false, 'and the slot is empty');
+            assert(slots.clear(1) === false, 'clearing an empty slot reports nothing removed');
+        }
+
+        section('Bad slot numbers');
+        {
+            const slots = createSaveSlots({ storage: fakeStorage(), count: 4 });
+            assert(slots.save(0, bytes(4, 1)).ok === false, 'slot 0 is rejected');
+            assert(slots.save(5, bytes(4, 1)).ok === false, 'past the last slot is rejected');
+            assert(slots.save(1.5, bytes(4, 1)).ok === false, 'a fractional slot is rejected');
+            assert(slots.load(99) === null, 'loading a bad slot is null, not a throw');
+            assert(slots.clear(99) === false, 'clearing a bad slot is false');
+            assert(slots.save(1, new Uint8Array(0)).ok === false, 'saving nothing is rejected');
+        }
+
+        section('When the browser store is full');
+        {
+            const storage = fakeStorage(200);          // room for one small state
+            const slots = createSaveSlots({ storage, count: 4 });
+            const first = slots.save(1, bytes(64, 7), { title: 'keep me' });
+            assert(first.ok === true, 'the first save fits');
+
+            const second = slots.save(2, bytes(4096, 9));
+            assert(second.ok === false, 'the oversized save fails');
+            assert(second.full === true, 'and is reported as a full store', JSON.stringify(second));
+            assert(/full/i.test(second.error), 'with a message a user can act on', second.error);
+
+            assert(slots.used(2) === false, 'the failed slot is left empty, not half-written');
+            const kept = slots.load(1);
+            assert(!!kept && kept.title === 'keep me', 'and the existing slot survives');
+        }
+
+        section('Corrupt data reads as empty');
+        {
+            const storage = fakeStorage();
+            const slots = createSaveSlots({ storage, count: 2 });
+            slots.save(1, bytes(8, 3), { title: 'ok' });
+            storage.map.set('zxm8_slot1_meta', '{not json');
+            const got = slots.load(1);
+            assert(!!got && got.bytes.length === 8, 'the state still loads with broken metadata');
+            assert(got.title === '', 'and the metadata reads as blank');
+
+            storage.map.set('zxm8_slot1', '!!!not base64!!!');
+            assert(slots.load(1) === null, 'an undecodable slot reads as empty rather than throwing');
+        }
+
+        section('The old single quicksave is not lost');
+        {
+            const storage = fakeStorage();
+            storage.map.set('zxm8_quicksave', btoa('OLDSTATE'));
+            storage.map.set('zxm8_quicksave-machine', '48k');
+            storage.map.set('zxm8_quicksave-time', 'yesterday');
+            const slots = createSaveSlots({ storage, count: 4 });
+
+            assert(slots.migrateLegacy() === true, 'the legacy quicksave migrates');
+            const got = slots.load(1);
+            assert(!!got && String.fromCharCode(...got.bytes) === 'OLDSTATE',
+                   'into slot 1, with its bytes', got ? String(got.bytes) : 'null');
+            assert(got.machine === '48k' && got.time === 'yesterday', 'and its metadata',
+                   JSON.stringify(got));
+            assert(slots.migrateLegacy() === false, 'migrating twice does nothing');
+
+            // never clobber a real slot 1
+            const s2 = createSaveSlots({ storage, count: 4 });
+            s2.save(1, bytes(4, 0xEE), { title: 'mine' });
+            assert(s2.migrateLegacy() === false, 'an occupied slot 1 is not overwritten');
+            assert(s2.load(1).title === 'mine', 'and keeps its own content');
+        }
+
+        section('Cycling slots');
+        {
+            const slots = createSaveSlots({ storage: fakeStorage(), count: 3 });
+            assert(slots.next(1) === 2 && slots.next(2) === 3, 'next walks forward');
+            assert(slots.next(3) === 1, 'and wraps');
+            assert(slots.next(0) === 1 && slots.next(undefined) === 1, 'a bad current slot starts at 1');
+        }
+
+        section('Configuration');
+        {
+            const bad = (o) => { try { createSaveSlots(o); return false; } catch (e) { return true; } };
+            assert(bad({}), 'storage is required');
+            assert(bad({ storage: {} }), 'storage must have get/set');
+            assert(bad({ storage: fakeStorage(), count: 0 }), 'count must be at least 1');
+        }
+
+        section('In the running emulator');
+        await (async () => {
+            const frame = document.createElement('iframe');
+            frame.src = '../index.html';
+            frame.style.cssText = 'width:1000px;height:700px;border:1px solid #444';
+            document.body.appendChild(frame);
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = frame.contentWindow;
+                if (w && w.spectrum && w.zxDebug && w.zxDebug.getDisplayAPI) break;
+                await wait(25);
+            }
+            const api = w && w.zxDebug && w.zxDebug.getDisplayAPI && w.zxDebug.getDisplayAPI();
+            assert(!!api, 'the display API is reachable');
+            if (!api) { frame.remove(); return; }
+            assert(!!api.saveSlots && typeof api.quicksave === 'function',
+                   'slots are wired into quicksave');
+            if (!api.saveSlots) { frame.remove(); return; }
+
+            try {
+                const sp = w.spectrum;
+                const ADDR = 0x8000;
+                // ROMs load asynchronously; snapshotting before they land captures a
+                // blank machine, which makes the round-trip meaningless.
+                if (w.zxDebug.ready) await w.zxDebug.ready();
+                for (let f = 0; f < 50; f++) sp.runFrame();
+                api.saveSlots.clear(4);
+
+                sp.memory.writeDebug(ADDR, 0x5A);
+                api.quicksave(4);
+                assert(api.saveSlots.used(4) === true, 'quicksave filled the slot');
+
+                const entry = api.saveSlots.list().find(s => s.index === 4);
+                assert(!!entry && entry.machine === sp.machineType,
+                       'the machine type is recorded', JSON.stringify(entry));
+                // SZX is compressed, so a freshly booted 48K state is only a few
+                // hundred bytes; assert the recorded size matches what comes back
+                // rather than guessing a floor.
+                assert(entry.bytes === api.saveSlots.load(4).bytes.length,
+                       'the recorded size matches the stored snapshot',
+                       `${entry.bytes} vs ${api.saveSlots.load(4).bytes.length}`);
+
+                // change memory, then load the slot back
+                sp.memory.writeDebug(ADDR, 0xA5);
+                assert(sp.memory.read(ADDR) === 0xA5, 'memory changed after the save');
+                await api.quickload(4);
+                await wait(200);
+                assert(sp.memory.read(ADDR) === 0x5A, 'loading the slot restored the machine',
+                       '0x' + sp.memory.read(ADDR).toString(16));
+
+                // other slots are unaffected, and an empty one is handled
+                assert(api.saveSlots.used(5) === false, 'a different slot stayed empty');
+                await api.quickload(5);
+                assert(sp.memory.read(ADDR) === 0x5A, 'loading an empty slot changes nothing');
+
+                api.saveSlots.clear(4);
+                assert(api.saveSlots.used(4) === false, 'the slot can be cleared again');
+            } catch (e) {
+                assert(false, 'driving save slots in the app threw', e && e.message);
+            }
+            frame.remove();
+        })();
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

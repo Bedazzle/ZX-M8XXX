@@ -1,6 +1,8 @@
 // poke-manager.js — POKE Manager (extracted from index.html)
 import { hex8, hex16 } from '../core/utils.js';
 
+import { parsePok, looksLikePok, pokTrainersToEntries } from '../core/pok.js';
+
 export function initPokeManager({ readMemory, writePoke, showMessage, goToAddress, setFrozenAddresses }) {
     // DOM lookups
     const pokeList = document.getElementById('pokeList');
@@ -97,6 +99,32 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
         }
 
         renderPokeManager();
+    }
+
+    // Load a community .pok cheat file. Same replace-everything behaviour as the
+    // JSON path. Pokes the file leaves to the user (value 256 - lives, ammo) are
+    // asked for once each; cancelling drops just that patch.
+    function loadPokFile(text, filename) {
+        const { trainers, warnings } = parsePok(text);
+        if (!trainers.length) {
+            throw new Error(warnings.length ? warnings[0] : 'no pokes found');
+        }
+        const askValue = (name, addr) => {
+            const got = window.prompt(
+                `${name}\nValue for address ${addr} (0-255):`, '255');
+            if (got === null) return null;
+            const n = parseInt(got.trim(), 10);
+            return Number.isFinite(n) ? (n & 0xFF) : null;
+        };
+        const entries = pokTrainersToEntries(trainers, askValue);
+        if (!entries.length) throw new Error('all pokes were cancelled');
+
+        pokeDisableAll();
+        pokeEntries = entries;
+        pokeEditorEntries = [];
+        pokeGameName = (filename || '').replace(/\.pok$/i, '');
+        renderPokeManager();
+        return { count: entries.length, warnings };
     }
 
     function pokeReadEditorValue(ed, input) {
@@ -417,7 +445,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
     btnPokeLoad.addEventListener('click', () => {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.json';
+        input.accept = '.json,.pok';
         input.addEventListener('change', () => {
             const file = input.files[0];
             if (!file) return;
@@ -425,8 +453,17 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
             reader.onerror = () => showMessage('Failed to read file: ' + file.name, 'error');
             reader.onload = () => {
                 try {
-                    loadPokeJSON(reader.result);
-                    showMessage('Pokes loaded: ' + file.name);
+                    // Route by content, not extension: .pok files are sometimes
+                    // saved as .txt, and a JSON file named .pok is not unheard of.
+                    if (looksLikePok(reader.result)) {
+                        const { count, warnings } = loadPokFile(reader.result, file.name);
+                        showMessage(`Loaded ${count} trainer(s) from ${file.name}` +
+                                    (warnings.length ? ` (${warnings.length} line(s) skipped)` : ''));
+                        if (warnings.length) console.warn('.pok warnings:', warnings);
+                    } else {
+                        loadPokeJSON(reader.result);
+                        showMessage('Pokes loaded: ' + file.name);
+                    }
                 } catch (e) {
                     showMessage('Error loading pokes: ' + e.message, 'error');
                 }
@@ -542,6 +579,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
     // Public API
     return {
         loadPokeJSON,
+        loadPokFile,
         pokeClearAll,
         addPoke(name, addrOrPatches, normal, poke, hint) {
             let patches;

@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.15.23</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.15.29</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -33,21 +33,46 @@
                     <h5>Features</h5>
                     <ul>
                         <li>Full Z80 CPU emulation (all documented + undocumented opcodes)</li>
-                        <li>48K, 128K, +2, +2A, +3, Pentagon, and Scorpion machine support</li>
+                        <li>48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, and Scorpion machine support</li>
                         <li>Memory banking (128K/+2/+2A/Pentagon/Scorpion)</li>
                         <li>ULA video generation with border</li>
                         <li>ULAplus extended palette (64 colors, HAM256 raster effects)</li>
+                        <li>ULA snow &mdash; the 48K ULA's refresh-cycle fault, when a program sets I to $40-$7F
+                            (Settings &rarr; Machines, off by default; machines with contended memory only)</li>
+                        <li>ULA ink edge skew &mdash; the Ferranti mux switches into ink later than back to paper, so an
+                            ink pixel is slightly narrower than a paper one (Settings &rarr; Machines, on by default;
+                            48K/128K/+2 only, not the +2A/+3 gate array or the clones)</li>
+                        <li>PAL composite (RF) simulation &mdash; what a TV makes of the single wire it is given, so
+                            dither at the colour subcarrier frequency becomes colour. The only way <i>Chromatrons
+                            Attack</i> is visible (Settings &rarr; Machines, off by default; stable on the 128K family,
+                            which locks its pixel clock to the subcarrier)</li>
                         <li>Memory contention emulation</li>
                         <li>AY-3-8910 sound chip (stereo modes)</li>
                         <li>PSG file export (record AY music)</li>
                         <li>SNA/Z80/SZX snapshot loading/saving</li>
-                        <li>Quicksave/Quickload (F2/F5) - instant state save to browser storage</li>
+                        <li>Quicksave/Quickload (F2/F5) - nine state slots in browser storage (see Files)</li>
+                        <li>Rewind (Ctrl+Left) - step back through the last minute of play (see Files)</li>
                         <li>TAP/TZX tape loading (instant or real-time with border stripes and sound)</li>
+                        <li>WAV tape loading &mdash; real recordings of tapes, turbo loaders included</li>
+                        <li>Tape SAVE and MIC recording &mdash; a program's own SAVE is captured to a new tape</li>
                         <li>TRD/SCL disk images (TR-DOS)</li>
                         <li>DSK disk images (+3 ВµPD765 FDC)</li>
                         <li>ZIP archive support</li>
-                        <li>RZX playback (partial)</li>
+                        <li>RZX recording and playback (playback partial &mdash; some recordings desync)</li>
+                        <li>Keyboard ghosting, as on real hardware (optional, Settings &rarr; Input)</li>
+                        <li>Headless automation API (<code>window.zxDebug</code>) for scripted runs</li>
                         <li>Game Browser - search and download games from Spectrum Computing</li>
+                        <li>Z80 assembler (sjasmplus-compatible) - multi-file projects, macros, structs,
+                            DEVICE/paging, SAVEBIN/SAVESNA/SAVETAP/SAVETRD, assemble straight into memory and debug</li>
+                        <li>LUA scripting at assembly time (LUA/ENDLUA) - generate tables, convert assets,
+                            build TAP/TRD output, exactly as sjasmplus does it</li>
+                        <li>Import foreign sources - ALASM, TASM, STORM, ADS, GENS, Zeus and Pasmo converted to
+                            sjasmplus syntax, plus a source beautifier</li>
+                        <li>Debugger - breakpoints (address, register, memory, conditional), step/run-to,
+                            execution trace with screen revert, call stack and call graph</li>
+                        <li>Reverse engineering - auto-map coverage, labels, regions, cross-references,
+                            runtime profiler, code paths, struct mapper, signature packs, disassembly export
+                            (SkoolKit .ctl, Ghidra .csv, sjasmplus .sym)</li>
                         <li>Fullscreen mode (F11) with crisp/fit/stretch options</li>
                         <li>Automated test suite with screenshot comparison</li>
                         <li>Compare tool for snapshots, binaries, and emulator memory</li>
@@ -81,6 +106,9 @@
                     <p style="font-size: 11px; color: var(--text-dim);">The PC keys acting as <b>Caps Shift</b> and <b>Symbol Shift</b> are chosen in
                     Settings &rarr; Input: both/left/right Shift, Ctrl or Alt, the Menu key, or Tab (e.g. Ctrl as Symbol Shift, like Fuse or Spectaculator).
                     The two can't share a key. Note the browser reserves Ctrl+W/T/N &mdash; those combinations can't reach the Spectrum.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);"><b>Ghosting</b> (Settings &rarr; Input, off by default) reproduces the real keyboard matrix:
+                    it has no diodes, so three keys held at the corners of a rectangle make a fourth read as pressed &mdash; which is why some games
+                    refuse certain key combinations. Turn it on to see a game behave as it did on real hardware; leave it off for comfort.</p>
                     <h5>Symbol Shift Combinations (Alt + Key)</h5>
                     <table>
                         <tr><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th><th>Keys</th><th>Symbol</th></tr>
@@ -97,6 +125,21 @@
                         <tr><td>Alt+M</td><td>.</td><td>Alt+N</td><td>,</td><td>Alt+B</td><td>*</td></tr>
                         <tr><td>Alt+C</td><td>?</td><td>Alt+V</td><td>/</td><td>Alt+X</td><td>ВЈ</td></tr>
                     </table>
+                    <h5>Joystick type</h5>
+                    <p>Settings &rarr; Input chooses what the numpad and gamepad pretend to be. Only Kempston
+                       is a real interface; the others simply press ZX keys, which is how those games read them.</p>
+                    <table>
+                        <tr><th>Type</th><th>Keys</th><th>Used by</th></tr>
+                        <tr><td>Kempston</td><td>port $1F</td><td>the most common</td></tr>
+                        <tr><td>Sinclair 1</td><td>6 7 8 9 0</td><td>Interface 2, right port</td></tr>
+                        <tr><td>Sinclair 2</td><td>1 2 3 4 5</td><td>Interface 2, left port</td></tr>
+                        <tr><td>Cursor / Protek</td><td>5 6 7 8 + 0</td><td>AGF, Protek</td></tr>
+                        <tr><td>Custom keys</td><td>whatever you bind</td><td>games with their own layout</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">For <strong>Custom keys</strong>, buttons
+                       appear next to the dropdown: click one (Up, Down, Left, Right, Fire), then press the key you
+                       want. Defaults to Q A O P + Space. Esc cancels.</p>
+
                     <h5>Kempston Joystick (Numpad)</h5>
                     <table>
                         <tr><td>Numpad 8/2/4/6</td><td>Up/Down/Left/Right</td></tr>
@@ -157,8 +200,10 @@
                         <tr><td>F4</td><td>Run to Cursor</td></tr>
                         <tr><td>F9</td><td>Toggle Breakpoint at PC</td></tr>
                         <tr><td>F11</td><td>Toggle Fullscreen</td></tr>
-                        <tr><td>F2</td><td>Quicksave</td></tr>
-                        <tr><td>F5</td><td>Quickload</td></tr>
+                        <tr><td>F2</td><td>Save state to the current slot (of nine)</td></tr>
+                        <tr><td>F5</td><td>Load the current slot</td></tr>
+                        <tr><td>Shift+F2</td><td>Switch to the next save slot</td></tr>
+                        <tr><td>Ctrl+Left / Ctrl+Right</td><td>Rewind / step forward again</td></tr>
                         <tr><td>PageUp / PageDown</td><td>Scroll hovered panel by page (disasm or memory)</td></tr>
                         <tr><td>Up / Down (paused)</td><td>Scroll hovered panel by line (disasm or memory)</td></tr>
                         <tr><td>Left / Right (paused)</td><td>Scroll hovered panel by 1 byte (disasm or memory)</td></tr>
@@ -801,12 +846,29 @@
                         <tr><td><strong>SZX</strong></td><td>Spectaculator format with zlib compression</td></tr>
                         <tr><td><strong>Z80</strong></td><td>v1/v2/v3 load, v3 save (48K/128K/+2/Pentagon)</td></tr>
                     </table>
-                    <h5>Quicksave / Quickload</h5>
-                    <p>Instant state save/restore during gameplay using browser localStorage.</p>
+                    <h5>Save states: quicksave, quickload and slots (F2 / F5 / Shift+F2)</h5>
+                    <p>Instant state save/restore during gameplay using browser localStorage.
+                       Nine slots, so one save doesn't overwrite the last.</p>
                     <table>
-                        <tr><td><strong>F2</strong></td><td>Quicksave - saves current state</td></tr>
-                        <tr><td><strong>F5</strong></td><td>Quickload - restores saved state</td></tr>
+                        <tr><td><strong>F2</strong></td><td>Save to the current slot</td></tr>
+                        <tr><td><strong>F5</strong></td><td>Load the current slot</td></tr>
+                        <tr><td><strong>Shift+F2</strong></td><td>Switch to the next slot (says what's in it)</td></tr>
                     </table>
+                    <p>The status bar shows the current slot next to the 💾 icon: green when it holds a state,
+                       grey with a dot when it's empty. Click it to switch slots; hover for what's in it.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">A quicksave made before slots existed
+                       moves into slot 1 automatically. If browser storage is full the save says so rather than
+                       silently losing the state.</p>
+
+                    <h5>Rewind (Ctrl+Left / Ctrl+Right)</h5>
+                    <p>The last minute of play is kept, so a mistake costs seconds instead of a reload.</p>
+                    <table>
+                        <tr><td><strong>Ctrl+Left</strong></td><td>Step back ~2 seconds (tap again to go further)</td></tr>
+                        <tr><td><strong>Ctrl+Right</strong></td><td>Step forward again</td></tr>
+                    </table>
+                    <p style="font-size: 11px; color: var(--text-dim);">Carry on playing and the rewind settles
+                       after a moment: what you rewound past is discarded. Ctrl isn't a Spectrum key, so this
+                       never interferes with a game.</p>
                     <p style="font-size: 11px; color: var(--text-dim);">Also accessible via Save в†’ Quick (F2) and Load в†’ Quick (F5). Uses SZX format internally.</p>
                     <h5>Tapes</h5>
                     <table>
@@ -1290,6 +1352,18 @@ start:  ...</pre>
                         <li>Pagination for large differences (50 blocks per page)</li>
                     </ul>
 
+                    <h5>Memory vs Memory</h5>
+                    <p>Compares one part of the running machine's memory with another &mdash; a buffer against the screen
+                    it is copied to, or a bank against the one it should mirror. No file is needed on either side.</p>
+                    <ul>
+                        <li><b>64K (as paged)</b> &mdash; <code>$0000-$FFFF</code>, what the CPU sees right now</li>
+                        <li><b>Bank</b> &mdash; a RAM bank by number plus <code>$0000-$3FFF</code>, whether or not it is paged in
+                            (128K and up; the bank range follows the machine &mdash; 8, 16 on Scorpion, 64 on Pentagon 1024)</li>
+                    </ul>
+                    <p>A 48K machine has nothing to page, so it offers the 64K space only. A length that would run past
+                    <code>$FFFF</code>, or past the end of a bank, is shortened and the result says so. Each side of the
+                    dump is labelled with its own address, since the two regions are at different places.</p>
+
                     <h5>Use Cases</h5>
                     <ul>
                         <li>Verify emulator accuracy by comparing against reference snapshots</li>
@@ -1599,7 +1673,14 @@ start:  ...</pre>
                 </div>
                 <div class="fullhelp-section hidden" id="help-pokes">
                     <h4>POKE Manager</h4>
-                    <p>The Pokes tab in the debugger panel manages named pokes (multi-address byte patches) and memory value editors. Two-column layout: editors on the left, pokes on the right. Create entries inline or load from JSON files.</p>
+                    <p>The Pokes tab in the debugger panel manages named pokes (multi-address byte patches) and memory value editors. Two-column layout: editors on the left, pokes on the right. Create entries inline, or load a JSON file or a community <strong>.pok</strong> cheat file.</p>
+                    <h5>Loading .pok files</h5>
+                    <p><strong>Load</strong> accepts the <code>.pok</code> format used by the POKE databases as well as this
+                       app's JSON, and works out which it is from the contents &mdash; so a <code>.pok</code> saved as <code>.txt</code>
+                       still loads. Each trainer in the file becomes a named poke, switched off until you enable it. Where a file
+                       leaves the value to the player (lives, ammo) you are asked for it; cancelling skips just that patch.
+                       Lines the file gets wrong are skipped and counted rather than failing the whole load, and the file name
+                       becomes the game label.</p>
                     <h5>Layout</h5>
                     <p>Editors column (left) and pokes column (right) are shown side by side. <strong>Load</strong>, <strong>Save</strong>, and <strong>Clear</strong> buttons are at the top right. Click the <strong>game name</strong> label to edit it.</p>
                     <h5>Adding Pokes</h5>
@@ -1691,6 +1772,19 @@ labelManager.remove(0x4000)
 labelManager.findByName('main_loop')
 labelManager.exportJSON()
 labelManager.importJSON(jsonStr, merge)</pre>
+                    <h5>Scripted / headless runs</h5>
+                    <p><code>window.zxDebug</code> is the driving surface for automation: boot and wait for a ROM,
+                    load a file or URL, run frames, replay an RZX, record which code ran and export it as
+                    SkoolKit <code>.ctl</code> / Ghidra <code>.csv</code> / sjasmplus <code>.sym</code>,
+                    watch reads/writes, hold keys, and report progress from a run that hasn't exited yet.</p>
+                    <pre>
+await zxDebug.ready()                  // ROMs load asynchronously — wait first
+await zxDebug.loadUrl('game.tap')
+await zxDebug.autoLoad({ type: 'tape' })
+zxDebug.enableMap(true, { fast: true })
+zxDebug.runFrames(500)
+zxDebug.exportCtl()                    // also exportCsv() / exportSym()</pre>
+                    <p>The full reference is <code>docs/automation.md</code> in the source tree.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-about">
                     <div style="text-align: center; margin: 15px 0;">
@@ -1717,14 +1811,14 @@ labelManager.importJSON(jsonStr, merge)</pre>
                     </ul>
                     <h5>Acknowledgements</h5>
                     <ul>
-                        <li><strong>xLook</strong> by Dmitry Kozlov (HalfElf) &amp; Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author</li>
-                        <li><strong>introspec</strong> — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support (EXPORT, <code>!label</code>, <code>param?</code> macro arguments)</li>
                         <li><strong>dcorp80</strong> — ES module extraction approach</li>
+                        <li><strong>introspec</strong> — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support (EXPORT, <code>!label</code>, <code>param?</code> macro arguments)</li>
+                        <li><strong>xLook</strong> by Dmitry Kozlov (HalfElf) &amp; Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author</li>
                     </ul>
                     <h5>Libraries &amp; Fonts</h5>
                     <ul>
-                        <li><strong>pako</strong> — zlib decompression library (<a href="https://github.com/nodeca/pako" target="_blank" style="color: var(--cyan);">github.com/nodeca/pako</a>, MIT + Zlib license)</li>
                         <li><strong>fengari</strong> — Lua 5.3 VM in JavaScript, powering the assembler's LUA/ENDLUA blocks (<a href="https://fengari.io" target="_blank" style="color: var(--cyan);">fengari.io</a>, MIT license)</li>
+                        <li><strong>pako</strong> — zlib decompression library (<a href="https://github.com/nodeca/pako" target="_blank" style="color: var(--cyan);">github.com/nodeca/pako</a>, MIT + Zlib license)</li>
                         <li><strong>ZX82 System</strong> — ZX Spectrum display font by Paul van der Laan (<a href="https://type-invaders.com/sinclair/zx82system/" target="_blank" style="color: var(--cyan);">type-invaders.com</a>)</li>
                     </ul>
                     <h5>Known Limitations</h5>

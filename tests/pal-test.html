@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>PAL Composite (RF) Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>PAL Composite (RF) Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // A TV separates luminance from chroma by filtering, so fine dither whose
+        // frequency lands on the colour subcarrier is demodulated as colour. On a
+        // clock-locked Spectrum (128K family) eight pixels are exactly five
+        // subcarrier cycles, so the effect is stable and byte-aligned — which is
+        // what "Chromatrons Attack" is built on. See core/pal-composite.js.
+        import {
+            PAL_SUBCARRIER_HZ, PIXEL_CLOCK_LOCKED_HZ, PIXEL_CLOCK_FREE_HZ,
+            SAMPLES_PER_PIXEL, SAMPLES_PER_CYCLE, LOCKED_PIXEL_PHASE, FREE_PIXEL_PHASE,
+            PHASE_STEPS, KERNEL_HALF, KERNEL_TAPS, DEFAULT_BURST_PHASE,
+            defaultOptions, pixelPhaseFor, isLocked, rgbToYuv, yuvToRgb,
+            encodeDecodeLine, buildKernel, buildKernels, createPalFilter
+        } from '../core/pal-composite.js';
+        import { ULA } from '../core/ula.js';
+        import { getMachineProfile } from '../core/machines.js';
+
+        const TEST_VERSION = '1.0.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps;
+
+        // --- helpers -------------------------------------------------------------
+
+        // Luminance of one byte under white paper / black ink: a set bit is ink.
+        function byteLuma(byte) {
+            const out = [];
+            for (let p = 0; p < 8; p++) out.push(((byte >> (7 - p)) & 1) ? 0 : 1);
+            return out;
+        }
+        // Magnitude of bin k of a byte's 8-point luminance DFT.
+        function bin(byte, k) {
+            const y = byteLuma(byte);
+            let re = 0, im = 0;
+            for (let p = 0; p < 8; p++) {
+                const a = -2 * Math.PI * k * p / 8;
+                re += y[p] * Math.cos(a); im += y[p] * Math.sin(a);
+            }
+            return Math.hypot(re, im);
+        }
+        // A packed RGBA row of one repeating byte pattern, black ink on white paper.
+        function ditherRow(byte, w) {
+            const y = byteLuma(byte);
+            const fb = new Uint8ClampedArray(w * 4);
+            for (let x = 0; x < w; x++) {
+                const v = y[x & 7] * 255, o = x * 4;
+                fb[o] = v; fb[o + 1] = v; fb[o + 2] = v; fb[o + 3] = 255;
+            }
+            return fb;
+        }
+        function pixelAt(fb, x) {
+            const o = x * 4;
+            return [fb[o], fb[o + 1], fb[o + 2]];
+        }
+        // The luma notch only removes the subcarrier, so each pixel keeps its own
+        // black or white — the *colour* of a dithered field is the mean over a whole
+        // byte, which is what an eye (and a TV's own bandwidth) sees.
+        function cellAt(fb, w, x0, y) {
+            let r = 0, g = 0, b = 0;
+            for (let i = 0; i < 8; i++) {
+                const p = pixelAt(fb, (y * w) + x0 + i);
+                r += p[0]; g += p[1]; b += p[2];
+            }
+            return [r / 8, g / 8, b / 8];
+        }
+
+        // --- the frequency relationship -----------------------------------------
+
+        section('The clock relationship that makes it work');
+        {
+            assert(near(PIXEL_CLOCK_LOCKED_HZ / PAL_SUBCARRIER_HZ, 8 / 5, 1e-6),
+                   'a locked pixel clock is 8/5 of the subcarrier',
+                   String(PIXEL_CLOCK_LOCKED_HZ / PAL_SUBCARRIER_HZ));
+            assert(near(LOCKED_PIXEL_PHASE, 360 * 5 / 8),
+                   'so the subcarrier advances 225 degrees a pixel');
+            assert(near(LOCKED_PIXEL_PHASE * 8 % 360, 0),
+                   'and one bitmap byte is a whole number of cycles');
+            assert(near(LOCKED_PIXEL_PHASE * 456 % 360, 0),
+                   'as is one 128K line (456 pixels = 285 cycles)');
+            assert(SAMPLES_PER_PIXEL * 8 / SAMPLES_PER_CYCLE === 5,
+                   'five samples a pixel gives eight samples a subcarrier cycle');
+            assert(!near(FREE_PIXEL_PHASE * 8 % 360, 0, 1),
+                   'a 14 MHz machine does not come back into phase after a byte',
+                   String(FREE_PIXEL_PHASE * 8 % 360));
+            assert(FREE_PIXEL_PHASE > 228 && FREE_PIXEL_PHASE < 228.1,
+                   'it creeps about 3 degrees a pixel instead', String(FREE_PIXEL_PHASE));
+        }
+
+        section('Which dithers carry colour, and which do not');
+        {
+            // The subcarrier is bin 5 (equivalently bin 3) of the 8-point DFT.
+            assert(bin(0xA5, 5) > 2.6 && bin(0xA5, 5) < 2.62,
+                   '$A5 puts its energy on the subcarrier bin', bin(0xA5, 5).toFixed(3));
+            assert(near(bin(0xA5, 4), 0, 1e-9), '  and none at Nyquist');
+            assert(near(bin(0xA5, 2), 0, 1e-9), '  nor at bin 2');
+            assert(near(bin(0x5A, 5), bin(0xA5, 5), 1e-9), '$5A carries the same amount');
+            assert(near(bin(0xAA, 5), 0, 1e-9),
+                   'a plain $AA checkerboard carries none — it is all Nyquist');
+            assert(near(bin(0xAA, 4), 4, 1e-9), '  bin 4, at full amplitude');
+            assert(near(bin(0x55, 5), 0, 1e-9), 'nor does $55');
+            assert(near(bin(0xFF, 5), 0, 1e-9), 'nor a solid cell');
+            // $A5 and $5A are complements, so their phasors are 180 degrees apart.
+            const phase = (byte) => {
+                const y = byteLuma(byte); let re = 0, im = 0;
+                for (let p = 0; p < 8; p++) {
+                    const a = -2 * Math.PI * 5 * p / 8;
+                    re += y[p] * Math.cos(a); im += y[p] * Math.sin(a);
+                }
+                return Math.atan2(im, re) * 180 / Math.PI;
+            };
+            const d = Math.abs(phase(0xA5) - phase(0x5A));
+            assert(near(d, 180, 1e-6), '$A5 and $5A are opposite in phase', d.toFixed(3));
+        }
+
+        // --- colour space --------------------------------------------------------
+
+        section('Y/U/V round trip');
+        {
+            for (const [r, g, b] of [[0, 0, 0], [1, 1, 1], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.3, 0.6, 0.9]]) {
+                const [y, u, v] = rgbToYuv(r, g, b);
+                const back = yuvToRgb(y, u, v);
+                assert(near(back[0], r, 2e-3) && near(back[1], g, 2e-3) && near(back[2], b, 2e-3),
+                       `round trip ${r},${g},${b}`, back.map(n => n.toFixed(4)).join(','));
+            }
+            const [, u, v] = rgbToYuv(0, 0, 1);
+            assert(u > 0.4 && Math.abs(v) < 0.3, 'blue is mostly +U');
+            const [, ur, vr] = rgbToYuv(1, 0, 0);
+            assert(vr > 0.5 && ur < 0, 'red is mostly +V');
+        }
+
+        // --- the sample-level chain ---------------------------------------------
+
+        section('Encode then decode leaves a flat colour alone');
+        {
+            const phaseAt = (k) => (DEFAULT_BURST_PHASE + k * LOCKED_PIXEL_PHASE / SAMPLES_PER_PIXEL) * Math.PI / 180;
+            for (const [name, y, u, v] of [['grey', 0.5, 0, 0], ['blue', 0.114, 0.4356, -0.1]]) {
+                const pix = new Array(24).fill(null).map(() => ({ y, u, v }));
+                const out = encodeDecodeLine(pix, phaseAt, 1, {})[12 * SAMPLES_PER_PIXEL + 2];
+                assert(near(out.y, y, 1e-9), `${name}: luminance survives`, out.y.toFixed(6));
+                assert(near(out.u, u, 1e-9), `  its U survives`, out.u.toFixed(6));
+                assert(near(out.v, v, 1e-9), `  its V survives`, out.v.toFixed(6));
+            }
+        }
+
+        section('A subcarrier-frequency dither becomes chroma');
+        {
+            const phaseAt = (k) => (0 + k * LOCKED_PIXEL_PHASE / SAMPLES_PER_PIXEL) * Math.PI / 180;
+            const run = (byte, parity) => {
+                const y = byteLuma(byte);
+                const pix = [];
+                for (let i = 0; i < 24; i++) pix.push({ y: y[i & 7], u: 0, v: 0 });
+                return encodeDecodeLine(pix, phaseAt, parity, {})[12 * SAMPLES_PER_PIXEL + 2];
+            };
+            const a5 = run(0xA5, 1), a5b = run(0xA5, -1), five = run(0x5A, 1);
+            assert(Math.hypot(a5.u, a5.v) > 0.2,
+                   '$A5 produces real chroma out of a black-and-white image',
+                   Math.hypot(a5.u, a5.v).toFixed(4));
+            assert(near(five.u, -a5.u, 1e-9) && near(five.v, -a5.v, 1e-9),
+                   '$5A produces exactly the opposite');
+            assert(near(a5b.u, a5.u, 1e-9), 'the V-switch does not touch the U axis');
+            assert(near(a5b.v, -a5.v, 1e-9), 'but it flips the V axis, as PAL requires');
+            // $AA is not colourless sample by sample: its 3.55 MHz content beats
+            // against the 4.43 MHz subcarrier, which is a hue rotating once every
+            // eight pixels. Averaged over those eight it comes to nothing, while
+            // $A5 — sitting *on* the subcarrier — is a steady colour.
+            const meanChroma = (byte) => {
+                const y = byteLuma(byte);
+                const pix = [];
+                for (let i = 0; i < 32; i++) pix.push({ y: y[i & 7], u: 0, v: 0 });
+                const out = encodeDecodeLine(pix, phaseAt, 1, {});
+                let u = 0, v = 0;
+                for (let i = 12; i < 20; i++) {
+                    const s = out[i * SAMPLES_PER_PIXEL + 2]; u += s.u; v += s.v;
+                }
+                return Math.hypot(u / 8, v / 8);
+            };
+            assert(meanChroma(0xAA) < 0.02,
+                   '$AA averages to no colour — its energy is off the subcarrier',
+                   meanChroma(0xAA).toFixed(4));
+            assert(meanChroma(0xA5) > 0.2,
+                   '$A5 averages to a steady one', meanChroma(0xA5).toFixed(4));
+        }
+
+        // --- kernels -------------------------------------------------------------
+
+        section('The fast path is the slow path');
+        {
+            const half = KERNEL_HALF;
+            assert(KERNEL_TAPS === half * 2 + 1, 'tap count follows the half width');
+            // Chroma reaches 8 samples either side of sample 5x+2, i.e. pixels
+            // x-2..x+2, so KERNEL_HALF must cover at least that.
+            assert(half >= 2, 'the window covers the filter\'s true reach');
+
+            const taps = buildKernel(0, 1, LOCKED_PIXEL_PHASE, {});
+            assert(taps.length === KERNEL_TAPS, 'one matrix per tap');
+            assert(taps[0].length === 9, 'each is 3x3');
+            // DC must pass at unity: summing every tap gives the identity.
+            const sum = new Float64Array(9);
+            for (const t of taps) for (let i = 0; i < 9; i++) sum[i] += t[i];
+            assert(near(sum[0], 1, 1e-9), 'summed taps pass Y at unity', sum[0].toFixed(9));
+            assert(near(sum[4], 1, 1e-9), '  and U', sum[4].toFixed(9));
+            assert(near(sum[8], 1, 1e-9), '  and V', sum[8].toFixed(9));
+            for (const [i, name] of [[1, 'U into Y'], [2, 'V into Y'], [3, 'Y into U'],
+                                     [5, 'V into U'], [6, 'Y into V'], [7, 'U into V']]) {
+                assert(near(sum[i], 0, 1e-9), `a flat picture leaks no ${name}`, sum[i].toFixed(9));
+            }
+
+            const table = buildKernels(LOCKED_PIXEL_PHASE, {});
+            assert(table.length === PHASE_STEPS * 2 * KERNEL_TAPS * 9, 'the table is fully sized');
+            const wanted = new Uint8Array(PHASE_STEPS); wanted[0] = 1;
+            const sparse = buildKernels(LOCKED_PIXEL_PHASE, {}, wanted);
+            let nonZero = 0;
+            for (let p = 1; p < PHASE_STEPS; p++) {
+                for (let i = 0; i < 2 * KERNEL_TAPS * 9; i++) {
+                    if (sparse[(p * 2) * KERNEL_TAPS * 9 + i] !== 0) nonZero++;
+                }
+            }
+            assert(nonZero === 0, 'a phase nobody reaches is never derived');
+            for (let i = 0; i < KERNEL_TAPS * 9; i++) {
+                if (!near(sparse[i], table[i], 1e-9)) { nonZero++; break; }
+            }
+            assert(nonZero === 0, 'and the ones that are match the full table');
+        }
+
+        // --- the runtime filter --------------------------------------------------
+
+        section('Flat pictures come through untouched');
+        {
+            const f = createPalFilter({});
+            for (const [r, g, b] of [[0, 0, 0], [255, 255, 255], [128, 128, 128], [0, 0, 0xD7], [0xD7, 0, 0]]) {
+                const fb = new Uint8ClampedArray(64 * 4);
+                for (let x = 0; x < 64; x++) {
+                    const o = x * 4;
+                    fb[o] = r; fb[o + 1] = g; fb[o + 2] = b; fb[o + 3] = 255;
+                }
+                f.apply(fb, 64, 0, 1, 0);
+                const p = pixelAt(fb, 32);
+                assert(Math.abs(p[0] - r) <= 1 && Math.abs(p[1] - g) <= 1 && Math.abs(p[2] - b) <= 1,
+                       `flat ${r},${g},${b} survives`, p.join(','));
+            }
+        }
+
+        section('The Chromatrons dither, as hardware shows it');
+        {
+            // Two fields differing only in which byte sits on which line parity.
+            const W = 64, H = 16;
+            function field(swap) {
+                const fb = new Uint8ClampedArray(W * H * 4);
+                for (let y = 0; y < H; y++) {
+                    const byte = ((y & 1) === (swap ? 1 : 0)) ? 0x5A : 0xA5;
+                    const row = ditherRow(byte, W);
+                    fb.set(row, y * W * 4);
+                }
+                createPalFilter({}).apply(fb, W, 0, H, 0);
+                return fb;
+            }
+            const a = field(false), b = field(true);
+            // Read a middle row: the first row of a frame has no line above it to
+            // average with, so it is the one place the delay line cannot act.
+            const pa = cellAt(a, W, 32, 8), pb = cellAt(b, W, 32, 8);
+            assert(pa[0] > pa[1] + 40, 'one field reads magenta — red well over green',
+                   pa.map(Math.round).join(','));
+            assert(pb[1] > pb[0] + 40, 'the other reads green', pb.map(Math.round).join(','));
+            assert(Math.abs(pa[2] - pb[2]) <= 2,
+                   'and the blue channel does not move: the artifact is pure V',
+                   `${pa[2].toFixed(1)} vs ${pb[2].toFixed(1)}`);
+            // Both average to the same 50% grey, which is exactly why a pixel-exact
+            // emulator shows nothing at all.
+            const luma = (p) => 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2];
+            assert(Math.abs(luma(pa) - luma(pb)) < 12,
+                   'both are the same brightness', `${luma(pa).toFixed(1)} vs ${luma(pb).toFixed(1)}`);
+        }
+
+        section('A line-invariant dither goes the other way');
+        {
+            // Same byte on every line: the PAL delay line cancels V and leaves U,
+            // so the colour moves along blue/yellow instead of magenta/green.
+            const W = 64, H = 16;
+            const fb = new Uint8ClampedArray(W * H * 4);
+            for (let y = 0; y < H; y++) fb.set(ditherRow(0xA5, W), y * W * 4);
+            createPalFilter({}).apply(fb, W, 0, H, 0);
+            const p = cellAt(fb, W, 32, 8);
+            assert(Math.abs(p[0] - p[1]) < 40, 'red and green stay together',
+                   p.map(Math.round).join(','));
+            assert(Math.abs(p[2] - p[0]) > 2 * Math.abs(p[0] - p[1]),
+                   'while blue departs — a pure U shift moves blue and leaves red',
+                   p.map(Math.round).join(','));
+        }
+
+        section('$AA does not do it');
+        {
+            const W = 64, H = 16;
+            const fb = new Uint8ClampedArray(W * H * 4);
+            for (let y = 0; y < H; y++) fb.set(ditherRow((y & 1) ? 0x55 : 0xAA, W), y * W * 4);
+            createPalFilter({}).apply(fb, W, 0, H, 0);
+            let maxSpread = 0;
+            for (let x = 8; x < W - 16; x += 8) {
+                const p = cellAt(fb, W, x, 8);
+                maxSpread = Math.max(maxSpread, Math.max(...p) - Math.min(...p));
+            }
+            assert(maxSpread < 40, 'a Nyquist checkerboard averages out near-grey',
+                   maxSpread.toFixed(1));
+        }
+
+        section('Turning the decoder\'s knobs');
+        {
+            const W = 64, H = 8;
+            const make = () => {
+                const fb = new Uint8ClampedArray(W * H * 4);
+                for (let y = 0; y < H; y++) fb.set(ditherRow((y & 1) ? 0xA5 : 0x5A, W), y * W * 4);
+                return fb;
+            };
+            const spread = (fb) => { const p = cellAt(fb, W, 32, 4); return Math.max(...p) - Math.min(...p); };
+            const full = make(); createPalFilter({}).apply(full, W, 0, H, 0);
+            const none = make(); createPalFilter({ saturation: 0 }).apply(none, W, 0, H, 0);
+            const half = make(); createPalFilter({ saturation: 0.5 }).apply(half, W, 0, H, 0);
+            assert(spread(none) < 4, 'saturation 0 gives a monochrome picture', String(spread(none)));
+            assert(spread(half) < spread(full) && spread(half) > spread(none) + 10,
+                   'and 0.5 lands between', `${spread(none)} / ${spread(half)} / ${spread(full)}`);
+
+            // Rotating the burst by 180 degrees swaps the two artifact colours.
+            const at0 = make(); createPalFilter({ burstPhase: 0 }).apply(at0, W, 0, H, 0);
+            const at180 = make(); createPalFilter({ burstPhase: 180 }).apply(at180, W, 0, H, 0);
+            const p0 = cellAt(at0, W, 32, 4), p180 = cellAt(at180, W, 32, 4);
+            assert((p0[0] - p0[1]) * (p180[0] - p180[1]) < 0,
+                   '180 degrees of burst swaps magenta and green',
+                   `${p0.map(Math.round).join(',')} vs ${p180.map(Math.round).join(',')}`);
+
+            // Without a delay line the V axis is no longer cancelled line to line,
+            // so neighbouring rows disagree — Hanover bars.
+            const comb = make(); createPalFilter({ delayLine: true }).apply(comb, W, 0, H, 0);
+            const bare = make(); createPalFilter({ delayLine: false }).apply(bare, W, 0, H, 0);
+            const rowDiff = (fb) => {
+                const a = cellAt(fb, W, 32, 4), b = cellAt(fb, W, 32, 5);
+                return Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+            };
+            assert(rowDiff(bare) > rowDiff(comb),
+                   'no delay line means neighbouring lines disagree',
+                   `${rowDiff(comb)} vs ${rowDiff(bare)}`);
+        }
+
+        section('The drifting phase starts from a known point');
+        {
+            // An unlocked machine's subcarrier creeps a little every frame — that is
+            // dot crawl, and it means the picture depends on how long the filter has
+            // been running. Anything comparing a fixed frame against a reference has
+            // to be able to put the drift back where it started.
+            const W = 64, H = 8;
+            const make = () => {
+                const fb = new Uint8ClampedArray(W * H * 4);
+                for (let y = 0; y < H; y++) fb.set(ditherRow((y & 1) ? 0xA5 : 0x5A, W), y * W * 4);
+                return fb;
+            };
+            const same = (a, b) => {
+                for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+                return true;
+            };
+            const f = createPalFilter({ locked: false, pixelsPerLine: 448, linesPerFrame: 320 });
+            const first = make(); f.apply(first, W, 0, H, 0);
+            const second = make(); f.apply(second, W, 0, H, 0);
+            assert(!same(first, second), 'an unlocked machine drifts frame to frame');
+            f.resetPhase();
+            const again = make(); f.apply(again, W, 0, H, 0);
+            assert(same(first, again), 'resetPhase puts the drift back to the start');
+
+            // A locked machine repeats exactly, so the reset changes nothing there.
+            const g = createPalFilter({ locked: true });
+            const a = make(); g.apply(a, W, 0, H, 0);
+            const b = make(); g.apply(b, W, 0, H, 0);
+            assert(same(a, b), 'a locked machine does not drift at all');
+        }
+
+        section('Switching the filter on re-seeds the phase');
+        {
+            const fakeMemory = (id) => ({
+                profile: getMachineProfile(id), currentRamBank: 0,
+                read: () => 0, write: () => {}, readScreen: () => 0
+            });
+            const W = 64, H = 8;
+            const make = () => {
+                const fb = new Uint8ClampedArray(W * H * 4);
+                for (let y = 0; y < H; y++) fb.set(ditherRow((y & 1) ? 0xA5 : 0x5A, W), y * W * 4);
+                return fb;
+            };
+            const same = (a, b) => {
+                for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+                return true;
+            };
+            const ula = new ULA(fakeMemory('pentagon'), 'pentagon');
+            ula.setPalComposite(true);
+            const first = make(); ula.palFilter.apply(first, W, 0, H, 0);
+            const drifted = make(); ula.palFilter.apply(drifted, W, 0, H, 0);
+            assert(!same(first, drifted), 'a Pentagon drifts, as it should');
+            ula.setPalComposite(true);
+            const reseeded = make(); ula.palFilter.apply(reseeded, W, 0, H, 0);
+            assert(same(first, reseeded),
+                   'enabling it again starts the drift over — so a screen test is reproducible ' +
+                   'however many frames ran before it');
+            ula.reset();
+            const afterReset = make(); ula.palFilter.apply(afterReset, W, 0, H, 0);
+            assert(same(first, afterReset), 'and so does a machine reset');
+        }
+
+        section('Machine gating');
+        {
+            assert(isLocked(getMachineProfile('128k')), 'a 128K locks its clock to the subcarrier');
+            assert(isLocked(getMachineProfile('+2')), 'so does a +2');
+            assert(isLocked(getMachineProfile('+2a')), 'so does a +2A');
+            assert(isLocked(getMachineProfile('+3')), 'so does a +3');
+            assert(!isLocked(getMachineProfile('48k')), 'a 48K does not — 14 MHz, free-running colour');
+            assert(!isLocked(getMachineProfile('pentagon')), 'nor does a Pentagon');
+            assert(!isLocked(getMachineProfile('pentagon1024')), 'nor a Pentagon 1024');
+            assert(!isLocked(getMachineProfile('scorpion')), 'nor a Scorpion');
+            assert(pixelPhaseFor(getMachineProfile('128k')) === LOCKED_PIXEL_PHASE,
+                   'a locked machine steps 225 degrees a pixel');
+            assert(pixelPhaseFor(getMachineProfile('48k')) === FREE_PIXEL_PHASE,
+                   'an unlocked one steps by its own ratio');
+
+            // Unlocked: the phase does not repeat every byte, so the same dither
+            // does not settle into one colour across the line.
+            const W = 128, H = 8;
+            const fb = new Uint8ClampedArray(W * H * 4);
+            for (let y = 0; y < H; y++) fb.set(ditherRow((y & 1) ? 0xA5 : 0x5A, W), y * W * 4);
+            createPalFilter({ locked: false }).apply(fb, W, 0, H, 0);
+            const hue = (x) => { const p = cellAt(fb, W, x, 4); return p[0] - p[1]; };
+            let swing = 0;
+            for (let x = 8; x < W - 16; x += 8) swing = Math.max(swing, Math.abs(hue(x) - hue(8)));
+            assert(swing > 60, 'an unlocked machine\'s artifact hue drifts along the line', String(swing));
+        }
+
+        section('The ULA picks it up from its machine');
+        {
+            const fakeMemory = (id) => ({
+                profile: getMachineProfile(id), currentRamBank: 0,
+                read: () => 0, write: () => {}, readScreen: () => 0
+            });
+            const ula = new ULA(fakeMemory('128k'), '128k');
+            assert(ula.getPalComposite() === false, 'the filter is off by default');
+            ula.setPalComposite(true);
+            assert(ula.getPalComposite() === true, 'and can be switched on');
+            assert(ula.palFilter && ula.palFilter.options.locked === true,
+                   'a 128K gets the locked model');
+            assert(ula.palFilter.options.pixelsPerLine === ula.TSTATES_PER_LINE * 2,
+                   'with its own line length', String(ula.palFilter.options.pixelsPerLine));
+
+            const ula48 = new ULA(fakeMemory('48k'), '48k');
+            ula48.setPalComposite(true);
+            assert(ula48.palFilter.options.locked === false, 'a 48K gets the free-running one');
+
+            ula.configurePalComposite({ saturation: 0.25 });
+            assert(ula.palFilter.options.saturation === 0.25, 'decoder settings are reachable');
+            ula.setPalComposite(false);
+            assert(ula.getPalComposite() === false, 'and it switches back off');
+        }
+
+        section('Defaults');
+        {
+            const o = defaultOptions();
+            assert(o.burstPhase === DEFAULT_BURST_PHASE, 'the calibrated burst phase is the default');
+            assert(o.burstPhase === 180, '  which is 180, measured off hardware');
+            assert(o.saturation === 1, 'saturation is unity — no fitted fudge factor');
+            assert(o.notch === 1, 'the luma notch is full');
+            assert(o.delayLine === true, 'and a delay line is assumed, as a PAL set has');
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

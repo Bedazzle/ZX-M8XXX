@@ -1,0 +1,38 @@
+# ZX-M8XXX — Apache config for a plain static deploy.
+#
+# NOTE: this file does nothing unless the vhost allows it. Ubuntu ships
+# "AllowOverride None", in which case Apache ignores it silently — no error,
+# no headers, directory listings stay on. See deploy/apache-m8xxx.conf for the
+# vhost form and how to check which case you are in.
+#
+# Why this exists: the app is ES modules loaded straight from disk, with no build
+# step and no hashed filenames. Without explicit headers Apache lets the browser
+# guess a freshness lifetime, so after an upload you get the new index.html with
+# *old* JavaScript — the version in the title looks right while a feature added
+# that day is missing, and nothing appears in the console. serve.py (local) always
+# sends no-cache, which is why it never happens locally.
+#
+# "no-cache" does not mean "don't store": the browser still caches, it just
+# revalidates, so unchanged files come back as a cheap 304.
+
+<IfModule mod_headers.c>
+    # Application sources: always revalidate
+    <FilesMatch "\.(html|js|css|json|map)$">
+        Header set Cache-Control "no-cache, must-revalidate"
+    </FilesMatch>
+
+    # Big, rarely-changing assets: cache for a week
+    <FilesMatch "\.(rom|png|jpg|jpeg|gif|ico|ttf|woff2?|zip|tap|tzx|trd|scl)$">
+        Header set Cache-Control "public, max-age=604800"
+    </FilesMatch>
+</IfModule>
+
+<IfModule mod_mime.c>
+    # Some hosts still serve .js as application/x-javascript, which breaks
+    # `<script type="module">` in strict browsers.
+    AddType text/javascript .js
+    AddType application/json .json
+</IfModule>
+
+# No directory listings for roms/, html/, css/ …
+Options -Indexes

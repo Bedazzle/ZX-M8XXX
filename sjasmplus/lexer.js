@@ -3,6 +3,17 @@
 
 import { ErrorCollector } from './errors.js';
 
+// Off by default: with Cyrillic letters allowed in names, a line typed in the
+// wrong keyboard layout ("щкп 25000" for "org 25000") is a label rather than a
+// mistake. Sources ported from native assemblers that really do use Russian
+// label names turn it on (Assembler options → Unicode labels).
+export const LexerOptions = {
+    unicodeIdentifiers: false,
+};
+
+const IDENT_START = () => LexerOptions.unicodeIdentifiers ? /[\p{L}_]/u : /[a-zA-Z_]/;
+const IDENT_PART  = () => LexerOptions.unicodeIdentifiers ? /[\p{L}0-9_]/u : /[a-zA-Z0-9_]/;
+
 export const TokenType = {
     // Identifiers and literals
     IDENTIFIER: 'IDENTIFIER',       // label, instruction, register
@@ -385,12 +396,12 @@ export class Lexer {
         let value = '';
 
         // First char: letter, underscore, dot (for local labels), or @ (for temporary labels)
-        if (/[a-zA-Z_.]/.test(this.peek()) || this.peek() === '@') {
+        if (IDENT_START().test(this.peek()) || this.peek() === '.' || this.peek() === '@') {
             value += this.advance();
         }
 
         // Subsequent chars: letters, digits, underscore
-        while (/[a-zA-Z0-9_]/.test(this.peek())) {
+        while (IDENT_PART().test(this.peek())) {
             value += this.advance();
         }
 
@@ -471,7 +482,7 @@ export class Lexer {
 
         // Identifiers and labels
         // Dot starts local label only if followed by letter/underscore
-        if (/[a-zA-Z_]/.test(ch) || ch === '@') {
+        if (IDENT_START().test(ch) || ch === '@') {
             return this.readIdentifier();
         }
         
@@ -484,7 +495,7 @@ export class Lexer {
             const prevChar = this.pos > 0 ? this.source[this.pos - 1] : '\n';
             const isAtBoundary = /[\s,;:([\n+\-*/%&|~<>=!^]/.test(prevChar) || this.pos === 0;
             
-            if (isAtBoundary && /[a-zA-Z_]/.test(this.peek(1))) {
+            if (isAtBoundary && IDENT_START().test(this.peek(1))) {
                 // Local label like .loop
                 return this.readIdentifier();
             }
@@ -565,8 +576,24 @@ export class Lexer {
             return new Token(singleCharTokens[ch], ch, startLine, startCol);
         }
 
-        // Unknown character - skip and warn
-        ErrorCollector.warn(`Unexpected character: '${ch}'`, this.line, this.filename);
+        // A character that means nothing here. Skipping it silently let a line
+        // typed in the wrong keyboard layout ("щкп 25000" for "org 25000") lose
+        // its first word and assemble as if the line were not there -- and the
+        // warning went with it, since warnings are cleared at the start of every
+        // pass and tokenising happens once, before them.
+        //
+        // Letters are collected into the whole word first: "метка" is one thing
+        // the reader wrote, and naming a single letter of it points at nothing.
+        if (/\p{L}/u.test(ch)) {
+            let word = '';
+            while (this.pos < this.source.length && /[\p{L}0-9_]/u.test(this.peek())) {
+                word += this.advance();
+            }
+            ErrorCollector.error(
+                `Unexpected characters: '${word}' — turn on Unicode labels to allow them`,
+                this.line, this.filename);
+        }
+        ErrorCollector.error(`Unexpected character: '${ch}'`, this.line, this.filename);
         this.advance();
         return this.nextToken();
     }

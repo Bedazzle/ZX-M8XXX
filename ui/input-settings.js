@@ -2,6 +2,9 @@
 import { storageGet, storageSet } from '../core/utils.js';
 import { MODIFIER_KEY_OPTIONS, DEFAULT_CAPS_SHIFT_OPTION, DEFAULT_SYMBOL_SHIFT_OPTION } from '../core/ula.js';
 
+import { JOYSTICK_TYPES, isJoystickType, DIRECTIONS, DEFAULT_CUSTOM_KEYS,
+         normalizeCustomKeys } from '../core/joystick.js';
+
 export function initInputSettings({
     getSpectrum,
     getCanvas,
@@ -17,6 +20,22 @@ export function initInputSettings({
 
     // DOM elements
     const chkKempston = document.getElementById('chkKempston');
+    const selJoystickType = document.getElementById('selJoystickType');
+
+    // Fill the joystick dropdown *before* settings are restored: assigning
+    // select.value with no matching <option> is silently ignored, so the restore
+    // would leave the dropdown on its first entry and the next save would write
+    // that back — losing the setting.
+    if (selJoystickType && !selJoystickType.options.length) {
+        for (const t of JOYSTICK_TYPES) {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = t.name;
+            opt.title = t.hint;
+            selJoystickType.appendChild(opt);
+        }
+    }
+    const joyCustomKeys = document.getElementById('joyCustomKeys');
     const chkKempstonExtended = document.getElementById('chkKempstonExtended');
     const chkMouseWheel = document.getElementById('chkMouseWheel');
     const chkMouseSwap = document.getElementById('chkMouseSwap');
@@ -31,6 +50,7 @@ export function initInputSettings({
     const btnNmiPlusD = document.getElementById('btnNmiPlusD');
     const chkIF1 = document.getElementById('chkIF1');
     const if1Status = document.getElementById('if1Status');
+    const chkKeyboardGhosting = document.getElementById('chkKeyboardGhosting');
     const selCapsShiftKey = document.getElementById('selCapsShiftKey');
     const selSymbolShiftKey = document.getElementById('selSymbolShiftKey');
     const modKeysHint = document.getElementById('modKeysHint');
@@ -46,8 +66,11 @@ export function initInputSettings({
             mouseWheel: chkMouseWheel.checked,
             mouseSwap: chkMouseSwap.checked,
             mouseWheelSwap: chkMouseWheelSwap.checked,
+            joystickType: selJoystickType ? selJoystickType.value : 'kempston',
+            joystickCustomKeys: customKeys,
             capsShiftKey: selCapsShiftKey.value,
-            symbolShiftKey: selSymbolShiftKey.value
+            symbolShiftKey: selSymbolShiftKey.value,
+            keyboardGhosting: chkKeyboardGhosting ? chkKeyboardGhosting.checked : false
         }));
     }
 
@@ -116,6 +139,15 @@ export function initInputSettings({
                     chkKempston.checked = savedInput.kempston;
                     spectrum.kempstonEnabled = savedInput.kempston;
                 }
+                if (savedInput.joystickType !== undefined && selJoystickType &&
+                    isJoystickType(savedInput.joystickType)) {
+                    selJoystickType.value = savedInput.joystickType;
+                    if (spectrum.setJoystickType) spectrum.setJoystickType(savedInput.joystickType);
+                }
+                if (savedInput.joystickCustomKeys) {
+                    customKeys = normalizeCustomKeys(savedInput.joystickCustomKeys);
+                    if (spectrum.setJoystickCustomKeys) spectrum.setJoystickCustomKeys(customKeys);
+                }
                 if (savedInput.kempstonExtended !== undefined) {
                     chkKempstonExtended.checked = savedInput.kempstonExtended;
                     spectrum.kempstonExtendedEnabled = savedInput.kempstonExtended;
@@ -140,6 +172,9 @@ export function initInputSettings({
                     chkMouseWheelSwap.checked = savedInput.mouseWheelSwap;
                     spectrum.kempstonMouseSwapWheel = savedInput.mouseWheelSwap;
                 }
+                if (savedInput.keyboardGhosting !== undefined && chkKeyboardGhosting) {
+                    chkKeyboardGhosting.checked = savedInput.keyboardGhosting;
+                }
                 if (MODIFIER_KEY_OPTIONS[savedInput.capsShiftKey]) {
                     selCapsShiftKey.value = savedInput.capsShiftKey;
                 }
@@ -162,6 +197,75 @@ export function initInputSettings({
         modPrev.set(selSymbolShiftKey, selSymbolShiftKey.value);
         spectrum.ula.setModifierKeys(selCapsShiftKey.value, selSymbolShiftKey.value);
         updateModKeysHint();
+
+        if (chkKeyboardGhosting) {
+            spectrum.ula.setKeyboardGhosting(chkKeyboardGhosting.checked);
+            chkKeyboardGhosting.addEventListener('change', () => {
+                getSpectrum().ula.setKeyboardGhosting(chkKeyboardGhosting.checked);
+                saveInputSettings();
+            });
+        }
+    }
+
+    // Which joystick the numpad/gamepad emulates. Sinclair and Cursor are keyboard
+    // interfaces, so the machine presses ZX keys for them; Kempston reads port $1F.
+    // Custom bindings: one click-to-bind button per direction, e.g. QAOP + Space
+    // for a game that expects those keys. Shown only for the Custom type.
+    let customKeys = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
+    let bindingBit = null;
+
+    const keyLabel = (code) => String(code || '')
+        .replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ');
+
+    // Compact: one small button per direction, glyph + the bound key, on one line.
+    const DIR_GLYPH = { up: '↑', down: '↓', left: '←', right: '→', fire: '●' };
+
+    function renderCustomKeys() {
+        if (!joyCustomKeys) return;
+        const isCustom = selJoystickType && selJoystickType.value === 'custom';
+        joyCustomKeys.classList.toggle('hidden', !isCustom);
+        if (!isCustom) return;
+        joyCustomKeys.innerHTML = '';
+        for (const d of DIRECTIONS) {
+            const btn = document.createElement('button');
+            btn.className = 'joy-bind' + (bindingBit === d.bit ? ' binding' : '');
+            btn.title = `${d.name} — click, then press a key (Esc to cancel)`;
+            btn.textContent = bindingBit === d.bit
+                ? `${DIR_GLYPH[d.id]} …` : `${DIR_GLYPH[d.id]} ${keyLabel(customKeys[d.bit])}`;
+            btn.addEventListener('click', () => {
+                bindingBit = bindingBit === d.bit ? null : d.bit;
+                renderCustomKeys();
+            });
+            joyCustomKeys.appendChild(btn);
+        }
+    }
+
+    // Capture the next key press while a button is armed. Capture phase, so the
+    // key is bound instead of being typed into the emulator.
+    document.addEventListener('keydown', (e) => {
+        if (bindingBit === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code !== 'Escape') {
+            customKeys = normalizeCustomKeys({ ...customKeys, [bindingBit]: e.code });
+            const spectrum = getSpectrum();
+            if (spectrum.setJoystickCustomKeys) spectrum.setJoystickCustomKeys(customKeys);
+            saveInputSettings();
+        }
+        bindingBit = null;
+        renderCustomKeys();
+    }, true);
+
+    if (selJoystickType) {
+        selJoystickType.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            if (spectrum.setJoystickType) spectrum.setJoystickType(selJoystickType.value);
+            saveInputSettings();
+            renderCustomKeys();
+            const t = JOYSTICK_TYPES.find(x => x.id === selJoystickType.value);
+            showMessage(`Joystick: ${t ? t.name : selJoystickType.value}` +
+                        (selJoystickType.value === 'custom' ? ' — click a button, then press a key' : ''));
+        });
     }
 
     chkKempston.addEventListener('change', () => {
@@ -529,8 +633,14 @@ export function initInputSettings({
         }
     }, { passive: false });
 
+    // Reflect whatever was restored from settings (the load block runs before the
+    // buttons exist, so render once here).
+    renderCustomKeys();
+
     return {
         saveInputSettings,
+        getCustomKeys: () => ({ ...customKeys }),
+        renderCustomKeys,
         updateBetaDiskStatus,
         updatePlusDStatus,
         updateIF1Status,

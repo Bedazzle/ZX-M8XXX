@@ -1,0 +1,93 @@
+<!-- OCR text ripper. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-ocr">
+            <div class="ocr-container">
+                <!-- Row 1: Source, Charset, Region, Capture -->
+                <div class="ocr-toolbar">
+                    <label>Source:</label>
+                    <select id="ocrSource">
+                        <option value="4000">$4000</option>
+                        <option value="C000">$C000</option>
+                    </select>
+                    <label>Charset:</label>
+                    <select id="ocrCharset"></select>
+                    <button id="btnOcrCharsetNew" title="New charset">New</button>
+                    <button id="btnOcrCharsetRename" title="Rename charset">Ren</button>
+                    <button id="btnOcrCharsetDel" title="Delete charset">Del</button>
+                    <div class="ocr-sep"></div>
+                    <label>X:</label><input type="number" id="ocrRegionX" value="0" min="0" max="31">
+                    <label>Y:</label><input type="number" id="ocrRegionY" value="0" min="0" max="23">
+                    <label>W:</label><input type="number" id="ocrRegionW" value="32" min="1" max="32">
+                    <label>H:</label><input type="number" id="ocrRegionH" value="24" min="1" max="24">
+                    <button id="btnOcrRefresh" title="Refresh preview from screen memory">Refresh</button>
+                    <button id="btnOcrCapture" class="primary" title="Capture screen region">Capture</button>
+                    <label class="ocr-check-label" title="Only capture glyphs already mapped in charset; unknown glyphs become spaces"><input type="checkbox" id="ocrCaptureKnown"> Known</label>
+                    <span id="ocrStatus" class="ocr-status"></span>
+                </div>
+
+                <!-- Row 2: Preview canvas + Glyph grid -->
+                <div class="ocr-body">
+                    <div class="ocr-preview-wrap">
+                        <div class="ocr-preview-stack">
+                            <canvas id="ocrPreviewCanvas" class="ocr-preview-canvas" width="256" height="192"></canvas>
+                            <canvas id="ocrGridCanvas" class="ocr-grid-canvas" width="512" height="384"></canvas>
+                        </div>
+                        <div class="ocr-preview-zoom">
+                            <button class="ocr-zoom-btn" data-zoom="1">x1</button>
+                            <button class="ocr-zoom-btn active" data-zoom="2">x2</button>
+                            <button class="ocr-zoom-btn" data-zoom="3">x3</button>
+                            <div class="ocr-sep"></div>
+                            <label title="Cell width (pixels)">CW:</label>
+                            <input type="number" id="ocrCellWidth" value="8" min="4" max="8">
+                            <label title="Cell height (pixels)">CH:</label>
+                            <input type="number" id="ocrCellHeight" value="8" min="4" max="16">
+                            <label title="Grid origin X (pixels)">OX:</label>
+                            <input type="number" id="ocrOriginX" value="0" min="0" max="7">
+                            <label title="Grid origin Y (pixels)">OY:</label>
+                            <input type="number" id="ocrOriginY" value="0" min="0" max="15">
+                            <label title="Horizontal gap between cells (pixels)">GX:</label>
+                            <input type="number" id="ocrGapX" value="0" min="0" max="8">
+                            <label title="Vertical gap between cells (pixels)">GY:</label>
+                            <input type="number" id="ocrGapY" value="0" min="0" max="8">
+                            <label class="ocr-grid-label" title="Show cell grid overlay on preview"><input type="checkbox" id="ocrShowGrid"> Grid</label>
+                        </div>
+                    </div>
+                    <div class="ocr-glyph-panel">
+                        <div class="ocr-glyph-header-row">
+                            <div id="ocrGlyphHeader" class="ocr-glyph-header"></div>
+                            <button id="btnOcrDeleteSelected" class="ocr-del-selected hidden" title="Delete selected glyphs from charset">Del selected</button>
+                            <label class="ocr-dupes-label"><input type="checkbox" id="ocrShowDupes"> dupes</label>
+                        </div>
+                        <div id="ocrGlyphGrid" class="ocr-glyph-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Row 3: Pages -->
+                <div class="ocr-pages">
+                    <div class="ocr-page-bar">
+                        <button id="btnOcrPagePrev" title="Previous page">&larr;</button>
+                        <span id="ocrPageLabel" class="ocr-page-label">No pages</span>
+                        <button id="btnOcrPageNext" title="Next page">&rarr;</button>
+                        <div class="ocr-sep"></div>
+                        <button id="btnOcrAppend" title="Append capture to current page">Append</button>
+                        <button id="btnOcrNewPage" title="Capture into new page">New Page</button>
+                        <button id="btnOcrDelPage" title="Delete current page">Del Page</button>
+                    </div>
+                    <div class="ocr-text-wrap">
+                        <textarea id="ocrTextOutput" class="ocr-text-output" readonly placeholder="Captured text will appear here..."></textarea>
+                        <div class="ocr-actions">
+                            <button id="btnOcrExportText" title="Export all pages as text file">Export Text</button>
+                            <button id="btnOcrExportCharset" title="Export active charset as JSON">Export Charset</button>
+                            <button id="btnOcrImportCharset" title="Import charset from JSON file">Import Charset</button>
+                            <button id="btnOcrSaveSession" title="Save full session as JSON">Save Session</button>
+                            <button id="btnOcrLoadSession" title="Load session from JSON file">Load Session</button>
+                            <button id="btnOcrClear" title="Clear all data">Clear</button>
+                            <div class="ocr-font-btns">
+                                <button id="btnOcrFontMinus" title="Decrease font size">A−</button>
+                                <button id="btnOcrFontPlus" title="Increase font size">A+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            </div><!-- tools-ocr -->

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Version Consistency Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Version Consistency Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        // The version is written in several files by hand. A bump that misses one
+        // used to show up as a wrong number in the title or the Help dialog; since
+        // the stale-module check compares the document against APP_VERSION, a
+        // mismatch now also puts a warning bar across a perfectly good deploy.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        const get = async (path) => (await fetch('../' + path, { cache: 'no-store' })).text();
+        const find = (text, re) => { const m = text.match(re); return m ? m[1] : null; };
+
+        (async () => {
+            const [indexHtml, appInit, help, readme, changelog, toolbar] = await Promise.all([
+                get('index.html'), get('ui/app-init.js'), get('ui/help-content.html'),
+                get('README.md'), get('CHANGELOG.md'), get('html/toolbar.html'),
+            ]);
+
+            const app = find(appInit, /APP_VERSION = '([\d.]+)'/);
+            section('Every place that states the version agrees');
+            assert(!!app, 'APP_VERSION found in ui/app-init.js', String(app));
+
+            const places = [
+                ['index.html <title>', find(indexHtml, /<title>ZX-M8XXX v([\d.]+)<\/title>/)],
+                ['index.html meta', find(indexHtml, /name="zxm8-version" content="([\d.]+)"/)],
+                ['html/toolbar.html Help tooltip', find(toolbar, /ZX-M8XXX v([\d.]+) /)],
+                ['ui/help-content.html header', find(help, /help-version">v([\d.]+)</)],
+                ['README.md', find(readme, /\*\*Version ([\d.]+)\*\*/)],
+                ['CHANGELOG.md newest entry', find(changelog, /##\s*v([\d.]+)/)],
+            ];
+            for (const [where, value] of places) {
+                assert(value === app, `${where} = ${app}`, `found ${value}`);
+            }
+
+            section('The stale-module check can actually fire');
+            {
+                // Same comparison app-init makes, so a broken check is visible here
+                // rather than only after a bad deploy.
+                const docVersion = find(indexHtml, /name="zxm8-version" content="([\d.]+)"/);
+                assert(!!docVersion, 'the document carries a version stamp');
+                assert(/checkForStaleModules/.test(appInit), 'and the app compares it at boot');
+                assert(/Ctrl\+Shift\+R/.test(appInit), 'telling the user how to fix it');
+            }
+
+            section('The deploy sets cache headers');
+            {
+                const htaccess = await get('.htaccess').catch(() => '');
+                assert(/no-cache/.test(htaccess),
+                       '.htaccess makes the browser revalidate app sources');
+                assert(/FilesMatch[^>]*js/.test(htaccess), 'and that covers .js');
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

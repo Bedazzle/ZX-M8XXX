@@ -1,0 +1,592 @@
+/* ZX-M8XXX — explorer: disk map, TAP/disk editors, dual panel, file lists
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Explorer Tab */
+.explorer-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    height: calc(100vh - 160px);
+    min-height: 500px;
+    overflow: auto;
+}
+.explorer-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+/* Prevent focus halos on controls */
+.explorer-subtab:focus,
+.explorer-btn:focus,
+.explorer-select:focus,
+.explorer-input:focus {
+    outline: none;
+}
+.explorer-btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    background: var(--bg-button);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 12px;
+}
+.explorer-btn:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+}
+.explorer-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.explorer-btn.primary {
+    background: var(--cyan);
+    color: var(--bg-primary);
+}
+.explorer-btn.primary:hover:not(:disabled) {
+    background: #5dade2;
+}
+.explorer-file-info {
+    color: var(--cyan);
+    font-size: 12px;
+}
+.explorer-file-size {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+.explorer-subtabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+}
+.explorer-subtab {
+    padding: 8px 16px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+}
+.explorer-subtab:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+.explorer-subtab.active {
+    color: var(--cyan);
+    border-bottom-color: var(--cyan);
+}
+.explorer-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+.explorer-subtab-content {
+    flex: 1;
+}
+.explorer-subtab-content.active {
+    display: flex;
+    flex-direction: column;
+}
+/* Disk Map subtab */
+.diskmap-body { display: flex; gap: 10px; }
+.diskmap-left { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
+    min-width: 90px; max-width: 160px; }
+.diskmap-toolbar { display: flex; align-items: center; gap: 4px; }
+.diskmap-view-btn { padding: 2px 10px; background: var(--bg-button); border: 1px solid var(--bg-button-border);
+    color: var(--text-primary); cursor: pointer; font-size: 11px; }
+.diskmap-view-btn.active { background: var(--accent); color: #000; }
+.diskmap-status { font-size: 10px; color: var(--text-secondary); }
+.diskmap-legend { display: flex; flex-direction: column; gap: 2px; padding: 0; font-size: 11px;
+    overflow-y: auto; flex: 1; min-height: 0; }
+.diskmap-legend-item { display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+.diskmap-legend-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.diskmap-legend-item.dimmed .diskmap-legend-swatch { opacity: 0.3; }
+.diskmap-main { flex: 1; min-width: 0; }
+.diskmap-grid-container { overflow: auto; max-height: 800px; width: fit-content; padding-right: 14px; }
+.diskmap-grid-wrapper { display: flex; gap: 16px; }
+.diskmap-grid-side { display: flex; flex-direction: column; }
+.diskmap-side-label { font-size: 10px; color: var(--text-secondary); text-align: center;
+    padding-bottom: 2px; font-weight: bold; }
+.diskmap-grid { display: grid; gap: 1px; width: fit-content; }
+.diskmap-cell { width: 18px; height: 18px; border-radius: 2px; cursor: pointer; transition: opacity 0.1s; }
+.diskmap-cell:hover { outline: 1px solid #fff; z-index: 1; }
+.diskmap-cell.dimmed { opacity: 0.25; }
+.diskmap-row-label { font-size: 9px; color: var(--text-secondary); text-align: right;
+    padding-right: 4px; line-height: 18px; white-space: nowrap; }
+.diskmap-col-label { font-size: 9px; color: var(--text-secondary); text-align: center; line-height: 18px; }
+.diskmap-side-divider { width: 2px; background: var(--accent); opacity: 0.3; align-self: stretch; }
+.diskmap-disk-container { display: flex; justify-content: center; gap: 20px; padding: 10px 0; }
+#diskmapCanvas { cursor: crosshair; }
+.diskmap-info { font-size: 11px; color: var(--text-secondary); min-height: 16px; padding: 2px 0; }
+.explorer-output {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    color: var(--text-primary);
+    flex: 1;
+    overflow: auto;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    padding: 6px 10px;
+    max-height: 750px; /* portrait */
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+    cursor: text;
+}
+#explorerInfoOutput {
+    white-space: normal;
+    width: 50%;
+    min-width: 300px;
+}
+.explorer-info-row {
+    display: flex;
+    gap: 15px;
+    flex: 1;
+}
+.explorer-preview:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.explorer-preview canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+.explorer-preview-label {
+    margin-top: 6px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+.explorer-preview-modes { display: flex; gap: 2px; margin-top: 6px; }
+.explorer-mode-btn { padding: 2px 10px; background: var(--bg-button); border: 1px solid var(--bg-button-border);
+    color: var(--text-primary); cursor: pointer; font-size: 11px; }
+.explorer-mode-btn.active { background: var(--accent); color: #000; }
+@media (min-width: 1400px) {
+    .explorer-output {
+        max-height: 650px; /* landscape */
+    }
+}
+.explorer-empty {
+    color: var(--text-secondary);
+    font-style: italic;
+    padding: 20px;
+    text-align: center;
+}
+.explorer-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    outline: none;
+}
+.explorer-select {
+    font-size: 11px;
+    padding: 4px 8px;
+    min-width: 150px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    color: var(--text-primary);
+}
+.explorer-input {
+    font-size: 11px;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+.explorer-input.addr {
+    width: 50px;
+    text-transform: uppercase;
+}
+.explorer-input.len {
+    width: 70px;
+}
+.explorer-info-section {
+    margin-bottom: 10px;
+}
+.explorer-info-section:first-child {
+    margin-top: 0;
+}
+.explorer-info-header {
+    color: var(--cyan);
+    font-size: 11px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+    letter-spacing: 0.5px;
+}
+.explorer-info-table {
+    width: auto;
+    max-width: 400px;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+.explorer-info-table th,
+.explorer-info-table td {
+    padding: 3px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--bg-button);
+}
+.explorer-info-table th {
+    color: var(--text-secondary);
+    font-weight: normal;
+    width: 120px;
+}
+.explorer-info-table td {
+    color: var(--text-primary);
+}
+.explorer-block-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.explorer-block {
+    border-left: 3px solid var(--cyan);
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    font-size: 11px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    cursor: pointer;
+    outline: none;
+}
+.explorer-block:hover {
+    opacity: 0.85;
+}
+.explorer-block.basic-block {
+    border-left-color: #2ecc71;
+}
+.explorer-block.code-block {
+    border-left-color: var(--cyan);
+}
+.explorer-block.array-block {
+    border-left-color: #9b59b6;
+}
+.explorer-block.data-block {
+    border-left-color: #7f8c8d;
+    background: var(--bg-tertiary);
+}
+.explorer-block-header {
+    color: var(--yellow);
+    font-weight: bold;
+}
+.explorer-block-meta {
+    color: var(--text-secondary);
+}
+.explorer-block-meta .checksum-ok {
+    color: #2ecc71;
+}
+.explorer-block-meta .checksum-bad {
+    color: #e74c3c;
+}
+.explorer-block-details {
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+.explorer-block-details .label {
+    color: var(--text-secondary);
+}
+.explorer-block-details .value {
+    color: var(--cyan);
+}
+.explorer-block-details .filename {
+    color: #2ecc71;
+}
+/* TAP Editor block rows */
+.editor-block-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--bg-button);
+    font-size: 11px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    cursor: pointer;
+    user-select: none;
+}
+.editor-block-row:hover { background: var(--bg-tertiary); }
+.editor-block-row.selected { background: var(--bg-button); }
+.editor-block-row.selected:hover { background: var(--bg-button-hover); }
+.editor-block-row.header-row { border-left: 3px solid var(--cyan); }
+.editor-block-row.data-row { border-left: 3px solid #7f8c8d; }
+.editor-block-row.data-row.pair { border-left-color: var(--cyan); opacity: 0.8; }
+.editor-block-info { flex: 1; color: var(--text-primary); white-space: nowrap; }
+.editor-block-info .dim { color: var(--text-secondary); }
+.editor-block-info .name { color: var(--cyan); }
+.editor-block-info .addr { color: var(--accent); }
+.editor-block-info .ok { color: #2ecc71; }
+.editor-block-info .bad { color: #e74c3c; }
+.editor-inline-edit {
+    display: flex; gap: 6px; align-items: center;
+    padding: 4px 6px; background: var(--bg-primary); border-radius: 3px;
+    flex-wrap: wrap; border-left: 3px solid var(--accent);
+}
+.editor-inline-edit input { width: 100px; font-size: 11px; }
+.editor-inline-edit input.editor-input { width: 110px; }
+.editor-inline-edit input.editor-input-short { width: 56px; }
+.editor-inline-edit select { font-size: 11px; padding: 2px 4px; border-radius: 3px; }
+.editor-inline-edit label { color: var(--text-secondary); font-size: 11px; }
+.editor-inline-edit .editor-apply-btn {
+    background: var(--bg-button); border: 1px solid var(--bg-button); color: var(--text-primary);
+    cursor: pointer; padding: 2px 6px; font-size: 11px; border-radius: 3px;
+}
+.editor-inline-edit .editor-apply-btn:hover { background: var(--bg-tertiary); }
+/* Disk editor rows */
+.editor-block-row.disk-row { border-left: 3px solid var(--cyan); }
+/* Deleted directory entry: dim the filename grey (with strikethrough); the rest of the
+   row stays normal so its fields remain readable. */
+.editor-block-row.disk-deleted .file-name { color: #7f8c8d; text-decoration: line-through; }
+.editor-block-row.disk-label-row {
+    border-left: 3px solid var(--accent);
+    color: var(--text-secondary);
+    font-size: 10px;
+    cursor: default;
+}
+.editor-block-row.disk-label-row:hover { background: transparent; }
+/* Fixed-width columns (monospace font) so editor file rows align vertically across tape + disk */
+.editor-block-info > .dim:first-child { display: inline-block; min-width: 3ch; text-align: right; margin-right: 6px; }
+.editor-block-info .file-ext { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
+.editor-block-info .file-mgttype { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
+.editor-block-info .file-name { color: var(--cyan); display: inline-block; min-width: 11ch; margin-right: 6px; }
+.editor-block-info .file-flag { color: var(--text-secondary); display: inline-block; min-width: 4ch; margin-right: 6px; }
+.editor-block-info .file-addr { color: var(--accent); display: inline-block; min-width: 14ch; margin-right: 6px; }
+.editor-block-info .file-size { color: var(--text-secondary); display: inline-block; min-width: 8ch; margin-right: 6px; }
+.editor-block-info .file-sectors { color: var(--text-secondary); display: inline-block; min-width: 7ch; }
+/* Column-header row (Name/Type/Address/Size) — uniform across tape, disk, snapshot panels */
+.editor-block-row.editor-col-header { cursor: default; font-weight: bold; border-left: 3px solid transparent; }
+.editor-block-row.editor-col-header:hover { background: transparent; }
+.editor-col-header .dim, .editor-col-header .file-name, .editor-col-header .file-flag, .editor-col-header .file-ext, .editor-col-header .file-addr, .editor-col-header .file-size, .editor-col-header .file-sectors { color: var(--text-secondary); }
+.editor-block-row.dsk-row { border-left: 3px solid var(--cyan); }
+.editor-block-row.dsk-row .file-user { color: var(--text-secondary); font-size: 10px; }
+.editor-block-row.dsk-row .file-plus3type { color: var(--accent); margin-right: 6px; display: inline-block; min-width: 5ch; }
+.editor-block-row.dsk-info-row { border-left: 3px solid var(--accent); color: var(--text-secondary); font-size: 10px; cursor: default; }
+.editor-block-row.dsk-info-row:hover { background: transparent; }
+.editor-block-row.nonstandard-row { border-left: 3px solid #555; opacity: 0.5; cursor: default; }
+.editor-block-row.nonstandard-row:hover { background: transparent; }
+/* Dual-panel editor */
+.editor-panels {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    overflow: hidden;
+}
+.editor-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 80px;
+    border: 1px solid var(--bg-button);
+    border-radius: 3px;
+    overflow: hidden;
+}
+/* First panel size adjustable via the splitter between the panels —
+   flex-basis is the main axis, so the same variable is height when the
+   panels are stacked (portrait) and width when side-by-side (landscape).
+   Default: equal split (50% minus its share of gaps and the bar). */
+#editorPanelLeft {
+    flex: 0 0 var(--explorer-pane-size, calc(50% - 7px));
+}
+.editor-panel.active { border-color: var(--cyan); }
+.editor-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+    background: var(--bg-secondary);
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+}
+.editor-panel.active .editor-panel-header {
+    background: var(--bg-button);
+    color: var(--text-primary);
+}
+.editor-panel-format {
+    font-weight: bold;
+    color: var(--cyan);
+    min-width: 28px;
+}
+.editor-panel-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.editor-panel-filelist {
+    flex: 1;
+    overflow: auto;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    padding: 2px;
+}
+/* Volume-label strip: panel-level metadata, kept out of the file table.
+   Always present (reserves height) so both panels' tables stay row-aligned. */
+.editor-panel-labelbar {
+    flex-shrink: 0;
+    min-height: 20px;
+    padding: 2px 8px;
+    margin-bottom: 6px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid var(--bg-secondary);
+}
+.editor-panel-labelbar:empty { border-bottom-color: transparent; }
+.editor-panel-labelbar .editor-label-view {
+    cursor: pointer;
+    border-left: 3px solid var(--accent);
+    padding-left: 5px;
+}
+.editor-panel-labelbar .editor-label-view:hover { color: var(--text-primary); }
+.editor-panel-labelbar .name { color: var(--cyan); }
+/* Right-edge bar only exists in the side-by-side layout */
+#explorerPaneSplitterRight { display: none; }
+/* Landscape: side-by-side; the splitters become vertical bars */
+@media (min-width: 1400px) {
+    .editor-panels { flex-direction: row; }
+    #explorerPaneSplitter,
+    #explorerPaneSplitterRight {
+        display: block;
+        height: auto;
+        align-self: stretch;
+        cursor: ew-resize;
+    }
+    /* Two bars + three gaps in the row: even split is 50% minus 12px each */
+    #editorPanelLeft {
+        flex: 0 0 var(--explorer-pane-size, calc(50% - 12px));
+    }
+    #editorPanelRight {
+        flex: 0 0 var(--explorer-pane2-size, calc(50% - 12px));
+    }
+}
+/* TRD/SCL file list - compact table-like layout */
+.explorer-file-list {
+    display: table;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    width: 100%;
+    max-width: 500px;
+}
+.explorer-file-entry {
+    display: table-row;
+    cursor: pointer;
+}
+.explorer-file-entry:hover {
+    background: var(--bg-tertiary);
+}
+.explorer-file-entry > span {
+    display: table-cell;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--bg-tertiary);
+}
+.explorer-file-num {
+    color: var(--text-secondary);
+    text-align: right;
+    width: 30px;
+}
+.explorer-file-type {
+    color: var(--yellow);
+    white-space: nowrap;
+}
+.explorer-file-name {
+    color: #2ecc71;
+}
+.explorer-file-entry.dir-child .explorer-file-type,
+.explorer-file-entry.dir-child .explorer-file-name {
+    padding-left: 16px;
+}
+.explorer-file-size {
+    color: var(--text-secondary);
+    text-align: right;
+}
+.explorer-file-addr {
+    color: var(--cyan);
+    text-align: right;
+}
+.explorer-file-preview {
+    color: var(--magenta);
+    width: 20px;
+    text-align: center;
+}
+.explorer-basic-line {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    user-select: text;
+    cursor: text;
+}
+.explorer-basic-linenum {
+    color: var(--yellow);
+    display: inline-block;
+    width: 50px;
+}
+.explorer-basic-keyword {
+    color: var(--cyan);
+}
+.explorer-basic-string {
+    color: #2ecc71;
+}
+.explorer-basic-number {
+    color: #e67e22;
+}
+.explorer-basic-comment {
+    color: var(--text-secondary);
+}
+.explorer-basic-screen {
+    font-family: 'ZX82 System', 'Consolas', 'Monaco', monospace;
+    font-size: 16px;
+    line-height: 1.2;
+    background: #c0c0c0;
+    color: #000000;
+    padding: 8px 12px;
+    user-select: text;
+    cursor: text;
+}
+.explorer-basic-screen .sb-linenum { color: #000000; display: inline-block; width: 5ch; }
+.explorer-basic-screen .sb-udg { background: #000000; color: #c0c0c0; }
+.explorer-basic-screen .sb-control { color: #808080; font-size: 12px; }
+.explorer-basic-screen .sb-line { min-height: 1.2em; }
+body.light-theme .explorer-basic-screen {
+    background: #c0c0c0;
+    color: #000000;
+}
+#explorerDisasmOutput {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    white-space: pre;
+}
+.da { color: var(--yellow); }
+.db { color: var(--text-secondary); }
+.dm { color: var(--cyan); }
+.dl { color: #2ecc71; }
+#explorerHexOutput {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    white-space: pre;
+}
+.ha { color: var(--yellow); }
+.hb { color: var(--text-primary); }
+.hc { color: var(--cyan); }
+

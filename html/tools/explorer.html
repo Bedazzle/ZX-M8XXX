@@ -1,0 +1,415 @@
+<!-- Explorer. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content active" id="tools-explorer">
+            <div class="explorer-container">
+                <!-- Controls Row -->
+                <div class="explorer-controls">
+                    <input type="file" id="explorerFileInput" accept=".tap,.tzx,.sna,.z80,.szx,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.opd,.opu,.d40,.d80,.zip,.$b,.$c,.$d,.$#,.hobeta" style="display:none">
+                    <button id="btnExplorerLoad" class="explorer-btn primary">Load File</button>
+                    <span id="explorerFileName" class="explorer-file-info">No file loaded</span>
+                    <span id="explorerFileSize" class="explorer-file-size"></span>
+                </div>
+
+                <!-- Sub-tabs -->
+                <div class="explorer-subtabs">
+                    <button class="explorer-subtab active" data-subtab="info">File Info</button>
+                    <button class="explorer-subtab" data-subtab="basic">BASIC</button>
+                    <button class="explorer-subtab" data-subtab="disasm">Disasm</button>
+                    <button class="explorer-subtab" data-subtab="hexdump">Hex Dump</button>
+                    <button class="explorer-subtab" data-subtab="text">Text</button>
+                    <button class="explorer-subtab" data-subtab="diskmap">Disk Map</button>
+                    <button class="explorer-subtab" data-subtab="edit">Edit</button>
+                </div>
+
+                <!-- Sub-tab Content -->
+                <div class="explorer-content">
+                    <!-- File Info Sub-tab -->
+                    <div class="explorer-subtab-content active" id="explorer-info">
+                        <div class="explorer-info-row">
+                            <div id="explorerInfoOutput" class="explorer-output">
+                                <span class="explorer-empty">Load a file to view its structure</span>
+                            </div>
+                            <div id="explorerPreviewContainer" class="explorer-preview hidden">
+                                <canvas id="explorerPreviewCanvas" width="256" height="192"></canvas>
+                                <div id="explorerPreviewModes" class="explorer-preview-modes hidden">
+                                    <button class="explorer-mode-btn active" data-mode="spectrum">Spectrum</button>
+                                    <button class="explorer-mode-btn" data-mode="linear">Linear</button>
+                                    <button class="explorer-mode-btn" data-mode="font">Font</button>
+                                </div>
+                                <div id="explorerPreviewLabel" class="explorer-preview-label"></div>
+                                <label id="explorerRcsToggleLabel" style="display:none;font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="De-scramble an RCS-reordered screen (Reverse Computer Screen)">
+                                    <input type="checkbox" id="explorerRcsToggle" style="vertical-align:middle;margin-right:2px">RCS
+                                </label>
+                                <button id="explorerSaveScrBtn" class="explorer-btn" style="display:none;font-size:11px;padding:2px 6px;margin-left:6px" title="Download the decoded screen as a 6912-byte .scr (de-RCS'd when RCS is ticked)">Save .scr</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- BASIC Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-basic" style="display:none">
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Source:</span>
+                            <select id="explorerBasicSource" class="explorer-select"></select>
+                            <span class="explorer-label">View:</span>
+                            <select id="explorerBasicView" class="explorer-select" style="min-width:80px">
+                                <option value="code">Code</option>
+                                <option value="screen">Screen</option>
+                            </select>
+                            <button id="btnExplorerBasic" class="explorer-btn">Decode</button>
+                            <button id="btnExplorerBasicCopy" class="explorer-btn" title="Copy decoded BASIC to clipboard">Copy</button>
+                            <label class="search-option" title="Copy original ASCII digits instead of deobfuscated values"><input type="checkbox" id="chkExplorerBasicAsListed"> As listed</label>
+                        </div>
+                        <div id="explorerBasicOutput" class="explorer-output">
+                            <span class="explorer-empty">Select a BASIC program and click Decode</span>
+                        </div>
+                    </div>
+
+                    <!-- Disasm Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-disasm" style="display:none">
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Source:</span>
+                            <select id="explorerDisasmSource" class="explorer-select"></select>
+                            <span class="explorer-label">Address:</span>
+                            <input type="text" id="explorerDisasmAddr" value="0000" maxlength="4" class="explorer-input addr">
+                            <span class="explorer-label">Length:</span>
+                            <input type="number" id="explorerDisasmLen" value="256" min="1" max="65536" class="explorer-input len">
+                            <button id="btnExplorerDisasm" class="explorer-btn">Disassemble</button>
+                        </div>
+                        <div id="explorerDisasmOutput" class="explorer-output">
+                            <span class="explorer-empty">Select a source and click Disassemble</span>
+                        </div>
+                    </div>
+
+                    <!-- Hex Dump Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-hexdump" style="display:none">
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Source:</span>
+                            <select id="explorerHexSource" class="explorer-select"></select>
+                            <span class="explorer-label">Address:</span>
+                            <input type="text" id="explorerHexAddr" value="0000" maxlength="4" class="explorer-input addr">
+                            <span class="explorer-label">Length:</span>
+                            <input type="number" id="explorerHexLen" value="256" min="16" max="65536" class="explorer-input len">
+                            <button id="btnExplorerHex" class="explorer-btn">View</button>
+                        </div>
+                        <div id="explorerBankTools" class="explorer-controls" style="margin-bottom:10px;display:none">
+                            <span class="explorer-label">Addressing:</span>
+                            <select id="explorerBankAddrMode" class="explorer-select" style="min-width:100px">
+                                <option value="bank">Bank (0000-3FFF)</option>
+                                <option value="logical">Logical Z80</option>
+                            </select>
+                            <button id="btnExplorerExportBank" class="explorer-btn">Export .bin</button>
+                            <button id="btnExplorerImportBank" class="explorer-btn">Import .bin</button>
+                            <button id="btnExplorerSaveModified" class="explorer-btn" style="display:none">Save Modified</button>
+                            <span id="explorerBankStatus" style="font-size:10px;color:var(--text-secondary)"></span>
+                            <input type="file" id="explorerBankImportInput" accept=".bin,.dat,*" style="display:none">
+                        </div>
+                        <div id="explorerHexOutput" class="explorer-output">
+                            <span class="explorer-empty">Select a source and click View</span>
+                        </div>
+                    </div>
+
+                    <!-- Text Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-text" style="display:none">
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Source:</span>
+                            <select id="explorerTextSource" class="explorer-select"></select>
+                            <span class="explorer-label">Codepage:</span>
+                            <select id="explorerTextCodepage" class="explorer-select">
+                                <option value="ascii">ASCII</option>
+                                <option value="cp866" selected>CP866 (DOS Cyrillic)</option>
+                                <option value="win1251">Windows-1251</option>
+                                <option value="koi8r">KOI8-R</option>
+                                <option value="iso88591">ISO 8859-1 (Latin-1)</option>
+                            </select>
+                            <button id="btnExplorerText" class="explorer-btn">View</button>
+                        </div>
+                        <div id="explorerTextOutput" class="explorer-output">
+                            <span class="explorer-empty">Select a source and click View</span>
+                        </div>
+                    </div>
+
+                    <!-- Disk Map Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-diskmap" style="display:none">
+                        <div class="diskmap-body">
+                            <div class="diskmap-left">
+                                <div class="diskmap-toolbar">
+                                    <button class="diskmap-view-btn active" data-view="grid">Grid</button>
+                                    <button class="diskmap-view-btn" data-view="disk">Disk</button>
+                                </div>
+                                <span id="diskmapStatus" class="diskmap-status"></span>
+                                <div id="diskmapLegend" class="diskmap-legend"></div>
+                            </div>
+                            <div class="diskmap-main">
+                                <div id="diskmapGridContainer" class="diskmap-grid-container"></div>
+                                <div id="diskmapDiskContainer" class="diskmap-disk-container" style="display:none">
+                                    <canvas id="diskmapCanvas"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="diskmapInfo" class="diskmap-info"></div>
+                    </div>
+
+                    <!-- Edit Sub-tab -->
+                    <div class="explorer-subtab-content" id="explorer-edit" style="display:none">
+                        <!-- Shared toolbar -->
+                        <div id="editorSharedToolbar" class="explorer-controls" style="margin-bottom:4px">
+                            <select id="editorNewFormat" class="explorer-btn" style="font-size:12px;padding:5px 6px;border-radius:4px;border:none;background:var(--bg-button);color:var(--text-primary);cursor:pointer">
+                                <option value="" disabled selected>New</option>
+                                <option value="tap">TAP (Tape file)</option>
+                                <option value="tzx">TZX (Tape extended)</option>
+                                <option value="trd">TRD (TR-DOS disk)</option>
+                                <option value="scl">SCL (TR-DOS archive)</option>
+                                <option value="mgt">MGT (+D disk)</option>
+                                <option value="mdr">MDR (Microdrive)</option>
+                                <option value="opd">OPD (Opus Discovery SS, 180K)</option>
+                                <option value="opd-ds">OPD (Opus Discovery DS, 720K)</option>
+                                <option value="d40">D40 (Didaktik MDOS, 360K)</option>
+                                <option value="d80">D80 (Didaktik MDOS, 720K)</option>
+                                <optgroup label="DSK — +3">
+                                    <option value="dsk-p3-ss40">DSK +3 SS 40T (180K)</option>
+                                    <option value="dsk-p3-ds80">DSK +3 DS 80T (720K)</option>
+                                </optgroup>
+                                <optgroup label="DSK — CPC">
+                                    <option value="dsk-cpc-sys-ss">DSK CPC System SS (180K)</option>
+                                    <option value="dsk-cpc-sys-ds">DSK CPC System DS (720K)</option>
+                                    <option value="dsk-cpc-data-ss">DSK CPC Data SS (180K)</option>
+                                    <option value="dsk-cpc-data-ds">DSK CPC Data DS (720K)</option>
+                                </optgroup>
+                                <optgroup label="DSK — Timex FDD3000">
+                                    <option value="dsk-tos-40">DSK TOS 40T (160K)</option>
+                                    <option value="dsk-tos-80">DSK TOS 80T (320K)</option>
+                                    <option value="dsk-tos-80ds">DSK TOS 80T DS (640K)</option>
+                                </optgroup>
+                            </select>
+                            <button id="btnEditorAddFile" class="explorer-btn">Add File</button>
+                            <button id="btnEditorSave" class="explorer-btn primary">Save</button>
+                            <button id="btnEditorMoveUp" class="explorer-btn" disabled style="min-width:0;padding:4px 8px">&#9650;</button>
+                            <button id="btnEditorMoveDown" class="explorer-btn" disabled style="min-width:0;padding:4px 8px">&#9660;</button>
+                            <button id="btnEditorDel" class="explorer-btn" disabled>Delete</button>
+                            <button id="btnEditorMarkDel" class="explorer-btn" disabled style="display:none">Mark Del</button>
+                            <button id="btnEditorExtract" class="explorer-btn" disabled>Extract</button>
+                            <select id="editorExtractDisk" class="explorer-btn" style="display:none;font-size:12px;padding:5px 6px;border-radius:4px;border:none;background:var(--bg-button);color:var(--text-primary);cursor:pointer" disabled>
+                                <option value="" disabled selected>Extract</option>
+                                <option value="bin">Extract bin</option>
+                                <option value="binfull">Extract bin (full sectors)</option>
+                                <option value="hobeta">Extract Hobeta</option>
+                            </select>
+                            <button id="btnEditorCopy" class="explorer-btn" disabled title="Copy selected files to other panel">Copy &#9654;</button>
+                            <button id="btnEditorToTurbo" class="explorer-btn" disabled style="display:none" title="View / set the pulse timing of the selected TZX block(s): convert standard↔turbo or re-time a turbo block">Turbo</button>
+                            <button id="btnEditorSplit" class="explorer-btn" disabled style="display:none" title="Split a monoloader: keep the loader (its declared length) and add the appended CODE as a separate entry for reverse-engineering">Split</button>
+                            <button id="btnEditorBanner" class="explorer-btn" style="display:none" title="View or attach a SPECSCII catalogue banner — fake directory entries drawn by TR-DOS LIST">Banner</button>
+                            <label id="editorKeepSlackLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Carry the unused bytes in each file's last sector to the destination">
+                                <input type="checkbox" id="editorKeepSlack" style="vertical-align:middle;margin-right:2px">Keep slack
+                            </label>
+                            <label id="editorLinkLabel" style="font-size:11px;color:var(--text-secondary);cursor:pointer;user-select:none" title="Select header+data blocks together">
+                                <input type="checkbox" id="editorPairLock" checked style="vertical-align:middle;margin-right:2px">Link header
+                            </label>
+                            <input type="file" id="editorPanelFileInput" multiple style="display:none">
+                        </div>
+
+                        <!-- Dual panel container -->
+                        <div class="editor-panels" id="editorPanels">
+                            <div class="editor-panel active" id="editorPanelLeft" data-panel="left">
+                                <div class="editor-panel-header" data-panel="left">
+                                    <span class="editor-panel-format"></span>
+                                    <span class="editor-panel-name">Empty</span>
+                                    <span class="editor-panel-status" style="margin-left:auto"></span>
+                                </div>
+                                <div class="editor-panel-labelbar" data-panel="left"></div>
+                                <div class="editor-panel-filelist" data-panel="left"></div>
+                            </div>
+                            <div id="explorerPaneSplitter" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the panels, double-click to reset"></div>
+                            <div class="editor-panel" id="editorPanelRight" data-panel="right">
+                                <div class="editor-panel-header" data-panel="right">
+                                    <span class="editor-panel-format"></span>
+                                    <span class="editor-panel-name">Empty</span>
+                                    <span class="editor-panel-status" style="margin-left:auto"></span>
+                                </div>
+                                <div class="editor-panel-labelbar" data-panel="right"></div>
+                                <div class="editor-panel-filelist" data-panel="right"></div>
+                            </div>
+                            <div id="explorerPaneSplitterRight" class="panel-splitter" style="margin-top: 0; flex: 0 0 6px;" title="Drag to resize the right panel, double-click to reset">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- tools-explorer -->
+
+            <!-- Add File Dialog -->
+            <div id="tapAddDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:340px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:12px">Add Block</h2>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Type:</label>
+                        <select id="tapAddType" style="font-size:12px;margin-left:4px">
+                            <option value="3">Bytes (CODE)</option>
+                            <option value="0">Program (BASIC)</option>
+                            <option value="1">Number array</option>
+                            <option value="2">Character array</option>
+                            <option value="-1">Headerless (raw data)</option>
+                        </select>
+                    </div>
+                    <div id="tapAddNameRow" style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Filename:</label>
+                        <input type="text" id="tapAddName" maxlength="10" value="" placeholder="10 chars max" style="width:120px;font-size:12px;margin-left:4px">
+                    </div>
+                    <div id="tapAddAddrRow" style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Start address:</label>
+                        <input type="text" id="tapAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                    </div>
+                    <div id="tapAddAutoRow" style="margin-bottom:8px;display:none">
+                        <label style="color:var(--text-secondary);font-size:11px">Autostart line:</label>
+                        <input type="number" id="tapAddAuto" value="" min="0" max="9999" style="width:60px;font-size:12px;margin-left:4px" placeholder="none">
+                    </div>
+                    <div id="tapAddVarRow" style="margin-bottom:8px;display:none">
+                        <label style="color:var(--text-secondary);font-size:11px">Variable:</label>
+                        <input type="text" id="tapAddVar" maxlength="1" value="A" style="width:24px;font-size:12px;margin-left:4px;text-transform:uppercase">
+                    </div>
+                    <div id="tapAddFlagRow" style="margin-bottom:8px;display:none">
+                        <label style="color:var(--text-secondary);font-size:11px">Flag byte:</label>
+                        <input type="text" id="tapAddFlag" value="FF" maxlength="2" style="width:32px;font-size:12px;margin-left:4px" placeholder="hex">
+                    </div>
+                    <div id="tapAddPauseRow" style="margin-bottom:8px;display:none">
+                        <label style="color:var(--text-secondary);font-size:11px">Pause (ms):</label>
+                        <input type="number" id="tapAddPause" value="1000" min="0" max="65535" style="width:70px;font-size:12px;margin-left:4px">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <span id="tapAddFileInfo" class="explorer-file-size"></span>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end">
+                        <button id="btnTapAddOk" class="explorer-btn primary">Add</button>
+                        <button id="btnTapAddCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Convert to Turbo Dialog -->
+            <div id="tzxTurboDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:360px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:6px">Turbo block timing</h2>
+                    <div style="color:var(--text-secondary);font-size:11px;margin-bottom:12px">Pulse lengths in T-states (3.5&nbsp;MHz). Shows the selected block's current timing — edit to convert standard→turbo or re-time a turbo block.</div>
+                    <div style="display:grid;grid-template-columns:auto 80px;gap:6px 10px;align-items:center;font-size:12px">
+                        <label>Pilot pulse:</label><input type="number" id="tzxTbPilot" value="2168" min="0" max="65535">
+                        <label>Sync 1 pulse:</label><input type="number" id="tzxTbSync1" value="667" min="0" max="65535">
+                        <label>Sync 2 pulse:</label><input type="number" id="tzxTbSync2" value="735" min="0" max="65535">
+                        <label>Zero-bit pulse:</label><input type="number" id="tzxTbZero" value="855" min="0" max="65535">
+                        <label>One-bit pulse:</label><input type="number" id="tzxTbOne" value="1710" min="0" max="65535">
+                        <label>Pilot tone (pulses):</label><input type="number" id="tzxTbPilotLen" value="3223" min="0" max="65535">
+                        <label>Used bits (last byte):</label><input type="number" id="tzxTbUsedBits" value="8" min="1" max="8">
+                        <label>Pause after (ms):</label><input type="number" id="tzxTbPause" value="1000" min="0" max="65535">
+                    </div>
+                    <div id="tzxTurboInfo" style="color:var(--text-secondary);font-size:11px;margin-top:10px"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                        <button id="btnTzxTurboOk" class="explorer-btn primary">Apply</button>
+                        <button id="btnTzxTurboCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPECSCII Catalogue Banner Dialog -->
+            <div id="bannerDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:560px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:6px">SPECSCII catalogue banner</h2>
+                    <div style="color:var(--text-secondary);font-size:11px;margin-bottom:10px">
+                        A picture drawn by TR-DOS <b>LIST</b>: fake directory entries whose names hold print control codes.
+                        Load a <b>.specscii</b> file (SpectraLab / zxart.ee) and it becomes catalogue entries before the real files.
+                        One leftover column row appears under the banner — real banner disks show it too.
+                    </div>
+                    <canvas id="bannerCanvas" width="256" height="192" style="width:min(512px,80vw);image-rendering:pixelated;border:1px solid var(--border-color);background:#000;display:block;margin:0 auto"></canvas>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">
+                        <button id="btnBannerLoad" class="explorer-btn">Load .specscii…</button>
+                        <label style="font-size:11px" title="Banner height in character rows — rows below are cut off (max 21, the AT print limit)">Rows:</label>
+                        <input type="number" id="bannerRows" min="1" max="21" value="10" style="width:52px;font-size:11px">
+                        <span id="bannerInfo" style="font-size:11px;color:var(--text-dim)"></span>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+                        <button id="btnBannerSave" class="explorer-btn" style="display:none" title="Extract this disk's banner as a .specscii file">Save .specscii</button>
+                        <button id="btnBannerRemove" class="explorer-btn" style="display:none">Remove banner</button>
+                        <button id="btnBannerApply" class="explorer-btn primary" disabled>Apply</button>
+                        <button id="btnBannerClose" class="explorer-btn">Close</button>
+                    </div>
+                    <input type="file" id="bannerFileInput" accept=".specscii" style="display:none">
+                </div>
+            </div>
+
+            <!-- Disk Add File Dialog -->
+            <div id="diskAddDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:340px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:12px">Add Disk File</h2>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Filename:</label>
+                        <input type="text" id="diskAddName" maxlength="8" value="" placeholder="8 chars max" style="width:100px;font-size:12px;margin-left:4px">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Extension:</label>
+                        <select id="diskAddExt" style="font-size:12px;margin-left:4px">
+                            <option value="C">C (Code)</option>
+                            <option value="B">B (BASIC)</option>
+                            <option value="D">D (Data)</option>
+                            <option value="#"># (Sequential)</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Start address:</label>
+                        <input type="text" id="diskAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <span id="diskAddFileInfo" class="explorer-file-size"></span>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end">
+                        <button id="btnDiskAddOk" class="explorer-btn primary">Add</button>
+                        <button id="btnDiskAddCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DSK Add File Dialog -->
+            <div id="dskAddDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:360px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:12px">Add +3DOS File</h2>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Filename:</label>
+                        <input type="text" id="dskAddName" maxlength="8" value="" placeholder="8 chars max" style="width:100px;font-size:12px;margin-left:4px">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Extension:</label>
+                        <input type="text" id="dskAddExt" maxlength="3" value="" placeholder="3 chars" style="width:50px;font-size:12px;margin-left:4px">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Type:</label>
+                        <select id="dskAddType" style="font-size:12px;margin-left:4px">
+                            <option value="3">CODE</option>
+                            <option value="0">BASIC</option>
+                            <option value="-1">Raw (no +3DOS header)</option>
+                        </select>
+                    </div>
+                    <div id="dskAddAddrRow" style="margin-bottom:8px">
+                        <label style="color:var(--text-secondary);font-size:11px">Load address:</label>
+                        <input type="text" id="dskAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                    </div>
+                    <div id="dskAddAutoRow" style="margin-bottom:8px;display:none">
+                        <label style="color:var(--text-secondary);font-size:11px">Autostart line:</label>
+                        <input type="number" id="dskAddAuto" value="" min="0" max="9999" style="width:60px;font-size:12px;margin-left:4px" placeholder="none">
+                    </div>
+                    <div style="margin-bottom:8px">
+                        <span id="dskAddFileInfo" class="explorer-file-size"></span>
+                    </div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end">
+                        <button id="btnDskAddOk" class="explorer-btn primary">Add</button>
+                        <button id="btnDskAddCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ZIP File Picker Dialog -->
+            <div id="zipPickDialog" class="modal-overlay hidden">
+                <div class="modal" style="max-width:360px;padding:20px">
+                    <h2 style="font-size:14px;margin-bottom:12px">Select file from ZIP</h2>
+                    <div id="zipPickList" style="max-height:300px;overflow-y:auto;margin-bottom:12px"></div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end">
+                        <button id="btnZipPickCancel" class="explorer-btn">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Export Sub-tab -->

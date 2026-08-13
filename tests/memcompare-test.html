@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Memory Compare Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Memory Compare Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/mem-compare.js is pure: the readers are injected, so the whole
+        // Utils → Compare "Memory vs Memory" logic tests without an emulator.
+        import { readRegion, diffRegions, validateRegion, regionLabel, regionAddress,
+                 availableLength, sameRegion, BANK_SIZE, ADDR_SPACE } from '../core/mem-compare.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // ---- a fake machine: 8 RAM banks, and a 64K view with banks 5,2,0 paged
+        function makeMachine() {
+            const banks = [];
+            for (let b = 0; b < 8; b++) {
+                const ram = new Uint8Array(BANK_SIZE);
+                for (let i = 0; i < BANK_SIZE; i++) ram[i] = (b * 16 + (i & 0x0F)) & 0xFF;
+                banks.push(ram);
+            }
+            const slots = [null, 5, 2, 0];   // ROM, then banks 5/2/0 like a 128K
+            const readPaged = (addr) => {
+                const slot = (addr >> 14) & 3;
+                if (slots[slot] === null) return 0xFF;               // "ROM"
+                return banks[slots[slot]][addr & 0x3FFF];
+            };
+            return { banks, readPaged, readBank: (b) => banks[b] || null };
+        }
+
+        (async () => {
+            const m = makeMachine();
+            const io = { readPaged: m.readPaged, readBank: m.readBank };
+
+            section('Reading a region');
+            {
+                const paged = readRegion({ mode: 'paged', addr: 0x4000 }, 16, io);
+                assert(paged.length === 16, 'a paged read returns what was asked for');
+                assert(paged.bytes[0] === m.banks[5][0], 'and reads through the current paging',
+                       `${paged.bytes[0]} vs ${m.banks[5][0]}`);
+
+                const bank = readRegion({ mode: 'bank', bank: 5, addr: 0 }, 16, io);
+                assert(Array.from(bank.bytes).every((b, i) => b === m.banks[5][i]),
+                       'a bank read returns that bank');
+
+                // bank 1 is not paged in anywhere, and still readable
+                const hidden = readRegion({ mode: 'bank', bank: 1, addr: 0x100 }, 8, io);
+                assert(hidden.bytes[0] === m.banks[1][0x100],
+                       'including a bank that is not currently paged in');
+
+                // the same bytes reached two ways
+                const viaPage = readRegion({ mode: 'paged', addr: 0xC000 }, 32, io);
+                const viaBank = readRegion({ mode: 'bank', bank: 0, addr: 0 }, 32, io);
+                assert(diffRegions(viaPage.bytes, viaBank.bytes).identical,
+                       'the paged view and its bank agree byte for byte');
+            }
+
+            section('Runs that would pass the end are shortened, not wrapped');
+            {
+                const r = readRegion({ mode: 'paged', addr: 0xFFF0 }, 0x100, io);
+                assert(r.length === 0x10, 'a 64K read stops at $FFFF', String(r.length));
+                assert(r.clamped === true, 'and says it was shortened');
+
+                const b = readRegion({ mode: 'bank', bank: 3, addr: 0x3FF0 }, 0x100, io);
+                assert(b.length === 0x10, 'a bank read stops at the end of the bank', String(b.length));
+                assert(b.clamped === true, 'and says so too');
+                assert(b.bytes[0] === m.banks[3][0x3FF0], 'reading the right bytes up to there');
+
+                assert(availableLength({ mode: 'paged', addr: 0x8000 }) === 0x8000,
+                       'availableLength: 64K from $8000');
+                assert(availableLength({ mode: 'bank', bank: 0, addr: 0x3F00 }) === 0x100,
+                       'availableLength: to the end of a bank');
+            }
+
+            section('Differences');
+            {
+                const a = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+                const b = new Uint8Array([1, 9, 9, 4, 5, 6, 0, 8]);
+                const d = diffRegions(a, b);
+                assert(d.count === 3, 'counts every differing byte', String(d.count));
+                assert(d.blocks.length === 2, 'groups them into runs', JSON.stringify(d.blocks));
+                assert(d.blocks[0].offset === 1 && d.blocks[0].length === 2,
+                       'first run is offset 1, two bytes', JSON.stringify(d.blocks[0]));
+                assert(d.blocks[1].offset === 6 && d.blocks[1].length === 1,
+                       'second run is the single byte at 6', JSON.stringify(d.blocks[1]));
+                assert(d.identical === false, 'and it is not identical');
+
+                const same = diffRegions(a, a);
+                assert(same.identical && same.count === 0 && same.blocks.length === 0,
+                       'identical data reports no differences');
+
+                // a shorter side bounds the comparison
+                const short = diffRegions(a, b.subarray(0, 4));
+                assert(short.compared === 4, 'the shorter region bounds it', String(short.compared));
+                assert(short.count === 2, 'and only those bytes are counted', String(short.count));
+            }
+
+            section('What the form is allowed to ask for');
+            {
+                const banked = { ramPages: 8 };
+                assert(validateRegion({ mode: 'paged', addr: 0x0000 }, banked).ok, '$0000 is fine');
+                assert(validateRegion({ mode: 'paged', addr: 0xFFFF }, banked).ok, '$FFFF is fine');
+                assert(!validateRegion({ mode: 'paged', addr: 0x10000 }, banked).ok,
+                       'above $FFFF is not');
+                assert(!validateRegion({ mode: 'paged', addr: NaN }, banked).ok,
+                       'a non-number address is not');
+                assert(validateRegion({ mode: 'bank', bank: 7, addr: 0x3FFF }, banked).ok,
+                       'bank 7 offset $3FFF is fine');
+                assert(!validateRegion({ mode: 'bank', bank: 8, addr: 0 }, banked).ok,
+                       'bank 8 is not, on a machine with 8');
+                assert(!validateRegion({ mode: 'bank', bank: 0, addr: 0x4000 }, banked).ok,
+                       'an offset past the end of a bank is not');
+                assert(!validateRegion({ mode: 'bank', bank: 0, addr: 0 }, { ramPages: 1 }).ok,
+                       'and 48K has no banks to ask for');
+                assert(validateRegion({ mode: 'paged', addr: 0x8000 }, { ramPages: 1 }).ok,
+                       'though its 64K space is addressable as usual');
+
+                // Pentagon 1024 / Scorpion have more than eight
+                assert(validateRegion({ mode: 'bank', bank: 40, addr: 0 }, { ramPages: 64 }).ok,
+                       'a 64-bank machine can reach bank 40');
+                assert(!validateRegion({ mode: 'bank', bank: 40, addr: 0 }, { ramPages: 16 }).ok,
+                       'a 16-bank machine cannot');
+            }
+
+            section('Labels name the place the bytes came from');
+            {
+                assert(regionLabel({ mode: 'paged', addr: 0x4000 }) === '$4000', 'paged label');
+                assert(regionLabel({ mode: 'bank', bank: 5, addr: 0x100 }) === 'bank 5:$0100', 'bank label');
+                assert(regionAddress({ mode: 'paged', addr: 0x4000 }, 0x10) === '4010',
+                       'paged addresses advance', regionAddress({ mode: 'paged', addr: 0x4000 }, 0x10));
+                assert(regionAddress({ mode: 'bank', bank: 2, addr: 0x10 }, 5) === '2:0015',
+                       'bank addresses carry the bank', regionAddress({ mode: 'bank', bank: 2, addr: 0x10 }, 5));
+
+                assert(sameRegion({ mode: 'paged', addr: 0x4000 }, { mode: 'paged', addr: 0x4000 }),
+                       'the same place is recognised');
+                assert(!sameRegion({ mode: 'paged', addr: 0x4000 }, { mode: 'bank', bank: 5, addr: 0 }),
+                       'the same bytes named two ways are not "the same place"');
+                assert(!sameRegion({ mode: 'bank', bank: 1, addr: 0 }, { mode: 'bank', bank: 2, addr: 0 }),
+                       'different banks are not');
+            }
+
+            section('A real comparison, end to end');
+            {
+                // put a known difference in bank 1 and compare it with bank 2
+                m.banks[1].set([0xAA, 0xBB, 0xCC], 0x20);
+                m.banks[2].set([0xAA, 0xBB, 0xCD], 0x20);
+                const ra = readRegion({ mode: 'bank', bank: 1, addr: 0x20 }, 3, io);
+                const rb = readRegion({ mode: 'bank', bank: 2, addr: 0x20 }, 3, io);
+                const d = diffRegions(ra.bytes, rb.bytes);
+                assert(d.count === 1 && d.blocks.length === 1 && d.blocks[0].offset === 2,
+                       'one byte differs, at the third position', JSON.stringify(d));
+
+                // and the same region against itself is always identical
+                const self = diffRegions(ra.bytes, readRegion({ mode: 'bank', bank: 1, addr: 0x20 }, 3, io).bytes);
+                assert(self.identical, 'a region matches itself');
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

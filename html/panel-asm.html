@@ -1,0 +1,152 @@
+<!-- Assembler tab. Spliced into index.html at boot by ui/boot.js. -->
+        <!-- Assembler Tab -->
+        <div class="tab-content" id="tab-assembler">
+            <div class="assembler-container">
+                <div class="assembler-header">
+                    <div class="assembler-controls">
+                        <div class="asm-files-dropdown">
+                            <button id="btnAsmFiles" title="Project actions and files">Project ▼</button>
+                            <div class="asm-files-list" id="asmProjectMenu">
+                                <div class="asm-menu-actions">
+                                    <button class="asm-menu-item" id="btnAsmNew" title="Create new file">New file</button>
+                                    <button class="asm-menu-item" id="btnAsmLoad" title="Load files (ASM, ZIP, binary)">Load…</button>
+                                    <button class="asm-menu-item" id="btnAsmImportForeign" title="Import sources written for other assemblers (ALASM, TASM) from TRD/SCL/ZIP/single files">Import foreign…</button>
+                                    <button class="asm-menu-item" id="btnAsmImport" title="Import shared project from clipboard">Import from clipboard</button>
+                                    <button class="asm-menu-item" id="btnAsmBeautify" title="Reformat the source: case, spacing, blank lines, one statement per line, …">Beautify…</button>
+                                    <button class="asm-menu-item" id="btnAsmExport" title="Export source files (plain text or ZIP)">Export…</button>
+                                    <button class="asm-menu-item" id="btnAsmShare" title="Copy project to clipboard for sharing">Share to clipboard</button>
+                                    <button class="asm-menu-item" id="btnAsmInject" title="Inject assembled code to memory without starting the debugger" disabled>Inject into memory</button>
+                                    <button class="asm-menu-item" id="btnAsmClear" title="Clear all files and assembled output">Clear all</button>
+                                </div>
+                                <div id="asmFilesList"></div>
+                            </div>
+                        </div>
+                        <div class="asm-files-dropdown">
+                            <button id="btnAsmSnippets" title="Insert a code snippet at the cursor">Snippets ▼</button>
+                            <div class="asm-files-list" id="asmSnippetsMenu">
+                                <div class="asm-menu-actions">
+                                    <button class="asm-menu-item" id="btnSnippetAdd" title="Save the selected editor text as a named snippet">+ Add selection as snippet…</button>
+                                    <button class="asm-menu-item" id="btnSnippetImport" title="Import snippets from a JSON file (merged into your snippets)">Import my snippets…</button>
+                                    <button class="asm-menu-item" id="btnSnippetExport" title="Export your snippets to a JSON file">Export my snippets…</button>
+                                    <button class="asm-menu-item" id="btnSnippetClear" title="Delete all your saved snippets (built-in stay)">Clear my snippets</button>
+                                    <input type="file" id="snippetImportFile" accept=".json,application/json" style="display:none">
+                                </div>
+                                <div id="asmSnippetsList"></div>
+                            </div>
+                        </div>
+                        <button id="btnAsmAssemble" title="Assemble code (F9)" disabled>Assemble</button>
+                        <button id="btnAsmDebug" title="Inject code and start debugging at entry point (Ctrl+F9)" disabled>Debug</button>
+                        <button id="btnAsmDownload" title="Download generated files (.bin, .sna, .tap, .trd)" disabled>Download</button>
+                        <input type="file" id="asmFileInput" accept=".asm,.z80,.s,.a80,.inc,.bin,.scr,.tap,.zip" multiple style="display:none">
+                        <label class="asm-option asm-defines-label" title="Command-line defines for IFDEF/IFNDEF (e.g., DEBUG,VERSION=5)">Defines: <input type="text" id="asmDefines" placeholder="NAME,NAME=value" spellcheck="false"></label>
+                        <span id="asmDetectedDefines" title="Defines from @define markers in source — tick to define (IFDEF true), untick to leave undefined" style="display:none"></span>
+                        <span id="asmMainFileLabel" class="asm-main-label" style="display:none" title="Click to change main file"></span>
+                        <button id="btnAsmSplit" style="margin-left: auto;" title="Split editor: edit two files (or the same file) side by side">◫</button>
+                        <span class="disasm-opts-wrap">
+                            <button id="btnAsmViewOpts" title="Assembler options">⚙</button>
+                            <div id="asmViewOptsPopover" class="disasm-opts-popover hidden">
+                                <label title="Treat labels and instructions case-insensitively"><input type="checkbox" id="chkAsmCaseInsensitive"> Case insensitive</label>
+                                <label title="Report unused labels after assembly"><input type="checkbox" id="chkAsmUnusedLabels"> Unused labels</label>
+                                <label title="Allow Cyrillic (and other non-Latin) letters in label names, as native assemblers do. Off: they are reported as unexpected characters, which catches a line typed in the wrong keyboard layout"><input type="checkbox" id="chkAsmUnicodeLabels"> Unicode labels</label>
+                                <label title="Show compiled bytes next to source lines"><input type="checkbox" id="chkAsmShowCompiled"> Show compiled</label>
+                                <label title="Always export source as ZIP, even for a single file (default: single file saved as plain text)"><input type="checkbox" id="chkAsmExportZip"> Export as ZIP</label>
+                                <label title="Display codepage for raw bytes in the editor (e.g. Cyrillic DB strings of imported TR-DOS sources). Display only — file content and assembled bytes are unchanged. KOI-7 remaps the lowercase Latin range by design">View enc:
+                                    <select id="asmViewCodepage" style="width: 70px; padding: 2px;">
+                                        <option value="raw" selected>Raw</option>
+                                        <option value="cp866">CP866</option>
+                                        <option value="koi8">KOI8-R</option>
+                                        <option value="koi7">KOI-7</option>
+                                    </select>
+                                </label>
+                                <label title="Editor font size">Font:
+                                    <select id="asmFontSize" style="width: 45px; padding: 2px;">
+                                        <option value="8">8</option>
+                                        <option value="9">9</option>
+                                        <option value="10">10</option>
+                                        <option value="11">11</option>
+                                        <option value="12" selected>12</option>
+                                        <option value="13">13</option>
+                                        <option value="14">14</option>
+                                        <option value="16">16</option>
+                                        <option value="18">18</option>
+                                        <option value="20">20</option>
+                                        <option value="22">22</option>
+                                        <option value="24">24</option>
+                                    </select>
+                                    <span class="opts-hint">Ctrl +/−</span>
+                                </label>
+                            </div>
+                        </span>
+                    </div>
+                </div>
+                <div class="assembler-body">
+                    <div class="asm-editor-container">
+                        <div class="asm-tabs-row">
+                            <div class="asm-file-tabs" id="asmFileTabs"></div>
+                            <div class="asm-pane2-header hidden" id="asmPane2Header">
+                                <select id="asmPane2File" title="File shown in the split pane"></select>
+                                <button id="btnAsmPane2Close" title="Close split view">×</button>
+                            </div>
+                        </div>
+                        <div class="asm-search-bar" id="asmSearchBar" style="display:none">
+                            <div class="asm-search-row">
+                                <input type="text" id="asmSearchInput" placeholder="Find (Ctrl+F)" spellcheck="false">
+                                <button id="btnAsmFindPrev" title="Find Previous (Shift+F3)">▲</button>
+                                <button id="btnAsmFindNext" title="Find Next (F3)">▼</button>
+                                <span id="asmSearchCount" class="asm-search-count"></span>
+                                <label class="asm-search-option"><input type="checkbox" id="chkAsmSearchCase"> Case</label>
+                                <button id="btnAsmSearchAll" title="Search in all project files">All Files</button>
+                                <button id="btnAsmSearchClose" title="Close (Esc)">×</button>
+                            </div>
+                            <div class="asm-replace-row" id="asmReplaceRow" style="display:none">
+                                <input type="text" id="asmReplaceInput" placeholder="Replace (Ctrl+R)" spellcheck="false">
+                                <button id="btnAsmReplace" title="Replace">Replace</button>
+                                <button id="btnAsmReplaceAll" title="Replace All">All</button>
+                            </div>
+                            <div class="asm-search-results" id="asmSearchResults" style="display:none"></div>
+                        </div>
+                        <div class="asm-editor-area">
+                            <div class="asm-pane">
+                                <div class="asm-line-numbers" id="asmLineNumbers"></div>
+                                <div class="asm-editor-wrap">
+                                    <pre class="asm-highlight" id="asmHighlight"></pre>
+                                    <textarea id="asmEditor" class="asm-textarea" spellcheck="false" placeholder="; Random border stripes
+; @main
+; @entry start
+
+        ORG $8000
+
+start:
+        LD A, R
+        AND 7
+        OUT ($FE), A
+        JR start
+
+        SAVESNA &quot;stripes.sna&quot;, start ; md5: 7b3f9a1e4c6d2f08e5a1b9c3d7f0e2a4"></textarea>
+                                    <div id="asmTstatePopup" class="asm-tstate-popup" style="display:none"></div>
+                                </div>
+                            </div>
+                            <div id="asmPaneSplitter" class="panel-vsplitter hidden" title="Drag to resize the split pane, double-click to reset"></div>
+                            <div class="asm-pane asm-pane-second hidden" id="asmPane2">
+                                <div class="asm-line-numbers" id="asmLineNumbers2"></div>
+                                <div class="asm-editor-wrap">
+                                    <pre class="asm-highlight" id="asmHighlight2"></pre>
+                                    <textarea id="asmEditor2" class="asm-textarea" spellcheck="false"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="asmOutputSplitter" class="panel-splitter" style="margin-top: 0;" title="Drag to resize the output pane, double-click to reset"></div>
+                    <div class="asm-output-container">
+                        <div class="asm-output-header">Output</div>
+                        <div id="asmProgress" class="asm-progress hidden">
+                            <span class="asm-progress-label" id="asmProgressLabel">Assembling&#x2026;</span>
+                            <div class="asm-progress-bar"><div class="asm-progress-fill" id="asmProgressFill"></div></div>
+                            <span class="asm-progress-pct" id="asmProgressPct"></span>
+                        </div>
+                        <div class="asm-output" id="asmOutput"><span class="asm-hint">Press Assemble to compile</span></div>
+                    </div>
+                </div>
+                <div id="asmHeightSplitter" class="panel-splitter" title="Drag to resize the assembler area height, double-click to reset"></div>
+            </div>
+        </div><!-- tab-assembler -->

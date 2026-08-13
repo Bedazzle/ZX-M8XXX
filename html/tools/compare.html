@@ -1,0 +1,117 @@
+<!-- Compare tool. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-compare">
+            <div class="compare-container" style="padding:10px;display:flex;flex-direction:column;gap:15px;max-width:1200px">
+
+                <!-- Compare Mode Selection -->
+                <div class="compare-mode" style="display:flex;gap:15px;flex-wrap:wrap">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="sna-sna" checked> Snapshots
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="bin-bin"> Binaries
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="sna-emu"> Snapshot vs Emulator
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="mem-bin"> Memory vs Binary
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                        <input type="radio" name="compareMode" value="mem-mem"> Memory vs Memory
+                    </label>
+                </div>
+
+                <!-- Memory vs Memory: two regions of the running machine -->
+                <div id="compareMemMemOptions" style="display:none;flex-direction:column;gap:6px;font-size:12px">
+                    <div class="settings-row cmp-mem-row">
+                        <span class="settings-row-label">Region A:</span>
+                        <select id="compareMemAMode" class="cmp-mode" title="How to address this region">
+                            <option value="paged">64K (as paged)</option>
+                            <option value="bank">Bank</option>
+                        </select>
+                        <select id="compareMemABank" class="cmp-bank" title="RAM bank number"></select>
+                        <span class="cmp-at">at $</span>
+                        <input type="text" id="compareMemAAddr" class="cmp-addr" maxlength="4" value="0000" title="Start address (hex)">
+                    </div>
+                    <div class="settings-row cmp-mem-row">
+                        <span class="settings-row-label">Region B:</span>
+                        <select id="compareMemBMode" class="cmp-mode" title="How to address this region">
+                            <option value="paged">64K (as paged)</option>
+                            <option value="bank">Bank</option>
+                        </select>
+                        <select id="compareMemBBank" class="cmp-bank" title="RAM bank number"></select>
+                        <span class="cmp-at">at $</span>
+                        <input type="text" id="compareMemBAddr" class="cmp-addr" maxlength="4" value="0000" title="Start address (hex)">
+                    </div>
+                    <div class="settings-row cmp-mem-row">
+                        <span class="settings-row-label">Length:</span>
+                        <input type="text" id="compareMemLength" class="cmp-addr" maxlength="5" value="4000" title="Number of bytes (hex). Shortened if it would run past the end of the address space or of a bank">
+                        <span id="compareMemHint" class="cmp-hint"></span>
+                    </div>
+                </div>
+
+                <!-- File Inputs -->
+                <div class="compare-inputs" style="display:flex;gap:15px;flex-wrap:wrap">
+                    <div class="compare-file" id="compareFileAContainer" style="flex:1;min-width:200px">
+                        <label style="display:block;margin-bottom:5px;color:var(--text-secondary);font-size:11px">File A:</label>
+                        <input type="file" id="compareFileA" accept=".sna,.z80,.szx,.rzx,.bin,.rom,.dat,*" style="width:100%">
+                    </div>
+                    <div class="compare-file" id="compareFileBContainer" style="flex:1;min-width:200px">
+                        <label style="display:block;margin-bottom:5px;color:var(--text-secondary);font-size:11px">File B:</label>
+                        <input type="file" id="compareFileB" accept=".sna,.z80,.szx,.rzx,.bin,.rom,.dat,*" style="width:100%">
+                    </div>
+                </div>
+
+                <!-- Memory vs Binary address -->
+                <div id="compareMemBinOptions" style="display:none;align-items:center;gap:8px;font-size:12px">
+                    <label style="color:var(--text-secondary)">Start address:</label>
+                    <input type="text" id="compareMemBinStart" maxlength="4" value="0000" style="width:42px;font-family:monospace;font-size:11px;text-transform:uppercase" title="Memory start address (hex) — binary file is compared against memory starting at this address">
+                </div>
+
+                <!-- Compare Options -->
+                <div class="compare-options" style="display:flex;gap:15px;flex-wrap:wrap;align-items:center">
+                    <button id="btnCompare" title="Compare selected files or states" style="padding:8px 20px;background:var(--accent);color:var(--bg-primary);border:none;border-radius:4px;cursor:pointer;font-size:12px">Compare</button>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+                        <input type="checkbox" id="chkCompareShowEqual"> Show equal values
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:12px">
+                        <input type="checkbox" id="chkCompareHexDump" checked> Hex dump
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:12px" title="Exclude $4000-$5AFF screen area (and $C000-$DAFF for 128K bank 7)">
+                        <input type="checkbox" id="chkCompareExcludeScreen" checked> Exclude screen
+                    </label>
+                </div>
+
+                <!-- Results -->
+                <div class="compare-results" style="flex:1;overflow:auto">
+                    <!-- Register Comparison -->
+                    <div id="compareHeaderResults" style="display:none;margin-bottom:15px">
+                        <div id="compareHeaderTable" style="font-family:monospace;font-size:12px;background:var(--bg-secondary);padding:10px;border-radius:4px;max-height:200px;overflow:auto"></div>
+                    </div>
+
+                    <!-- Data/Memory Differences -->
+                    <div id="compareDataResults" style="display:none">
+                        <span id="compareDataTitle" style="display:none"></span>
+                        <div id="comparePagination" style="display:none;margin-bottom:8px;align-items:center;gap:10px;font-size:12px">
+                            <button id="comparePrevPage" style="padding:4px 8px">◄ Prev</button>
+                            <span id="comparePageInfo" style="color:var(--text-secondary)">Page 1 / 1</span>
+                            <button id="compareNextPage" style="padding:4px 8px">Next ►</button>
+                            <span style="color:var(--text-secondary);margin-left:10px">Go to:</span>
+                            <input type="number" id="compareGoToPage" min="1" style="width:60px;padding:2px 4px;font-size:12px">
+                            <button id="compareGoPage" style="padding:4px 8px">Go</button>
+                            <span id="compareDiffCount" style="margin-left:15px;color:var(--yellow);font-size:12px"></span>
+                        </div>
+                        <div id="compareDiffCountNoPage" style="display:none;margin-bottom:8px;color:var(--yellow);font-size:12px"></div>
+                        <div id="compareDataTable" style="font-family:monospace;font-size:12px;background:var(--bg-secondary);padding:10px;border-radius:4px;max-height:400px;overflow:auto"></div>
+                    </div>
+
+                    <!-- No differences message -->
+                    <div id="compareNoResults" style="display:none;text-align:center;padding:40px;color:var(--green)">
+                        <span style="font-size:24px">✓</span><br>
+                        Files are identical
+                    </div>
+                </div>
+            </div>
+            </div><!-- tools-compare -->
+
+            <!-- Explorer Sub-tab Content -->

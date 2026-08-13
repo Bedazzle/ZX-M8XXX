@@ -1,4 +1,29 @@
-# Peripherals: +D/MGT, IF1/Microdrive, Opus Discovery, Didaktik 40/80, +3/FDC
+# Peripherals: Joysticks, +D/MGT, IF1/Microdrive, Opus Discovery, Didaktik 40/80, +3/FDC
+
+## Joysticks (`core/joystick.js`)
+
+Settings -> Input picks what the numpad and gamepad emulate. Only Kempston is
+hardware; the rest close ZX keyboard contacts, so the machine presses those keys.
+
+| Type | Left | Right | Down | Up | Fire |
+|------|------|-------|------|----|------|
+| Kempston | port $1F bit 1 | bit 0 | bit 2 | bit 3 | bit 4 |
+| Sinclair 1 (Interface 2 right) | 6 | 7 | 8 | 9 | 0 |
+| Sinclair 2 (Interface 2 left) | 1 | 2 | 3 | 4 | 5 |
+| Cursor / AGF / Protek | 5 | 8 | 6 | 7 | 0 |
+| Custom | any key | any key | any key | any key | any key |
+
+**Custom keys** default to QAOP + Space and are rebound in place: click the button
+for a direction, press the key. Partial settings are filled in from the defaults,
+so a direction can never end up unbound.
+
+Direction masks use the Kempston bit numbering the input layer already speaks, so
+the numpad and gamepad paths feed all types without separate plumbing.
+`setJoystickType()` and `setJoystickCustomKeys()` release whatever the previous
+binding was holding, otherwise a key stays stuck down in the matrix.
+
+Note Sinclair 1 and Cursor share fire (key 0), which is why some games accept
+either.
 
 ## DISCiPLE/+D Interface (MGT Disks)
 
@@ -126,7 +151,12 @@ External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports 
 - `buildOPD(files, label, sides)` -- serialize file list into OPD image (writes the boot sector + directory skeleton; preserves an existing disk's sector 0 when given a `baseImage`)
 - `createBlankOPD(sides)` -- create empty formatted disk image (boot sector + label entry + terminator)
 
-**OpusDisk class (`core/loaders.js`):**
+**Status: image format only.** `core/loaders/disk-opus.js` implements `OPDLoader` (reading and
+writing OPD images for the Explorer and file tools). There is **no Opus controller emulation** —
+the WD1770/MC6821 description below is a design note, not implemented code, and the
+`loadedOpusDisks` state it refers to does not exist.
+
+**OpusDisk class (design note, not implemented):**
 - WD1770 FDC + MC6821 PIA emulation via composition (wraps PlusDDisk internally)
 - Memory-mapped register access (not I/O ports): readFDC/writeFDC ($2800-$2FFF), readPIA/writePIA ($3000-$37FF)
 - PIA Port A bits: bit 1=drive select, bit 4=side select; Control register bit 2 gates DDR vs data

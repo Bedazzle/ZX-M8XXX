@@ -7,11 +7,7 @@
  * Based on Zilog Z80 documentation and Fuse emulator behavior.
  */
 
-const VERSION = '0.6.5';
-
     export class Z80 {
-        static get VERSION() { return VERSION; }
-        
         constructor(memory) {
             this.memory = memory;
             this.halted = false;
@@ -64,6 +60,10 @@ const VERSION = '0.6.5';
             // Cycle counter
             this.tStates = 0;
             this.instructionCount = 0;  // M1 cycle counter for RZX sync
+
+            // Set by the ULA when snow is switched on: a record of when each M1
+            // refresh happened, which is what decides where snow lands
+            this.m1Log = null;
 
             // Port handlers
             this.portRead = null;
@@ -170,6 +170,13 @@ const VERSION = '0.6.5';
         
         incR() {
             this.r = (this.r + 1) & 0x7f;
+            // R increments once per refresh cycle, so this is every M1 there is —
+            // prefixes and interrupt acknowledge included. The ULA needs the T-state
+            // and the R value to reproduce snow (core/ula-snow.js); the log is null
+            // unless the effect is switched on, so this costs one test per M1.
+            if (this.m1Log !== null && this.m1Log.enabled) {
+                this.m1Log.note(this.tStates, this.r, this.i);
+            }
         }
         
         // Memory access with contention

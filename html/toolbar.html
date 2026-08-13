@@ -1,0 +1,24 @@
+<!-- top bar: machine, load/save, help. Spliced into index.html at boot by ui/boot.js. -->
+        <div class="top-bar">
+            <select id="machineSelect" class="toolbar-select" title="Select machine type">
+            </select>
+            <select id="loadSelect" class="toolbar-select" title="Load file" style="width:auto;padding:4px 6px;">
+                <option value="" disabled selected hidden>Load</option>
+                <option value="file">File</option>
+                <option value="browse">Web</option>
+                <option value="quick">Quick (F5)</option>
+            </select>
+            <select id="saveSelect" class="toolbar-select" title="Save" style="width:auto;padding:4px 6px;">
+                <option value="" disabled selected hidden>Save</option>
+                <option value="sna">SNA</option>
+                <option value="z80">Z80</option>
+                <option value="szx">SZX</option>
+                <option value="dsk">DSK</option>
+                <option value="trd">TRD/SCL</option>
+                <option value="project">Project</option>
+                <option value="quick">Quick (F2)</option>
+            </select>
+            <button id="btnHelpFull" class="test-link" title="ZX-M8XXX v0.15.29 — Help">Help</button>
+            <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">☀️</button>
+
+        </div>

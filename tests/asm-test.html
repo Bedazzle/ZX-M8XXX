@@ -98,6 +98,8 @@
 
     <script type="module">
     import { Assembler } from '../sjasmplus/assembler.js';
+    import { ErrorCollector } from '../sjasmplus/errors.js';
+    import { VFS } from '../sjasmplus/vfs.js';
     import snippetsData from '../data/asm-snippets.json' with { type: 'json' };
         const TEST_VERSION = '0.6.4';
 
@@ -1407,14 +1409,16 @@ VAL:            EQU 42
         async function runProjectFormTests() {
             section('EXPORT');
 
-            function build(src) {
+            function build(src, opts) {
                 let r = null, threw = null;
-                try { r = Assembler.assemble(src); } catch (e) { threw = e.message; }
+                try { r = Assembler.assemble(src, '<input>', [], opts || {}); } catch (e) { threw = e.message; }
                 return {
                     ok: !threw && !!(r && r.success),
                     err: threw || '',
                     output: (r && r.output) || [],
                     cmds: (r && r.saveCommands) || [],
+                    warns: (((r && r.warnings) || []).map(w => w.message || String(w))
+                        .filter(m => !m.startsWith('Unused label:'))),
                 };
             }
 
@@ -1449,6 +1453,256 @@ VAL:            EQU 42
             assert(b.ok && !!exp3 && /a: EQU/.test(exp3.content || '') && /b: EQU/.test(exp3.content || ''),
                    'EXPORT takes a list', exp3 ? String(exp3.content) : b.err);
             assert(b.cmds.filter(c => c.type === 'export').length === 1, 'one .exp per build');
+
+            section('VFS: renaming a file');
+            {
+                VFS.reset();
+                VFS.addFile('main.asm', '    nop\n');
+                VFS.addBinaryFile('pic.bin', new Uint8Array([1, 2, 3]));
+
+                let r = VFS.renameFile('main.asm', 'game.asm');
+                assert(r.ok && VFS.exists('game.asm') && !VFS.exists('main.asm'),
+                       'a source is renamed', JSON.stringify(r));
+                assert(VFS.getFile('game.asm').content === '    nop\n', 'and keeps its contents');
+
+                r = VFS.renameFile('pic.bin', 'screen.scr');
+                assert(r.ok && VFS.getBinaryFile('screen.scr').content.length === 3,
+                       'a binary keeps its bytes and stays binary', JSON.stringify(r));
+
+                r = VFS.renameFile('game.asm', 'screen.scr');
+                assert(!r.ok && /exists/.test(r.error), 'renaming onto an existing file is refused',
+                       JSON.stringify(r));
+                assert(VFS.exists('game.asm'), 'and the original survives that');
+
+                assert(!VFS.renameFile('nothere.asm', 'x.asm').ok, 'renaming a missing file fails');
+                assert(!VFS.renameFile('game.asm', '   ').ok, 'an empty name is refused');
+                assert(VFS.renameFile('game.asm', 'game.asm').ok, 'renaming to the same name is a no-op');
+
+                // subdirectories
+                VFS.addFile('src/util.asm', '    ret\n');
+                r = VFS.renameFile('src/util.asm', 'src/helpers.asm');
+                assert(r.ok && VFS.exists('src/helpers.asm'), 'a file inside a directory renames',
+                       JSON.stringify(r));
+                VFS.reset();
+            }
+
+            section('VFS: a single-file build keeps what the caller loaded');
+            {
+                // Assembling a single file means "no project", not "no data": the
+                // INCLUDE/INCBIN payloads the caller loaded must survive, or a build
+                // fails with "file not found" for a file the user can see. Only the
+                // editor's own scratch buffer is dropped.
+                VFS.reset();
+                VFS.addFile('editor.asm', '    nop\n', { scratch: true });
+                VFS.addFile('old.asm', '    nop\n');
+                VFS.addFile('data.inc', 'HELLO');
+                VFS.addBinaryFile('game.scr', new Uint8Array([1, 2, 3]));
+                VFS.resetSources();
+                assert(!VFS.exists('editor.asm'), 'resetSources drops the scratch buffer');
+                assert(VFS.exists('old.asm'), 'and keeps a loaded source');
+                assert(VFS.exists('data.inc'), 'including one with a source extension');
+                assert(VFS.exists('game.scr'), 'and keeps the binaries');
+                const kept = VFS.getBinaryFile('game.scr');
+                assert(kept && kept.content && kept.content.length === 3,
+                       'with their bytes intact', JSON.stringify(kept && kept.content));
+
+                VFS.reset();
+                VFS.addBinaryFile('data.bin', new Uint8Array([9, 9, 9, 9]));
+                const r = Assembler.assemble('    org $8000\n    incbin "data.bin"\n', 'main.asm');
+                assert(r.success && r.output.length === 4,
+                       'a single-file build can INCBIN a preloaded binary',
+                       r.success ? String(r.output.length) : 'failed');
+                assert(VFS.exists('data.bin'), 'and the binary is still there afterwards');
+
+                // The reported case: the payload has a *source* extension, so it is
+                // stored as text — assembling twice must still find it.
+                VFS.reset();
+                VFS.addFile('somefile.inc', 'HELLO-DATA!');
+                for (const pass of ['first', 'second']) {
+                    const r2 = Assembler.assemble('    org $8000\n    incbin "somefile.inc"\n', 'editor.asm');
+                    assert(r2.success && r2.output.length === 11,
+                           `a text-extension INCBIN payload survives the ${pass} build`,
+                           r2.success ? String(r2.output.length) : 'failed');
+                    assert(VFS.exists('somefile.inc'), `and is still listed after the ${pass} build`);
+                }
+
+                // Nothing about this is specific to .inc, or to INCBIN: the rule is
+                // "the editor's buffer is scratch, everything else was loaded by the
+                // user". Every extension the loader treats as text, plus one it
+                // doesn't, plus a subdirectory — INCBINned and INCLUDEd, twice each.
+                for (const name of ['data.inc', 'data.txt', 'data.def', 'data.h',
+                                    'data.dat', 'data.bin', 'assets/data.inc', 'shared.asm']) {
+                    VFS.reset();
+                    VFS.addFile(name, 'HELLO-DATA!');
+                    let ok = true, why = '';
+                    for (let i = 0; i < 2; i++) {
+                        const rb = Assembler.assemble(`    org $8000\n    incbin "${name}"\n`, 'editor.asm');
+                        if (!rb.success || rb.output.length !== 11 || !VFS.exists(name)) {
+                            ok = false; why = `incbin pass ${i + 1}`;
+                        }
+                    }
+                    assert(ok, `INCBIN "${name}" survives repeated builds`, why);
+
+                    VFS.reset();
+                    VFS.addFile(name, '    nop\n    nop\n');
+                    ok = true; why = '';
+                    for (let i = 0; i < 2; i++) {
+                        const ri = Assembler.assemble(`    org $8000\n    include "${name}"\n`, 'editor.asm');
+                        if (!ri.success || ri.output.length !== 2 || !VFS.exists(name)) {
+                            ok = false; why = `include pass ${i + 1}` +
+                                (ri.success ? ` len=${ri.output.length}` : ' failed');
+                        }
+                    }
+                    assert(ok, `INCLUDE "${name}" survives repeated builds`, why);
+                }
+
+                // A loaded file keeps its bytes. Decoding to text for the editor is
+                // lossy above 0x7F, so INCBIN used to emit the right *size* and the
+                // wrong data — silently, since nothing about the build looked odd.
+                VFS.reset();
+                const all256 = new Uint8Array(256);
+                for (let i = 0; i < 256; i++) all256[i] = i;
+                VFS.addFile('gfx.inc', 'whatever the decoder made of it',
+                            { bytes: all256 });
+                const back = VFS.getBinaryFile('gfx.inc');
+                assert(back.content && back.content.length === 256 &&
+                       Array.from(back.content).every((b, i) => b === i),
+                       'the bytes as loaded come back unchanged',
+                       back.content ? `len=${back.content.length}` : JSON.stringify(back));
+
+                const rgfx = Assembler.assemble('    org $8000\n    incbin "gfx.inc"\n', 'editor.asm');
+                assert(rgfx.success && rgfx.output.length === 256 &&
+                       Array.from(rgfx.output).every((b, i) => b === i),
+                       'and INCBIN emits them byte for byte',
+                       rgfx.success ? `len=${rgfx.output.length}` : 'failed');
+
+                // Editing the file makes the text the file again
+                VFS.setContent('gfx.inc', 'AB');
+                const redit = Assembler.assemble('    org $8000\n    incbin "gfx.inc"\n', 'editor.asm');
+                assert(redit.success && redit.output.length === 2 &&
+                       redit.output[0] === 0x41 && redit.output[1] === 0x42,
+                       'editing it drops the stale bytes and follows the text',
+                       redit.success ? Array.from(redit.output).join(',') : 'failed');
+
+                // A file with no loaded bytes (typed in, or restored from a project)
+                // still works the old way
+                VFS.reset();
+                VFS.addFile('typed.inc', 'AB');
+                const rtyped = Assembler.assemble('    org $8000\n    incbin "typed.inc"\n', 'editor.asm');
+                assert(rtyped.success && rtyped.output.length === 2 && rtyped.output[0] === 0x41,
+                       'a file that never had bytes still INCBINs its text',
+                       rtyped.success ? Array.from(rtyped.output).join(',') : 'failed');
+
+                // Several loaded files at once, none of them dropped
+                VFS.reset();
+                VFS.addFile('a.inc', 'AA');
+                VFS.addFile('b.txt', 'BBB');
+                VFS.addBinaryFile('c.bin', new Uint8Array([1, 2, 3, 4]));
+                Assembler.assemble('    org $8000\n    incbin "a.inc"\n    incbin "b.txt"\n' +
+                                   '    incbin "c.bin"\n', 'editor.asm');
+                const still = ['a.inc', 'b.txt', 'c.bin'].filter(p => VFS.exists(p));
+                assert(still.length === 3, 'a mixed set of loaded files all survive',
+                       JSON.stringify(still));
+                VFS.reset();
+            }
+
+            section('ORG below the first one still emits');
+            {
+                // Reported: "org 25000" code then "org 16384 / incbin screen.scr"
+                // built as 9 bytes and the image never reached memory.
+                VFS.reset();
+                VFS.addBinaryFile('pic.bin', new Uint8Array(6912).fill(0xAA));
+                const r = Assembler.assemble(
+                    '    org 25000\nlab:\n    ld a,r\n    and 7\n    out ($fe),a\n    jp lab\n' +
+                    '    org 16384\n    incbin "pic.bin"\n', 'main.asm');
+                assert(r.success, 'it assembles', r.success ? '' : 'failed');
+                assert(r.outputStart === 16384, 'the output starts at the lower ORG',
+                       String(r.outputStart));
+                assert(r.output.length === 25009 - 16384, 'and spans both blocks',
+                       `${r.output.length} vs ${25009 - 16384}`);
+                assert(r.output[0] === 0xAA && r.output[6911] === 0xAA,
+                       'the included data is at the lower address',
+                       `${r.output[0]},${r.output[6911]}`);
+                assert(r.output[6912] === 0, 'the gap is zero-filled');
+                assert(r.output[25000 - 16384] === 0xED, 'and the code is at its own ORG',
+                       '0x' + (r.output[25000 - 16384] || 0).toString(16));
+                VFS.reset();
+
+                // The UI assembles through the async entry point, so it needs the
+                // same behaviour — this is the path the reported build actually took.
+                VFS.reset();
+                VFS.addBinaryFile('pic.bin', new Uint8Array(6912).fill(0xAA));
+                const ra = await Assembler.assembleAsync(
+                    '    org 25000\n    ret\n    org 16384\n    incbin "pic.bin"\n', 'editor.asm');
+                assert(ra.success && ra.outputStart === 16384,
+                       'assembleAsync starts at the lower ORG too',
+                       `${ra.success} start=${ra.outputStart}`);
+                assert(ra.output.length === 25001 - 16384,
+                       'and emits both blocks', String(ra.output.length));
+                VFS.reset();
+
+                // A typed array from another realm (an iframe, a worker) must not
+                // silently become an empty file — that turned INCBIN into a no-op.
+                VFS.reset();
+                let threw = false;
+                try { VFS.addBinaryFile('bad.bin', 'not bytes'); } catch (e) { threw = true; }
+                assert(threw, 'addBinaryFile rejects data it cannot read');
+                VFS.addBinaryFile('view.bin', new Uint8Array([1, 2, 3]).subarray(1));
+                assert(VFS.getBinaryFile('view.bin').content.length === 2,
+                       'a typed-array view keeps its own length',
+                       String(VFS.getBinaryFile('view.bin').content.length));
+                VFS.addBinaryFile('buf.bin', new Uint8Array([4, 5, 6, 7]).buffer);
+                assert(VFS.getBinaryFile('buf.bin').content.length === 4, 'an ArrayBuffer works');
+                VFS.reset();
+
+                // The ORG-0 measuring trick emits nothing, so it must be unaffected
+                const r2 = Assembler.assemble(
+                    '    org $8000\n    ld a,1\n    org 0\nlen: equ 5\n    org $8002\n    nop\n', 'm.asm');
+                assert(r2.success && r2.outputStart === 0x8000,
+                       'an ORG 0 that emits nothing does not move the start',
+                       String(r2.outputStart));
+            }
+
+            section('Keyword used as a label');
+            {
+                function warnings(src) {
+                    try { Assembler.assemble(src); } catch (e) {}
+                    return (ErrorCollector.warnings || []).map(w => w.message || String(w));
+                }
+                let w = warnings(['    org $8000', 'end     push hl', '        jr end'].join('\n'));
+                assert(w.some(m => /"end" is a directive/.test(m)),
+                       'a keyword in column 0 used as a label warns', w.join(' | '));
+                assert(w.filter(m => /is a directive/.test(m)).length === 1,
+                       'warned once, not once per pass', w.join(' | '));
+
+                w = warnings(['    org $8000', 'end:    push hl', '        jr end'].join('\n'));
+                assert(!w.some(m => /is a directive/.test(m)),
+                       '"end:" with a colon does not warn', w.join(' | '));
+
+                w = warnings(['    org $8000', 'moo     push hl', '        jr moo'].join('\n'));
+                assert(!w.some(m => /is a directive/.test(m)),
+                       'an ordinary column-0 label does not warn', w.join(' | '));
+
+                w = warnings(['    org $8000', '    ret'].join('\n'));
+                assert(!w.some(m => /is a directive/.test(m)),
+                       'a plain directive line does not warn', w.join(' | '));
+
+                // Instruction names hit the same trap
+                w = warnings(['    org $8000', 'push    exx', '        jr push'].join('\n'));
+                assert(w.some(m => /"push" is an instruction/.test(m)),
+                       'an instruction name in column 0 used as a label warns', w.join(' | '));
+                w = warnings(['    org $8000', 'nop     exx'].join('\n'));
+                assert(w.some(m => /"nop" is an instruction/.test(m)),
+                       'a no-operand instruction used as a label warns', w.join(' | '));
+
+                // ...but a real label named after an instruction must stay quiet
+                w = warnings(['    org $8000', 'rst:    nop', 'jr      rst', '    ret'].join('\n'));
+                assert(!w.some(m => /is an instruction/.test(m)),
+                       '"jr rst" is quiet when rst: is a real label', w.join(' | '));
+                w = warnings(['    org $8000', '        push hl', '        pop hl'].join('\n'));
+                assert(!w.some(m => /is an instruction/.test(m)),
+                       'ordinary indented instructions do not warn', w.join(' | '));
+            }
 
             section('Labels marked "!" (not exported)');
             {
@@ -1496,6 +1750,125 @@ VAL:            EQU 42
                 // Parameters without "?" keep working
                 r = build(['OLD MACRO value', '    db value', '  ENDM', '    ORG $8000', '    OLD 3'].join('\n'));
                 assert(r.ok && r.output[0] === 3, 'parameters without "?" still substitute', r.err);
+            }
+
+            section('A mistyped mnemonic is reported, not turned into a label');
+            {
+                // "dup32" (for "dup 32") used to define a label called dup32 and
+                // assemble the body once, reporting OK for a source that never
+                // worked. An indented name has to be an instruction or macro call.
+                let r = build(['    org 25000', 'label:', '    dup32', '        nop', '    edup'].join('\n'));
+                assert(!r.ok, 'the reported source fails instead of emitting 1 byte',
+                       r.ok ? r.output.length + ' bytes' : '');
+                assert(/dup32/i.test(r.err || ''), 'the message names the line at fault', r.err);
+
+                r = build(['    org 25000', '    frobnicate'].join('\n'));
+                assert(!r.ok, 'any unknown indented mnemonic fails');
+
+                // Column 1 is still a label without a colon — sjasmplus allows it
+                r = build(['    org 25000', 'start', '    nop', '    jp start'].join('\n'));
+                assert(r.ok && r.output.length === 4, 'a colon-less label in column 1 still works', r.err);
+
+                // Block ends with nothing open
+                r = build(['    org 25000', '    nop', '    edup'].join('\n'));
+                assert(!r.ok && /EDUP without DUP/i.test(r.err || ''), 'EDUP without DUP is an error', r.err);
+                r = build(['    org 25000', '    nop', '    endr'].join('\n'));
+                assert(!r.ok && /ENDR without REPT/i.test(r.err || ''), 'ENDR without REPT is an error', r.err);
+
+                // ...and the working forms are untouched
+                r = build(['    org 25000', '    dup 32', '    nop', '    edup'].join('\n'));
+                assert(r.ok && r.output.length === 32, 'DUP 32 still emits 32 bytes', r.err);
+                r = build(['    org 25000', '    rept 4', '    nop', '    endr'].join('\n'));
+                assert(r.ok && r.output.length === 4, 'REPT 4 still emits 4 bytes', r.err);
+                r = build(['    org 25000', '    dup 2', '    dup 3', '    nop', '    edup', '    edup'].join('\n'));
+                assert(r.ok && r.output.length === 6, 'nested DUP still expands', r.err);
+            }
+
+            section('A symbol used above its EQU');
+            {
+                // The reference emitted 0, and by the end of the pass the symbol
+                // looked defined, so the pass loop stopped and kept the zeros —
+                // "OK" for code pointing at address 0. Forward labels always worked.
+                let r = build(['    org #8000', '    ld hl,BUF', 'BUF equ #4000'].join('\n'));
+                assert(r.ok && r.output[1] === 0x00 && r.output[2] === 0x40,
+                       'a forward EQU resolves instead of assembling as 0',
+                       r.err + ' ' + Array.from(r.output).join(','));
+
+                r = build(['    org #8000', '    ld a,low (BUF+#505)', 'BUF equ #4000'].join('\n'));
+                assert(r.ok && r.output[1] === 0x05, 'and resolves inside low()', r.err);
+                r = build(['    org #8000', '    ld a,high (BUF+#505)', 'BUF equ #4000'].join('\n'));
+                assert(r.ok && r.output[1] === 0x45, 'and inside high()', r.err);
+
+                // Defined before use is unchanged, and still converges
+                r = build(['BUF equ #4000', '    org #8000', '    ld hl,BUF'].join('\n'));
+                assert(r.ok && r.output[1] === 0x00 && r.output[2] === 0x40,
+                       'the ordinary order still works', r.err);
+                // A name that never gets defined must still fail
+                r = build(['    org #8000', '    ld hl,NOSUCH'].join('\n'));
+                assert(!r.ok, 'a genuinely undefined symbol is still an error');
+            }
+
+            section('low/high bind tighter than +');
+            {
+                // sjasmplus counts low/high as unary operators, so "low X+5" is
+                // "(low X)+5", not "low (X+5)".
+                let r = build(['BUF equ #4000', '    org #8000', '    ld hl,low BUF+#505'].join('\n'));
+                assert(r.ok && r.output[1] === 0x05 && r.output[2] === 0x05,
+                       'low X+n is (low X)+n', r.err);
+                r = build(['BUF equ #4000', '    org #8000', '    ld a,low BUF+1'].join('\n'));
+                assert(r.ok && r.output[1] === 0x01, 'and keeps its value when it fits a byte', r.err);
+                r = build(['BUF equ #4000', '    org #8000', '    ld a,low (BUF+#505)'].join('\n'));
+                assert(r.ok && r.output[1] === 0x05, 'parentheses take the whole expression', r.err);
+                r = build(['BUF equ #4000', '    org #8000', '    ld a,high (BUF+#505)'].join('\n'));
+                assert(r.ok && r.output[1] === 0x45, 'and for high', r.err);
+            }
+
+            section('Characters that mean nothing are reported');
+            {
+                // A line typed in the wrong keyboard layout ("щкп" for "org") lost
+                // its first word one character at a time and assembled as if the
+                // line were absent — at address 0, reported as OK. The lexer's
+                // warning never showed either: warnings are cleared at the start of
+                // every pass, and tokenising happens once, before them.
+                let r = build(['щкп 25000', '    ld a,5', '    ret'].join('\n'));
+                assert(!r.ok, 'a mistyped ORG fails instead of assembling at 0',
+                       r.ok ? r.output.length + ' bytes' : '');
+                assert(/'щкп'/.test(r.err || ''),
+                       'and the message quotes the whole word, not one letter', r.err);
+
+                // A name further into the source is reported whole too
+                r = build(['    org #8000', '    ld a,(метка)', 'метка: db 5'].join('\n'));
+                assert(!r.ok && /'метка'/.test(r.err || ''),
+                       'a Cyrillic name inside an operand is quoted whole', r.err);
+
+                r = build(['    org #8000', '    nop ¬'].join('\n'));
+                assert(!r.ok && /Unexpected character/.test(r.err || ''),
+                       'a stray character is an error too', r.err);
+
+                // Cyrillic is always fine where text belongs
+                r = build(['    org #8000  ; комментарий', '    nop'].join('\n'));
+                assert(r.ok && r.output.length === 1, 'a Cyrillic comment still assembles', r.err);
+                r = build(['    org #8000', '    db "привет"'].join('\n'));
+                assert(r.ok && r.output.length === 6, 'a Cyrillic string still assembles', r.err);
+
+                // In a *name* it is an error unless asked for: that is what makes
+                // the wrong-layout line above a mistake rather than a label
+                const cyr = ['    org #8000', 'МЕТКА:', '    jp МЕТКА'].join('\n');
+                r = build(cyr);
+                assert(!r.ok, 'a Cyrillic label is rejected by default', r.ok ? 'assembled' : '');
+                r = build(cyr, { unicodeLabels: true });
+                assert(r.ok && r.output.length === 3 && r.output[1] === 0x00 && r.output[2] === 0x80,
+                       'and accepted with the Unicode labels option on', r.err);
+
+                // The option must not leak into the next build
+                r = build(cyr);
+                assert(!r.ok, 'the option does not persist into the next assembly');
+
+                // ...and a wrong-layout line is still an error with it on, because
+                // "щкп" is not an instruction
+                r = build(['щкп 25000', '    ret'].join('\n'), { unicodeLabels: true });
+                assert(!r.ok && /щкп/.test(r.err || ''),
+                       'the mistyped ORG fails even with Unicode labels on', r.err);
             }
         }
 

@@ -349,6 +349,53 @@
             ula.keyUp('q');
             ula.keyUp('w');
 
+            // Keyboard ghosting (the real matrix has no diodes)
+            section('Keyboard Ghosting');
+
+            const ghost = new ULA();
+            //  row 2 (0xFBFE): Q W E R T      row 1 (0xFDFE): A S D F G
+            //  Q+W+A hold the corners of a rectangle, so S is the phantom
+            const sPressed = () => (ghost.readPort(0xFDFE) & 0x02) === 0;
+            const wPressed = () => (ghost.readPort(0xFBFE) & 0x02) === 0;
+
+            assert(ghost.keyboardGhosting === false, 'ghosting is off on a fresh ULA');
+
+            ghost.keyDown('q'); ghost.keyDown('w'); ghost.keyDown('a');
+            assert(!sPressed(), 'off: the three corner keys do not conjure S');
+
+            ghost.setKeyboardGhosting(true);
+            assert(sPressed(), 'on: Q+W+A make S read as pressed');
+            assert(wPressed(), 'and the real keys still read as pressed');
+            assert((ghost.keyboardState[1] & 0x02) !== 0,
+                   'the phantom is not written into the key matrix state');
+
+            ghost.keyUp('w');
+            assert(!sPressed(), 'releasing a corner removes the phantom');
+
+            // Two keys sharing a column short the rows but conjure nothing
+            ghost.keyDown('s');                       // A + S (row 1), Q (row 2)
+            ghost.keyUp('a');
+            ghost.keyUp('s');
+            ghost.keyDown('a');                       // back to A + Q, one column each
+            assert(!wPressed(), 'two keys in one column alone make no phantom');
+
+            // Shorted rows chain: row 3 joins the pair through column 0
+            ghost.keyDown('w');                       // Q,W (row 2) + A (row 1) → S
+            ghost.keyDown('1');                       // row 3 col 0, shares column with A/Q
+            assert((ghost.readPort(0xF7FE) & 0x02) === 0,
+                   'a third row shorted in gains the phantom too (2)');
+
+            ghost.keyUp('q'); ghost.keyUp('w'); ghost.keyUp('a'); ghost.keyUp('1');
+            assert((ghost.readPort(0xFDFE) & 0x1F) === 0x1F &&
+                   (ghost.readPort(0xFBFE) & 0x1F) === 0x1F,
+                   'nothing is held once every key is released');
+
+            // Keys in a single row can never ghost, whatever their number
+            ghost.keyDown('q'); ghost.keyDown('w'); ghost.keyDown('e');
+            assert((ghost.readPort(0xFDFE) & 0x1F) === 0x1F,
+                   'three keys in one row leave the other rows alone');
+            ghost.keyUp('q'); ghost.keyUp('w'); ghost.keyUp('e');
+
             // Configurable Caps Shift / Symbol Shift PC keys
             section('Configurable Modifier Keys');
 

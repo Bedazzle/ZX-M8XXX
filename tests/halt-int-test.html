@@ -69,6 +69,37 @@ function run(){
     const counter2 = sp2.memory.read(0xBF00);
     assert(counter2 === N, '128K: handler runs once per frame', `counter=${counter2}, expected ${N}`);
 
+    // The application test suite and every zxDebug harness step with
+    // runFrameHeadless, not runFrame — so it needs the identical HALT handling.
+    // It used to lack it, and a snapshot resumed on an EI/HALT loop then ran a single
+    // frame and froze. That is easy to miss: the paper keeps the snapshot's contents
+    // and still looks plausible, and only the missing border effects give it away
+    // (the "shock" 128K screen test caught it).
+    section('runFrameHeadless behaves the same as runFrame');
+    const sp3 = makeMachine('48k');
+    setupHaltLoop(sp3);
+    for (let f = 0; f < N; f++) sp3.runFrameHeadless();
+    const counter3 = sp3.memory.read(0xBF00);
+    assert(counter3 === N, 'headless: handler runs once per frame', `counter=${counter3}, expected ${N}`);
+    assert(!!sp3.cpu.iff1, 'headless: interrupts remain enabled across frames', `iff1=${sp3.cpu.iff1}`);
+    assert(sp3.cpu.halted === true, 'headless: CPU is halted at frame end');
+
+    section('128K headless variant');
+    const sp4 = makeMachine('128k');
+    setupHaltLoop(sp4);
+    for (let f = 0; f < N; f++) sp4.runFrameHeadless();
+    const counter4 = sp4.memory.read(0xBF00);
+    assert(counter4 === N, '128K headless: handler runs once per frame', `counter=${counter4}, expected ${N}`);
+
+    section('The two steppers agree');
+    const spA = makeMachine('128k'); setupHaltLoop(spA);
+    const spB = makeMachine('128k'); setupHaltLoop(spB);
+    for (let f = 0; f < N; f++) { spA.runFrame(); spB.runFrameHeadless(); }
+    assert(spA.memory.read(0xBF00) === spB.memory.read(0xBF00),
+           'same interrupt count either way',
+           `runFrame=${spA.memory.read(0xBF00)} headless=${spB.memory.read(0xBF00)}`);
+    assert(!!spA.cpu.iff1 === !!spB.cpu.iff1, 'same interrupt-enable state either way');
+
     summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed+failed}`;
     summaryEl.className = failed > 0 ? 'fail' : 'pass';
 }

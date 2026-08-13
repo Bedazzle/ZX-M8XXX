@@ -159,6 +159,17 @@ export function initKeyboardShortcuts({
             return;
         }
 
+        // Ctrl+Left / Ctrl+Right - Rewind. Ctrl is not a ZX modifier by default
+        // (Caps Shift is Shift, Symbol Shift is Alt), and the arrows alone are the
+        // Spectrum's cursor keys, so this pair doesn't take anything from a game.
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && e.ctrlKey && !e.altKey) {
+            if (window.zxRewind) {
+                e.preventDefault();
+                window.zxRewind.step(e.key === 'ArrowLeft');
+                return;
+            }
+        }
+
         // PageUp/PageDown - Scroll last-clicked panel (disasm or memory view)
         if (e.key === 'PageUp' || e.key === 'PageDown') {
             e.preventDefault();

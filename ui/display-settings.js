@@ -1,5 +1,6 @@
 // display-settings.js — Audio, fullscreen, quicksave, display invert, ULAplus, palette (extracted from index.html)
 import { storageGet, storageSet } from '../core/utils.js';
+import { createSaveSlots } from '../core/save-slots.js';
 
 export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadResult, updateCanvasSize }) {
 
@@ -264,41 +265,89 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     // ===== Quicksave/Quickload (F2/F5) =====
 
     const QUICKSAVE_KEY = 'zxm8_quicksave';
+    const SLOT_KEY = 'zxm8_slot_current';
 
-    function quicksave() {
+    // Several save slots instead of the single quicksave. F2/F5 act on the current
+    // one; Shift+F2 cycles. The old single quicksave migrates into slot 1 so nobody
+    // loses the state they had.
+    const saveSlots = createSaveSlots({
+        storage: {
+            get: (k) => storageGet(k, null),
+            set: (k, v) => {
+                // storageSet swallows failures, so write through to localStorage here:
+                // a full store must be reported, not silently dropped.
+                localStorage.setItem(k, v);
+            },
+            remove: (k) => localStorage.removeItem(k),
+        },
+        count: 9,
+    });
+    try { saveSlots.migrateLegacy(); } catch (e) { /* storage unavailable */ }
+    let currentSlot = parseInt(storageGet(SLOT_KEY, '1'), 10) || 1;
+
+    // Persistent indicator in the status bar: which slot F2/F5 will use, and
+    // whether it holds anything (a toast on save was the only clue before).
+    const slotStatusEl = document.getElementById('slotStatus');
+    const slotInfoEl = document.getElementById('slotInfo');
+
+    function updateSlotIndicator() {
+        if (!slotStatusEl) return;
+        const entry = saveSlots.list().find(s => s.index === currentSlot);
+        const used = entry && entry.used;
+        slotStatusEl.textContent = String(currentSlot) + (used ? '' : '·');   // 3 or 3·
+        slotStatusEl.style.color = used ? 'var(--green)' : 'var(--text-secondary)';
+        if (slotInfoEl) {
+            slotInfoEl.title = used
+                ? `Save slot ${currentSlot} — ${entry.machine || 'saved'}${entry.time ? ', ' + entry.time : ''}. `
+                  + 'F5 loads, F2 overwrites, Shift+F2 (or click) switches slot.'
+                : `Save slot ${currentSlot} is empty. F2 saves, Shift+F2 (or click) switches slot.`;
+        }
+    }
+
+    if (slotStatusEl) {
+        slotStatusEl.addEventListener('click', () => cycleSlot());
+    }
+
+    function slotLabel(i) {
+        const e = saveSlots.list().find(s => s.index === i);
+        if (!e || !e.used) return `slot ${i} (empty)`;
+        return `slot ${i}${e.machine ? ' · ' + e.machine : ''}${e.time ? ' · ' + e.time : ''}`;
+    }
+
+    function cycleSlot() {
+        currentSlot = saveSlots.next(currentSlot);
+        storageSet(SLOT_KEY, String(currentSlot));
+        updateSlotIndicator();
+        showMessage('Now using ' + slotLabel(currentSlot));
+        return currentSlot;
+    }
+
+    function quicksave(slot = currentSlot) {
         const spectrum = getSpectrum();
         try {
             const data = spectrum.saveSnapshot('szx');
-            // Convert to base64 for localStorage
-            let binary = '';
-            const bytes = new Uint8Array(data);
-            for (let i = 0; i < bytes.length; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            const base64 = btoa(binary);
-            storageSet(QUICKSAVE_KEY, base64);
-            storageSet(QUICKSAVE_KEY + '-machine', spectrum.machineType);
-            storageSet(QUICKSAVE_KEY + '-time', new Date().toLocaleString());
-            showMessage('Quicksave (F5 to load)', 'success');
+            const res = saveSlots.save(slot, new Uint8Array(data), {
+                machine: spectrum.machineType,
+                title: (spectrum.lastLoadedName || ''),
+            });
+            if (!res.ok) { showMessage('Quicksave failed: ' + res.error, 'error'); return; }
+            updateSlotIndicator();
+            showMessage(`Saved to slot ${slot} (F5 to load, Shift+F2 to change slot)`, 'success');
+            return;
         } catch (err) {
             showMessage('Quicksave failed: ' + err.message, 'error');
         }
     }
 
-    async function quickload() {
+    async function quickload(slot = currentSlot) {
         const spectrum = getSpectrum();
         try {
-            const base64 = storageGet(QUICKSAVE_KEY);
-            if (!base64) {
-                showMessage('No quicksave found (F2 to save)', 'warning');
+            const entry = saveSlots.load(slot);
+            if (!entry) {
+                showMessage(`Slot ${slot} is empty (F2 to save, Shift+F2 to change slot)`, 'warning');
                 return;
             }
-            // Convert from base64
-            const binary = atob(base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
-            }
+            const bytes = entry.bytes;
             const blob = new Blob([bytes], { type: 'application/octet-stream' });
             const file = new File([blob], 'quicksave.szx');
             const result = await spectrum.loadFile(file);
@@ -313,7 +362,10 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     document.addEventListener('keydown', (e) => {
         // F2 = Quicksave, F5 = Quickload (spaced apart to avoid mistakes)
         // Ctrl+F5 is allowed through for hard refresh
-        if (e.key === 'F2' && !e.ctrlKey) {
+        if (e.key === 'F2' && !e.ctrlKey && e.shiftKey) {
+            e.preventDefault();
+            cycleSlot();                       // Shift+F2 = pick a different slot
+        } else if (e.key === 'F2' && !e.ctrlKey) {
             e.preventDefault();
             quicksave();
         } else if (e.key === 'F5' && !e.ctrlKey) {
@@ -426,6 +478,101 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         storageSet('zxm8_lateTiming', chkLateTimings.checked);
         showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
     });
+
+    // ===== ULA snow checkbox =====
+    // Off by default: it is a hardware fault worth *seeing*, not one to inflict on
+    // every session. The status line says when the machine can't produce it, so
+    // ticking the box on a Pentagon doesn't look broken.
+    const chkUlaSnow = document.getElementById('chkUlaSnow');
+    const ulaSnowStatus = document.getElementById('ulaSnowStatus');
+
+    // Only says something when the answer isn't in the tooltip: that this machine
+    // cannot produce the effect at all. When it can, the checkbox speaks for itself.
+    function updateUlaSnowStatus() {
+        if (!ulaSnowStatus) return;
+        const spectrum = getSpectrum();
+        const profile = spectrum.memory && spectrum.memory.profile;
+        const supported = !!(profile && profile.hasSnow);
+        ulaSnowStatus.textContent = (chkUlaSnow && chkUlaSnow.checked && !supported)
+            ? `${spectrum.machineType.toUpperCase()} has no snow — its ULA does not do it`
+            : '';
+    }
+
+    if (chkUlaSnow) {
+        const savedSnow = storageGet('zxm8_ulaSnow') === 'true';   // Default false
+        chkUlaSnow.checked = savedSnow;
+        getSpectrum().ula.setSnowEffect(savedSnow);
+        updateUlaSnowStatus();
+
+        chkUlaSnow.addEventListener('change', () => {
+            getSpectrum().ula.setSnowEffect(chkUlaSnow.checked);
+            storageSet('zxm8_ulaSnow', chkUlaSnow.checked);
+            updateUlaSnowStatus();
+            showMessage(chkUlaSnow.checked ? 'ULA snow enabled' : 'ULA snow disabled');
+        });
+    }
+
+    // ===== ULA ink/paper edge skew checkbox =====
+    // On by default, unlike snow: this is what the Ferranti part does all the time,
+    // not a fault you go looking for. Ticking it only ever restores the machine's
+    // own value, so a +2A or a Pentagon stays pixel-exact either way.
+    const chkInkSkew = document.getElementById('chkInkSkew');
+    const inkSkewStatus = document.getElementById('inkSkewStatus');
+
+    function updateInkSkewStatus() {
+        if (!inkSkewStatus) return;
+        const spectrum = getSpectrum();
+        const profile = spectrum.memory && spectrum.memory.profile;
+        const supported = !!(profile && profile.ulaInkSkew);
+        inkSkewStatus.textContent = (chkInkSkew && chkInkSkew.checked && !supported)
+            ? `${spectrum.machineType.toUpperCase()} does not skew — Amstrad's gate array, not the Ferranti ULA`
+            : '';
+    }
+
+    if (chkInkSkew) {
+        const savedSkew = storageGet('zxm8_inkSkew') !== 'false';   // Default true
+        chkInkSkew.checked = savedSkew;
+        getSpectrum().ula.setInkSkew(savedSkew ? null : 0);
+        updateInkSkewStatus();
+
+        chkInkSkew.addEventListener('change', () => {
+            getSpectrum().ula.setInkSkew(chkInkSkew.checked ? null : 0);
+            storageSet('zxm8_inkSkew', chkInkSkew.checked);
+            updateInkSkewStatus();
+            showMessage(chkInkSkew.checked ? 'ULA ink edge skew enabled' : 'ULA ink edge skew disabled');
+        });
+    }
+
+    // ===== PAL composite (RF) simulation checkbox =====
+    // Off by default: it is a whole-frame filter, and it is only the truth for a
+    // machine plugged into a TV — someone using the RGB/SCART output sees the clean
+    // picture we draw without it.
+    const chkPalComposite = document.getElementById('chkPalComposite');
+    const palCompositeStatus = document.getElementById('palCompositeStatus');
+
+    function updatePalCompositeStatus() {
+        if (!palCompositeStatus) return;
+        const spectrum = getSpectrum();
+        const profile = spectrum.memory && spectrum.memory.profile;
+        const locked = !!(profile && profile.ulaSubcarrierLock);
+        palCompositeStatus.textContent = (chkPalComposite && chkPalComposite.checked && !locked)
+            ? `${spectrum.machineType.toUpperCase()} does not lock its pixel clock to the subcarrier — dot crawl, no stable artifact colour`
+            : '';
+    }
+
+    if (chkPalComposite) {
+        const savedPal = storageGet('zxm8_palComposite') === 'true';   // Default false
+        chkPalComposite.checked = savedPal;
+        getSpectrum().ula.setPalComposite(savedPal);
+        updatePalCompositeStatus();
+
+        chkPalComposite.addEventListener('change', () => {
+            getSpectrum().ula.setPalComposite(chkPalComposite.checked);
+            storageSet('zxm8_palComposite', chkPalComposite.checked);
+            updatePalCompositeStatus();
+            showMessage(chkPalComposite.checked ? 'PAL composite simulation enabled' : 'PAL composite simulation disabled');
+        });
+    }
 
     // ===== Pentagon attribute prefetch checkbox =====
 
@@ -889,11 +1036,21 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
 
     // ===== Public API =====
 
+    // Show the restored slot as soon as the app starts
+    updateSlotIndicator();
+
     return {
         applyPalette,
         updateULAplusStatus,
+        updateUlaSnowStatus,
+        updateInkSkewStatus,
+        updatePalCompositeStatus,
         quicksave,
         quickload,
+        saveSlots,
+        cycleSlot,
+        updateSlotIndicator,
+        getCurrentSlot: () => currentSlot,
         applyInvertDisplay,
         initAudioOnUserGesture,
         toggleSound,

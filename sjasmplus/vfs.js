@@ -14,6 +14,21 @@ export const VFS = {
         this.includePaths = [];
     },
 
+    // Drop the editor's scratch buffer, keep everything the user loaded. A
+    // single-file assembly means "no project", not "no data": whatever else is in
+    // here was loaded deliberately and is listed in the project dropdown, so
+    // dropping it makes the build fail with "file not found" for a file the user
+    // can see. Keeping only binaries was not enough — an INCBIN payload named
+    // .inc (or .txt, .def, .h) is stored as text and was wiped just the same.
+    resetSources() {
+        const kept = {};
+        for (const [path, file] of Object.entries(this.files)) {
+            if (file && !file.scratch) kept[path] = file;
+        }
+        this.reset();
+        this.files = kept;
+    },
+
     // Normalize path (handle .., ., etc)
     normalizePath(path) {
         // Convert backslashes to forward slashes
@@ -63,27 +78,56 @@ export const VFS = {
     },
 
     // Add a text file
-    addFile(path, content) {
+    // `scratch: true` marks the editor's own buffer, the one copy resetSources()
+    // is allowed to drop. Everything else in here was put there by the user.
+    //
+    // `bytes` is the file exactly as it was loaded. A file with a source
+    // extension is decoded to text so it can be shown and edited, but that
+    // decode is not reversible — round-tripping through charCodeAt() mangled
+    // every byte above 0x7F, so INCBIN of a .inc holding graphics produced the
+    // right *size* and the wrong data. Keep the original and hand that to
+    // INCBIN; the text stays for the editor.
+    addFile(path, content, opts = {}) {
         const normalized = this.normalizePath(path);
         this.files[normalized] = {
             content: content,
-            binary: false
+            binary: false,
+            scratch: !!opts.scratch,
+            raw: opts.bytes instanceof Uint8Array ? opts.bytes : undefined
         };
+    },
+
+    // Replace a text file's content. Editing invalidates the loaded bytes: from
+    // here on the text *is* the file, so INCBIN must follow the edit rather than
+    // silently emit what was on disk.
+    setContent(path, content) {
+        const normalized = this.normalizePath(path);
+        const file = this.files[normalized];
+        if (!file) return false;
+        file.content = content;
+        file.raw = undefined;
+        return true;
     },
 
     // Add a binary file
     addBinaryFile(path, data) {
         const normalized = this.normalizePath(path);
         // Convert to Uint8Array if needed
+        // Duck-typing rather than instanceof: a typed array created in another
+        // realm (an iframe, a worker) fails `instanceof Uint8Array`, and the old
+        // fallback turned it into an empty file — INCBIN then emitted nothing and
+        // reported no error, which is the worst way to fail.
         let bytes;
-        if (data instanceof Uint8Array) {
-            bytes = data;
-        } else if (data instanceof ArrayBuffer) {
+        if (ArrayBuffer.isView(data)) {
+            bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        } else if (data instanceof ArrayBuffer || Object.prototype.toString.call(data) === '[object ArrayBuffer]') {
             bytes = new Uint8Array(data);
         } else if (Array.isArray(data)) {
             bytes = new Uint8Array(data);
-        } else {
+        } else if (data === null || data === undefined) {
             bytes = new Uint8Array(0);
+        } else {
+            throw new Error(`addBinaryFile(${path}): expected bytes, got ${typeof data}`);
         }
         
         this.files[normalized] = {
@@ -157,7 +201,10 @@ export const VFS = {
         if (!hit) return { error: `File not found: ${path}` };
         const file = this.files[hit];
         if (!file.binary) {
-            // Text file - convert to bytes
+            // The file as loaded, when we still have it — see addFile()
+            if (file.raw) return { path: hit, content: file.raw };
+            // Otherwise the text is the file (typed in the editor, or restored
+            // from a project): one char per byte.
             const content = file.content || '';
             const bytes = new Uint8Array(content.length);
             for (let i = 0; i < content.length; i++) {
@@ -294,6 +341,30 @@ export const VFS = {
             return true;
         }
         return false;
+    },
+
+    /**
+     * Rename a file, keeping its contents and binary flag.
+     * @returns {{ok: true, from, to} | {ok: false, error: string}}
+     *
+     * Refuses to overwrite an existing file: INCLUDE and INCBIN reference files by
+     * name, so silently replacing one would break a build in a way that's hard to
+     * see. Renaming a file to its own name is a no-op, not an error, so a dialog
+     * that returns the unchanged name doesn't have to special-case it.
+     */
+    renameFile(oldPath, newPath) {
+        const from = this.normalizePath(oldPath);
+        const raw = String(newPath == null ? '' : newPath).trim();
+        const to = this.normalizePath(raw);
+        if (!(from in this.files)) return { ok: false, error: `no such file: ${oldPath}` };
+        // Reject a blank or path-only name before it becomes a file called "   "
+        if (!raw || !to || /^[./]+$/.test(to)) return { ok: false, error: 'the new name is empty' };
+        if (to === from) return { ok: true, from, to };
+        if (to in this.files) return { ok: false, error: `${newPath} already exists` };
+
+        this.files[to] = this.files[from];
+        delete this.files[from];
+        return { ok: true, from, to };
     },
 
     // Remove all files under a directory prefix

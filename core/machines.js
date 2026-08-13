@@ -23,6 +23,16 @@ const MACHINE_PROFILES = {
             // ULA timing profile
             ulaProfile: '48k',     // '48k' | '128k' | 'pentagon'
             // Contention
+            // ULA snow: the refresh address reaches the display fetch
+            hasSnow: true,
+            // Ink/paper edge skew: the Ferranti mux switches into ink late, so an
+            // ink pixel is narrower than a paper one (see core/ula-inkskew.js).
+            // 0.03 is measured off a real +2 running the Bright Miner test — the
+            // figure sat 4.7/170 of the black-to-white range above the background.
+            ulaInkSkew: 0.03,
+            // 14 MHz crystal with a free-running subcarrier oscillator: nothing is
+            // locked, hence the dot crawl and no stable artifact colour
+            ulaSubcarrierLock: false,
             hasContention: true,
             hasIOContention: true,          // IO ports are contended
             hasInternalContention: true,    // Internal cycles (no MREQ) are contended
@@ -54,6 +64,16 @@ const MACHINE_PROFILES = {
             basicRomBank: 1,
             pagingModel: '128k',
             ulaProfile: '128k',
+            // ULA snow: the refresh address reaches the display fetch
+            hasSnow: true,
+            // Ink/paper edge skew: the Ferranti mux switches into ink late, so an
+            // ink pixel is narrower than a paper one (see core/ula-inkskew.js).
+            // 0.03 is measured off a real +2 running the Bright Miner test — the
+            // figure sat 4.7/170 of the black-to-white range above the background.
+            ulaInkSkew: 0.03,
+            // Pixel clock locked to the PAL subcarrier (17.734475 MHz = 4x fsc),
+            // so composite artifact colour stands still — see core/pal-composite.js
+            ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: true,
             hasInternalContention: true,
@@ -80,6 +100,16 @@ const MACHINE_PROFILES = {
             basicRomBank: 1,
             pagingModel: '128k',
             ulaProfile: '128k',
+            // ULA snow: the refresh address reaches the display fetch
+            hasSnow: true,
+            // Ink/paper edge skew: the Ferranti mux switches into ink late, so an
+            // ink pixel is narrower than a paper one (see core/ula-inkskew.js).
+            // 0.03 is measured off a real +2 running the Bright Miner test — the
+            // figure sat 4.7/170 of the black-to-white range above the background.
+            ulaInkSkew: 0.03,
+            // Pixel clock locked to the PAL subcarrier (17.734475 MHz = 4x fsc),
+            // so composite artifact colour stands still — see core/pal-composite.js
+            ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: true,
             hasInternalContention: true,
@@ -106,6 +136,12 @@ const MACHINE_PROFILES = {
             basicRomBank: 3,
             pagingModel: '+2a',
             ulaProfile: '128k',
+            // No snow: Amstrad's gate array and the clones do not do it
+            hasSnow: false,
+            ulaInkSkew: 0,             // nor the ink/paper edge skew
+            // Pixel clock locked to the PAL subcarrier (17.734475 MHz = 4x fsc),
+            // so composite artifact colour stands still — see core/pal-composite.js
+            ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: false,         // +2A ULA only contends on MREQ, not IO
             hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
@@ -132,6 +168,12 @@ const MACHINE_PROFILES = {
             basicRomBank: 1,
             pagingModel: '128k',
             ulaProfile: 'pentagon',
+            // No snow: Amstrad's gate array and the clones do not do it
+            hasSnow: false,
+            ulaInkSkew: 0,             // nor the ink/paper edge skew
+            // 14 MHz crystal with a free-running subcarrier oscillator: nothing is
+            // locked, hence the dot crawl and no stable artifact colour
+            ulaSubcarrierLock: false,
             hasContention: false,
             hasIOContention: false,
             hasInternalContention: false,
@@ -158,6 +200,12 @@ const MACHINE_PROFILES = {
             basicRomBank: 3,
             pagingModel: '+2a',      // Same memory banking as +2A
             ulaProfile: '128k',
+            // No snow: Amstrad's gate array and the clones do not do it
+            hasSnow: false,
+            ulaInkSkew: 0,             // nor the ink/paper edge skew
+            // Pixel clock locked to the PAL subcarrier (17.734475 MHz = 4x fsc),
+            // so composite artifact colour stands still — see core/pal-composite.js
+            ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: false,         // +3 ULA only contends on MREQ, not IO
             hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
@@ -184,6 +232,12 @@ const MACHINE_PROFILES = {
             basicRomBank: 1,
             pagingModel: 'pentagon1024',  // Extended: 7FFD bits 5,6,7 + EFF7
             ulaProfile: 'pentagon',
+            // No snow: Amstrad's gate array and the clones do not do it
+            hasSnow: false,
+            ulaInkSkew: 0,             // nor the ink/paper edge skew
+            // 14 MHz crystal with a free-running subcarrier oscillator: nothing is
+            // locked, hence the dot crawl and no stable artifact colour
+            ulaSubcarrierLock: false,
             hasContention: false,
             hasIOContention: false,
             hasInternalContention: false,
@@ -210,6 +264,12 @@ const MACHINE_PROFILES = {
             basicRomBank: 1,
             pagingModel: 'scorpion',
             ulaProfile: 'pentagon',
+            // No snow: Amstrad's gate array and the clones do not do it
+            hasSnow: false,
+            ulaInkSkew: 0,             // nor the ink/paper edge skew
+            // 14 MHz crystal with a free-running subcarrier oscillator: nothing is
+            // locked, hence the dot crawl and no stable artifact colour
+            ulaSubcarrierLock: false,
             hasContention: false,
             hasIOContention: false,
             hasInternalContention: false,

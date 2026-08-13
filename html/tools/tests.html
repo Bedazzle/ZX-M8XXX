@@ -1,0 +1,112 @@
+<!-- Tests tab. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-tests">
+            <div class="tests-container">
+                <!-- Controls Row -->
+                <div class="tests-controls">
+                    <button id="btnRunSelectedTests" class="tests-btn primary" disabled>Run Selected</button>
+                    <button id="btnPreviewTest" class="tests-btn" disabled>Preview</button>
+                    <button id="btnAbortTests" class="tests-btn danger hidden">Abort</button>
+                    <button id="btnReloadTests" class="tests-btn">Reload</button>
+                    <label class="tests-checkbox-label" title="Highlight pixel differences with semi-transparent overlay">
+                        <input type="checkbox" id="chkHighlightDiff"> Highlight Diff
+                    </label>
+                    <a href="tests/fuse-test.html" class="test-link" title="FUSE Z80 CPU tests (external suite)">FUSE Tests</a>
+                    <a href="tests/all-tests.html" class="test-link" title="Unit test suites">Unit Tests</a>
+                    <a href="tests/pristine-test.html" class="test-link" title="Pristine-file comparison tests (byte-compare against reference disks made by other software — drop them in tests/pristine/)">Pristine Tests</a>
+                    <span class="tests-status" id="testsStatus">Loading tests...</span>
+                </div>
+
+                <!-- Summary Stats -->
+                <div class="tests-summary-stats hidden" id="testsSummaryStats">
+                    <span class="tests-stat passed"><span id="testsPassed">0</span> passed</span>
+                    <span class="tests-stat failed"><span id="testsFailed">0</span> failed</span>
+                    <span class="tests-stat skipped"><span id="testsSkipped">0</span> skipped</span>
+                    <span class="tests-stat time"><span id="testsTime">0.0</span>s</span>
+                    <span class="tests-stat fps"><span id="testsFps">0</span> fps</span>
+                </div>
+
+                <!-- Test List + Preview/Comparison Row -->
+                <div class="tests-main-row">
+                    <!-- Test List -->
+                    <div class="tests-list-container">
+                        <div class="tests-category-tabs" id="testsCategoryTabs">
+                            <button class="tests-category-tab active" data-category="all">All</button>
+                            <button class="tests-category-tab" data-category="cpu">CPU</button>
+                            <button class="tests-category-tab" data-category="video">Video</button>
+                            <button class="tests-category-tab" data-category="ulaplus">ULA+</button>
+                            <button class="tests-category-tab" data-category="multicolor">Multicolor</button>
+                            <button class="tests-category-tab" data-category="rzx">RZX</button>
+                        </div>
+                        <table class="tests-table" id="testsTable">
+                            <thead>
+                                <tr>
+                                    <th class="tests-col-check"><input type="checkbox" id="testsSelectAll" title="Select/deselect all"></th>
+                                    <th class="tests-col-name">Test Name</th>
+                                    <th class="tests-col-machine">Machine</th>
+                                    <th class="tests-col-file">File</th>
+                                    <th class="tests-col-result">Result</th>
+                                    <th class="tests-col-details">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="testsTableBody">
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Right side: Preview + Comparison -->
+                    <div class="tests-right-panel">
+                        <!-- Progress Section -->
+                        <div class="tests-progress hidden" id="testsProgressSection">
+                            <div class="tests-progress-header">
+                                <span id="testsProgressText">Test 1/5: ULA 48K Timing</span>
+                                <span id="testsProgressPercent">0%</span>
+                            </div>
+                            <div class="tests-progress-bar">
+                                <div class="tests-progress-fill" id="testsProgressFill" style="width: 0%"></div>
+                            </div>
+                            <div class="tests-progress-details">
+                                <span id="testsFrameCount">Frame: 0/500</span>
+                                <span id="testsTstateCount">T-states: 0</span>
+                            </div>
+                        </div>
+
+                        <!-- Preview Section (for calibration) -->
+                        <div class="tests-preview hidden" id="testsPreviewSection">
+                            <div class="tests-preview-header">
+                                <span>Frame: <strong id="testsPreviewFrame">0</strong></span>
+                                <div class="tests-preview-buttons">
+                                    <button id="btnPausePreview" class="tests-btn">Pause</button>
+                                    <button id="btnCopyFrame" class="tests-btn">Copy Frame#</button>
+                                    <button id="btnTestScreenshot" class="tests-btn">Screenshot</button>
+                                    <button id="btnStopPreview" class="tests-btn danger">Stop</button>
+                                </div>
+                            </div>
+                            <div class="tests-preview-canvas-container">
+                                <canvas id="testsPreviewCanvas" width="320" height="240"></canvas>
+                            </div>
+                            <div class="tests-preview-info" id="testsPreviewInfo"></div>
+                        </div>
+
+                        <!-- Comparison Section -->
+                        <div class="tests-comparison hidden" id="testsComparisonSection">
+                            <div class="tests-comparison-images">
+                                <div class="tests-comparison-panel">
+                                    <div class="tests-comparison-label">Expected (Pristine)</div>
+                                    <canvas id="testsExpectedCanvas" width="320" height="240"></canvas>
+                                </div>
+                                <div class="tests-comparison-panel">
+                                    <div class="tests-comparison-label">Actual (Current)</div>
+                                    <canvas id="testsActualCanvas" width="320" height="240"></canvas>
+                                </div>
+                            </div>
+                            <div class="tests-comparison-result" id="testsComparisonResult">
+                                No comparison yet
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            </div><!-- tools-tests -->
+
+            <!-- Compare Sub-tab Content -->

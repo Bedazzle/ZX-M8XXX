@@ -1,0 +1,298 @@
+/* ZX-M8XXX — calculator
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Calculator (right panel) */
+.calc-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 5px;
+}
+.calc-top-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+.calc-container {
+    width: 306px;
+    min-width: 306px;
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+.calc-log {
+    width: 475px;
+    height: 445px;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 6px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.calc-log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.calc-log-header button {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+}
+.calc-log-header button:hover {
+    color: var(--accent);
+}
+.calc-log-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    font-size: 11px;
+}
+.calc-log-entry {
+    padding: 4px 6px;
+    margin: 2px 0;
+    border-radius: 3px;
+    background: var(--bg-secondary);
+    cursor: pointer;
+}
+.calc-log-entry:hover {
+    background: var(--bg-button);
+}
+.calc-log-op {
+    color: var(--text-secondary);
+}
+.calc-log-val {
+    color: var(--cyan);
+    margin-left: 4px;
+}
+.calc-log-result {
+    color: var(--green);
+    font-weight: bold;
+}
+.calc-display {
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 6px;
+    padding: 12px;
+    min-height: 180px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.calc-input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.calc-base-select {
+    background: var(--bg-button);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: inherit;
+    font-size: 10px;
+    height: 20px;
+}
+.calc-base-select:disabled {
+    opacity: 0.4;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+    pointer-events: none;
+}
+.calc-input {
+    flex: 1;
+    background: var(--bg-primary);
+    color: var(--cyan);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 16px;
+    text-align: right;
+}
+.calc-output-row {
+    display: flex;
+    align-items: center;
+    padding: 4px 0;
+    gap: 10px;
+    min-height: 20px;
+}
+.calc-label {
+    font-size: 11px;
+    font-weight: bold;
+    width: 35px;
+}
+.calc-label.dec { color: #4CAF50; }
+.calc-label.hex { color: var(--cyan); }
+.calc-label.oct { color: var(--text-secondary); }
+.calc-label.bin { color: var(--text-secondary); }
+.calc-label.ascii { color: var(--yellow); }
+.calc-output-row.ascii-row {
+    height: 20px;
+    min-height: 20px;
+    max-height: 20px;
+}
+.calc-signed {
+    color: #e74c3c;
+    font-size: 12px;
+    margin-left: 10px;
+    min-width: 60px;
+}
+.calc-value {
+    font-size: 13px;
+    color: var(--text-primary);
+    word-break: break-all;
+    max-width: 280px;
+}
+.calc-value.bin-value {
+    font-size: 11px;
+    letter-spacing: -0.5px;
+}
+.calc-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 6px;
+    padding: 8px;
+    margin-top: 4px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.calc-row {
+    display: flex;
+    gap: 3px;
+}
+.calc-btn {
+    flex: 1;
+    padding: 8px 3px;
+    font-family: inherit;
+    font-size: 12px;
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    transition: background 0.1s;
+}
+.calc-btn:hover {
+    background: var(--bg-button);
+}
+.calc-btn:active {
+    background: var(--accent);
+}
+.calc-btn.digit {
+    background: var(--bg-primary);
+    font-size: 14px;
+    font-weight: bold;
+}
+.calc-btn.hex-digit {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.calc-btn-disabled,
+.calc-btn-disabled:hover {
+    opacity: 0.35;
+    cursor: not-allowed;
+    background: var(--bg-tertiary) !important;
+    color: var(--text-secondary);
+}
+.calc-btn.op {
+    color: var(--text-secondary);
+}
+.calc-btn.func {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+.calc-btn.mode {
+    background: var(--bg-button);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: bold;
+}
+.calc-btn.special {
+    color: var(--cyan);
+    font-weight: bold;
+}
+.calc-btn.clear {
+    background: #c0392b;
+    color: white;
+    font-weight: bold;
+}
+.calc-btn.clear:hover {
+    background: #e74c3c;
+}
+.calc-btn.equals {
+    background: var(--bg-button);
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: bold;
+}
+.calc-btn.paren {
+    font-size: 14px;
+}
+.calc-bits-panel {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--bg-button);
+    border-radius: 6px;
+    padding: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.calc-bits-labels {
+    display: flex;
+    gap: 1px;
+    margin-bottom: 2px;
+    justify-content: flex-start;
+}
+.calc-bits-label {
+    width: 18px;
+    font-size: 8px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.calc-bits-label-sep {
+    width: 3px;
+}
+.calc-bits-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 1px;
+}
+.calc-bit {
+    width: 18px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-button);
+    border-radius: 2px;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+.calc-bit.set {
+    background: var(--cyan);
+    color: var(--bg-primary);
+}
+.calc-bit-separator {
+    width: 3px;
+}
+.calc-bit-label {
+    font-size: 9px;
+    color: var(--text-secondary);
+    width: 100%;
+    text-align: center;
+    margin-top: 2px;
+}
+

@@ -1,0 +1,81 @@
+<!-- screen, status bar, run controls, virtual keyboard. Spliced into index.html at boot by ui/boot.js. -->
+        <div class="emulator-section">
+        <div class="screen-container">
+            <div class="screen-wrapper">
+                <canvas id="screen" width="320" height="240"></canvas>
+                <canvas id="overlayCanvas" width="320" height="240"></canvas>
+                <div id="spriteRegionOverlay" class="sprite-region-overlay"></div>
+            </div>
+            <div id="secondScreenContainer" class="second-screen-container hidden">
+                <div class="second-screen-header">
+                    <span id="secondScreenLabel" class="second-screen-label">Bank 7</span>
+                    <span class="second-screen-tag">Shadow screen</span>
+                </div>
+                <canvas id="secondScreen" width="256" height="192"></canvas>
+            </div>
+            <div id="screenInfoPopup" class="screen-info-popup hidden"></div>
+            <div id="xrefTooltip" class="xref-tooltip"></div>
+            <div id="pcHistoryPopup" class="pc-history-popup hidden"></div>
+        </div>
+
+        <div class="status">
+            <span class="status-item">
+                <span class="status-value" id="fps" style="min-width: 32px; display: inline-block; text-align: right;">0</span>
+            </span>
+            <span class="status-item" id="rzxInfo" style="visibility: hidden;">
+                <span class="status-label">RZX:</span>
+                <span class="status-value" id="rzxStatus" style="min-width: 130px; display: inline-block; font-variant-numeric: tabular-nums;">-</span>
+                <button id="btnRzxStop" class="small-btn" title="Stop RZX playback">Stop</button>
+            </span>
+            <span class="status-item" id="tapeInfo" style="display:none;">
+                <span class="status-label" id="tapeLed" title="No tape">📼</span>
+                <span class="status-value" id="tapeProgress" style="color: var(--cyan); min-width: 30px; display: inline-block; text-align: right;"></span>
+            </span>
+            <span class="status-item" id="diskInfo" style="display:none;">
+                <span class="status-label" id="diskInfoLed" title="No disk">💾</span>
+            </span>
+            <span class="status-item" id="diskActivity" style="display:none;">
+                <span class="status-label" id="diskLed" title="Disk activity">💾</span>
+                <span class="status-value" id="diskStatus" style="display:inline-block;min-width:6.5em;font-family:monospace;">-</span>
+            </span>
+            <span class="status-item" id="slotInfo" title="Save-state slot — F2 saves, F5 loads, Shift+F2 switches. Click to switch.">
+                <span class="status-label">💾</span>
+                <span class="status-value" id="slotStatus" style="cursor:pointer;">1</span>
+            </span>
+            <span class="status-item" id="screenBankInfo" style="display:none;">
+                <span class="status-label">SCR:</span>
+                <span class="status-value" id="screenBankStatus">5</span>
+            </span>
+        </div>
+        
+        <div class="controls">
+            <button id="btnScreenshotMain" title="Save screenshot (F3)">📷</button>
+            <button id="btnRun" class="primary" title="Run/Pause emulation (F6)">Run</button>
+            <button id="btnReset" title="Reset machine">Reset</button>
+            <select id="speedSelect" title="Emulation speed">
+                <option value="10">10%</option>
+                <option value="25">25%</option>
+                <option value="50">50%</option>
+                <option value="75">75%</option>
+                <option value="100" selected>100%</option>
+                <option value="200">200%</option>
+                <option value="400">400%</option>
+                <option value="0">Max</option>
+            </select>
+            <button id="btnSound" title="Toggle sound (AY-3-8910)">🔇</button>
+            <button id="btnFullscreen" title="Toggle fullscreen (F11)">⛶</button>
+            <button id="btnVKbd" title="Show/hide the clickable ZX Spectrum keyboard">⌨</button>
+            <button id="btnMouse" title="Capture mouse (Kempston Mouse)" style="display: none;">🖱️</button>
+        </div>
+        <div id="virtualKeyboard" class="vkbd hidden"></div>
+        <input type="file" id="rom48Input" class="file-input" accept=".rom,.bin">
+        <input type="file" id="rom128Input" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPlus2Input" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPlus2aInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPlus3Input" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPentagonInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romScorpionInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romTrdosInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="romPlusDRomInput" class="file-input" accept=".rom,.bin">
+        <input type="file" id="fileInput" class="file-input" accept=".sna,.tap,.tzx,.z80,.szx,.zip,.rzx,.trd,.scl,.mgt,.img,.dsk,.mdr,.wav,.zxproj,.json">
+        </div><!-- emulator-section -->

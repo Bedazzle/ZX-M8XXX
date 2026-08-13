@@ -16,11 +16,7 @@ import {
     P7FFD_RAM_MASK, P7FFD_SCREEN_BIT, P7FFD_ROM_BIT, P7FFD_LOCK_BIT, P7FFD_P1024_EXT
 } from './constants.js';
 
-const VERSION = '0.6.5';
-
     export class Memory {
-        static get VERSION() { return VERSION; }
-
         constructor(machineType = '48k') {
             this.machineType = machineType;
             this.profile = getMachineProfile(machineType);

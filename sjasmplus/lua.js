@@ -88,6 +88,8 @@ export function luaPassMatches(filter, pass, isLast) {
 //   setPage(n) / setSlot(n)         getModules() -> string
 //   fileExists(name) -> boolean     print(text)
 //   exit(code)                      vfsRead(name) / vfsWrite(name, Uint8Array)
+//   zxTrdCreate(name, label)        zxTrdAddFile(trd, trdosName, start, len,
+//   zxSaveSna(name, startAddr)                   autostart, replace)
 export function createLuaRuntime(host) {
     if (!isLuaEngineLoaded()) {
         throw new Error('LUA engine not loaded — call loadLuaEngine() first');
@@ -201,6 +203,27 @@ export function createLuaRuntime(host) {
     lua.lua_setfield(L, -2, to_luastring('__newindex'));
     lua.lua_setmetatable(L, -2);
     lua.lua_setglobal(L, to_luastring('sj'));
+
+    // ---- zx table ---------------------------------------------------------
+    // The ZX-specific output helpers. Each returns a boolean like sjasmplus does,
+    // and routes to the same save commands as EMPTYTRD / SAVETRD / SAVESNA, so a
+    // script produces byte-identical files to the directives.
+    const optNum = (i, dflt) => (lua.lua_isnoneornil(L, i) ? dflt : num(i));
+    lua.lua_newtable(L);
+    setField('trdimage_create', () => {
+        pushBool(host.zxTrdCreate(str(1), optStr(2, '')));
+        return 1;
+    });
+    setField('trdimage_add_file', () => {
+        pushBool(host.zxTrdAddFile(str(1), str(2), num(3), num(4),
+                                   optNum(5, -1), lua.lua_toboolean(L, 6)));
+        return 1;
+    });
+    setField('save_snapshot_sna', () => {
+        pushBool(host.zxSaveSna(str(1), optNum(2, null)));
+        return 1;
+    });
+    lua.lua_setglobal(L, to_luastring('zx'));
 
     // ---- io over the VFS --------------------------------------------------
     // fengari has no io library (no filesystem). Scripts in the sjasmplus docs

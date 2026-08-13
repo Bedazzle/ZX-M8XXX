@@ -1,0 +1,269 @@
+/* ZX-M8XXX — settings tab
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Settings Tab */
+#tab-settings {
+    overflow-y: auto;
+    max-height: calc(100vh - 120px);
+    padding-top: 0;
+}
+.settings-subtab-bar {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--bg-button);
+    margin-bottom: 10px;
+    padding: 0 10px;
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary);
+    z-index: 10;
+}
+.settings-subtab-btn {
+    padding: 6px 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--bg-button);
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    margin-bottom: -1px;
+}
+.settings-subtab-btn:hover {
+    background: var(--bg-button);
+    color: var(--text-primary);
+}
+.settings-subtab-btn.active {
+    background: var(--bg-secondary);
+    color: var(--cyan);
+    border-bottom: 1px solid var(--bg-secondary);
+}
+.settings-subtab-content {
+    display: none;
+}
+.settings-subtab-content.active {
+    display: block;
+}
+.media-catalog-bar {
+    display: flex;
+    gap: 2px;
+    margin-top: 6px;
+    border-bottom: 1px solid var(--bg-button);
+}
+.media-catalog-btn {
+    padding: 3px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--bg-button);
+    border-bottom: none;
+    border-radius: 3px 3px 0 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    margin-bottom: -1px;
+}
+.media-catalog-btn:hover {
+    background: var(--bg-button);
+    color: var(--text-primary);
+}
+.media-catalog-btn.active {
+    background: var(--bg-secondary);
+    color: var(--cyan);
+    border-bottom: 1px solid var(--bg-secondary);
+}
+.settings-tab-content {
+    padding: 15px;
+    max-width: 720px;
+}
+.settings-tab-content h3 {
+    margin: 0 0 15px 0;
+    color: var(--accent);
+    font-size: 16px;
+}
+.settings-section {
+    margin-bottom: 15px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--bg-button);
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.settings-section h4 {
+    margin: -12px -12px 12px -12px;
+    padding: 8px 12px;
+    color: var(--cyan);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: var(--bg-button);
+    border-radius: 3px 3px 0 0;
+}
+.settings-row {
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    /* The panel is capped at 720px; a row with many controls (Joystick, once the
+       custom key bindings are shown) must wrap inside the section rather than
+       overflow past its border. */
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+/* Right-aligned group label column (same pattern as .tools-row .search-label) */
+.settings-row .settings-row-label {
+    color: var(--text-secondary);
+    font-size: 11px;
+    min-width: 64px;
+    text-align: right;
+    flex: none;
+}
+.settings-row label:not(.checkbox-label) {
+    min-width: 100px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.settings-row select {
+    flex: 1;
+    max-width: 200px;
+    padding: 5px 10px;
+    font-size: 12px;
+}
+.settings-section select {
+    padding: 5px 10px;
+    font-size: 12px;
+}
+.palette-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+.palette-row {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.palette-row-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    width: 42px;
+    text-align: right;
+    margin-right: 4px;
+}
+.palette-color {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: bold;
+    color: #000;
+    text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
+    cursor: pointer;
+}
+.palette-color:hover {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+}
+.palette-color::after {
+    content: attr(data-index);
+    border-radius: 2px;
+}
+.ulaplus-palette-preview {
+    margin-top: 10px;
+    padding: 8px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+}
+.ulaplus-palette-grid {
+    display: grid;
+    grid-template-columns: repeat(16, 18px);
+    gap: 2px;
+}
+.ulaplus-palette-cell {
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-secondary);
+    cursor: pointer;
+}
+.ulaplus-palette-cell:hover {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+}
+.frame-export-controls {
+    gap: 5px;
+}
+.sprite-region-row {
+    gap: 2px !important;
+}
+.sprite-input-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-right: 6px;
+}
+.sprite-input-group label {
+    min-width: auto !important;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.sprite-input-group input {
+    font-size: 11px;
+    padding: 2px 4px;
+    width: 50px;
+}
+.settings-section.full-width {
+    max-width: none;
+}
+.frame-grab-btn {
+    padding: 4px 12px;
+    font-size: 11px;
+}
+.frame-grab-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.frame-grab-status {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    min-height: 16px;
+}
+.frame-grab-status.recording {
+    color: var(--accent);
+}
+.loop-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+.loop-result-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+}
+.loop-result-item:hover {
+    border-color: var(--accent);
+}
+.loop-result-item.selected {
+    border-color: var(--accent);
+    background: var(--bg-tertiary);
+}
+.loop-result-badge {
+    background: var(--accent);
+    color: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+    font-size: 10px;
+    white-space: nowrap;
+}

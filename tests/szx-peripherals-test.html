@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>SZX Peripheral State Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>SZX Peripheral State Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html" style="width:1000px;height:700px;border:1px solid #444"></iframe>
+
+    <script type="module">
+        import { SZXLoader } from '../core/loaders.js';
+        // Rewind, quicksave and the save slots all restore through SZX. Until now
+        // that carried CPU, RAM, paging and border only, so restoring mid-disk-load
+        // left the WD1793 wherever it had got to while the CPU believed a command
+        // was in flight. These assert the peripheral state survives a round trip.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+        (async () => {
+            const f = document.getElementById('app');
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = f.contentWindow;
+                if (w && w.spectrum && w.zxDebug) break;
+                await wait(25);
+            }
+            assert(!!(w && w.spectrum), 'emulator booted');
+            if (!w || !w.spectrum) { log('=== ABORTED ===', 'fail'); return; }
+            await w.zxDebug.ready();
+            const sp = w.spectrum;
+
+            section('AY registers survive a snapshot');
+            try {
+                sp.ay48kEnabled = true;
+                for (let r = 0; r < 14; r++) {
+                    sp.ay.selectedRegister = r;
+                    sp.ay.writeRegister ? sp.ay.writeRegister(0x10 + r) : (sp.ay.registers[r] = 0x10 + r);
+                }
+                sp.ay.selectedRegister = 7;
+                // Registers 1, 3, 5 and 13 are 4-bit on real hardware, so the chip
+                // masks what we wrote — compare against what it actually holds.
+                const expected = Array.from(sp.ay.registers).slice(0, 14);
+                const snap = sp.saveSnapshot('szx');
+
+                for (let r = 0; r < 14; r++) {
+                    sp.ay.selectedRegister = r;
+                    sp.ay.writeRegister ? sp.ay.writeRegister(0) : (sp.ay.registers[r] = 0);
+                }
+                sp.ay.selectedRegister = 0;
+                assert(sp.ay.registers[3] === 0, 'registers cleared before the restore');
+
+                sp.loadSZXSnapshot(snap);
+                const got = Array.from(sp.ay.registers).slice(0, 14);
+                assert(String(got) === String(expected), 'AY registers come back',
+                       `${got} vs ${expected}`);
+                assert(expected.some((v, i) => v !== 0), 'the fixture actually set something',
+                       String(expected));
+                assert(sp.ay.selectedRegister === 7, 'and the selected register',
+                       String(sp.ay.selectedRegister));
+            } catch (e) { assert(false, 'AY section threw', e.message); }
+
+            section('Beta Disk controller survives a snapshot');
+            try {
+                const bd = sp.betaDisk;
+                assert(!!bd, 'the machine has a Beta Disk');
+                if (bd) {
+                    bd.system = 0x1C; bd.track = 23; bd.sector = 7; bd.data = 0xA5; bd.status = 0x81;
+                    bd.command = 0x8C; bd.drive = 1; bd.side = 1;
+                    if (bd.drives) { bd.drives[0].headTrack = 12; bd.drives[1].headTrack = 34; }
+                    bd.dataBuffer = new Uint8Array([1, 2, 3, 4, 5]);
+                    bd.dataPos = 3;
+                    sp.memory.trdosActive = true;
+
+                    const snap = sp.saveSnapshot('szx');
+
+                    bd.system = 0; bd.track = 0; bd.sector = 1; bd.data = 0; bd.status = 0;
+                    bd.command = 0; bd.drive = 0; bd.side = 0;
+                    if (bd.drives) { bd.drives[0].headTrack = 0; bd.drives[1].headTrack = 0; }
+                    bd.dataBuffer = null; bd.dataPos = 0;
+                    sp.memory.trdosActive = false;
+
+                    sp.loadSZXSnapshot(snap);
+                    assert(bd.track === 23 && bd.sector === 7 && bd.data === 0xA5 && bd.status === 0x81,
+                           'WD1793 registers come back',
+                           `t${bd.track} s${bd.sector} d${bd.data} st${bd.status}`);
+                    assert(bd.system === 0x1C, 'the system register comes back', String(bd.system));
+                    assert(bd.command === 0x8C, 'the command in flight comes back', String(bd.command));
+                    assert(bd.drive === 1 && bd.side === 1, 'drive and side come back',
+                           `${bd.drive}/${bd.side}`);
+                    assert(bd.drives && bd.drives[1].headTrack === 34, 'head positions come back',
+                           bd.drives ? String(bd.drives[1].headTrack) : 'n/a');
+                    assert(bd.dataBuffer && bd.dataBuffer.length === 5 && bd.dataPos === 3,
+                           'the transfer buffer and position come back',
+                           `${bd.dataBuffer ? bd.dataBuffer.length : 'null'}@${bd.dataPos}`);
+                    assert(sp.memory.trdosActive === true, 'TR-DOS paging comes back');
+                }
+            } catch (e) { assert(false, 'Beta Disk section threw', e.message); }
+
+            section('ULAplus palette survives a snapshot');
+            try {
+                const up = sp.ula.ulaplus;
+                up.paletteEnabled = true;
+                up.register = 0x40;
+                for (let i = 0; i < 64; i++) up.palette[i] = (i * 3) & 0xFF;
+                const snap = sp.saveSnapshot('szx');
+
+                up.paletteEnabled = false;
+                up.register = 0;
+                up.palette.fill(0);
+                sp.loadSZXSnapshot(snap);
+
+                let ok = true;
+                for (let i = 0; i < 64; i++) if (up.palette[i] !== ((i * 3) & 0xFF)) ok = false;
+                assert(ok, 'the 64 palette entries come back');
+                assert(up.paletteEnabled === true, 'palette mode comes back');
+                assert(up.register === 0x40, 'the selected register comes back', String(up.register));
+                up.paletteEnabled = false;         // leave the machine as we found it
+            } catch (e) { assert(false, 'ULAplus section threw', e.message); }
+
+            section('Snapshots without the new chunks still load');
+            try {
+                // A file written by the old code (or another emulator) has no AY,
+                // B128 or private chunks: it must load and leave those alone.
+                const bare = SZXLoader.create(sp.cpu, sp.memory, sp.ula.borderColor);
+                sp.ay.selectedRegister = 2;
+                sp.ay.writeRegister ? sp.ay.writeRegister(0x2A) : (sp.ay.registers[2] = 0x2A);
+                const marker = sp.ay.registers[2];
+                sp.loadSZXSnapshot(bare);
+                assert(sp.ay.registers[2] === marker,
+                       'a chunkless snapshot leaves the AY untouched',
+                       `${sp.ay.registers[2]} vs ${marker}`);
+                assert(bare.length > 0, 'and it is a valid file', String(bare.length));
+            } catch (e) { assert(false, 'compatibility section threw', e.message); }
+
+            section('Media position survives a snapshot');
+            try {
+                const tp = sp.tapePlayer;
+                assert(!!tp, 'the machine has a tape player');
+                // Pretend a tape is mid-load: the medium stays loaded, only the
+                // playback point is snapshotted.
+                tp.blocks = [{ type: 'data' }, { type: 'data' }, { type: 'data' }];
+                tp.currentBlock = 2; tp.playing = true; tp.phase = 'data';
+                tp.byteIndex = 137; tp.bitIndex = 3; tp.pulseRemaining = 855;
+                tp.blockTstates = 12345; tp.earBit = true;
+
+                const snap = sp.saveSnapshot('szx');
+
+                tp.currentBlock = 0; tp.playing = false; tp.phase = 'idle';
+                tp.byteIndex = 0; tp.bitIndex = 0; tp.pulseRemaining = 0;
+                tp.blockTstates = 0; tp.earBit = false;
+
+                sp.loadSZXSnapshot(snap);
+                assert(tp.currentBlock === 2 && tp.phase === 'data',
+                       'the tape returns to the same block and phase',
+                       `${tp.currentBlock}/${tp.phase}`);
+                assert(tp.byteIndex === 137 && tp.bitIndex === 3,
+                       'and to the same byte and bit', `${tp.byteIndex}.${tp.bitIndex}`);
+                assert(tp.pulseRemaining === 855 && tp.blockTstates === 12345,
+                       'and the pulse timing', `${tp.pulseRemaining}/${tp.blockTstates}`);
+                assert(tp.playing === true && tp.earBit === true, 'and the playing/EAR state');
+
+                // A snapshot restored against a shorter tape must not point past the end
+                tp.blocks = [{ type: 'data' }];
+                sp.loadSZXSnapshot(snap);
+                assert(tp.currentBlock <= 1, 'the block index is clamped to the loaded tape',
+                       String(tp.currentBlock));
+                tp.blocks = []; tp.currentBlock = 0; tp.playing = false; tp.phase = 'idle';
+            } catch (e) { assert(false, 'tape section threw', e.message); }
+
+            section('+D and Microdrive position survive');
+            try {
+                if (sp.plusD) {
+                    sp.plusD.track = 41; sp.plusD.sector = 9; sp.plusD.status = 0x42;
+                    sp.plusD.drive = 1; sp.plusD.side = 1;
+                    if (sp.plusD.drives) sp.plusD.drives[1].headTrack = 41;
+                    const snap = sp.saveSnapshot('szx');
+                    sp.plusD.track = 0; sp.plusD.sector = 1; sp.plusD.status = 0;
+                    sp.plusD.drive = 0; sp.plusD.side = 0;
+                    if (sp.plusD.drives) sp.plusD.drives[1].headTrack = 0;
+                    sp.loadSZXSnapshot(snap);
+                    assert(sp.plusD.track === 41 && sp.plusD.sector === 9 && sp.plusD.status === 0x42,
+                           '+D registers come back',
+                           `${sp.plusD.track}/${sp.plusD.sector}/${sp.plusD.status}`);
+                    assert(sp.plusD.drive === 1 && sp.plusD.side === 1, '+D drive and side come back');
+                    assert(!sp.plusD.drives || sp.plusD.drives[1].headTrack === 41,
+                           '+D head position comes back');
+                } else {
+                    assert(true, '(no +D on this machine)');
+                }
+
+                if (sp.microdrive && sp.microdrive.drives && sp.microdrive.drives.length) {
+                    sp.microdrive.commsShiftReg = 0x24;
+                    sp.microdrive.writing = true;
+                    if (sp.microdrive.drives[0]) sp.microdrive.drives[0].headPos = 4321;
+                    const snap = sp.saveSnapshot('szx');
+                    sp.microdrive.commsShiftReg = 0;
+                    sp.microdrive.writing = false;
+                    if (sp.microdrive.drives[0]) sp.microdrive.drives[0].headPos = 0;
+                    sp.loadSZXSnapshot(snap);
+                    assert(sp.microdrive.commsShiftReg === 0x24 && sp.microdrive.writing === true,
+                           'Microdrive control state comes back');
+                    assert(!sp.microdrive.drives[0] || sp.microdrive.drives[0].headPos === 4321,
+                           'and the head position', String(sp.microdrive.drives[0].headPos));
+                    sp.microdrive.writing = false;
+                } else {
+                    assert(true, '(no Microdrive cartridges loaded)');
+                }
+            } catch (e) { assert(false, '+D/Microdrive section threw', e.message); }
+
+            section('+3 FDC state survives a snapshot');
+            try {
+                // The FDC only exists on a +3, so switch machine for this one.
+                const wasMachine = sp.machineType;
+                if (!sp.fdc) { sp.setMachineType('+3', true); await wait(200); }
+                if (!sp.fdc) {
+                    assert(true, '(no FDC available on this build)');
+                } else {
+                    const fdc = sp.fdc;
+                    fdc.phase = 2; fdc.currentCommand = 0x46; fdc.dataDirection = 1;
+                    fdc.opCylinder = 12; fdc.opHead = 1; fdc.opSector = 5; fdc.opSizeCode = 2;
+                    fdc.interruptPending = true; fdc.seekTrack = 12; fdc.driveBusy = 1;
+                    fdc.dataBuffer = [1, 2, 3, 4]; fdc.dataIndex = 2;
+                    fdc.resultBuffer = [0x40, 0, 0]; fdc.resultIndex = 1;
+                    if (fdc.drives) { fdc.drives[0].track = 12; fdc.drives[0].motorOn = true; }
+
+                    const snap = sp.saveSnapshot('szx');
+
+                    fdc.phase = 0; fdc.currentCommand = 0; fdc.dataDirection = 0;
+                    fdc.opCylinder = 0; fdc.opHead = 0; fdc.opSector = 0; fdc.opSizeCode = 0;
+                    fdc.interruptPending = false; fdc.seekTrack = 0; fdc.driveBusy = 0;
+                    fdc.dataBuffer = []; fdc.dataIndex = 0;
+                    fdc.resultBuffer = []; fdc.resultIndex = 0;
+                    if (fdc.drives) { fdc.drives[0].track = 0; fdc.drives[0].motorOn = false; }
+
+                    sp.loadSZXSnapshot(snap);
+                    assert(fdc.phase === 2 && fdc.currentCommand === 0x46,
+                           'the command phase comes back', `${fdc.phase}/${fdc.currentCommand}`);
+                    assert(fdc.opCylinder === 12 && fdc.opHead === 1 && fdc.opSector === 5,
+                           'the sector being transferred comes back',
+                           `${fdc.opCylinder}/${fdc.opHead}/${fdc.opSector}`);
+                    assert(String(fdc.dataBuffer) === '1,2,3,4' && fdc.dataIndex === 2,
+                           'the data buffer and index come back',
+                           `${fdc.dataBuffer}@${fdc.dataIndex}`);
+                    assert(String(fdc.resultBuffer) === '64,0,0' && fdc.resultIndex === 1,
+                           'the result buffer comes back', String(fdc.resultBuffer));
+                    assert(fdc.interruptPending === true && fdc.driveBusy === 1,
+                           'the interrupt and busy flags come back');
+                    assert(!fdc.drives || (fdc.drives[0].track === 12 && fdc.drives[0].motorOn === true),
+                           'head position and motor come back');
+                }
+                if (sp.machineType !== wasMachine) { sp.setMachineType(wasMachine, true); await wait(200); }
+            } catch (e) { assert(false, 'FDC section threw', e.message); }
+
+            section('Rewind carries it too');
+            try {
+                const buf = w.zxRewind.buffer;
+                buf.clear();
+                sp.ay.selectedRegister = 5;
+                sp.ay.writeRegister ? sp.ay.writeRegister(0x77) : (sp.ay.registers[5] = 0x77);
+                for (let i = 0; i < 120; i++) sp.runFrame();      // records at least one state
+                const captured = sp.ay.registers[5];
+                sp.ay.selectedRegister = 5;
+                sp.ay.writeRegister ? sp.ay.writeRegister(0x11) : (sp.ay.registers[5] = 0x11);
+                assert(buf.stepBack() === true, 'rewound a step');
+                assert(sp.ay.registers[5] === captured, 'the AY state rewound with the machine',
+                       `${sp.ay.registers[5]} vs ${captured}`);
+                buf.resume();
+            } catch (e) { assert(false, 'rewind section threw', e.message); }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

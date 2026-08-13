@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Rewind Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Rewind Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { createRewindBuffer } from '../core/rewind.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // A fake machine: its "state" is a number that advances every frame.
+        function machine(opts = {}) {
+            const m = { now: 0, restored: [], captured: [], captures: 0 };
+            const rw = createRewindBuffer({
+                capture: () => { m.captures++; m.captured.push(m.now); return new Uint8Array([m.now & 0xFF]); },
+                restore: (d) => { m.restored.push(d[0]); m.now = d[0]; },
+                intervalFrames: opts.intervalFrames ?? 10,
+                maxStates: opts.maxStates ?? 5,
+            });
+            m.run = (frames) => {
+                for (let i = 0; i < frames; i++) { m.now++; rw.onFrame(m.now); }
+            };
+            m.rw = rw;
+            return m;
+        }
+
+        section('Capturing');
+        {
+            const m = machine();
+            m.run(100);
+            assert(m.rw.count === 5, 'the ring holds maxStates', String(m.rw.count));
+            assert(m.rw.stats.dropped > 0, 'older states are dropped', String(m.rw.stats.dropped));
+            // 100 frames at one per 10 = 10 captures (the first is due immediately)
+            assert(m.captures === 10, 'captures once per interval, not per frame', String(m.captures));
+            const gaps = m.captured.slice(1).map((v, i) => v - m.captured[i]);
+            assert(gaps.every(g => g === 10), 'captures are evenly spaced', String(gaps));
+
+            const m2 = machine({ intervalFrames: 4, maxStates: 100 });
+            m2.run(20);
+            assert(m2.rw.count === 5, 'interval is honoured', String(m2.rw.count));
+
+            // capture failures must not break the loop
+            let boom = true;
+            const rw3 = createRewindBuffer({
+                capture: () => { if (boom) throw new Error('no'); return new Uint8Array([1]); },
+                restore: () => {}, intervalFrames: 1, maxStates: 4,
+            });
+            rw3.onFrame(1);
+            assert(rw3.count === 0, 'a throwing capture is skipped, not fatal');
+            boom = false;
+            rw3.onFrame(2);
+            assert(rw3.count === 1, 'and capturing resumes afterwards');
+        }
+
+        section('Stepping back and forward');
+        {
+            const m = machine({ intervalFrames: 10, maxStates: 10 });
+            m.run(50);                       // states at 10,20,30,40,50
+            assert(m.rw.count === 5, 'five states', String(m.rw.count));
+            assert(m.rw.scrubbing === false, 'starts live');
+
+            // Recorded points, newest last — the expectations follow these rather
+            // than assuming which frames the captures landed on.
+            const pts = m.captured.slice();          // e.g. [1, 11, 21, 31, 41]
+            const last = () => m.restored[m.restored.length - 1];
+
+            assert(m.rw.stepBack() === true, 'first step back works');
+            assert(m.rw.scrubbing === true, 'now scrubbing');
+            assert(m.rw.depth === 1, 'depth is 1', String(m.rw.depth));
+            assert(last() === pts[pts.length - 1], 'restored the newest recorded state',
+                   `${last()} vs ${pts[pts.length - 1]}`);
+
+            m.rw.stepBack(); m.rw.stepBack();
+            assert(last() === pts[pts.length - 3], 'stepping back walks the history',
+                   `${last()} vs ${pts[pts.length - 3]}`);
+            assert(m.rw.depth === 3, 'depth tracks the position', String(m.rw.depth));
+
+            assert(m.rw.stepForward() === true, 'forward moves back toward now');
+            assert(last() === pts[pts.length - 2], 'and restores the next state',
+                   `${last()} vs ${pts[pts.length - 2]}`);
+
+            // back-and-forth must be symmetric, or holding the key feels broken
+            const here = last();
+            const before = m.restored.length;
+            m.rw.stepBack(); m.rw.stepForward();
+            assert(last() === here, 'back then forward lands where it started',
+                   `${last()} vs ${here}`);
+            assert(m.restored.length === before + 2, 'both steps restored something');
+        }
+
+        section('Running out of history');
+        {
+            const m = machine({ intervalFrames: 10, maxStates: 3 });
+            m.run(30);
+            let steps = 0;
+            while (m.rw.stepBack()) steps++;
+            assert(steps === 3, 'stops at the oldest state', String(steps));
+            assert(m.rw.stepBack() === false, 'and keeps saying no');
+
+            let fwd = 0;
+            while (m.rw.stepForward()) fwd++;
+            assert(fwd === 3, 'and can walk all the way forward again', String(fwd));
+            assert(m.rw.stepForward() === false, 'forward stops at the present');
+
+            const empty = machine();
+            assert(empty.rw.stepBack() === false, 'stepping back with no history does nothing');
+        }
+
+        section('Resuming drops the abandoned future');
+        {
+            const m = machine({ intervalFrames: 10, maxStates: 10 });
+            m.run(50);
+            m.rw.stepBack(); m.rw.stepBack(); m.rw.stepBack();   // viewing 30
+            assert(m.rw.count === 6, 'the live state is kept while scrubbing', String(m.rw.count));
+            assert(m.rw.resume() === true, 'resume leaves scrub mode');
+            assert(m.rw.scrubbing === false, 'no longer scrubbing');
+            // three steps back from five states: the two newer ones (and the live
+            // state kept while scrubbing) are a future that no longer happened
+            assert(m.rw.count === 3, 'states after the resume point are gone', String(m.rw.count));
+            assert(m.rw.depth === 0, 'depth is back to live');
+            assert(m.rw.resume() === false, 'resuming when live does nothing');
+
+            // and recording continues on the new timeline
+            const before = m.rw.count;
+            m.run(20);
+            assert(m.rw.count > before, 'capturing continues after a rewind',
+                   `${before} -> ${m.rw.count}`);
+        }
+
+        section('No capturing while scrubbing');
+        {
+            const m = machine({ intervalFrames: 5, maxStates: 20 });
+            m.run(20);
+            m.rw.stepBack();
+            const n = m.rw.count;
+            m.run(50);
+            assert(m.rw.count === n, 'frames during scrub do not record', `${n} -> ${m.rw.count}`);
+        }
+
+        section('Reset, enable and bookkeeping');
+        {
+            const m = machine({ intervalFrames: 10, maxStates: 10 });
+            m.run(50);
+            m.rw.clear();
+            assert(m.rw.count === 0 && m.rw.depth === 0, 'clear empties the ring');
+
+            m.rw.setEnabled(false);
+            m.run(50);
+            assert(m.rw.count === 0, 'disabled means no capturing');
+            m.rw.setEnabled(true);
+            m.run(50);
+            assert(m.rw.count > 0, 'and re-enabling starts again');
+
+            // a frame counter that jumps backwards (reset, snapshot load)
+            const m2 = machine({ intervalFrames: 10, maxStates: 10 });
+            m2.run(50);
+            const n = m2.rw.count;
+            m2.now = 0;                       // machine reset
+            m2.run(10);
+            assert(m2.rw.count > n, 're-anchors when the frame counter goes backwards',
+                   `${n} -> ${m2.rw.count}`);
+            assert(m2.captures < 60, 'without capturing every frame while it catches up',
+                   String(m2.captures));
+
+            assert(m.rw.stats.bytes > 0, 'stats report the memory held', JSON.stringify(m.rw.stats));
+        }
+
+        section('Bad configuration is rejected');
+        {
+            const bad = (opts) => { try { createRewindBuffer(opts); return false; } catch (e) { return true; } };
+            assert(bad({}), 'capture/restore are required');
+            assert(bad({ capture: () => {}, restore: () => {}, intervalFrames: 0 }), 'interval must be positive');
+            assert(bad({ capture: () => {}, restore: () => {}, maxStates: 1 }), 'maxStates must be at least 2');
+        }
+
+        section('In the running emulator');
+        await (async () => {
+            const frame = document.createElement('iframe');
+            frame.src = '../index.html';
+            frame.style.cssText = 'width:1000px;height:700px;border:1px solid #444';
+            document.body.appendChild(frame);
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = frame.contentWindow;
+                if (w && w.spectrum && w.zxRewind) break;
+                await wait(25);
+            }
+            assert(!!(w && w.zxRewind), 'rewind is wired into the app');
+            if (!w || !w.zxRewind) return;
+
+            try {
+            const sp = w.spectrum, buf = w.zxRewind.buffer;
+            buf.clear();
+            // runFrame is the loop that notifies frame listeners (runFrameHeadless
+            // does not), so rewind only records here - which is what the app uses.
+            const step = () => sp.runFrame();
+
+            // Write a marker that changes over time, so a restore is observable.
+            const ADDR = 0x8000;
+            const marks = [];
+            for (let i = 1; i <= 6; i++) {
+                sp.memory.writeDebug(ADDR, i);
+                marks.push(i);
+                for (let f = 0; f < 100; f++) step();
+            }
+            assert(buf.count >= 3, 'states were captured while running', String(buf.count));
+
+            const before = sp.memory.read(ADDR);
+            assert(buf.stepBack() === true, 'stepBack works on a live machine');
+            const after = sp.memory.read(ADDR);
+            assert(marks.includes(after), 'restored a value the machine really had',
+                   `${before} -> ${after}`);
+
+            buf.stepForward();
+            assert(sp.memory.read(ADDR) >= after, 'stepping forward moves toward the present');
+            buf.resume();
+            assert(buf.scrubbing === false, 'resume returns to live');
+
+            const framesBefore = sp.totalFrames;
+            for (let f = 0; f < 10; f++) step();
+            assert(sp.totalFrames > framesBefore, 'the emulator keeps running after a rewind');
+            } catch (e) {
+                assert(false, 'driving rewind in the app threw', e && e.message);
+            }
+            frame.remove();
+        })();
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

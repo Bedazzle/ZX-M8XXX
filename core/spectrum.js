@@ -5,6 +5,9 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 import { looksLikeMarkup } from './utils.js';
+import { normalizeCustomKeys, DEFAULT_CUSTOM_KEYS } from './joystick.js';
+import { DebugInstrumentation } from './debug-instrument.js';
+import { InputHandling } from './input.js';
 import {
     SCREEN_BITMAP, SCREEN_ATTR, SCREEN_END,
     SLOT1_START, SLOT2_START, SLOT3_START,
@@ -380,6 +383,11 @@ import { Disassembler } from './disasm.js';
             // Kempston joystick state (active high)
             // Bit 0: Right, Bit 1: Left, Bit 2: Down, Bit 3: Up, Bit 4: Fire
             this.kempstonState = 0;
+            // Which joystick the numpad/gamepad pretends to be. Sinclair and
+            // Cursor are keyboard interfaces, so they press ZX keys instead of
+            // feeding the Kempston port.
+            this.joystickType = 'kempston';
+            this.joystickCustomKeys = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
             this.kempstonEnabled = false; // Disabled by default
 
             // Kempston Mouse state
@@ -2606,9 +2614,21 @@ import { Disassembler } from './disasm.js';
 
             // Fire interrupt if within INT pulse window from previous frame overshoot
             // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
-            if (!this.rzxPlaying &&
+            const hlNormalIntWindow = !this.rzxPlaying &&
                 this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
-                this.cpu.iff1 && !this.cpu.eiPending) {
+                this.cpu.iff1 && !this.cpu.eiPending;
+            // Same HALT handling as runFrame: a real Z80 executes the instruction at
+            // PC before accepting an interrupt, so a PC sitting on a not-yet-executed
+            // HALT must enter the halt state first — otherwise the INT pushes the
+            // HALT's own address and a handler that re-enables interrupts after the
+            // HALT halts forever. Snapshots saved on an EI/HALT main loop land exactly
+            // there, because loading one resets frame-start tStates into the INT
+            // window. Without this, such a demo runs its first frame and then freezes,
+            // which is invisible unless you look at the border (see tests/halt-int-test).
+            if (hlNormalIntWindow && !this.cpu.halted && this.memory.read(this.cpu.pc) === 0x76) {
+                this.cpu.halted = true;
+            }
+            if (hlNormalIntWindow) {
                 const _hlIntOldPC = this.cpu.pc, _hlIntOldSP = this.cpu.sp;
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
@@ -6522,343 +6542,9 @@ import { Disassembler } from './disasm.js';
 
         // ========== Keyboard Handling ==========
 
-        handleKeyDown(e) {
-            // Don't capture keys when typing in input fields or contentEditable
-            const tag = e.target.tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-                return;
-            }
-            if (e.target.isContentEditable) {
-                return;
-            }
-            // Also check if any input has focus
-            const active = document.activeElement;
-            if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-                return;
-            }
-            if (active && active.isContentEditable) {
-                return;
-            }
-            
-            // Ignore real keyboard during RZX playback
-            if (this.rzxPlaying) {
-                return;
-            }
+        // Keyboard, joysticks, Kempston mouse and gamepad live in core/input.js
+        // and are mixed into this prototype below.
 
-            // Prevent browser shortcuts when a held Alt/Ctrl acts as a ZX modifier
-            // (e.g. Alt+P for Symbol+P, or Ctrl+S when Ctrl is Symbol Shift).
-            // AltGr reports Ctrl+Alt together: only prevent then if BOTH families are
-            // mapped, so AltGr national-character typing keeps working otherwise.
-            // Note: the browser reserves some Ctrl combos (Ctrl+W/T/N) at a level
-            // preventDefault can't reach.
-            if (!e.metaKey && (e.altKey || e.ctrlKey)) {
-                const codes = this.ula.capsShiftCodes.concat(this.ula.symbolShiftCodes);
-                const altMapped = codes.some(c => c.startsWith('Alt'));
-                const ctrlMapped = codes.some(c => c.startsWith('Control'));
-                const altActs = e.altKey && altMapped && (!e.ctrlKey || ctrlMapped);
-                const ctrlActs = e.ctrlKey && ctrlMapped && (!e.altKey || altMapped);
-                if ((altActs || ctrlActs) && /^[a-z0-9]$/.test(e.key.toLowerCase())) {
-                    e.preventDefault();
-                }
-            }
-
-            // Check e.key first for punctuation/shifted characters
-            // This must be before joystick checks so typing { } | etc works
-            if (e.key.length === 1 && !e.key.match(/^[a-zA-Z0-9]$/)) {
-                const mapping = this.ula.getKeyMapping(e.key);
-                if (mapping) {
-                    e.preventDefault();
-                    // If PC Shift is held, acts as Caps Shift, and mapping is a Symbol Shift
-                    // compound (e.g. Shift+1 → '!'), temporarily release Caps Shift to
-                    // avoid Extended Mode (Caps+Symbol+key)
-                    if (e.shiftKey && Array.isArray(mapping[0]) &&
-                        this.ula.capsShiftCodes.some(c => c.startsWith('Shift'))) {
-                        this.ula.keyboardState[0] |= (1 << 0); // Release Caps Shift
-                    }
-                    this.pressedKeys.set(e.code, e.key); // Track for proper release
-                    this.ula.keyDown(e.key);
-                    return;
-                }
-            }
-
-            // Kempston joystick on numpad (use e.code for cross-platform consistency)
-            const kempstonBit = this.getKempstonBit(e.code);
-            if (kempstonBit !== null) {
-                e.preventDefault();
-                this.kempstonState |= kempstonBit;
-                return;
-            }
-
-            // Extended Kempston buttons: [ = C, ] = A, \ = Start (only when not typing punctuation)
-            const extBit = this.getExtendedKempstonBit(e.code);
-            if (extBit !== null && this.kempstonExtendedEnabled) {
-                e.preventDefault();
-                this.kempstonExtendedState |= (1 << extBit);
-                return;
-            }
-
-            // Use e.code for layout-independent key detection (letters, digits, special keys)
-            if (this.ula.keyMap[e.code]) {
-                e.preventDefault();
-                this.pressedKeys.set(e.code, e.code); // Track for proper release
-                this.ula.keyDown(e.code);
-            }
-        }
-
-        handleKeyUp(e) {
-            // Don't capture keys when typing in input fields or contentEditable
-            const tag = e.target.tagName;
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-                return;
-            }
-            if (e.target.isContentEditable) {
-                return;
-            }
-            // Also check if any input has focus
-            const active = document.activeElement;
-            if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-                return;
-            }
-            if (active && active.isContentEditable) {
-                return;
-            }
-
-            // Use tracked key for proper release (handles shifted chars where e.key changes on release)
-            const trackedKey = this.pressedKeys.get(e.code);
-            if (trackedKey) {
-                e.preventDefault();
-                this.ula.keyUp(trackedKey);
-                this.pressedKeys.delete(e.code);
-                // Re-press Caps Shift if PC Shift is still held and acts as Caps Shift.
-                // Handles: Shift+1 (!) suppressed Caps Shift → release 1 → Caps Shift must return
-                // for subsequent Shift+letter to produce uppercase.
-                if (e.shiftKey && this.ula.capsShiftCodes.some(c => c.startsWith('Shift'))) {
-                    this.ula.keyboardState[0] &= ~(1 << 0); // Caps Shift
-                }
-                return;
-            }
-
-            // Kempston joystick on numpad (use e.code for cross-platform consistency)
-            const kempstonBit = this.getKempstonBit(e.code);
-            if (kempstonBit !== null) {
-                e.preventDefault();
-                this.kempstonState &= ~kempstonBit;
-                return;
-            }
-
-            // Extended Kempston buttons: [ = C, ] = A, \ = Start
-            const extBit = this.getExtendedKempstonBit(e.code);
-            if (extBit !== null && this.kempstonExtendedEnabled) {
-                e.preventDefault();
-                this.kempstonExtendedState &= ~(1 << extBit);
-                return;
-            }
-        }
-
-        getKempstonBit(code) {
-            // Numpad mapping to Kempston joystick (using e.code for consistency)
-            // Bit 0: Right, Bit 1: Left, Bit 2: Down, Bit 3: Up, Bit 4: Fire
-            switch (code) {
-                case 'Numpad8': return 0x08; // Up
-                case 'Numpad2': return 0x04; // Down
-                case 'Numpad4': return 0x02; // Left
-                case 'Numpad6': return 0x01; // Right
-                case 'Numpad5': return 0x10; // Fire
-                case 'Numpad0': return 0x10; // Fire
-                case 'Numpad1': return 0x06; // Down+Left
-                case 'Numpad3': return 0x05; // Down+Right
-                case 'Numpad7': return 0x0a; // Up+Left
-                case 'Numpad9': return 0x09; // Up+Right
-                default:  return null;
-            }
-        }
-
-        getExtendedKempstonBit(code) {
-            // Extended Kempston buttons: [ ] \
-            // Returns the bit number (5, 6, 7) not the mask
-            switch (code) {
-                case 'BracketLeft':  return 5; // [ = C button (bit 5)
-                case 'BracketRight': return 6; // ] = A button (bit 6)
-                case 'Backslash':    return 7; // \ = Start button (bit 7)
-                default:  return null;
-            }
-        }
-
-        // Kempston Mouse update methods
-        updateMousePosition(dx, dy) {
-            // Clamp movement to prevent large jumps (max ±20 per update)
-            dx = Math.max(-20, Math.min(20, dx));
-            dy = Math.max(-20, Math.min(20, dy));
-
-            // Update X/Y with wrapping (0-255)
-            // X increases right, Y increases when mouse moves UP (hardware convention)
-            this.kempstonMouseX = (this.kempstonMouseX + dx) & 0xff;
-            this.kempstonMouseY = (this.kempstonMouseY - dy) & 0xff;
-        }
-
-        setMouseButton(button, pressed) {
-            // Buttons are active low (0 = pressed, 1 = released)
-            // button: 0=left, 1=middle, 2=right
-            // Default: left=bit1, right=bit0. Swap: left=bit0, right=bit1
-            const swap = this.kempstonMouseSwapButtons;
-            const bit = button === 0 ? (swap ? 0 : 1) : (button === 1 ? 2 : (swap ? 1 : 0));
-            if (pressed) {
-                this.kempstonMouseButtons &= ~(1 << bit);
-            } else {
-                this.kempstonMouseButtons |= (1 << bit);
-            }
-        }
-
-        // Mouse wheel update (0-15, wrapping)
-        updateMouseWheel(delta) {
-            // delta > 0 = scroll down, delta < 0 = scroll up
-            if (this.kempstonMouseSwapWheel) delta = -delta;
-            // Scroll up increases wheel value
-            if (delta < 0) {
-                this.kempstonMouseWheel = (this.kempstonMouseWheel + 1) & 0x0f;
-            } else if (delta > 0) {
-                this.kempstonMouseWheel = (this.kempstonMouseWheel - 1) & 0x0f;
-            }
-        }
-
-        // Extended Kempston joystick buttons (bits 5-7)
-        setExtendedButton(bit, pressed) {
-            // bit 5 = C, bit 6 = A, bit 7 = Start (active high)
-            if (pressed) {
-                this.kempstonExtendedState |= (1 << bit);
-            } else {
-                this.kempstonExtendedState &= ~(1 << bit);
-            }
-        }
-
-        // Poll hardware gamepad and update Kempston state
-        pollGamepad() {
-            if (!this.gamepadEnabled || !navigator.getGamepads) {
-                this.gamepadState = 0;
-                this.gamepadExtState = 0;
-                return;
-            }
-
-            const gamepads = navigator.getGamepads();
-            let gp = null;
-
-            // Find first connected gamepad
-            for (let i = 0; i < gamepads.length; i++) {
-                if (gamepads[i] && gamepads[i].connected) {
-                    gp = gamepads[i];
-                    break;
-                }
-            }
-
-            if (!gp) {
-                this.gamepadState = 0;
-                this.gamepadExtState = 0;
-                return;
-            }
-
-            // Reset state each frame
-            let state = 0;
-            let extState = 0;
-
-            // Use custom mapping if available
-            if (this.gamepadMapping) {
-                const m = this.gamepadMapping;
-                if (this.checkGamepadInput(gp, m.up)) state |= 0x08;
-                if (this.checkGamepadInput(gp, m.down)) state |= 0x04;
-                if (this.checkGamepadInput(gp, m.left)) state |= 0x02;
-                if (this.checkGamepadInput(gp, m.right)) state |= 0x01;
-                if (this.checkGamepadInput(gp, m.fire)) state |= 0x10;
-                // Extended buttons (C=bit5, A=bit6, Start=bit7)
-                if (this.checkGamepadInput(gp, m.c)) extState |= 0x20;
-                if (this.checkGamepadInput(gp, m.a)) extState |= 0x40;
-                if (this.checkGamepadInput(gp, m.start)) extState |= 0x80;
-            } else {
-                // Default mapping for standard gamepads
-                const axisThreshold = 0.5;
-                for (let i = 0; i < gp.axes.length; i += 2) {
-                    if (gp.axes[i] !== undefined) {
-                        if (gp.axes[i] < -axisThreshold) state |= 0x02; // Left
-                        if (gp.axes[i] > axisThreshold) state |= 0x01;  // Right
-                    }
-                    if (gp.axes[i + 1] !== undefined) {
-                        if (gp.axes[i + 1] < -axisThreshold) state |= 0x08; // Up
-                        if (gp.axes[i + 1] > axisThreshold) state |= 0x04;  // Down
-                    }
-                }
-
-                // D-pad buttons (buttons 12-15 on standard mapping)
-                if (gp.buttons[12]?.pressed) state |= 0x08; // Up
-                if (gp.buttons[13]?.pressed) state |= 0x04; // Down
-                if (gp.buttons[14]?.pressed) state |= 0x02; // Left
-                if (gp.buttons[15]?.pressed) state |= 0x01; // Right
-
-                // Fire buttons - any of first 4 face buttons
-                for (let i = 0; i < Math.min(4, gp.buttons.length); i++) {
-                    if (gp.buttons[i]?.pressed) state |= 0x10;
-                }
-
-                // Extended buttons (standard gamepad mapping)
-                if (gp.buttons[2]?.pressed) extState |= 0x20; // X/Square = C
-                if (gp.buttons[1]?.pressed) extState |= 0x40; // B/Circle = A
-                if (gp.buttons[9]?.pressed) extState |= 0x80; // Start
-                if (gp.buttons[4]?.pressed) extState |= 0x20; // LB = C
-                if (gp.buttons[5]?.pressed) extState |= 0x40; // RB = A
-            }
-
-            // Store gamepad state separately (will be ORed with keyboard when reading port)
-            this.gamepadState = state;
-            this.gamepadExtState = extState;
-        }
-
-        // Check if a gamepad input matches a mapping entry
-        checkGamepadInput(gp, mapping) {
-            if (!mapping) return false;
-            if (mapping.type === 'axis') {
-                const val = gp.axes[mapping.index];
-                if (val === undefined) return false;
-                if (mapping.direction > 0) return val > mapping.threshold;
-                else return val < -mapping.threshold;
-            } else if (mapping.type === 'button') {
-                const btn = gp.buttons[mapping.index];
-                return btn && btn.pressed;
-            }
-            return false;
-        }
-
-        // Debug: Show gamepad state in console (call from console: spectrum.debugGamepad())
-        debugGamepad() {
-            if (!navigator.getGamepads) {
-                console.log('Gamepad API not available');
-                return;
-            }
-            const gamepads = navigator.getGamepads();
-            for (let i = 0; i < gamepads.length; i++) {
-                const gp = gamepads[i];
-                if (!gp) continue;
-                console.log(`=== Gamepad ${i}: ${gp.id} ===`);
-                console.log(`Connected: ${gp.connected}, Mapping: "${gp.mapping}", Axes: ${gp.axes.length}, Buttons: ${gp.buttons.length}`);
-                console.log('Axes (showing all):');
-                for (let a = 0; a < gp.axes.length; a++) {
-                    const val = gp.axes[a].toFixed(3);
-                    if (Math.abs(gp.axes[a]) > 0.1) {
-                        console.log(`  [${a}] = ${val} <-- ACTIVE`);
-                    } else {
-                        console.log(`  [${a}] = ${val}`);
-                    }
-                }
-                console.log('Buttons (showing all):');
-                for (let b = 0; b < gp.buttons.length; b++) {
-                    const btn = gp.buttons[b];
-                    const active = btn.pressed || btn.value > 0.1;
-                    console.log(`  [${b}] pressed=${btn.pressed} value=${btn.value.toFixed(3)}${active ? ' <-- ACTIVE' : ''}`);
-                }
-                if (gp.buttons.length === 0) {
-                    console.log('  (no buttons reported)');
-                }
-            }
-        }
-
-        // ========== File Loading ==========
 
         async loadFile(file, driveIndex = 0) {
             let data = await file.arrayBuffer();
@@ -7416,7 +7102,11 @@ import { Disassembler } from './disasm.js';
                 if (targetType === '+2A') {
                     targetType = '+2a';  // Map SZX name to internal type
                 } else if (targetType === '+3' || targetType === '+3e') {
-                    targetType = '+2a';  // +3 is hardware-identical to +2A (minus floppy)
+                    // The +3 used to be mapped to +2A ("hardware-identical minus
+                    // floppy") - but the floppy is the point for +3 software, and a
+                    // +2A has no FDC, so loading a +3 state left the machine without
+                    // a disk controller. There is a real +3 profile; use it.
+                    targetType = '+3';
                 } else if (targetType === 'scorpion') {
                     // Native Scorpion support
                 } else if (targetType === 'didaktik') {
@@ -7431,7 +7121,8 @@ import { Disassembler } from './disasm.js';
                 }
 
                 // Load SZX
-                const result = SZXLoader.load(data, this.cpu, this.memory, this.ula);
+                const result = SZXLoader.load(data, this.cpu, this.memory, this.ula,
+                                              this._restorePeripherals());
                 result.machineType = targetType;  // Add machine type to result for ROM reload
                 result.wasRunning = wasRunning;    // Preserve pre-load running state for caller
 
@@ -8060,12 +7751,191 @@ import { Disassembler } from './disasm.js';
             this.tapePlayer.setBlock(n);
         }
         
+        // Where the media is *positioned*, as opposed to what is in it. The tape,
+        // disks and cartridges themselves stay loaded; a snapshot only needs the
+        // playback/seek state, or restoring mid-load resumes reading from wherever
+        // the tape had since reached. Scalars only, kept small: a rewind buffer
+        // holds ~30 of these.
+        //
+        // Field lists are explicit rather than a blanket copy, so adding a field to
+        // a device can't silently start dragging a megabyte into every snapshot.
+        static get MEDIA_FIELDS() {
+            return {
+                tape: ['currentBlock', 'playing', 'earBit', 'blockTstates', 'phase',
+                       'pilotCount', 'byteIndex', 'bitIndex', 'pulseInBit', 'pulseRemaining',
+                       'currentPulseIndex', 'usedBits', 'pilotPulse', 'sync1Pulse',
+                       'sync2Pulse', 'zeroPulse', 'onePulse', 'pauseMs'],
+                plusD: ['command', 'status', 'track', 'sector', 'data', 'drive', 'side'],
+                microdrive: ['commsShiftReg', 'commsData', 'commsClk', 'writing', 'erasing'],
+                // +3 uPD765: the command/result/data phase machinery, so a restore
+                // mid-sector doesn't strand the CPU waiting on a controller that
+                // has forgotten the command.
+                fdc: ['phase', 'commandBytesExpected', 'currentCommand', 'resultIndex',
+                      'dataIndex', 'dataDirection', 'opCylinder', 'opHead', 'opSector',
+                      'opSectorEnd', 'opSizeCode', 'opDTL', 'opMultiTrack', 'opMFM',
+                      'opSkipDeleted', 'interruptPending', 'seekTrack', 'driveBusy'],
+            };
+        }
+
+        _snapshotMedia() {
+            const out = {};
+            const grab = (obj, fields) => {
+                const o = {};
+                for (const f of fields) if (obj[f] !== undefined) o[f] = obj[f];
+                return o;
+            };
+            const F = Spectrum.MEDIA_FIELDS;
+            if (this.tapePlayer) {
+                out.tape = grab(this.tapePlayer, F.tape);
+                // The loop stack is small and matters for TZX loops
+                out.tape.loopStack = (this.tapePlayer.loopStack || []).slice(0, 16);
+            }
+            if (this.plusD) {
+                out.plusD = grab(this.plusD, F.plusD);
+                out.plusD.headTracks = (this.plusD.drives || []).map(d => d.headTrack | 0);
+            }
+            if (this.microdrive) {
+                out.microdrive = grab(this.microdrive, F.microdrive);
+                out.microdrive.positions = (this.microdrive.drives || []).map(d => d && d.headPos | 0);
+            }
+            if (this.fdc) {
+                out.fdc = grab(this.fdc, F.fdc);
+                out.fdc.tracks = (this.fdc.drives || []).map(d => d.track | 0);
+                out.fdc.motors = (this.fdc.drives || []).map(d => !!d.motorOn);
+                // The in-flight buffers decide whether a command can carry on
+                out.fdc.commandBuffer = Array.from(this.fdc.commandBuffer || []);
+                out.fdc.resultBuffer = Array.from(this.fdc.resultBuffer || []);
+                out.fdc.dataBuffer = Array.from(this.fdc.dataBuffer || []);
+            }
+            return out;
+        }
+
+        _restoreMedia(state) {
+            if (!state) return;
+            const put = (obj, fields, src) => {
+                if (!obj || !src) return;
+                for (const f of fields) if (src[f] !== undefined) obj[f] = src[f];
+            };
+            const F = Spectrum.MEDIA_FIELDS;
+            if (state.tape && this.tapePlayer) {
+                put(this.tapePlayer, F.tape, state.tape);
+                if (Array.isArray(state.tape.loopStack)) this.tapePlayer.loopStack = state.tape.loopStack;
+                // The tape may have been changed since: keep the index in range
+                const n = (this.tapePlayer.blocks || []).length;
+                if (this.tapePlayer.currentBlock > n) this.tapePlayer.currentBlock = n;
+            }
+            if (state.plusD && this.plusD) {
+                put(this.plusD, F.plusD, state.plusD);
+                const ht = state.plusD.headTracks || [];
+                (this.plusD.drives || []).forEach((d, i) => { if (ht[i] !== undefined) d.headTrack = ht[i]; });
+            }
+            if (state.microdrive && this.microdrive) {
+                put(this.microdrive, F.microdrive, state.microdrive);
+                const pos = state.microdrive.positions || [];
+                (this.microdrive.drives || []).forEach((d, i) => {
+                    if (d && pos[i] !== undefined) d.headPos = pos[i];
+                });
+            }
+            if (state.fdc && this.fdc) {
+                put(this.fdc, F.fdc, state.fdc);
+                const tr = state.fdc.tracks || [], mo = state.fdc.motors || [];
+                (this.fdc.drives || []).forEach((d, i) => {
+                    if (tr[i] !== undefined) d.track = tr[i];
+                    if (mo[i] !== undefined) d.motorOn = mo[i];
+                });
+                if (state.fdc.commandBuffer) this.fdc.commandBuffer = state.fdc.commandBuffer.slice();
+                if (state.fdc.resultBuffer) this.fdc.resultBuffer = state.fdc.resultBuffer.slice();
+                if (state.fdc.dataBuffer) this.fdc.dataBuffer = state.fdc.dataBuffer.slice();
+            }
+        }
+
+        // State a snapshot must carry beyond CPU/RAM/paging, so quicksave, a save
+        // slot and a rewind step don't leave the sound chip and the disk controller
+        // where they happened to be. Field names are the machine's own.
+        _snapshotPeripherals() {
+            const p = {};
+            if (this.ay && (is128kCompat(this.machineType) || this.ay48kEnabled)) p.ay = this.ay;
+            if (this.betaDisk) {
+                const bd = this.betaDisk;
+                p.betaDisk = {
+                    numDrives: bd.drives ? bd.drives.length : 1,
+                    systemReg: bd.system, track: bd.track, sector: bd.sector,
+                    data: bd.data, status: bd.status,
+                };
+                p.betaDiskPaged = !!this.memory.trdosActive;
+                // B128 has no room for the parts that decide whether a command in
+                // flight can continue: which drive/side, where each head is, and the
+                // sector buffer being transferred. Those go in a private chunk.
+                p.betaDiskExtra = {
+                    command: bd.command, drive: bd.drive, side: bd.side,
+                    headTracks: (bd.drives || []).map(d => d.headTrack | 0),
+                    dataPos: bd.dataPos | 0,
+                    dataBuffer: bd.dataBuffer ? new Uint8Array(bd.dataBuffer) : null,
+                };
+            }
+            p.media = this._snapshotMedia();
+            if (this.ula && this.ula.ulaplus) {
+                p.ulaPlus = {
+                    enabled: this.ula.ulaplus.paletteEnabled,
+                    mode: this.ula.ulaplus.register,
+                    palette: this.ula.ulaplus.palette,
+                };
+            }
+            return p;
+        }
+
+        // The restoring counterpart: setters so the loader writes through to the
+        // real objects without knowing their shape.
+        _restorePeripherals() {
+            const self = this;
+            const p = {};
+            if (this.ay && (is128kCompat(this.machineType) || this.ay48kEnabled)) p.ay = this.ay;
+            if (this.betaDisk) {
+                const bd = this.betaDisk;
+                p.betaDisk = {
+                    set systemReg(v) { bd.system = v; },
+                    set track(v) { bd.track = v; },
+                    set sector(v) { bd.sector = v; },
+                    set data(v) { bd.data = v; },
+                    set status(v) { bd.status = v; },
+                };
+                p.setBetaDiskPaged = (paged) => { self.memory.trdosActive = !!paged; };
+                p.setBetaDiskExtra = (x) => {
+                    bd.command = x.command;
+                    bd.drive = x.drive;
+                    bd.side = x.side;
+                    if (bd.drives) {
+                        for (let i = 0; i < bd.drives.length && i < x.headTracks.length; i++) {
+                            bd.drives[i].headTrack = x.headTracks[i];
+                        }
+                    }
+                    bd.dataPos = x.dataPos;
+                    bd.dataBuffer = x.dataBuffer ? new Uint8Array(x.dataBuffer) : null;
+                };
+            }
+            p.setMedia = (state) => self._restoreMedia(state);
+            if (this.ula && this.ula.ulaplus) {
+                const u = this.ula;
+                p.ulaPlus = {
+                    setState(enabled, mode, palette) {
+                        u.ulaplus.paletteEnabled = !!enabled;
+                        u.ulaplus.register = mode & 0xFF;
+                        for (let i = 0; i < 64 && i < palette.length; i++) u.ulaplus.palette[i] = palette[i];
+                        u.ulaplus.paletteModified = true;
+                        u.updateULAplusPalette32();
+                    },
+                };
+            }
+            return p;
+        }
+
         saveSnapshot(format = 'sna') {
             switch (format.toLowerCase()) {
                 case 'z80':
                     return this.snapshotLoader.createZ80(this.cpu, this.memory, this.ula.borderColor);
                 case 'szx':
-                    return SZXLoader.create(this.cpu, this.memory, this.ula.borderColor);
+                    return SZXLoader.create(this.cpu, this.memory, this.ula.borderColor,
+                                            this._snapshotPeripherals());
                 case 'sna':
                 default:
                     return this.snapshotLoader.createSNA(this.cpu, this.memory, this.ula.borderColor);
@@ -8107,6 +7977,11 @@ import { Disassembler } from './disasm.js';
             const oldPaletteId = this.ula ? this.ula.paletteId : null;
             const oldCapsOption = this.ula ? this.ula.capsShiftOption : null;
             const oldSymbolOption = this.ula ? this.ula.symbolShiftOption : null;
+            const oldKeyboardGhosting = this.ula ? this.ula.keyboardGhosting : undefined;
+            const oldSnow = this.ula ? this.ula.snowEnabled : undefined;
+            // null means "whatever the new machine's profile says", which is the point
+            const oldInkSkew = this.ula ? this.ula.inkSkewOverride : undefined;
+            const oldPalComposite = this.ula ? this.ula.palCompositeEnabled : undefined;
             // Use persistent setting, not runtime state (which may be modified by test runner)
             const ulaplusSetting = storageGet('zxm8_ulaplus') === 'true';
 
@@ -8129,6 +8004,18 @@ import { Disassembler } from './disasm.js';
             // Restore ULA settings to new ULA
             if (oldCapsOption) {
                 this.ula.setModifierKeys(oldCapsOption, oldSymbolOption);
+            }
+            if (oldKeyboardGhosting !== undefined) {
+                this.ula.setKeyboardGhosting(oldKeyboardGhosting);
+            }
+            if (oldSnow !== undefined) {
+                this.ula.setSnowEffect(oldSnow);
+            }
+            if (oldInkSkew !== undefined) {
+                this.ula.setInkSkew(oldInkSkew);
+            }
+            if (oldPalComposite !== undefined) {
+                this.ula.setPalComposite(oldPalComposite);
             }
             if (this.lateTimings !== undefined) {
                 this.ula.setLateTimings(this.lateTimings);
@@ -8631,7 +8518,8 @@ import { Disassembler } from './disasm.js';
          * @returns {Uint8Array} SZX format snapshot
          */
         createSZXSnapshot() {
-            return SZXLoader.create(this.cpu, this.memory, this.ula.borderColor);
+            return SZXLoader.create(this.cpu, this.memory, this.ula.borderColor,
+                                            this._snapshotPeripherals());
         }
 
         /**
@@ -8940,273 +8828,9 @@ import { Disassembler } from './disasm.js';
             return null;
         }
 
-        getAutoMapKey(addr) {
-            addr &= 0xffff;
-            const p = this._autoMapPage(addr);
-            return p === null ? addr.toString() : addr + ':' + p;
-        }
+        // Auto-map, provenance, indirect jumps and the call graph live in
+        // core/debug-instrument.js and are mixed into this prototype below.
 
-        // Cheap paging signature — everything _autoMapPage depends on, packed into one
-        // int. Changes only on a paging port write, so the paged fast path recomputes
-        // the per-slot bitset pointers (below) only when this changes.
-        _pagingSignature() {
-            const m = this.memory;
-            return (m.currentRamBank & 63)
-                | ((m.currentRomBank & 15) << 6)
-                | ((m.specialPagingMode ? 1 : 0) << 10)
-                | ((m.ramInRomMode ? 1 : 0) << 11)
-                | ((m.scorpionRamInRomMode ? 1 : 0) << 12)
-                | ((m.specialBanks[0] & 63) << 13);
-        }
-
-        // Lazily allocate + return the touched-bitset triple for a page label.
-        _pagedTriple(label) {
-            let t = this.autoMap.pagedBits.get(label);
-            if (!t) {
-                t = {
-                    execBits: new Uint8Array(0x10000),
-                    readBits: new Uint8Array(0x10000),
-                    writeBits: new Uint8Array(0x10000)
-                };
-                this.autoMap.pagedBits.set(label, t);
-            }
-            return t;
-        }
-
-        // Hot path for paged fast mode: return the triple the given address currently
-        // maps to, rebuilding the per-slot cache only when paging changed.
-        _pagedTripleForAddr(addr) {
-            const am = this.autoMap;
-            const sig = this._pagingSignature();
-            if (sig !== am._pgSig) {
-                am._pgSig = sig;
-                for (let slot = 0; slot < 4; slot++) {
-                    const p = this._autoMapPage(slot << 14);
-                    am._pgSlots[slot] = this._pagedTriple(p === null ? '' : p);
-                }
-            }
-            return am._pgSlots[addr >> 14];
-        }
-
-        // Parse auto-map key back to {addr, page}
-        parseAutoMapKey(key) {
-            const parts = key.split(':');
-            const addr = parseInt(parts[0], 10);
-            const page = parts.length > 1 ? parts[1] : null;
-            return { addr, page };
-        }
-
-        // Enable/disable auto-mapping
-        setAutoMapEnabled(enabled) {
-            this.autoMap.enabled = enabled;
-            this.updateMemoryCallbacksFlag();
-        }
-
-        isAutoMapEnabled() {
-            return this.autoMap.enabled;
-        }
-
-        // Enable/disable fast bitset recording (see autoMap struct). Allocates the
-        // exec/read/write bitsets on first enable. Recording still requires
-        // setAutoMapEnabled(true); when both are on, the hot callbacks set a bit
-        // instead of updating the Map (much cheaper for long RZX replays).
-        //
-        // paged = true selects the per-page variant: one bitset triple per memory
-        // page (keyed like getAutoMapKey), so a bank-switching game maps correctly
-        // instead of unioning all banks into one flat 16-bit space. Per-page bitsets
-        // are allocated lazily as pages are touched.
-        setAutoMapFast(enabled, paged = false) {
-            this.autoMap.paged = !!(enabled && paged);
-            this.autoMap.fast = !!enabled;
-            this.autoMap._pgSig = -1;   // force the per-slot cache to rebuild
-            if (enabled && !paged && !this.autoMap.execBits) {
-                this.autoMap.execBits = new Uint8Array(0x10000);
-                this.autoMap.readBits = new Uint8Array(0x10000);
-                this.autoMap.writeBits = new Uint8Array(0x10000);
-            }
-        }
-
-        // Live fast-mode bitsets (Uint8Array(0x10000) each; 1 = touched). The flat
-        // exec/read/write are null until setAutoMapFast(true) with paged=false. In
-        // paged mode, `paged` is true and `pagedBits` is a Map<label,{execBits,
-        // readBits,writeBits}> — one flat-16-bit triple per page (label per
-        // getAutoMapKey; '' = unpaged fixed RAM / 48K).
-        getAutoMapBits() {
-            return {
-                execBits: this.autoMap.execBits,
-                readBits: this.autoMap.readBits,
-                writeBits: this.autoMap.writeBits,
-                paged: this.autoMap.paged,
-                pagedBits: this.autoMap.pagedBits
-            };
-        }
-
-        // Clear all auto-map tracking data (Map, flat bitset, and paged bitset modes)
-        clearAutoMap() {
-            this.autoMap.executed.clear();
-            this.autoMap.read.clear();
-            this.autoMap.written.clear();
-            this.autoMap.currentFetchAddrs.clear();
-            if (this.autoMap.execBits) this.autoMap.execBits.fill(0);
-            if (this.autoMap.readBits) this.autoMap.readBits.fill(0);
-            if (this.autoMap.writeBits) this.autoMap.writeBits.fill(0);
-            this.autoMap.pagedBits.clear();
-            this.autoMap._pgSig = -1;
-        }
-
-        // One provenance hit: count it against `pc`, remembering the call stack the
-        // first time we see that pc (the callers rarely differ, and copying the stack
-        // on every hit would cost more than the recording itself).
-        _noteProvenance(prov, pc) {
-            let e = prov.byPc.get(pc);
-            if (!e) {
-                e = {
-                    count: 0,
-                    // Routines entered to get here, outermost first…
-                    callers: this._debugCallStack.map(x => x.addr),
-                    // …and the CALL/RST instruction that entered each of them
-                    callSites: this._debugCallStack.map(x => x.caller),
-                };
-                prov.byPc.set(pc, e);
-            }
-            e.count++;
-        }
-
-        _provenanceList(prov) {
-            const out = [];
-            for (const [pc, e] of prov.byPc) {
-                out.push({
-                    pc, count: e.count,
-                    callers: e.callers.slice(),
-                    callSites: (e.callSites || []).slice(),
-                });
-            }
-            return out.sort((a, b) => b.count - a.count);
-        }
-
-        // Record which instructions READ from [lo, hi] — "who consumes this block?",
-        // the counterpart of write provenance. Same cost profile: in-range work only.
-        startReadProvenance(lo, hi) {
-            this.readProvenance.lo = lo & 0xFFFF;
-            this.readProvenance.hi = hi & 0xFFFF;
-            this.readProvenance.byPc = new Map();
-            this.readProvenance.enabled = true;
-            this.updateMemoryCallbacksFlag();
-        }
-
-        stopReadProvenance() {
-            this.readProvenance.enabled = false;
-            this.updateMemoryCallbacksFlag();
-            return this.getReadProvenance();
-        }
-
-        // [{ pc, count, callers:[addr] }], most-frequent reader first.
-        getReadProvenance() {
-            return this._provenanceList(this.readProvenance);
-        }
-
-        // Record which addresses inside [lo, hi] were EXECUTED, and who called them —
-        // "is this block code, and who runs it?". `pc` here is the executed address.
-        startExecProvenance(lo, hi) {
-            this.execProvenance.lo = lo & 0xFFFF;
-            this.execProvenance.hi = hi & 0xFFFF;
-            this.execProvenance.byPc = new Map();
-            this.execProvenance.enabled = true;
-            this.updateMemoryCallbacksFlag();
-        }
-
-        stopExecProvenance() {
-            this.execProvenance.enabled = false;
-            this.updateMemoryCallbacksFlag();
-            return this.getExecProvenance();
-        }
-
-        getExecProvenance() {
-            return this._provenanceList(this.execProvenance);
-        }
-
-        // Record which instructions write into [lo, hi] (inclusive). Cheap enough
-        // for a full RZX replay (work happens only for in-range writes).
-        startWriteProvenance(lo, hi) {
-            this.writeProvenance.lo = lo & 0xFFFF;
-            this.writeProvenance.hi = hi & 0xFFFF;
-            this.writeProvenance.byPc = new Map();
-            this.writeProvenance.enabled = true;
-            this.updateMemoryCallbacksFlag();
-        }
-
-        stopWriteProvenance() {
-            this.writeProvenance.enabled = false;
-            this.updateMemoryCallbacksFlag();
-            return this.getWriteProvenance();
-        }
-
-        // [{ pc, count, callers:[addr] }], most-frequent writer first.
-        getWriteProvenance() {
-            return this._provenanceList(this.writeProvenance);
-        }
-
-        // Called after each instruction (when indirectJumps.enabled): if the just-
-        // executed instruction at sitePC was JP (HL)/(IX)/(IY), record where it went.
-        // cpu.pc now holds the resolved target (the jump doesn't touch the reg).
-        _trackIndirectJump(sitePC) {
-            const op = this.memory.read(sitePC);
-            let kind;
-            if (op === 0xE9) kind = 'JP (HL)';
-            else if (op === 0xDD && this.memory.read((sitePC + 1) & 0xFFFF) === 0xE9) kind = 'JP (IX)';
-            else if (op === 0xFD && this.memory.read((sitePC + 1) & 0xFFFF) === 0xE9) kind = 'JP (IY)';
-            else return;
-            let e = this.indirectJumps.sites.get(sitePC);
-            if (!e) { e = { kind, targets: new Map() }; this.indirectJumps.sites.set(sitePC, e); }
-            const t = this.cpu.pc & 0xFFFF;
-            e.targets.set(t, (e.targets.get(t) || 0) + 1);
-        }
-
-        startIndirectJumps() {
-            this.indirectJumps.sites = new Map();
-            this.indirectJumps.enabled = true;
-        }
-
-        stopIndirectJumps() {
-            this.indirectJumps.enabled = false;
-            return this.getIndirectJumps();
-        }
-
-        // [{ site, kind, targets:[{target, count}] }], sorted by site.
-        getIndirectJumps() {
-            const out = [];
-            for (const [site, e] of this.indirectJumps.sites) {
-                const targets = [...e.targets.entries()]
-                    .map(([target, count]) => ({ target, count }))
-                    .sort((a, b) => a.target - b.target);
-                out.push({ site, kind: e.kind, targets });
-            }
-            return out.sort((a, b) => a.site - b.site);
-        }
-
-        startCallGraph() {
-            this.callGraph.edges = new Map();
-            this.callGraph.enabled = true;
-        }
-
-        stopCallGraph() {
-            this.callGraph.enabled = false;
-            return this.getCallGraph();
-        }
-
-        // [{ caller, callees:[{callee, count}] }], sorted by caller.
-        getCallGraph() {
-            const out = [];
-            for (const [caller, m] of this.callGraph.edges) {
-                const callees = [...m.entries()]
-                    .map(([callee, count]) => ({ callee, count }))
-                    .sort((a, b) => a.callee - b.callee);
-                out.push({ caller, callees });
-            }
-            return out.sort((a, b) => a.caller - b.caller);
-        }
-
-        // Get auto-map statistics
         getAutoMapStats() {
             return {
                 executed: this.autoMap.executed.size,
@@ -9831,3 +9455,12 @@ import { Disassembler } from './disasm.js';
         }
     }
 
+
+// The observation surface — auto-map coverage, read/write/exec provenance,
+// resolved indirect jumps and the runtime call graph — lives in
+// debug-instrument.js. Mixed into the prototype here, so every call site
+// (including window.zxDebug) keeps calling them as ordinary Spectrum methods.
+Object.assign(Spectrum.prototype, DebugInstrumentation);
+
+// Keyboard, joysticks, mouse and gamepad - see core/input.js.
+Object.assign(Spectrum.prototype, InputHandling);

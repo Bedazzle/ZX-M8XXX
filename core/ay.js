@@ -11,8 +11,6 @@
  */
 
 export class AY {
-    static VERSION = '1.0.0';
-
     // Volume table - logarithmic scale matching real AY chip
     // Values normalized to 0-1 range
     static VOLUME_TABLE = [

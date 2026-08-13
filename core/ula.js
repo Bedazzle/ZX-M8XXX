@@ -6,6 +6,9 @@
  */
 
 import { getMachineProfile, is128kCompat } from './machines.js';
+import { applySnow, applySnowLine, snowActive, snowRange, DISPLAY_BYTES, M1Log, SnowCalibration } from './ula-snow.js';
+import { applyInkSkew, inkSkewFor } from './ula-inkskew.js';
+import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
     // PC keys that can act as the ZX modifiers (Caps Shift / Symbol Shift).
     // Option id → { label, codes: e.code values }. CapsLock and the Windows key are
@@ -45,6 +48,14 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             this.pentagonAttrOffset = 0;  // Pentagon ULA attribute read offset in T-states (negative = read earlier)
             this.mcWriteAdjust = 5;   // Write time adjustment - ADDED to recorded tStates (try 5-8 for PUSH)
             this.mc128kOffset = 0;    // 128K-specific colTstate offset (console: spectrum.ula.mc128kOffset = X)
+            // Ink/paper edge skew — a Ferranti-ULA trait, so it comes from the
+            // machine profile like hasSnow does (console: spectrum.ula.setInkSkew(x))
+            this.inkSkewOverride = null;
+            this.inkSkew = inkSkewFor(this.profile, null);
+            // PAL composite (RF) simulation — off by default; it is a whole-frame
+            // filter, and it is only faithful for a TV, not for an RGB monitor.
+            this.palCompositeEnabled = false;
+            this.palFilter = null;
             this.SCREEN_WIDTH = 256;
             this.SCREEN_HEIGHT = 192;
 
@@ -207,6 +218,25 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             
             this.keyboardState = new Uint8Array(8);
             this.keyboardState.fill(0xff);
+
+            // ULA snow (off by default): with I in $40-$7F the Z80's refresh
+            // address lands in contended RAM and the ULA puts the byte from the
+            // bus on screen instead of the display byte. See core/ula-snow.js and
+            // _displayRam() below.
+            this.snowEnabled = false;
+            this._snowRam = null;       // corrupted copy of the display file
+            this._snowFrameDone = false;
+            this.snowBytes = 0;         // cells hit by snow, for tests/debug
+            this.snowDoubles = 0;       // cells that repeated their neighbour
+            this.m1Log = new M1Log();   // filled by the CPU while snow is on
+            // Exposed so a calibration run can sweep it against the Snow* tests
+            this.snowCalibration = SnowCalibration;
+
+            // Keyboard ghosting, as the real matrix behaves (off by default — a PC
+            // keyboard has no reason to inflict it). See _ghostedRows().
+            this.keyboardGhosting = false;
+            this._ghostRows = new Uint8Array(8);
+            this._ghostPressed = new Uint8Array(8);
 
             // Counts keyboard matrix reads. A ROM only scans the keyboard once it
             // has booted to an input loop, so a rising count is how the auto-loader
@@ -765,6 +795,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
 
         reset() {
             this.borderColor = 7;
+            if (this.palFilter) this.palFilter.resetPhase();
             this.earOutput = 0;
             this.micOutput = 0;
             this.flashState = false;
@@ -919,6 +950,14 @@ import { getMachineProfile, is128kCompat } from './machines.js';
 
         // Called at start of each frame
         startFrame() {
+            // Snow is applied per line as the beam reaches it; this restarts it
+            this._snowFrameDone = false;
+            // The refresh log is frame-relative, like cpu.tStates
+            if (this.snowEnabled) {
+                this.m1Log.reset();
+                if (this.cpu && this.cpu.m1Log !== this.m1Log) this.cpu.m1Log = this.m1Log;
+            }
+
             // Track if previous frame had screen bank changes (for scroll17-style effects)
             // If so, we need to defer paper rendering to endFrame when all changes are known
             this.hadScreenBankChanges = this.screenBankChanges && this.screenBankChanges.length > 1;
@@ -1197,6 +1236,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 const attrAddr = 0x1800 + ((y >> 3) << 5);
                 const rowOffset = visY * totalWidth + this.BORDER_LEFT;
 
+                // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                const inkSkew = this.inkSkew;
+                let prevInkBit = 0;
                 for (let col = 0; col < 32; col++) {
                     const pixelByte = screenRam[pixelAddr + col];
                     const attr = screenRam[attrAddr + col];
@@ -1226,6 +1268,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                     fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                     fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                     fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                    if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                 }
             }
         }
@@ -1288,7 +1331,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
         // Uses T-state based timing with LINE_TIMES_BASE for accurate positioning
         renderScanline(line) {
             const screen = this.memory.getScreenBase();
-            const screenRam = screen.ram;
+            const screenRam = this._displayRam(screen, line);
 
             // Convert frame line to visible line
             const offset = this.VISIBLE_LINE_OFFSET || 0;
@@ -1457,6 +1500,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         const machineOffset = is128kCompat(this.machineType) ? (this.mc128kOffset || 0) : 0;
                         const prefetchOffset = (this.profile.ulaProfile === 'pentagon') ? (this.pentagonAttrOffset || 0) : 0;
 
+                        // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                        const inkSkew = this.inkSkew;
+                        let prevInkBit = 0;
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
                             const attrOffset = attrRowOffset + col;
@@ -1507,6 +1553,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                             fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                             fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                             fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                            if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                         }
                     } else {
                         // Fast path: no attribute changes, use optimized 32-bit writes
@@ -1532,6 +1579,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                             ulaPal32ForLine = this.paletteTempLine;
                         }
 
+                        // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                        const inkSkew = this.inkSkew;
+                        let prevInkBit = 0;
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
                             const attr = screenRam[attrAddr + col];
@@ -1564,6 +1614,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                             fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                             fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                             fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                            if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                         }
                     }
                 }
@@ -1594,7 +1645,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             if (this.deferPaperRendering) return false;
 
             const screen = this.memory.getScreenBase();
-            const screenRam = screen.ram;
+            const screenRam = this._displayRam(screen, line);
 
             // Convert frame line to screen line (0-191)
             const screenLine = line - this.FIRST_SCREEN_LINE;
@@ -1653,6 +1704,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                     const attrChanges = this.attrChanges;
                     const attrInitial = this.attrInitial;
 
+                    // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                    const inkSkew = this.inkSkew;
+                    let prevInkBit = 0;
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
                         const attrOffset = attrRowOffset + col;
@@ -1702,9 +1756,13 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                         fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                         fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                     }
                 } else {
                     // Fast path: no attribute changes, render from current screen
+                    // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                    const inkSkew = this.inkSkew;
+                    let prevInkBit = 0;
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
                         const attr = screenRam[attrAddr + col];
@@ -1734,6 +1792,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                         fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                         fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                     }
                 }
             } else {
@@ -1910,6 +1969,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             }
 
             this.frameCounter++;
+            this._applyPalComposite();
             return this.frameBuffer;
         }
 
@@ -1969,6 +2029,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                 let changeIdx = 0;
                 let currentBank = changes[0].bank;
 
+                // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                const inkSkew = this.inkSkew;
+                let prevInkBit = 0;
                 for (let col = 0; col < 32; col++) {
                     // T-state at column start (each column = 4 T-states = 8 pixels at 2 pixels/T-state)
                     const colTstate = paperStartTstate + (col * 4);
@@ -2008,6 +2071,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                     fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                     fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                     fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                    if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                 }
             }
         }
@@ -2034,13 +2098,225 @@ import { getMachineProfile, is128kCompat } from './machines.js';
         
         readKeyboard(highByte) {
             this.keyboardReads++;
+            const rows = this.keyboardGhosting ? this._ghostedRows() : this.keyboardState;
             let result = 0xff;
             for (let row = 0; row < 8; row++) {
                 if ((highByte & (1 << row)) === 0) {
-                    result &= this.keyboardState[row];
+                    result &= rows[row];
                 }
             }
             return result;
+        }
+
+        setKeyboardGhosting(enabled) {
+            this.keyboardGhosting = !!enabled;
+        }
+
+        // Ink/paper edge skew. Pass a fraction of a pixel (0 = a pixel-exact
+        // renderer, which is what the Amstrad and clone ULAs give), or null to go
+        // back to whatever the machine profile says.
+        setInkSkew(value) {
+            this.inkSkewOverride = (value === null || value === undefined) ? null : value;
+            this.inkSkew = inkSkewFor(this.profile, this.inkSkewOverride);
+            return this.inkSkew;
+        }
+
+        getInkSkew() { return this.inkSkew; }
+
+        // --- PAL composite (RF) simulation -------------------------------------
+        //
+        // The filter models what a TV does to the single wire it is given, so it is
+        // applied once, to the finished frame, from endFrame()/renderFrame(). It is
+        // the only way "Chromatrons Attack" is visible; see core/pal-composite.js.
+        setPalComposite(enabled) {
+            this.palCompositeEnabled = !!enabled;
+            if (this.palCompositeEnabled) {
+                // On a machine whose subcarrier is not locked the phase creeps a
+                // little every frame — that is dot crawl, and it means the picture
+                // depends on how long the filter has been running. Start the drift
+                // from a known point so a given frame is reproducible; otherwise a
+                // screen test passes or fails according to what ran before it.
+                this._ensurePalFilter().resetPhase();
+            }
+        }
+
+        getPalComposite() { return this.palCompositeEnabled; }
+
+        // Decoder settings a caller may want to move (burst phase, saturation,
+        // notch depth, delay line). Machine-derived fields are not overridable here.
+        configurePalComposite(opts) {
+            this._ensurePalFilter();
+            this.palFilter.configure(opts || {});
+        }
+
+        _ensurePalFilter() {
+            const locked = palLocked(this.profile);
+            if (!this.palFilter) {
+                this.palFilter = createPalFilter({
+                    locked,
+                    pixelsPerLine: this.TSTATES_PER_LINE * 2,
+                    linesPerFrame: this.LINES_PER_FRAME
+                });
+            } else {
+                this.palFilter.configure({
+                    locked,
+                    pixelsPerLine: this.TSTATES_PER_LINE * 2,
+                    linesPerFrame: this.LINES_PER_FRAME
+                });
+            }
+            return this.palFilter;
+        }
+
+        // PAL alternates the V axis every *display* line, so the parity has to be
+        // taken from the frame line, not from wherever the filter happens to start.
+        _applyPalComposite() {
+            if (!this.palCompositeEnabled) return;
+            this._ensurePalFilter();
+            this.palFilter.apply(this.frameBuffer, this.TOTAL_WIDTH, 0, this.TOTAL_HEIGHT, 0);
+        }
+
+        setSnowEffect(enabled) {
+            this.snowEnabled = !!enabled;
+            this._snowFrameDone = false;
+            // The CPU only records its refresh cycles while the effect is on
+            this.m1Log.enabled = this.snowEnabled;
+            this.m1Log.reset();
+            if (this.cpu) this.cpu.m1Log = this.snowEnabled ? this.m1Log : null;
+        }
+
+        // Is the machine producing snow right now? Needs the option, a ULA that does
+        // it at all, and I pointing into memory it can mistake the refresh for —
+        // which on a 128K means $C0-$FF while an odd (contended) page sits at $C000.
+        //
+        // `hasSnow`, not `hasContention`: the +2A/+3 have contended memory and no
+        // snow. Weiv is explicit — "there is no snow/double effects on Amstrad's
+        // black machines (+2A/+2B/+3/…) and on any ZX Spectrum clones except maybe
+        // those that based on original ULA" — they use the 40077 gate array rather
+        // than the Ferranti part.
+        isSnowing() {
+            const profile = this.memory && this.memory.profile;
+            const banked = profile && profile.ramPages > 1;
+            return snowActive({
+                enabled: this.snowEnabled,
+                hasSnow: !!(profile && profile.hasSnow),
+                i: this.cpu ? (this.cpu.i || 0) : 0,
+                pagedBankAtC000: banked ? (this.memory.currentRamBank & 7) : null
+            });
+        }
+
+        // A 256-entry yes/no for I, rebuilt per frame because the page at $C000 can
+        // change between frames.
+        _snowOkTable() {
+            const profile = this.memory && this.memory.profile;
+            const banked = profile && profile.ramPages > 1;
+            const paged = banked ? (this.memory.currentRamBank & 7) : null;
+            if (!this._snowOk) this._snowOk = new Uint8Array(256);
+            for (let i = 0; i < 256; i++) {
+                this._snowOk[i] = snowRange(i, { pagedBankAtC000: paged }) ? 1 : 0;
+            }
+            return this._snowOk;
+        }
+
+        // T-state at which the ULA starts fetching the first cell pair of a screen
+        // line — the same base the renderer uses for its per-column timing, so snow
+        // lands where the picture is actually drawn.
+        _paperStartTstate(screenLine) {
+            const offset = this.VISIBLE_LINE_OFFSET || 0;
+            const visY = this.BORDER_TOP + screenLine - offset;
+            if (visY < 0 || visY >= this.TOTAL_HEIGHT) return null;
+            return this.calculateLineStartTstate(visY) + (this.BORDER_LEFT / 2);
+        }
+
+        // What the ULA actually managed to put on screen. Every render path takes
+        // its display bytes from here, so snow can't be drawn by one and missed by
+        // another. Built once per frame: the picture is corrupted as a whole, and
+        // rebuilding per scanline would cost 192 copies of it.
+        _displayRam(screen, frameLine) {
+            const ram = screen.ram;
+            if (!this.isSnowing()) {
+                // Otherwise the counters keep the last snowing machine's numbers and
+                // read as though this one were producing snow
+                this.snowBytes = 0;
+                this.snowDoubles = 0;
+                return ram;
+            }
+
+            if (!this._snowRam) {
+                this._snowRam = new Uint8Array(DISPLAY_BYTES);
+                this._snowLinesDone = new Uint8Array(192);
+            }
+            // Start of a frame: the picture as written, then snow is applied to
+            // each line as the beam reaches it (the refresh log only holds what
+            // has happened so far — that is the whole point of the effect).
+            if (!this._snowFrameDone) {
+                this._snowRam.set(ram.subarray(0, DISPLAY_BYTES));
+                this._snowLinesDone.fill(0);
+                this.snowBytes = 0;
+                this.snowDoubles = 0;
+                this._snowFrameDone = true;
+            }
+
+            // Which values of I were snowing, evaluated for this machine and the
+            // page currently at $C000 — the log carries the I of each refresh, so a
+            // program that moves I mid-frame is honoured rather than judged by
+            // whatever I happened to hold when the frame was drawn.
+            const snowOk = this._snowOkTable();
+
+            const doLine = (y) => {
+                if (y < 0 || y >= 192 || this._snowLinesDone[y]) return;
+                this._snowLinesDone[y] = 1;
+                const counts = applySnowLine(this._snowRam, ram, this.m1Log,
+                                             this._paperStartTstate(y), y, snowOk);
+                this.snowBytes += counts.snow;
+                this.snowDoubles += counts.double;
+            };
+
+            if (frameLine === undefined) {
+                for (let y = 0; y < 192; y++) doLine(y);      // full-frame redraw
+            } else {
+                doLine(frameLine - this.FIRST_SCREEN_LINE);
+            }
+            return this._snowRam;
+        }
+
+        // The matrix has no diodes: two keys held in different half-rows on the
+        // same column short those half-rows together through their contacts, so
+        // every other key held in either row now reads as pressed in both. Three
+        // keys forming the corner of a rectangle therefore conjure a fourth —
+        // the reason games ask for key combinations that avoid it. Shorted rows
+        // chain, so the columns are unioned until nothing changes.
+        _ghostedRows() {
+            const st = this.keyboardState;
+            const out = this._ghostRows;
+            let rowsHeld = 0;
+            for (let r = 0; r < 8; r++) {
+                out[r] = st[r];
+                if ((st[r] & 0x1F) !== 0x1F) rowsHeld++;
+            }
+            if (rowsHeld < 2) return out;   // one row can't short against anything
+
+            const p = this._ghostPressed;
+            for (let r = 0; r < 8; r++) p[r] = ~st[r] & 0x1F;
+
+            let changed = true;
+            while (changed) {
+                changed = false;
+                for (let a = 0; a < 8; a++) {
+                    if (p[a] === 0) continue;
+                    for (let b = a + 1; b < 8; b++) {
+                        if ((p[a] & p[b]) === 0) continue;   // no column in common
+                        const both = p[a] | p[b];
+                        if (both !== p[a] || both !== p[b]) {
+                            p[a] = both;
+                            p[b] = both;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            for (let r = 0; r < 8; r++) out[r] = (st[r] & 0xE0) | (~p[r] & 0x1F);
+            return out;
         }
         
         // Map for string-based key lookup
@@ -2216,7 +2492,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
             }
             
             const screen = this.memory.getScreenBase();
-            const screenRam = screen.ram;
+            const screenRam = this._displayRam(screen);
             
             // Use internal borderChanges if no parameter provided
             const changes = borderChanges || this.borderChanges;
@@ -2262,6 +2538,9 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         ulaPal32 = ulaplus.palette32;
                     }
 
+                    // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
+                    const inkSkew = this.inkSkew;
+                    let prevInkBit = 0;
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
                         const attr = screenRam[attrAddr + col];
@@ -2291,6 +2570,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                         fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
                         fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
                         fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
+                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
                     }
                 }
             } else {
@@ -2304,6 +2584,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
                     }
                 }
             }
+            this._applyPalComposite();
             return this.frameBuffer;
         }
         

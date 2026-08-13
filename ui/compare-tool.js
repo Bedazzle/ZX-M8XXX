@@ -2,6 +2,8 @@
 import { SLOT1_START, SLOT2_START, SLOT3_START, SCREEN_BITMAP, SCREEN_AFTER } from '../core/constants.js';
 import { hex8, hex16 } from '../core/utils.js';
 import { parseSnapshotFile as parseSnapshot } from './snapshot-parse.js';
+import { readRegion, diffRegions, validateRegion, regionAddress, regionLabel,
+         availableLength, sameRegion } from '../core/mem-compare.js';
 
 export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     // ========== Compare Tool ==========
@@ -28,6 +30,16 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     const compareGoPage = document.getElementById('compareGoPage');
     const compareMemBinOptions = document.getElementById('compareMemBinOptions');
     const compareMemBinStart = document.getElementById('compareMemBinStart');
+    const compareMemMemOptions = document.getElementById('compareMemMemOptions');
+    const compareMemAMode = document.getElementById('compareMemAMode');
+    const compareMemBMode = document.getElementById('compareMemBMode');
+    const compareMemABank = document.getElementById('compareMemABank');
+    const compareMemBBank = document.getElementById('compareMemBBank');
+    const compareMemAAddr = document.getElementById('compareMemAAddr');
+    const compareMemBAddr = document.getElementById('compareMemBAddr');
+    const compareMemLength = document.getElementById('compareMemLength');
+    const compareMemHint = document.getElementById('compareMemHint');
+    const compareFileAContainer = document.getElementById('compareFileAContainer');
 
     let compareDataA = null;
     let compareDataB = null;
@@ -96,9 +108,18 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
                 compareFileBContainer.style.display = 'block';
             }
             compareMemBinOptions.style.display = mode === 'mem-bin' ? 'flex' : 'none';
+            compareMemMemOptions.style.display = mode === 'mem-mem' ? 'flex' : 'none';
+            // Memory vs Memory reads the running machine — no file on either side
+            if (compareFileAContainer) {
+                compareFileAContainer.style.display = mode === 'mem-mem' ? 'none' : 'block';
+            }
+            if (mode === 'mem-mem') {
+                compareFileBContainer.style.display = 'none';
+                updateMemMemForm();
+            }
             // Exclude screen only makes sense for snapshot comparisons
             const excludeScreenLabel = chkCompareExcludeScreen.parentElement;
-            if (mode === 'bin-bin' || mode === 'mem-bin') {
+            if (mode === 'bin-bin' || mode === 'mem-bin' || mode === 'mem-mem') {
                 excludeScreenLabel.style.opacity = '0.4';
                 chkCompareExcludeScreen.disabled = true;
             } else {
@@ -108,6 +129,199 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             clearCompareResults();
         });
     });
+
+    // ---- Memory vs Memory ----------------------------------------------------
+
+    // How many RAM banks this machine has. 48K has one block and no paging, so
+    // the bank option is not offered there at all.
+    function ramPageCount() {
+        const st = getEmulatorState();
+        const profile = st && st.memory && st.memory.profile;
+        return (profile && profile.ramPages) || 1;
+    }
+
+    // Shape the form to the machine: on 48K there is nothing to page, so the mode
+    // selects are hidden and both regions are plain 64K addresses.
+    //
+    // Called on a machine switch too (refreshMachine, below): the controls would
+    // otherwise keep offering banks the new machine doesn't have, and any result
+    // on screen would be labelled with banks that no longer mean anything.
+    let lastMachineKey = null;
+    function updateMemMemForm() {
+        const pages = ramPageCount();
+        const banked = pages > 1;
+
+        const st = getEmulatorState();
+        const key = (st && st.machineType) + ':' + pages;
+        if (lastMachineKey !== null && key !== lastMachineKey) clearCompareResults();
+        lastMachineKey = key;
+        for (const [sel, bank] of [[compareMemAMode, compareMemABank],
+                                   [compareMemBMode, compareMemBBank]]) {
+            if (!sel || !bank) continue;
+            sel.style.display = banked ? '' : 'none';
+            if (!banked) sel.value = 'paged';
+
+            // A list of the banks this machine actually has, rather than a number
+            // box: it can't be typed out of range, and it has no spinner to draw.
+            if (bank.options.length !== pages) {
+                const keep = bank.value;
+                bank.innerHTML = '';
+                for (let i = 0; i < pages; i++) {
+                    const o = document.createElement('option');
+                    o.value = String(i);
+                    o.textContent = String(i);
+                    bank.appendChild(o);
+                }
+                bank.value = (Number(keep) < pages) ? keep : '0';
+            }
+            if (Number(bank.value) >= pages) bank.value = '0';
+
+            // Hidden but still occupying its place, so region A and region B line
+            // up whether or not either of them is addressed by bank.
+            bank.hidden = !(banked && sel.value === 'bank');
+            if (!banked) bank.style.display = 'none';
+            else bank.style.display = '';
+        }
+        if (compareMemHint) {
+            compareMemHint.textContent = banked
+                ? `bytes (hex) — ${pages} RAM banks, $0000-$3FFF each`
+                : 'bytes (hex) — 48K: one 64K address space';
+        }
+    }
+
+    for (const sel of [compareMemAMode, compareMemBMode]) {
+        if (sel) sel.addEventListener('change', updateMemMemForm);
+    }
+
+    // The machine can be switched while the tool is open, so the form is also
+    // re-shaped every time the panel is shown (see the mode handler above).
+    try { updateMemMemForm(); } catch (e) { /* emulator not built yet */ }
+
+    function readMemRegionForm(modeSel, bankInput, addrInput, side) {
+        const mode = modeSel && modeSel.style.display === 'none' ? 'paged'
+                                                                : (modeSel ? modeSel.value : 'paged');
+        const addr = parseInt((addrInput.value || '').trim(), 16);
+        const region = {
+            mode,
+            addr: isNaN(addr) ? NaN : addr,
+            bank: mode === 'bank' ? Number(bankInput.value) : undefined
+        };
+        const check = validateRegion(region, { ramPages: ramPageCount() });
+        if (!check.ok) return { error: `Region ${side}: ${check.error}` };
+        return { region };
+    }
+
+    function compareMemoryVsMemory() {
+        // Machines can also be switched by loading a project or a ROM, which don't
+        // come through the selector — re-shape before reading the form either way.
+        updateMemMemForm();
+        const a = readMemRegionForm(compareMemAMode, compareMemABank, compareMemAAddr, 'A');
+        if (a.error) { alert(a.error); return; }
+        const b = readMemRegionForm(compareMemBMode, compareMemBBank, compareMemBAddr, 'B');
+        if (b.error) { alert(b.error); return; }
+
+        const wanted = parseInt((compareMemLength.value || '').trim(), 16);
+        if (isNaN(wanted) || wanted <= 0) { alert('Length must be a hex number of bytes'); return; }
+
+        if (sameRegion(a.region, b.region)) {
+            alert('Both regions are the same place — they will always be identical');
+            return;
+        }
+
+        const st = getEmulatorState();
+        const io = {
+            readPaged: (addr) => st.memory.read(addr),
+            readBank: (bank) => st.memory.getRamBank(bank)
+        };
+        const ra = readRegion(a.region, wanted, io);
+        const rb = readRegion(b.region, wanted, io);
+        const length = Math.min(ra.length, rb.length);
+        if (length === 0) { alert('Nothing to compare at those addresses'); return; }
+
+        const result = diffRegions(ra.bytes.subarray(0, length), rb.bytes.subarray(0, length));
+        const showEqual = chkCompareShowEqual.checked;
+        const showHexDump = chkCompareHexDump.checked;
+
+        // Say so when the run was shortened, rather than reporting a smaller
+        // comparison as though it were the one that was asked for.
+        const shortest = Math.min(availableLength(a.region), availableLength(b.region));
+        if (length < wanted) {
+            compareHeaderResults.style.display = 'block';
+            compareHeaderTable.innerHTML =
+                `<div style="color:var(--yellow)">Shortened to ${hex16(length)} bytes: ` +
+                `${hex16(wanted)} from ${regionLabel(shortest === availableLength(a.region) ? a.region : b.region)} ` +
+                `would run past the end.</div>`;
+        }
+
+        if (result.count === 0) {
+            compareNoResults.style.display = 'block';
+            comparePagination.style.display = 'none';
+            compareDataResults.style.display = 'none';
+            return;
+        }
+
+        compareDataResults.style.display = 'block';
+        comparePagination.style.display = 'none';
+        compareDiffCountNoPage.style.display = 'block';
+        compareDiffCountNoPage.textContent =
+            `${result.count} bytes differ in ${result.blocks.length} block` +
+            `${result.blocks.length === 1 ? '' : 's'} ` +
+            `(${hex16(length)} bytes, A ${regionLabel(a.region)} vs B ${regionLabel(b.region)})`;
+        compareDataTable.innerHTML = renderMemMemDiff(
+            ra.bytes, rb.bytes, a.region, b.region, result, length, showEqual, showHexDump);
+    }
+
+    // Each side keeps its own addresses: the point of this comparison is that the
+    // two regions live at different places, so a single offset column would make
+    // the reader do the arithmetic.
+    function renderMemMemDiff(bytesA, bytesB, regA, regB, result, length, showEqual, showHexDump) {
+        const rows = [];
+        const MAX_LINES = 2000;
+
+        if (!showHexDump) {
+            const list = [];
+            for (const block of result.blocks) {
+                for (let i = 0; i < block.length && list.length < 500; i++) {
+                    const off = block.offset + i;
+                    list.push(`<div style="color:#ff6b6b">${regionAddress(regA, off)}: ${hex8(bytesA[off])}` +
+                              ` vs ${regionAddress(regB, off)}: ${hex8(bytesB[off])}</div>`);
+                }
+            }
+            if (result.count > list.length) {
+                list.push(`<div>... and ${result.count - list.length} more</div>`);
+            }
+            return list.join('');
+        }
+
+        // 16-byte lines around each block of differences, A above B
+        const shown = new Set();
+        for (const block of result.blocks) {
+            const from = block.offset & ~0xF;
+            const to = Math.min(length, block.offset + block.length);
+            for (let lineStart = from; lineStart < to; lineStart += 16) {
+                if (shown.has(lineStart) || rows.length > MAX_LINES) continue;
+                shown.add(lineStart);
+                let hexA = '', hexB = '', ascA = '', ascB = '';
+                for (let j = 0; j < 16; j++) {
+                    const off = lineStart + j;
+                    const inRange = off < length;
+                    const a = inRange ? bytesA[off] : null;
+                    const b = inRange ? bytesB[off] : null;
+                    const isDiff = inRange && a !== b;
+                    const style = isDiff ? 'color:#ff6b6b;font-weight:bold' : '';
+                    hexA += `<span style="${style}">${a !== null ? hex8(a) : '--'}</span> `;
+                    hexB += `<span style="${style}">${b !== null ? hex8(b) : '--'}</span> `;
+                    ascA += `<span style="${style}">${a !== null ? escapeHtmlChar(a) : '.'}</span>`;
+                    ascB += `<span style="${style}">${b !== null ? escapeHtmlChar(b) : '.'}</span>`;
+                }
+                rows.push(`<div style="white-space:nowrap">A ${regionAddress(regA, lineStart)}: ${hexA}|${ascA}|</div>`);
+                rows.push(`<div style="white-space:nowrap;color:var(--cyan)">B ${regionAddress(regB, lineStart)}: ${hexB}|${ascB}|</div>`);
+                rows.push('<hr style="border-color:var(--border);margin:5px 0">');
+            }
+        }
+        if (showEqual && result.count === 0) rows.push('<div>No differences</div>');
+        return rows.join('');
+    }
 
     function clearCompareResults() {
         compareHeaderResults.style.display = 'none';
@@ -180,7 +394,9 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         const mode = document.querySelector('input[name="compareMode"]:checked').value;
         clearCompareResults();
 
-        if (mode === 'mem-bin') {
+        if (mode === 'mem-mem') {
+            compareMemoryVsMemory();
+        } else if (mode === 'mem-bin') {
             if (!compareDataA) {
                 alert('Please select a binary file');
                 return;
@@ -751,4 +967,12 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             updateComparePagination();
         }
     }
+
+    return {
+        // The machine decides what the Memory vs Memory controls may offer, so
+        // switching it has to re-shape them — otherwise the bank selector keeps
+        // the old machine's range and a result stays on screen labelled with
+        // banks that no longer exist.
+        refreshMachine: () => { try { updateMemMemForm(); } catch (e) { /* not ready */ } }
+    };
 }

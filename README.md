@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.15.23** | [Changelog](CHANGELOG.md)
+**Version 0.15.29** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just serve from any webserver, local or remote.
 
@@ -12,10 +12,17 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory banking and contention emulation
 - Pixel-perfect ULA video timing with border effects
 - ULAplus extended palette (64 colors, HAM256 raster effects)
+- ULA snow (optional) — the 48K refresh-cycle fault that fills the screen with noise when I points at $40-$7F
+- ULA ink edge skew — the Ferranti mux switches into ink late, so an ink pixel is narrower than a paper one (48K/128K/+2 only, as with snow)
 - AY-3-8910 sound chip emulation (stereo modes: Mono/ABC/ACB)
 - PSG file export (record AY music with player source)
-- SNA/Z80/SZX snapshot loading/saving
+- SNA/Z80/SZX snapshot loading/saving, nine save-state slots
+- Rewind (Ctrl+Left) — step back through the last minute of play
+- Kempston, Sinclair 1/2, Cursor and custom-key joysticks (numpad or gamepad)
 - TAP/TZX tape loading (instant or real-time with border stripes and sound)
+- WAV tape loading (real recordings of tapes, including turbo loaders)
+- Tape SAVE and MIC recording — a program's own SAVE is captured to a new tape
+- Multiple tape slots (swap sides or games without reloading)
 - Auto Load: automatic LOAD "" for tapes, TR-DOS boot for disks (turbo block handoff)
 - TRD/SCL disk image support (TR-DOS format) with boot injection
 - DSK disk image support (+3 µPD765 FDC, standard and extended CPC DSK format)
@@ -23,12 +30,14 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - MDR Microdrive cartridge support (Interface 1, 8-drive daisy chain)
 - OPD disk image support (Opus Discovery WD1770 FDC + MC6821 PIA, memory-mapped I/O)
 - Multi-drive support: BetaDisk 4 drives (A-D), FDC 2 drives (A-B), +D 2 drives (A-B), Microdrive 8 drives (1-8), Opus 2 drives (A-B), simultaneous tape+disk
+- Didaktik 40/80 MDOS disk images (read and edit in the Explorer; the interface itself is not emulated)
 - ZIP archive support
-- RZX playback
+- RZX recording and playback
 - Kempston Joystick (numpad) with extended buttons support
 - Kempston Mouse with wheel support and swappable L/R buttons
-- Hardware gamepad support (USB/Bluetooth via Gamepad API)
-- Keyboard: Ctrl=Caps Shift, Alt=Symbol Shift (works with any layout)
+- Hardware gamepad support (USB/Bluetooth via Gamepad API), autofire
+- Keyboard: Ctrl=Caps Shift, Alt=Symbol Shift (works with any layout), on-screen ZX keyboard
+- Keyboard ghosting, as on real hardware (optional — three keys can conjure a fourth)
 
 ### Debugger
 - Unified breakpoint system (execution, memory read/write, port I/O)
@@ -36,6 +45,12 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Memory region marking (code/data/text/graphics)
 - Auto memory mapping (detect regions during execution)
 - Memory heatmap visualization
+- Disassembly-toolchain exports (SkoolKit `.ctl`, Ghidra `.csv`, sjasmplus `.sym`)
+- Runtime profiler with hotspot detection and a visual call graph
+- Code Path recording (diff which code ran between two runs)
+- Struct mapper (field accesses at offsets from IX/IY or a fixed base)
+- Signature packs for auto-labelling, with a GitHub pack browser
+- Shadow screen view, layout splitters, Ctrl+G goto palette
 - Labels with import/export
 - Cross-references (XRefs) tracking
 - Subroutine detection and marking
@@ -46,26 +61,41 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Undo/Redo support
 - Pattern search with wildcards
 - Project save/load (complete session state)
+- Headless automation API (`window.zxDebug`) for scripted runs — see [docs/automation.md](docs/automation.md)
 
 ### Assembler
 - Integrated Z80 assembler (sjasmplus-compatible)
 - Multi-file projects with virtual file system
+- LUA/ENDLUA scripting (sjasmplus-compatible, via fengari)
 - Syntax highlighting
 - Search/replace across all files
-- Output: SAVEBIN, SAVESNA, SAVETAP
+- Output: SAVEBIN, SAVESNA, SAVETAP, SAVETRD, EMPTYTRD, EXPORT
+- `zx.*` Lua helpers (trdimage_create/add_file, save_snapshot_sna)
+- Import foreign sources: ALASM, TASM, STORM, ADS, GENS, Zeus, Pasmo
+- Source beautifier (case, number base, alignment, jump labels)
+- Code snippets (built-in and your own)
 - MD5 checksum verification
 - Debug injection at entry point (with label export to debugger)
 
 ### Tools
 - Graphics Viewer for sprite search
 - Memory Watches (up to 10 addresses)
+- POKE Manager (native JSON and community `.pok` cheat files)
+- POKE Search (find a game's lives/ammo variable by narrowing snapshots)
+- Screenshot, GIF and animation export (with loop detection)
 - Text Scanner for string search
 - Programmer Calculator (hex/dec/oct/bin)
-- Compare Tool (snapshots, binaries, emulator state)
-- Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, MGT, DSK, MDR, OPD, ZIP — BASIC decoder, disassembly, hex dump, disk map visualization)
+- Compare Tool (snapshots, binaries, emulator state, and memory against memory — by 64K address or by RAM bank)
+- Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, MGT, DSK, MDR, OPD, D40/D80, ZIP — BASIC decoder, disassembly, hex dump, disk map visualization, per-format editors, SPECSCII catalogue banners)
 - Game Mapper (capture rooms, stitch into navigable map grid, blend screenshots, save/load JSON, export PNG)
 - OCR Text Ripper (screen text recognition, custom cell size 4–8×4–16 px, grid origin offsets, font extraction from memory, multi-charset support, character map templates, bulk glyph delete, capture-known mode)
 - Z80 Opcodes reference
+
+## Testing
+
+`python run-tests.py` runs every browser test suite headlessly and prints one table
+(33 suites, ~5,100 asserts). Filter with `python run-tests.py asm disk`, `--list` to
+see them, `--all` to include the long-running `fuse-test`.
 
 ## Quick Start
 
@@ -88,6 +118,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 
 | Format | Description |
 |--------|-------------|
+| D40/D80 | Didaktik 40/80 MDOS disk image (Explorer only) |
 | DSK | +3 disk image (standard and extended CPC DSK) |
 | MDR | Interface 1 Microdrive cartridge |
 | MGT | DISCiPLE/+D disk image |
@@ -99,6 +130,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 | TAP | Tape format (instant or real-time loading) |
 | TRD | TR-DOS disk image |
 | TZX | Extended tape format (turbo, pure tone, loops) |
+| WAV | Tape audio recording |
 | Z80 | Snapshot (v1, v2, v3 with compression) |
 | ZIP | Archive support |
 
@@ -124,10 +156,12 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 ## Acknowledgements
 
 - **dcorp80** — ES module extraction approach ([PR #1](https://github.com/Bedazzle/ZX-M8XXX/pull/1))
+- **introspec** — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support
 - **xLook** by Dmitry Kozlov (HalfElf) & Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author
 
 ## Libraries & Fonts
 
+- **[fengari](https://fengari.io)** — Lua 5.3 VM in JavaScript, powering the assembler's LUA/ENDLUA blocks (MIT license)
 - **[pako](https://github.com/nodeca/pako)** — zlib decompression (MIT + Zlib license)
 - **[ZX82 System](https://type-invaders.com/sinclair/zx82system/)** — ZX Spectrum display font by Paul van der Laan
 

@@ -1,0 +1,19 @@
+/* ZX-M8XXX - stylesheet index
+ * @license GPL-3.0
+ *
+ * The rules live in the files below, one per area, and are imported in the order
+ * they used to appear in this file - the cascade depends on it, so keep the order
+ * when adding one.
+ */
+
+@import url('base.css');
+@import url('tabs.css');
+@import url('asm.css');
+@import url('opcodes.css');
+@import url('tools.css');
+@import url('settings.css');
+@import url('calculator.css');
+@import url('tests.css');
+@import url('explorer.css');
+@import url('debugger.css');
+@import url('panels.css');

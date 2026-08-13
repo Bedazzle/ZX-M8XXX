@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>.pok Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>.pok Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { parsePok, looksLikePok, pokTrainersToEntries } from '../core/pok.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        section('A well-formed file');
+        {
+            const src = [
+                'N Infinite lives',
+                'M 8 34765 0 12',
+                'Z 8 34766 0 3',
+                'N Infinite ammo',
+                'Z 8 39321 255 1',
+                'Y',
+            ].join('\n');
+            const { trainers, warnings } = parsePok(src);
+            assert(trainers.length === 2, 'two trainers', String(trainers.length));
+            assert(trainers[0].name === 'Infinite lives', 'first name kept');
+            assert(trainers[0].patches.length === 2, 'M then Z group together');
+            assert(trainers[1].patches.length === 1, 'Z alone is its own trainer');
+            const p = trainers[0].patches[0];
+            assert(p.addr === 34765 && p.poke === 0 && p.normal === 12,
+                   'address, value and original parsed', JSON.stringify(p));
+            assert(p.bank === null, 'bank 8 means unbanked');
+            assert(warnings.length === 0, 'no warnings', warnings.join(' | '));
+        }
+
+        section('Banks and user-supplied values');
+        {
+            const { trainers } = parsePok('N Banked\nZ 3 49152 7 0\nY');
+            assert(trainers[0].patches[0].bank === 3, 'a 128K bank is kept');
+
+            const { trainers: t2 } = parsePok('N Lives\nZ 8 34765 256 0\nY');
+            const patch = t2[0].patches[0];
+            assert(patch.userValue === true, 'value 256 marks a user-supplied poke');
+            assert(patch.poke === null, 'and carries no value of its own');
+
+            // conversion: without a prompt the patch is dropped, with one it is used
+            assert(pokTrainersToEntries(t2).length === 0, 'no prompt -> the trainer is dropped');
+            const withValue = pokTrainersToEntries(t2, () => 99);
+            assert(withValue[0].patches[0].poke === 99, 'the prompt supplies the value');
+            assert(pokTrainersToEntries(t2, () => null).length === 0, 'cancelling drops it');
+        }
+
+        section('Real files are untidy');
+        {
+            const crlf = parsePok('N Trainer\r\nZ 8 30000 1 2\r\nY\r\n');
+            assert(crlf.trainers.length === 1, 'CRLF is handled');
+
+            const noY = parsePok('N Trainer\nZ 8 30000 1 2');
+            assert(noY.trainers.length === 1, 'a missing Y terminator still parses');
+
+            const blanks = parsePok('\n\nN Trainer\n\nZ 8 30000 1 2\n\nY');
+            assert(blanks.trainers.length === 1, 'blank lines are skipped');
+
+            const afterY = parsePok('N A\nZ 8 30000 1 2\nY\nN B\nZ 8 30001 1 2\n');
+            assert(afterY.trainers.length === 1, 'nothing after Y is read');
+
+            const orphan = parsePok('Z 8 30000 1 2\nY');
+            assert(orphan.trainers.length === 1 && /Unnamed/.test(orphan.trainers[0].name),
+                   'a poke before any name is kept under a generated name');
+            assert(orphan.warnings.length > 0, 'and warned about');
+
+            const junk = parsePok('N Trainer\nM 8 not-a-number 1 2\nZ 8 30000 1 2\nY');
+            assert(junk.trainers[0].patches.length === 1, 'a malformed line is skipped, not fatal');
+            assert(/line 2/.test(junk.warnings.join(' ')), 'the warning names the line',
+                   junk.warnings.join(' | '));
+
+            const short = parsePok('N Trainer\nM 8 30000\nZ 8 30001 1 2\nY');
+            assert(short.trainers[0].patches.length === 1, 'a truncated poke line is skipped');
+
+            const empty = parsePok('N Nothing here\nY');
+            assert(empty.trainers.length === 0, 'a trainer with no pokes is dropped');
+            assert(/no pokes/.test(empty.warnings.join(' ')), 'and reported');
+
+            assert(parsePok('').trainers.length === 0, 'empty input is not an error');
+            let threw = false;
+            try { parsePok(null); } catch (e) { threw = true; }
+            assert(threw, 'non-text input throws');
+        }
+
+        section('Out-of-range values are rejected');
+        {
+            assert(parsePok('N T\nZ 8 70000 1 2\nY').trainers.length === 0, 'address above $FFFF');
+            assert(parsePok('N T\nZ 8 30000 300 2\nY').trainers.length === 0, 'value above 256');
+            assert(parsePok('N T\nZ 8 -5 1 2\nY').trainers.length === 0, 'negative address');
+        }
+
+        section('Detection');
+        {
+            assert(looksLikePok('N Trainer\nZ 8 30000 1 2\nY') === true, 'a .pok file is detected');
+            assert(looksLikePok('{"pokes":[]}') === false, 'JSON is not a .pok file');
+            assert(looksLikePok('') === false, 'empty text is not a .pok file');
+            assert(looksLikePok(null) === false, 'null is not a .pok file');
+        }
+
+        section('Conversion to POKE manager entries');
+        {
+            const { trainers } = parsePok('N Lives\nM 8 34765 0 12\nZ 3 49152 7 0\nY');
+            const entries = pokTrainersToEntries(trainers);
+            assert(entries.length === 1, 'one entry');
+            assert(entries[0].name === 'Lives' && entries[0].enabled === false,
+                   'named and disabled by default');
+            assert(entries[0].patches.length === 2, 'both patches carried');
+            assert(entries[0].patches[0].addr === 34765 &&
+                   entries[0].patches[0].normal === 12 &&
+                   entries[0].patches[0].poke === 0, 'patch shape matches the manager',
+                   JSON.stringify(entries[0].patches[0]));
+            assert(/bank 3/i.test(entries[0].patches[1].hint || ''),
+                   'a banked poke carries the bank as a hint', entries[0].patches[1].hint);
+        }
+
+        section('Loading into the real POKE manager');
+        await (async () => {
+            // The parser is pure, but the wiring (file routing, replace-existing,
+            // the user-value prompt) only exists in the app, so drive it there.
+            const frame = document.createElement('iframe');
+            frame.src = '../index.html';
+            frame.style.cssText = 'width:1200px;height:800px;border:1px solid #444';
+            document.body.appendChild(frame);
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = frame.contentWindow;
+                if (w && w.zxDebug && w.zxDebug.pokes) break;
+                await wait(25);
+            }
+            const api = w && w.zxDebug && w.zxDebug.pokes;
+            assert(!!api, 'the POKE manager is reachable from the app');
+            if (!api) return;
+            assert(typeof api.loadPokFile === 'function', 'loadPokFile is exposed');
+
+            const src = 'N Infinite lives\nM 8 34765 0 12\nZ 8 34766 0 3\nN Infinite ammo\nZ 8 39321 255 1\nY';
+            const res = api.loadPokFile(src, 'manic.pok');
+            assert(res.count === 2, 'both trainers loaded', JSON.stringify(res));
+
+            const list = w.document.getElementById('pokeList');
+            const shown = (list && list.textContent) || '';
+            assert(/Infinite lives/.test(shown), 'the trainer is listed in the UI', shown.slice(0, 60));
+            assert(/Infinite ammo/.test(shown), 'both trainers are listed');
+            const label = w.document.getElementById('pokeGameLabel');
+            assert((label.textContent || '') === 'manic', 'the file name becomes the game label',
+                   label.textContent);
+
+            // a second load replaces rather than appends
+            api.loadPokFile('N Only this\nZ 8 30000 1 2\nY', 'other.pok');
+            const shown2 = (w.document.getElementById('pokeList').textContent) || '';
+            assert(/Only this/.test(shown2) && !/Infinite lives/.test(shown2),
+                   'loading again replaces the previous set', shown2.slice(0, 60));
+
+            let threw = '';
+            try { api.loadPokFile('nothing useful here', 'bad.pok'); }
+            catch (e) { threw = e.message; }
+            assert(!!threw, 'a file with no pokes is rejected', threw);
+            const shown3 = (w.document.getElementById('pokeList').textContent) || '';
+            assert(/Only this/.test(shown3), 'and the previous set survives the failure');
+
+            frame.remove();
+        })();
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

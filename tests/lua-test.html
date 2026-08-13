@@ -310,6 +310,85 @@
                 }
             }
 
+
+            section('zx.* output helpers');
+            {
+                const asmZx = (src) => {
+                    VFS.reset();
+                    let r = null, err = '';
+                    try { r = Assembler.assemble(src, 'main.asm'); } catch (e) { err = e.message; }
+                    return { ok: !!(r && r.success), err, cmds: (r && r.saveCommands) || [] };
+                };
+                const find = (cmds, t) => cmds.filter(c => c.type === t);
+
+                // trdimage_create -> the command EMPTYTRD produces
+                let r = asmZx('    DEVICE ZXSPECTRUM48\n    LUA ALLPASS\nzx.trdimage_create("out.trd", "MYDISK")\n    ENDLUA\n');
+                let trd = find(r.cmds, 'emptytrd');
+                assert(r.ok && trd.length === 1, 'trdimage_create emits an empty TRD', r.err);
+                assert(!!trd[0] && trd[0].filename === 'out.trd' && trd[0].label === 'MYDISK',
+                       'filename and label carried', JSON.stringify(trd[0] || {}));
+
+                r = asmZx('    DEVICE ZXSPECTRUM48\n    LUA ALLPASS\nzx.trdimage_create("d.trd")\n    ENDLUA\n');
+                assert(find(r.cmds, 'emptytrd')[0].label === 'sjasmplus', 'label defaults like EMPTYTRD');
+
+                // trdimage_add_file
+                r = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\n    db 1,2,3,4\n' +
+                          '    LUA ALLPASS\nzx.trdimage_create("out.trd")\n' +
+                          'zx.trdimage_add_file("out.trd", "sometextC", 0x8000, 4)\n    ENDLUA\n');
+                const f = find(r.cmds, 'trd')[0];
+                assert(r.ok && !!f, 'trdimage_add_file emits a TRD file command', r.err);
+                assert(!!f && f.innerFilename === 'sometext' && f.fileType === 'C',
+                       'the 9th character is the TR-DOS type',
+                       JSON.stringify(f ? { n: f.innerFilename, t: f.fileType } : {}));
+                assert(!!f && f.start === 0x8000 && f.length === 4, 'start and length carried');
+                assert(!!f && f.capturedData && f.capturedData.length === 4 &&
+                       f.capturedData[0] === 1 && f.capturedData[3] === 4,
+                       'memory captured at call time', f ? String(f.capturedData) : 'none');
+
+                // ...and it matches what the directive produces
+                const viaLua = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\n    db 9,8,7,6\n' +
+                                     '    LUA ALLPASS\nzx.trdimage_add_file("o.trd", "name    C", 0x8000, 4)\n    ENDLUA\n');
+                const viaDir = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\n    db 9,8,7,6\n' +
+                                     '    SAVETRD "o.trd", "name", $8000, 4\n');
+                const a = find(viaLua.cmds, 'trd')[0], b2 = find(viaDir.cmds, 'trd')[0];
+                assert(!!a && !!b2 && a.innerFilename === b2.innerFilename && a.fileType === b2.fileType &&
+                       a.start === b2.start && a.length === b2.length &&
+                       String(a.capturedData) === String(b2.capturedData),
+                       'script and SAVETRD produce the same command',
+                       JSON.stringify({ lua: a && String(a.capturedData), dir: b2 && String(b2.capturedData) }));
+
+                // The type is the 9th character, as documented ("somenameC"), so a
+                // short name is a name - not a name plus type - and defaults to C.
+                r = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\n    db 1\n' +
+                          '    LUA ALLPASS\nzx.trdimage_add_file("o.trd", "MUSIC", 0x8000, 1)\n    ENDLUA\n');
+                const shortName = find(r.cmds, 'trd')[0];
+                assert(!!shortName && shortName.innerFilename === 'MUSIC' && shortName.fileType === 'C',
+                       'a name under 8 characters keeps all of it and defaults to type C',
+                       JSON.stringify(shortName ? { n: shortName.innerFilename, t: shortName.fileType } : {}));
+
+                // save_snapshot_sna
+                r = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\nstart:\n    ret\n' +
+                          '    LUA ALLPASS\nzx.save_snapshot_sna("game.sna", _c("start"))\n    ENDLUA\n');
+                const sna = find(r.cmds, 'sna')[0];
+                assert(r.ok && !!sna, 'save_snapshot_sna emits a SNA command', r.err);
+                assert(!!sna && sna.filename === 'game.sna' && sna.start === 0x8000,
+                       'filename and entry address carried', JSON.stringify(sna || {}));
+
+                // booleans are usable, and a zero-length file is refused
+                r = asmZx('    DEVICE ZXSPECTRUM48\n    ORG $8000\n    db 1\n    LUA ALLPASS\n' +
+                          'if zx.trdimage_create("x.trd") then sj.warning("created") end\n' +
+                          'if not zx.trdimage_add_file("x.trd", "aC", 0x8000, 0) then sj.warning("rejected") end\n' +
+                          '    ENDLUA\n');
+                assert(r.ok, 'the boolean results are usable in Lua', r.err);
+                assert(find(r.cmds, 'trd').length === 0, 'a zero-length add is refused');
+
+                // documented device requirement
+                r = asmZx('    ORG $8000\n    LUA ALLPASS\n' +
+                          'if not zx.save_snapshot_sna("no.sna", 0x8000) then sj.warning("no device") end\n    ENDLUA\n');
+                assert(find(r.cmds, 'sna').length === 0,
+                       'save_snapshot_sna refuses without DEVICE, as documented');
+            }
+
             log('\n=== COMPLETE ===', 'section');
         }
 

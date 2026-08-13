@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Compare UI Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1250px; height: 820px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Compare UI Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // Utils → Compare "Memory vs Memory" drives the real panel: the machine
+        // decides what the controls may offer, and that only shows up in the app.
+        // core/mem-compare.js itself is covered by memcompare-test.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // every machine selectable before the app boots (same origin, same store)
+        localStorage.setItem('zxm8_machines', JSON.stringify(
+            ['48k', '128k', '+2', '+2a', '+3', 'pentagon', 'pentagon1024', 'scorpion']));
+        const frame = document.createElement('iframe');
+        frame.src = '../index.html';
+        document.body.appendChild(frame);
+
+        (async () => {
+            section('App and Compare panel come up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.spectrum);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            const w = frame.contentWindow, d = frame.contentDocument;
+            await wait(800);
+
+            const el = (id) => d.getElementById(id);
+            const shown = (id) => { const e = el(id); return !!(e && e.offsetParent !== null); };
+            const clickByText = (re) => {
+                const b = [...d.querySelectorAll('button, .tools-subtab, .tab')]
+                    .find(x => re.test((x.textContent || '').trim()));
+                if (b) b.click();
+                return !!b;
+            };
+            clickByText(/Utils\s*$/i); await wait(250);
+            assert(clickByText(/^Compare$/i), 'the Compare sub-tab exists');
+            await wait(250);
+
+            const radio = [...d.querySelectorAll('input[name="compareMode"]')]
+                .find(x => x.value === 'mem-mem');
+            assert(!!radio, 'the Memory vs Memory mode exists');
+            if (!radio) { log('\n=== ABORTED ===', 'fail'); return; }
+            radio.checked = true;
+            radio.dispatchEvent(new w.Event('change', { bubbles: true }));
+            await wait(300);
+            assert(shown('compareMemMemOptions'), 'its options appear');
+            assert(!shown('compareFileAContainer'), 'and no file input is asked for');
+
+            async function switchTo(v) {
+                const sel = el('machineSelect');
+                const opt = [...sel.options].find(o => o.value === v);
+                if (!opt) return false;
+                sel.value = v;
+                sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await until(() => w.spectrum.machineType === v, 120, 25);
+                await wait(500);
+                return true;
+            }
+
+            section('The controls follow the machine');
+            {
+                assert(w.spectrum.machineType === '48k', 'starts on 48K', w.spectrum.machineType);
+                assert(!shown('compareMemAMode'), '48K offers no addressing choice');
+                assert(/48K/.test(el('compareMemHint').textContent || ''),
+                       'and says so', el('compareMemHint').textContent);
+
+                // The reported bug: switching the machine left these untouched
+                assert(await switchTo('128k'), 'switch to 128K');
+                assert(shown('compareMemAMode'), 'switching to 128K reveals the addressing choice');
+                assert(el('compareMemABank').options.length === 8, '8 banks are offered',
+                       el('compareMemABank').options.length + ' options');
+                assert(/8 RAM banks/.test(el('compareMemHint').textContent || ''),
+                       'and the hint follows', el('compareMemHint').textContent);
+
+                // a bank picked on 128K must not survive a move to a machine without banks
+                el('compareMemAMode').value = 'bank';
+                el('compareMemAMode').dispatchEvent(new w.Event('change', { bubbles: true }));
+                el('compareMemABank').value = '7';
+                await wait(150);
+                assert(shown('compareMemABank'), 'the bank number appears when Bank is chosen');
+
+                assert(await switchTo('48k'), 'switch back to 48K');
+                assert(!shown('compareMemAMode'), '48K hides the choice again');
+                assert(el('compareMemAMode').value === 'paged', 'and forces 64K addressing',
+                       el('compareMemAMode').value);
+                assert(el('compareMemABank').value === '0', 'the stale bank 7 is cleared',
+                       el('compareMemABank').value);
+
+                if (await switchTo('pentagon1024')) {
+                    assert(el('compareMemABank').options.length === 64,
+                           'Pentagon 1024 offers all 64 banks',
+                           el('compareMemABank').options.length + ' options');
+                    assert(/64 RAM banks/.test(el('compareMemHint').textContent || ''),
+                           'and the hint counts them', el('compareMemHint').textContent);
+                }
+            }
+
+            section('Row layout');
+            {
+                // These rows borrow .settings-row for its label column, whose rules
+                // stretch selects to 200px and give labels a 100px column — which
+                // left a gap mid-row and pushed the two address boxes out of line.
+                await switchTo('128k');
+                el('compareMemAMode').value = 'paged';
+                el('compareMemAMode').dispatchEvent(new w.Event('change', { bubbles: true }));
+                el('compareMemBMode').value = 'bank';
+                el('compareMemBMode').dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(200);
+
+                const box = (id) => el(id).getBoundingClientRect();
+                assert(box('compareMemAMode').width < 140,
+                       'the addressing select is sized for its content',
+                       Math.round(box('compareMemAMode').width) + 'px');
+                assert(Math.abs(box('compareMemAAddr').left - box('compareMemBAddr').left) < 1.5,
+                       'both address boxes line up, whichever mode each row uses',
+                       `${Math.round(box('compareMemAAddr').left)} vs ${Math.round(box('compareMemBAddr').left)}`);
+                assert(w.getComputedStyle(el('compareMemABank')).visibility === 'hidden',
+                       'the unused bank slot is invisible');
+                assert(box('compareMemABank').width > 0,
+                       'but still holds its place, which is what keeps the rows aligned');
+                assert(d.querySelectorAll('#compareMemMemOptions input[type=number]').length === 0,
+                       'no number spinners are used (they drew badly on this theme)');
+                assert(el('compareMemABank').tagName === 'SELECT' &&
+                       el('compareMemABank').options.length === 8,
+                       'the bank is a list of the banks the machine has',
+                       el('compareMemABank').options.length + ' options');
+
+                await switchTo('48k');
+                assert(w.getComputedStyle(el('compareMemABank')).display === 'none',
+                       '48K drops the bank slot entirely rather than reserving it');
+                assert(Math.abs(box('compareMemAAddr').left - box('compareMemBAddr').left) < 1.5,
+                       'and the rows still line up');
+            }
+
+            section('Comparing');
+            {
+                await switchTo('48k');
+                const sp = w.spectrum;
+                for (let i = 0; i < 32; i++) { sp.memory.write(0x8000 + i, i); sp.memory.write(0x9000 + i, i); }
+                sp.memory.write(0x9005, 0xFF);
+
+                el('compareMemAAddr').value = '8000';
+                el('compareMemBAddr').value = '9000';
+                el('compareMemLength').value = '20';
+                el('btnCompare').click();
+                await wait(400);
+                const note = (el('compareDiffCountNoPage').textContent || '');
+                assert(/1 bytes differ in 1 block/.test(note), 'one planted byte is found', note);
+                assert(/\$8000/.test(note) && /\$9000/.test(note), 'both regions are named', note);
+                const table = el('compareDataTable').textContent || '';
+                assert(/8000/.test(table) && /9000/.test(table),
+                       'and each side of the dump carries its own address', table.slice(0, 60));
+
+                sp.memory.write(0x9005, 5);
+                el('btnCompare').click();
+                await wait(400);
+                assert(el('compareNoResults').style.display !== 'none',
+                       'once equal, it reports identical');
+
+                // 128K: two banks, one of them altered
+                await switchTo('128k');
+                el('compareMemAMode').value = 'bank';
+                el('compareMemAMode').dispatchEvent(new w.Event('change', { bubbles: true }));
+                el('compareMemBMode').value = 'bank';
+                el('compareMemBMode').dispatchEvent(new w.Event('change', { bubbles: true }));
+                const b1 = sp.memory.getRamBank(1), b3 = sp.memory.getRamBank(3);
+                for (let i = 0; i < 16; i++) { b1[i] = i; b3[i] = i; }
+                b3[7] = 0x99;
+                el('compareMemABank').value = '1'; el('compareMemAAddr').value = '0000';
+                el('compareMemBBank').value = '3'; el('compareMemBAddr').value = '0000';
+                el('compareMemLength').value = '10';
+                el('btnCompare').click();
+                await wait(400);
+                const bankNote = (el('compareDiffCountNoPage').textContent || '');
+                assert(/1 bytes differ/.test(bankNote), 'a bank comparison finds its byte', bankNote);
+                assert(/bank 1/.test(bankNote) && /bank 3/.test(bankNote),
+                       'and names both banks', bankNote);
+
+                // past the end of a bank: shortened, and said so
+                el('compareMemAAddr').value = '3FF0';
+                el('compareMemBAddr').value = '3FF0';
+                el('compareMemLength').value = '100';
+                el('btnCompare').click();
+                await wait(400);
+                assert(/Shortened/.test(el('compareHeaderTable').textContent || ''),
+                       'a run past the end of a bank is shortened, and reported',
+                       (el('compareHeaderTable').textContent || '').slice(0, 60));
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

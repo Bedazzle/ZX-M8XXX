@@ -171,6 +171,21 @@ Screen capture and room stitching tool for building navigable game maps. Capture
 
 ## POKE Manager
 
+**Loading `.pok` files** (`core/pok.js`): Load accepts the community `.pok` format
+as well as the native JSON, and routes by *content* rather than extension, since
+`.pok` files are often saved as `.txt`.
+
+- `N` names a trainer, `M`/`Z` are its pokes (`Z` closes it), `Y` ends the file
+- bank `8` means unbanked; `0-7` is a 128K page, carried as a patch hint
+- value `256` means "ask the user" (lives, ammo) -- the manager prompts, and
+  cancelling drops just that patch
+- Real files are untidy, so CRLF, blank lines, a missing `Y`, junk lines,
+  truncated pokes and pokes appearing before any name are all tolerated: each is
+  skipped with a per-line warning and the rest still loads
+
+Loading replaces the current set, and the file name becomes the game label.
+
+
 Manages named pokes (multi-address byte patches) and memory value editors. Located in Pokes tab in the debugger panel.
 
 **Layout (`index.html`):**
@@ -235,6 +250,46 @@ Snap-based memory scanner for finding game variables (lives, score, etc.). Locat
 - No progressive candidate narrowing between searches -- each search is a complete re-evaluation.
 - Skip screen checkbox excludes 0x4000-0x5BFF (screen bitmap + attributes).
 - Tooltip shows value at every snap point (raw, including duplicates).
+
+## Compare: Memory vs Memory (Utils -> Compare)
+
+Compares one part of the running machine's memory with another — a buffer against
+the screen it is copied to, one level's data against the next, a bank against the
+bank it was meant to mirror. The other Compare modes need a file on at least one
+side; this one needs none.
+
+Each region is named independently, and on a 128K-family machine there are two ways
+to name one:
+
+| Mode | Range | Means |
+|------|-------|-------|
+| **64K (as paged)** | `$0000-$FFFF` | what the CPU sees at the moment of reading — which bank that is depends on the current paging |
+| **Bank** | bank number + `$0000-$3FFF` | that RAM bank, whether or not it is currently paged in |
+
+On a 48K machine there is nothing to page, so the mode selector is hidden and both
+regions are plain 64K addresses. The bank selector's range follows the machine:
+8 banks on 128K/+2/+2A/+3/Pentagon, 16 on Scorpion, 64 on Pentagon 1024.
+
+Notes:
+
+- **A run that would pass the end is shortened, not wrapped** — `$100` bytes from
+  `$FFF0`, or from `$3FF0` inside a bank, compares `$10` bytes and says so. Wrapping
+  would report differences in bytes nobody asked about.
+- The listing labels **each side with its own address** (`A 8000:` / `B 9000:`, or
+  `A 1:0000` / `B 3:0000` for banks), because the two regions are at different
+  places and a single offset column would leave the reader doing the arithmetic.
+- Picking the same region twice is refused: it would always report "identical",
+  which reads as a result rather than as a mis-filled form.
+- **Switching the machine re-shapes the controls** (`refreshMachine`, called from
+  `switchMachine` in `ui/app-init.js`, and again before each comparison for the
+  paths that don't go through the selector — project load, ROM selector). A bank
+  chosen on a 128K machine is cleared when moving to one without banks, and any
+  result on screen is cleared with it: it would otherwise be labelled with banks
+  that no longer mean anything.
+- The logic is pure and lives in `core/mem-compare.js` (`readRegion`, `diffRegions`,
+  `validateRegion`); the readers are injected, so it is tested without an emulator
+  in `tests/memcompare-test.html`. The panel itself is driven in
+  `tests/compare-ui-test.html`.
 
 ## Runtime Behavior Profiler
 

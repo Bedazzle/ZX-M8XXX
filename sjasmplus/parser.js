@@ -180,7 +180,26 @@ export const Parser = {
                         // Only treat as label if we're followed by a DOT (local label)
                         // We already consumed this identifier and next is the following token
                         // If next is a regular identifier (not local label), this is a directive with operands
+                        // A directive name in column 0 followed by an instruction is
+                        // almost always a label that collides with a keyword
+                        // ("end push hl"): it parses as the directive, so the label is
+                        // never defined and every reference to it fails later. Flag it
+                        // for the assembler to warn about — parsing is unchanged.
+                        if (this.isInstruction(next)) {
+                            result.keywordAsLabel = { name: ident.value, kind: 'directive' };
+                        }
                         this.pos--; // Put it back, let it be parsed as directive
+                        putBack = true;
+                    }
+                    // Same mistake with an instruction name: "push exx" in column 0.
+                    // It parses as PUSH with a nonsense operand, so the errors talk
+                    // about the operand rather than the label that was meant. Only
+                    // flagged when the operand is itself an instruction name — the
+                    // assembler additionally checks it isn't a real label, since
+                    // "jr rst" is legitimate in a source that defines rst:.
+                    else if (isAtLineStart && this.isInstruction(ident.value) && this.isInstruction(next)) {
+                        result.keywordAsLabel = { name: ident.value, kind: 'instruction', operand: this.peek().value };
+                        this.pos--;
                         putBack = true;
                     }
                     // Check if this could be a label followed by instruction
@@ -273,6 +292,7 @@ export const Parser = {
                 }
                 result.instruction = name;
                 result.instructionRaw = rawName;
+                result.instructionColumn = ident.column;
                 result.operands = this.parseOperands();
                 while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.COLON) && !this.isAtEnd()) {
                     this.advance();
@@ -287,6 +307,9 @@ export const Parser = {
             } else {
                 result.instruction = name;
                 result.instructionRaw = ident.value; // Preserve original case for label fallback
+                // Where the name started: a colon-less label is only a label in
+                // column 1. Indented, it has to be an instruction or macro call.
+                result.instructionColumn = ident.column;
             }
 
             // Parse operands

@@ -18,10 +18,10 @@
     <div id="log"></div>
 
     <script type="module">
-        import { highlightAsmCode, highlightAsmLine, createHighlightCache, createHighlightLayer }
+        import { highlightAsmCode, highlightAsmLine, createHighlightCache, createHighlightLayer, collectLabels }
             from '../ui/asm-highlight.js';
 
-        const TEST_VERSION = '0.1.0';
+        const TEST_VERSION = '0.3.0';
         const logEl = document.getElementById('log');
         const summaryEl = document.getElementById('summary');
         let passed = 0, failed = 0;
@@ -181,6 +181,146 @@
             layer.render(doc(30), 'cp866');
             assert(el.textContent === rawText || true, 'codepage switch re-renders without error');
             el.remove();
+        }
+
+        section('Labels are one colour everywhere');
+        {
+            // The reported case: a label named after a directive, and jump targets
+            // that were left uncoloured because the tokenizer saw one line at a time.
+            const src = [
+                'start           CALL 5896',
+                'loop:           LD C,0',
+                '                JR Z,files',
+                '                JR loop',
+                'files:          LD HL,63780',
+                '                JR Z,end',
+                'end:            POP HL',
+                '                CALL loadsect',
+                'loadsect:       PUSH BC',
+                '                ORG 64900',
+                '                LD A,B',
+            ].join('\n');
+            const labels = collectLabels(src);
+            const cls = (line, word) => {
+                const html = highlightAsmLine(line, labels);
+                const re = new RegExp('<span class="([^"]+)">' + word + '</span>');
+                const m = re.exec(html);
+                return m ? m[1] : 'NO-SPAN';
+            };
+
+            assert(labels.has('end'), 'a label named "end" is collected');
+            assert(labels.has('start'), 'a column-0 label without a colon is collected');
+            assert(!labels.has('ORG'), 'an unindented directive is not collected as a label');
+
+            assert(cls('end:            POP HL', 'end') === 'asm-hl-label',
+                   '"end:" is a label, not the END directive', cls('end:  POP HL', 'end'));
+            assert(cls('                JR Z,end', 'end') === 'asm-hl-label',
+                   'a jump to "end" is a label', cls('   JR Z,end', 'end'));
+            assert(cls('                JR loop', 'loop') === 'asm-hl-label',
+                   'a jump target is coloured like its definition');
+            assert(cls('                CALL loadsect', 'loadsect') === 'asm-hl-label',
+                   'a call target is coloured like its definition');
+            assert(cls('                JR Z,files', 'files') === 'asm-hl-label',
+                   'a conditional jump target is a label');
+
+            // ...without swallowing the keywords
+            assert(cls('                ORG 64900', 'ORG') === 'asm-hl-directive',
+                   'ORG is still a directive');
+            assert(cls('                JR Z,end', 'JR') === 'asm-hl-instruction',
+                   'JR is still an instruction');
+            assert(cls('                JR Z,end', 'Z') === 'asm-hl-register',
+                   'the Z condition is still a condition');
+            assert(cls('                LD A,B', 'B') === 'asm-hl-register',
+                   'a register keeps its colour');
+
+            // A file that defines a label B must not repaint the B register
+            const shadow = collectLabels('B:  nop\n    LD A,B');
+            const shadowed = highlightAsmLine('    LD A,B', shadow);
+            assert(/<span class="asm-hl-register">B<\/span>/.test(shadowed),
+                   'a label named B does not steal the B register', shadowed);
+
+            // Unknown names stay unhighlighted
+            assert(cls('                CALL nowhere', 'nowhere') === 'NO-SPAN',
+                   'an undefined name is not coloured as a label');
+        }
+
+        section('Label set tracked while editing');
+        {
+            const el = document.createElement('pre');
+            document.body.appendChild(el);
+            const layer = createHighlightLayer(el, { linesPerChunk: 4 });
+            const base = ['loop:  nop', '       jr loop', '       nop', '       nop',
+                          '       nop', '       nop', '       nop', '       nop'];
+            layer.render(base.join('\n'), 'raw');
+            assert(layer.labelCount === 1, 'one label after the first render');
+            assert(/asm-hl-label">loop</.test(el.innerHTML), 'the use of loop is a label');
+
+            // Typing on a non-definition line must not force a rebuild
+            const typed = base.slice();
+            typed[5] = '       ret';
+            assert(layer.render(typed.join('\n'), 'raw') === 'patched',
+                   'ordinary typing still patches one chunk');
+
+            // Renaming the definition updates every use
+            const renamed = typed.slice();
+            renamed[0] = 'again: nop';
+            renamed[1] = '       jr again';
+            layer.render(renamed.join('\n'), 'raw');
+            assert(layer.labelCount === 1 && !/>loop</.test(el.innerHTML),
+                   'renaming the definition drops the old label');
+            assert(/asm-hl-label">again</.test(el.innerHTML),
+                   'the renamed label is coloured at its use');
+
+            // Two definitions of one name: deleting one keeps the label alive
+            const dup = renamed.slice();
+            dup[3] = 'again: nop';
+            layer.render(dup.join('\n'), 'raw');
+            dup[3] = '       nop';
+            layer.render(dup.join('\n'), 'raw');
+            assert(layer.labelCount === 1 && /asm-hl-label">again</.test(el.innerHTML),
+                   'a duplicate definition removed leaves the label defined');
+
+            // Layer output still equals the whole-document highlighter
+            const strip2 = (s) => s.replace(/<span><\/span>/g, '');
+            const viaLayer2 = strip2([...el.children].map(c => c.innerHTML).join(''));
+            assert(viaLayer2 === highlightAsmCode(dup.join('\n'), 'raw'),
+                   'chunked output matches whole-document output with labels');
+            el.remove();
+        }
+
+        section('Keywords only in the mnemonic slot');
+        {
+            // A directive name in column 0 IS the directive — the assembler agrees:
+            // "end push hl" fails with "Undefined symbol: end" — so it must not be
+            // painted as a label. In an operand the same word is a symbol.
+            const noLabels = collectLabels('        org 25000\nlab:\n        jr end\nend     push hl');
+            const cls = (line, word, labels) => {
+                const re = new RegExp('<span class="([^"]+)">' + word + '</span>');
+                const m = re.exec(highlightAsmLine(line, labels));
+                return m ? m[1] : 'NO-SPAN';
+            };
+            assert(!noLabels.has('end'), 'a bare "end" in column 0 is not collected as a label');
+            assert(cls('end     push hl', 'end', noLabels) === 'asm-hl-directive',
+                   'bare "end" in column 0 is the END directive');
+            assert(cls('        jr end', 'end', noLabels) === 'NO-SPAN',
+                   'an undefined operand is not painted as a directive',
+                   cls('        jr end', 'end', noLabels));
+            assert(cls('        jr lab', 'lab', noLabels) === 'asm-hl-label',
+                   'a defined label used as a target is a label');
+
+            // With the colon it is a label, and then every use follows
+            const withColon = collectLabels('end:    push hl\n        jr end');
+            assert(withColon.has('end'), '"end:" with a colon is a label');
+            assert(cls('end:    push hl', 'end', withColon) === 'asm-hl-label',
+                   '"end:" paints as a label');
+            assert(cls('        jr end', 'end', withColon) === 'asm-hl-label',
+                   'and so does "jr end"');
+
+            // A ':' separator reopens the mnemonic slot
+            assert(cls('        nop : ret', 'ret', null) === 'asm-hl-instruction',
+                   'an instruction after ":" is still an instruction');
+            assert(cls('        ld a,5', 'ld', null) === 'asm-hl-instruction',
+                   'the mnemonic itself is unaffected');
         }
 
         log('\n=== COMPLETE ===', 'section');

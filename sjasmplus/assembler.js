@@ -8,6 +8,7 @@ import { AsmMemory } from './memory.js';
 import { Preprocessor } from './preprocessor.js';
 import { VFS } from './vfs.js';
 import { Parser } from './parser.js';
+import { LexerOptions } from './lexer.js';
 import { InstructionEncoder, Z80Asm } from './instructions.js';
 import { parseExpression } from './expression.js';
 import { createLuaRuntime, isLuaEngineLoaded, parseLuaPass, luaPassMatches, sourceUsesLua } from './lua.js';
@@ -35,6 +36,7 @@ export const Assembler = {
     // Reset per-assembly state — everything except the VFS and MD5 associations,
     // which the multi-file project entry points preserve (files already loaded).
     _resetState() {
+        this._warnedBelowStart = false;
         this.currentAddress = 0;
         this.physicalAddress = null;
         this.sectionStart = 0;
@@ -78,25 +80,28 @@ export const Assembler = {
     },
 
     // Reset all assembler state (single-file entry points): also clears the VFS
-    // and MD5 associations.
+    // sources and MD5 associations. Binaries stay: a single-file build still needs
+    // whatever the caller loaded for INCBIN.
     reset() {
         this._resetState();
         this.md5Associations = {};
-        VFS.reset();
+        VFS.resetSources();
     },
 
     // Main assembly function for single file
     assemble(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
 
         // Apply command-line defines
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
         
-        // Add source to VFS
-        VFS.addFile(filename, source);
+        // Add source to VFS as the scratch buffer: this is the caller's text,
+        // re-added on every build, and the one file resetSources() may drop.
+        VFS.addFile(filename, source, { scratch: true });
         
         // Parse source
         this.lines = Parser.parse(this.extractLuaBlocks(source, filename), filename);
@@ -108,10 +113,11 @@ export const Assembler = {
     async assembleAsync(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
-        VFS.addFile(filename, source);
+        VFS.addFile(filename, source, { scratch: true });
         this.lines = Parser.parse(this.extractLuaBlocks(source, filename), filename);
         return this.runPassesAsync();
     },
@@ -120,6 +126,7 @@ export const Assembler = {
     async assembleProjectAsync(mainFile, cmdDefines = [], options = {}) {
         this._resetState();   // preserve the already-loaded VFS
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
 
         cmdDefines = cmdDefines || [];
         for (const def of cmdDefines) {
@@ -138,6 +145,7 @@ export const Assembler = {
     assembleProject(mainFile, cmdDefines = [], options = {}) {
         this._resetState();   // don't reset VFS — files are already loaded
         if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
 
         // Apply command-line defines
         cmdDefines = cmdDefines || [];
@@ -593,6 +601,62 @@ export const Assembler = {
             print: (text) => self.displayMessages.push(
                 { message: text, line: lineOf().line, file: lineOf().file }),
             fileExists: (name) => !!VFS.exists(name),
+
+            // ---- zx.* -------------------------------------------------------
+            // These do exactly what EMPTYTRD / SAVETRD / SAVESNA do, by pushing the
+            // same save commands, so a script and a directive produce the same file
+            // through the same downstream path. Each returns a boolean, as sjasmplus
+            // documents, rather than raising.
+            zxTrdCreate: (filename, label) => {
+                if (!filename) return false;
+                self.saveCommands.push({
+                    type: 'emptytrd',
+                    filename: String(filename),
+                    label: label ? String(label) : 'sjasmplus',
+                });
+                return true;
+            },
+            // zx.trdimage_add_file("disk.trd", "somenameC", start, length,
+            //                      autostart = -1, replace = false)
+            // The 9th character of the TR-DOS name is the type (B/C/D/#).
+            zxTrdAddFile: (trdName, trdosName, start, length, autostart, replace) => {
+                if (!trdName || !trdosName) return false;
+                const nm = String(trdosName);
+                const fileType = nm.length > 8 ? nm.charAt(8) : 'C';
+                const innerFilename = nm.substring(0, 8).trimEnd();
+                const startAddr = start & 0xFFFF;
+                const len = length | 0;
+                if (len <= 0) return false;
+                const data = self.captureMemory(startAddr, len);
+                if (!data) return false;
+                self.saveCommands.push({
+                    type: 'trd',
+                    trdFilename: String(trdName),
+                    innerFilename,
+                    filename: String(trdName),
+                    fileType,
+                    start: startAddr,
+                    startAddr,
+                    length: len,
+                    capturedData: data,
+                    autostart: (autostart === undefined || autostart === null) ? -1 : (autostart | 0),
+                    replace: !!replace,
+                });
+                return true;
+            },
+            zxSaveSna: (filename, startAddr) => {
+                if (!filename) return false;
+                // Documented as device-emulation only, and that is also the only
+                // mode where a full 64K image exists to snapshot.
+                if (!AsmMemory.device) return false;
+                self.saveCommands.push({
+                    type: 'sna',
+                    filename: String(filename),
+                    start: (startAddr === undefined || startAddr === null)
+                        ? self.outputStart : (startAddr & 0xFFFF),
+                });
+                return true;
+            },
             getLabel: (name) => {
                 if (!name) return -1;
                 const v = SymbolTable.getValue(name);
@@ -674,6 +738,23 @@ export const Assembler = {
         // resets ErrorCollector, so we must restore from the parsed line info
         ErrorCollector.currentLine = line.line;
         ErrorCollector.currentFile = line.file;
+
+        // "end push hl" — a keyword in column 0 where a label was meant. Emitted
+        // on every pass on purpose: each pass clears ErrorCollector.warnings (only
+        // the final pass's survive), so warning once here would be thrown away.
+        if (line.keywordAsLabel) {
+            const { name, kind, operand } = line.keywordAsLabel;
+            // "jr rst" is fine in a source that defines rst:, so only warn about the
+            // instruction form when the operand isn't a real symbol.
+            const bogus = kind !== 'instruction' || !SymbolTable.isDefined(operand);
+            if (bogus) {
+                ErrorCollector.warn(
+                    `"${name}" is ${kind === 'directive' ? 'a directive' : 'an instruction'}, so this line ` +
+                    `assembles as ${name.toUpperCase()} and no label "${name}" is defined — ` +
+                    `write "${name}:" with a colon to make it a label`,
+                    line.line, line.file);
+            }
+        }
 
         const dir = line.directive;
         
@@ -1084,7 +1165,12 @@ export const Assembler = {
                 break;
             case 'ENDR':
             case 'EDUP':
-                // Handled by REPT processing
+                // Inside a block these lines are consumed by the body collector,
+                // so getting here means nothing was open — report it, like
+                // ENDM without MACRO does.
+                ErrorCollector.error(
+                    dir === 'EDUP' ? 'EDUP without DUP' : 'ENDR without REPT',
+                    line.line, line.file);
                 break;
             case 'STRUCT':
                 this.dirSTRUCT(ops, line);
@@ -1190,6 +1276,15 @@ export const Assembler = {
         }
         const val = this.evaluate(line.operands[0], line);
         if (!val.undefined) {
+            // A reference above this line evaluated to 0 (the name wasn't known
+            // yet) and the bytes for it are already emitted. By the end of the
+            // pass the symbol looks defined, so the pass loop saw no undefined
+            // symbols and stopped — keeping those zeros. Ask for another pass
+            // when the value is new or has moved, exactly as defineLabel does.
+            const prev = SymbolTable.symbols[SymbolTable.getFullName(line.label)];
+            if (!prev || !prev.defined || prev.value !== val.value) {
+                this.changed = true;
+            }
             EquTable.define(line.label, val.value, line.line, line.file);
         }
     },
@@ -2536,20 +2631,9 @@ export const Assembler = {
         }
         
         // Capture data NOW - memory may be overwritten later by subsequent code
-        let capturedData = null;
-        const actualLength = length > 0 ? length : 
+        const actualLength = length > 0 ? length :
             (AsmMemory.device ? 0x10000 - startAddr : Math.max(0, this.output.length - (startAddr - this.outputStart)));
-        if (actualLength > 0) {
-            if (AsmMemory.device) {
-                capturedData = new Uint8Array(actualLength);
-                for (let i = 0; i < actualLength; i++) {
-                    capturedData[i] = AsmMemory.readByte(startAddr + i);
-                }
-            } else if (startAddr >= this.outputStart) {
-                const dataStart = startAddr - this.outputStart;
-                capturedData = new Uint8Array(this.output.slice(dataStart, dataStart + actualLength));
-            }
-        }
+        const capturedData = this.captureMemory(startAddr, actualLength);
         
         this.saveCommands.push({
             type: 'tap',
@@ -2582,6 +2666,22 @@ export const Assembler = {
             label: label,
             expectedMD5: this.getExpectedMD5(filename, line.comment)
         });
+    },
+
+    // Grab `length` bytes at `start` the way SAVETRD/SAVEBIN do: from the device's
+    // 64K image when emulating one, otherwise from the flat output buffer. Captured
+    // immediately, because later code may overwrite the same addresses.
+    captureMemory(start, length) {
+        if (length <= 0) return null;
+        if (AsmMemory.device) {
+            const out = new Uint8Array(length);
+            for (let i = 0; i < length; i++) out[i] = AsmMemory.readByte((start + i) & 0xFFFF);
+            return out;
+        }
+        if (start < this.outputStart) return null;
+        const from = start - this.outputStart;
+        if (from >= this.output.length) return null;
+        return new Uint8Array(this.output.slice(from, from + length));
     },
 
     // SAVETRD "diskfile", "filename", start, length
@@ -2828,16 +2928,20 @@ export const Assembler = {
         );
         
         if (!result) {
-            // If unknown instruction with no operands, treat as label definition
-            // This handles labels without colons on their own line
-            if (line.operands.length === 0) {
+            // An unknown name with no operands in column 1 is a label without a
+            // colon. Indented it is not: it is a mistyped or unsupported
+            // instruction ("dup32" for "dup 32"), and defining it as a label made
+            // the whole line disappear with no error. Lines built internally
+            // (macro/REPT expansion) carry no column, so they keep the old rule.
+            const inLabelColumn = line.instructionColumn === undefined ||
+                                  line.instructionColumn === 1;
+            if (line.operands.length === 0 && inLabelColumn) {
                 // Use original case (instructionRaw) if available, otherwise instruction
                 const labelName = line.instructionRaw || line.instruction;
                 this.defineLabel(labelName, line.line, line.file);
                 return;
             }
             // Could be a macro call - try again with original case
-            const macroName = line.instructionRaw || line.instruction;
             if (Preprocessor.isMacro(macroName)) {
                 this.macroCount++;
                 const expanded = Preprocessor.expandMacro(macroName, line.operands, this.macroCount);
@@ -2883,8 +2987,31 @@ export const Assembler = {
             AsmMemory.writeByte(outputAddr, b);
         }
         
-        // Only add to linear output if within output range
-        // This prevents ORG 0 tricks (for string length measurement) from polluting output
+        // Emitting below the first ORG (e.g. "org 25000" code followed by
+        // "org 16384 / incbin screen.scr") used to be dropped silently, so the data
+        // never reached memory and the build reported only the first block. Grow the
+        // buffer downwards instead, which is what the address-indexed output means:
+        // everything emitted, placed where it was emitted.
+        //
+        // The old guard existed to stop ORG-0 tricks (measuring string lengths)
+        // polluting the output. Those emit nothing at ORG 0, so they are unaffected;
+        // the span cap keeps a genuine mistake from allocating wildly.
+        if (this.output.length > 0 && outputAddr < this.outputStart) {
+            const gap = this.outputStart - outputAddr;
+            if (gap + this.output.length <= 0x10000) {
+                const filled = new Array(gap).fill(0);
+                this.output.unshift(...filled);
+                this.outputStart = outputAddr;
+            } else if (!this._warnedBelowStart) {
+                this._warnedBelowStart = true;
+                ErrorCollector.warn(
+                    `address $${outputAddr.toString(16).toUpperCase()} is more than 64K below the ` +
+                    `first ORG ($${this.outputStart.toString(16).toUpperCase()}); those bytes are not in the output`,
+                    this.currentLine ? this.currentLine.line : 0,
+                    this.currentLine ? this.currentLine.file : '');
+            }
+        }
+
         if (outputAddr >= this.outputStart) {
             const offset = outputAddr - this.outputStart;
             // Fill gap if needed (handles forward ORG within output range)

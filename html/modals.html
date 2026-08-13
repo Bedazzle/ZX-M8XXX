@@ -1,0 +1,233 @@
+<!-- ROM picker, ZIP picker, ASM import, Beautify, Import Foreign. Spliced into index.html at boot by ui/boot.js. -->
+    <div class="modal-overlay hidden" id="romModal">
+        <div class="modal">
+            <h2>🖥️ ROM Files Required</h2>
+            <p>No ROM files found in <code>roms/</code> directory. Select ROM files below, or place them in the <code>roms/</code> folder.</p>
+
+            <div class="rom-grid">
+                <button id="btnSelect48Rom">48.rom</button>
+                <div class="rom-status" id="status48Rom">Not loaded (required)</div>
+
+                <button id="btnSelect128Rom">128.rom</button>
+                <div class="rom-status" id="status128Rom">Not loaded</div>
+
+                <button id="btnSelectPlus2Rom">plus2.rom</button>
+                <div class="rom-status" id="statusPlus2Rom">Not loaded</div>
+
+                <button id="btnSelectPlus2aRom">plus2a.rom</button>
+                <div class="rom-status" id="statusPlus2aRom">Not loaded</div>
+
+                <button id="btnSelectPlus3Rom">plus3.rom</button>
+                <div class="rom-status" id="statusPlus3Rom">Not loaded</div>
+
+                <button id="btnSelectPentagonRom">pentagon.rom</button>
+                <div class="rom-status" id="statusPentagonRom">Not loaded</div>
+
+                <button id="btnSelectScorpionRom">scorpion.rom</button>
+                <div class="rom-status" id="statusScorpionRom">Not loaded</div>
+
+                <button id="btnSelectTrdosRom">trdos.rom</button>
+                <div class="rom-status" id="statusTrdosRom">Not loaded (for TRD/SCL disks)</div>
+
+                <button id="btnSelectPlusDRom">plusd.rom</button>
+                <div class="rom-status" id="statusPlusDRom">Not loaded (for MGT disks)</div>
+
+                <button id="btnSelectIF1Rom">if1.rom</button>
+                <div class="rom-status" id="statusIF1Rom">Not loaded (for Microdrive cartridges)</div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="btnStartEmulator" class="primary" disabled>Start Emulator</button>
+                <button id="btnCloseRomModal" class="hidden">Close</button>
+            </div>
+            
+            <p class="modal-hint">
+                You can also drag & drop ROM files onto this dialog.
+            </p>
+        </div>
+    </div>
+
+    <!-- ZIP File Selection Modal -->
+    <div id="zipModal" class="modal-overlay hidden">
+        <div class="modal">
+            <h2>Select File to Load</h2>
+            <p>The archive contains multiple files. Select one to load:</p>
+            <div id="zipFileList" class="zip-file-list"></div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button id="btnBootTrdos" class="secondary" style="display: none;">Boot TR-DOS</button>
+                <button id="btnZipCancel" class="secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ASM Import Dialog -->
+    <div id="asmImportDialog" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 520px;">
+            <h2>Import Shared Project</h2>
+            <textarea id="asmImportText" rows="10"
+                placeholder="Paste shared project here (===M8XXX-ASM-BEGIN=== ... ===M8XXX-ASM-END===)"
+                spellcheck="false"
+                style="width:100%; font-family:monospace; font-size:11px; resize:vertical;
+                       background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-color);
+                       padding:8px; box-sizing:border-box;"></textarea>
+            <div id="asmImportPreview" style="display:none; margin-top:8px; padding:8px;
+                       background:var(--bg-secondary); border:1px solid var(--border-color);
+                       font-size:11px; line-height:1.5; max-height:180px; overflow-y:auto;">
+            </div>
+            <label id="asmImportSettingsLabel" style="display:none; margin-top:8px; font-size:12px; cursor:pointer;">
+                <input type="checkbox" id="chkAsmImportSettings" checked> Apply machine &amp; hardware settings
+            </label>
+            <div class="modal-actions">
+                <button id="btnAsmImportCancel">Cancel</button>
+                <button id="btnAsmImportOk">Import</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="beautifyDialog" class="modal-overlay hidden">
+        <div class="modal bf-modal" style="max-width: 920px; width: 92vw;">
+            <h2>Beautify Source</h2>
+            <div class="bf-cols">
+                <div class="bf-opts">
+                    <label id="bfScopeRow" title="Reformat every text file in the project, not just the open file"><input type="checkbox" id="bfAllFiles"> <span>📁 Apply to <b>all project files</b></span></label>
+                    <div class="bf-tabs">
+                        <button type="button" class="bf-tab active" data-bftab="layout">Layout</button>
+                        <button type="button" class="bf-tab" data-bftab="code">Numbers &amp; code</button>
+                    </div>
+                    <div class="bf-tab-panel" data-bfpanel="layout">
+                        <div class="bf-group">
+                            <div class="bf-group-title">Case</div>
+                            <div class="bf-sel-row">
+                                <label class="bf-sel-solo" title="Uppercase/lowercase instructions, registers, conditions and directives. Labels, identifiers and strings keep their case">
+                                    <select id="bfCase">
+                                        <option value="upper" selected>UPPERCASE</option>
+                                        <option value="lower">lowercase</option>
+                                        <option value="none">as-is</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Layout</div>
+                            <label><input type="checkbox" id="bfSplitColon" checked> One statement per line</label>
+                            <label><input type="checkbox" id="bfLabelOwnLine" checked> Label on its own line</label>
+                            <label><input type="checkbox" id="bfIndent" checked> Indent instructions to column 8</label>
+                            <label><input type="checkbox" id="bfSpaceComma" checked> Space after commas</label>
+                            <label title="Align operands into a column so a routine lines up vertically"><input type="checkbox" id="bfAlign"> Align operands into columns</label>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Blank lines</div>
+                            <label title="Blank line after unconditional RET, JP nn, JR nn, RST"><input type="checkbox" id="bfBlankFlow" checked> Blank line after flow control</label>
+                            <label title="Blank line after LDIR/LDDR/CPIR/CPDR/INIR/INDR/OTIR/OTDR"><input type="checkbox" id="bfBlankBlock"> Blank line after block ops</label>
+                            <label title="Blank line before each top-level routine label (not local .labels)"><input type="checkbox" id="bfBlankBeforeLabel"> Blank line before routines</label>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Comments</div>
+                            <label title="Ensure a space after ';' in comments (;text → ; text)"><input type="checkbox" id="bfCommentSpace" checked> Space after ';' in comments</label>
+                            <label title="Line up trailing ; comments to a common column"><input type="checkbox" id="bfAlignComments"> Align trailing comments</label>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Cleanup</div>
+                            <label title="Trim spaces/tabs at the end of each line"><input type="checkbox" id="bfTrim" checked> Trim trailing whitespace</label>
+                            <label title="Collapse runs of blank lines into one"><input type="checkbox" id="bfCollapse" checked> Collapse blank lines</label>
+                        </div>
+                    </div>
+                    <div class="bf-tab-panel hidden" data-bfpanel="code">
+                        <div class="bf-group">
+                            <div class="bf-group-title">Numbers</div>
+                            <div class="bf-sel-row">
+                                <label title="Byte = 8-bit values (≤ $FF). 'To hex' → hex (in the Hex notation below, else $); 'To decimal' → decimal. Independent of the Word setting, so you can keep bytes decimal while addresses go hex. Temp labels (1b/2f) and $ current-address left alone"><span>Byte</span>
+                                    <select id="bfByteBase">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="hex">To hex</option>
+                                        <option value="dec">To decimal</option>
+                                    </select>
+                                </label>
+                                <label title="Word = 16-bit values ($100–$FFFF, i.e. addresses). 'To hex' → hex; 'To decimal' → decimal. Independent of the Byte setting"><span>Word</span>
+                                    <select id="bfWordBase">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="hex">To hex</option>
+                                        <option value="dec">To decimal</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="bf-sel-row">
+                                <label title="Unify hex notation: #FF / $FF / 0xFF / 0FFh all become the chosen form. Bare $ (current address), $+n and non-hex left alone"><span>Hex</span>
+                                    <select id="bfHexPrefix">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="#">#FF</option>
+                                        <option value="$">$FF</option>
+                                        <option value="0x">0xFF</option>
+                                        <option value="h">0FFh</option>
+                                    </select>
+                                </label>
+                                <label title="Unify binary notation: %1010 / 0b1010 / 1010b. The suffix form is padded to 3 digits when needed (the assembler reads 1-2 digit Nb as a temp label). The modulo operator (X%10) is left alone"><span>Binary</span>
+                                    <select id="bfBinFormat">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="%">%1010</option>
+                                        <option value="0b">0b1010</option>
+                                        <option value="b">1010b</option>
+                                    </select>
+                                </label>
+                                <label title="Unify octal notation (suffix only — sjasmplus has no octal prefix): 77o / 77q"><span>Octal</span>
+                                    <select id="bfOctFormat">
+                                        <option value="leave" selected>as-is</option>
+                                        <option value="o">77o</option>
+                                        <option value="q">77q</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <label title="Pad byte-range hex (≤ $FF) to 2 digits when converting/unifying hex: $5 → $05. 'Byte' = 8-bit (DB/DEFB)"><input type="checkbox" id="bfPadBytes"> Pad byte hex to 2 digits ($05)</label>
+                            <label title="Pad word-range hex ($100–$FFFF) to 4 digits when converting/unifying hex: $100 → $0100. 'Word' = 16-bit (DW/DEFW)"><input type="checkbox" id="bfPadWords"> Pad word hex to 4 digits ($0100)</label>
+                            <div class="bf-sel-row">
+                                <label class="bf-sel-solo" title="Note each operand's value in the other base in the comment: dec→hex, hex/bin/oct→dec (LD HL,1234 → ; 1234=$04D2). Add: after any comment. Replace: overwrite it. Skip: bare lines only"><span>Value →</span>
+                                    <select id="bfAnnotateBase">
+                                        <option value="off" selected>Off</option>
+                                        <option value="add">Add (other base)</option>
+                                        <option value="replace">Replace comment</option>
+                                        <option value="skip">Skip commented</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="bf-group">
+                            <div class="bf-group-title">Code rewrites</div>
+                            <label title="EXA → EX AF,AF', SLI → SLL"><input type="checkbox" id="bfNormalize" checked> Normalize pseudo-ops</label>
+                            <label title="PUSH AF,HL,BC → one PUSH per line; chained LD H,D,L,E → LD H,D / LD L,E"><input type="checkbox" id="bfExpandMulti" checked> Expand multi-register PUSH/POP/LD</label>
+                            <label title="Turn current-address-relative jumps (JR/JP/DJNZ/… $±N) into named labels, resolving the target by instruction sizes. Backward JR/JP/DJNZ → back_N, forward → fwd_N, other instructions (CALL, LD, …) → addr_N. Reuses an existing label at the target; leaves a jump alone if it can't resolve it exactly"><input type="checkbox" id="bfGenLabels"> Generate labels for $±N jumps</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="bf-preview-wrap">
+                    <div class="bf-preview-label">Preview (current file)</div>
+                    <pre id="bfPreview" class="bf-preview"></pre>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="btnBeautifyCancel">Cancel</button>
+                <button id="btnBeautifyApply">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="importForeignDialog" class="modal-overlay hidden">
+        <div class="modal" style="max-width: 880px; width: 90vw;">
+            <h2>Import Foreign Source</h2>
+            <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                <button id="btnImpForeignChoose">Choose file…</button>
+                <input type="file" id="impForeignFile" style="display:none;">
+                <span id="impForeignSrcName" style="font-size:12px; color:var(--text-secondary);">or drop a .trd / .scl / .zip / single file here</span>
+            </div>
+            <div style="display:flex; gap:8px; min-height:260px;">
+                <div id="impForeignList" class="impf-list"></div>
+                <pre id="impForeignPreview" class="impf-preview"></pre>
+            </div>
+            <div id="impForeignStatus" style="font-size:12px; color:var(--text-secondary); min-height:14px; margin-top:6px;"></div>
+            <div class="modal-actions">
+                <button id="btnImpForeignCancel">Cancel</button>
+                <button id="btnImpForeignOk" disabled>Import</button>
+            </div>
+        </div>
+    </div>
+
+

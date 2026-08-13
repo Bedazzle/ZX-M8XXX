@@ -1,0 +1,418 @@
+<!-- free-standing dialogs. Spliced into index.html at boot by ui/boot.js. -->
+    <!-- Extract Font dialog (OCR) -->
+    <div class="ocr-extract-dialog hidden" id="ocrExtractDialog">
+        <div class="ocr-extract-content">
+            <h4>Extract Font</h4>
+            <div class="ocr-extract-row">
+                <label>Charset:</label>
+                <select id="ocrExtractCharset" title="Destination charset for extracted glyphs"></select>
+                <label>Address:</label>
+                <input type="text" id="ocrExtractAddr" value="3D00" maxlength="4">
+                <label>Bank:</label>
+                <input type="text" id="ocrExtractBank" value="" maxlength="2" size="3" placeholder="—" title="RAM bank number (empty = all RAM / current paging)">
+                <label>Count:</label>
+                <input type="number" id="ocrExtractCount" value="96" min="1" max="256">
+                <label>Cols:</label>
+                <input type="number" id="ocrExtractCols" value="1" min="1" max="64" title="Characters per row. 1 = sequential (8 bytes/char). >1 = bitmap font layout (e.g. 32 for GFX viewer width)">
+                <label>W:</label>
+                <input type="number" id="ocrExtractWidth" value="8" min="4" max="8" title="Glyph width in pixels">
+                <label>H:</label>
+                <input type="number" id="ocrExtractHeight" value="8" min="4" max="16" title="Glyph height in pixels">
+                <span class="ocr-extract-info" id="ocrExtractByteInfo">(= 768 bytes)</span>
+            </div>
+            <div class="ocr-extract-row">
+                <label>Map:</label>
+                <select id="ocrExtractMapSelect">
+                    <option value="spectrum">Spectrum ASCII</option>
+                    <option value="spectrofon">Spectrofon</option>
+                    <option value="custom">Custom</option>
+                </select>
+                <button id="btnOcrExtractSaveMap">Save Map</button>
+                <button id="btnOcrExtractLoadMap">Load Map</button>
+            </div>
+            <div class="ocr-extract-map-area">
+                <textarea id="ocrExtractMapText"> !"#$%&amp;'()*+,-./0123456789:;&lt;=&gt;?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_&#163;abcdefghijklmnopqrstuvwxyz{|}~&#169;</textarea>
+                <div class="ocr-extract-map-info">Characters in map: <span id="ocrExtractMapCount">96</span></div>
+            </div>
+            <div class="ocr-extract-buttons">
+                <button id="btnOcrExtractDo" class="primary">Extract to Charset</button>
+                <button id="btnOcrExtractRom">Load ROM Font</button>
+                <button id="btnOcrExtractClose">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Memory Map Dialog -->
+    <div class="memmap-dialog hidden" id="memmapDialog">
+        <div class="memmap-content">
+            <div class="memmap-header">
+                <button class="memmap-close" id="btnMemmapClose">Close</button>
+            </div>
+            <div class="memmap-body">
+                <div class="memmap-scale">
+                    <div class="memmap-scale-item"><span id="memmapRomLabel">ROM</span><span class="memmap-scale-addr">0000</span></div>
+                    <div class="memmap-scale-item"><span>Bank 5</span><span class="memmap-scale-addr">4000</span></div>
+                    <div class="memmap-scale-tick" style="top:182px"><span class="memmap-scale-addr">5B00</span></div>
+                    <div class="memmap-scale-item"><span>Bank 2</span><span class="memmap-scale-addr">8000</span></div>
+                    <div class="memmap-scale-item"><span id="memmapBankLabel">Bank 0</span><span class="memmap-scale-addr">C000</span></div>
+                    <div class="memmap-scale-end"><span class="memmap-scale-addr">FFFF</span></div>
+                </div>
+                <div class="memmap-canvas-container">
+                    <canvas id="memmapCanvas" width="512" height="512"></canvas>
+                    <div class="memmap-tooltip" id="memmapTooltip"></div>
+                    <div style="margin-top:6px;display:flex;align-items:center;gap:10px">
+                        <button id="btnExportAsm" title="Export disassembly as sjasmplus-compatible ASM file">Export ASM</button>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer" title="Include address and bytes as comments (e.g. LD A,$00 ; 8000: 3E 00)">
+                            <input type="checkbox" id="chkExportAddrBytes"> Addr+Bytes
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer" title="Detect unrolled loops (identical instruction sequences) and output as REPT blocks">
+                            <input type="checkbox" id="chkExportDedupLoops" checked> Dedup loops
+                        </label>
+                    </div>
+                </div>
+                <div class="memmap-sidebar">
+                    <div class="memmap-view-toggle" style="margin-bottom:8px">
+                        <button class="memmap-view-btn active" id="btnMemmapRegions">Regions</button>
+                        <button class="memmap-view-btn" id="btnMemmapHeatmap">Heatmap</button>
+                    </div>
+                    <div class="memmap-view-toggle" id="memmapBankToggle" style="display:none;margin-bottom:8px">
+                        <button class="memmap-view-btn active" id="btnMemmap64K">64KB</button>
+                        <button class="memmap-view-btn" id="btnMemmap128K">128KB</button>
+                    </div>
+                    <div class="memmap-legend" id="memmapLegendRegions">
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#4080ff"></div>Code</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#ff4040"></div>SMC</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#ffcc00"></div>DB (bytes)</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#ff8800"></div>DW (words)</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#40cc40"></div>Text</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#cc40cc"></div>Graphics</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#606060"></div>Unmapped</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#000000;border:1px solid #444"></div>Zeroes</div>
+                    </div>
+                    <div class="memmap-legend hidden" id="memmapLegendHeatmap">
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#0066ff"></div>Execute</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#00ff66"></div>Read</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#ff6600"></div>Write</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#ffffff"></div>Mixed (high)</div>
+                        <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#000000;border:1px solid #444"></div>No access</div>
+                        <div class="memmap-heatmap-scale">
+                            <div>Low</div>
+                            <div class="memmap-gradient"></div>
+                            <div>High</div>
+                        </div>
+                        <div class="memmap-export" style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                            <button id="btnHeatmapExport">Export</button>
+                            <button id="btnHeatmapExportFree" title="Export unaccessed address ranges (free memory)">Free</button>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipRom" checked> Skip ROM</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="chkHeatSkipScreen" checked> Skip screen</label>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <span style="width:1px;height:16px;background:var(--border-color)"></span>
+                                <span style="font-size:11px;color:var(--text-secondary)">Disasm:</span>
+                                <button id="btnMapExportCtl" title="Export SkoolKit control file (.ctl): executed = code, read/written = data, plus labels &amp; comments">.ctl</button>
+                                <button id="btnMapExportCsv" title="Export Ghidra CSV (address,name,comment) — for the ZX-disasm apply_labels.py">.csv</button>
+                                <button id="btnMapExportSym" title="Export sjasmplus symbols (.sym): NAME: EQU 0x…">.sym</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="memmap-stats" id="memmapStats"></div>
+                    <div class="memmap-bar" id="memmapBar"></div>
+                    <div class="memmap-addr-info" id="memmapAddrInfo">Hover over map to see details<br>Click to navigate</div>
+                    <h3 class="memmap-title">Memory Map (64KB)</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Go-to-label palette (Ctrl+G) -->
+    <div class="goto-palette hidden" id="gotoPalette">
+        <div class="goto-palette-box">
+            <div class="goto-palette-head">
+                <input type="text" id="gotoPaletteInput" placeholder="Label or hex address… (Ctrl+G)" spellcheck="false" autocomplete="off">
+                <label class="goto-rom-opt" title="Include ROM labels in the search"><input type="checkbox" id="gotoPaletteRom"> ROM</label>
+            </div>
+            <div class="goto-palette-list" id="gotoPaletteList"></div>
+        </div>
+    </div>
+
+    <!-- Label Edit Dialog -->
+    <div class="label-dialog hidden" id="labelDialog">
+        <div class="label-dialog-content">
+            <h4 id="labelDialogTitle">Add Label</h4>
+            <div class="label-dialog-row">
+                <label>Address</label>
+                <input type="text" id="labelAddrInput" readonly>
+            </div>
+            <div class="label-dialog-row">
+                <label>Name</label>
+                <input type="text" id="labelNameInput" placeholder="LABEL_NAME" maxlength="32">
+            </div>
+            <div class="label-dialog-row">
+                <label>Comment (optional)</label>
+                <input type="text" id="labelCommentInput" placeholder="Description..." maxlength="100">
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnLabelSave">Save</button>
+                <button id="btnLabelCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Region Mark Dialog -->
+    <div class="label-dialog hidden" id="regionDialog">
+        <div class="label-dialog-content">
+            <h4 id="regionDialogTitle">Mark Region</h4>
+            <div class="label-dialog-row">
+                <label>Start Address</label>
+                <input type="text" id="regionStartInput" readonly>
+            </div>
+            <div class="label-dialog-row">
+                <label>End Address</label>
+                <input type="text" id="regionEndInput" placeholder="FFFF" maxlength="4">
+            </div>
+            <div class="label-dialog-row">
+                <label>Type</label>
+                <select id="regionTypeSelect">
+                    <option value="code">Code</option>
+                    <option value="db">DB (bytes)</option>
+                    <option value="dw">DW (words)</option>
+                    <option value="text">Text (ASCII)</option>
+                    <option value="graphics">Graphics</option>
+                    <option value="smc">SMC (self-modifying)</option>
+                </select>
+            </div>
+            <div class="label-dialog-row">
+                <label>Comment (optional)</label>
+                <input type="text" id="regionCommentInput" placeholder="Description..." maxlength="100">
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnRegionSave">Mark</button>
+                <button id="btnRegionCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fold Block Dialog -->
+    <div class="label-dialog hidden" id="foldDialog">
+        <div class="label-dialog-content">
+            <h4>Create Fold Block</h4>
+            <div class="label-dialog-row">
+                <label>Start Address</label>
+                <input type="text" id="foldStartInput" readonly>
+            </div>
+            <div class="label-dialog-row">
+                <label>End Address</label>
+                <input type="text" id="foldEndInput" placeholder="FFFF" maxlength="4">
+            </div>
+            <div class="label-dialog-row">
+                <label>Name (optional)</label>
+                <input type="text" id="foldNameInput" placeholder="e.g. Sprite Data" maxlength="50">
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnFoldSave">Create</button>
+                <button id="btnFoldCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comment Dialog -->
+    <div class="label-dialog hidden" id="commentDialog">
+        <div class="label-dialog-content" style="width: 400px;">
+            <h4 id="commentDialogTitle">Edit Comment</h4>
+            <div class="label-dialog-row">
+                <label>Address</label>
+                <input type="text" id="commentAddrInput" readonly>
+            </div>
+            <div class="label-dialog-row">
+                <label><input type="checkbox" id="commentSeparator"> Add separator line (----------)</label>
+            </div>
+            <div class="label-dialog-row">
+                <label>Before (multiline)</label>
+                <textarea id="commentBeforeInput" rows="3" placeholder="Comment before instruction..."></textarea>
+            </div>
+            <div class="label-dialog-row">
+                <label>Inline</label>
+                <input type="text" id="commentInlineInput" placeholder="Short comment on same line" maxlength="60">
+            </div>
+            <div class="label-dialog-row">
+                <label>After (multiline)</label>
+                <textarea id="commentAfterInput" rows="3" placeholder="Comment after instruction..."></textarea>
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnCommentSave">Save</button>
+                <button id="btnCommentDelete" class="danger">Delete</button>
+                <button id="btnCommentCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- BASIC Paste Dialog -->
+    <div class="label-dialog hidden" id="basicPasteDialog">
+        <div class="label-dialog-content" style="width: 480px;">
+            <h4>Paste BASIC Program</h4>
+            <div class="label-dialog-row">
+                <textarea id="basicPasteText" rows="12" placeholder="10 PRINT &quot;HELLO&quot;&#10;20 GOTO 10" style="font-family:monospace;font-size:12px;width:100%;box-sizing:border-box"></textarea>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+                This replaces the current BASIC program. Emulator will be paused.
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnBasicPasteConfirm">Confirm</button>
+                <button id="btnBasicPasteCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Export Disasm Dialog -->
+    <div class="label-dialog hidden" id="exportDisasmDialog">
+        <div class="label-dialog-content">
+            <h4>Export Disassembly</h4>
+            <div class="label-dialog-row">
+                <label>Start Address</label>
+                <input type="text" id="exportStartAddr" placeholder="0000" maxlength="4">
+            </div>
+            <div class="label-dialog-row">
+                <label>End Address</label>
+                <input type="text" id="exportEndAddr" placeholder="FFFF" maxlength="4">
+            </div>
+            <div class="label-dialog-row">
+                <label>Options</label>
+                <div class="export-options">
+                    <label><input type="checkbox" id="exportWithOrg" checked> ORG directive</label>
+                    <label><input type="checkbox" id="exportWithAddr" checked> Address comments</label>
+                    <label><input type="checkbox" id="exportWithBytes"> Byte comments</label>
+                    <label><input type="checkbox" id="exportWithTstates"> T-states</label>
+                </div>
+            </div>
+            <div class="label-dialog-buttons">
+                <button id="btnExportSave">Export</button>
+                <button id="btnExportCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gamepad Calibration Dialog -->
+    <div class="label-dialog hidden" id="gamepadCalibDialog">
+        <div class="label-dialog-content" style="width: 350px;">
+            <h4>Gamepad Calibration</h4>
+            <div id="gamepadCalibInfo" style="margin-bottom: 10px; font-size: 12px; color: var(--text-dim);">
+                No gamepad detected
+            </div>
+            <div style="margin-bottom: 15px;">
+                <table style="width: 100%; font-size: 12px;">
+                    <tr>
+                        <td style="padding: 4px;">Up:</td>
+                        <td id="gamepadMapUp" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="up">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">Down:</td>
+                        <td id="gamepadMapDown" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="down">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">Left:</td>
+                        <td id="gamepadMapLeft" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="left">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">Right:</td>
+                        <td id="gamepadMapRight" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="right">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">Fire:</td>
+                        <td id="gamepadMapFire" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="fire">Assign</button></td>
+                    </tr>
+                    <tr><td colspan="3" style="padding: 6px 0 2px; color: var(--text-dim); font-size: 11px;">Extended (optional):</td></tr>
+                    <tr>
+                        <td style="padding: 4px;">C:</td>
+                        <td id="gamepadMapC" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="c">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">A:</td>
+                        <td id="gamepadMapA" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="a">Assign</button></td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 4px;">Start:</td>
+                        <td id="gamepadMapStart" style="color: var(--cyan);">-</td>
+                        <td><button class="small-btn gamepad-assign-btn" data-dir="start">Assign</button></td>
+                    </tr>
+                </table>
+            </div>
+            <div id="gamepadCalibStatus" style="margin-bottom: 10px; min-height: 20px; font-size: 12px; color: var(--accent);"></div>
+            <div class="label-dialog-buttons">
+                <button id="btnGamepadCalibReset">Reset</button>
+                <button id="btnGamepadCalibSave">Save</button>
+                <button id="btnGamepadCalibClose">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Browser Dialog -->
+    <div class="gamebrowser-dialog hidden" id="gameBrowserDialog">
+        <div class="gamebrowser-content">
+            <div class="gamebrowser-header">
+                <h3>Game Browser</h3>
+                <button class="gamebrowser-close" id="btnGameBrowserClose">&times;</button>
+            </div>
+            <div class="gamebrowser-search">
+                <input type="text" id="gameBrowserSearch" placeholder="Search games..." spellcheck="false">
+                <button id="btnGameBrowserSearchGo">Search</button>
+                <span class="gamebrowser-source-info">Powered by <a href="https://spectrumcomputing.co.uk" target="_blank">Spectrum Computing</a></span>
+            </div>
+            <div class="gamebrowser-body">
+                <div class="gamebrowser-results" id="gameBrowserResults">
+                    <div class="gamebrowser-status">
+                        Enter a search term to find games
+                    </div>
+                </div>
+                <div class="gamebrowser-detail hidden" id="gameBrowserDetail">
+                    <div class="gamebrowser-detail-title" id="gameBrowserDetailTitle">Select a game</div>
+                    <div class="gamebrowser-detail-screen" id="gameBrowserDetailScreen">
+                        <div class="gamebrowser-thumb-placeholder"></div>
+                    </div>
+                    <div class="gamebrowser-detail-info" id="gameBrowserDetailInfo"></div>
+                    <div class="gamebrowser-releases" id="gameBrowserReleases">
+                        <div class="gamebrowser-releases-title">Available Downloads</div>
+                        <div id="gameBrowserReleasesList"></div>
+                    </div>
+                    <div class="gamebrowser-external" id="gameBrowserExternal"></div>
+                </div>
+            </div>
+            <div class="gamebrowser-pagination">
+                <button id="btnGameBrowserPrev" disabled>&lt; Prev</button>
+                <span id="gameBrowserPageInfo">Page 0 of 0</span>
+                <button id="btnGameBrowserNext" disabled>Next &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comprehensive Help Dialog (content lazy-loaded from ui/help-content.html) -->
+    <div class="fullhelp-dialog hidden" id="fullHelpDialog"></div>
+    <!-- File Selector Dialog -->
+    <div class="file-selector-dialog hidden" id="fileSelectorDialog">
+        <div class="file-selector-content">
+            <div class="file-selector-header">
+                <h3 id="fileSelectorTitle">Select Main File</h3>
+                <button class="file-selector-close" id="btnFileSelectorClose">&times;</button>
+            </div>
+            <div class="file-selector-body" id="fileSelectorBody">
+            </div>
+        </div>
+    </div>
+
+    <div id="callGraphDialog" class="hidden" style="position:fixed;top:5%;left:5%;width:90%;height:90%;background:var(--bg-primary);border:1px solid var(--border);z-index:10000;display:flex;flex-direction:column;box-shadow:0 4px 20px rgba(0,0,0,0.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-bottom:1px solid var(--border);background:var(--bg-secondary)">
+            <span style="color:var(--cyan);font-weight:bold">Call Graph</span>
+            <button id="btnCallGraphClose" style="background:none;border:none;color:var(--text-primary);font-size:18px;cursor:pointer;padding:0 4px">&times;</button>
+        </div>
+        <div style="flex:1;padding:0;overflow:hidden">
+            <canvas id="callGraphCanvas" style="width:100%;height:100%;cursor:grab"></canvas>
+        </div>
+    </div>
+
+    <div class="drop-zone" id="dropZone">Drop ROM or Snapshot here</div>
+

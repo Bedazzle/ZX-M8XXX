@@ -72,7 +72,13 @@ the DOM-only variant for when the page isn't served by `serve.py`.
 staged file exists before suspecting the format.
 
 **Stepping.** Use `spectrum.runFrameHeadless()` for deterministic frame stepping
-(skips rendering/audio). Use `spectrum.runFrame()` when you need the per-frame
+(skips rendering/audio). It accepts interrupts exactly as `runFrame` does, including
+the case where the loaded PC sits on a not-yet-executed `HALT` — which is where every
+snapshot saved on an `EI`/`HALT` main loop lands, since loading one resets frame-start
+T-states into the INT window. That used to be missing here, and the symptom is nasty:
+the program runs one frame and freezes, but the screen still holds the snapshot's own
+picture, so it looks like it is running. Check `cpu.iff1` and a port-write count, not
+the screen. Covered by `tests/halt-int-test.html`. Use `spectrum.runFrame()` when you need the per-frame
 listener chain — e.g. `zxDebug.autoLoad` and the RZX advance run there. For RZX,
 prefer the one-call `zxDebug.replayRZX` (see below), which loops correctly to the
 recording's true end.
@@ -367,6 +373,48 @@ Options: `onProgress(frame,total)`, `progressEvery` (default 1000), `maxFrames`
   you know which build you measured.
 - **`version`** — the app version string (matches `APP_VERSION`).
 
+## Keyboard (and ghosting)
+
+A headless run has no real keyboard, so hold matrix keys directly. Key names are the
+ULA's own: `'q'`, `'Enter'`, `' '`, `'CAPS'`, `'SYM'`.
+
+```js
+zx.keyDown('q'); zx.keyDown('w'); zx.keyDown('a');
+zx.runFrames(200);                       // the ROM must reach its input loop first
+zx.keyUp('q'); zx.keyUp('w'); zx.keyUp('a');
+```
+
+- **`typeText(text, {hold, gap})`** — type a string, pumping frames itself so it works
+  while the emulator is stopped. `\n` is ENTER, `' '` is SPACE; `hold` and `gap` are in
+  frames (4 each by default), because the ROM samples the keyboard once per interrupt
+  and anything shorter than a frame is never seen.
+
+  ```js
+  await zx.autoLoad({ type: 'tape' });
+  zx.typeText('0\n');                      // answer the program's INPUT prompt
+  ```
+
+  Needed by test programs that ask a question before doing anything. Woodmass' Snow
+  Contention prompts for a T-state with `INPUT`, and a run that never answered sat in
+  the ROM's key wait looking exactly like a failed auto-load — so check the PC against
+  the ROM before concluding a tape did not load.
+- **`keyDown(key)` / `keyUp(key)`** — press/release in the matrix (`ula.keyDown/keyUp`).
+- **`readKeyboardPort(port)`** — read a half-row, e.g. `readKeyboardPort(0xFDFE)`.
+- **`setKeyboardGhosting(on)`** / **`keyboardGhosting`** — the Settings → Input toggle.
+  Off by default. On, the matrix behaves as the hardware does: keys held in different
+  half-rows on the same column short those rows together, so three keys at the corners
+  of a rectangle make a fourth read as pressed. It survives a machine switch, and the
+  Settings checkbox follows the API so the UI never disagrees with the run.
+
+Two traps when checking whether a *running* program sees this:
+
+- The CPU reads through **`ula.readKeyboard(highByte)`**, not `ula.readPort(port)` —
+  hook the former if you are instrumenting scans. Ghosting lives in `readKeyboard`, so
+  both entry points and `runFrameHeadless` are covered either way.
+- A freshly reset 48K does not scan the keyboard for ~83 frames (see
+  [Deterministic boot](#deterministic-boot--auto-load)). A few frames after `ready()`
+  will show no scans at all, which looks like the feature is off.
+
 ## One call: boot, run, export the map
 
 `mapRun()` is the whole boot → run → export sequence, so a driver doesn't rebuild it:
@@ -391,6 +439,54 @@ runs the frames (or replays the recording to its end), then returns everything:
 before it returns. Pass `report: true` (or `report: 'name'`) to post the whole object
 to `serve.py`'s sink, so the driver just reads `headless/name.json`. `onProgress(done,
 total)` fires every `progressEvery` frames for both the frame-run and replay paths.
+
+## UI handles (pokes, save states, rewind)
+
+Some features only exist as UI modules; these handles let a driver or a test use
+them without clicking.
+
+```js
+// POKE manager — .pok cheat files and the native JSON
+zxDebug.pokes.loadPokFile(text, 'manic.pok');   // { count, warnings }
+zxDebug.pokes.loadPokeJSON(text);
+
+// Save states: nine slots, F2/F5 act on the current one
+const display = zxDebug.getDisplayAPI();
+display.quicksave(3);                 // save to slot 3
+await display.quickload(3);
+display.saveSlots.list();             // [{ index, used, machine, time, title, bytes }]
+display.cycleSlot();
+
+// Rewind ring (see core/rewind.js)
+window.zxRewind.buffer.stepBack();
+window.zxRewind.buffer.resume();
+```
+
+```js
+// Application test runner (tests/tests.json) — the Tools → Tests tab's own engine
+const tr = zxDebug.testRunner;
+tr.running = true;                                  // see the trap below
+const result = await tr.runSingleTest(entry);       // { passed, diff, step, frame }
+tr.running = false;
+```
+
+Three traps worth knowing:
+
+* **`runSingleTest` types nothing unless `running` (or `previewing`) is true.** Every
+  wait inside `injectLoadCommand` goes through `runFramesWithAbortCheck`, which
+  returns immediately when both are false — so the tape loads, nothing is typed, and
+  the test quietly grades the boot screen. Set the flag before the call.
+* **To capture what the runner drew, intercept it**, don't read the screen
+  afterwards: `runSingleTest` restores the machine in its `finally`, so by the time
+  it resolves the framebuffer is gone. Stub `loadPristineImage` to return any
+  `ImageData` and `compareScreens` to keep its first argument — that is exactly the
+  image the comparison would have used, which is how `tests/*.png` references are
+  generated.
+* Snapshotting before the ROM has loaded captures a **blank machine** — call
+  `await zxDebug.ready()` first, or a save/load round-trip passes while proving
+  nothing.
+* Rewind captures from `spectrum.addFrameListener`, and only `runFrame` notifies
+  listeners. A driver stepping with `runFrameHeadless` records no rewind states.
 
 ## Notes
 

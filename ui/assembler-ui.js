@@ -48,6 +48,7 @@ export function initAssemblerUI({
     const asmProgressPct = document.getElementById('asmProgressPct');
     const chkAsmCaseInsensitive = document.getElementById('chkAsmCaseInsensitive');
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
+    const chkAsmUnicodeLabels = document.getElementById('chkAsmUnicodeLabels');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
     const asmViewCodepage = document.getElementById('asmViewCodepage');
@@ -731,6 +732,22 @@ export function initAssemblerUI({
     }
 
     // Async decode: UTF-8 if valid, otherwise prompt user for encoding
+    // Is this data, rather than text in some codepage? A .inc holding graphics is
+    // not UTF-8 and never will be, and asking which codepage to read it in is a
+    // question with no right answer. Russian sources in CP866/KOI8 have high bytes
+    // but no NULs and few control codes, so they still get the dialog.
+    function looksBinaryData(bytes) {
+        const n = Math.min(bytes.length, 4096);
+        if (n === 0) return false;
+        let control = 0;
+        for (let i = 0; i < n; i++) {
+            const b = bytes[i];
+            if (b === 0x00) return true;
+            if (b < 0x09 || (b > 0x0D && b < 0x20)) control++;
+        }
+        return control / n > 0.02;
+    }
+
     async function decodeText(data) {
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
         // Try UTF-8
@@ -928,8 +945,14 @@ export function initAssemblerUI({
                 <span class="file-icon">${icon}</span>
                 <span class="file-name" title="${path}">${name}</span>
                 <span class="file-size">${sizeStr}</span>
+                <span class="file-rename" title="Rename in project">\u270e</span>
                 <span class="file-delete" title="Remove from project">\u00d7</span>
             `;
+
+            item.querySelector('.file-rename').addEventListener('click', (e) => {
+                e.stopPropagation();
+                renameVfsFile(path);
+            });
 
             item.querySelector('.file-delete').addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -955,7 +978,7 @@ export function initAssemblerUI({
 
         // Save current editor content to previous file (only if it's a text file)
         if (currentOpenFile && VFS.files[currentOpenFile] && !VFS.files[currentOpenFile].binary) {
-            VFS.files[currentOpenFile].content = asmEditor.value;
+            VFS.setContent(currentOpenFile, asmEditor.value);
         }
 
         // Add to open tabs if not already open
@@ -1008,6 +1031,47 @@ export function initAssemblerUI({
         updateFileTabs();
     }
 
+    // Rename a project file. Everything that refers to a path by name — the open
+    // tabs, the modified flags, the main file — moves with it, or a tab would go on
+    // editing a file that no longer exists.
+    // Kept separate from the prompt so it can be driven directly (and tested).
+    function applyRename(oldPath, newName) {
+        const from = VFS.normalizePath(oldPath);
+        const dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/') + 1) : '';
+        const trimmed = String(newName || '').trim();
+        if (!trimmed) return { ok: false, error: 'the name cannot be empty' };
+        // A bare name stays in the same directory; a path moves the file.
+        const target = trimmed.includes('/') ? trimmed : dir + trimmed;
+
+        const res = VFS.renameFile(from, target);
+        if (!res.ok) return res;
+        if (res.from === res.to) return res;
+
+        const idx = openTabs.indexOf(res.from);
+        if (idx !== -1) openTabs[idx] = res.to;
+        if (fileModified[res.from] !== undefined) {
+            fileModified[res.to] = fileModified[res.from];
+            delete fileModified[res.from];
+        }
+        if (currentOpenFile === res.from) currentOpenFile = res.to;
+        if (currentProjectMainFile === res.from) currentProjectMainFile = res.to;
+
+        assemblyDirty = true;
+        updateFileTabs();
+        updateFilesList();
+        updateProjectButtons();
+        return res;
+    }
+
+    function renameVfsFile(path) {
+        const current = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+        const input = window.prompt(`Rename "${current}" to:`, current);
+        if (input === null) return;                      // cancelled
+        const res = applyRename(path, input);
+        if (!res.ok) showMessage('Rename failed: ' + res.error, 'error');
+        else if (res.from !== res.to) showMessage(`Renamed to ${res.to}`);
+    }
+
     // Remove a file from VFS and close its tab if open
     function removeVfsFile(path) {
         VFS.removeFile(path);
@@ -1038,7 +1102,7 @@ export function initAssemblerUI({
 
         updateFileTabs();
         updateFilesList();
-        updateAsmButtons();
+        updateProjectButtons();
     }
 
     // Remove all files in a directory from VFS
@@ -1074,7 +1138,7 @@ export function initAssemblerUI({
 
         updateFileTabs();
         updateFilesList();
-        updateAsmButtons();
+        updateProjectButtons();
     }
 
     // Update file tabs display
@@ -1268,7 +1332,7 @@ export function initAssemblerUI({
     // Sync editor to VFS when in project mode
     function syncEditorToVFS() {
         if (currentOpenFile && VFS.files[currentOpenFile] && !VFS.files[currentOpenFile].binary) {
-            VFS.files[currentOpenFile].content = asmEditor.value;
+            VFS.setContent(currentOpenFile, asmEditor.value);
         }
     }
 
@@ -1514,7 +1578,7 @@ export function initAssemblerUI({
                         if (f.name.endsWith('/') || f.name.startsWith('.') || f.name.includes('/.')) continue;
 
                         const ext = '.' + f.name.split('.').pop().toLowerCase();
-                        const isText = textExtensions.includes(ext);
+                        const isText = textExtensions.includes(ext) && !looksBinaryData(f.data);
                         const normalizedPath = VFS.normalizePath(f.name);
 
                         // Check if this file is already open in a tab
@@ -1525,7 +1589,8 @@ export function initAssemblerUI({
                         if (isText) {
                             const text = await decodeText(f.data);
                             if (text === null) { showMessage('Import aborted'); return; }
-                            VFS.addFile(f.name, text);
+                            // keep the bytes as loaded, so INCBIN is byte-exact
+                            VFS.addFile(f.name, text, { bytes: new Uint8Array(f.data) });
                             if (['.asm', '.z80', '.s', '.a80'].includes(ext)) {
                                 lastAddedFile = normalizedPath;
                             }
@@ -1556,7 +1621,8 @@ export function initAssemblerUI({
                 } else {
                     // Single file - check for duplicates
                     const ext = '.' + file.name.split('.').pop().toLowerCase();
-                    const isText = textExtensions.includes(ext);
+                    const isText = textExtensions.includes(ext) &&
+                                   !looksBinaryData(new Uint8Array(arrayBuffer));
                     const basename = file.name.split('/').pop();
                     const existingFiles = findFilesByBasename(basename);
 
@@ -1606,7 +1672,7 @@ export function initAssemblerUI({
                     if (isText) {
                         const text = await decodeText(arrayBuffer);
                         if (text === null) { showMessage('Import aborted'); return; }
-                        VFS.addFile(targetPath, text);
+                        VFS.addFile(targetPath, text, { bytes: new Uint8Array(arrayBuffer) });
                         if (['.asm', '.z80', '.s', '.a80'].includes(ext)) {
                             lastAddedFile = VFS.normalizePath(targetPath);
                         }
@@ -1704,7 +1770,7 @@ export function initAssemblerUI({
         } else {
             // Save current editor to VFS first
             if (currentOpenFile && VFS.files[currentOpenFile] && !VFS.files[currentOpenFile].binary) {
-                VFS.files[currentOpenFile].content = asmEditor.value;
+                VFS.setContent(currentOpenFile, asmEditor.value);
             }
             // Search all files (skip binary files)
             for (const filename of files) {
@@ -1778,7 +1844,7 @@ export function initAssemblerUI({
         if (file !== currentOpenFile && VFS.listFiles().length > 0) {
             // Save current file first
             if (currentOpenFile && VFS.files[currentOpenFile] && !VFS.files[currentOpenFile].binary) {
-                VFS.files[currentOpenFile].content = asmEditor.value;
+                VFS.setContent(currentOpenFile, asmEditor.value);
             }
             // Open target file
             const targetFile = VFS.files[file];
@@ -1982,6 +2048,15 @@ export function initAssemblerUI({
         });
     }
 
+    // Unicode (e.g. Cyrillic) label names — off by default, so a line typed in
+    // the wrong keyboard layout is an error rather than a label
+    if (chkAsmUnicodeLabels) {
+        chkAsmUnicodeLabels.checked = storageGet('zxm8_asmUnicodeLabels') === 'true';
+        chkAsmUnicodeLabels.addEventListener('change', () => {
+            storageSet('zxm8_asmUnicodeLabels', chkAsmUnicodeLabels.checked);
+        });
+    }
+
     // Export as ZIP option
     if (chkAsmExportZip) {
         chkAsmExportZip.checked = storageGet('zxm8_asmExportZip') === 'true';
@@ -2153,7 +2228,7 @@ export function initAssemblerUI({
                         const f = VFS.files[path];
                         if (f.binary) continue;
                         if (!/\.(asm|z80|s|a80|inc)$/i.test(path)) continue;
-                        f.content = beautify(f.content, opts);
+                        VFS.setContent(path, beautify(f.content, opts));
                         n++;
                     }
                     // refresh the open file from VFS
@@ -2371,7 +2446,7 @@ export function initAssemblerUI({
                 mirrorRenderSoon();
                 if (currentOpenFile) fileModified[currentOpenFile] = true;
             } else {
-                VFS.files[pane2Path].content = asmEditor2.value;
+                VFS.setContent(pane2Path, asmEditor2.value);
                 fileModified[pane2Path] = true;
             }
             updateFileTabs();
@@ -3355,16 +3430,21 @@ export function initAssemblerUI({
         const isSingleFile = !currentProjectMainFile && !currentOpenFile;
 
         if (isSingleFile) {
-            VFS.reset();
+            // Scratch mode: drop the previous editor buffer, keep everything the
+            // user loaded. A file loaded to be INCLUDEd or INCBINned is in the
+            // project list whatever its extension, and must survive the build.
+            VFS.resetSources();
         }
 
         const normalizedOpenFile = currentOpenFile ? currentOpenFile.replace(/\\/g, '/').toLowerCase() : null;
         if (normalizedOpenFile && VFS.files[normalizedOpenFile] && !VFS.files[normalizedOpenFile].binary) {
-            VFS.files[normalizedOpenFile].content = asmEditor.value;
+            VFS.setContent(normalizedOpenFile, asmEditor.value);
         }
 
         if (asmEditor.value.trim()) {
-            VFS.addFile(filename, asmEditor.value);
+            // The editor's own text: scratch, so the next build replaces it rather
+            // than accumulating stale copies. Files in the list are the user's.
+            VFS.addFile(filename, asmEditor.value, { scratch: !currentOpenFile });
         }
 
         const hasProject = !isSingleFile && Object.keys(VFS.files).length > 1;
@@ -3394,7 +3474,8 @@ export function initAssemblerUI({
         }
 
         const asmOptions = {
-            caseInsensitive: chkAsmCaseInsensitive && chkAsmCaseInsensitive.checked
+            caseInsensitive: chkAsmCaseInsensitive && chkAsmCaseInsensitive.checked,
+            unicodeLabels: chkAsmUnicodeLabels && chkAsmUnicodeLabels.checked
         };
 
         return { filename, normalizedFilename, hasProject, cmdDefines, asmOptions };
@@ -3707,6 +3788,18 @@ export function initAssemblerUI({
             } else {
                 html += `<div class="asm-error">${escapeHtml(e.message || e.toString())}</div>`;
             }
+
+            // Warnings collected before the failure often explain it — "org push hl"
+            // errors on the operand, and the warning is what says why. Dropping them
+            // here left the useful half of the diagnosis invisible.
+            const collectedWarnings = (ErrorCollector.warnings || []).filter(w =>
+                w.message && !w.message.startsWith('Unused label:') &&
+                !w.message.startsWith('DISPLAY: ')
+            );
+            collectedWarnings.forEach(w => {
+                html += formatErrorLocation(w.file, w.line, w.message, false);
+            });
+
             asmOutput.innerHTML = html;
 
             asmOutput.querySelectorAll('.asm-clickable').forEach(el => {
@@ -4626,7 +4719,7 @@ export function initAssemblerUI({
         saveState: () => {
             // Sync current editor to VFS
             if (currentOpenFile && VFS.files[currentOpenFile] && !VFS.files[currentOpenFile].binary) {
-                VFS.files[currentOpenFile].content = asmEditor.value;
+                VFS.setContent(currentOpenFile, asmEditor.value);
             }
             return {
                 editorContent: asmEditor.value,
@@ -4722,6 +4815,8 @@ export function initAssemblerUI({
         // Add already-prepared files to the project ({path, text} or
         // {path, data} for binaries) and refresh the UI.
         // Used by the foreign-source importer (ui/import-foreign.js).
+        // Rename a project file (the prompt-free half of the ✎ button)
+        renameProjectFile: (oldPath, newName) => applyRename(oldPath, newName),
         addProjectFiles: (files, mainHint) => {
             let lastSrc = null;
             for (const f of files) {

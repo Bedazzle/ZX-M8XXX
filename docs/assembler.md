@@ -42,6 +42,92 @@ sjasmplus-compatible Z80 assembler. Multi-pass (up to 10 passes) with forward re
 - UI renders with cyan `.asm-display` CSS class and `>` prefix, clickable to navigate to source line
 - Prefixed with `DISPLAY: ` in `ErrorCollector.warnings` for UI identification
 
+**Output and ORG**: the output is address-indexed from the first `ORG`. Emitting
+*below* it (`org 25000` code, then `org 16384` + `incbin`) grows the buffer
+downwards and zero-fills the gap, so the reported start is the lowest address
+written. An `ORG` that emits nothing (the string-length measuring trick) doesn't
+move it. A target more than 64K below the start is refused with a warning.
+
+## LUA Scripting (`sjasmplus/lua.js`)
+
+sjasmplus-compatible `LUA` / `ENDLUA` blocks. Existing projects that script their build
+(asset conversion, TAP/BASIC generation, table generation) assemble unchanged.
+
+```asm
+    org $8000
+    LUA ALLPASS
+for i = 1, 4 do _pc("db " .. (i * 16)) end
+sj.add_byte(0xAB)
+    ENDLUA
+```
+
+**Engine**: [fengari](https://fengari.io) (Lua 5.3 in pure JS, MIT), lazy-loaded from
+`lib/fengari-web.js` on the first source that contains a `LUA` line — a project without
+scripting never pays for it. `sourceUsesLua(text)` is the cheap pre-check the editor uses;
+`ui/assembler-ui.js` awaits `ensureLuaEngine()` before both assemble paths. The full Lua
+standard library is available — sjasmplus does not restrict it to a subset either.
+(sjasmplus 1.21.1 itself embeds Lua 5.5; the differences that matter for build scripts are
+`goto`/integer-division-era syntax, not the library surface these scripts use.)
+
+**Blocks are lifted before parsing.** `Assembler.extractLuaBlocks(source, filename)` pulls
+each block body out and replaces it with a single `LUA` directive line, at every
+`Parser.parse` site including `INCLUDE`. Consequences worth knowing:
+- The body is never touched by the Z80 parser, so Lua syntax can't collide with assembler syntax
+- Inside a macro, macro arguments are **not** substituted into the Lua body — pass them
+  through `sj.calc("param")` / `_c("param")`, exactly as sjasmplus does
+- The opening line is matched CRLF-tolerantly, so Windows-authored sources work
+
+**Passes**: `LUA [PASS1|PASS2|PASS3|ALLPASS]`, default `PASS3`. `PASS3` means the final,
+emitting pass. One Lua state persists across all passes, so a variable set in `PASS1` is
+still there in `PASS3`. A source containing any LUA block always runs three passes.
+**Code-emitting blocks need `ALLPASS`** — with the default, earlier passes see no bytes and
+every label after the block lands at the wrong address.
+
+**Bindings** (`createLuaRuntime(host)` — the host object is the only link back to the
+assembler, so `lua.js` never reaches into it directly):
+
+| Global | Meaning |
+|--------|---------|
+| `_c(expr)` | evaluate an assembler expression → number |
+| `_pc(text)` | parse text as assembler code (emits) |
+| `_pl(text)` | parse a full source line (label + code) |
+
+`sj.` table: `calc`, `parse_code`, `parse_line`, `error`, `warning`, `file_exists`,
+`get_define` / `insert_define`, `get_label` / `insert_label`, `add_byte` / `add_word`,
+`get_byte` / `get_word`, `get_device` / `set_device`, `set_page`, `set_slot`,
+`get_modules`, `get_page_at`, `exit`, `shellexec` (warns — no shell in a browser).
+Properties `sj.current_address` (writing it performs an `ORG`), `sj.pass`,
+`sj.error_count`, `sj.warning_count` go through a metatable.
+
+**File I/O runs on the VFS.** `io.open` / `read` / `write` / `seek` / `close` / `flush` and
+`os.remove` are shimmed over `sjasmplus/vfs.js`, so a script that writes a `.tap` or `.bin`
+produces a downloadable project file instead of touching the disk. Handles opened for
+reading are never written back on `close()`.
+
+**Related directives** these scripts rely on, implemented alongside:
+- `EXPORT name[, name…]` — collects `NAME: EQU 0x….` lines into a generated `<main>.exp`
+  save command; values are read after assembly, so forward-declared labels export correctly
+- `!label` — the "not exported" marker prefix, accepted on `!name = $` and `!name:`
+- `NAME MACRO param?` — `?`-suffixed macro parameters, substituted without clobbering
+  longer names that start with the same text
+
+**Errors**: a runtime error is reported with a Lua traceback attached, at the source line
+of the `LUA` directive. `sj.error(msg, bad)` and `sj.warning(msg)` feed the normal
+`ErrorCollector`, so they render as clickable UI lines like any assembler diagnostic.
+
+**`zx.` table**: `trdimage_create(name[, label])`, `trdimage_add_file(trd, "somenameC", start,
+length[, autostart[, replace]])` and `save_snapshot_sna(name, startAddr)`. Each returns a boolean
+and routes to the same save command as `EMPTYTRD`/`SAVETRD`/`SAVESNA`, so a script and a directive
+produce the same file. The TR-DOS type is the **9th** character of the name, as sjasmplus documents
+— a shorter name is taken whole and defaults to type `C`. `save_snapshot_sna` needs a `DEVICE`,
+which sjasmplus also requires.
+
+**Tests**: `tests/lua-test.html` — bindings, pass filters, state across passes, LUA inside
+macros, error reporting, plus three real-world sources in `tests/lua/` (sjasmplus's own
+`BasicLib`, compared byte-for-byte against sjasmplus 1.21.1 output, and introspec's script
+library). The three directives above are additionally covered without Lua in
+`tests/asm-test.html`.
+
 ## Editor Syntax Highlighting (`ui/asm-highlight.js`)
 
 **The layer is what the user reads.** `.asm-textarea.highlighting` sets `color:
@@ -102,6 +188,7 @@ Shows real-time pass and line progress during assembly.
 **Assembler options** (⚙ gear popover in the toolbar, persisted to localStorage):
 - **Case insensitive** (`chkAsmCaseInsensitive`, key `zxm8_asmCaseInsensitive`) — when checked, all label names are lowercased during define/lookup so `PlayerHPMAX` and `PlayerHPMax` resolve to the same symbol. Implemented via `SymbolTable.caseInsensitive` flag applied in `getFullName()` before any prefix/module processing. Passed as `options.caseInsensitive` to all four assembly entry points.
 - **Unused labels** (`chkAsmUnusedLabels`) — show warnings for defined but unreferenced labels
+- **Unicode labels** (`chkAsmUnicodeLabels`, key `zxm8_asmUnicodeLabels`) — **off by default**: allows Cyrillic and other non-Latin letters in label names, as native assemblers (ALASM and friends) do. Off, those characters are reported as `Unexpected character`, which is what catches a line typed in the wrong keyboard layout (`щкп 25000` for `org 25000`) — with the option on, such a line would just be a label. Cyrillic in comments and string literals is unaffected either way. Implemented as `LexerOptions.unicodeIdentifiers` in `sjasmplus/lexer.js`, passed as `options.unicodeLabels` to all four assembly entry points.
 - **Show compiled** (`chkAsmShowCompiled`) — show hex dump of assembled output
 - **Export as ZIP** (`chkAsmExportZip`, key `zxm8_asmExportZip`) — force ZIP export for single files (multi-file projects always export as ZIP); moved here from Settings → Display
 - **View enc** (`asmViewCodepage`, key `zxm8_asmViewCodepage`: `raw`/`cp866`/`koi8`/`koi7`) — display codepage for raw bytes in the editor (Cyrillic `DB` strings of imported TR-DOS sources). Display-only: the transform (`decodeViewCodepage` in `core/asm-detok.js`) is applied in `highlightAsmCode()` (the highlight layer paints the visible text while the textarea text is transparent) and maps 1 char → 1 char, so caret/selection positions stay aligned and the file content / assembled bytes are untouched. CP866 and KOI8-R decode the high half 0x80–0xFF; KOI-7 N2 remaps the lowercase Latin range 0x60–0x7E to uppercase Cyrillic (that's the encoding's design — lowercase code will display as Cyrillic too). The earlier boolean `zxm8_asmCp866View` key is migrated.

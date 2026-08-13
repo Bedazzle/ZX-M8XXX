@@ -349,6 +349,16 @@ The ULA generates video output in a raster pattern:
 3. Paper area (192 lines of screen content)
 4. Bottom border (visible, border color)
 
+Two analogue traits of the Ferranti part also belong to video generation but are easier
+to read as edge cases: **snow** (§10.7) and the **ink/paper edge skew** (§10.8). Both
+are absent on the +2A/+3 gate array and on the clones, so model them as machine
+properties rather than as global display options.
+
+What happens *after* the ULA is a third: on RF or composite the TV cannot fully
+separate luminance from chroma, so dither at the subcarrier frequency becomes colour
+(§10.9). That one splits the other way — the 128K family locks its pixel clock to the
+subcarrier and the 48K and the clones do not.
+
 ### 5.2 Border Color Changes
 
 Border color changes via OUT to port 0xFE take effect at the **current beam position**. For multicolor border effects, you must track the exact T-state of each OUT instruction.
@@ -720,11 +730,167 @@ For IM 2, the vector table address is `(I << 8) | data_bus_value`. On Spectrum, 
 
 For LDIR/LDDR, writes to contended memory incur contention. This is why copying to screen memory is slower than copying from it.
 
-### 10.7 Snow Effect (48K)
+### 10.7 Snow Effect (Ferranti ULA)
 
-On 48K only, during the first T-state of certain instructions, if the IR register points to contended memory AND the ULA is fetching, a "snow" effect can occur. This is rarely emulated.
+Every M1 cycle ends with a refresh: the Z80 puts `I:R` on the address bus with MREQ
+asserted. The 48K ULA gates its display fetch on **MREQ alone** — not RD, not WR, not
+RFSH — so when `I` points into contended RAM the refresh looks to it like a display
+fetch, and the picture is corrupted.
 
-### 10.8 Chained Prefix Bytes (DD/FD)
+**Why the low 7 bits.** The lower 16K is 4116 DRAM (16K x 1): a 7-bit row and a 7-bit
+column, multiplexed. The refresh drives `R` on A0-A6, which is exactly the row, and it
+is latched at RAS while the column stays whatever the ULA had. So the ULA reads the
+display file at an address whose **low 7 bits are R's** — snow is made of fragments of
+the picture, not random dots. 128K machines use 4164s (8-bit row), which predicts 8
+bits there.
+
+**The two outcomes** (Weiv's measurements, hype.retroscene.org/blog/1089):
+
+| M1 T4 lands on | Result |
+|---|---|
+| the ULA cycle's **3rd** T-state | **Snow** — both the pixel and attribute byte of that cell come from the corrupted address |
+| the cycle's **5th** T-state | **Double** — the second cell of the pair is never read, so the first cell's bytes repeat |
+| any of the other six | nothing |
+
+Because the two triggers share a parity, a stream of 4T instructions can miss both.
+That is hardware behaviour, not a bug in the model.
+
+**Which machines.** `I` in `$40-$7F` on 16/48/128/+2; on a 128K also `$C0-$FF`, but only
+while an odd (contended) page sits at `$C000`. **Not** on the +2A/+3 — those use
+Amstrad's 40077 gate array, not the Ferranti part — and not on Pentagon, Scorpion or
+other clones.
+
+**Implementation notes.** Sample `I` at **each refresh**, not once per frame: a program
+can arm and disarm the effect mid-screen (holding `I` in ROM until the beam is past a
+caption, then setting it), and a per-frame sample silently ignores that. Apply snow
+**per scanline as the beam reaches it**, since only the refreshes that have already
+happened may affect that line. In this codebase: `core/ula-snow.js` (pure),
+`cpu.incR()` logs `(T-state, R, I)` into `ula.m1Log`, tests in `tests/snow-test.html`,
+details in `docs/rendering.md`.
+
+### 10.8 Ink/Paper Edge Skew (Ferranti ULA)
+
+The Ferranti ULA does not switch symmetrically between ink and paper: the transition
+**into** ink lags the transition back to paper, so an ink pixel comes out slightly
+narrower than a paper one. Only a pixel that *starts* an ink run pays for it — a long
+run loses a sliver of its left edge and nothing else — so ordinary graphics are
+essentially unchanged.
+
+A one-pixel checkerboard is the pathological case, because there every ink pixel is a
+leading edge:
+
+```
+the same pattern, white as INK   -> (1 - skew) / 2 lit    <- darker
+the same pattern, white as PAPER -> (1 + skew) / 2 lit    <- brighter
+```
+
+So two encodings that a pixel-exact renderer **cannot tell apart** differ in brightness
+on hardware, by exactly `skew`.
+
+**The test that exposes it** is *Bright Miner*, which paints Miner Willy as `$AA` cells
+with attribute `$07` (ink 7 / paper 0) against `$55` cells with attribute `$38`
+(ink 0 / paper 7) — an inverted bitmap **and** an exact ink/paper swap. Both regions are
+white exactly where `(x + y)` is even: not a phase shift, the same image bit for bit. A
+pixel-exact emulator shows uniform grey; with the skew, Willy appears, and appears
+*brighter* than the background because his cells carry the white as paper.
+
+Note what this rules out: since the pixel stream is identical, **no** filter,
+resampling, RF/composite artefact or attribute-fetch offset can reveal the figure. Only
+an ink-versus-paper asymmetry can.
+
+**Which machines.** The same split as snow — 48K, 128K, +2 do it; the +2A/+3 gate array
+and the Pentagon/Scorpion clones do not. It is a machine trait, not a display filter —
+confirmed on hardware, and SpecEmu makes the same per-machine distinction, which is
+what rules out a post-process (a filter cannot know which machine it is attached to).
+
+**Implementation notes.** Compute the leading-ink mask as `byte & ~(byte >> 1)` with
+bit 7's left neighbour carried in from the previous cell (bit 7 is the leftmost pixel,
+so a pixel's left neighbour is the bit *above* it — getting this backwards is an easy
+bug), then re-tint only those pixels after the cell's eight have been stored. In this
+codebase: `core/ula-inkskew.js` (pure), `ulaInkSkew` in the machine profile, tests in
+`tests/inkskew-test.html`, details in `docs/rendering.md`.
+
+**Magnitude.** Measured off a capture of a real UK +2 running the test: the figure sat
+4.7 luminance units above the background on a 0-170 black-to-white range, giving a skew
+of **~0.03 of a pixel**. It is a subtle effect on hardware — an emulator showing an
+obvious figure is overstating it. (SpecEmu's contrast implies roughly 0.25, about 8x
+too strong.) Camera, TV, compression and display gamma all sit between the ULA and that
+number, so treat it as an order-of-magnitude result, not a datasheet value.
+
+### 10.9 Composite Artifact Colour (PAL, RF/composite output)
+
+A Spectrum plugged into a TV hands it **one wire** carrying luminance and the colour
+subcarrier together. The set separates them by filtering, so fine luminance detail
+whose frequency falls in the chroma band is demodulated as **colour that is not in
+the palette at all**. Most emulators produce an ideal, unlimited-bandwidth signal and
+model none of this — which is fine until a program is written to exploit it.
+
+**The clock relationship decides whether it is usable.** On a 128K/+2/+2A/+3 the
+master clock is 17.734475 MHz, *exactly 4x the PAL subcarrier* (4.43361875 MHz), and
+the pixel clock is that over 2.5:
+
+```
+f_subcarrier / f_pixel = 5/8   exactly   (8 pixels = 5 subcarrier cycles)
+```
+
+So one bitmap byte is a whole number of subcarrier cycles, every character column
+starts at the same phase, and so does every line (456 pixels = 285 cycles) and every
+frame. Artifact colour on those machines is therefore **stable and byte-aligned**,
+and the artifact chroma of a byte is bin 5 (equivalently bin 3) of its 8-point
+luminance DFT.
+
+The 48K is a 14 MHz machine whose subcarrier comes from a **separate free-running
+oscillator**. Nothing is locked — that is its notorious dot crawl, a known design
+compromise that Sinclair fixed on the 128K — and its artifact hue drifts instead of
+standing still. Pentagon and Scorpion clones are 14 MHz machines too.
+
+**PAL, not NTSC.** The V (R-Y) axis is inverted line by line and the receiver's delay
+line averages neighbouring lines, so an artifact that is *identical* on consecutive
+lines has its V cancelled and keeps U (blue/yellow), while one *inverted* every line
+has its U cancelled and keeps V (magenta/green, with the blue channel untouched).
+Program authors can pick either by how they lay out the dither. This is why PAL
+artifact colour is more limited than NTSC's, and why it is not simply "the NTSC
+trick with different numbers".
+
+**The test case.** *Chromatrons Attack* (Guesser / Gasman, CSSCGC 2013) fills the
+screen with bytes **`$A5` and `$5A`** under one attribute (`$78` — bright white
+paper, black ink), inverted on every scanline. Both bytes are 50 % dither, so a
+pixel-exact renderer draws flat grey; all their AC energy is on the subcarrier bin
+and they are 180 degrees apart, so a TV shows two complementary colours. A plain
+`$AA`/`$55` checkerboard lands at Nyquist (3.55 MHz) instead and produces nothing —
+a useful negative control, and the reason the superficially similar Bright Miner test
+(10.8) has a completely different explanation.
+
+**Modelling it.** Encode Y/U/V to composite at 5 samples per pixel (8 samples per
+subcarrier cycle on a locked machine), notch the luma, quadrature-demodulate the
+chroma, average the line pair, convert back. A centred 9-tap boxcar over 8 samples is
+a perfect null at the subcarrier and adds no group delay; applied twice it also gives
+roughly the ~1.3 MHz chroma bandwidth a PAL receiver has. The chain is linear and
+periodic in 8 pixels, so it collapses exactly into a per-pixel 3x3 FIR indexed by
+subcarrier phase and line parity — derive those coefficients by impulse response from
+the sample-level chain and there is no second implementation to drift.
+
+**Calibration.** The one free constant is the subcarrier phase at the left edge of
+the display. Calibrated against the hardware photograph published with the game
+(magenta (185, 91, 121) against green (57, 157, 121) — note the identical blue, the
+signature of a pure V shift), the model reproduces (189, 90, 127) and (66, 163, 127)
+with unit saturation, i.e. no fitted gain.
+
+**Other colour systems.** The mechanism is not PAL-specific — any composite system
+carrying colour as a phase against a per-line burst shows it — but the numbers decide
+which dither is useful. PAL-M (Brazil, e.g. the TK90X clone) puts the subcarrier at
+3.575611 MHz with 60 Hz vertical, and at a 7 MHz pixel clock that is only ~75 kHz
+below Nyquist: the good and bad bytes swap round, and a plain `$AA`/`$55` checkerboard
+lands essentially on the burst. Be wary, too, of the common summary that PAL is "NTSC
+with the colour phase inverted every line" — that describes the encoder and drops the
+receiver's delay line, which is precisely what limits PAL's artifact palette to one
+axis where NTSC gets a full hue circle.
+
+In this codebase: `core/pal-composite.js` (pure), `ulaSubcarrierLock` in the machine
+profile, tests in `tests/pal-test.html` plus the `chromatrons` application test,
+details in `docs/rendering.md`.
+
+### 10.10 Chained Prefix Bytes (DD/FD)
 
 The DD and FD prefix bytes can be chained indefinitely. Each prefix:
 - Takes 4 T-states
@@ -762,7 +928,7 @@ execute() {
 }
 ```
 
-### 10.9 Interrupts During Prefix Chains
+### 10.11 Interrupts During Prefix Chains
 
 **Critical behavior**: Interrupts are **NOT accepted** between a prefix byte and its instruction.
 
@@ -808,7 +974,7 @@ DD          ; Prefix - IFFs enabled NOW (before DD executes)
 
 The EI's delayed enable happens at the START of the next instruction (before decoding), so interrupts are enabled before the prefix is processed, but still blocked by the prefix mechanism.
 
-### 10.10 Kempston Joystick
+### 10.12 Kempston Joystick
 
 The Kempston joystick interface is the most common joystick standard for the Spectrum.
 
@@ -858,7 +1024,7 @@ Bit 6: Fire 3 / Button A
 Bit 7: Fire 4 / Start
 ```
 
-### 10.11 Kempston Mouse
+### 10.13 Kempston Mouse
 
 The Kempston mouse interface provides relative X/Y movement and button state.
 
@@ -2028,6 +2194,18 @@ For video timing validation:
 - Border effects (Aquaplane, Uridium loading)
 - Multicolor demos (Interlace, Shock)
 - Floating bus detection (Arkanoid, Sidewize)
+- ULA snow (§10.7) — the `Snow*` programs; run the same tape on a +2A, which must
+  show **nothing**, or a passing result proves only that you drew noise
+- Ink/paper edge skew (§10.8) — *Bright Miner*; a pixel-exact emulator shows uniform
+  grey, and again the +2A is the control
+- Composite artifact colour (§10.9) — *Chromatrons Attack*; flat grey without a PAL
+  decoder, magenta/green with one. The control here is a 48K, where the unlocked
+  subcarrier means the hue must drift rather than stand still
+
+Three of these are gated on the machine rather than on timing, so a visual test for them
+is only meaningful **in pairs**: one machine that should show the effect and one that
+should not. A single screenshot cannot distinguish "modelled correctly" from
+"unconditionally on".
 
 ---
 
@@ -2312,6 +2490,8 @@ Key injection uses setTimeout-based scheduling with the emulator's `ula.keyDown(
 - [Sinclair Wiki](https://sinclair.wiki.zxnet.co.uk/) - Spectrum technical details
 - [World of Spectrum](https://worldofspectrum.org/) - Community and resources
 - [FUSE Emulator](http://fuse-emulator.sourceforge.net/) - Reference implementation
+- [Chromatrons Attack](https://spectrumcomputing.co.uk/entry/31261/ZX-Spectrum/Chromatrons_Attack) - the composite-artifact test case for §10.9; the CSSCGC entry carries Guesser's own description of the mechanism, and the site's screenshots are photographs because the effect cannot be captured from an emulator
+- [Weiv, "ULA snow"](https://hype.retroscene.org/blog/1089.html) - the hardware measurement behind §10.7: which T-state produces snow versus a repeated cell, why the low 7 bits come from `R`, and the explicit statement that Amstrad's black machines and the clones do not do it
 
 **GitHub Z80 Test Repositories:**
 - [raxoft/z80test](https://github.com/raxoft/z80test) - Patrik Rak's Z80 test suite (Q flag, MEMPTR, flags)
@@ -2347,6 +2527,13 @@ Key injection uses setTimeout-based scheduling with the emulator's `ula.keyDown(
 - Z80 Block Flags Test - detailed block instruction flag behavior
 - Woody's Z80 other tests - extended MEMPTR and flag corner cases
 - Timing tests from various demos - real-world contention validation
+
+**ULA-trait tests (§16.3 — run each on a Ferranti machine *and* a +2A):**
+- `Snow*` programs - ULA snow (§10.7)
+- Bright Miner - ink/paper edge skew (§10.8); invisible on a pixel-exact renderer by
+  construction, so "shows nothing" is a result, not a failure to load
+- Chromatrons Attack - composite artifact colour (§10.9); same caveat, and it needs a
+  128K: on a 48K the subcarrier is not locked and the colour cannot stand still
 
 **Recommended approach:**
 1. Start with FUSE tests for basic correctness

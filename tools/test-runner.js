@@ -63,7 +63,10 @@ export class TestRunner {
         this.keyMap = {
             'ENTER': 'Enter', 'SPACE': ' ', 'SHIFT': 'Shift', 'CTRL': 'Control',
             'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
-            'BREAK': 'Escape', 'CAPS': 'CapsLock'
+            'BREAK': 'Escape',
+            // 'CAPS'/'SYM' are the ULA's own canonical tokens — 'CapsLock' is not in
+            // its key map (the browser owns that key), so it used to press nothing
+            'CAPS': 'CAPS', 'SYM': 'SYM'
         };
 
         // Callbacks (set via setCallbacks)
@@ -409,6 +412,11 @@ export class TestRunner {
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
+        const savedGhosting = this.spectrum.ula.keyboardGhosting;
+        const savedSnow = this.spectrum.ula.snowEnabled;
+        const savedInkSkew = this.spectrum.ula.inkSkewOverride;
+        const savedPalComposite = this.spectrum.ula.palCompositeEnabled;
+        const savedPentagonPrefetch = this.spectrum.pentagonAttrOffset;
         const wasRunning = this.spectrum.running;
         if (wasRunning) this.spectrum.stop();
 
@@ -419,9 +427,11 @@ export class TestRunner {
             }
 
             // Apply timing settings if specified
-            if (test.earlyTimings !== undefined) {
-                this.spectrum.setEarlyTimings?.(test.earlyTimings);
-            }
+            // Late vs early ULA timing is a global Settings toggle as well, so set
+            // it for every test rather than only for the ones that ask: a test that
+            // cares says so with "earlyTimings", and everything else gets the app's
+            // default (early) instead of whatever the toggle was left on.
+            this.spectrum.setEarlyTimings?.(test.earlyTimings !== undefined ? test.earlyTimings : true);
 
             // Apply full border mode if specified (default to true for tests)
             const useFullBorder = test.fullBorder !== undefined ? test.fullBorder : true;
@@ -458,6 +468,27 @@ export class TestRunner {
             // change a test's port reads (FADF/FBDF/FFDF); a test that needs it
             // sets "kempstonMouse": true.
             this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
+
+            // Keyboard ghosting: same reasoning — it changes what port 0xFE
+            // returns for held keys, so the global toggle must not decide a
+            // test's outcome. A test that wants it sets "keyboardGhosting": true.
+            this.spectrum.ula.setKeyboardGhosting(test.keyboardGhosting === true);
+
+            // ULA snow and the ink/paper edge skew: both change what reaches the
+            // screen, so like the two above they are forced off per test and the
+            // global Settings toggles cannot decide a result. A test that is *about*
+            // one of them opts in with "ulaSnow": true / "inkSkew": true — inkSkew
+            // then takes the machine's own value, so the same entry proves the
+            // Ferranti/Amstrad split by running on two machines.
+            this.spectrum.ula.setSnowEffect(test.ulaSnow === true);
+            this.spectrum.ula.setInkSkew(test.inkSkew === true ? null : 0);
+            // Same for the PAL composite filter — it rewrites every pixel of the
+            // finished frame, so a test opts in with "palComposite": true.
+            this.spectrum.ula.setPalComposite(test.palComposite === true);
+            // Pentagon attribute prefetch is the same kind of global: it shifts the
+            // ULA's attribute fetch by -5T, so a Pentagon screen test would pass or
+            // fail according to the Settings toggle. Opt in with "pentagonPrefetch".
+            this.spectrum.setPentagonAttrOffset(test.pentagonPrefetch === true ? -5 : 0);
 
             // Apply palette if specified
             if (test.palette && typeof this._callbacks.applyPalette === 'function') {
@@ -514,6 +545,11 @@ export class TestRunner {
             this.spectrum.setLateTimings(savedLateTimings);
             // Restore Kempston Mouse enable (the global Settings state)
             this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
+            this.spectrum.ula.setKeyboardGhosting(savedGhosting);
+            this.spectrum.ula.setSnowEffect(savedSnow);
+            this.spectrum.ula.setInkSkew(savedInkSkew);
+            this.spectrum.ula.setPalComposite(savedPalComposite);
+            this.spectrum.setPentagonAttrOffset(savedPentagonPrefetch || 0);
         }
     }
 
@@ -1504,6 +1540,11 @@ export class TestRunner {
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
+        const savedGhosting = this.spectrum.ula.keyboardGhosting;
+        const savedSnow = this.spectrum.ula.snowEnabled;
+        const savedInkSkew = this.spectrum.ula.inkSkewOverride;
+        const savedPalComposite = this.spectrum.ula.palCompositeEnabled;
+        const savedPentagonPrefetch = this.spectrum.pentagonAttrOffset;
         const wasRunning = this.spectrum.running;
 
         this.previewing = true;
@@ -1526,9 +1567,11 @@ export class TestRunner {
                 await this.switchMachine(test.machine);
             }
 
-            if (test.earlyTimings !== undefined) {
-                this.spectrum.setEarlyTimings?.(test.earlyTimings);
-            }
+            // Late vs early ULA timing is a global Settings toggle as well, so set
+            // it for every test rather than only for the ones that ask: a test that
+            // cares says so with "earlyTimings", and everything else gets the app's
+            // default (early) instead of whatever the toggle was left on.
+            this.spectrum.setEarlyTimings?.(test.earlyTimings !== undefined ? test.earlyTimings : true);
 
             if (test.palette && typeof this._callbacks.applyPalette === 'function') {
                 this._callbacks.applyPalette(test.palette);
@@ -1567,6 +1610,23 @@ export class TestRunner {
             // Kempston Mouse: off by default so the global Settings toggle can't
             // change the test's port reads; a test sets "kempstonMouse": true to use it.
             this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
+            this.spectrum.ula.setKeyboardGhosting(test.keyboardGhosting === true);
+
+            // ULA snow and the ink/paper edge skew: both change what reaches the
+            // screen, so like the two above they are forced off per test and the
+            // global Settings toggles cannot decide a result. A test that is *about*
+            // one of them opts in with "ulaSnow": true / "inkSkew": true — inkSkew
+            // then takes the machine's own value, so the same entry proves the
+            // Ferranti/Amstrad split by running on two machines.
+            this.spectrum.ula.setSnowEffect(test.ulaSnow === true);
+            this.spectrum.ula.setInkSkew(test.inkSkew === true ? null : 0);
+            // Same for the PAL composite filter — it rewrites every pixel of the
+            // finished frame, so a test opts in with "palComposite": true.
+            this.spectrum.ula.setPalComposite(test.palComposite === true);
+            // Pentagon attribute prefetch is the same kind of global: it shifts the
+            // ULA's attribute fetch by -5T, so a Pentagon screen test would pass or
+            // fail according to the Settings toggle. Opt in with "pentagonPrefetch".
+            this.spectrum.setPentagonAttrOffset(test.pentagonPrefetch === true ? -5 : 0);
 
             // Recreate tape trap to ensure clean state
             this.spectrum.tapeTrap = new this._TapeTrapHandler(
@@ -1645,6 +1705,11 @@ export class TestRunner {
             this.spectrum.setLateTimings(savedLateTimings);
             // Restore Kempston Mouse enable (the global Settings state)
             this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
+            this.spectrum.ula.setKeyboardGhosting(savedGhosting);
+            this.spectrum.ula.setSnowEffect(savedSnow);
+            this.spectrum.ula.setInkSkew(savedInkSkew);
+            this.spectrum.ula.setPalComposite(savedPalComposite);
+            this.spectrum.setPentagonAttrOffset(savedPentagonPrefetch || 0);
 
             // Always update canvas size after preview (in case dimensions changed)
             if (typeof this._callbacks.updateCanvasSize === 'function') {

@@ -1,0 +1,71 @@
+/* ZX-M8XXX — tab system
+   Split out of app.css; app.css keeps the @font-face and the imports so the
+   cascade order is fixed in one place. */
+
+/* Tab System */
+.tab-container {
+    margin-top: 0;
+}
+.tab-container.collapsed .tab-content,
+.tab-container.collapsed .tab-content.active {
+    display: none !important;
+}
+.tab-bar {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-primary);
+    padding: 4px 4px 0 4px;
+    border-radius: 6px 6px 0 0;
+}
+.tab-container.collapsed .tab-bar {
+    border-radius: 6px;
+    padding: 4px;
+}
+.tab-btn {
+    padding: 8px 16px;
+    background: var(--bg-button);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+.tab-container.collapsed .tab-btn {
+    border-radius: 4px;
+}
+.tab-btn .arrow {
+    margin-right: 6px;
+    font-size: 10px;
+    display: inline-block;
+    transition: transform 0.2s;
+}
+.tab-btn.active .arrow {
+    transform: rotate(90deg);
+}
+.tab-container.collapsed .tab-btn .arrow {
+    transform: rotate(0deg);
+}
+.tab-btn:hover {
+    background: var(--bg-button-hover);
+    color: var(--text-primary);
+}
+.tab-btn.active {
+    background: var(--bg-secondary);
+    color: var(--cyan);
+}
+.tab-container.collapsed .tab-btn.active {
+    background: var(--bg-button);
+    color: var(--text-secondary);
+}
+.tab-content {
+    display: none;
+    background: var(--bg-secondary);
+    border-radius: 0 6px 6px 6px;
+    padding: 10px;
+}
+.tab-content.active {
+    display: block;
+}
+

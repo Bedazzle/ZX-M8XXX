@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Joystick Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Joystick Tests</h2>
+    <div id="summary"></div>
+    <div id="log"></div>
+
+    <script type="module">
+        import {
+            JOYSTICK_TYPES, isJoystickType, usesKeyboard, joystickKeys, allJoystickKeys,
+            normalizeCustomKeys, DEFAULT_CUSTOM_KEYS, DIRECTIONS,
+            JOY_UP, JOY_DOWN, JOY_LEFT, JOY_RIGHT, JOY_FIRE,
+        } from '../core/joystick.js';
+        import { ULA } from '../core/ula.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        section('Types');
+        {
+            assert(JOYSTICK_TYPES.length === 5, 'five types offered', String(JOYSTICK_TYPES.length));
+            assert(JOYSTICK_TYPES.some(t => t.id === 'custom'), 'including user-defined keys');
+            assert(JOYSTICK_TYPES[0].id === 'kempston', 'Kempston first (the common one)');
+            assert(isJoystickType('cursor') === true, 'a known id is recognised');
+            assert(isJoystickType('fuller') === false, 'an unknown id is not');
+            assert(usesKeyboard('custom') === true, 'custom bindings are keyboard-driven');
+            assert(usesKeyboard('kempston') === false, 'Kempston is a port, not keys');
+            assert(usesKeyboard('sinclair1') && usesKeyboard('sinclair2') && usesKeyboard('cursor'),
+                   'the other three are keyboard interfaces');
+        }
+
+        section('Key assignments');
+        {
+            // Sinclair ZX Interface 2: right port 67890, left port 12345
+            const s1 = (m) => joystickKeys('sinclair1', m).join(',');
+            assert(s1(JOY_LEFT) === 'Digit6', 'Sinclair 1 left = 6', s1(JOY_LEFT));
+            assert(s1(JOY_RIGHT) === 'Digit7', 'Sinclair 1 right = 7', s1(JOY_RIGHT));
+            assert(s1(JOY_DOWN) === 'Digit8', 'Sinclair 1 down = 8', s1(JOY_DOWN));
+            assert(s1(JOY_UP) === 'Digit9', 'Sinclair 1 up = 9', s1(JOY_UP));
+            assert(s1(JOY_FIRE) === 'Digit0', 'Sinclair 1 fire = 0', s1(JOY_FIRE));
+
+            const s2 = (m) => joystickKeys('sinclair2', m).join(',');
+            assert(s2(JOY_LEFT) === 'Digit1' && s2(JOY_RIGHT) === 'Digit2' &&
+                   s2(JOY_DOWN) === 'Digit3' && s2(JOY_UP) === 'Digit4' && s2(JOY_FIRE) === 'Digit5',
+                   'Sinclair 2 is 1-5', [s2(JOY_LEFT), s2(JOY_RIGHT), s2(JOY_DOWN), s2(JOY_UP), s2(JOY_FIRE)].join(' '));
+
+            // Cursor/AGF/Protek: 5=left 6=down 7=up 8=right, fire 0
+            const c = (m) => joystickKeys('cursor', m).join(',');
+            assert(c(JOY_LEFT) === 'Digit5' && c(JOY_RIGHT) === 'Digit8' &&
+                   c(JOY_DOWN) === 'Digit6' && c(JOY_UP) === 'Digit7' && c(JOY_FIRE) === 'Digit0',
+                   'Cursor is 5678 + 0', [c(JOY_LEFT), c(JOY_RIGHT), c(JOY_DOWN), c(JOY_UP), c(JOY_FIRE)].join(' '));
+        }
+
+        section('Diagonals and edge cases');
+        {
+            const diag = joystickKeys('sinclair2', JOY_UP | JOY_LEFT);
+            assert(diag.length === 2 && diag.includes('Digit4') && diag.includes('Digit1'),
+                   'a diagonal presses both keys', String(diag));
+            assert(joystickKeys('kempston', JOY_UP).length === 0, 'Kempston yields no keys');
+            assert(joystickKeys('sinclair1', 0).length === 0, 'no direction yields no keys');
+            assert(joystickKeys('nonsense', JOY_UP).length === 0, 'an unknown type yields no keys');
+            assert(Array.isArray(joystickKeys('kempston', JOY_UP)), 'always an array, never null');
+
+            const all = allJoystickKeys('sinclair1');
+            assert(all.length === 5, 'all keys for a type', String(all));
+            assert(allJoystickKeys('kempston').length === 0, 'Kempston has none');
+        }
+
+        section('Custom key bindings');
+        {
+            const qaop = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
+            assert(joystickKeys('custom', JOY_UP, qaop)[0] === 'KeyQ', 'default up is Q');
+            assert(joystickKeys('custom', JOY_DOWN, qaop)[0] === 'KeyA', 'default down is A');
+            assert(joystickKeys('custom', JOY_LEFT, qaop)[0] === 'KeyO', 'default left is O');
+            assert(joystickKeys('custom', JOY_RIGHT, qaop)[0] === 'KeyP', 'default right is P');
+            assert(joystickKeys('custom', JOY_FIRE, qaop)[0] === 'Space', 'default fire is Space');
+
+            // rebind one direction
+            const mine = normalizeCustomKeys({ ...qaop, [JOY_FIRE]: 'KeyM' });
+            assert(joystickKeys('custom', JOY_FIRE, mine)[0] === 'KeyM', 'a rebound key is used');
+            assert(joystickKeys('custom', JOY_UP, mine)[0] === 'KeyQ', 'and the others are untouched');
+
+            // a partly-filled map must not leave a direction dead
+            const partial = normalizeCustomKeys({ [JOY_UP]: 'KeyZ' });
+            assert(partial[JOY_UP] === 'KeyZ', 'the given direction is kept');
+            assert(DIRECTIONS.every(d => !!partial[d.bit]), 'every direction still has a key',
+                   JSON.stringify(partial));
+
+            assert(Object.keys(normalizeCustomKeys(null)).length === 5, 'a null map yields the defaults');
+            assert(normalizeCustomKeys({ [JOY_UP]: 42 })[JOY_UP] === 'KeyQ',
+                   'a non-string binding falls back');
+
+            const diag = joystickKeys('custom', JOY_UP | JOY_RIGHT, qaop);
+            assert(diag.length === 2 && diag.includes('KeyQ') && diag.includes('KeyP'),
+                   'diagonals work for custom keys too', String(diag));
+            assert(allJoystickKeys('custom', qaop).length === 5, 'all custom keys are listed');
+        }
+
+        section('Against the real keyboard matrix');
+        {
+            // The ULA is what actually holds the key state, so check the assignments
+            // land on the rows/bits a game would read.
+            const ula = new ULA();
+            const rowsFor = (keys) => {
+                ula.reset && ula.reset();
+                for (const k of keys) ula.keyDown(k);
+                const state = [];
+                for (let row = 0; row < 8; row++) {
+                    state.push(ula.keyboardState ? ula.keyboardState[row] : 0xFF);
+                }
+                for (const k of keys) ula.keyUp(k);
+                return state;
+            };
+
+            // Sinclair 2 fire is key 5 — half-row 1-5, bit 4
+            const fire2 = rowsFor(joystickKeys('sinclair2', JOY_FIRE));
+            const pressed = fire2.some(v => v !== 0xFF);
+            assert(pressed, 'pressing Sinclair 2 fire changes the matrix', String(fire2));
+
+            // ...and releasing restores it
+            const idle = rowsFor([]);
+            assert(idle.every(v => v === 0xFF), 'nothing held when idle', String(idle));
+
+            // Sinclair 1 and Cursor share fire (key 0), which is why some games take either
+            const f1 = rowsFor(joystickKeys('sinclair1', JOY_FIRE));
+            const fc = rowsFor(joystickKeys('cursor', JOY_FIRE));
+            assert(String(f1) === String(fc), 'Sinclair 1 and Cursor fire are the same key');
+
+            // different directions must not collide
+            const up2 = rowsFor(joystickKeys('sinclair2', JOY_UP));
+            const down2 = rowsFor(joystickKeys('sinclair2', JOY_DOWN));
+            assert(String(up2) !== String(down2), 'up and down are distinct keys');
+        }
+
+        section('In the running emulator');
+        await (async () => {
+            const frame = document.createElement('iframe');
+            frame.src = '../index.html';
+            frame.style.cssText = 'width:1000px;height:700px;border:1px solid #444';
+            document.body.appendChild(frame);
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            let w = null;
+            for (let i = 0; i < 400; i++) {
+                w = frame.contentWindow;
+                if (w && w.spectrum && w.spectrum.setJoystickType) break;
+                await wait(25);
+            }
+            assert(!!(w && w.spectrum && w.spectrum.setJoystickType), 'joystick types are wired in');
+            if (!w || !w.spectrum || !w.spectrum.setJoystickType) { frame.remove(); return; }
+
+            try {
+                const sp = w.spectrum;
+                // The keyboard listeners are attached by spectrum.start(), so a
+                // harness that dispatches before the machine runs sees nothing.
+                for (let i = 0; i < 400 && !sp.running; i++) await wait(25);
+                assert(sp.running === true, 'the machine is running, so key events are listened for');
+                const press = (code, down) => w.document.dispatchEvent(
+                    new w.KeyboardEvent(down ? 'keydown' : 'keyup', { code, key: code, bubbles: true }));
+                const matrix = () => Array.from(sp.ula.keyboardState || []).join(',');
+                const idle = matrix();
+
+                // Kempston: the numpad feeds the port, not the keyboard
+                sp.setJoystickType('kempston');
+                press('Numpad8', true);
+                assert(sp.kempstonState !== 0, 'Kempston: numpad sets the port', String(sp.kempstonState));
+                assert(matrix() === idle, 'and leaves the keyboard alone');
+                press('Numpad8', false);
+                assert(sp.kempstonState === 0, 'and releases it');
+
+                // Sinclair 2: the same numpad press closes key 4 instead
+                sp.setJoystickType('sinclair2');
+                press('Numpad8', true);
+                assert(sp.kempstonState === 0, 'Sinclair: the port stays idle', String(sp.kempstonState));
+                assert(matrix() !== idle, 'and the keyboard matrix changes instead');
+                press('Numpad8', false);
+                assert(matrix() === idle, 'releasing lets the key go');
+
+                // Switching type must not leave a key stuck down
+                press('Numpad8', true);
+                sp.setJoystickType('kempston');
+                assert(matrix() === idle, 'switching type releases held keys');
+                assert(sp.kempstonState === 0, 'and clears the port');
+
+                assert(sp.setJoystickType('nonsense') === false, 'an unknown type is refused');
+                assert(sp.getJoystickType() === 'kempston', 'and the current type is unchanged');
+
+                // Custom bindings: a game wanting QAOP+M should get exactly that
+                sp.setJoystickType('custom');
+                sp.setJoystickCustomKeys({ ...sp.getJoystickCustomKeys(), [JOY_FIRE]: 'KeyM' });
+                assert(sp.getJoystickCustomKeys()[JOY_FIRE] === 'KeyM', 'the binding is stored');
+
+                press('Numpad8', true);                       // up -> Q by default
+                const upState = matrix();
+                assert(upState !== idle, 'a custom direction reaches the matrix');
+                press('Numpad8', false);
+                assert(matrix() === idle, 'and releases');
+
+                press('Numpad5', true);                       // fire -> the rebound M
+                const fireState = matrix();
+                assert(fireState !== idle && fireState !== upState,
+                       'the rebound fire key is a different key', fireState);
+                press('Numpad5', false);
+                assert(matrix() === idle, 'and it releases too');
+
+                // rebinding while a key is held must not strand it
+                press('Numpad8', true);
+                sp.setJoystickCustomKeys({ ...sp.getJoystickCustomKeys(), [JOY_UP]: 'KeyZ' });
+                assert(matrix() === idle, 'rebinding releases what was held');
+                sp.setJoystickType('kempston');
+            } catch (e) {
+                assert(false, 'driving the joystick in the app threw', e && e.message);
+            }
+            frame.remove();
+        })();
+
+        section('The chosen type survives a reload');
+        await (async () => {
+            // The dropdown is restored from localStorage, but its <option>s used to
+            // be created afterwards — so the restore silently did nothing and the
+            // next save wrote the default back.
+            let frame = null;
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            const open = async () => {
+                frame = document.createElement('iframe');
+                frame.style.cssText = 'width:900px;height:600px;border:1px solid #444';
+                frame.src = '../index.html';
+                document.body.appendChild(frame);
+                for (let i = 0; i < 400; i++) {
+                    const w = frame.contentWindow;
+                    if (w && w.spectrum && w.document.getElementById('selJoystickType')) return w;
+                    await wait(25);
+                }
+                return null;
+            };
+            try {
+                let w = await open();
+                assert(!!w, 'app opened');
+                if (!w) return;
+                const sel = () => w.document.getElementById('selJoystickType');
+                assert(sel().options.length >= 5, 'the dropdown is populated',
+                       String(sel().options.length));
+
+                sel().value = 'cursor';
+                sel().dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(150);
+                assert(w.spectrum.getJoystickType() === 'cursor', 'the machine took the choice');
+
+                frame.remove();
+                w = await open();                 // same origin, so localStorage carries over
+                assert(!!w, 'app reopened');
+                if (!w) return;
+                assert(sel().value === 'cursor', 'the dropdown shows the saved type', sel().value);
+                assert(w.spectrum.getJoystickType() === 'cursor',
+                       'and the machine is set to it', w.spectrum.getJoystickType());
+
+                sel().value = 'custom';
+                sel().dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(150);
+                frame.remove();
+                w = await open();
+                assert(sel().value === 'custom', 'a custom selection survives too', sel().value);
+
+                sel().value = 'kempston';         // leave it as we found it
+                sel().dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(100);
+            } catch (e) {
+                assert(false, 'reload section threw', e && e.message);
+            }
+            if (frame) frame.remove();
+        })();
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

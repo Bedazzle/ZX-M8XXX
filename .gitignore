@@ -1,3 +1,17 @@
+# Headless test/automation output (serve.py writes results here)
+headless/
+
+# Throwaway probe pages — real suites are tests/<name>-test.html
+tests/_*.html
+
+# Local-only tooling state
+.claude/settings.local.json
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
+
 roms/*
 CLAUDE.md
 .claude

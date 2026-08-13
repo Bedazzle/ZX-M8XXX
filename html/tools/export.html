@@ -1,0 +1,171 @@
+<!-- Export/Import. Spliced into html/panel-utils.html at boot. -->
+            <div class="tools-subtab-content" id="tools-export">
+            <div class="settings-tab-content">
+                <div class="settings-section full-width">
+                    <div class="settings-row">
+                        <span style="font-weight: bold; font-size: 12px;">Screenshot Button</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="screenshotFormat">Format:</label>
+                        <select id="screenshotFormat">
+                            <option value="png">PNG</option>
+                            <option value="scr">SCR</option>
+                            <option value="gif">GIF (flash)</option>
+                            <option value="gigascr">Gigascreen</option>
+                        </select>
+                        <span id="screenshotImageOptions"><label for="screenshotSize" style="min-width: auto; margin-left: 10px;">Size:</label>
+                        <select id="screenshotSize">
+                            <option value="screen">Screen only</option>
+                            <option value="border">With border</option>
+                        </select>
+                        <label for="screenshotZoom" style="min-width: auto; margin-left: 10px;">Zoom:</label>
+                        <select id="screenshotZoom">
+                            <option value="1">x1</option>
+                            <option value="2">x2</option>
+                            <option value="3">x3</option>
+                        </select>
+                        <label style="min-width: auto; margin-left: 10px;"><input type="checkbox" id="chkScreenshotOverlay"> Overlay</label></span>
+                    </div>
+                    <div class="settings-row">
+                        <label style="min-width: auto;"><input type="checkbox" id="chkScreenshotBatch"> Batch</label>
+                        <span id="screenshotBatchCount" style="font-size: 11px; color: var(--cyan); display: none;"></span>
+                        <label style="min-width: auto; margin-left: 10px;">Every:</label>
+                        <input type="number" id="screenshotInterval" value="50" min="1" step="1" style="width: 50px;">
+                        <select id="screenshotIntervalUnit" style="width: 70px; flex: none;">
+                            <option value="frames">frames</option>
+                            <option value="seconds">seconds</option>
+                        </select>
+                    </div>
+                </div>
+                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 4px 0;">
+                <div class="settings-section full-width">
+                    <div class="settings-row">
+                        <button id="btnScreenshot" title="Export current screen in selected format">Export</button>
+                    </div>
+                    <div class="settings-row">
+                        <label for="frameExportFormat">Format:</label>
+                        <select id="frameExportFormat">
+                            <option value="png">PNG</option>
+                            <option value="scr">SCR (screen only)</option>
+                            <option value="bsc">BSC (with border)</option>
+                            <option value="zip">ZIP (PNG sequence)</option>
+                            <option value="gif">Animated GIF</option>
+                            <option value="sca">SCA (animation)</option>
+                            <option value="gigascr">Gigascreen (.img)</option>
+                        </select>
+                        <label for="maxFrames" style="min-width: auto; margin-left: 10px; margin-right: -6px;">Max:</label>
+                        <input type="number" id="maxFrames" value="0" min="0" style="width: 50px;">
+                        <span style="color: var(--text-secondary); font-size: 11px;">(0=∞)</span>
+                    </div>
+                    <div class="settings-row" id="scaOptionsRow" style="display: none;">
+                        <label for="scaPayloadType">Payload:</label>
+                        <select id="scaPayloadType">
+                            <option value="0">Type 0 (full frames)</option>
+                            <option value="1">Type 1 (attrs only)</option>
+                        </select>
+                        <label for="scaFillPattern" style="min-width: auto; margin-left: 10px;">Fill:</label>
+                        <select id="scaFillPattern">
+                            <option value="auto">Automatic</option>
+                            <option value="53c">53c (AA 55)</option>
+                            <option value="127c">127c (DD 77)</option>
+                            <option value="v4x8">Vertical 4x8 (F0)</option>
+                            <option value="h8x4">Horizontal 8x4 (FF/00)</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="settings-row" id="scaCustomPatternRow" style="display: none;">
+                        <label for="scaCustomPattern">Pattern (8 hex bytes):</label>
+                        <input type="text" id="scaCustomPattern" value="AA 55 AA 55 AA 55 AA 55" style="width: 200px; font-family: monospace;">
+                    </div>
+                    <div class="settings-row" id="sizeRow">
+                        <label for="frameExportSize">Size:</label>
+                        <select id="frameExportSize">
+                            <option value="screen">Screen only (256×192)</option>
+                            <option value="normal">Normal border</option>
+                            <option value="full">Full border</option>
+                            <option value="sprite-pixels">Sprite (pixels)</option>
+                            <option value="sprite-cells">Sprite (cells 8×8)</option>
+                        </select>
+                    </div>
+                    <div class="settings-row sprite-region-row" id="spriteRegionRow" style="display: none;">
+                        <span class="sprite-input-group"><label id="spriteLabelX">X:</label><input type="number" id="spriteX" value="0" min="0" max="255"></span>
+                        <span class="sprite-input-group"><label id="spriteLabelY">Y:</label><input type="number" id="spriteY" value="0" min="0" max="191"></span>
+                        <span class="sprite-input-group"><label id="spriteLabelW">W:</label><input type="number" id="spriteW" value="16" min="1" max="256"></span>
+                        <span class="sprite-input-group"><label id="spriteLabelH">H:</label><input type="number" id="spriteH" value="16" min="1" max="192"></span>
+                    </div>
+                    <div class="settings-row frame-export-controls">
+                        <button id="btnFrameGrabStart" class="frame-grab-btn">Start</button>
+                        <button id="btnFrameGrabStop" class="frame-grab-btn" disabled>Stop</button>
+                        <button id="btnFrameGrabCancel" class="frame-grab-btn" disabled>Cancel</button>
+                        <button id="btnLoopDetect" class="frame-grab-btn" title="Detect repeating animation cycles by comparing rendered frames">Detect Loop</button>
+                    </div>
+                    <div class="frame-grab-status" id="frameGrabStatus"></div>
+                    <div id="loopResultsContainer" style="display: none;"></div>
+                    <label style="display: none; font-size: 11px; margin-top: 4px; cursor: pointer;" id="loopSkipDupsLabel"><input type="checkbox" id="loopSkipDups" checked> Skip identical frames</label>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">AY Capture (PSG)</span>
+                        <button id="btnPsgPlayer" style="margin-left: auto; font-size: 11px;" title="Download PSG player Z80 source code">Get Player</button>
+                    </div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Only record registers that changed from previous frame (smaller file)">
+                            <input type="checkbox" id="chkPsgChangedOnly" checked> Changed only
+                        </label>
+                    </div>
+                    <div class="settings-row frame-export-controls">
+                        <button id="btnPsgStart" class="frame-grab-btn" title="Start recording AY register writes">Record</button>
+                        <button id="btnPsgStop" class="frame-grab-btn" disabled title="Stop and export PSG file">Export</button>
+                        <button id="btnPsgCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
+                    </div>
+                    <div class="frame-grab-status" id="psgStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">RZX Recording</span>
+                    </div>
+                    <div class="settings-row frame-export-controls">
+                        <button id="btnRzxRecStart" class="frame-grab-btn" title="Start recording inputs for RZX">Record</button>
+                        <button id="btnRzxRecExport" class="frame-grab-btn" disabled title="Stop and export RZX file">Export</button>
+                        <button id="btnRzxRecCancel" class="frame-grab-btn" disabled title="Cancel recording">Cancel</button>
+                    </div>
+                    <div class="frame-grab-status" id="rzxRecStatus"></div>
+                    <div style="border-top: 1px solid var(--text-secondary); margin: 12px 0 8px 0; opacity: 0.3;"></div>
+                    <div class="settings-row" style="margin-bottom: 4px;">
+                        <span style="font-weight: bold; font-size: 11px; color: var(--text-secondary);">Binary</span>
+                    </div>
+                    <div class="settings-row" style="gap: 4px; align-items: center;">
+                        <label style="font-size: 11px; min-width: 30px;">Start</label>
+                        <input type="text" id="binExportStart" maxlength="4" value="4000" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Start address (hex)">
+                        <label style="font-size: 11px; min-width: 18px;">Len</label>
+                        <input type="text" id="binExportLength" maxlength="4" value="1B00" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Length in bytes (hex)">
+                        <label style="font-size: 11px; min-width: 18px;">End</label>
+                        <input type="text" id="binExportEnd" maxlength="4" value="5AFF" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="End address inclusive (hex)">
+                        <label style="font-size: 11px; min-width: auto;">Byte</label>
+                        <input type="text" id="binFillByte" maxlength="2" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte (hex)">
+                        <button id="btnBinFill" class="frame-grab-btn" title="Fill the Start..End range with the fill byte (default 00 clears it)">Fill</button>
+                    </div>
+                    <div class="settings-row frame-export-controls" style="margin-top: 2px;">
+                        <button id="btnBinExport" class="frame-grab-btn" title="Export memory range to .bin file">Export</button>
+                        <button id="btnBinLoad" class="frame-grab-btn" title="Import .bin file into memory at start address">Import</button>
+                        <input type="file" id="binLoadFile" accept=".bin,.dat,*" style="display: none;">
+                    </div>
+                    <div class="settings-row frame-export-controls" style="margin-top: 2px;">
+                        <label style="font-size: 11px; min-width: auto;">Screen</label>
+                        <select id="binPatternSel" style="font-size: 11px; flex: 0 0 auto; width: 128px;" title="What to write into the screen">
+                            <option value="clear">Clear</option>
+                            <option value="grid">Grid (8×8)</option>
+                            <option value="diag">Diagonal (45°)</option>
+                        </select>
+                        <span id="binScreenSelWrap" style="display: none; align-items: center; gap: 4px;">
+                            <select id="binScreenSel" style="font-size: 11px; flex: 0 0 auto; width: 74px;" title="Main or shadow screen (128K-style machines have both)">
+                                <option value="main">Main</option>
+                                <option value="shadow">Shadow</option>
+                            </select>
+                        </span>
+                        <button id="btnBinScreenApply" class="frame-grab-btn" title="Write the selected pattern into the chosen screen">Apply</button>
+                    </div>
+                    <div class="frame-grab-status" id="binStatus"></div>
+                </div>
+            </div>
+            </div><!-- tools-export -->
+
+            <!-- Mapper Sub-tab -->

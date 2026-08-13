@@ -1,0 +1,466 @@
+<!-- Settings tab. Spliced into index.html at boot by ui/boot.js. -->
+        <!-- Settings Tab -->
+        <div class="tab-content" id="tab-settings">
+            <div class="settings-subtab-bar">
+                <button class="settings-subtab-btn active" data-settingstab="display">Display</button>
+                <button class="settings-subtab-btn" data-settingstab="input">Input</button>
+                <button class="settings-subtab-btn" data-settingstab="tape">Tape</button>
+                <button class="settings-subtab-btn" data-settingstab="disk">Disk</button>
+                <button class="settings-subtab-btn" data-settingstab="audio">Audio</button>
+                <button class="settings-subtab-btn" data-settingstab="machines">Machines</button>
+                <button class="settings-subtab-btn" data-settingstab="signatures">Signatures</button>
+            </div>
+
+            <!-- Display Sub-tab -->
+            <div class="settings-subtab-content active" id="settings-display">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row">
+                        <select id="borderSizeSelect" title="Border size preset">
+                            <option value="full" selected>Full border (352x312)</option>
+                            <option value="normal">Normal (320x240)</option>
+                            <option value="thick">Thick (352x288)</option>
+                            <option value="medium">Medium (320x256)</option>
+                            <option value="small">Small (288x224)</option>
+                            <option value="none">None (256x192)</option>
+                        </select>
+                        <label class="checkbox-label" title="Invert screen colors" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkInvertDisplay"> Invert
+                        </label>
+                        <select id="overlaySelect" style="margin-left: 15px;" title="Overlay display mode">
+                            <option value="normal" selected>Normal</option>
+                            <option value="grid">Grid</option>
+                            <option value="box">Box</option>
+                            <option value="screen">Screen</option>
+                            <option value="reveal">Reveal</option>
+                            <option value="beam">Beam</option>
+                            <option value="beamscreen">BeamScreen</option>
+                            <option value="noattr">No Attr</option>
+                            <option value="nobitmap">No Bitmap</option>
+                        </select>
+                        <span class="zoom-group" style="margin-left: 15px;">
+                            Zoom:
+                            <button id="zoom1" class="zoom-btn active" title="Zoom 1x">x1</button>
+                            <button id="zoom2" class="zoom-btn" title="Zoom 2x">x2</button>
+                            <button id="zoom3" class="zoom-btn" title="Zoom 3x">x3</button>
+                            <button id="zoom4" class="zoom-btn" title="Zoom 4x">x4</button>
+                            <button id="zoom5" class="zoom-btn" title="Zoom 5x">x5</button>
+                        </span>
+                    </div>
+                    <input type="color" id="paletteColorPicker" style="position: absolute; visibility: hidden; width: 0; height: 0;">
+                    <div class="settings-row">
+                        <label for="paletteSelect">Color Palette:</label>
+                        <select id="paletteSelect">
+                            <option value="default">Default</option>
+                        </select>
+                        <button id="btnResetPalette" style="margin-left: 6px; padding: 2px 8px; font-size: 11px;" title="Reset palette to current preset">Reset</button>
+                        <span style="margin-left: 15px;">
+                            <label for="fullscreenMode">Fullscreen:</label>
+                            <select id="fullscreenMode" title="Fullscreen aspect ratio mode">
+                                <option value="crisp" selected>Crisp (integer scale)</option>
+                                <option value="fit">Fit (keep aspect ratio)</option>
+                                <option value="stretch">Stretch (fill screen)</option>
+                            </select>
+                        </span>
+                        <span style="margin-left: 15px;">
+                            <label for="uiScaleSelect">UI Scale:</label>
+                            <select id="uiScaleSelect" title="Scale the interface without affecting the emulator canvas">
+                                <option value="0.75">75%</option>
+                                <option value="1">100%</option>
+                                <option value="1.25">125%</option>
+                                <option value="1.5">150%</option>
+                                <option value="1.75">175%</option>
+                                <option value="2">200%</option>
+                            </select>
+                        </span>
+                    </div>
+                    <div class="palette-preview" id="palettePreview">
+                        <div class="palette-row">
+                            <span class="palette-row-label">Normal</span>
+                            <span class="palette-color" data-index="0"></span>
+                            <span class="palette-color" data-index="1"></span>
+                            <span class="palette-color" data-index="2"></span>
+                            <span class="palette-color" data-index="3"></span>
+                            <span class="palette-color" data-index="4"></span>
+                            <span class="palette-color" data-index="5"></span>
+                            <span class="palette-color" data-index="6"></span>
+                            <span class="palette-color" data-index="7"></span>
+                        </div>
+                        <div class="palette-row">
+                            <span class="palette-row-label">Bright</span>
+                            <span class="palette-color" data-index="0" data-bright="true"></span>
+                            <span class="palette-color" data-index="1" data-bright="true"></span>
+                            <span class="palette-color" data-index="2" data-bright="true"></span>
+                            <span class="palette-color" data-index="3" data-bright="true"></span>
+                            <span class="palette-color" data-index="4" data-bright="true"></span>
+                            <span class="palette-color" data-index="5" data-bright="true"></span>
+                            <span class="palette-color" data-index="6" data-bright="true"></span>
+                            <span class="palette-color" data-index="7" data-bright="true"></span>
+                        </div>
+                    </div>
+                    <div class="settings-row" style="margin-top: 4px; font-size: 11px;">
+                        <button id="btnSavePalette" style="padding: 2px 8px; font-size: 11px;" title="Save current palette with a name">Save</button>
+                        <select id="savedPaletteSelect" style="margin-left: 6px; font-size: 11px;" title="Saved palettes">
+                            <option value="">(no saved palettes)</option>
+                        </select>
+                        <button id="btnLoadSavedPalette" style="margin-left: 4px; padding: 2px 8px; font-size: 11px;" title="Load selected saved palette">Load</button>
+                        <button id="btnDeleteSavedPalette" style="margin-left: 4px; padding: 2px 8px; font-size: 11px;" title="Delete selected saved palette">Delete</button>
+                    </div>
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <label class="checkbox-label" title="Enable ULAplus extended palette support (64 colors)">
+                            <input type="checkbox" id="chkULAplus"> ULA+
+                        </label>
+                        <button id="btnResetULAplus" style="margin-left: 10px; padding: 2px 8px; font-size: 11px;" title="Reset ULAplus palette to defaults">Reset</button>
+                        <span id="ulaplusStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div class="ulaplus-palette-preview hidden" id="ulaplusPalettePreview">
+                        <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">ULA+ Palette (4 CLUTs × 16 colors)</div>
+                        <div class="ulaplus-palette-grid" id="ulaplusPaletteGrid"></div>
+                    </div>
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <select id="secondScreenMode" title="Second screen display mode">
+                            <option value="none">Shadow: None</option>
+                            <option value="full">Shadow: Full</option>
+                            <option value="bitmap">Shadow: Bitmap</option>
+                            <option value="linear">Shadow: Linear</option>
+                            <option value="spectrum">Shadow: Spectrum</option>
+                        </select>
+                        <label style="margin-left: 8px; display: none;" id="secondScreenAddrLabel">
+                            Addr: <input type="text" id="secondScreenAddr" value="C000"
+                                style="width: 40px; font-family: monospace; font-size: 11px;"
+                                maxlength="4" title="Start address (hex) for buffer display">
+                        </label>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-display -->
+
+            <!-- Input Sub-tab -->
+            <div class="settings-subtab-content" id="settings-input">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row">
+                        <span class="settings-row-label">Joystick:</span>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="chkKempston"> Kempston port
+                        </label>
+                        <select id="selJoystickType" title="Which joystick the numpad and gamepad emulate. Sinclair and Cursor press ZX keys; Kempston uses port $1F." style="margin-left: 8px;"></select>
+                        <span id="joyCustomKeys" class="hidden"></span>
+                        <label class="checkbox-label" title="Extended buttons: [ = C, ] = A, \ = Start" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkKempstonExtended"> Extended
+                        </label>
+                        <label class="checkbox-label" title="Use USB/Bluetooth gamepad for Kempston joystick" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkGamepad"> Gamepad
+                        </label>
+                        <button id="btnCalibrateGamepad" class="small-btn" style="margin-left: 5px; padding: 2px 6px; font-size: 11px;" title="Configure gamepad mapping">Calibrate</button>
+                        <span id="gamepadStatus" style="margin-left: 5px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row">
+                        <span class="settings-row-label">Mouse:</span>
+                        <label class="checkbox-label" title="Click screen to capture mouse, Escape to release">
+                            <input type="checkbox" id="chkKempstonMouse"> Kempston
+                        </label>
+                        <label class="checkbox-label" title="Mouse wheel on bits 7:4 of button port" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkMouseWheel"> Wheel
+                        </label>
+                        <label class="checkbox-label" title="Swap left/right mouse buttons (bit0↔bit1)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkMouseSwap" checked> Swap L/R
+                        </label>
+                        <label class="checkbox-label" title="Invert mouse wheel direction" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkMouseWheelSwap"> Swap Wheel
+                        </label>
+                        <span id="mouseStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row" style="gap: 3px;">
+                        <span class="settings-row-label" style="margin-right: 7px;">ZX shifts:</span>
+                        <label style="font-size: 11px; min-width: auto;" title="PC key acting as the ZX CAPS SHIFT key">Caps:</label>
+                        <select id="selCapsShiftKey" style="width: 108px; font-size: 11px; flex: none;"></select>
+                        <label style="font-size: 11px; min-width: auto; margin-left: 10px;" title="PC key acting as the ZX SYMBOL SHIFT key">Symbol:</label>
+                        <select id="selSymbolShiftKey" style="width: 108px; font-size: 11px; flex: none;"></select>
+                        <span id="modKeysHint" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row">
+                        <span class="settings-row-label" style="margin-right: 7px;">Keyboard:</span>
+                        <label class="checkbox-label" title="Emulate the real matrix: with no diodes in it, three keys held at the corners of a rectangle make a fourth read as pressed. Off, every key is read on its own">
+                            <input type="checkbox" id="chkKeyboardGhosting"> Ghosting (as on real hardware)
+                        </label>
+                    </div>
+                    <hr style="border: none; border-top: 1px solid var(--border-color); margin: 10px 0 0 0;">
+                    <div style="padding: 6px 0 0 0;">
+                        <div class="settings-row" style="margin-bottom: 4px;">
+                            <label class="checkbox-label" title="Toggle with Ctrl+F">
+                                <input type="checkbox" id="chkAutofire"> Autofire
+                            </label>
+                            <span id="autofireStatus" style="margin-left: 6px; font-size: 11px;"></span>
+                            <span style="flex: 1;"></span>
+                        </div>
+                        <div id="autofireList" style="max-height: 82px; overflow-y: auto; scrollbar-width: thin; margin-bottom: 3px;"></div>
+                        <hr style="border: none; border-top: 1px solid var(--border-color); margin: 2px 0;">
+                        <div class="settings-row" style="gap: 3px; margin-bottom: 0;">
+                            <label style="font-size: 11px; min-width: auto;">Key:</label>
+                            <span style="position: relative; display: inline-block;">
+                            <select id="autofireKey" style="width: 90px; font-size: 11px; flex: none;">
+                                <option value="fire">Fire</option>
+                                <option value=" ">Space</option>
+                                <option value="Enter">Enter</option>
+                                <option value="Shift">Caps Shift</option>
+                                <option value="Alt">Sym Shift</option>
+                                <option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+                                <option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option>
+                                <option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option><option value="e">E</option>
+                                <option value="f">F</option><option value="g">G</option><option value="h">H</option><option value="i">I</option><option value="j">J</option>
+                                <option value="k">K</option><option value="l">L</option><option value="m">M</option><option value="n">N</option><option value="o">O</option>
+                                <option value="p">P</option><option value="q">Q</option><option value="r">R</option><option value="s">S</option><option value="t">T</option>
+                                <option value="u">U</option><option value="v">V</option><option value="w">W</option><option value="x">X</option><option value="y">Y</option>
+                                <option value="z">Z</option>
+                            </select>
+                            </span>
+                            <label style="font-size: 11px; min-width: auto;">Rate:</label>
+                            <select id="autofireRate" style="width: 62px; font-size: 11px; flex: none;">
+                                <option value="1">1 Hz</option>
+                                <option value="3">3 Hz</option>
+                                <option value="5">5 Hz</option>
+                                <option value="8">8 Hz</option>
+                                <option value="10" selected>10 Hz</option>
+                                <option value="15">15 Hz</option>
+                                <option value="20">20 Hz</option>
+                                <option value="25">25 Hz</option>
+                                <option value="30">30 Hz</option>
+                                <option value="50">50 Hz</option>
+                            </select>
+                            <label style="font-size: 11px; min-width: auto;">Hold:</label>
+                            <select id="autofireHold" style="width: 56px; font-size: 11px; flex: none;">
+                                <option value="30">30%</option>
+                                <option value="40">40%</option>
+                                <option value="50" selected>50%</option>
+                                <option value="60">60%</option>
+                                <option value="70">70%</option>
+                                <option value="100">Hold</option>
+                            </select>
+                            <button class="small-btn" id="btnAutofireAdd" style="padding: 1px 5px; font-size: 11px; margin-left: 3px;" title="Add profile">+</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-input -->
+
+            <!-- Tape Sub-tab -->
+            <div class="settings-subtab-content" id="settings-tape">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row">
+                        <label style="min-width: 80px;">Last File:</label>
+                        <span id="lastLoadedFile" style="color: var(--cyan); font-size: 11px;">—</span>
+                        <label class="checkbox-label" title="Automatically type LOAD &quot;&quot; for tape files, boot TR-DOS for disk images" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAutoLoad" checked> Auto Load
+                        </label>
+                    </div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Flash load = instant (trap), unchecked = real-time with border stripes and sound">
+                            <input type="checkbox" id="chkFlashLoad" checked> Flash Load
+                        </label>
+                        <span id="tapeLoadMode" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">(instant)</span>
+                        <label class="checkbox-label" title="Enable tape loading sounds (real-time mode)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkTapeAudio" checked> Tape Sound
+                        </label>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnTapePlay" class="control-btn" title="Play tape (real-time mode)">▶ Play</button>
+                        <button id="btnTapeStop" class="control-btn" title="Stop tape playback" style="margin-left: 5px;">⏹ Stop</button>
+                        <button id="btnTapeRewind" class="control-btn" title="Rewind tape to beginning" style="margin-left: 5px;">⏪ Rewind</button>
+                        <span id="tapePosition" style="margin-left: 10px; color: var(--cyan); font-size: 11px;"></span>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnLoadTape" class="control-btn" title="Load tape file into active slot (no reset)">📼 Load Tape...</button>
+                        <button id="btnBlankTape" class="control-btn" style="margin-left: 8px;" title="Insert blank tape for recording">📼 Blank Tape</button>
+                        <input type="file" id="loadTapeFile" accept=".tap,.tzx,.wav,.zip" style="display: none;">
+                    </div>
+                    <div id="tapeCatalogContainer" style="margin-top: 6px;">
+                        <div class="media-catalog-bar" id="tapeCatalogBar" style="display: none;">
+                            <span id="tapeSlotTabs" style="margin-left: 4px;">
+                                <button class="media-catalog-btn tape-slot-tab" data-slot="0" style="min-width: 18px; padding: 1px 4px;">1</button>
+                                <button class="media-catalog-btn tape-slot-tab" data-slot="1" style="min-width: 18px; padding: 1px 4px;">2</button>
+                            </span>
+                        </div>
+                        <div id="tapeCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
+                        <div id="tapeActionsRow" style="display: none; align-items: center; padding: 4px 6px; gap: 8px;">
+                            <button id="btnTapeEject" class="control-btn" title="Eject tape from active slot">Eject</button>
+                            <span id="tapeRecordingCount" style="color: var(--cyan); font-size: 11px; margin-left: 4px;"></span>
+                            <button id="btnTapeExport" class="control-btn" title="Export recorded blocks (TAP or TZX)" style="display: none;">Export</button>
+                            <button id="btnTapeClearRec" class="control-btn" title="Clear recorded blocks" style="display: none;">Clear Rec</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-tape -->
+
+            <!-- Disk Sub-tab -->
+            <div class="settings-subtab-content" id="settings-disk">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row" id="driveSelector" style="display: none; margin-bottom: 16px;">
+                        <label style="min-width: 0;">System:</label>
+                        <select id="diskSystemSelect" style="flex: 0 0 auto; width: auto;" title="Disk system that Blank Disk, Target drive, and system-specific controls act on"></select>
+                        <label id="driveSelectorLabel" style="min-width: 0; margin-left: 10px;">Target drive:</label>
+                        <select id="driveSelectorSelect" style="flex: 0 0 auto; width: auto;">
+                            <option value="0">A:</option>
+                            <option value="1">B:</option>
+                            <option value="2">C:</option>
+                            <option value="3">D:</option>
+                        </select>
+                    </div>
+                    <div class="settings-row">
+                        <button id="btnLoadDisk" class="control-btn" title="Load disk image into selected drive (no reset)">💾 Load Disk...</button>
+                        <button id="btnBlankDisk" class="control-btn" style="margin-left: 8px;" title="Insert blank formatted disk">💾 Blank Disk</button>
+                        <label class="checkbox-label" title="Automatically boot disk images on load (same setting as Auto Load on the Tape tab)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAutoLoadDisk" checked> Auto Load
+                        </label>
+                        <input type="file" id="loadDiskFile" accept=".trd,.scl,.dsk,.mgt,.img,.mdr,.opd,.zip" style="display: none;">
+                    </div>
+                    <div class="settings-row" id="trdosBootRow">
+                        <select id="bootTrdMode" style="flex: 0 0 auto; width: auto;" title="How to handle boot file when loading TRD images">
+                            <option value="none">No change</option>
+                            <option value="add">Add boot</option>
+                            <option value="replace">Replace boot</option>
+                            <option value="run_first">Run first BASIC</option>
+                            <option value="run_last">Run last BASIC</option>
+                        </select>
+                        <button id="btnSelectBootTrd" class="control-btn" style="margin-left: 10px;" title="Select TRD or Hobeta file containing boot file">Select...</button>
+                        <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 6px;">No boot file selected</span>
+                        <input type="file" id="bootTrdFile" accept=".trd,.$c,.$b,.$d,.$#,.hobeta" style="display: none;">
+                    </div>
+                    <div id="diskCatalogContainer" style="margin-top: 6px;">
+                        <div class="media-catalog-bar" id="diskCatalogBar" style="display: none;">
+                            <span id="diskDriveTabs" style="margin-left: 4px;">
+                                <!-- Drive tabs are dynamically generated by updateDiskDriveTabs() -->
+                            </span>
+                        </div>
+                        <div id="diskCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-disk -->
+
+            <!-- Audio Sub-tab -->
+            <div class="settings-subtab-content" id="settings-audio">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="Enable AY-3-8910 sound output">
+                            <input type="checkbox" id="chkSound"> Sound
+                        </label>
+                        <label class="checkbox-label" title="Enable AY chip in 48K mode (like Melodik interface)" style="margin-left: 15px;">
+                            <input type="checkbox" id="chkAY48k"> AY in 48K
+                        </label>
+                        <button id="btnMute" class="control-btn" style="margin-left: 15px;" title="Mute/unmute sound">🔊</button>
+                    </div>
+                    <div class="settings-row">
+                        <label for="volumeSlider" style="min-width: 60px;">Volume:</label>
+                        <input type="range" id="volumeSlider" min="0" max="100" value="50" style="width: 120px;">
+                        <span id="volumeValue" style="min-width: 35px; text-align: right;">50%</span>
+                    </div>
+                    <div class="settings-row">
+                        <label for="stereoMode">Stereo:</label>
+                        <select id="stereoMode" title="Stereo panning mode">
+                            <option value="mono">Mono</option>
+                            <option value="abc" selected>ABC (A-left, B-center, C-right)</option>
+                            <option value="acb">ACB (A-left, C-center, B-right)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            </div><!-- settings-audio -->
+
+            <!-- Machines Sub-tab -->
+            <div class="settings-subtab-content" id="settings-machines">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Choose which machines appear in the toolbar dropdown:</div>
+                    <div id="machineCheckboxes"></div>
+                    <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up." style="margin-top: 8px; display: inline-block;">
+                        <input type="checkbox" id="chkLateTimings"> Late Timings
+                    </label>
+                    <label class="checkbox-label" title="Pentagon ULA attribute prefetch (-5T). When enabled, matches ZXMAK2/Spectaculator/SpecEmu multicolor timing. Default (off) matches Unreal Speccy/FUSE." style="margin-top: 4px; display: inline-block;">
+                        <input type="checkbox" id="chkPentagonPrefetch"> Pentagon Attr Prefetch
+                    </label>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="ULA snow: with the I register set to $40-$7F the Z80's refresh address lands in contended RAM, and the ULA puts the byte from the bus on screen instead of the display byte. Machines with contended memory only (not Pentagon)." style="display: inline-block;">
+                            <input type="checkbox" id="chkUlaSnow"> ULA Snow (I = $40-$7F)
+                        </label>
+                        <span id="ulaSnowStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Ink/paper edge skew: the Ferranti ULA switches into ink later than back to paper, so an ink pixel is slightly narrower than a paper one. Only the first pixel of each ink run is affected, so ordinary graphics barely change — but a one-pixel checkerboard drawn with white ink reads darker than the same pattern drawn with white paper. Ferranti machines only (48K/128K/+2), not the +2A/+3 gate array or the clones." style="display: inline-block;">
+                            <input type="checkbox" id="chkInkSkew"> ULA Ink Edge Skew
+                        </label>
+                        <span id="inkSkewStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="PAL composite (RF) simulation: models the single wire a TV is given, so fine dither whose frequency lands on the colour subcarrier is demodulated as colour. This is the only way &quot;Chromatrons Attack&quot; is visible — its $A5/$5A dither is flat grey on an RGB monitor and magenta/green on a TV. Stable only where the pixel clock is locked to the subcarrier (128K/+2/+2A/+3); on a 48K or a Pentagon the phase drifts, which is dot crawl." style="display: inline-block;">
+                            <input type="checkbox" id="chkPalComposite"> PAL Composite (RF)
+                        </label>
+                        <span id="palCompositeStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom). Always enabled for Pentagon." style="display: inline-block;">
+                            <input type="checkbox" id="chkBetaDisk"> Beta Disk (TR-DOS)
+                        </label>
+                        <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="+D interface is currently under development" style="display: inline-block; opacity: 0.5;">
+                            <input type="checkbox" id="chkPlusD" disabled> +D Interface (MGT)
+                        </label>
+                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">coming soon</span>
+                        <input type="file" id="romPlusDInput" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" disabled style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
+                        <button id="btnNmiPlusD" title="Trigger +D NMI (snapshot button)" disabled style="font-size: 11px; padding: 2px 10px;">NMI</button>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable Interface 1 for Microdrive cartridges (requires if1.rom). Conflicts with +D." style="display: inline-block;">
+                            <input type="checkbox" id="chkIF1"> Interface 1 (Microdrive)
+                        </label>
+                        <span id="if1Status" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <input type="file" id="romIF1Input" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadIF1Rom" title="Load Interface 1 ROM file (if1.rom)" style="font-size: 11px; padding: 2px 10px;">Load IF1 ROM</button>
+                    </div>
+                    <button id="btnSettingsLoadRoms" style="margin-top: 10px; font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
+                </div>
+            </div>
+            </div><!-- settings-machines -->
+
+            <!-- Signatures Sub-tab -->
+            <div class="settings-subtab-content" id="settings-signatures">
+            <div class="settings-tab-content">
+                <div class="settings-section">
+                    <div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Signature packs for automatic label/region recognition:</div>
+                    <div class="settings-row" style="margin-bottom: 6px;">
+                        <button id="btnSigImportSkool" title="Import .skool or .asm files from disk">Import File</button>
+                        <button id="btnSigImportPack" title="Import a signature pack JSON file from disk">Import Pack</button>
+                        <button id="btnSigGitHub" title="Browse a GitHub repository for disassembly sources (.asm, .skool, .a80, .json)">GitHub</button>
+                        <button id="btnSigScanMemory" title="Scan current memory for matching signatures">Scan Memory</button>
+                    </div>
+                    <div id="sigGitHubBrowser" class="hidden" style="margin-top: 6px; padding: 6px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px;">
+                        <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 6px;">
+                            <input id="sigGitHubUrl" type="text" placeholder="GitHub repo URL or owner/repo" style="flex: 1; padding: 4px 8px; font-size: 11px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--bg-button); border-radius: 3px;">
+                            <button id="btnSigGitHubFetch" style="font-size: 11px; padding: 3px 10px;">Browse</button>
+                            <button id="btnSigGitHubClose" style="font-size: 11px; padding: 3px 6px;" title="Close">&times;</button>
+                        </div>
+                        <div id="sigGitHubStatus" style="font-size: 10px; color: var(--text-secondary); margin-bottom: 4px;"></div>
+                        <div id="sigGitHubFileList" style="max-height: 200px; overflow-y: auto;"></div>
+                        <div id="sigGitHubActions" class="hidden" style="margin-top: 6px; display: flex; gap: 6px; align-items: center;">
+                            <button id="btnSigGitHubImport" style="font-size: 11px; padding: 3px 10px;">Import Selected</button>
+                            <span id="sigGitHubSelected" style="font-size: 10px; color: var(--text-secondary);"></span>
+                        </div>
+                    </div>
+                    <div id="sigPackList" style="margin-top: 6px;"></div>
+                    <div id="sigScanResults" class="hidden" style="margin-top: 8px; padding: 6px 8px; background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 3px; font-size: 11px; max-height: 33vh; overflow-y: auto;"></div>
+                </div>
+            </div>
+            </div><!-- settings-signatures -->
+
+        </div><!-- tab-settings -->
