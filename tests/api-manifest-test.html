@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>API Manifest Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre-wrap; }
+        iframe { width: 1200px; height: 700px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>API Manifest Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // This is the test that keeps the automation surface honest. External
+        // tools reimplement things they cannot discover, so `zxDebug` describes
+        // itself — and a self-description is worse than none once it drifts.
+        //
+        // Three invariants, all of which have been broken in this repo's history:
+        //   1. every member of zxDebug is declared in the manifest
+        //   2. every manifest entry still exists on zxDebug
+        //   3. every member is mentioned in docs/automation.md
+        //
+        // If you add an API and this fails, that is the test doing its job: add
+        // the entry to core/api-manifest.js and a line to docs/automation.md.
+        import { API, API_VERSION, API_CATEGORIES, versionAtLeast,
+                 buildCapabilities, checkRequired } from '../core/api-manifest.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 300, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // Nothing is exempt, including the describing members themselves: a
+        // capabilities() that did not list capabilities() would be telling a tool
+        // the surface is smaller than it is.
+
+        (async () => {
+            const frame = document.getElementById('app');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'the app comes up');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            const w = frame.contentWindow;
+            const zx = w.zxDebug;
+
+            section('Nothing is undeclared');
+
+            // Object.keys misses getters defined on the literal, so walk the
+            // descriptors: a getter is as much part of the surface as a method
+            const members = Object.keys(Object.getOwnPropertyDescriptors(zx));
+            assert(members.length > 80, `zxDebug has ${members.length} members`);
+
+            const undeclared = members.filter(m => !(m in API));
+            assert(undeclared.length === 0,
+                   'every member is declared in core/api-manifest.js',
+                   undeclared.join(', '));
+
+            const missing = Object.keys(API).filter(m => !(m in zx));
+            assert(missing.length === 0,
+                   'and every declared entry still exists on zxDebug',
+                   missing.join(', '));
+
+            section('Every entry says something');
+
+            const bad = Object.entries(API).filter(([, e]) =>
+                !e.category || !e.sig || !e.summary || !(e.category in API_CATEGORIES));
+            assert(bad.length === 0, 'each has a category, a signature and a summary',
+                   bad.map(([n]) => n).join(', '));
+            const unused = Object.keys(API_CATEGORIES).filter(c =>
+                !Object.values(API).some(e => e.category === c));
+            assert(unused.length === 0, 'and every category is used', unused.join(', '));
+            const sigMismatch = Object.entries(API).filter(([n, e]) => !e.sig.startsWith(n));
+            assert(sigMismatch.length === 0, 'the signature starts with the name it describes',
+                   sigMismatch.map(([n, e]) => `${n}: ${e.sig}`).join(' | '));
+
+            section('M8XXX.md, the page a tool is pointed at');
+
+            // A tool is told to read one file. It must not enumerate members (that
+            // would go stale), but it must name every *category* — a whole new
+            // capability area nobody hears about is the failure this all exists to
+            // prevent, and it is exactly what would slip through otherwise.
+            const briefDoc = await (await fetch('../M8XXX.md')).text();
+            const unnamed = Object.keys(API_CATEGORIES).filter(c => !briefDoc.includes(c));
+            assert(unnamed.length === 0, 'every capability category is named in M8XXX.md',
+                   unnamed.join(', '));
+            assert(/zxDebug\.help\(\)/.test(briefDoc),
+                   'and it points at help() for the members themselves');
+            assert(!/peekBlock|watchIndirect/.test(briefDoc),
+                   'while naming no individual member, which would go stale');
+
+            section('The docs mention all of it');
+
+            // A tool author reads the docs; a member absent from them is a member
+            // nobody will find, which is the whole problem this is here to solve
+            const doc = await (await fetch('../docs/automation.md')).text();
+            const undocumented = members.filter(m => !doc.includes(m));
+            assert(undocumented.length === 0,
+                   'every member appears in docs/automation.md',
+                   undocumented.join(', '));
+
+            section('capabilities()');
+
+            const caps = zx.capabilities();
+            assert(caps.apiVersion === API_VERSION, 'reports the api version');
+            assert(caps.appVersion === zx.version, 'and the app version');
+            assert(Array.isArray(caps.members) && caps.members.length === members.length,
+                   'listing exactly what this build has',
+                   `${caps.members.length} vs ${members.length}`);
+            assert(caps.members.every(m => m.name && m.sig && m.summary && m.category),
+                   'each entry carrying enough to act on');
+            const names = caps.members.map(m => m.name);
+            assert(names.join() === names.slice().sort().join(), 'sorted, so two builds diff cleanly');
+            let json = null;
+            try { json = JSON.stringify(caps); } catch (e) { /* not serialisable */ }
+            assert(!!json && json.length > 1000, 'and JSON-safe, so it can be logged or sent');
+
+            section('help()');
+
+            assert(zx.help('peek').includes('one byte'), 'help(name) explains one member',
+                   zx.help('peek'));
+            assert(/nothing called/.test(zx.help('nosuchthing')),
+                   'and says so plainly when there is no such thing');
+            const md = zx.help();
+            assert(md.startsWith('# zxDebug'), 'help() with no name is markdown');
+            assert(md.includes('## memory') && md.includes('## differential'),
+                   'grouped by category, for handing to a model', md.slice(0, 60));
+            assert(members.every(m => md.includes(m)), 'and it holds every member');
+
+            section('brief()');
+
+            // The one call an external tool is told to make. It has to carry both
+            // halves — the rules, which no API can convey, and the surface of this
+            // build — or the tool is back to guessing at one of them.
+            const brief = await zx.brief();
+            assert(typeof brief === 'string' && brief.length > 2000,
+                   'brief() returns one string with everything in it', String(brief.length));
+            assert(/M8XXX for external tools/.test(brief),
+                   'the rules half is there', brief.slice(0, 80));
+            assert(/await zxDebug\.ready\(\)/.test(brief) && /escape hatch/.test(brief),
+                   'including the two that cost the most');
+            assert(brief.includes('# zxDebug'), 'and the API half');
+            assert(members.every(m => brief.includes(m)), 'listing every member of this build');
+            assert(brief.indexOf('Driving ZX-M8XXX') < brief.indexOf('# zxDebug'),
+                   'rules first, since they decide how the rest is used');
+
+            section('require()');
+
+            assert(zx.require(['peek', 'poke', 'disassemble']) === true,
+                   'require passes for what is here');
+            let threw = '';
+            try { zx.require(['peek', 'notAThing']); } catch (e) { threw = e.message; }
+            assert(/notAThing/.test(threw), 'and names what is missing', threw);
+            assert(threw.includes(zx.version),
+                   'along with the build it is talking to, which is the useful half', threw);
+
+            // A tool asking for something newer than the build must be told the
+            // version, not just "no" — that is what turns a silent workaround
+            // into a fixable message
+            let versionErr = '';
+            try { checkRequired(['peek'], '0.15.31', () => true); } catch (e) { versionErr = e.message; }
+            assert(/too old/.test(versionErr) && /0\.15\.32/.test(versionErr),
+                   'an older build is told which version it needs', versionErr);
+            assert(checkRequired(['peek'], '0.15.32', () => true) === true,
+                   'and the exact version passes');
+            assert(checkRequired(['labels'], '0.0.1', () => true) === true,
+                   'an entry with no `since` needs no version at all');
+
+            section('versionAtLeast');
+
+            assert(versionAtLeast('0.15.32', '0.15.32'), 'equal passes');
+            assert(versionAtLeast('0.15.33', '0.15.32'), 'newer passes');
+            assert(!versionAtLeast('0.15.31', '0.15.32'), 'older fails');
+            assert(versionAtLeast('0.16.0', '0.15.99'), 'across a minor bump');
+            assert(!versionAtLeast('0.9.0', '0.10.0'), 'and 9 is not newer than 10');
+            assert(versionAtLeast('0.15.32', null), 'no requirement is always met');
+
+            section('The primitives actually work');
+
+            await zx.ready();
+            zx.pause();
+            zx.poke(0x8000, 0x3E); zx.poke(0x8001, 0x42); zx.poke(0x8002, 0xC9);
+            assert(zx.peek(0x8000) === 0x3E, 'peek reads what poke wrote');
+            zx.pokeWord(0x8010, 0xBEEF);
+            assert(zx.peekWord(0x8010) === 0xBEEF, 'and a word round-trips little-endian',
+                   '0x' + zx.peekWord(0x8010).toString(16));
+            assert(zx.peek(0x8010) === 0xEF && zx.peek(0x8011) === 0xBE, 'low byte first');
+
+            zx.pokeBlock(0x8100, [1, 2, 3, 4]);
+            assert(Array.from(zx.peekBlock(0x8100, 4)).join() === '1,2,3,4', 'blocks round-trip');
+
+            const found = zx.findBytes('3E 42 C9', { from: 0x8000, to: 0x8100 });
+            assert(found.includes(0x8000), 'findBytes finds hex text', found.join());
+            assert(zx.findBytes([0x3E, null, 0xC9], { from: 0x8000, to: 0x8100 }).includes(0x8000),
+                   'and a wildcard');
+            assert(zx.findBytes('3E ?? C9', { from: 0x8000, to: 0x8100 }).includes(0x8000),
+                   'written as ?? too');
+            assert(zx.findWord(0xBEEF, { from: 0x8000, to: 0x8100 }).includes(0x8010),
+                   'findWord takes the little-endian pair');
+            let e1 = '';
+            try { zx.findBytes('zz'); } catch (e) { e1 = e.message; }
+            assert(/pattern must be/.test(e1), 'a pattern that is not one is refused', e1);
+
+            const dis = zx.disassemble(0x8000, 2);
+            assert(dis.length === 2 && /LD A/i.test(dis[0].text), 'disassemble reads instructions',
+                   dis.map(d => d.text).join(' / '));
+            assert(dis[0].length === 2 && dis[1].addr === 0x8002, 'and walks by instruction length');
+            assert(zx.disassembleRange(0x8000, 0x8003).length === 2, 'a range stops where told');
+
+            section('Stepping says what it needs');
+
+            zx.pause();
+            const regs = zx.setRegisters({ pc: 0x8000, hl: 0x1234 });
+            assert(regs.pc === 0x8000 && regs.hl === 0x1234, 'setRegisters sets pairs and singles');
+            let e2 = '';
+            try { zx.setRegisters({ nosuchreg: 1 }); } catch (e) { e2 = e.message; }
+            assert(/no register named/.test(e2), 'and refuses a name it does not have', e2);
+
+            const stepped = zx.step(1);
+            assert(stepped.steps === 1 && stepped.pc === 0x8002, 'step advances the PC',
+                   '0x' + stepped.pc.toString(16));
+
+            zx.setRegisters({ pc: 0x8000 });
+            assert(zx.runTo(0x8002).reached, 'runTo reaches an address');
+
+            // The core returns a bare `false` when the machine is running, which
+            // to a driver is a silent no-op. That is the bug this whole session
+            // started with, so the wrapper must not repeat it.
+            zx.resume();
+            let e3 = '';
+            try { zx.step(); } catch (e) { e3 = e.message; }
+            assert(/is running/.test(e3) && /pause\(\)/.test(e3),
+                   'stepping a running machine throws and names the fix', e3);
+            zx.pause();
+
+            section('Breakpoints');
+
+            zx.clearBreakpoints();
+            assert(zx.breakpoints().length === 0, 'start with none');
+            assert(zx.addBreakpoint(0x8002) === true, 'one can be added');
+            const bps = zx.breakpoints();
+            assert(bps.length === 1 && bps[0].start === 0x8002, 'and is listed back',
+                   JSON.stringify(bps));
+            zx.clearBreakpoints();
+            assert(zx.breakpoints().length === 0, 'and cleared');
+
+            log(`\n=== ${passed} passed, ${failed} failed ===`, failed ? 'fail' : 'pass');
+        })().catch(e => {
+            failed++;
+            log('  the suite threw: ' + (e && e.message), 'fail');
+            log(`\n=== ${passed} passed, ${failed} failed ===`, 'fail');
+        });
+    </script>
+</body>
+</html>

@@ -17,6 +17,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Sound (beeper, AY) | `core/ay.js`, `core/audio-processor.js` | `ui/display-settings.js` | `chkSound`, `volumeSlider`, `stereoMode` | `tape-test` | `docs/rendering.md` |
 | Keyboard | `core/ula.js` (keyMap), `core/spectrum.js` | `ui/input-settings.js`, `ui/virtual-keyboard.js` | `selCapsShiftKey`, `virtualKeyboard` | `system-test` | `docs/peripherals.md` |
 | Keyboard ghosting | `core/ula.js` (`_ghostedRows`, `setKeyboardGhosting`) | `ui/input-settings.js` | `chkKeyboardGhosting` | `system-test` | `docs/peripherals.md` |
+| Scripted key presses | `core/ula.js` (`hasKey`, `keyNames`, `resolveKeyName`) | `ui/app-init.js` (`assertZXKey`) | — | `system-test` | `docs/automation.md` |
 | ULA snow | `core/ula-snow.js`, `core/ula.js` (`_displayRam`) | `ui/display-settings.js` | `chkUlaSnow` | `snow-test` | `docs/rendering.md` |
 | ULA ink edge skew | `core/ula-inkskew.js`, `core/ula.js` (`inkSkew`) | `ui/display-settings.js` | `chkInkSkew` | `inkskew-test` | `docs/rendering.md` |
 | PAL composite (RF) | `core/pal-composite.js`, `core/ula.js` (`setPalComposite`) | `ui/display-settings.js` | `chkPalComposite` | `pal-test`, `chromatrons`, `chromatrons-pentagon` | `docs/rendering.md` |
@@ -58,6 +59,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Beautify | `core/asm-beautify.js` | `ui/assembler-ui.js` | `beautifyDialog`, `bf*` | `beautify-test` | `docs/assembler.md` |
 | Import foreign sources | `core/asm-detok.js`, `core/asm-convert.js` | `ui/import-foreign.js` | `importForeignDialog` | `convert-test`, `import-test` | `docs/assembler.md` |
 | Snippets | `data/asm-snippets.json` | `ui/asm-snippets.js` | `btnAsmSnippets` | `asm-test` | `docs/assembler.md` |
+| Non-Zilog forms (options) | `sjasmplus/instructions.js` (`DialectOptions`) | `ui/assembler-ui.js` | `chkAsmAltMnemonics`, `chkAsmMultiOperand`, `chkAsmUndocumented` | `asm-test` | `docs/assembler.md` |
 
 ## Debugger and RE
 
@@ -71,6 +73,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Profiler | `tools/profiler-analysis.js` | `ui/profiler-ui.js` | `profilerPanel` | `profiler-analysis-test` | `docs/tools.md` |
 | Signature packs | `debug/signature-pack-manager.js` | `ui/signature-packs-ui.js` | `sigPacksList` | `sigpack-test` | `docs/tools.md` |
 | Headless API | `ui/app-init.js` (`window.zxDebug`) | — | — | (per-feature) | `docs/automation.md` |
+| API manifest / capabilities | `core/api-manifest.js` | `ui/app-init.js` (`capabilities`, `help`, `require`) | — | `api-manifest-test` | `docs/automation.md` |
 
 ## Tools
 
@@ -79,6 +82,9 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Explorer | `ui/explorer.js` + `explorer-banks.js` + `explorer-editors.js` | same | `explorer*`, `editorPanel*` | `explorer-test` | `docs/tools.md` |
 | POKEs (JSON and `.pok`) | `core/pok.js` | `ui/poke-manager.js` | `pokeList`, `btnPokeLoad` | `pok-test` | `docs/tools.md` |
 | POKE search | — | `ui/poke-search.js` | `pokeSearchPanel` | — | `docs/tools.md` |
+| Encoded text search | `core/encoded-search.js` | `ui/memory-search.js`, `ui/explorer-views.js` | `memSearchType`, `explorerFindMode` | `encoded-search-test`, `explorer-test` | `docs/automation.md` |
+| Data-table recognisers | `core/table-scan.js` | `ui/table-scanner.js` | `btnTableScan`, `tableScanKind` | `table-scan-test` | `docs/automation.md` |
+| Differential runs | `core/divergence.js`, `core/spectrum.js` (`execTrace`) | `ui/diff-run.js`, `ui/app-init.js` (`recordRun`) | `btnDiffRun`, `drChange`, `drResults` | `divergence-test`, `diffrun-ui-test` | `docs/tools.md`, `docs/automation.md` |
 | Game Mapper | `tools/game-mapper.js` | `ui/mapper-ui.js` | `mapperCanvas` | `mapper-test` | `docs/tools.md` |
 | OCR text ripper | — | `ui/text-ripper.js` | `ocrDialog` | — | `docs/tools.md` |
 | Graphics viewer | — | `ui/graphics-viewer.js` | `graphicsViewer*` | — | `docs/tools.md` |

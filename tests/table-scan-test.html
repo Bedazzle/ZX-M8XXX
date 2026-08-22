@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Table Scan Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Table Scan Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/table-scan.js is pure — the byte reader is injected — so the three
+        // recognisers test against a synthetic 64K with no emulator.
+        import { findKeyScanTables, findCharTables, findWordTables,
+                 byValue, outliers, namedKey, describeTable,
+                 HALF_ROW_BYTES } from '../core/table-scan.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // Noise that no recogniser should mistake for a table
+        function makeMemory() {
+            const mem = new Uint8Array(0x10000);
+            for (let i = 0; i < mem.length; i++) mem[i] = (i * 11 + (i >> 4)) & 0xff;
+            return mem;
+        }
+        const reader = (mem) => (a) => mem[a & 0xffff];
+        const put = (mem, addr, bytes) => bytes.forEach((b, i) => { mem[addr + i] = b & 0xff; });
+
+        async function run() {
+            section('Keyboard scan tables');
+
+            // Six controls, each a half-row select byte and the bit to test
+            const mem = makeMemory();
+            const controls = [
+                [0xFB, 0x02],   // W  (row $FB, bit 1)
+                [0xFD, 0x01],   // A
+                [0xF7, 0x01],   // 1
+                [0xEF, 0x01],   // 0
+                [0x7F, 0x01],   // SPACE
+                [0xFE, 0x01],   // CAPS
+            ];
+            put(mem, 0x8000, controls.flat());
+            let tables = findKeyScanTables(reader(mem), 0x7000, 0x9000);
+            const t = tables.find(x => x.addr === 0x8000);
+            assert(!!t, 'a (row, bit) table is found', tables.map(x => x.addr.toString(16)).join(','));
+            if (t) {
+                assert(t.entries.length === 6, 'with all six entries', String(t.entries.length));
+                assert(t.stride === 2 && t.order === 'row, bit', 'and the layout it has');
+                assert(t.rowForm === 'port byte', 'the row is read as a port byte');
+                assert(t.entries[0].key === 'W', 'and the keys are named', String(t.entries[0].key));
+                assert(t.entries[4].key === 'SPACE', 'including SPACE', String(t.entries[4].key));
+            }
+
+            // The other order, and a payload byte in each record
+            const mem2 = makeMemory();
+            put(mem2, 0x8400, controls.flatMap(([r, b]) => [b, r, 0x99]));
+            const t2 = findKeyScanTables(reader(mem2), 0x8000, 0x9000).find(x => x.addr === 0x8400);
+            assert(!!t2, 'a (bit, row) table with a payload byte is found');
+            if (t2) {
+                assert(t2.stride === 3 && t2.order === 'bit, row', 'with its stride and order',
+                       `${t2.stride} ${t2.order}`);
+                assert(t2.entries.length === 6, 'and all its entries');
+            }
+
+            // A row held as an index 0-7 rather than the port byte
+            const mem3 = makeMemory();
+            put(mem3, 0x8800, [2, 0x02, 1, 0x01, 3, 0x01, 4, 0x01, 7, 0x01]);
+            const t3 = findKeyScanTables(reader(mem3), 0x8000, 0x9000).find(x => x.addr === 0x8800);
+            assert(!!t3 && t3.rowForm === 'row index', 'a row held as an index is found and marked',
+                   t3 ? t3.rowForm : 'not found');
+
+            // Noise is not a table
+            assert(findKeyScanTables(reader(makeMemory()), 0x2000, 0x3000).length === 0,
+                   'and noise produces nothing');
+
+            // The same key over and over is data that happens to fit. Without this
+            // the row-as-index form ran away: any byte 0-7 beside any of five bit
+            // values, so ordinary memory matched for thousands of "entries" and
+            // buried the real tables.
+            const memRep = makeMemory();
+            put(memRep, 0x8C00, new Array(200).fill(0).flatMap(() => [3, 0x01]));
+            const rep = findKeyScanTables(reader(memRep), 0x8B00, 0x8E00);
+            assert(rep.length === 0, 'a repeated pair is not a controls table',
+                   rep.map(x => x.entries.length).join(','));
+            assert(findKeyScanTables(reader(memRep), 0x8B00, 0x8E00,
+                                     { requireDistinct: false })[0].entries.length <= 40,
+                   'and even allowing repeats, no table is longer than the keyboard');
+            assert(namedKey(0xFE, 0x01) === 'CAPS' && namedKey(0x7F, 0x10) === 'B',
+                   'namedKey reads the matrix');
+            assert(namedKey(0x12, 0x01) === null && namedKey(0xFE, 0x33) === null,
+                   'and refuses what is not in it');
+            assert(HALF_ROW_BYTES.length === 8, 'there are eight half-rows');
+
+            section('Key-number to character tables');
+
+            const memC = makeMemory();
+            const KTAB = 'BHY65TGVNJU74RFCMKI83EDXLOP92WSAQ  ENTER'.slice(0, 40);
+            put(memC, 0x9000, Array.from(KTAB, c => c.charCodeAt(0)));
+            memC[0x9000 - 1] = 0x00; memC[0x9000 + 40] = 0x00;   // bound the run
+            let chars = findCharTables(reader(memC), 0x8F00, 0x9100);
+            // A 40-byte run is legitimately both a 39 and a 40; both are reported
+            const c1 = chars.find(x => x.addr === 0x9000 && x.length === 40);
+            assert(!!c1, 'a forty-character table is found', chars.map(x => x.addr.toString(16)).join(','));
+            if (c1) {
+                assert(c1.length === 40, 'at the length asked for', String(c1.length));
+                assert(c1.text.startsWith('BHY65'), 'and reads back', c1.text.slice(0, 8));
+                assert(c1.distinct >= 20, 'with enough distinct characters', String(c1.distinct));
+            }
+
+            // A run of padding is printable but says nothing
+            const memP = makeMemory();
+            put(memP, 0x9200, new Array(60).fill(0x20));
+            assert(findCharTables(reader(memP), 0x9100, 0x9300).length === 0,
+                   'a run of spaces is not a character table');
+
+            // The ROM keeps 39, so the length has to be the caller's to choose
+            const mem39 = makeMemory();
+            put(mem39, 0x9400, Array.from(KTAB.slice(0, 39), c => c.charCodeAt(0)));
+            mem39[0x93FF] = 0; mem39[0x9400 + 39] = 0;
+            assert(findCharTables(reader(mem39), 0x9300, 0x9500).some(x => x.length === 39),
+                   'a 39-byte table is found too');
+            assert(findCharTables(reader(mem39), 0x9300, 0x9500, { lengths: [40] }).length === 0,
+                   'and asking only for 40 does not find it');
+
+            // Bit 7 on the last character is the usual end marker
+            const memB = makeMemory();
+            const b7 = Array.from(KTAB, c => c.charCodeAt(0));
+            b7[39] |= 0x80;
+            put(memB, 0x9600, b7);
+            memB[0x95FF] = 0; memB[0x9600 + 40] = 0;
+            assert(findCharTables(reader(memB), 0x9500, 0x9700).some(x => x.addr === 0x9600),
+                   'bit 7 on the last character does not break the run');
+            assert(!findCharTables(reader(memB), 0x9500, 0x9700, { bit7: false })
+                        .some(x => x.addr === 0x9600 && x.length === 40),
+                   'unless bit 7 handling is turned off: the run stops one short');
+
+            section('Vocabulary tables');
+
+            // The shape a PAW/Quill vocabulary has: five characters, a value, a type
+            const vocab = [
+                ['GO   ', 11, 0], ['TAKE ', 57, 0], ['DROP ', 71, 0],
+                ['NORTH', 12, 1], ['SOUTH', 13, 1], ['EAST ', 14, 1],
+                ['WEST ', 15, 1], ['LAMP ', 20, 2], ['ROPE ', 21, 2],
+                ['XYZZY', 200, 0], ['PLUGH', 201, 0],
+            ];
+            const recBytes = (enc) => vocab.flatMap(([w, v, ty]) =>
+                Array.from(w, c => enc(c.charCodeAt(0))).concat([v, ty]));
+
+            const memV = makeMemory();
+            put(memV, 0xA000, recBytes(c => c));
+            let vt = findWordTables(reader(memV), 0x9F00, 0xA200);
+            let v1 = vt.find(x => x.addr === 0xA000);
+            assert(!!v1, 'a plain vocabulary is found', vt.map(x => x.addr.toString(16)).join(','));
+            if (v1) {
+                assert(v1.entries.length === vocab.length, 'with every entry',
+                       `${v1.entries.length} of ${vocab.length}`);
+                assert(v1.recordLen === 7 && v1.textLen === 5, 'and its record shape',
+                       `${v1.textLen}+${v1.recordLen - v1.textLen}`);
+                assert(v1.entries[0].word === 'GO', 'padding is trimmed off the word',
+                       v1.entries[0].word);
+                assert(v1.entries[1].value === 57 && v1.entries[1].type === 0,
+                       'the value and type come through');
+                assert(v1.encoding === 'plain', 'and the encoding is named', v1.encoding);
+            }
+
+            // The same table complemented, and with the high bit set: two forms a
+            // vocabulary is commonly stored in
+            for (const [name, enc, id] of [['complemented', (c) => c ^ 0xff, 'complement'],
+                                           ['high-bit', (c) => c ^ 0x80, 'high']]) {
+                const m = makeMemory();
+                put(m, 0xA000, recBytes(enc));
+                const got = findWordTables(reader(m), 0x9F00, 0xA200).find(x => x.addr === 0xA000);
+                assert(!!got, `a ${name} vocabulary is found`);
+                assert(got && got.entries[9].word === 'XYZZY', 'and reads back',
+                       got ? got.entries[9].word : '');
+                assert(got && got.encoding === id, `named ${id}`, got ? got.encoding : '');
+            }
+
+            // A key nobody would guess, derived from the padding rather than swept
+            const memX = makeMemory();
+            put(memX, 0xA000, recBytes(c => (c + 0x37) & 0xff));
+            const vx = findWordTables(reader(memX), 0x9F00, 0xA200).find(x => x.addr === 0xA000);
+            assert(!!vx, 'an offset vocabulary is found without brute force');
+            assert(vx && vx.entries[10].word === 'PLUGH', 'and reads back',
+                   vx ? vx.entries[10].word : '');
+
+            // Four-character words in six-byte records: the other common shape
+            const memQ = makeMemory();
+            const short = [['GO  ', 11, 0], ['TAKE', 57, 0], ['DROP', 71, 0], ['NORT', 12, 1],
+                           ['SOUT', 13, 1], ['EAST', 14, 1], ['WEST', 15, 1], ['LAMP', 20, 2],
+                           ['ROPE', 21, 2]];
+            put(memQ, 0xA400, short.flatMap(([w, v, ty]) =>
+                Array.from(w, c => c.charCodeAt(0)).concat([v, ty])));
+            const vq = findWordTables(reader(memQ), 0xA300, 0xA500).find(x => x.addr === 0xA400);
+            assert(!!vq && vq.textLen === 4, 'a four-character vocabulary is found',
+                   vq ? String(vq.textLen) : 'not found');
+
+            // Noise, and padding, are not vocabularies
+            assert(findWordTables(reader(makeMemory()), 0x2000, 0x3000).length === 0,
+                   'noise is not a vocabulary');
+            const memPad = makeMemory();
+            put(memPad, 0xB000, new Array(200).fill(0x20));
+            assert(!findWordTables(reader(memPad), 0xAF00, 0xB100).some(x => x.addr === 0xB000),
+                   'nor is a field of spaces');
+
+            section('Reading a vocabulary by value');
+
+            // The point of the view: the odd words out stand up
+            assert(!!v1, 'the plain table is there to sort');
+            if (v1) {
+                const sorted = byValue(v1);
+                assert(sorted[0].value === 11 && sorted[sorted.length - 1].value === 201,
+                       'byValue orders the entries', `${sorted[0].value}..${sorted[sorted.length - 1].value}`);
+                const odd = outliers(v1);
+                assert(odd.length === 2, 'the two words far above the rest are picked out',
+                       odd.map(e => `${e.word}=${e.value}`).join(' '));
+                assert(odd.map(e => e.word).sort().join(',') === 'PLUGH,XYZZY',
+                       'and they are the right two', odd.map(e => e.word).join(','));
+                assert(outliers(v1, { minGap: 250 }).length === 0,
+                       'a gap nothing reaches picks out nothing');
+                assert(/^\$A000/.test(describeTable(v1)), 'describeTable leads with the address',
+                       describeTable(v1));
+            }
+            assert(byValue(null).length === 0 && outliers(null).length === 0,
+                   'and neither minds being given nothing');
+
+            log(`\n=== ${passed} passed, ${failed} failed ===`, failed ? 'fail' : 'pass');
+        }
+        run();
+    </script>
+</body>
+</html>

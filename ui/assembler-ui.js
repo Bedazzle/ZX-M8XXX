@@ -49,6 +49,9 @@ export function initAssemblerUI({
     const chkAsmCaseInsensitive = document.getElementById('chkAsmCaseInsensitive');
     const chkAsmUnusedLabels = document.getElementById('chkAsmUnusedLabels');
     const chkAsmUnicodeLabels = document.getElementById('chkAsmUnicodeLabels');
+    const chkAsmAltMnemonics = document.getElementById('chkAsmAltMnemonics');
+    const chkAsmMultiOperand = document.getElementById('chkAsmMultiOperand');
+    const chkAsmUndocumented = document.getElementById('chkAsmUndocumented');
     const chkAsmShowCompiled = document.getElementById('chkAsmShowCompiled');
     const chkAsmExportZip = document.getElementById('chkAsmExportZip');
     const asmViewCodepage = document.getElementById('asmViewCodepage');
@@ -2057,6 +2060,17 @@ export function initAssemblerUI({
         });
     }
 
+    // The non-Zilog forms the assembler takes, one checkbox each — all **on** by
+    // default (sjasmplus accepts them all). Turning one off is for a source that
+    // has to assemble elsewhere too, so the errors name the standard form.
+    for (const [chk, key] of [[chkAsmAltMnemonics, 'zxm8_asmAltMnemonics'],
+                              [chkAsmMultiOperand, 'zxm8_asmMultiOperand'],
+                              [chkAsmUndocumented, 'zxm8_asmUndocumented']]) {
+        if (!chk) continue;
+        chk.checked = storageGet(key) !== 'false';
+        chk.addEventListener('change', () => storageSet(key, chk.checked));
+    }
+
     // Export as ZIP option
     if (chkAsmExportZip) {
         chkAsmExportZip.checked = storageGet('zxm8_asmExportZip') === 'true';
@@ -3475,7 +3489,12 @@ export function initAssemblerUI({
 
         const asmOptions = {
             caseInsensitive: chkAsmCaseInsensitive && chkAsmCaseInsensitive.checked,
-            unicodeLabels: chkAsmUnicodeLabels && chkAsmUnicodeLabels.checked
+            unicodeLabels: chkAsmUnicodeLabels && chkAsmUnicodeLabels.checked,
+            // On unless the box is there and unticked — a missing checkbox must
+            // not quietly turn a form off
+            altMnemonics: !chkAsmAltMnemonics || chkAsmAltMnemonics.checked,
+            multiOperand: !chkAsmMultiOperand || chkAsmMultiOperand.checked,
+            undocumented: !chkAsmUndocumented || chkAsmUndocumented.checked
         };
 
         return { filename, normalizedFilename, hasProject, cmdDefines, asmOptions };

@@ -170,6 +170,16 @@
             return result.success ? result.output : null;
         }
 
+        // Assemble expecting it may fail: an error is thrown, not returned
+        function tryAsm(source) {
+            try {
+                const r = Assembler.assemble(source);
+                return { ok: !!(r && r.success), err: '', line: null };
+            } catch (e) {
+                return { ok: false, err: e.message, line: e.line };
+            }
+        }
+
         // ==================== INSTRUCTION TESTS ====================
 
         async function runInstructionTests() {
@@ -305,6 +315,17 @@
             assertBytes(bytes('EX (SP), IX'), [0xDD, 0xE3], 'EX (SP), IX');
             assertBytes(bytes('EXX'), [0xD9], 'EXX');
 
+            // Either order: the pair picks the opcode, not the side each is written
+            // on, and sjasmplus accepts both. Native assemblers write EX HL,DE.
+            assertBytes(bytes('EX HL, DE'), [0xEB], 'EX HL, DE (reversed)');
+            assertBytes(bytes('EX HL, (SP)'), [0xE3], 'EX HL, (SP) (reversed)');
+            assertBytes(bytes('EX IX, (SP)'), [0xDD, 0xE3], 'EX IX, (SP) (reversed)');
+            assertBytes(bytes('EX IY, (SP)'), [0xFD, 0xE3], 'EX IY, (SP) (reversed)');
+            assertBytes(bytes('EX AF, AF'), [0x08], 'EX AF, AF (apostrophe optional)');
+            assertBytes(bytes('EX AF'), [0x08], 'EX AF (second operand optional)');
+            assert(!tryAsm('EX BC, HL').ok, 'EX BC, HL is still an error');
+            assert(!tryAsm('EX HL, BC').ok, 'EX HL, BC is still an error');
+
             section('Rotate/Shift Instructions');
 
             assertBytes(bytes('RLCA'), [0x07], 'RLCA');
@@ -318,6 +339,17 @@
             assertBytes(bytes('SRA B'), [0xCB, 0x28], 'SRA B');
             assertBytes(bytes('SRL C'), [0xCB, 0x39], 'SRL C');
             assertBytes(bytes('SLL A'), [0xCB, 0x37], 'SLL A (undocumented)');
+
+            // CB 30-37 was never documented, so it never got one official name:
+            // SLL, SLI and SL1 are all in use for it (sjasmplus takes SLI and SLL)
+            assertBytes(bytes('SLI A'), [0xCB, 0x37], 'SLI A = SLL A');
+            assertBytes(bytes('SL1 A'), [0xCB, 0x37], 'SL1 A = SLL A');
+            assertBytes(bytes('SLI (HL)'), [0xCB, 0x36], 'SLI (HL)');
+            assertBytes(bytes('SLI (IX+3)'), [0xDD, 0xCB, 0x03, 0x36], 'SLI (IX+d)');
+            // SWAP is the Game Boy's nibble swap sharing the encoding slot, not a
+            // Z80 instruction — so it is free to be a label
+            assert(!tryAsm('SWAP A').ok, 'SWAP is not a Z80 instruction');
+            assert(tryAsm('swap: nop\n jr swap').ok, 'and SWAP works as a label');
             assertBytes(bytes('RLC (IX+5)'), [0xDD, 0xCB, 0x05, 0x06], 'RLC (IX+d)');
 
             section('Undocumented Half-Index Registers');
@@ -562,6 +594,27 @@
             assertBytes(bytes('DB 1 << 4'), [16], 'Shift left');
             assertBytes(bytes('DB $80 >> 4'), [8], 'Shift right');
 
+            // sjasmplus spells them in words too (parser.cpp needa()), and native
+            // assemblers write them that way — same operators, same precedence
+            assertBytes(bytes('DB $F0 and $0F'), [0], 'AND');
+            assertBytes(bytes('DB $F0 or $0F'), [0xFF], 'OR');
+            assertBytes(bytes('DB $FF xor $0F'), [0xF0], 'XOR');
+            assertBytes(bytes('DB 17 mod 5'), [2], 'MOD');
+            assertBytes(bytes('DB 1 shl 4'), [16], 'SHL');
+            assertBytes(bytes('DB $80 shr 4'), [8], 'SHR');
+            assertBytes(bytes('DB $F0 AND $0F'), [0], 'case does not matter');
+            assertBytes(bytes('DB 1 or 2*3'), bytes('DB 1|2*3'), 'OR binds like |');
+            assertBytes(bytes('DB 4 shl 2 + 1'), bytes('DB 4 << 2 + 1'), 'SHL binds like <<');
+            assertBytes(bytes('DB 17 mod 5 * 2'), bytes('DB 17 % 5 * 2'), 'MOD binds like %');
+            // The screen-address table every ZX source has, which needs several at once
+            assertBytes(bytes('crdY = 1\n DW (((crdY>>3) and #F8) or #40 or (crdY and #07))*#100 + (((crdY and #38)*4) and #00FF)'),
+                        [0x00, 0x41], 'a real screen-address expression');
+            // They are operators only where an operator can go: a label may still
+            // be called "and", as it may in sjasmplus
+            assertBytes(bytes('org $8000\nand: db 7\n dw and'), [7, 0x00, 0x80],
+                        'a label named AND still works');
+            assertBytes(bytes('and equ 7\n db and'), [7], 'and so does an EQU named AND');
+
             section('Comparison Expressions');
 
             assertBytes(bytes('DB 5 > 3'), [1], 'Greater than (true)');
@@ -639,6 +692,38 @@
 
             result = bytes('DUP 2\nRET\nEDUP');
             assertEqual(result.length, 2, 'DUP alias');
+
+            assertEqual(bytes('DB 1\nDUP 0\nNOP\nEDUP\nDB 2').length, 2,
+                        'a count of 0 is allowed and emits nothing');
+
+            // The count has to be known at the DUP: the body is collected there and
+            // replayed at EDUP, so there is no later pass to learn it in. All three
+            // of these used to open no block at all — the body then assembled once
+            // inline and the first complaint was "EDUP without DUP", on the wrong
+            // line and about the wrong thing.
+            let bad = tryAsm('DUP nosuchsym\nNOP\nEDUP');
+            assert(!bad.ok && /count "nosuchsym" is not known/.test(bad.err) && bad.line === 1,
+                   'an unknown count is reported at the DUP', bad.err);
+            bad = tryAsm('REPT nosuchsym\nNOP\nENDR');
+            assert(!bad.ok && /^REPT:/.test(bad.err), 'and REPT says REPT, not DUP', bad.err);
+            bad = tryAsm('DUP n\nNOP\nEDUP\nn EQU 3');
+            assert(!bad.ok, 'a count defined below the block is the same mistake');
+
+            // Unary minus wraps to 32 bits, so -1 arrives as 4294967295 and would
+            // run away; sjasmplus reads the count signed for the same reason
+            bad = tryAsm('DUP -1\nNOP\nEDUP');
+            assert(!bad.ok && /zero or more, not -1/.test(bad.err), 'a negative count is caught', bad.err);
+            bad = tryAsm('N EQU 2\nDUP 1-N\nNOP\nEDUP');
+            assert(!bad.ok && /not -1/.test(bad.err) && bad.line === 2,
+                   'and one that only comes out negative', bad.err);
+
+            bad = tryAsm('DUP 4, $\nDB 1\nEDUP');
+            assert(!bad.ok && /counter variable name/.test(bad.err),
+                   'a counter that is not a name is caught', bad.err);
+            bad = tryAsm('DUP 4,\nDB 1\nEDUP');
+            assert(!bad.ok && /counter variable name/.test(bad.err),
+                   'so is a trailing comma with nothing after it', bad.err);
+            assertBytes(bytes('DUP 4, i\nDB i\nEDUP'), [0, 1, 2, 3], 'a good counter still works');
 
             section('Nested DUP/REPT');
 
@@ -1404,6 +1489,110 @@ VAL:            EQU 42
             assert(warningsOf('    align 4').length === 0, 'ALIGN 4 silent');
         }
 
+        // Three Assembler options, one per kind of non-Zilog form the assembler
+        // takes. All on by default (sjasmplus accepts them all); off, each is an
+        // error naming the standard form, and each is independent of the others.
+        async function runDialectOptionTests() {
+            section('Dialect options');
+
+            function build(src, opts) {
+                try {
+                    const r = Assembler.assemble(src, '<input>', [], opts || {});
+                    return { ok: !!(r && r.success), err: '' };
+                } catch (e) { return { ok: false, err: e.message }; }
+            }
+            const ALT = { altMnemonics: false };
+            const MULTI = { multiOperand: false };
+            const UNDOC = { undocumented: false };
+
+            // Alternative mnemonics
+            assert(build('EX HL,DE', ALT).err.includes('EX DE,HL'),
+                   'EX HL,DE off: the message names EX DE,HL', build('EX HL,DE', ALT).err);
+            assert(!build('EXA', ALT).ok, 'EXA off');
+            assert(!build('EX HL,(SP)', ALT).ok, 'EX HL,(SP) off');
+            assert(!build('EX AF,AF', ALT).ok, 'EX AF,AF off');
+            assert(!build('EX AF', ALT).ok, 'EX AF off');
+            assert(!build('LD A,XH', ALT).ok, 'the XH spelling off');
+            // ...and the canonical forms still assemble
+            assert(build('EX DE,HL', ALT).ok, 'EX DE,HL still assembles');
+            assert(build('EX (SP),HL', ALT).ok, 'EX (SP),HL still assembles');
+            assert(build("EX AF,AF'", ALT).ok, "EX AF,AF' still assembles");
+            assert(build('LD A,IXH', ALT).ok, 'LD A,IXH still assembles');
+
+            // Multi-operand PUSH/POP and INC/DEC
+            assert(!build('PUSH HL,AF', MULTI).ok, 'PUSH HL,AF off');
+            assert(!build('POP BC,DE', MULTI).ok, 'POP BC,DE off');
+            assert(!build('INC E,DE', MULTI).ok, 'INC E,DE off');
+            assert(!build('DEC E,DE', MULTI).ok, 'DEC E,DE off');
+            assert(build('PUSH HL', MULTI).ok, 'PUSH HL still assembles');
+            assert(build('INC E', MULTI).ok, 'INC E still assembles');
+
+            // Undocumented opcodes
+            assert(!build('SLL B', UNDOC).ok, 'SLL off');
+            assert(!build('SLI B', UNDOC).ok, 'SLI off with it');
+            assert(!build('SL1 B', UNDOC).ok, 'SL1 off with it');
+            assert(build('SLI B', UNDOC).err.includes('SLI'),
+                   'and the message quotes the name the source used', build('SLI B', UNDOC).err);
+            // SLI is a name sjasmplus knows; SL1 is only a spelling, so that one
+            // needs the alternatives option too
+            assert(build('SLI B', ALT).ok, 'SLI survives with alternatives off');
+            assert(!build('SL1 B', ALT).ok, 'SL1 does not');
+            assert(!build('LD A,IXH', UNDOC).ok, 'IXH off');
+            assert(!build('INC IYL', UNDOC).ok, 'IYL off');
+            assert(!build('IN F,(C)', UNDOC).ok, 'IN F,(C) off');
+            assert(!build('OUT (C),0', UNDOC).ok, 'OUT (C),0 off');
+            assert(build('IN A,(C)', UNDOC).ok, 'IN A,(C) still assembles');
+            assert(build('OUT (C),A', UNDOC).ok, 'OUT (C),A still assembles');
+            assert(build('SRL B', UNDOC).ok, 'SRL B still assembles');
+
+            // Independent of one another
+            assert(build('PUSH HL,AF', ALT).ok && build('SLL B', ALT).ok,
+                   'turning alternatives off leaves the other two alone');
+            assert(build('EX HL,DE', MULTI).ok && build('SLL B', MULTI).ok,
+                   'turning multi-operand off leaves the other two alone');
+            assert(build('EX HL,DE', UNDOC).ok && build('PUSH HL,AF', UNDOC).ok,
+                   'turning undocumented off leaves the other two alone');
+
+            // ...and none of it persists into the next build
+            assert(build('EX HL,DE').ok && build('PUSH HL,AF').ok && build('SLL B').ok,
+                   'the options do not leak into a build that does not pass them');
+        }
+
+        // The line an error is reported on is the line it is on. The parser used to
+        // count NEWLINE tokens, but the lexer swallows the newlines inside a /* */
+        // comment and at a "\" continuation without emitting one, so from there on
+        // every error pointed a few lines too early — and the editor jumped there.
+        async function runErrorLineTests() {
+            section('Error line numbers');
+
+            const lineOf = (lines) => tryAsm(lines.join('\n')).line;
+            const BAD = 'nosuchop zz';   // fails on whatever line it sits on
+
+            assert(lineOf(['nop', 'nop', 'nop', 'nop', BAD]) === 5,
+                   'plain source: reported on its own line');
+            assert(lineOf(['nop', '', 'foo:', '    or a', BAD]) === 5,
+                   'blank and label-only lines are counted');
+            assert(lineOf(['nop : nop', 'nop', 'nop', 'nop', BAD]) === 5,
+                   'two statements on one line count as one');
+            assert(lineOf(['ld \\', ' a,1', 'nop', 'nop', BAD]) === 5,
+                   'a "\\" line continuation does not lose a line');
+            assert(lineOf(['nop', '/* one', 'two', 'three */', 'nop', BAD]) === 6,
+                   'a block comment does not lose its lines');
+            assert(lineOf(['/* a', 'b */ /* c', 'd */', BAD]) === 4,
+                   'two block comments do not lose their lines');
+
+            // A REPT/DUP body is re-parsed from text, so its lines have to be
+            // carried across — otherwise every error in the loop, however far
+            // down, is reported on the DUP line
+            assert(lineOf([' DUP 3', ' nop', ' nop', ' ' + BAD, ' EDUP']) === 4,
+                   'an error in a DUP body is on its own line');
+            assert(lineOf([' DUP 2', ' DUP 2', ' nop', ' nop', ' ' + BAD, ' EDUP', ' EDUP']) === 5,
+                   'and in a nested DUP body too');
+            assert(lineOf([' MACRO m', ' ' + BAD, ' ENDM', ' nop', ' nop',
+                           ' DUP 2', ' m', ' EDUP']) === 7,
+                   'a macro called from a DUP is reported at the call');
+        }
+
         // Directive and macro forms that real sjasmplus projects use. These were all
         // broken until Lua-using sources exposed them, but none of them need Lua.
         async function runProjectFormTests() {
@@ -1879,6 +2068,8 @@ VAL:            EQU 42
             await runSnippetTests();
             await runOperandValidationTests();
             await runSourceValidationTests();
+            await runErrorLineTests();
+            await runDialectOptionTests();
             await runProjectFormTests();
             await runInstructionTests();
             await runDirectiveTests();

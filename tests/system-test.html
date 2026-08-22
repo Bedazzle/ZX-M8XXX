@@ -475,6 +475,44 @@
             // Option table sanity: every option has at least one e.code
             const allValid = Object.values(MODIFIER_KEY_OPTIONS).every(o => o.codes.length >= 1 && o.label);
             assert(allValid, 'All MODIFIER_KEY_OPTIONS entries have label and codes');
+
+            section('Unknown key names');
+
+            // A press that names nothing has to be visible to whoever made it.
+            // Real key events stay quiet — the browser sends every key the PC has —
+            // so the answer is a return value, which the automation API turns into
+            // a thrown error. A scripted chord that silently did nothing is the
+            // worst kind of bug: the run carries on and the result gets explained
+            // some other way.
+            const ula3 = new ULA();
+            assert(ula3.keyDown('q') === true, 'a key that exists reports true');
+            assert(ula3.keyUp('q') === true, 'and so does releasing it');
+            assert(ula3.keyDown('caps space') === false, '"caps space" reports false');
+            assert(ula3.keyUp('caps space') === false, 'releasing it too');
+            assert(ula3.keyDown('F5') === false, 'a PC-only key reports false');
+            assert(ula3.keyDown(null) === false, 'and a non-string is false, not a crash');
+            assert(ula3.keyDown('~') === true, 'an extended-mode character reports true');
+
+            assert(ula3.hasKey('CAPS') && ula3.hasKey('q') && ula3.hasKey('.') &&
+                   ula3.hasKey('Space') && ula3.hasKey('Shift'),
+                   'hasKey covers the e.code, character and punctuation names');
+            assert(!ula3.hasKey('caps space') && !ula3.hasKey('') && !ula3.hasKey(null),
+                   'and rejects what is not a key');
+
+            // resolveKeyName only explains a bad name; it never accepts one
+            assert(ula3.resolveKeyName('caps') === 'CAPS', "'caps' means CAPS");
+            assert(ula3.resolveKeyName('space') === 'Space', "'space' means Space");
+            assert(ula3.resolveKeyName('sym') === 'SYM', "'sym' means SYM");
+            assert(ula3.resolveKeyName('cs') === 'CAPS', "the 'cs' shorthand too");
+            assert(ula3.resolveKeyName('ss') === 'SYM', "and 'ss'");
+            assert(ula3.resolveKeyName('q') === 'q', 'a name that is already right is kept');
+            assert(ula3.resolveKeyName('nope') === null, 'and nonsense stays nonsense');
+
+            const names = ula3.keyNames();
+            assert(names.includes('CAPS') && names.includes('q') && names.includes('Space') &&
+                   names.includes('.') && names.includes('ShiftLeft'),
+                   'keyNames lists all three sources');
+            assert(names.every(n => ula3.hasKey(n)), 'every name it lists is a key');
         }
 
         // ==================== ULA TESTS ====================

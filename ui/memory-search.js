@@ -1,5 +1,6 @@
 // memory-search.js — Memory Search for right and left panels (extracted from index.html)
-import { hex8, hex16 } from '../core/utils.js';
+import { hex8, hex16, escapeHtml } from '../core/utils.js';
+import { searchEncoded, searchNibblePacked, decodeAt } from '../core/encoded-search.js';
 
 export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, goToLeftMemoryAddress }) {
 
@@ -20,6 +21,8 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
     const leftSearchResults = document.getElementById('leftSearchResults');
     const chkLeftSearchCase = document.getElementById('chkLeftSearchCase');
     const chkLeftSearch7bit = document.getElementById('chkLeftSearch7bit');
+    const chkSearchTrunc5 = document.getElementById('chkSearchTrunc5');
+    const chkLeftSearchTrunc5 = document.getElementById('chkLeftSearchTrunc5');
 
     // Search state (right panel)
     let searchPattern = null;
@@ -151,6 +154,62 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         return results;
     }
 
+    // ========== Encoded search (shared by both panels) ==========
+    //
+    // The other three modes look for bytes. This one looks for a *word*, however
+    // the game happens to store it — complemented, XORed, offset, or with the
+    // character's position folded into the key. Searching for the plaintext of
+    // something written that way finds nothing and says nothing, which reads as
+    // "the text isn't there" rather than "it isn't in that form".
+    //
+    // Nibble packing is searched alongside, being the other way text stops
+    // looking like text. core/encoded-search.js does the work; this is the panel.
+
+    // How much beyond the match to decode: a hit is the way into the record, and
+    // the record is what the reader actually wants to see
+    const ENCODED_TAIL = 16;
+
+    function runEncodedSearch(text, { cases, bit7, truncate }) {
+        const opts = { cases, bit7, truncate: truncate ? 5 : 0, limit: 200 };
+        const a = searchEncoded(readMemory, 0, 0x10000, text, opts);
+        const b = searchNibblePacked(readMemory, 0, 0x10000, truncate ? text.slice(0, 5) : text,
+                                     { cases, limit: 200 });
+        const matches = a.matches.concat(b.matches).sort((x, y) => x.addr - y.addr);
+        return { matches, truncated: a.truncated || b.truncated };
+    }
+
+    // A decoded string is arbitrary bytes: show what is printable and dot the rest
+    function decodedPreview(m) {
+        if (m.encoding === 'nibble') return m.text;   // packing has no byte-wise inverse here
+        const bytes = decodeAt(readMemory, m.addr, m.encoding, m.key, m.length + ENCODED_TAIL, 0);
+        if (!bytes) return m.text;
+        return bytes.map(b => {
+            const c = b & 0x7f;                        // bit 7 is an end marker, not a character
+            return (c >= 0x20 && c < 0x7f) ? String.fromCharCode(c) : '.';
+        }).join('');
+    }
+
+    function renderEncodedResults(el, matches, truncated) {
+        if (!matches.length) {
+            el.innerHTML = '<div class="search-info">Not found in any of the encodings</div>';
+            return;
+        }
+        el.innerHTML = matches.slice(0, 20).map((m, idx) => {
+            const decoded = decodedPreview(m);
+            const head = escapeHtml(decoded.slice(0, m.length));
+            const tail = escapeHtml(decoded.slice(m.length));
+            const note = m.note ? ` · ${escapeHtml(m.note)}` : '';
+            return `<div class="search-result" data-addr="${m.addr}" data-idx="${idx}"
+                         title="${escapeHtml(m.label)}${note}">
+                    <span class="addr">${hex16(m.addr)}</span>
+                    <span class="preview"><b>${head}</b>${tail}</span>
+                    <span class="search-enc">${escapeHtml(m.label)}</span>
+                </div>`;
+        }).join('') +
+        (matches.length > 20 ? `<div class="search-info">...and ${matches.length - 20} more</div>` : '') +
+        (truncated ? '<div class="search-info">stopped at the result limit — a longer word narrows it</div>' : '');
+    }
+
     // ========== Right panel search ==========
 
     function displaySearchResults(results, searchData) {
@@ -177,6 +236,24 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         const input = memSearchInput.value.trim();
         if (!input) {
             searchResults.innerHTML = '';
+            return;
+        }
+
+        if (memSearchType.value === 'encoded') {
+            const { matches, truncated } = runEncodedSearch(input, {
+                cases: chkSearchCase.checked,
+                bit7: chkSearch7bit.checked,
+                truncate: chkSearchTrunc5.checked,
+            });
+            searchResultAddrs = matches.map(m => m.addr);
+            searchResultIndex = searchResultAddrs.length ? 0 : -1;
+            renderEncodedResults(searchResults, matches, truncated);
+            if (searchResultAddrs.length) {
+                goToMemoryAddress(searchResultAddrs[0]);
+                showMessage(`Found ${matches.length} result(s)`);
+            } else {
+                showMessage('Not found in any of the encodings', 'error');
+            }
             return;
         }
 
@@ -234,7 +311,7 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
     const searchOptionsDiv = document.querySelector('.right-memory-search .search-options');
     function updateSearchOptions() {
         const mode = memSearchType.value;
-        if (searchOptionsDiv) searchOptionsDiv.style.display = mode === 'text' ? 'flex' : 'none';
+        if (searchOptionsDiv) searchOptionsDiv.style.display = (mode === 'text' || mode === 'encoded') ? 'flex' : 'none';
 
         // Update placeholder and tooltip based on mode
         if (mode === 'hex') {
@@ -243,6 +320,11 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         } else if (mode === 'dec') {
             memSearchInput.placeholder = '205 33 0...';
             memSearchInput.title = 'Decimal values (0-255 = byte, 256-65535 = word little-endian)';
+        } else if (mode === 'encoded') {
+            memSearchInput.placeholder = 'word...';
+            memSearchInput.title = 'Find the word however it is stored: plain, complemented, XOR/offset by any key, ' +
+                'with the position folded into the key, or nibble-packed. Case = try upper/lower too; ' +
+                '+128 = bit 7 on the last character; 5ch = match five characters only';
         } else {
             memSearchInput.placeholder = 'text...';
             memSearchInput.title = 'Text string to search';
@@ -285,6 +367,24 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         const input = leftMemSearchInput.value.trim();
         if (!input) {
             leftSearchResults.innerHTML = '';
+            return;
+        }
+
+        if (leftMemSearchType.value === 'encoded') {
+            const { matches, truncated } = runEncodedSearch(input, {
+                cases: chkLeftSearchCase.checked,
+                bit7: chkLeftSearch7bit.checked,
+                truncate: chkLeftSearchTrunc5.checked,
+            });
+            leftSearchResultAddrs = matches.map(m => m.addr);
+            leftSearchResultIndex = leftSearchResultAddrs.length ? 0 : -1;
+            renderEncodedResults(leftSearchResults, matches, truncated);
+            if (leftSearchResultAddrs.length) {
+                goToLeftMemoryAddress(leftSearchResultAddrs[0]);
+                showMessage(`Found ${matches.length} result(s)`);
+            } else {
+                showMessage('Not found in any of the encodings', 'error');
+            }
             return;
         }
 
@@ -341,7 +441,7 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
     const leftSearchOptionsDiv = document.querySelector('.left-memory-search .search-options');
     function updateLeftSearchOptions() {
         const mode = leftMemSearchType.value;
-        if (leftSearchOptionsDiv) leftSearchOptionsDiv.style.display = mode === 'text' ? 'flex' : 'none';
+        if (leftSearchOptionsDiv) leftSearchOptionsDiv.style.display = (mode === 'text' || mode === 'encoded') ? 'flex' : 'none';
 
         if (mode === 'hex') {
             leftMemSearchInput.placeholder = 'CD ? 00 or ABCD...';
@@ -349,6 +449,11 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         } else if (mode === 'dec') {
             leftMemSearchInput.placeholder = '205 33 0...';
             leftMemSearchInput.title = 'Decimal values (0-255 = byte, 256-65535 = word little-endian)';
+        } else if (mode === 'encoded') {
+            leftMemSearchInput.placeholder = 'word...';
+            leftMemSearchInput.title = 'Find the word however it is stored: plain, complemented, XOR/offset by any key, ' +
+                'with the position folded into the key, or nibble-packed. Case = try upper/lower too; ' +
+                '+128 = bit 7 on the last character; 5ch = match five characters only';
         } else {
             leftMemSearchInput.placeholder = 'text...';
             leftMemSearchInput.title = 'Text string to search';

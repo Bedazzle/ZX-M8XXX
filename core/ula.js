@@ -31,6 +31,56 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
     export const DEFAULT_CAPS_SHIFT_OPTION = 'shift-both';
     export const DEFAULT_SYMBOL_SHIFT_OPTION = 'alt-both';
 
+    // Single characters and the two shift names, as typed
+    const KEY_CHAR_MAP = {
+        'a': [1, 0], 's': [1, 1], 'd': [1, 2], 'f': [1, 3], 'g': [1, 4],
+        'q': [2, 0], 'w': [2, 1], 'e': [2, 2], 'r': [2, 3], 't': [2, 4],
+        '1': [3, 0], '2': [3, 1], '3': [3, 2], '4': [3, 3], '5': [3, 4],
+        '0': [4, 0], '9': [4, 1], '8': [4, 2], '7': [4, 3], '6': [4, 4],
+        'p': [5, 0], 'o': [5, 1], 'i': [5, 2], 'u': [5, 3], 'y': [5, 4],
+        'l': [6, 1], 'k': [6, 2], 'j': [6, 3], 'h': [6, 4],
+        'm': [7, 2], 'n': [7, 3], 'b': [7, 4],
+        'z': [0, 1], 'x': [0, 2], 'c': [0, 3], 'v': [0, 4],
+        ' ': [7, 0], 'Enter': [6, 0], 'Shift': [0, 0], 'Control': [0, 0], 'Alt': [7, 1]
+    };
+
+    // Punctuation (Symbol Shift + key, or Extended mode for the special ones)
+    const KEY_PUNCT_MAP = {
+        '.': [[7, 1], [7, 2]],       // Symbol + M
+        ',': [[7, 1], [7, 3]],       // Symbol + N
+        ';': [[7, 1], [5, 1]],       // Symbol + O
+        '"': [[7, 1], [5, 0]],       // Symbol + P
+        '/': [[7, 1], [0, 4]],       // Symbol + V
+        '-': [[7, 1], [6, 3]],       // Symbol + J
+        '+': [[7, 1], [6, 2]],       // Symbol + K
+        '=': [[7, 1], [6, 1]],       // Symbol + L
+        '*': [[7, 1], [7, 4]],       // Symbol + B
+        '?': [[7, 1], [0, 3]],       // Symbol + C
+        ':': [[7, 1], [0, 1]],       // Symbol + Z
+        '<': [[7, 1], [2, 3]],       // Symbol + R
+        '>': [[7, 1], [2, 4]],       // Symbol + T
+        '!': [[7, 1], [3, 0]],       // Symbol + 1
+        '@': [[7, 1], [3, 1]],       // Symbol + 2
+        '#': [[7, 1], [3, 2]],       // Symbol + 3
+        '$': [[7, 1], [3, 3]],       // Symbol + 4
+        '%': [[7, 1], [3, 4]],       // Symbol + 5
+        '&': [[7, 1], [4, 4]],       // Symbol + 6
+        "'": [[7, 1], [4, 3]],       // Symbol + 7
+        '(': [[7, 1], [4, 2]],       // Symbol + 8
+        ')': [[7, 1], [4, 1]],       // Symbol + 9
+        '_': [[7, 1], [4, 0]],       // Symbol + 0
+        '^': [[7, 1], [6, 4]],       // Symbol + H
+        // Extended mode characters (Caps Shift + Symbol Shift + key)
+        '`': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
+        '~': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
+        '|': [[0, 0], [7, 1], [1, 1]],  // Caps + Symbol + S = |
+        '\\': [[0, 0], [7, 1], [1, 2]], // Caps + Symbol + D = \
+        '{': [[0, 0], [7, 1], [1, 3]],  // Caps + Symbol + F = {
+        '}': [[0, 0], [7, 1], [1, 4]],  // Caps + Symbol + G = }
+        '[': [[0, 0], [7, 1], [5, 4]],  // Caps + Symbol + Y = [
+        ']': [[0, 0], [7, 1], [5, 3]]   // Caps + Symbol + U = ]
+    };
+
     export class ULA {
 
         constructor(memory, machineType = '48k') {
@@ -2325,68 +2375,63 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             if (typeof key === 'number') {
                 return this.keyMap[key];
             }
-            // String-based lookup
-            const charMap = {
-                'a': [1, 0], 's': [1, 1], 'd': [1, 2], 'f': [1, 3], 'g': [1, 4],
-                'q': [2, 0], 'w': [2, 1], 'e': [2, 2], 'r': [2, 3], 't': [2, 4],
-                '1': [3, 0], '2': [3, 1], '3': [3, 2], '4': [3, 3], '5': [3, 4],
-                '0': [4, 0], '9': [4, 1], '8': [4, 2], '7': [4, 3], '6': [4, 4],
-                'p': [5, 0], 'o': [5, 1], 'i': [5, 2], 'u': [5, 3], 'y': [5, 4],
-                'l': [6, 1], 'k': [6, 2], 'j': [6, 3], 'h': [6, 4],
-                'm': [7, 2], 'n': [7, 3], 'b': [7, 4],
-                'z': [0, 1], 'x': [0, 2], 'c': [0, 3], 'v': [0, 4],
-                ' ': [7, 0], 'Enter': [6, 0], 'Shift': [0, 0], 'Control': [0, 0], 'Alt': [7, 1]
-            };
-            // Punctuation map (Symbol Shift + key, or Extended mode for special chars)
-            const punctMap = {
-                '.': [[7, 1], [7, 2]],       // Symbol + M
-                ',': [[7, 1], [7, 3]],       // Symbol + N
-                ';': [[7, 1], [5, 1]],       // Symbol + O
-                '"': [[7, 1], [5, 0]],       // Symbol + P
-                '/': [[7, 1], [0, 4]],       // Symbol + V
-                '-': [[7, 1], [6, 3]],       // Symbol + J
-                '+': [[7, 1], [6, 2]],       // Symbol + K
-                '=': [[7, 1], [6, 1]],       // Symbol + L
-                '*': [[7, 1], [7, 4]],       // Symbol + B
-                '?': [[7, 1], [0, 3]],       // Symbol + C
-                ':': [[7, 1], [0, 1]],       // Symbol + Z
-                '<': [[7, 1], [2, 3]],       // Symbol + R
-                '>': [[7, 1], [2, 4]],       // Symbol + T
-                '!': [[7, 1], [3, 0]],       // Symbol + 1
-                '@': [[7, 1], [3, 1]],       // Symbol + 2
-                '#': [[7, 1], [3, 2]],       // Symbol + 3
-                '$': [[7, 1], [3, 3]],       // Symbol + 4
-                '%': [[7, 1], [3, 4]],       // Symbol + 5
-                '&': [[7, 1], [4, 4]],       // Symbol + 6
-                "'": [[7, 1], [4, 3]],       // Symbol + 7
-                '(': [[7, 1], [4, 2]],       // Symbol + 8
-                ')': [[7, 1], [4, 1]],       // Symbol + 9
-                '_': [[7, 1], [4, 0]],       // Symbol + 0
-                '^': [[7, 1], [6, 4]],       // Symbol + H
-                // Extended mode characters (Caps Shift + Symbol Shift + key)
-                '`': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
-                '~': [[0, 0], [7, 1], [1, 0]],  // Caps + Symbol + A = ~
-                '|': [[0, 0], [7, 1], [1, 1]],  // Caps + Symbol + S = |
-                '\\': [[0, 0], [7, 1], [1, 2]], // Caps + Symbol + D = \
-                '{': [[0, 0], [7, 1], [1, 3]],  // Caps + Symbol + F = {
-                '}': [[0, 0], [7, 1], [1, 4]],  // Caps + Symbol + G = }
-                '[': [[0, 0], [7, 1], [5, 4]],  // Caps + Symbol + Y = [
-                ']': [[0, 0], [7, 1], [5, 3]]   // Caps + Symbol + U = ]
-            };
-            return charMap[key] || charMap[key.toLowerCase()] || punctMap[key];
+            if (typeof key !== 'string') return undefined;   // null/undefined is "no key", not a crash
+            return KEY_CHAR_MAP[key] || KEY_CHAR_MAP[key.toLowerCase()] || KEY_PUNCT_MAP[key];
         }
         
+        // Is there a ZX key by this name? The browser sends every key the PC has,
+        // most of which the Spectrum doesn't, so keyDown/keyUp stay quiet about a
+        // miss — but a *scripted* press that quietly does nothing is a bug that
+        // hides itself, so a driver can ask first (and zxDebug.keyDown does).
+        hasKey(key) {
+            if (typeof key === 'number') return !!this.keyMap[key];
+            if (typeof key !== 'string') return false;
+            if (key.length === 1 && this.isExtendedModeChar(key)) return true;
+            return !!(this.keyMap[key] || this.getKeyMapping(key));
+        }
+
+        // The name a loose spelling means, or null: 'caps' → 'CAPS', 'space' →
+        // 'Space', 'q' → 'q'. For explaining an unknown name, not for accepting
+        // one — a press either names a key exactly or it is a mistake.
+        resolveKeyName(name) {
+            const s = String(name == null ? '' : name).trim();
+            if (!s) return null;
+            // The shorthands a ZX source or a cheat note uses for the shifts
+            const shorthand = { CS: 'CAPS', SS: 'SYM', CTRL: 'Control' };
+            if (shorthand[s.toUpperCase()]) return shorthand[s.toUpperCase()];
+            const candidates = [
+                s, s.toUpperCase(), s.toLowerCase(),
+                s[0].toUpperCase() + s.slice(1).toLowerCase(),
+                'Key' + s.toUpperCase(), 'Digit' + s,
+            ];
+            for (const c of candidates) if (this.hasKey(c)) return c;
+            return null;
+        }
+
+        // Every name a press accepts, for a driver to check against or print.
+        // Three sources: the e.code map (which the Caps/Symbol Shift setting adds
+        // the configured PC keys to), the typed characters, and the punctuation.
+        keyNames() {
+            return [...new Set([
+                ...Object.keys(this.keyMap),
+                ...Object.keys(KEY_CHAR_MAP),
+                ...Object.keys(KEY_PUNCT_MAP),
+            ])].sort();
+        }
+
+        // Returns whether the key was found, so a caller that cannot afford a
+        // silent no-op can tell. Real key events ignore it.
         keyDown(key) {
             // Check if this is an extended mode character (needs Caps+Symbol, then Symbol+letter)
             if (typeof key === 'string' && key.length === 1 && this.isExtendedModeChar(key)) {
                 this.startExtendedMode(key);
-                return;
+                return true;
             }
 
             // Check keyMap first (handles e.code strings like 'Space', 'ArrowUp', etc.)
             // Then fall back to getKeyMapping for character-based lookups
             const mapping = this.keyMap[key] || this.getKeyMapping(key);
-            if (!mapping) return;
+            if (!mapping) return false;
             if (Array.isArray(mapping[0])) {
                 for (const [row, bit] of mapping) {
                     this.keyboardState[row] &= ~(1 << bit);
@@ -2394,18 +2439,19 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             } else {
                 this.keyboardState[mapping[0]] &= ~(1 << mapping[1]);
             }
+            return true;
         }
-        
+
         keyUp(key) {
             // Cancel any active extended mode sequence for this key
             if (this.extendedModeActive && this.extendedModeKey === key) {
                 this.cancelExtendedMode();
-                return;
+                return true;
             }
             // Check keyMap first (handles e.code strings like 'Space', 'ArrowUp', etc.)
             // Then fall back to getKeyMapping for character-based lookups
             const mapping = this.keyMap[key] || this.getKeyMapping(key);
-            if (!mapping) return;
+            if (!mapping) return false;
             if (Array.isArray(mapping[0])) {
                 for (const [row, bit] of mapping) {
                     this.keyboardState[row] |= (1 << bit);
@@ -2413,6 +2459,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             } else {
                 this.keyboardState[mapping[0]] |= (1 << mapping[1]);
             }
+            return true;
         }
 
         // Extended mode characters that need Caps+Symbol, then Symbol+letter sequence

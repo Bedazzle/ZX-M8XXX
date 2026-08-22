@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Diff Run UI Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Diff Run UI Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // The Diff run row drives the real machine — save state, run, restore,
+        // change, run, compare — so it can only be tested against the real app.
+        // The assertion that matters most is the self-check: with nothing changed
+        // the two runs must be identical, or every real comparison carries a
+        // phantom divergence at its tail.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 300, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d;
+
+        // A loop whose path depends on one byte, so the divergence has a cause
+        const PROG = [
+            0x21, 0x00, 0x90,   // 8000: LD HL,$9000
+            0x7E,               // 8003: LD A,(HL)
+            0xB7,               // 8004: OR A
+            0x28, 0x04,         // 8005: JR Z,$800B
+            0x3E, 0x11,         // 8007: LD A,$11
+            0x18, 0x02,         // 8009: JR $800D
+            0x3E, 0x22,         // 800B: LD A,$22
+            0x32, 0x50, 0x90,   // 800D: LD ($9050),A
+            0x18, 0xEE,         // 8010: JR $8000
+        ];
+
+        function plant() {
+            PROG.forEach((b, i) => w.spectrum.memory.write(0x8000 + i, b));
+            w.spectrum.memory.write(0x9000, 0x00);
+            w.spectrum.memory.write(0x9050, 0x00);
+            w.spectrum.cpu.pc = 0x8000;
+            w.spectrum.cpu.sp = 0xFFF0;
+        }
+
+        async function runDiff(change, frames = 2) {
+            d.getElementById('drFrames').value = String(frames);
+            d.getElementById('drChange').value = change;
+            d.getElementById('drStatus').textContent = '';
+            d.getElementById('btnDiffRun').click();
+            await until(() => {
+                const s = d.getElementById('drStatus').textContent;
+                return s && s !== 'running…' ? s : null;
+            });
+            return {
+                status: d.getElementById('drStatus').textContent,
+                text: d.getElementById('drResults').textContent,
+                pcs: [...d.getElementById('drResults').querySelectorAll('.dr-pc')],
+            };
+        }
+
+        (async () => {
+            section('The app comes up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument;
+            await w.zxDebug.ready();
+            w.spectrum.stop();
+
+            const errors = [];
+            w.addEventListener('error', e => errors.push(e.message), true);
+
+            // Reach the Code Path tab, where the row lives
+            [...d.querySelectorAll('button')].find(b => /^\s*Debug\s*$/.test(b.textContent || ''))?.click();
+            await wait(150);
+            [...d.querySelectorAll('.panel-tab')].find(b => /code path/i.test(b.textContent || ''))?.click();
+            await wait(150);
+
+            assert(!!d.getElementById('btnDiffRun'), 'the Diff run row exists in the Code Path tab');
+            assert(!!d.getElementById('drFrames') && !!d.getElementById('drChange'),
+                   'with its frame count and change field');
+
+            section('Nothing changed means nothing diverged');
+
+            // This is the self-check the whole tool rests on. It failed before
+            // the panel restored the snapshot ahead of the *first* run too:
+            // loading a snapshot resets the frame T-state counter, so a run from
+            // the live machine and a run from a restore start at different points
+            // in the frame and came out one instruction apart.
+            plant();
+            let r = await runDiff('');
+            assert(/no divergence/i.test(r.status), 'the status says so', r.status);
+            assert(/executed the same/.test(r.text), 'and the report says the runs were identical',
+                   r.text.slice(0, 120));
+            assert(/deterministic/.test(r.text), 'naming that as the point of the check');
+
+            section('One byte changed');
+
+            plant();
+            r = await runDiff('9000=01');
+            assert(/diverged at instruction/i.test(r.status), 'the runs part company', r.status);
+            assert(/different address/.test(r.text), 'because they went to different addresses');
+            assert(/both ran/.test(r.text) && /then A went/.test(r.text) && /and B went/.test(r.text),
+                   'the run-up and both branches are shown');
+            // The branch is the conditional that reads the changed byte
+            assert(/LD A,\(HL\)/.test(r.text) && /OR A/.test(r.text),
+                   'disassembled, so the cause is readable', r.text.slice(0, 200));
+            assert(/\$?8007|8007/.test(r.text) && /800B/.test(r.text),
+                   'and both sides of the jump appear', '');
+            assert(r.pcs.length > 0, 'every address is clickable', String(r.pcs.length));
+
+            // What the divergence decided
+            assert(/memory: 2 bytes differ/.test(r.text), 'the memory difference is reported',
+                   (r.text.match(/memory:[^\n]*/) || [''])[0]);
+            assert(/9000/.test(r.text) && /9050/.test(r.text),
+                   'naming both the byte changed and the byte it decided');
+            assert(/registers/.test(r.text) && /\ba 0\/1\b/.test(r.text.replace(/\s+/g, ' ')),
+                   'and the registers that differ', (r.text.match(/registers[^\n]*/) || [''])[0]);
+
+            section('A change that reaches nothing');
+
+            // Changing a byte the code never reads must report no divergence,
+            // not a false one
+            plant();
+            r = await runDiff('9F00=7F');
+            assert(/no divergence/i.test(r.status),
+                   'a byte the code never reads changes nothing', r.status);
+            assert(/does not reach this code/.test(r.text),
+                   'and the report says what that means', r.text.slice(0, 160));
+
+            section('Bad input is refused, not guessed at');
+
+            r = await runDiff('nonsense');
+            assert(/not addr=value/.test(r.status), 'a change that is not addr=value', r.status);
+            r = await runDiff('8000=zz');
+            assert(/not addr=value/.test(r.status), 'nor is a non-hex value', r.status);
+            r = await runDiff('  ');
+            assert(/no divergence|diverged/i.test(r.status), 'but whitespace is simply no change',
+                   r.status);
+
+            section('Export');
+
+            plant();
+            await runDiff('9000=01');
+            let downloaded = null;
+            const realCreate = w.URL.createObjectURL;
+            w.URL.createObjectURL = (blob) => { downloaded = blob; return realCreate.call(w.URL, blob); };
+            d.getElementById('btnDiffExport').click();
+            await wait(300);
+            w.URL.createObjectURL = realCreate;
+            assert(!!downloaded, 'exporting produces a file');
+            if (downloaded) {
+                const text = await downloaded.text();
+                assert(/Parted company at instruction/.test(text), 'holding the divergence', text.slice(0, 80));
+                assert(/\$9000=\$01/.test(text), 'and what was changed to get it');
+            }
+
+            assert(errors.length === 0, 'no uncaught errors while driving it',
+                   errors.slice(0, 3).join(' | '));
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

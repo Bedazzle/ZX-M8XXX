@@ -44,6 +44,8 @@
                 `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
         }
 
+        const hex = (v) => '0x' + (v & 0xff).toString(16).padStart(2, '0');
+
         section('Types');
         {
             assert(JOYSTICK_TYPES.length === 5, 'five types offered', String(JOYSTICK_TYPES.length));
@@ -235,6 +237,32 @@
                 sp.setJoystickCustomKeys({ ...sp.getJoystickCustomKeys(), [JOY_UP]: 'KeyZ' });
                 assert(matrix() === idle, 'rebinding releases what was held');
                 sp.setJoystickType('kempston');
+
+                // Port $1F. An interface that is not fitted must not answer at all:
+                // 0x00 reads as "Kempston present, stick centred", which is the very
+                // value detection routines look for, so returning it for an absent
+                // interface makes every game believe one is fitted (issue #12).
+                sp.stop();
+                sp.cpu.tStates = 0;          // top border, so the idle bus is 0xFF
+                sp.kempstonEnabled = true;
+                sp.kempstonState = 0;
+                assert(sp.portRead(0x001F) === 0x00,
+                       'fitted and centred reads 0', hex(sp.portRead(0x001F)));
+                sp.kempstonState = 0x01;
+                assert((sp.portRead(0x001F) & 0x1f) === 0x01, 'right sets bit 0');
+
+                sp.kempstonState = 0;
+                sp.kempstonEnabled = false;
+                assert(sp.portRead(0x001F) === 0xFF,
+                       'not fitted reads the idle bus, not 0', hex(sp.portRead(0x001F)));
+
+                // Partial decoding: A5-A7 low is enough to reach the interface,
+                // which is why the mask must stop short of the mouse at $DF.
+                sp.kempstonEnabled = true;
+                sp.kempstonState = 0x10;
+                assert((sp.portRead(0x0003) & 0x1f) === 0x10, 'any port $00-$1F reaches it');
+                assert(sp.portRead(0x00DF) !== 0x10, 'the mouse port at $DF does not');
+                sp.kempstonState = 0;
             } catch (e) {
                 assert(false, 'driving the joystick in the app threw', e && e.message);
             }

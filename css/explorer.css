@@ -186,6 +186,26 @@
     padding: 20px;
     text-align: center;
 }
+/* Find in the selected source: a short list above the dump, each hit clickable */
+.explorer-find-results {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 11px;
+    max-height: 120px;
+    overflow: auto;
+    margin-bottom: 8px;
+}
+.explorer-find-results:empty { margin-bottom: 0; }
+.explorer-find-hit {
+    padding: 1px 4px;
+    cursor: pointer;
+    border-radius: 2px;
+    white-space: pre;
+}
+.explorer-find-hit:hover { background: var(--bg-button); }
+.explorer-find-hit .ha { color: var(--accent); }
+.explorer-find-hit .hc { color: var(--text-primary); }
+/* Which encoding the word was wearing */
+.explorer-find-hit .he { color: var(--cyan); opacity: 0.8; }
 .explorer-label {
     font-size: 11px;
     color: var(--text-secondary);

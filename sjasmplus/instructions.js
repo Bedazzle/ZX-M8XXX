@@ -4,6 +4,28 @@
 import { ErrorCollector, AssemblerError } from './errors.js';
 import { parseExpression } from './expression.js';
 
+// The forms the assembler takes that are not in the Zilog manual, each one
+// switchable in Assembler options. All on by default: that is what sjasmplus
+// does, and turning one off is for a source that has to stay portable to
+// another assembler, not for everyday work.
+export const DialectOptions = {
+    // Other names and operand orders for opcodes that have a canonical spelling
+    // too: EXA, EX HL,DE, EX AF, and XH/LX for the index-register halves
+    altMnemonics: true,
+    // One mnemonic emitting several instructions: PUSH HL,AF and INC E,DE
+    multiOperand: true,
+    // Real silicon Zilog never wrote down: SLL, IXH/IXL/IYH/IYL, IN F,(C), OUT (C),0
+    undocumented: true,
+};
+
+// One message shape for all three, so the fix never needs the manual: it names
+// what to write instead and which option puts the form back.
+export function dialectError(what, instead, option) {
+    ErrorCollector.error(
+        `${what} is not standard Z80${instead ? ` — write ${instead}` : ''}` +
+        ` (Assembler options → ${option})`);
+}
+
 export const Z80Asm = {
     // Register encoding for 8-bit registers
     R8: { B: 0, C: 1, D: 2, E: 3, H: 4, L: 5, '(HL)': 6, A: 7 },
@@ -137,6 +159,19 @@ const NO_OPERAND = new Set([
     'INI', 'INIR', 'IND', 'INDR', 'OUTI', 'OTIR', 'OUTD', 'OTDR',
 ]);
 
+// The spellings of the index-register halves other than the canonical ones
+const HALF_ALIAS = {
+    XH: 'IXH', HX: 'IXH', XL: 'IXL', LX: 'IXL',
+    YH: 'IYH', HY: 'IYH', YL: 'IYL', LY: 'IYL',
+};
+
+// CB 30-37 — shift left, bit 0 := 1 — was never documented, so it never got an
+// official name: SLL ("logical", a misnomer, it shifts a 1 in), SLI ("insert
+// one") and SL1 are all in use for it. sjasmplus registers SLI and SLL; SL1 it
+// does not. (SWAP is not among them: that is the Game Boy's nibble swap, which
+// only shares the encoding slot.)
+const MNEMONIC_ALIAS = { SLI: 'SLL', SL1: 'SLL' };
+
 // Instruction encoder
 export const InstructionEncoder = {
     // Encode a single instruction
@@ -144,16 +179,28 @@ export const InstructionEncoder = {
     // Normalize IX/IY half-register aliases to canonical names
     // sjasmplus accepts: XH/HX/IXH, XL/LX/IXL, YH/HY/IYH, YL/LY/IYL
     normalizeOperand(op) {
-        const u = op.toUpperCase();
-        if (u === 'XH' || u === 'HX') return 'IXH';
-        if (u === 'XL' || u === 'LX') return 'IXL';
-        if (u === 'YH' || u === 'HY') return 'IYH';
-        if (u === 'YL' || u === 'LY') return 'IYL';
-        return op;
+        const alias = HALF_ALIAS[op.toUpperCase()];
+        if (!alias) return op;
+        if (!DialectOptions.altMnemonics) {
+            dialectError(`"${op}"`, alias, 'Alternative mnemonics');
+        }
+        return alias;
     },
 
     encode(mnemonic, operands, currentAddress, symbols) {
-        const mn = mnemonic.toUpperCase();
+        const written = mnemonic.toUpperCase();   // what the source says, for the messages
+        let mn = written;
+
+        // Other names for the same undocumented shift. SL1 is only a spelling —
+        // sjasmplus doesn't know it — so it needs the alternatives option as well;
+        // SLI it registers alongside SLL, so that one needs nothing extra.
+        if (MNEMONIC_ALIAS[mn]) {
+            if (mn === 'SL1' && !DialectOptions.altMnemonics) {
+                dialectError('SL1', 'SLL or SLI', 'Alternative mnemonics');
+            }
+            mn = MNEMONIC_ALIAS[mn];
+        }
+
         const ops = operands.map(o => this.normalizeOperand(o.trim()));
 
         // Dispatch to specific encoder
@@ -169,6 +216,20 @@ export const InstructionEncoder = {
         }
         if (ops.some(o => o === '')) {
             ErrorCollector.error(`${mn}: missing operand`);
+        }
+
+        // Non-Zilog forms a mnemonic or an operand identifies on its own. The
+        // rest (EX's operand order, multi-operand PUSH/INC, IN F,(C), OUT (C),0)
+        // are checked in their own encoders, where the operand pair is known.
+        if (mn === 'EXA' && !DialectOptions.altMnemonics) {
+            dialectError('EXA', "EX AF,AF'", 'Alternative mnemonics');
+        }
+        if (!DialectOptions.undocumented) {
+            if (mn === 'SLL') {
+                dialectError(written, 'SLA or SRL', 'Undocumented opcodes');
+            }
+            const half = ops.find(o => /^I[XY][HL]$/.test(o.toUpperCase()));
+            if (half) dialectError(half.toUpperCase(), null, 'Undocumented opcodes');
         }
 
         try {

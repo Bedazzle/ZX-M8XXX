@@ -2,6 +2,27 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.32
+- **`M8XXX.md`** — the page to point an external tool at: what the emulator offers, how to ask it for the current API, and the rules the API cannot tell you. `await zxDebug.brief()` returns it plus the live member list.
+- **`await zxDebug.brief()`** — one call an external tool can be pointed at: the rules a driver needs, then everything this build can do, as one markdown string.
+- **The automation API describes itself.** `zxDebug.capabilities()` lists every member with its signature and the version it appeared in, `help()` renders the lot as markdown, and `require([...])` fails at startup naming what a build is missing. A test keeps the manifest and the docs complete.
+- **Primitives on `zxDebug`: peek/poke, findBytes, disassemble, step and breakpoints.** All of it existed inside the app but was reachable only through `zxDebug.spectrum`, so external tools reimplemented it.
+- **Encoded text search.** Game text is often not stored as text, so a plaintext search finds nothing and says nothing. The new **Encoded** mode in the Search box, and a new **Find** row in the Explorer's Hex Dump, try plain, complemented, XOR/offset by any key, the position folded into the key, and nibble packing — and name the scheme each hit was wearing.
+- **Tables card (Search tab).** Finds data tables by their shape: a game's keyboard scan table, a key-number to character table, and PAW/Quill-style vocabularies. Vocabularies list in word-value order with the odd ones out marked.
+- **Diff run** (Code Path tab, and `zxDebug.recordRun` / `compareRuns`). Run the same frames twice with one byte changed and get the first instruction where the two part company, both branches disassembled, and the memory and register differences. Code Path answers the set question; this one answers *where*.
+- **A scripted key press with an unknown name now fails loudly.** `zxDebug.keyDown('caps space')` used to do nothing at all; it now throws and says a chord is one call per key. `ula.keyDown/keyUp` return whether the key existed, and `hasKey`/`keyNames`/`resolveKeyName` are new.
+
+## v0.15.31
+- **Assembler: `EX HL,DE` assembles**, as sjasmplus takes EX either way round. So do `EX HL,(SP)`, `EX IX,(SP)`, `EX AF,AF` and bare `EX AF`.
+- **Assembler: `SLI` and `SL1` assemble** — the other names for the undocumented `SLL`. `SWAP` is gone: it is the Game Boy's, and listing it made a label of that name an unknown instruction.
+- **Three new Assembler options: Alternative mnemonics, Multi-operand PUSH/INC, Undocumented opcodes.** All on by default; untick one and its forms become errors naming the standard spelling.
+- **Assembler: the word operators `AND`, `OR`, `XOR`, `MOD`, `SHL`, `SHR`** now parse, as they do in sjasmplus. Without them a screen-address table like `dw (((crdY>>3) and #F8) or #40 …)` failed with `Expected ')'`.
+- **Fixed: errors were reported a few lines too early** once a source had a `/* */` comment or a `\` line continuation, and everything inside a `DUP`/`REPT` was reported on the `DUP` line.
+- **`DUP`/`REPT` now says what is wrong with its count** — unknown, negative, or a bad counter name — instead of failing later with `EDUP without DUP`.
+
+## v0.15.30
+- **Fixed: port $1F answered even with no Kempston fitted** ([#12](https://github.com/Bedazzle/ZX-M8XXX/issues/12)). It returned 0 — "interface present, stick centred" to a detection routine — so switching Kempston off still told every game it was there. An empty slot now reads the idle/floating bus. **Kempston port** is on by default, decoded as ports $00-$1F.
+
 ## v0.15.29
 - **PAL composite (RF) simulation** (Settings → Machines, off by default). A TV carries picture and colour on one wire and can't fully separate them, so fine dither at the colour subcarrier frequency comes out as colour. That is how *Chromatrons Attack* works — flat grey in every emulator, magenta and green on hardware. Stable on 128K/+2/+2A/+3, whose clock is locked to the subcarrier; on a 48K or a clone the hue drifts instead, which is their familiar dot crawl. Calibrated against a hardware photograph; costs about 9 ms a frame.
 - **Fixed: a snapshot saved on an EI/HALT loop froze in the test tab.** It ran one frame and stopped, which was easy to miss: the picture stayed on screen and only the border effects went missing. The automation API was affected too.

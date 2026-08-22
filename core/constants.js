@@ -81,6 +81,17 @@ export const P7FFD_LOCK_BIT   = 0x20;  // Bit 5: paging disable (lock)
 export const P7FFD_P1024_EXT  = 0xC0;  // Bits 6-7: Pentagon 1024 bank bits 3-4
 
 // =============================================================================
+// Kempston joystick port decode
+// =============================================================================
+
+// The interface is a bus device with partial decoding: the one-chip design reads
+// on any I/O access with A5 low, the two-chip one also checks A6/A7. We use the
+// stricter form (FUSE's kempston_strict_decoding), so ports 0x00-0x1F match and
+// the mouse at 0xDF — which also has A5 low — does not.
+export const DECODE_KEMPSTON_MASK = 0xE0;
+export const DECODE_KEMPSTON      = 0x00;
+
+// =============================================================================
 // Beta Disk WD1793 port addresses (active-low, bits 5-7 select register)
 // =============================================================================
 

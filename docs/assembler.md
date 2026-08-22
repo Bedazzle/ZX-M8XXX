@@ -16,10 +16,14 @@ sjasmplus-compatible Z80 assembler. Multi-pass (up to 10 passes) with forward re
 - After final pass, `SymbolTable.checkUndefined()` scans for symbols that are `used && !defined`
 - Each undefined symbol is reported as a separate error with its file and line number (clickable in the UI)
 - `parseExpression()` preserves `ErrorCollector.currentLine/currentFile` across its internal `reset()` call so source locations survive
+- A parsed line takes its line number from the token it starts with (`parser.js` `parseLine()`), not from a count of the NEWLINE tokens seen: the lexer swallows the newlines inside a `/* */` comment and at a `\` line continuation without emitting one, so a count falls behind the source and every error after such a place is reported — and jumped to in the editor — a few lines too early
+- A `REPT`/`DUP` body is collected as `{text, line}` and replayed with each line's own number (`assembler.js`): the body is re-parsed from text, so without carrying the number across, every error inside the loop lands on the `DUP` header line. A macro is reported at its **call site**, which is the convention — a macro body has no unique instance
+- `dirREPT()` rejects a count it can't use, at the `DUP`/`REPT` line and naming whichever of the two was written: one that isn't known yet (the body is collected here and replayed at `EDUP`, so a later pass is no help), and one that is negative — the count is read signed (`| 0`) like sjasmplus's `(int)` cast, because unary minus wraps to 32 bits and `DUP -1` would otherwise arrive as 4294967295. An invalid counter-variable name is rejected too. All three used to open no block at all, so the body assembled once inline and the first complaint was `EDUP without DUP`. A count of 0 is allowed, as in sjasmplus
 
 **Expression evaluation** (`expression.js`):
 - Operator precedence: logical or -> logical and -> bitwise or/xor/and -> equality -> comparison -> shift -> additive -> multiplicative -> unary -> primary
 - Unary operators: `+`, `-`, `~`, `!`, `HIGH`, `LOW`, `NOT`, `ABS`, `DEFINED` (parentheses optional)
+- Word forms of the binary operators, as sjasmplus has them (`parser.cpp` `needa()`): `AND` = `&`, `OR` = `|`, `XOR` = `^`, `MOD` = `%`, `SHL`/`SHR` = `<<`/`>>` — same precedence as the symbol, case-insensitive. Matched by `ExpressionParser.matchWord()` in **operator position only**, so a source may still have a label called `and` or `or` and read it as one everywhere a value can go
 - All operations propagate `undefined` flag -- if any operand is undefined, result is `{ value: 0, undefined: true }`
 - `$` = current address, `$$` = section start
 - Temp label references: `1B`/`1F` etc. via `SymbolTable.parseTemp()`
@@ -189,6 +193,10 @@ Shows real-time pass and line progress during assembly.
 - **Case insensitive** (`chkAsmCaseInsensitive`, key `zxm8_asmCaseInsensitive`) — when checked, all label names are lowercased during define/lookup so `PlayerHPMAX` and `PlayerHPMax` resolve to the same symbol. Implemented via `SymbolTable.caseInsensitive` flag applied in `getFullName()` before any prefix/module processing. Passed as `options.caseInsensitive` to all four assembly entry points.
 - **Unused labels** (`chkAsmUnusedLabels`) — show warnings for defined but unreferenced labels
 - **Unicode labels** (`chkAsmUnicodeLabels`, key `zxm8_asmUnicodeLabels`) — **off by default**: allows Cyrillic and other non-Latin letters in label names, as native assemblers (ALASM and friends) do. Off, those characters are reported as `Unexpected character`, which is what catches a line typed in the wrong keyboard layout (`щкп 25000` for `org 25000`) — with the option on, such a line would just be a label. Cyrillic in comments and string literals is unaffected either way. Implemented as `LexerOptions.unicodeIdentifiers` in `sjasmplus/lexer.js`, passed as `options.unicodeLabels` to all four assembly entry points.
+- **Alternative mnemonics** / **Multi-operand PUSH/INC** / **Undocumented opcodes** (`chkAsmAltMnemonics`, `chkAsmMultiOperand`, `chkAsmUndocumented`; keys `zxm8_asmAltMnemonics`, `zxm8_asmMultiOperand`, `zxm8_asmUndocumented`) — **all on by default**, one per kind of form the assembler takes that is not in the Zilog manual. Untick one and each of its forms becomes an error naming the standard spelling to write instead (`EX HL,DE is not standard Z80 — write EX DE,HL (Assembler options → Alternative mnemonics)`), which is for a source that has to assemble elsewhere too; sjasmplus itself accepts all three groups silently, so on is the compatible default. The three are independent. Implemented as `DialectOptions` in `sjasmplus/instructions.js` (with the shared `dialectError()` message), enforced in `InstructionEncoder.encode()` (`EXA`, `SLL`, `IXH`/`IXL`/`IYH`/`IYL`), `normalizeOperand()` (the `XH`/`LX`/`YH`/`LY` spellings), `encodeEX`, `encodePUSHPOP`, `encodeINCDEC`, `encodeIN` and `encodeOUT`. Passed as `options.altMnemonics` / `multiOperand` / `undocumented` through `Assembler._applyOptions()`, which all four entry points call; **absent means on**, so existing callers and the automation API are unchanged
+  - *Alternative mnemonics*: `EXA`, `EX HL,DE`, `EX HL,(SP)`, `EX IX,(SP)`, `EX AF,AF`, `EX AF`, `SL1`, and `XH`/`HX`/`XL`/`LX`/`YH`/`HY`/`YL`/`LY` for the index halves
+  - *Multi-operand PUSH/INC*: `PUSH HL,AF`, `POP BC,DE`, `INC E,DE`, `DEC E,DE`
+  - *Undocumented opcodes*: `SLL` (and its other names `SLI`/`SL1`), the `IXH`/`IXL`/`IYH`/`IYL` halves themselves, `IN F,(C)`, `OUT (C),0`
 - **Show compiled** (`chkAsmShowCompiled`) — show hex dump of assembled output
 - **Export as ZIP** (`chkAsmExportZip`, key `zxm8_asmExportZip`) — force ZIP export for single files (multi-file projects always export as ZIP); moved here from Settings → Display
 - **View enc** (`asmViewCodepage`, key `zxm8_asmViewCodepage`: `raw`/`cp866`/`koi8`/`koi7`) — display codepage for raw bytes in the editor (Cyrillic `DB` strings of imported TR-DOS sources). Display-only: the transform (`decodeViewCodepage` in `core/asm-detok.js`) is applied in `highlightAsmCode()` (the highlight layer paints the visible text while the textarea text is transparent) and maps 1 char → 1 char, so caret/selection positions stay aligned and the file content / assembled bytes are untouched. CP866 and KOI8-R decode the high half 0x80–0xFF; KOI-7 N2 remaps the lowercase Latin range 0x60–0x7E to uppercase Cyrillic (that's the encoding's design — lowercase code will display as Cyrillic too). The earlier boolean `zxm8_asmCp866View` key is migrated.
@@ -322,10 +330,23 @@ The assembler supports undocumented Z80 half-index register operands: IXH, IXL, 
 - `PUSH HL,AF` = `PUSH HL : PUSH AF` — each register pair encoded as a separate instruction
 - `POP AF,HL,DE,BC` — pops in listed order
 - Supports BC, DE, HL, AF, IX, IY in any combination and count
+- Switchable: **Assembler options → Multi-operand PUSH/INC** (on by default)
 
 **Multi-operand INC/DEC** (`instructions2.js`):
 - `INC E,DE,E,DE` = `INC E : INC DE : INC E : INC DE` — each operand encoded as a separate instruction
 - Supports all operand types: 8-bit registers, 16-bit pairs, IX/IY, (IX+d)/(IY+d), undocumented IXH/IXL/IYH/IYL
+- Switchable: **Assembler options → Multi-operand PUSH/INC** (on by default)
+
+**SLL, SLI, SL1** (`instructions.js` `MNEMONIC_ALIAS`):
+- `CB 30`–`CB 37` (shift left, bit 0 := 1) was never documented, so it never got one official name. `SLL` ("logical" — a misnomer, it shifts a **1** in), `SLI` ("insert one") and `SL1` are all in use; all three assemble to the same bytes here
+- sjasmplus registers `sli` and `sll`, not `sl1` — so `SL1` needs **Alternative mnemonics** on as well as **Undocumented opcodes**, the other two need only the latter. The error message quotes the name the source used
+- `SWAP` is **not** among them: it is the Game Boy's (LR35902) nibble swap, which only shares the encoding slot — sjasmplus registers it solely under `Options::IsLR35902`. It used to sit in the parser's instruction list with no encoder, which made a label called `SWAP` an unknown instruction instead of a label
+
+**EX in either operand order** (`instructions3.js`):
+- The register pair picks the opcode, not the side each is written on, and sjasmplus takes them either way round (`OpCode_EX` checks for "the other one"). So `EX HL,DE` = `EX DE,HL` = `$EB`, and `EX HL,(SP)` / `EX IX,(SP)` — Zilog's own way of writing it — = `EX (SP),HL` / `EX (SP),IX`. Native assemblers (ALASM, TASM, STORM) write `EX HL,DE`, so imported sources need it
+- `EX AF,AF'` also assembles with the apostrophe or the second operand left off (`EX AF,AF`, `EX AF`), again as sjasmplus does
+- Pairs that no `EX` encodes (`EX BC,HL`) are still an error
+- Switchable: **Assembler options → Alternative mnemonics** (on by default)
 
 **Colon as statement separator** (`parser.js`, `assembler.js`):
 - `:` after an indented known instruction name is a statement separator, not a label terminator: `exa : ld a,b` = `EX AF,AF'` then `LD A,B`

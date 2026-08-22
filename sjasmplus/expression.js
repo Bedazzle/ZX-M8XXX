@@ -59,6 +59,20 @@ const ExpressionParser = {
         return null;
     },
 
+    // sjasmplus spells the bitwise and shift operators in words as well as in
+    // symbols — AND = &, OR = |, XOR = ^, MOD = %, SHL/SHR = <</>> (parser.cpp
+    // needa()) — and native assemblers write them that way. Only in operator
+    // position, where an identifier cannot be a label anyway, so a source that
+    // does have a label called "or" still reads it as one everywhere else.
+    matchWord(word) {
+        const t = this.peek();
+        if (t && t.type === TokenType.IDENTIFIER &&
+            typeof t.value === 'string' && t.value.toUpperCase() === word) {
+            return this.advance();
+        }
+        return null;
+    },
+
     // Precedence levels (lowest to highest):
     // 1. || (logical or)
     // 2. && (logical and)
@@ -106,7 +120,7 @@ const ExpressionParser = {
     parseBitwiseOr() {
         let result = this.parseBitwiseXor();
 
-        while (this.match(TokenType.PIPE)) {
+        while (this.match(TokenType.PIPE) || this.matchWord('OR')) {
             const right = this.parseBitwiseXor();
             if (result.undefined || right.undefined) {
                 result = { value: 0, undefined: true };
@@ -121,7 +135,7 @@ const ExpressionParser = {
     parseBitwiseXor() {
         let result = this.parseBitwiseAnd();
 
-        while (this.match(TokenType.CARET)) {
+        while (this.match(TokenType.CARET) || this.matchWord('XOR')) {
             const right = this.parseBitwiseAnd();
             if (result.undefined || right.undefined) {
                 result = { value: 0, undefined: true };
@@ -136,7 +150,7 @@ const ExpressionParser = {
     parseBitwiseAnd() {
         let result = this.parseEquality();
 
-        while (this.match(TokenType.AMPERSAND)) {
+        while (this.match(TokenType.AMPERSAND) || this.matchWord('AND')) {
             const right = this.parseEquality();
             if (result.undefined || right.undefined) {
                 result = { value: 0, undefined: true };
@@ -218,14 +232,14 @@ const ExpressionParser = {
         let result = this.parseAdditive();
 
         while (true) {
-            if (this.match(TokenType.LSHIFT)) {
+            if (this.match(TokenType.LSHIFT) || this.matchWord('SHL')) {
                 const right = this.parseAdditive();
                 if (result.undefined || right.undefined) {
                     result = { value: 0, undefined: true };
                 } else {
                     result = { value: (result.value << right.value) & 0xFFFFFFFF, undefined: false };
                 }
-            } else if (this.match(TokenType.RSHIFT)) {
+            } else if (this.match(TokenType.RSHIFT) || this.matchWord('SHR')) {
                 const right = this.parseAdditive();
                 if (result.undefined || right.undefined) {
                     result = { value: 0, undefined: true };
@@ -287,7 +301,7 @@ const ExpressionParser = {
                     }
                     result = { value: Math.floor(result.value / right.value), undefined: false };
                 }
-            } else if (this.match(TokenType.PERCENT)) {
+            } else if (this.match(TokenType.PERCENT) || this.matchWord('MOD')) {
                 const right = this.parseUnary();
                 if (result.undefined || right.undefined) {
                     result = { value: 0, undefined: true };

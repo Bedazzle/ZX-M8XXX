@@ -33,6 +33,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     const explorerHexLen = document.getElementById('explorerHexLen');
     const explorerHexSource = document.getElementById('explorerHexSource');
     const btnExplorerHex = document.getElementById('btnExplorerHex');
+    const explorerFindText = document.getElementById('explorerFindText');
+    const explorerFindMode = document.getElementById('explorerFindMode');
+    const chkExplorerFind5ch = document.getElementById('chkExplorerFind5ch');
+    const btnExplorerFind = document.getElementById('btnExplorerFind');
+    const explorerFindStatus = document.getElementById('explorerFindStatus');
+    const explorerFindResults = document.getElementById('explorerFindResults');
     const explorerBankTools = document.getElementById('explorerBankTools');
     const explorerBankAddrMode = document.getElementById('explorerBankAddrMode');
     const btnExplorerExportBank = document.getElementById('btnExplorerExportBank');
@@ -2639,6 +2645,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         get explorerFileSize() { return explorerFileSize; },
         get explorerGetBankList() { return explorerGetBankList; },
         get explorerGetBankLogicalAddr() { return explorerGetBankLogicalAddr; },
+        get explorerFindText() { return explorerFindText; },
+        get explorerFindMode() { return explorerFindMode; },
+        get chkExplorerFind5ch() { return chkExplorerFind5ch; },
+        get btnExplorerFind() { return btnExplorerFind; },
+        get explorerFindStatus() { return explorerFindStatus; },
+        get explorerFindResults() { return explorerFindResults; },
         get explorerHexAddr() { return explorerHexAddr; },
         get explorerHexLen() { return explorerHexLen; },
         get explorerHexOutput() { return explorerHexOutput; },

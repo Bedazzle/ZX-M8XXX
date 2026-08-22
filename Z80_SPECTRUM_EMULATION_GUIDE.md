@@ -998,6 +998,20 @@ if ((port & 0x20) === 0) {
 }
 ```
 
+The two-chip design also decodes A6 and A7, so only ports 0x00-0x1F reach it. That is
+the safer mask for an emulator: it keeps the Kempston mouse at 0xDF — which also has
+A5 low — out of the way.
+
+**When no interface is fitted:**
+
+The Kempston is a bus device. With no card in the slot nothing drives the data bus, so
+`IN 31` returns the idle bus (0xFF) or, during the display, the floating bus — never
+0x00. This matters: 0x00 reads as *"interface present, stick centred"*, which is exactly
+what detection routines look for, so an emulator that returns 0x00 for an absent
+interface makes every game believe one is fitted. Fuse models this by registering the
+port handler only while the option is on, and filling unclaimed bits from
+`machine_current->unattached_port()`.
+
 **Implementation:**
 ```javascript
 // Kempston state (bits set when direction/button pressed)
@@ -1005,7 +1019,9 @@ this.kempstonState = 0;
 
 // On port read
 readPort(port) {
-    if ((port & 0x00E0) === 0x001F) {  // More selective decoding
+    // Claim the port only when the interface is fitted, so that an absent one
+    // falls through to the floating-bus/idle default
+    if (this.kempstonEnabled && (port & 0x00E0) === 0x0000) {
         return this.kempstonState;
     }
     // ... other ports ...

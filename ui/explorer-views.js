@@ -11,6 +11,7 @@ import { isFlowBreak } from './mnemonic-format.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { SLOT1_START, SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE } from '../core/constants.js';
 import { MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
+import { searchEncoded, searchNibblePacked, decodeAt } from '../core/encoded-search.js';
 
 // The parameter is `xp`, not `ctx`: the disk-map drawing code has its own
 // `const ctx = canvas.getContext(...)` in several functions, and that shadowed
@@ -2642,6 +2643,128 @@ export function initExplorerViews(xp) {
         }
 
         xp.explorerHexOutput.innerHTML = html || '<div class="explorer-empty">No data</div>';
+    }
+
+    // ========== Find in the selected source ==========
+    //
+    // The Explorer had no find at all: a file could be opened, catalogued and
+    // dumped, but not asked whether a word was in it. Text and Hex are the two
+    // obvious modes; Encoded is the one that matters, because game text is very
+    // often not stored as text and looking only for the plaintext reports the
+    // same "nothing" whether the word is absent or merely enciphered.
+    //
+    // Clicking a hit scrolls the dump to it, so a find leads into the bytes
+    // rather than being a dead end.
+
+    function explorerFindBytes(needle, data) {
+        const hits = [];
+        for (let i = 0; i + needle.length <= data.length && hits.length < 200; i++) {
+            let ok = true;
+            for (let j = 0; j < needle.length; j++) {
+                if (needle[j] !== null && data[i + j] !== needle[j]) { ok = false; break; }
+            }
+            if (ok) hits.push({ addr: i, length: needle.length, label: '' });
+        }
+        return hits;
+    }
+
+    // Where the selected source's byte 0 sits in the dump's addresses — the same
+    // rule explorerRenderHexDump applies, and 0 for every other source
+    function explorerFindBaseAddr() {
+        const source = xp.explorerHexSource.value;
+        const type = xp.explorerParsed && xp.explorerParsed.type;
+        const isSnap = type === 'sna' || type === 'z80' || type === 'szx';
+        if (source === 'memory' && isSnap) return SLOT1_START;
+        if (source && source.startsWith('bank:') && isSnap &&
+            xp.explorerBankAddressMode === 'logical') {
+            return xp.explorerGetBankLogicalAddr(parseInt(source.slice(5)));
+        }
+        if (source === 'boot' && type === 'dsk') return 0xFE00;
+        return 0;
+    }
+
+    function explorerParseHexNeedle(text) {
+        const out = [];
+        for (const tok of text.trim().split(/\s+/).filter(Boolean)) {
+            if (tok === '?' || tok === '??') { out.push(null); continue; }
+            if (!/^[0-9a-fA-F]{2}$/.test(tok)) return null;
+            out.push(parseInt(tok, 16));
+        }
+        return out.length ? out : null;
+    }
+
+    function explorerRunFind() {
+        const text = xp.explorerFindText.value.trim();
+        const mode = xp.explorerFindMode.value;
+        const results = xp.explorerFindResults;
+        const status = xp.explorerFindStatus;
+        results.innerHTML = '';
+        status.textContent = '';
+        if (!text) return;
+
+        const data = explorerGetSourceData(xp.explorerHexSource.value);
+        if (!data || !data.length) { status.textContent = 'no data in this source'; return; }
+
+        const read = (a) => data[a];
+        let hits = [];
+        if (mode === 'hex') {
+            const needle = explorerParseHexNeedle(text);
+            if (!needle) { status.textContent = 'not hex bytes (use "CD 21 00", ? for any)'; return; }
+            hits = explorerFindBytes(needle, data);
+        } else if (mode === 'text') {
+            const needle = Array.from(text, c => c.charCodeAt(0) & 0xff);
+            hits = explorerFindBytes(needle, data);
+        } else {
+            const truncate = xp.chkExplorerFind5ch.checked ? 5 : 0;
+            const a = searchEncoded(read, 0, data.length, text, { truncate, limit: 200 });
+            const b = searchNibblePacked(read, 0, data.length,
+                                         truncate ? text.slice(0, 5) : text, { limit: 200 });
+            hits = a.matches.concat(b.matches).sort((x, y) => x.addr - y.addr);
+        }
+
+        if (!hits.length) {
+            status.textContent = mode === 'encoded' ? 'not found in any of the encodings' : 'not found';
+            return;
+        }
+        status.textContent = `${hits.length} hit${hits.length === 1 ? '' : 's'}` +
+                             (hits.length >= 200 ? ' (stopped at the limit)' : '');
+
+        results.innerHTML = hits.slice(0, 40).map(h => {
+            let preview;
+            if (h.encoding && h.encoding !== 'nibble') {
+                const decoded = decodeAt(read, h.addr, h.encoding, h.key, h.length + 12, 0) || [];
+                preview = decoded.map(b => {
+                    const c = b & 0x7f;
+                    return (c >= 0x20 && c < 0x7f) ? String.fromCharCode(c) : '.';
+                }).join('');
+            } else {
+                preview = Array.from(data.slice(h.addr, h.addr + h.length + 12))
+                    .map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.').join('');
+            }
+            return `<div class="explorer-find-hit" data-off="${h.addr}">` +
+                   `<span class="ha">${hex16(h.addr)}</span> ` +
+                   `<span class="hc">${escapeHtml(preview)}</span>` +
+                   (h.label ? ` <span class="he">${escapeHtml(h.label)}</span>` : '') +
+                   `</div>`;
+        }).join('') + (hits.length > 40 ? `<div class="explorer-empty">...and ${hits.length - 40} more</div>` : '');
+    }
+
+    if (xp.btnExplorerFind) {
+        xp.btnExplorerFind.addEventListener('click', explorerRunFind);
+        xp.explorerFindText.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') explorerRunFind();
+        });
+        // A hit is a way into the dump, so clicking one shows the bytes there
+        xp.explorerFindResults.addEventListener('click', (e) => {
+            const hit = e.target.closest('.explorer-find-hit');
+            if (!hit) return;
+            const off = parseInt(hit.dataset.off, 10);
+            // The dump is addressed, the search is offset-based: two sources put
+            // their first byte somewhere other than 0
+            const addr = explorerFindBaseAddr() + off;
+            xp.explorerHexAddr.value = hex16(Math.max(0, addr - (addr % 16)));
+            explorerRenderHexDump();
+        });
     }
 
     // Text viewer

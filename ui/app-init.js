@@ -31,6 +31,8 @@ import { initCalculator } from './calculator.js';
 import { initCompareTool } from './compare-tool.js';
 import { initExplorer } from './explorer.js';
 import { initTextScanner } from './text-scanner.js';
+import { initTableScanner } from './table-scanner.js';
+import { initDiffRun } from './diff-run.js';
 import { initWatches } from './watches.js';
 import { initFrameExport } from './frame-export.js';
 import { initGameBrowser } from './game-browser.js';
@@ -98,7 +100,13 @@ import { initDisasmNavigation } from './disasm-navigation.js';
 import { initLabelsPanel } from './labels-panel.js';
 import { initPsgPlayer } from './psg-player.js';
 import { initBasicEditor } from './basic-editor.js';
-    const APP_VERSION = '0.15.29';
+import { searchEncoded, searchNibblePacked, decodeAt, ENCODINGS } from '../core/encoded-search.js';
+import { findKeyScanTables, findCharTables, findWordTables,
+         byValue as tableByValue, outliers as tableOutliers } from '../core/table-scan.js';
+import { compareRuns, firstDivergence, divergenceContext,
+         diffMemoryImages, diffRegisters } from '../core/divergence.js';
+import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
+    const APP_VERSION = '0.15.32';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -348,6 +356,52 @@ import { initBasicEditor } from './basic-editor.js';
     }
     window.zxRewind = { step: rewindStep, buffer: rewind };
 
+    // A scripted key press that names nothing is a no-op that hides itself: the
+    // run continues, the chord never happened, and the result gets explained some
+    // other way. So the automation API refuses the name instead — and, since the
+    // usual mistake is writing a chord as one string ('caps space'), it says which
+    // keys it did recognise in what was passed.
+    function assertZXKey(what, key) {
+        const ula = spectrum.ula;
+        if (ula.hasKey(key)) return;
+        const parts = String(key == null ? '' : key).split(/[\s+,]+/).filter(Boolean);
+        const named = parts.length > 1 ? parts.map(p => ula.resolveKeyName(p)) : [];
+        const hint = named.length && named.every(Boolean)
+            ? ` — a chord is one call per key: ${named.map(n => `zxDebug.${what}('${n}')`).join('; ')}`
+            : ' — see zxDebug.keyNames()';
+        throw new Error(`zxDebug.${what}: no ZX key named '${key}'${hint}`);
+    }
+
+    // Stepping, running-to and breakpoints all bail out of the core with a bare
+    // `false` while the machine is running. To a driver that reads as "it did
+    // nothing and did not say why" — the same silent-no-op trap as an unknown key
+    // name — so name the fix instead.
+    function requireStopped(what) {
+        if (spectrum.running) {
+            throw new Error(`zxDebug.${what}: the machine is running — call zxDebug.pause() first ` +
+                            `(or use runFrames() to advance it while it runs)`);
+        }
+        if (!spectrum.romLoaded) {
+            throw new Error(`zxDebug.${what}: no ROM loaded — await zxDebug.ready() first`);
+        }
+    }
+
+    // Bytes, or hex text with `?`/`??` for any byte. A null in the result means
+    // "match anything here".
+    function parseBytePattern(pattern) {
+        if (Array.isArray(pattern) || pattern instanceof Uint8Array) {
+            return Array.from(pattern, b => (b === null ? null : b & 0xFF));
+        }
+        if (typeof pattern !== 'string') return null;
+        const out = [];
+        for (const tok of pattern.trim().split(/[\s,]+/).filter(Boolean)) {
+            if (tok === '?' || tok === '??') { out.push(null); continue; }
+            if (!/^[0-9a-fA-F]{2}$/.test(tok)) return null;
+            out.push(parseInt(tok, 16));
+        }
+        return out.length ? out : null;
+    }
+
     // ========== Headless automation API (window.zxDebug) ==========
     // A documented, stable surface for external drivers (the ZX-disasm skill)
     // so they don't reach into emulator internals (which the planned Spectrum
@@ -355,6 +409,71 @@ import { initBasicEditor } from './basic-editor.js';
     // disassembly-toolchain exporters, and write provenance. See docs/automation.md.
     window.zxDebug = {
         version: APP_VERSION,
+        // ========== What this build has ==========
+        //
+        // Tools kept reimplementing what the emulator already did, because nothing
+        // told them what was there — and a document cannot, since a driver talks
+        // to whatever build is deployed rather than to the docs someone read once.
+        // So ask: `capabilities()` is the whole surface, declared in
+        // core/api-manifest.js and kept honest by tests/api-manifest-test.html.
+        capabilities() {
+            return buildCapabilities(APP_VERSION, (name) => name in window.zxDebug);
+        },
+        // The one call to give an external tool: "await zxDebug.brief()".
+        //
+        // Everything a driver needs in one string — the rules that cannot be
+        // discovered from the API, then the whole surface of *this* build. Meant
+        // to be read, logged, or handed straight to a model as context.
+        //
+        // The rules are fetched from M8XXX.md rather than kept here, so
+        // there is one copy of them; the API half is generated, so it cannot go
+        // stale. If the fetch fails the API half still comes back, with a line
+        // saying which half is missing — a silently half-answer would be worse
+        // than either.
+        async brief() {
+            const api = window.zxDebug.help();
+            let rules = '';
+            try {
+                const url = new URL('M8XXX.md', document.baseURI).href;
+                const res = await fetch(url, { cache: 'no-store' });
+                if (res.ok) rules = (await res.text()).trim();
+                else rules = `<!-- M8XXX.md returned ${res.status}: the rules are ` +
+                             `not included below, only the API surface -->`;
+            } catch (e) {
+                rules = `<!-- M8XXX.md could not be read (${e.message}): the rules ` +
+                        `are not included below, only the API surface -->`;
+            }
+            return `${rules}\n\n---\n\n${api}`;
+        },
+        // One line of prose for one member, or the whole lot as markdown — which
+        // is the form to hand to a model driving this.
+        help(name) {
+            if (!name) {
+                const caps = buildCapabilities(APP_VERSION, (n) => n in window.zxDebug);
+                const byCat = new Map();
+                for (const m of caps.members) {
+                    if (!byCat.has(m.category)) byCat.set(m.category, []);
+                    byCat.get(m.category).push(m);
+                }
+                let out = `# zxDebug — ZX-M8XXX ${APP_VERSION} (api ${caps.apiVersion})\n`;
+                for (const [cat, members] of byCat) {
+                    out += `\n## ${cat} — ${caps.categories[cat] || ''}\n\n`;
+                    for (const m of members) out += `- \`${m.sig}\` — ${m.summary}\n`;
+                }
+                return out;
+            }
+            const entry = API[name];
+            if (!entry) return `zxDebug has nothing called "${name}". capabilities() lists what it has.`;
+            return `${entry.sig}\n${entry.summary}` + (entry.since ? `\n(since ${entry.since})` : '');
+        },
+        // Fail at startup with one clear error, rather than working around a gap
+        // and growing a second implementation of something that is already here.
+        require(names) {
+            return checkRequired(Array.isArray(names) ? names : [names],
+                                 APP_VERSION, (n) => n in window.zxDebug);
+        },
+        get apiVersion() { return API_VERSION; },
+
         get spectrum() { return spectrum; },
         // The application test runner (tests/tests.json), wired with the same
         // loaders and callbacks the Tools → Tests tab uses. Null until init has
@@ -751,6 +870,150 @@ import { initBasicEditor } from './basic-editor.js';
         // ---- Convenience ----
         runFrames(n) { for (let i = 0; i < n; i++) spectrum.runFrame(); },
 
+        // ========== Primitives ==========
+        //
+        // The plain operations a driver needs constantly: read and write memory,
+        // find bytes in it, disassemble it, and step through it. All of this was
+        // inside the app already; none of it was reachable except through
+        // `zxDebug.spectrum`, so every tool that wanted to peek a byte reached
+        // into emulator internals — the exact thing this API exists to avoid, and
+        // the thing a Spectrum refactor would break underneath them.
+
+        // --- memory ---
+        // Through the *current* paging, as the CPU sees it
+        peek(addr) { return spectrum.memory.read(addr & 0xFFFF); },
+        poke(addr, value) { spectrum.memory.write(addr & 0xFFFF, value & 0xFF); },
+        peekWord(addr) {
+            return spectrum.memory.read(addr & 0xFFFF) |
+                   (spectrum.memory.read((addr + 1) & 0xFFFF) << 8);
+        },
+        pokeWord(addr, value) {
+            spectrum.memory.write(addr & 0xFFFF, value & 0xFF);
+            spectrum.memory.write((addr + 1) & 0xFFFF, (value >> 8) & 0xFF);
+        },
+        peekBlock(addr, length) {
+            const out = new Uint8Array(Math.max(0, length | 0));
+            for (let i = 0; i < out.length; i++) out[i] = spectrum.memory.read((addr + i) & 0xFFFF);
+            return out;
+        },
+        pokeBlock(addr, bytes) {
+            const src = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+            for (let i = 0; i < src.length; i++) spectrum.memory.write((addr + i) & 0xFFFF, src[i]);
+            return src.length;
+        },
+        // A whole RAM bank regardless of what is paged in — null if the machine
+        // hasn't got one by that number
+        peekBank(bank) {
+            const b = spectrum.memory.getRamBank(bank);
+            return b ? new Uint8Array(b) : null;
+        },
+
+        // --- search ---
+        // `pattern` is bytes, or hex text ("CD ?? 00", `?`/`??` matching any byte).
+        // Capped by `limit`: a one-byte needle matches hundreds of times, and a
+        // list that long is not an answer.
+        findBytes(pattern, { from = 0, to = 0x10000, limit = 200, bank = null } = {}) {
+            const pat = parseBytePattern(pattern);
+            if (!pat) throw new Error('findBytes: pattern must be bytes or hex text like "CD ?? 00"');
+            const data = bank === null ? null : spectrum.memory.getRamBank(bank);
+            if (bank !== null && !data) throw new Error('findBytes: this machine has no RAM bank ' + bank);
+            const read = data ? (a) => data[a] : (a) => spectrum.memory.read(a & 0xFFFF);
+            const end = Math.min(to, data ? data.length : 0x10000) - pat.length;
+            const hits = [];
+            for (let a = Math.max(0, from); a <= end && hits.length < limit; a++) {
+                let ok = true;
+                for (let i = 0; i < pat.length; i++) {
+                    if (pat[i] !== null && read(a + i) !== pat[i]) { ok = false; break; }
+                }
+                if (ok) hits.push(a);
+            }
+            return hits;
+        },
+        findWord(value, opts = {}) {
+            return window.zxDebug.findBytes([value & 0xFF, (value >> 8) & 0xFF], opts);
+        },
+
+        // --- disassembly ---
+        // [{addr, bytes, text, length}] — the reading of it. The exportCtl/Csv/Sym
+        // calls are for handing a map to another toolchain, not for reading here.
+        disassemble(addr, count = 1) {
+            const d = disasm || new Disassembler(spectrum.memory);
+            const out = [];
+            let a = addr & 0xFFFF;
+            for (let i = 0; i < count; i++) {
+                const r = d.disassemble(a);
+                const len = r.length || (r.bytes ? r.bytes.length : 1);
+                out.push({ addr: a, bytes: Array.from(r.bytes || []), text: r.mnemonic, length: len });
+                a = (a + len) & 0xFFFF;
+            }
+            return out;
+        },
+        disassembleRange(from, to) {
+            const d = disasm || new Disassembler(spectrum.memory);
+            const out = [];
+            let a = from & 0xFFFF;
+            while (a < to && out.length < 100000) {
+                const r = d.disassemble(a);
+                const len = r.length || (r.bytes ? r.bytes.length : 1);
+                out.push({ addr: a, bytes: Array.from(r.bytes || []), text: r.mnemonic, length: len });
+                a += len;
+            }
+            return out;
+        },
+
+        // --- execution control ---
+        pause() { if (spectrum.running) spectrum.stop(); return !spectrum.running; },
+        resume() { if (!spectrum.running) spectrum.start(); return spectrum.running; },
+        get paused() { return !spectrum.running; },
+
+        step(n = 1) {
+            requireStopped('step');
+            let done = 0;
+            for (let i = 0; i < n; i++) { if (spectrum.stepInto() === false) break; done++; }
+            return { steps: done, pc: spectrum.cpu.pc };
+        },
+        stepOver(maxCycles) {
+            requireStopped('stepOver');
+            const r = spectrum.stepOver(maxCycles) || {};
+            return { ...r, pc: spectrum.cpu.pc };
+        },
+        runTo(addr, maxCycles) {
+            requireStopped('runTo');
+            const reached = spectrum.runToAddress(addr & 0xFFFF, maxCycles);
+            return { reached: !!reached, pc: spectrum.cpu.pc };
+        },
+        runToInterrupt(maxCycles) {
+            requireStopped('runToInterrupt');
+            return { reached: !!spectrum.runToInterrupt(maxCycles), pc: spectrum.cpu.pc };
+        },
+        runToRet(maxCycles) {
+            requireStopped('runToRet');
+            return { reached: !!spectrum.runToRet(maxCycles), pc: spectrum.cpu.pc };
+        },
+
+        // --- breakpoints ---
+        // A number, or an address spec the app understands ("8000", "8000-80FF")
+        addBreakpoint(spec) { return spectrum.addBreakpoint(spec) !== false; },
+        removeBreakpoint(index) { return spectrum.removeBreakpoint(index); },
+        clearBreakpoints() { spectrum.clearBreakpoints(); },
+        breakpoints() {
+            return spectrum.triggers
+                .filter(t => t.type === 'exec')
+                .map(t => ({ start: t.start, end: t.end, page: t.page, enabled: t.enabled }));
+        },
+
+        // --- registers ---
+        setRegisters(regs) {
+            const c = spectrum.cpu;
+            const pairs = { bc: ['b', 'c'], de: ['d', 'e'], hl: ['h', 'l'] };
+            for (const [k, v] of Object.entries(regs || {})) {
+                if (pairs[k]) { c[pairs[k][0]] = (v >> 8) & 0xFF; c[pairs[k][1]] = v & 0xFF; }
+                else if (k in c) c[k] = v;
+                else throw new Error('setRegisters: no register named "' + k + '"');
+            }
+            return window.zxDebug.captureRegisters();
+        },
+
         // Type into the running machine, frame by frame — for the programs that ask
         // a question before they do anything (Woodmass' Snow Contention prompts for
         // a T-state with INPUT, and sat in the ROM's key wait looking exactly like a
@@ -784,9 +1047,143 @@ import { initBasicEditor } from './basic-editor.js';
 
         // Hold/release matrix keys without a DOM event (headless runs have no
         // real keyboard): names are the ULA's own, e.g. 'q', 'Enter', ' '.
-        keyDown(key) { spectrum.ula.keyDown(key); },
-        keyUp(key) { spectrum.ula.keyUp(key); },
+        //
+        // A name the ULA doesn't know **throws** here. The DOM path has to stay
+        // quiet — the browser sends every key the PC has — but a scripted press
+        // that silently does nothing is the worst kind of bug: the run carries on,
+        // the chord was never pressed, and the result gets explained some other
+        // way. A chord is one call per key, so 'CAPS SPACE' is two calls; the
+        // message says so and names the keys it recognised in what you passed.
+        keyDown(key) { assertZXKey('keyDown', key); return spectrum.ula.keyDown(key); },
+        keyUp(key) { assertZXKey('keyUp', key); return spectrum.ula.keyUp(key); },
+
+        // Every name the two above accept
+        keyNames() { return spectrum.ula.keyNames(); },
         readKeyboardPort(port) { return spectrum.ula.readPort(port); },
+
+        // Encoding-aware text search (core/encoded-search.js). Game text is very
+        // often not stored as text, and a plaintext search reports the same
+        // "nothing" whether the word is absent or merely enciphered — so this
+        // tries the ladder: plain, complemented, XOR/offset by any key, the
+        // position folded into the key, and nibble packing.
+        //
+        // `searchEncodedText` reads the paged 64K; `searchEncodedBytes` takes any
+        // array, which is how a driver searches a file it has loaded rather than
+        // run. Both return [{addr, encoding, key, label, length, text, note}].
+        searchEncodedText(text, opts = {}) {
+            const read = (a) => spectrum.memory.read(a & 0xffff);
+            const from = opts.from | 0, to = opts.to === undefined ? 0x10000 : opts.to;
+            const a = searchEncoded(read, from, to, text, opts);
+            const b = opts.nibble === false ? { matches: [] }
+                    : searchNibblePacked(read, from, to, text, opts);
+            return a.matches.concat(b.matches).sort((x, y) => x.addr - y.addr);
+        },
+        searchEncodedBytes(bytes, text, opts = {}) {
+            const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            const read = (a) => data[a];
+            const from = opts.from | 0, to = opts.to === undefined ? data.length : opts.to;
+            const a = searchEncoded(read, from, to, text, opts);
+            const b = opts.nibble === false ? { matches: [] }
+                    : searchNibblePacked(read, from, to, text, opts);
+            return a.matches.concat(b.matches).sort((x, y) => x.addr - y.addr);
+        },
+        // What the bytes at a hit say once the scheme is undone — the word is the
+        // way in, the record around it is usually the point
+        decodeEncoded(addr, encoding, key, length, startIndex = 0) {
+            return decodeAt((a) => spectrum.memory.read(a & 0xffff), addr, encoding, key, length, startIndex);
+        },
+        decodeEncodedBytes(bytes, offset, encoding, key, length, startIndex = 0) {
+            const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+            return decodeAt((a) => data[a], offset, encoding, key, length, startIndex);
+        },
+        get encodings() { return ENCODINGS.map(e => ({ id: e.id, label: e.label, keys: e.keys })); },
+
+        // Data-table recognisers (core/table-scan.js). Signature packs match code
+        // byte patterns; these find tables by their shape, which is the only thing
+        // a table has to be recognised by.
+        //
+        //   findKeyScanTables  (half-row, key bit) records — a game's controls
+        //   findCharTables     runs of printable bytes of a key-table length
+        //   findWordTables     fixed-record word tables (PAW/Quill vocabularies)
+        //
+        // `vocabularyByValue` is the reading that pays: the words in value order
+        // with the outliers marked, which is how two cheat words numbered 200 and
+        // 201 stand out of a table that otherwise runs 11, 57, 71.
+        findKeyScanTables(from = 0x4000, to = 0x10000, opts = {}) {
+            return findKeyScanTables((a) => spectrum.memory.read(a & 0xffff), from, to, opts);
+        },
+        findCharTables(from = 0x4000, to = 0x10000, opts = {}) {
+            return findCharTables((a) => spectrum.memory.read(a & 0xffff), from, to, opts);
+        },
+        findWordTables(from = 0x4000, to = 0x10000, opts = {}) {
+            return findWordTables((a) => spectrum.memory.read(a & 0xffff), from, to, opts);
+        },
+        vocabularyByValue(table, opts = {}) {
+            const odd = new Set(tableOutliers(table, opts).map(e => e.addr));
+            return tableByValue(table).map(e => ({ ...e, outlier: odd.has(e.addr) }));
+        },
+
+        // ========== Differential runs ==========
+        //
+        // Run the same thing twice with one variable changed and find where the
+        // two runs stop agreeing. Code Path already answers "what did this run
+        // reach that the other didn't" — a set difference — but a set has no
+        // order, so it cannot say *where* they parted company. This records the
+        // program counter in order and compares the two streams.
+        //
+        //   const a = await zx.recordRun(() => { ...; zx.runFrames(50); });
+        //   // change the one variable
+        //   const b = await zx.recordRun(() => { ...; zx.runFrames(50); });
+        //   zx.compareRuns(a, b);
+        //
+        // Both runs must start from the same state for the comparison to mean
+        // anything — restore the same snapshot before each, or the first
+        // divergence is just wherever they happened to be different already.
+        async recordRun(fn, opts = {}) {
+            spectrum.startExecTrace(opts);
+            let error = null;
+            try { await fn(); } catch (e) { error = e; }
+            const trace = spectrum.stopExecTrace();
+            const memory = opts.memory === false ? null : window.zxDebug.snapshotMemory();
+            const registers = window.zxDebug.captureRegisters();
+            if (error) throw error;
+            return { trace, memory, registers, tStates: spectrum.cpu.tStates };
+        },
+
+        // A flat copy of the paged 64K as it stands — what the run left behind
+        snapshotMemory() {
+            const out = new Uint8Array(0x10000);
+            for (let a = 0; a < 0x10000; a++) out[a] = spectrum.memory.read(a);
+            return out;
+        },
+
+        captureRegisters() {
+            const c = spectrum.cpu;
+            return {
+                pc: c.pc, sp: c.sp, a: c.a, f: c.f,
+                bc: (c.b << 8) | c.c, de: (c.d << 8) | c.e, hl: (c.h << 8) | c.l,
+                ix: c.ix, iy: c.iy,
+                a_: c.a_, f_: c.f_,
+                bc_: (c.b_ << 8) | c.c_, de_: (c.d_ << 8) | c.e_, hl_: (c.h_ << 8) | c.l_,
+                i: c.i, r: c.r, im: c.im, iff1: c.iff1, iff2: c.iff2,
+            };
+        },
+
+        // The comparison itself (core/divergence.js — pure, so it tests without
+        // an emulator): the first instruction at which the streams differ, the
+        // run-up and the two branches, what memory ends up holding, and which
+        // registers disagree.
+        compareRuns(a, b, opts = {}) { return compareRuns(a, b, opts); },
+        firstDivergence(a, b) { return firstDivergence(a && a.trace || a, b && b.trace || b); },
+        divergenceContext(a, b, at, before, after) {
+            return divergenceContext(a && a.trace || a, b && b.trace || b, at, before, after);
+        },
+        diffMemoryImages(a, b, opts) { return diffMemoryImages(a, b, opts); },
+        diffRegisters(a, b) { return diffRegisters(a, b); },
+
+        // The recorder on its own, for a driver that wants to drive the frames
+        startExecTrace(opts) { return spectrum.startExecTrace(opts || {}); },
+        stopExecTrace() { return spectrum.stopExecTrace(); },
         async loadFile(fileOrBytes, name) {
             const f = (fileOrBytes instanceof File) ? fileOrBytes : new File([fileOrBytes], name || 'file.bin');
             return spectrum.loadFile(f);
@@ -1666,6 +2063,9 @@ import { initBasicEditor } from './basic-editor.js';
         goToMemoryAddress
     });
 
+    // Tables card, right below Text scan in the Search tab
+    initTableScanner({ readMemory, showMessage, goToMemoryAddress });
+
 
     // Watches (extracted to ui/watches.js)
     const { updateWatchValues, renderWatches, saveWatches, setWatches, getWatchBytesCount, getWatches, addWatch } = initWatches({
@@ -1824,6 +2224,23 @@ import { initBasicEditor } from './basic-editor.js';
     const codePathAPI = initCodePath({
         getSpectrum: () => spectrum,
         readMemory,
+        disassembleAt: (addr) => {
+            const d = disasm || new Disassembler(spectrum.memory);
+            return d.disassemble(addr);
+        },
+        getLabel: (addr) => {
+            const label = labelManager.get(addr);
+            return label ? label.name : null;
+        },
+        goToAddress,
+        showMessage,
+        downloadFile
+    });
+
+    // The ordered counterpart to the Code Path slots above it, in the same tab:
+    // a set difference says what a run reached, this says where two runs parted
+    initDiffRun({
+        getSpectrum: () => spectrum,
         disassembleAt: (addr) => {
             const d = disasm || new Disassembler(spectrum.memory);
             return d.disassemble(addr);

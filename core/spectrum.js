@@ -18,6 +18,7 @@ import {
     DECODE_7FFD_PLUS2A, DECODE_1FFD_PLUS2A,
     DECODE_FDC_MSR, DECODE_FDC_DATA,
     DECODE_AY_MASK, DECODE_AY_REG, DECODE_AY_DATA,
+    DECODE_KEMPSTON_MASK, DECODE_KEMPSTON,
     DECODE_P1024_MASK, DECODE_P1024_VAL,
     IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL,
     IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR,
@@ -388,7 +389,9 @@ import { Disassembler } from './disasm.js';
             // feeding the Kempston port.
             this.joystickType = 'kempston';
             this.joystickCustomKeys = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
-            this.kempstonEnabled = false; // Disabled by default
+            // Fitted by default: the port now reads as an empty slot when it isn't,
+            // and a Kempston game that skips detection would see every direction held.
+            this.kempstonEnabled = true;
 
             // Kempston Mouse state
             // Ports: FADF=buttons, FBDF=X, FFDF=Y
@@ -572,6 +575,24 @@ import { Disassembler } from './disasm.js';
                 if (this.codePath.enabled) {
                     this.codePath.executed.add(this.getAutoMapKey(addr));
                 }
+                if (this.execTrace.enabled) {
+                    const t = this.execTrace;
+                    // onFetch fires for every byte read through PC, operands
+                    // included — the auto-map wants that, a divergence trace does
+                    // not. _instrByteCount is 0 only at the opcode fetch, so this
+                    // is one entry per instruction and the index means something.
+                    if (this.cpu._instrByteCount === 0 &&
+                        (!t.filtered || (addr >= t.lo && addr <= t.hi))) {
+                        if (t.count < t.limit) {
+                            // The paged bank rides in the high bits: two runs that
+                            // reach the same address through different paging have
+                            // not agreed, and a bare PC would say they had
+                            t.pcs[t.count++] = ((this.memory.currentRamBank & 0xFF) << 16) | addr;
+                        } else {
+                            t.truncated = true;
+                        }
+                    }
+                }
                 if (this.codePath.tracing) {
                     const key = this.getAutoMapKey(addr);
                     if (!this.codePath.baselineSet.has(key)) {
@@ -582,6 +603,19 @@ import { Disassembler } from './disasm.js';
                 if (this.registerTracker.enabled && addr === this.registerTracker.pc) {
                     this._captureRegisterValue();
                 }
+            };
+
+            // Ordered execution trace, for a differential run. The Code Path tool
+            // records a *set* of executed addresses, which answers what a run
+            // reached but not where two runs parted company — a set has no order.
+            this.execTrace = {
+                enabled: false,
+                pcs: null,        // Uint32Array: (bank << 16) | pc
+                count: 0,
+                limit: 0,
+                truncated: false,
+                lo: 0, hi: 0xFFFF,   // only record fetches in this range
+                filtered: false,
             };
 
             this.codePath = {
@@ -1532,18 +1566,20 @@ import { Disassembler } from './disasm.js';
                 } else if (betaDiskActive && lowByte === PORT_WD_SYS) {
                     // Beta Disk system register
                     result = this.betaDisk.read(port);
-                } else if (lowByte === PORT_WD_CMD) {
+                } else if (this.kempstonEnabled &&
+                           (lowByte & DECODE_KEMPSTON_MASK) === DECODE_KEMPSTON) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
                     // Bits 0-4: standard (Right, Left, Down, Up, Fire/B)
                     // Bits 5-7: extended (C, A, Start) - active high
-                    if (this.kempstonEnabled) {
-                        // Combine keyboard and gamepad states
-                        result = (this.kempstonState | this.gamepadState) & 0x1f;
-                        if (this.kempstonExtendedEnabled) {
-                            result |= ((this.kempstonExtendedState | this.gamepadExtState) & 0xe0);
-                        }
-                    } else {
-                        result = 0x00;
+                    //
+                    // The port is claimed only when the interface is fitted. With no
+                    // card in the slot nothing drives the bus, so the read must fall
+                    // through to the floating-bus/idle value below — returning 0x00
+                    // here would read as "Kempston present, stick centred", which is
+                    // exactly what detection routines look for.
+                    result = (this.kempstonState | this.gamepadState) & 0x1f;
+                    if (this.kempstonExtendedEnabled) {
+                        result |= ((this.kempstonExtendedState | this.gamepadExtState) & 0xe0);
                     }
                 } else if (lowByte === 0xdf && this.kempstonMouseEnabled) {
                     // Kempston Mouse ports (FADF=buttons, FBDF=X, FFDF=Y)
@@ -4313,6 +4349,41 @@ import { Disassembler } from './disasm.js';
             return result;  // Set<string> of autoMapKeys
         }
 
+        // ========== Ordered execution trace (differential runs) ==========
+
+        // `limit` is a hard ceiling on entries, not a ring: a differential run
+        // compares from the start, so the beginning is what must be kept. Four
+        // bytes an instruction, so a million entries is 4MB and about a third of
+        // a second of 48K execution — enough to reach a decision, not enough to
+        // record a game. Past it the trace says it was cut short, because a run
+        // that stopped early proves nothing about what came after.
+        startExecTrace({ limit = 1 << 20, from = 0, to = 0xFFFF } = {}) {
+            const t = this.execTrace;
+            t.limit = Math.max(1, limit | 0);
+            t.pcs = new Uint32Array(t.limit);
+            t.count = 0;
+            t.truncated = false;
+            t.lo = from & 0xFFFF;
+            t.hi = to & 0xFFFF;
+            t.filtered = !(t.lo === 0 && t.hi === 0xFFFF);
+            t.enabled = true;
+            this.updateMemoryCallbacksFlag();
+        }
+
+        stopExecTrace() {
+            const t = this.execTrace;
+            t.enabled = false;
+            this.updateMemoryCallbacksFlag();
+            const result = {
+                pcs: t.pcs ? t.pcs.subarray(0, t.count) : new Uint32Array(0),
+                count: t.count,
+                truncated: t.truncated,
+                limit: t.limit,
+            };
+            t.pcs = null;
+            return result;
+        }
+
         startCodePathTracing(baselineSet) {
             this.codePath.baselineSet = baselineSet;
             this.codePath.traceHit = false;
@@ -5855,7 +5926,7 @@ import { Disassembler } from './disasm.js';
             this.memory.onWrite = (needsRead || this._accessHooks.write) ? this._memoryWriteCallback : null;
 
             // CPU fetch callback needed for autoMap, codePath recording/tracing, register tracker, or a fetch hook
-            this.cpu.onFetch = (this.autoMap.enabled || this.codePath.enabled || this.codePath.tracing || this.registerTracker.enabled || this.execProvenance.enabled || this._accessHooks.fetch) ? this._cpuFetchCallback : null;
+            this.cpu.onFetch = (this.autoMap.enabled || this.codePath.enabled || this.codePath.tracing || this.execTrace.enabled || this.registerTracker.enabled || this.execProvenance.enabled || this._accessHooks.fetch) ? this._cpuFetchCallback : null;
         }
 
         // ========== External access hooks (headless automation) ==========

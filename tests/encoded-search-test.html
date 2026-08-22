@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Encoded Search Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Encoded Search Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/encoded-search.js is pure — the byte reader is injected — so the
+        // whole ladder tests against a synthetic 64K with no emulator.
+        import { ENCODINGS, ENCODING_IDS, needleVariants, buildIndex,
+                 searchEncoded, searchNibblePacked, decodeAt } from '../core/encoded-search.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // A 64K of noise that never accidentally spells anything, plus whatever
+        // the test plants in it
+        function makeMemory() {
+            const mem = new Uint8Array(0x10000);
+            for (let i = 0; i < mem.length; i++) mem[i] = (i * 7 + (i >> 5)) & 0xff;
+            return mem;
+        }
+        const reader = (mem) => (a) => mem[a & 0xffff];
+
+        function plant(mem, addr, text, encode) {
+            const bytes = Array.from(text, ch => ch.charCodeAt(0) & 0xff);
+            bytes.forEach((c, i) => { mem[addr + i] = encode(c, i) & 0xff; });
+            return bytes.length;
+        }
+        // Where a search found the word, whatever scheme it wore
+        const at = (r, addr) => r.matches.filter(m => m.addr === addr);
+
+        async function run() {
+            section('The ladder');
+
+            // One planting per scheme the module claims, each found by name and key
+            const cases = [
+                ['plaintext',            0x8000, (c) => c,                        'plain',     0],
+                ['complemented',         0x8100, (c) => c ^ 0xff,                 'xor',       0xff],
+                ['XOR $5A',              0x8200, (c) => c ^ 0x5a,                 'xor',       0x5a],
+                ['+$07',                 0x8300, (c) => c + 0x07,                 'add',       0x07],
+                ['minus $07',            0x8400, (c) => c - 0x07,                 'add',       0xf9],
+                ['$9B - char',           0x8500, (c) => 0x9b - c,                 'const-sub', 0x9b],
+                ['XOR ($10 + i)',        0x8600, (c, i) => c ^ ((0x10 + i) & 0xff), 'xor-pos', 0x10],
+                ['+($07 + i)',           0x8700, (c, i) => c + 0x07 + i,          'add-pos',   0x07],
+                ['char - ($3B + i)',     0x8800, (c, i) => c - 0x3b - i,          'sub-pos',   0x3b],
+            ];
+
+            const mem = makeMemory();
+            for (const [, addr, enc] of cases) plant(mem, addr, 'TREASURE', enc);
+            const read = reader(mem);
+            const found = searchEncoded(read, 0, 0x10000, 'TREASURE');
+
+            for (const [name, addr, , id, key] of cases) {
+                const hits = at(found, addr);
+                assert(hits.some(h => h.encoding === id && h.key === key),
+                       `${name} is found, as ${id} key $${key.toString(16)}`,
+                       hits.map(h => `${h.encoding}/$${h.key.toString(16)}`).join(' ') || 'nothing');
+            }
+            assert(found.matches.length >= cases.length,
+                   `all ${cases.length} plantings found (${found.matches.length} hits)`);
+
+            section('One pass, whatever the number of schemes');
+
+            // The point of the index: 7 schemes x 256 keys is one scan, and every
+            // (scheme, key) that produces the same bytes is one entry, not several
+            const idx = buildIndex(needleVariants('AB', { cases: false, bit7: false }));
+            const total = ENCODINGS.reduce((n, e) => n + e.keys, 0);
+            assert(idx.count < total, 'duplicate encodings collapse', `${idx.count} of ${total}`);
+            const flat = idx.byFirstByte.flat();
+            assert(flat.length === idx.count, 'the index holds exactly the candidates it counted');
+            assert(flat.every(c => c.bytes[0] === idx.byFirstByte.indexOf(
+                       idx.byFirstByte.find(l => l.includes(c)))),
+                   'every candidate is filed under its own first byte');
+            // Plain wins the tie, being the plainest description of the same bytes
+            const zeroKeyed = flat.filter(c => c.bytes.join() ===
+                                          [0x41, 0x42].join());
+            assert(zeroKeyed.length === 1 && zeroKeyed[0].encoding.id === 'plain',
+                   'plain, XOR $00 and +$00 are one candidate, named plain');
+
+            section('Needle variants');
+
+            let v = needleVariants('Gold');
+            assert(v.some(x => x.text === 'GOLD') && v.some(x => x.text === 'gold') &&
+                   v.some(x => x.text === 'Gold'), 'all three spellings by default');
+            assert(v.some(x => x.bytes[x.bytes.length - 1] & 0x80),
+                   'and a form with bit 7 on the last character');
+            v = needleVariants('Gold', { cases: false, bit7: false });
+            assert(v.length === 1 && v[0].text === 'Gold', 'both can be turned off');
+            assert(needleVariants('').length === 0, 'empty text searches for nothing');
+            assert(needleVariants(null).length === 0, 'and so does null');
+
+            // Truncation: PAW keeps five characters of a word, so a longer one
+            // has to be cut down or it is never there to find
+            v = needleVariants('TREASURE', { truncate: 5, cases: false, bit7: false });
+            assert(v[0].text === 'TREAS', 'truncate cuts the needle to length');
+
+            section('A truncated vocabulary word');
+
+            const mem2 = makeMemory();
+            plant(mem2, 0x9000, 'TREAS', (c) => c);          // five characters, as PAW stores it
+            const whole = searchEncoded(reader(mem2), 0, 0x10000, 'TREASURE');
+            assert(whole.matches.length === 0, 'the whole word is not there');
+            const cut = searchEncoded(reader(mem2), 0, 0x10000, 'TREASURE', { truncate: 5 });
+            assert(at(cut, 0x9000).length > 0, 'cut to five characters, it is');
+
+            section('Bit 7 as the end marker');
+
+            const mem3 = makeMemory();
+            plant(mem3, 0x9100, 'GOLD', (c, i) => (i === 3 ? c | 0x80 : c));
+            const r3 = searchEncoded(reader(mem3), 0, 0x10000, 'GOLD');
+            const h3 = at(r3, 0x9100);
+            assert(h3.length > 0, 'a bit-7-terminated string is found');
+            assert(h3.some(h => h.note.includes('bit 7')), 'and the hit says so', h3.map(h => h.note).join('|'));
+            assert(searchEncoded(reader(mem3), 0, 0x10000, 'GOLD', { bit7: false }).matches.length === 0,
+                   'with the option off it is not');
+
+            section('Case');
+
+            const mem4 = makeMemory();
+            plant(mem4, 0x9200, 'SWORD', (c) => c);
+            assert(at(searchEncoded(reader(mem4), 0, 0x10000, 'sword'), 0x9200).length > 0,
+                   'lower-case text finds upper-case bytes');
+            assert(searchEncoded(reader(mem4), 0, 0x10000, 'sword',
+                                 { cases: false, encodings: ['plain'] }).matches.length === 0,
+                   'with case folding off, plain alone does not');
+            // ...but XOR $20 *is* the case bit, so the ladder finds it anyway,
+            // which is the whole point of searching the schemes rather than a spelling
+            const byCase = searchEncoded(reader(mem4), 0, 0x10000, 'sword', { cases: false });
+            assert(at(byCase, 0x9200).some(m => m.encoding === 'xor' && m.key === 0x20),
+                   'the ladder still finds it: XOR $20 is the case bit');
+
+            section('Range and limit');
+
+            const mem5 = makeMemory();
+            plant(mem5, 0x4000, 'KEY', (c) => c);
+            plant(mem5, 0xC000, 'KEY', (c) => c);
+            const read5 = reader(mem5);
+            assert(at(searchEncoded(read5, 0x8000, 0x10000, 'KEY'), 0x4000).length === 0,
+                   'a hit below the range is not reported');
+            assert(at(searchEncoded(read5, 0x8000, 0x10000, 'KEY'), 0xC000).length > 0,
+                   'and one inside it is');
+            const capped = searchEncoded(read5, 0, 0x10000, 'KEY', { limit: 1 });
+            assert(capped.matches.length === 1 && capped.truncated,
+                   'the limit caps the list and says it did', `${capped.matches.length}`);
+            assert(!searchEncoded(read5, 0, 0x10000, 'KEY').truncated, 'and is not set when it was not hit');
+            // A word can cross the end of the range only if it fits
+            const memEnd = makeMemory();
+            plant(memEnd, 0xFFFD, 'KEY', (c) => c);
+            assert(at(searchEncoded(reader(memEnd), 0, 0x10000, 'KEY'), 0xFFFD).length > 0,
+                   'a word ending on the last byte still fits');
+
+            section('Choosing the schemes');
+
+            const mem6 = makeMemory();
+            plant(mem6, 0x9300, 'MAP', (c) => c ^ 0x5a);
+            const read6 = reader(mem6);
+            assert(at(searchEncoded(read6, 0, 0x10000, 'MAP', { encodings: ['plain'] }), 0x9300).length === 0,
+                   'plain alone does not find an XORed string');
+            assert(at(searchEncoded(read6, 0, 0x10000, 'MAP', { encodings: ['plain', 'xor'] }), 0x9300).length > 0,
+                   'adding XOR does');
+            assert(ENCODING_IDS.length === ENCODINGS.length, 'every scheme has an id');
+            assert(new Set(ENCODING_IDS).size === ENCODING_IDS.length, 'and the ids are distinct');
+
+            section('Nibble packing');
+
+            // Two characters to a byte: A=1..Z=26, high nibble first
+            const mem7 = makeMemory();
+            const word = 'CABBAGE';                   // 3,1,2,2,1,7,5
+            const nib = Array.from(word, ch => ch.charCodeAt(0) - 0x40);
+            for (let i = 0; i < 3; i++) mem7[0x9400 + i] = (nib[i * 2] << 4) | nib[i * 2 + 1];
+            mem7[0x9403] = nib[6] << 4;
+            const packed = searchNibblePacked(reader(mem7), 0, 0x10000, 'CABBAGE');
+            const p1 = packed.matches.filter(m => m.addr === 0x9400);
+            assert(p1.length > 0, 'a nibble-packed word is found');
+            assert(p1.some(m => m.key === 0x40), "and the alphabet base is reported ('A' = 1)",
+                   p1.map(m => '$' + m.key.toString(16)).join(' '));
+            assert(p1.every(m => m.note.includes('odd length')),
+                   'an odd length says the last character was not compared');
+
+            // Low nibble first is a different packing and must be found too
+            const mem8 = makeMemory();
+            for (let i = 0; i < 3; i++) mem8[0x9500 + i] = (nib[i * 2 + 1] << 4) | nib[i * 2];
+            const lowFirst = searchNibblePacked(reader(mem8), 0, 0x10000, 'CABBAGE');
+            assert(lowFirst.matches.some(m => m.addr === 0x9500 && m.label.includes('low')),
+                   'low nibble first is found and named');
+            assert(!searchNibblePacked(reader(mem8), 0, 0x10000, 'CABBAGE', { lowFirst: false })
+                        .matches.some(m => m.addr === 0x9500),
+                   'and can be switched off');
+
+            section('Decoding around a hit');
+
+            // The word is the way in; the record around it is the point
+            const mem9 = makeMemory();
+            plant(mem9, 0x9600, 'TAKE LAMP', (c) => 0x9b - c);
+            const r9 = searchEncoded(reader(mem9), 0, 0x10000, 'TAKE');
+            const h9 = at(r9, 0x9600).find(h => h.encoding === 'const-sub');
+            assert(!!h9, 'the hit is there to decode from');
+            if (h9) {
+                const plainText = String.fromCharCode(...decodeAt(reader(mem9), 0x9600, h9.encoding, h9.key, 9));
+                assert(plainText === 'TAKE LAMP', 'the rest of the string decodes past the match', plainText);
+            }
+            // A positional scheme has to be told where in the string it starts
+            const memA = makeMemory();
+            plant(memA, 0x9700, 'DROP COIN', (c, i) => c - 0x3b - i);
+            const rA = searchEncoded(reader(memA), 0, 0x10000, 'DROP');
+            const hA = at(rA, 0x9700).find(h => h.encoding === 'sub-pos');
+            assert(!!hA, 'a positional hit too');
+            if (hA) {
+                const s = String.fromCharCode(...decodeAt(reader(memA), 0x9700, hA.encoding, hA.key, 9, 0));
+                assert(s === 'DROP COIN', 'and decodes with the index carried on', s);
+                const wrong = String.fromCharCode(...decodeAt(reader(memA), 0x9705, hA.encoding, hA.key, 4, 0));
+                assert(wrong !== 'COIN', 'starting the index at 0 halfway through does not decode');
+                const right = String.fromCharCode(...decodeAt(reader(memA), 0x9705, hA.encoding, hA.key, 4, 5));
+                assert(right === 'COIN', 'giving it the real offset does', right);
+            }
+            assert(decodeAt(reader(memA), 0, 'nosuchscheme', 0, 4) === null, 'an unknown scheme decodes to null');
+
+            section('Every scheme round-trips');
+
+            // encode then decode is the identity for all 256 keys, at several
+            // positions — a scheme that cannot be undone cannot be reported
+            let roundTripOk = true;
+            for (const enc of ENCODINGS) {
+                for (let k = 0; k < enc.keys; k += 37) {
+                    for (const i of [0, 1, 250]) {
+                        for (const c of [0, 1, 0x41, 0x7f, 0x80, 0xff]) {
+                            const e = enc.encode(c, k, i);
+                            if (e < 0 || e > 255 || !Number.isInteger(e)) { roundTripOk = false; }
+                            const mem = new Uint8Array(1); mem[0] = e;
+                            const back = decodeAt(() => mem[0], 0, enc.id, k, 1, i)[0];
+                            if (back !== c) roundTripOk = false;
+                        }
+                    }
+                }
+            }
+            assert(roundTripOk, 'every scheme is a byte-clean bijection at every index');
+
+            log(`\n=== ${passed} passed, ${failed} failed ===`, failed ? 'fail' : 'pass');
+        }
+        run();
+    </script>
+</body>
+</html>

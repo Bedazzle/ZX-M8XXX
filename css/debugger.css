@@ -1491,6 +1491,17 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
     color: var(--text-secondary);
     margin-left: 10px;
 }
+/* Encoded search: the matched word in front, the decoded tail behind it */
+.search-result .preview b {
+    color: var(--text-primary);
+    font-weight: bold;
+}
+/* ...and which scheme it was wearing, kept out of the way on the right */
+.search-result .search-enc {
+    color: var(--cyan);
+    margin-left: 10px;
+    opacity: 0.8;
+}
 .search-info {
     color: var(--text-secondary);
     font-style: italic;
@@ -1753,6 +1764,23 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
     color: var(--green);
     font-weight: bold;
 }
+/* Table scan: what shape it is, then the reading of it */
+.text-scan-result .tscan-label {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+.text-scan-result .preview {
+    color: var(--cyan);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* A word whose value sits far above the rest of its table — the reason to sort */
+.text-scan-result .table-odd {
+    color: var(--green);
+    font-weight: bold;
+}
 .text-scan-result .bank {
     color: var(--magenta);
     font-size: 9px;
@@ -1897,3 +1925,16 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
     border-radius: 3px;
 }
 
+
+/* Diff run (Code Path tab): the first instruction two runs disagreed on, and
+   what that decided. The two branches are coloured apart because which side
+   went where is the whole reading. */
+.dr-head { color: var(--cyan); font-weight: bold; padding: 2px 4px; }
+.dr-sub { color: var(--text-secondary); padding: 2px 4px; }
+.dr-block { margin: 3px 0; }
+.dr-line { padding: 1px 4px 1px 14px; }
+.dr-pc { color: var(--accent); cursor: pointer; margin-right: 8px; }
+.dr-pc:hover { text-decoration: underline; }
+.dr-instr { color: var(--text-primary); }
+.dr-line.dr-a { border-left: 2px solid var(--green); }
+.dr-line.dr-b { border-left: 2px solid var(--yellow); }

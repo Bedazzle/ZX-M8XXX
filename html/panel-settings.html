@@ -141,8 +141,8 @@
                 <div class="settings-section">
                     <div class="settings-row">
                         <span class="settings-row-label">Joystick:</span>
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="chkKempston"> Kempston port
+                        <label class="checkbox-label" title="Whether a Kempston interface is fitted. Unticked, port $1F reads as an empty slot ($FF or the floating bus), which is how software detects that there is no interface.">
+                            <input type="checkbox" id="chkKempston" checked> Kempston port
                         </label>
                         <select id="selJoystickType" title="Which joystick the numpad and gamepad emulate. Sinclair and Cursor press ZX keys; Kempston uses port $1F." style="margin-left: 8px;"></select>
                         <span id="joyCustomKeys" class="hidden"></span>

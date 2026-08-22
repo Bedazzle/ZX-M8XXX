@@ -14,6 +14,7 @@ const Z80_INSTRUCTIONS = new Set([
     'LDIR', 'NEG', 'NOP', 'OR', 'OTDR', 'OTIR', 'OUT', 'OUTD', 'OUTI', 'POP',
     'PUSH', 'RES', 'RET', 'RETI', 'RETN', 'RL', 'RLA', 'RLC', 'RLCA', 'RLD',
     'RR', 'RRA', 'RRC', 'RRCA', 'RRD', 'RST', 'SBC', 'SCF', 'SET', 'SLA', 'SLL',
+    'SLI', 'SL1',   // the other names for SLL
     'SRA', 'SRL', 'SUB', 'XOR', 'DEFB', 'DEFW', 'DEFS', 'DB', 'DW', 'DS', 'DEFM',
     'DM', 'BYTE', 'WORD', 'BLOCK'
 ]);

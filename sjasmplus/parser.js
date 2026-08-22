@@ -78,6 +78,14 @@ export const Parser = {
             return null;
         }
 
+        // Take the line number from the token, not from a running count of the
+        // NEWLINE tokens seen so far. The lexer swallows newlines inside a /* */
+        // comment and at a "\" line continuation without emitting one, so a count
+        // falls behind the source and every error past the first such place is
+        // reported — and jumped to in the editor — a few lines too early.
+        const startTok = this.peek();
+        if (startTok) this.line = startTok.line;
+
         const result = {
             line: this.line,
             file: this.filename,
@@ -536,8 +544,9 @@ export const Parser = {
             'CPI', 'CPIR', 'CPD', 'CPDR',
             // Exchange
             'EX', 'EXA', 'EXX',
-            // Undocumented
-            'SLI', 'SWAP',
+            // Undocumented: the other names for SLL (SWAP is the Game Boy's,
+            // not the Z80's — it only shares the encoding slot)
+            'SLI', 'SL1',
             // Next hardware (if supported)
             'LDIX', 'LDIRX', 'LDDX', 'LDDRX', 'LDPIRX', 'LDIRSCALE',
             'OUTINB', 'MUL', 'MIRROR', 'NEXTREG', 'PIXELDN', 'PIXELAD',

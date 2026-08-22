@@ -10,6 +10,10 @@ Everything is reachable from the page's `window` (in an iframe harness,
 `frame.contentWindow.zxDebug`). `window.spectrum` remains available for lower-level
 access; `zxDebug.spectrum` returns the same instance.
 
+**Writing a tool that drives this?** Start with [M8XXX.md](../M8XXX.md) — one
+page to paste into the tool's instructions: ask `zxDebug.help()` what the build has, plus
+the rules that are not discoverable from the API. This file is the detail behind it.
+
 ## Running headlessly (harness setup)
 
 M8XXX is a browser app with no build step, so a headless run is: serve the folder
@@ -100,6 +104,145 @@ recording's true end.
   (`replayRZX`'s `maxFrames`, or your own counter) so a desync or a bad file can't
   spin forever.
 
+## What this build has (`capabilities`, `help`, `require`)
+
+The surface describes itself, because a document can't: a driver talks to whatever build
+is deployed, and *"does this one have an encoded search"* depends on that build, not on
+the docs someone read once. Tools that can't discover a feature reimplement it.
+
+```js
+const brief = await zx.brief();        // ← the one call to give an external tool
+```
+
+`brief()` is the rules a driver needs followed by the whole surface of this build, in one
+markdown string — ready to log, or to hand to a model as context. The rules half comes
+from [M8XXX.md](../M8XXX.md) so there is one copy of it; the API half is
+generated, so it cannot go stale. If the doc can't be fetched you still get the API half
+and a line saying which half is missing.
+
+The pieces on their own:
+
+```js
+zx.require(['peek', 'searchEncodedText', 'recordRun']);   // first thing a driver does
+// throws: "zxDebug.require: this is ZX-M8XXX 0.15.31 — too old: searchEncodedText (needs 0.15.32)"
+
+zx.capabilities();     // {apiVersion, appVersion, categories, members:[{name, sig, summary, category, since}]}
+zx.help('peek');       // one member, in prose
+zx.help();             // the whole surface as markdown — the form to hand to a model
+```
+
+- **`require(names)`** — throws one clear error naming what is missing, what version would
+  have it, and which build it is talking to. That turns a gap into a fixable message
+  instead of a silent workaround that grows into a second implementation.
+- **`capabilities()`** — sorted and JSON-safe, so two builds diff cleanly.
+- **`help(name?)`** — prose for one member, or markdown for all of it.
+- **`apiVersion`** — bumped when the *shape* of the surface changes, separately from the
+  app version, which moves for reasons a driver doesn't care about.
+
+The manifest lives in `core/api-manifest.js` and `tests/api-manifest-test.html` enforces
+three things: every member is declared, every declaration still exists, and every member
+is mentioned in this file. A self-description is worse than none once it drifts.
+
+**`zxDebug.spectrum` is the escape hatch and is *not* a stable interface** — the planned
+`Spectrum` refactor will move things under it. If you need something only reachable
+through it, that is a gap in this API; say so rather than building on it.
+
+## Primitives (memory, search, disassembly, stepping)
+
+The plain operations a driver needs constantly. All of this was already inside the app;
+none of it was reachable except through `zxDebug.spectrum`, so every tool that wanted to
+read a byte reached into emulator internals.
+
+**Memory** — through the current paging, as the CPU sees it:
+
+```js
+zx.peek(0x5C78);                 zx.poke(0x5C78, 0);
+zx.peekWord(0x5C78);             zx.pokeWord(0x5C78, 0xBEEF);
+zx.peekBlock(0x4000, 6912);      zx.pokeBlock(0x8000, [0x3E, 0x42, 0xC9]);
+zx.peekBank(5);                  // a whole RAM bank whatever is paged in, or null
+zx.snapshotMemory();             // a flat Uint8Array(65536) of the paged 64K
+```
+
+`pokeBlock` is how you patch a running program. `zxDebug.pokes` is a different thing — the
+poke *manager*, for named cheat sets of the `.pok` kind.
+
+**Search:**
+
+```js
+zx.findBytes('CD ?? 00', {from: 0x4000, to: 0x10000, limit: 200});   // ? / ?? = any byte
+zx.findBytes([0x21, null, 0x40]);                                    // or bytes, null = any
+zx.findBytes('00 FF', {bank: 7});                                    // one bank, whatever is paged
+zx.findWord(23296);                                                  // the little-endian pair
+```
+
+Capped by `limit` (200): a one-byte needle matches hundreds of times and a list that long
+is not an answer. For text that isn't stored as text, see **Encoded text search** below.
+
+**Disassembly** — the reading of it; `exportCtl`/`exportCsv`/`exportSym` are for handing a
+map to another toolchain:
+
+```js
+zx.disassemble(0x8000, 10);        // [{addr, bytes, text, length}]
+zx.disassembleRange(0x8000, 0x8100);
+```
+
+**Stepping and running-to** need the machine stopped. The core returns a bare `false` when
+it is running, which to a driver is a silent no-op — so these **throw** and name the fix:
+
+```js
+zx.pause();                        // zx.paused, zx.resume()
+zx.step(1);                        // {steps, pc}
+zx.stepOver();                     // runs a CALL/RST to completion
+zx.runTo(0x8010);                  // {reached, pc}
+zx.runToInterrupt();  zx.runToRet();
+```
+
+**Breakpoints and registers:**
+
+```js
+zx.addBreakpoint(0x8000);          // a number, or an address spec ("8000-80FF")
+zx.breakpoints();                  // [{start, end, page, enabled}]
+zx.removeBreakpoint(0);  zx.clearBreakpoints();
+
+zx.captureRegisters();             // {pc, sp, a, f, bc, de, hl, ix, iy, …}
+zx.setRegisters({pc: 0x8000, hl: 0x1234});   // an unknown name is an error, not a no-op
+```
+
+## Recipes
+
+**Patch a running program** — find the instruction, change it, watch it stay changed:
+
+```js
+await zx.ready();
+const hits = zx.findBytes('3D 32 ?? ??');        // DEC A ; LD (nn),A — a life counter
+zx.pokeBlock(hits[0], [0x00, 0x00, 0x00, 0x00]); // NOP it out
+```
+
+**Find a value and see what writes it:**
+
+```js
+const addrs = zx.findWord(9999);                 // the score, say
+zx.watchWrites(addrs[0], addrs[0] + 1);
+zx.runFrames(200);
+zx.stopWrites();                                 // [{pc, count, callers, callSites}]
+```
+
+**Break somewhere and look around:**
+
+```js
+zx.pause();
+zx.addBreakpoint(0x8000);
+zx.resume();                                     // …until it hits
+zx.pause();
+zx.disassemble(zx.captureRegisters().pc, 8);
+```
+
+**Read text that isn't stored as text:** `zx.searchEncodedText('TREASURE')` — see
+[Encoded text search](#encoded-text-search).
+
+**Find what one change did:** `zx.recordRun` twice and `zx.compareRuns` — see
+[Differential runs](#differential-runs).
+
 ## Execution-based code/data map
 
 ```js
@@ -173,8 +316,8 @@ zx.watchReads(0x9000, 0x90FF);    // who consumes this data block?
 zx.watchExec(0xA000, 0xA0FF);     // is this block code, and who calls it?
 // ... run frames / replay an RZX ...
 const writers = zx.stopWrites();  // getWrites() reads without stopping
-const readers = zx.stopReads();
-const runners = zx.stopExec();
+const readers = zx.stopReads();   // getReads() likewise
+const runners = zx.stopExec();    // getExec() likewise
 ```
 
 Each returns `[{ pc, count, callers, callSites }]`, most-frequent first:
@@ -249,6 +392,7 @@ and remapped RST vectors that static xref analysis misses.
 zx.watchCalls();
 // ... run frames / replay an RZX ...
 const calls = zx.getCalls();          // [{caller, callees:[{callee,count}]}]
+zx.stopCalls();                       // stop recording; getCalls() still reads
 const csv = zx.exportCallGraphCsv();  // Ghidra CSV, callee-indexed ("who calls this")
 ```
 
@@ -399,6 +543,24 @@ zx.keyUp('q'); zx.keyUp('w'); zx.keyUp('a');
   the ROM's key wait looking exactly like a failed auto-load — so check the PC against
   the ROM before concluding a tape did not load.
 - **`keyDown(key)` / `keyUp(key)`** — press/release in the matrix (`ula.keyDown/keyUp`).
+  **A name the ULA does not know throws here.** A chord is one call per key, so a
+  driver that writes it as one string gets told exactly that:
+
+  ```
+  zxDebug.keyDown: no ZX key named 'caps space' — a chord is one call per key:
+  zxDebug.keyDown('CAPS'); zxDebug.keyDown('Space')
+  ```
+
+  The reason for the noise is that the failure is otherwise invisible: the press does
+  nothing, the run carries on, and whatever the program did next gets explained some
+  other way. Real key events stay silent — the browser sends every key the PC has, most
+  of which the Spectrum hasn't — so at the ULA the answer is a return value instead:
+  `ula.keyDown/keyUp` return `true` when the key existed, and `ula.hasKey(name)` asks
+  without pressing.
+- **`keyNames()`** — every name the two above accept (134 of them: the `e.code` names,
+  the typed characters, and the punctuation). `ula.resolveKeyName('cs')` → `'CAPS'`
+  turns a loose spelling into the right name, for reporting — a press still has to name
+  a key exactly.
 - **`readKeyboardPort(port)`** — read a half-row, e.g. `readKeyboardPort(0xFDFE)`.
 - **`setKeyboardGhosting(on)`** / **`keyboardGhosting`** — the Settings → Input toggle.
   Off by default. On, the matrix behaves as the hardware does: keys held in different
@@ -440,6 +602,102 @@ before it returns. Pass `report: true` (or `report: 'name'`) to post the whole o
 to `serve.py`'s sink, so the driver just reads `headless/name.json`. `onProgress(done,
 total)` fires every `progressEvery` frames for both the frame-run and replay paths.
 
+## Differential runs
+
+Run the same thing twice with one variable changed and find where the two runs stop
+agreeing. The Code Path tool already answers *what did this run reach that the other
+didn't* — a set difference — but a set has no order, so it cannot say **where** they
+parted company. This records the program counter in order and compares the streams.
+
+```js
+const before = zx.captureRegisters();          // and a save state, see below
+const a = await zx.recordRun(() => zx.runFrames(50), { limit: 1 << 20 });
+// ...restore the same starting state, change the one variable...
+const b = await zx.recordRun(() => zx.runFrames(50), { limit: 1 << 20 });
+
+const d = zx.compareRuns(a, b);
+// d.at        -> { index, a:{pc,bank}, b:{pc,bank}, reason, lengths }
+// d.context   -> { common:[…], a:[…], b:[…] }  the run-up, then the two branches
+// d.memory    -> { first, count, runs:[{addr,length}], truncated }
+// d.registers -> [{ name, a, b }]
+// d.truncated -> either trace hit its limit, so proves nothing past its end
+```
+
+The same thing is in the UI, in the debugger's **Code Path** tab: the **Diff run** row
+takes a frame count and a `8000=1` change, and does the snapshot/restore/compare itself.
+
+**Both runs must start from the same state**, or the first divergence is only wherever
+they already differed — restore the same save state (`getDisplayAPI().saveSlots`) before
+each. The `r` register will differ regardless, since it counts refreshes across both.
+
+- **`recordRun(fn, opts)`** — trace `fn` (sync or async), then capture memory and
+  registers. `opts.limit` is a hard ceiling in entries, **not a ring**: a differential
+  compares from the start, so the beginning is what must be kept. Four bytes an entry, so
+  the default 1M is 4MB and roughly a third of a second of 48K execution. `opts.from`/`to`
+  restrict which addresses are recorded (keeping the ROM out of a trace, say).
+  `opts.memory: false` skips the 64K copy.
+- **`startExecTrace(opts)` / `stopExecTrace()`** — the recorder alone, for a driver that
+  wants to pump the frames itself. Returns `{pcs, count, truncated, limit}`.
+- **`snapshotMemory()`** — a flat `Uint8Array(65536)` of the paged 64K as it stands.
+- **`captureRegisters()`** — a plain object of the register file.
+- **`compareRuns` / `firstDivergence` / `divergenceContext` / `diffMemoryImages` /
+  `diffRegisters`** — the comparison itself (`core/divergence.js`, pure).
+
+One entry per **instruction**, not per byte: `cpu.onFetch` fires for operand bytes too
+(the auto-map wants that), so the recorder takes only the opcode fetch. The paged RAM bank
+rides in the entry's high bits, so two runs reaching the same address through different
+paging are not mistaken for agreeing — `pcOf()` and `bankOf()` split them.
+
+## Encoded text search
+
+Game text is very often not stored as text, and a plaintext search reports the same
+"nothing" whether the word is absent or merely enciphered. These try the ladder: plain,
+complemented, XOR or offset by any key, the character's position folded into the key, and
+nibble packing (`core/encoded-search.js`).
+
+```js
+zx.searchEncodedText('TREASURE');
+// [{ addr, encoding:'sub-pos', key:0x3B, label:'c − ($3B + i)', length, text, note }, …]
+zx.searchEncodedBytes(fileBytes, 'TREASURE');       // the same over a file
+zx.decodeEncoded(addr, encoding, key, 40);          // read on past the match
+```
+
+- **`searchEncodedText(text, opts)`** / **`searchEncodedBytes(bytes, text, opts)`** —
+  `opts.from`/`to` bound the range, `truncate: 5` matches only the first five characters
+  (a PAW/Quill vocabulary keeps five), `cases: false` stops trying upper/lower,
+  `bit7: false` stops trying the bit-7 end marker, `nibble: false` skips the packed search.
+- **`decodeEncoded(addr, enc, key, length, startIndex)`** / **`decodeEncodedBytes(...)`** —
+  undo the scheme so the record *around* the hit can be read, which is usually the point.
+  A positional scheme needs the real `startIndex` or it decodes to nonsense.
+- **`encodings`** — the schemes and how many keys each has.
+
+Cost does not grow with the number of schemes: every (scheme, key) pair is encoded once
+and indexed by the byte the needle would start with, so a position only verifies the few
+pairs that could begin there. The same search is in the debugger's **Search** box (type
+**Encoded**) and in the Explorer's **Hex Dump → Find** row.
+
+## Data-table recognisers
+
+Signature packs match *code* byte patterns. These find tables, which have no opcodes to
+anchor on and are recognised by shape instead (`core/table-scan.js`). Every result is a
+lead, not a proof.
+
+```js
+zx.findKeyScanTables();   // (half-row, key bit) records — a game's controls
+zx.findCharTables();      // runs of printable bytes of a key-table length
+zx.findWordTables();      // fixed-record word tables (PAW/Quill vocabularies)
+zx.vocabularyByValue(table);   // [{word, value, type, addr, outlier}] in value order
+```
+
+Each takes `(from = 0x4000, to = 0x10000, opts)`. The vocabulary scanner does not
+brute-force the encoding: entries are space-padded, so the commonest byte in the first
+records is almost certainly that pad, and assuming it is a space gives one key per scheme
+to check rather than 256. Plain, complemented and high-bit-set are always tried.
+
+`vocabularyByValue` is the reading that pays. A game whose words run 11, 57, 71 and then
+has two at 200 and 201 is saying what those two are for; `outlier: true` marks them. The
+same three scans are in the debugger's **Search** tab, in the **Tables** card.
+
 ## UI handles (pokes, save states, rewind)
 
 Some features only exist as UI modules; these handles let a driver or a test use
@@ -456,6 +714,11 @@ display.quicksave(3);                 // save to slot 3
 await display.quickload(3);
 display.saveSlots.list();             // [{ index, used, machine, time, title, bytes }]
 display.cycleSlot();
+
+// The assembler panel and its virtual filesystem
+const asm = zxDebug.getAsmAPI();      // the ASM tab: compile, load a project, read output
+zxDebug.vfs.addFile('main.asm', text);
+zxDebug.assembler.assemble(text);
 
 // Rewind ring (see core/rewind.js)
 window.zxRewind.buffer.stepBack();

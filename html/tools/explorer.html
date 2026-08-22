@@ -90,6 +90,21 @@
                             <input type="number" id="explorerHexLen" value="256" min="16" max="65536" class="explorer-input len">
                             <button id="btnExplorerHex" class="explorer-btn">View</button>
                         </div>
+                        <div class="explorer-controls" style="margin-bottom:10px">
+                            <span class="explorer-label">Find:</span>
+                            <input type="text" id="explorerFindText" class="explorer-input" style="width:130px"
+                                   placeholder="text or CD 21 00"
+                                   title="A word, or hex bytes. Encoded searches the source for the word however it is stored — complemented, XORed, offset by any key, with the position folded into the key, or nibble-packed">
+                            <select id="explorerFindMode" class="explorer-select">
+                                <option value="text">Text</option>
+                                <option value="hex">Hex</option>
+                                <option value="encoded">Encoded</option>
+                            </select>
+                            <label class="explorer-label" title="Match only the first five characters, the way a PAW/Quill vocabulary stores a word"><input type="checkbox" id="chkExplorerFind5ch"> 5ch</label>
+                            <button id="btnExplorerFind" class="explorer-btn">Find</button>
+                            <span id="explorerFindStatus" style="font-size:10px;color:var(--text-secondary)"></span>
+                        </div>
+                        <div id="explorerFindResults" class="explorer-find-results"></div>
                         <div id="explorerBankTools" class="explorer-controls" style="margin-bottom:10px;display:none">
                             <span class="explorer-label">Addressing:</span>
                             <select id="explorerBankAddrMode" class="explorer-select" style="min-width:100px">

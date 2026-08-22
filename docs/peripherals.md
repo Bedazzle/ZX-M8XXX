@@ -25,6 +25,22 @@ binding was holding, otherwise a key stays stuck down in the matrix.
 Note Sinclair 1 and Cursor share fire (key 0), which is why some games accept
 either.
 
+### The Kempston port ($1F)
+
+**Kempston port** in Settings -> Input is whether the interface is *fitted*, not
+whether the numpad is mapped to it — it is on by default. Decoding is partial: the
+one-chip design reads on any I/O access with A5 low, the two-chip one also checks
+A6/A7, so we take the stricter form (FUSE's `kempston_strict_decoding`) and match
+ports $00-$1F. That deliberately stops short of the Kempston mouse at $DF, which
+also has A5 low.
+
+Untick it and the port must go **silent**, not read zero. The interface is a bus
+device; with no card in the slot nothing drives the data bus, so `IN 31` returns the
+idle bus ($FF) or, during the display, the floating bus. Zero would read as
+*"interface present, stick centred"* — the value detection routines look for — so an
+absent interface answering 0 makes every game believe one is fitted (issue #12).
+The port read simply falls through to the floating-bus default for this.
+
 ## DISCiPLE/+D Interface (MGT Disks)
 
 External +D disk interface with WD1772 floppy controller. Supports .mgt/.img disk images.

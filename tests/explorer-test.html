@@ -270,6 +270,81 @@
                        'the editor toolbar is available for a disk image');
             });
 
+            await part('Hex Dump: Find, including the encoded ladder', async () => {
+                // The Explorer had no find at all before this. Encoded is the mode
+                // that matters: game text is very often not stored as text, and a
+                // plaintext search says the same "nothing" either way.
+                const size = 0x1000;
+                const raw = new Uint8Array(size);
+                for (let i = 0; i < size; i++) raw[i] = (i * 7) & 0xff;
+                const plant = (off, text, enc) => Array.from(text).forEach(
+                    (ch, i) => { raw[off + i] = enc(ch.charCodeAt(0), i) & 0xff; });
+                plant(0x100, 'TREASURE', c => c);              // plain
+                plant(0x200, 'TREASURE', c => c ^ 0xff);       // complemented
+                plant(0x300, 'TREASURE', (c, i) => c - 0x3b - i);  // c - (key + i)
+                plant(0x400, 'TREAS', c => c);                 // five characters only
+                await loadIntoExplorer(raw, 'probe.bin');
+
+                clickTab('Hex Dump');
+                await wait(200);
+                const input = d.getElementById('explorerFindText');
+                const mode = d.getElementById('explorerFindMode');
+                const results = d.getElementById('explorerFindResults');
+                const status = d.getElementById('explorerFindStatus');
+                assert(!!input && !!mode && !!results, 'the Find row exists in the Hex Dump tab');
+                if (!input) return;
+
+                const find = async (text, m, five = false) => {
+                    mode.value = m;
+                    d.getElementById('chkExplorerFind5ch').checked = five;
+                    input.value = text;
+                    d.getElementById('btnExplorerFind').click();
+                    await wait(250);
+                    return [...results.querySelectorAll('.explorer-find-hit')]
+                        .map(h => parseInt(h.dataset.off, 10));
+                };
+
+                let hits = await find('TREASURE', 'text');
+                assert(hits.includes(0x100), 'Text finds the plaintext copy', hits.join(','));
+                assert(!hits.includes(0x200), 'and not the complemented one');
+
+                hits = await find('TREASURE', 'encoded');
+                assert(hits.includes(0x100) && hits.includes(0x200) && hits.includes(0x300),
+                       'Encoded finds all three', hits.map(h => h.toString(16)).join(','));
+                const labels = [...results.querySelectorAll('.explorer-find-hit .he')]
+                    .map(e => e.textContent).join(' | ');
+                assert(/complement/i.test(labels), 'and names the scheme each was wearing', labels);
+
+                hits = await find('TREASURE', 'encoded', true);
+                assert(hits.includes(0x400), 'five-character matching finds a truncated word',
+                       hits.map(h => h.toString(16)).join(','));
+
+                hits = await find('43 4E', 'hex');
+                assert(Array.isArray(hits), 'Hex mode runs');
+                await find('ZZ', 'hex');
+                assert(/not hex/i.test(status.textContent), 'and rejects what is not hex',
+                       status.textContent);
+
+                await find('QQZZXX', 'text');
+                assert(/not found/i.test(status.textContent), 'a word that is absent says so',
+                       status.textContent);
+                await find('QQZZXX', 'encoded');
+                assert(/any of the encodings/i.test(status.textContent),
+                       'and the encoded search says which "nothing" it means',
+                       status.textContent);
+
+                // A hit is a way into the dump, not a dead end
+                await find('TREASURE', 'encoded');
+                const row = results.querySelector('.explorer-find-hit[data-off="768"]');  // $300
+                if (row) {
+                    row.click();
+                    await wait(200);
+                    assert(d.getElementById('explorerHexAddr').value.toUpperCase() === '0300',
+                           'clicking a hit scrolls the dump to it',
+                           d.getElementById('explorerHexAddr').value);
+                }
+            });
+
             assert(errors.length === 0, 'no uncaught errors while driving the Explorer',
                    errors.slice(0, 3).join(' | '));
 

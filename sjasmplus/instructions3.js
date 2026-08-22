@@ -1,7 +1,7 @@
 // sjasmplus-js v0.10.22 - Z80 Assembler for ZX Spectrum
 // Z80 Instruction Encoder - Part 3: Jumps, calls, and misc
 
-import { InstructionEncoder, Z80Asm } from './instructions.js';
+import { InstructionEncoder, Z80Asm, DialectOptions, dialectError } from './instructions.js';
 import { ErrorCollector } from './errors.js';
 
 // JP encoder
@@ -150,6 +150,11 @@ InstructionEncoder.encodePUSHPOP = function(op, ops, addr, syms) {
         ErrorCollector.error(`${op} requires at least 1 operand`);
     }
 
+    if (ops.length > 1 && !DialectOptions.multiOperand) {
+        dialectError(`${op} with ${ops.length} operands`,
+                     `one ${op} per register`, 'Multi-operand PUSH/INC');
+    }
+
     const isPush = op === 'PUSH';
     const base = isPush ? 0xC5 : 0xC1;
     const r16af = { BC: 0, DE: 1, HL: 2, AF: 3 };
@@ -172,26 +177,59 @@ InstructionEncoder.encodePUSHPOP = function(op, ops, addr, syms) {
     return { bytes: allBytes, size: allBytes.length, undefined: false };
 };
 
-// EX encoder
+// EX encoder.
+//
+// The pair of registers picks the opcode, not the side each is written on, and
+// sjasmplus takes them either way round (OpCode_EX in sjasm/z80.cpp checks for
+// "the other one" rather than a fixed order). So EX HL, DE assembles as EX DE, HL,
+// and EX HL, (SP) — Zilog's own way of writing it — as EX (SP), HL. Native
+// assemblers like ALASM and TASM write them that way, so imported sources need it.
 InstructionEncoder.encodeEX = function(ops, addr, syms) {
+    const isAF = (r) => r === 'AF' || r === "AF'" || r === "AF`";
+
+    // Every spelling below that Zilog does not document goes through here, so
+    // the message can name the canonical one to write instead
+    const alt = (instead) => {
+        if (!DialectOptions.altMnemonics) {
+            dialectError(`EX ${ops.map(o => o.toUpperCase()).join(',')}`,
+                         instead, 'Alternative mnemonics');
+        }
+    };
+
+    // EX AF, AF' — sjasmplus makes both the apostrophe and the second operand optional
+    if (ops.length === 1 && isAF(ops[0].toUpperCase())) {
+        alt("EX AF,AF'");
+        return { bytes: [0x08], size: 1, undefined: false };
+    }
+
     if (ops.length !== 2) {
         ErrorCollector.error('EX requires 2 operands');
     }
-    
-    const d = ops[0].toUpperCase();
-    const s = ops[1].toUpperCase();
-    
+
+    let d = ops[0].toUpperCase();
+    let s = ops[1].toUpperCase();
+
+    // (SP) on the right: swap it to the left, where the cases below expect it
+    if (s === '(SP)') {
+        alt(`EX (SP),${d}`);
+        const t = d; d = s; s = t;
+    }
+
     // EX DE, HL
     if (d === 'DE' && s === 'HL') {
         return { bytes: [0xEB], size: 1, undefined: false };
     }
-    
-    // EX AF, AF'
-    if ((d === 'AF' && (s === "AF'" || s === "AF`")) || 
-        ((d === "AF'" || d === "AF`") && s === 'AF')) {
+    if (d === 'HL' && s === 'DE') {
+        alt('EX DE,HL');
+        return { bytes: [0xEB], size: 1, undefined: false };
+    }
+
+    // EX AF, AF' — anything but that exact spelling is the loose form
+    if (isAF(d) && isAF(s)) {
+        if (d !== 'AF' || s === 'AF') alt("EX AF,AF'");
         return { bytes: [0x08], size: 1, undefined: false };
     }
-    
+
     // EX (SP), HL
     if (d === '(SP)' && s === 'HL') {
         return { bytes: [0xE3], size: 1, undefined: false };
@@ -295,6 +333,9 @@ InstructionEncoder.encodeIN = function(ops, addr, syms) {
     
     // IN F, (C) - undocumented, reads flags
     if (ops.length === 2 && ops[0].toUpperCase() === 'F' && ops[1].toUpperCase() === '(C)') {
+        if (!DialectOptions.undocumented) {
+            dialectError('IN F,(C)', null, 'Undocumented opcodes');
+        }
         return { bytes: [0xED, 0x70], size: 2, undefined: false };
     }
     
@@ -325,6 +366,9 @@ InstructionEncoder.encodeOUT = function(ops, addr, syms) {
         
         // OUT (C), 0 - undocumented
         if (d === '(C)' && s === '0') {
+            if (!DialectOptions.undocumented) {
+                dialectError('OUT (C),0', null, 'Undocumented opcodes');
+            }
             return { bytes: [0xED, 0x71], size: 2, undefined: false };
         }
     }

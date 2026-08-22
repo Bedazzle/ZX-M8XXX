@@ -67,12 +67,14 @@
                                     <option value="hex">Hex</option>
                                     <option value="dec">Dec</option>
                                     <option value="text">Text</option>
+                                    <option value="encoded" title="Find the text however it is stored: complemented, XORed, offset, or with the position folded into the key">Encoded</option>
                                 </select>
                                 <button id="btnLeftMemSearch" title="Find bytes in memory">Find</button>
                                 <button id="btnLeftMemSearchNext" title="Find next occurrence">Next</button>
                                 <div class="search-options">
                                     <label class="search-option"><input type="checkbox" id="chkLeftSearchCase"> Case</label>
                                     <label class="search-option"><input type="checkbox" id="chkLeftSearch7bit"> +128</label>
+                                    <label class="search-option" title="Match only the first five characters, the way a PAW/Quill vocabulary stores a word"><input type="checkbox" id="chkLeftSearchTrunc5"> 5ch</label>
                                 </div>
                             </div>
                             <div class="search-results" id="leftSearchResults"></div>
@@ -288,12 +290,14 @@
                                         <option value="hex">Hex</option>
                                         <option value="dec">Dec</option>
                                         <option value="text">Text</option>
+                                        <option value="encoded" title="Find the text however it is stored: complemented, XORed, offset, or with the position folded into the key">Encoded</option>
                                     </select>
                                     <button id="btnMemSearch" title="Find bytes in memory">Find</button>
                                     <button id="btnMemSearchNext" title="Find next occurrence">Next</button>
                                     <div class="search-options">
                                         <label class="search-option"><input type="checkbox" id="chkSearchCase"> Case</label>
                                         <label class="search-option"><input type="checkbox" id="chkSearch7bit"> +128</label>
+                                        <label class="search-option" title="Match only the first five characters, the way a PAW/Quill vocabulary stores a word"><input type="checkbox" id="chkSearchTrunc5"> 5ch</label>
                                     </div>
                                 </div>
                                 <div class="search-results" id="searchResults"></div>
@@ -486,6 +490,19 @@
                                 <button id="textScanNext" title="Next page">&gt;</button>
                             </div>
                             <div class="text-scan-results" id="textScanResults"></div>
+                            <div class="tools-row">
+                                <span class="search-label">Tables:</span>
+                                <button id="btnTableScan" title="Find data tables by their shape: a keyboard scan table, a key-number to character table, or a fixed-record vocabulary">Scan</button>
+                                <select id="tableScanKind" title="What shape to look for">
+                                    <option value="vocab">Vocabulary</option>
+                                    <option value="keyscan">Key scan</option>
+                                    <option value="chars">Char table</option>
+                                </select>
+                                <label class="search-option" title="Include ROM area (0000-3FFF)"><input type="checkbox" id="tableScanROM"> ROM</label>
+                                <label class="search-option" title="Vocabulary: list the words in value order, so the odd ones out stand up"><input type="checkbox" id="tableScanByValue" checked> by value</label>
+                                <span id="tableScanStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="text-scan-results" id="tableScanResults"></div>
                         </div>
                         <div class="tools-group">
                             <div class="tools-group-label">monitors</div>
@@ -582,6 +599,16 @@
                                 <span id="cpFilterStatus" class="automap-stats"></span>
                             </div>
                             <div class="cp-results" id="cpResults"></div>
+                            <div class="tools-row">
+                                <span class="search-label" title="Run the same frames twice with one thing changed, and find the first instruction at which the two runs part company. The slots above answer what a run reached; this answers where they diverged">Diff run:</span>
+                                <label class="search-option" title="Frames to run each time">frames <input type="number" id="drFrames" value="25" min="1" max="500" style="width:42px"></label>
+                                <input type="text" id="drChange" placeholder="8000=1, C000=FF" style="width:110px"
+                                       title="What to change before the second run: hex address=value, comma separated. Leave empty to check that the run is deterministic at all">
+                                <button id="btnDiffRun" title="Save the state, run it, restore, apply the change, run it again, and compare">Run</button>
+                                <button id="btnDiffExport" title="Export the comparison as text">Export</button>
+                                <span id="drStatus" class="automap-stats"></span>
+                            </div>
+                            <div class="cp-results" id="drResults"></div>
                     </div>
                     <!-- Struct Mapper Panel -->
                     <div class="panel-tab-content" id="panel-struct">

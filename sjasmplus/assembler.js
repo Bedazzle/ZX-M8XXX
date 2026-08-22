@@ -9,7 +9,7 @@ import { Preprocessor } from './preprocessor.js';
 import { VFS } from './vfs.js';
 import { Parser } from './parser.js';
 import { LexerOptions } from './lexer.js';
-import { InstructionEncoder, Z80Asm } from './instructions.js';
+import { InstructionEncoder, Z80Asm, DialectOptions } from './instructions.js';
 import { parseExpression } from './expression.js';
 import { createLuaRuntime, isLuaEngineLoaded, parseLuaPass, luaPassMatches, sourceUsesLua } from './lua.js';
 import './instructions2.js';
@@ -88,11 +88,22 @@ export const Assembler = {
         VFS.resetSources();
     },
 
+    // Options that live outside this object (the lexer's, the encoders') — set
+    // from one place so all four entry points below stay in step. The dialect
+    // ones default to on when the caller says nothing, which is sjasmplus's
+    // behaviour and what every existing caller expects.
+    _applyOptions(options) {
+        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
+        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
+        DialectOptions.altMnemonics = options.altMnemonics !== false;
+        DialectOptions.multiOperand = options.multiOperand !== false;
+        DialectOptions.undocumented = options.undocumented !== false;
+    },
+
     // Main assembly function for single file
     assemble(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
-        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
-        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
+        this._applyOptions(options);
 
         // Apply command-line defines
         for (const def of cmdDefines) {
@@ -112,8 +123,7 @@ export const Assembler = {
     // Async single-file assembly with progress reporting
     async assembleAsync(source, filename = '<input>', cmdDefines = [], options = {}) {
         this.reset();
-        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
-        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
+        this._applyOptions(options);
         for (const def of cmdDefines) {
             EquTable.define(def.name, def.value, 0, '<cmdline>');
         }
@@ -125,8 +135,7 @@ export const Assembler = {
     // Async multi-file project assembly with progress reporting
     async assembleProjectAsync(mainFile, cmdDefines = [], options = {}) {
         this._resetState();   // preserve the already-loaded VFS
-        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
-        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
+        this._applyOptions(options);
 
         cmdDefines = cmdDefines || [];
         for (const def of cmdDefines) {
@@ -144,8 +153,7 @@ export const Assembler = {
     // Assembly function for multi-file project (files already in VFS)
     assembleProject(mainFile, cmdDefines = [], options = {}) {
         this._resetState();   // don't reset VFS — files are already loaded
-        if (options.caseInsensitive) SymbolTable.caseInsensitive = true;
-        LexerOptions.unicodeIdentifiers = !!options.unicodeLabels;
+        this._applyOptions(options);
 
         // Apply command-line defines
         cmdDefines = cmdDefines || [];
@@ -776,14 +784,14 @@ export const Assembler = {
                 // Nested DUP/REPT — track depth, collect as raw text
                 this.reptState.depth = (this.reptState.depth || 1) + 1;
                 const rawLine = this.reconstructLine(line);
-                this.reptState.body.push(rawLine);
+                this.reptState.body.push({ text: rawLine, line: line.line });
             } else if (dir === 'ENDR' || dir === 'EDUP') {
                 // Check nesting depth
                 if (this.reptState.depth > 1) {
                     // Inner EDUP/ENDR — collect as raw text, decrement depth
                     this.reptState.depth--;
                     const rawLine = this.reconstructLine(line);
-                    this.reptState.body.push(rawLine);
+                    this.reptState.body.push({ text: rawLine, line: line.line });
                 } else {
                     // End REPT - expand and process per-iteration
                     const reptBody = this.reptState.body;
@@ -806,14 +814,17 @@ export const Assembler = {
                                 file: reptFile
                             };
                         }
-                        for (const rawLine of reptBody) {
-                            const parsed = Parser.parse(rawLine, reptFile || '<rept>')[0];
+                        for (const bodyLine of reptBody) {
+                            const parsed = Parser.parse(bodyLine.text, reptFile || '<rept>')[0];
                             if (parsed) {
-                                // Preserve original file/line info from REPT definition
+                                // A body line keeps the line it was written on, not
+                                // the REPT/DUP header's. The body is re-parsed from
+                                // text, so without this every error inside the loop
+                                // — however far down — points at the DUP line
+                                const at = bodyLine.line || reptLine;
                                 parsed.file = reptFile;
-                                parsed.line = reptLine;
-                                // Update ErrorCollector location for correct error reporting
-                                ErrorCollector.currentLine = reptLine;
+                                parsed.line = at;
+                                ErrorCollector.currentLine = at;
                                 ErrorCollector.currentFile = reptFile;
                                 this.processLine(parsed);
                             }
@@ -828,7 +839,7 @@ export const Assembler = {
             } else {
                 // Collect raw line for REPT body
                 const rawLine = this.reconstructLine(line);
-                this.reptState.body.push(rawLine);
+                this.reptState.body.push({ text: rawLine, line: line.line });
             }
             return;
         }
@@ -1884,29 +1895,55 @@ export const Assembler = {
     reptState: null,  // Current REPT being collected
 
     dirREPT(ops, line) {
+        const what = line.directive || 'REPT';   // say DUP or REPT, whichever was written
         if (ops.length < 1) {
-            ErrorCollector.error('REPT requires a count', line.line, line.file);
+            ErrorCollector.error(`${what} requires a count`, line.line, line.file);
             return;
         }
+
         const val = this.evaluate(ops[0], line);
-        if (!val.undefined) {
-            // Optional counter variable: REPT count, counterVar / DUP count, counterVar
-            let counterVar = null;
-            if (ops.length >= 2) {
-                const varName = ops[1].trim();
-                if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
-                    counterVar = varName;
-                }
-            }
-            this.reptState = {
-                count: val.value,
-                body: [],
-                depth: 1,
-                startLine: line.line,
-                file: line.file,
-                counterVar: counterVar
-            };
+
+        // The count has to be known right here: the body is collected now and
+        // replayed at EDUP/ENDR, so there is no later pass to learn it in. These
+        // three used to be silent — the block was simply never opened, the body
+        // assembled once inline, and the first thing to complain was "EDUP
+        // without DUP", on the wrong line and about the wrong thing.
+        if (val.undefined) {
+            ErrorCollector.error(
+                `${what}: the count "${ops[0].trim()}" is not known here — it must be defined above`,
+                line.line, line.file);
+            return;
         }
+        // Signed, like sjasmplus's (int) cast: unary minus wraps to 32 bits, so
+        // "DUP -1" arrives as 4294967295 and would otherwise run away
+        const count = val.value | 0;
+        if (count < 0) {
+            ErrorCollector.error(`${what}: the count must be zero or more, not ${count}`,
+                                 line.line, line.file);
+            return;
+        }
+
+        // Optional counter variable: REPT count, counterVar / DUP count, counterVar
+        let counterVar = null;
+        if (ops.length >= 2) {
+            const varName = ops[1].trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
+                ErrorCollector.error(
+                    `${what}: "${varName}" is not a valid counter variable name`,
+                    line.line, line.file);
+                return;
+            }
+            counterVar = varName;
+        }
+
+        this.reptState = {
+            count: count,
+            body: [],
+            depth: 1,
+            startLine: line.line,
+            file: line.file,
+            counterVar: counterVar
+        };
     },
 
     dirDUP(ops, line) {

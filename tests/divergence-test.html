@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Divergence Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Divergence Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/divergence.js is pure, so the whole differential comparison tests
+        // against hand-built traces. The recorder that produces them is checked
+        // against the real emulator at the end.
+        import { firstDivergence, divergenceContext, diffMemoryImages,
+                 diffRegisters, compareRuns, pcOf, bankOf } from '../core/divergence.js';
+        import { Spectrum } from '../core/spectrum.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // A real machine, headless: the constructor wants a canvas
+        function makeSpectrum() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 352; canvas.height = 296;
+            const sp = new Spectrum(canvas, { machineType: '48k' });
+            sp.romLoaded = true;
+            sp.cpu.sp = 0xFFF0;
+            sp.cpu.iff1 = false; sp.cpu.iff2 = false;
+            return sp;
+        }
+
+        // A trace as the recorder makes one: (bank << 16) | pc
+        const trace = (pcs, bank = 0) => ({
+            pcs: Uint32Array.from(pcs, p => ((bank & 0xff) << 16) | (p & 0xffff)),
+            count: pcs.length, truncated: false, limit: pcs.length,
+        });
+
+        async function run() {
+            section('Where two runs part company');
+
+            const a = trace([0x8000, 0x8003, 0x8006, 0x8009, 0x800C]);
+            const same = trace([0x8000, 0x8003, 0x8006, 0x8009, 0x800C]);
+            assert(firstDivergence(a, same) === null, 'identical runs have not diverged');
+
+            const b = trace([0x8000, 0x8003, 0x9000, 0x9003, 0x9006]);
+            const at = firstDivergence(a, b);
+            assert(!!at && at.index === 2, 'the first differing instruction is found',
+                   at ? String(at.index) : 'null');
+            assert(at.a.pc === 0x8006 && at.b.pc === 0x9000, 'with what each run did there',
+                   at ? `${at.a.pc.toString(16)}/${at.b.pc.toString(16)}` : '');
+            assert(at.reason === 'different address', 'and why');
+
+            // A set difference cannot answer this: both runs execute $8000-$8006,
+            // so neither has any address the other lacks
+            const setA = new Set(a.pcs), setB = new Set(b.pcs);
+            const onlyA = [...setA].filter(x => !setB.has(x));
+            assert(onlyA.length > 0 && firstDivergence(a, b).index === 2,
+                   'ordering says where, which a set difference cannot');
+
+            section('The same address reached differently');
+
+            // Two runs at the same PC through different paging have not agreed
+            const p0 = trace([0x8000, 0xC000, 0xC003], 0);
+            const p1 = trace([0x8000, 0xC000, 0xC003], 1);
+            const paged = firstDivergence(p0, p1);
+            assert(!!paged && paged.index === 0, 'a different bank is a divergence');
+            assert(paged.reason === 'different bank at the same address',
+                   'and is reported as one', paged ? paged.reason : '');
+            assert(bankOf(p1.pcs[0]) === 1 && pcOf(p1.pcs[0]) === 0x8000,
+                   'the bank rides in the high bits without disturbing the PC');
+
+            section('One run longer than the other');
+
+            const shortRun = trace([0x8000, 0x8003]);
+            const longRun = trace([0x8000, 0x8003, 0x8006]);
+            const ext = firstDivergence(shortRun, longRun);
+            assert(!!ext && ext.index === 2 && ext.reason === 'one run is longer than the other',
+                   'a prefix is reported at the point it ran out', ext ? ext.reason : 'null');
+            assert(ext.a === null && ext.b.pc === 0x8006, 'saying which side kept going');
+            assert(ext.lengths.a === 2 && ext.lengths.b === 3,
+                   'and how long each was — "no divergence" over two instructions means little');
+
+            section('Reading a divergence');
+
+            const long1 = trace([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+            const long2 = trace([1, 2, 3, 4, 5, 60, 70, 80, 90, 100]);
+            const d = firstDivergence(long1, long2);
+            const ctx = divergenceContext(long1, long2, d, 3, 3);
+            assert(ctx.index === 5, 'the context is at the divergence');
+            assert(ctx.common.join(',') === '3,4,5', 'the run-up they shared', ctx.common.join(','));
+            assert(ctx.a.join(',') === '6,7,8', 'where one went', ctx.a.join(','));
+            assert(ctx.b.join(',') === '60,70,80', 'and where the other did', ctx.b.join(','));
+            assert(divergenceContext(long1, long2, null) === null, 'no divergence, no context');
+
+            section('What they left in memory');
+
+            const m1 = new Uint8Array(64), m2 = new Uint8Array(64);
+            m2[10] = 1; m2[11] = 2; m2[40] = 9;
+            const md = diffMemoryImages(m1, m2);
+            assert(md.first === 10, 'the first differing address', String(md.first));
+            assert(md.count === 3, 'how many bytes differ', String(md.count));
+            assert(md.runs.length === 2 && md.runs[0].length === 2 && md.runs[1].addr === 40,
+                   'and the runs, so one counter reads differently from one buffer',
+                   JSON.stringify(md.runs));
+            assert(diffMemoryImages(m1, m1).first === null, 'identical images differ nowhere');
+            assert(diffMemoryImages(m1, m2, { from: 20 }).first === 40,
+                   'a range narrows it', String(diffMemoryImages(m1, m2, { from: 20 }).first));
+            const many = new Uint8Array(64);
+            for (let i = 0; i < 64; i += 2) many[i] = 1;
+            const capped = diffMemoryImages(new Uint8Array(64), many, { maxRuns: 4 });
+            assert(capped.truncated && capped.runs.length === 4,
+                   'and the run list is capped and says so');
+            assert(diffMemoryImages(null, m1) === null, 'nothing compares to nothing');
+
+            section('Registers');
+
+            const rA = { pc: 0x8000, sp: 0xFF00, a: 1, hl: 0x1234 };
+            const rB = { pc: 0x8000, sp: 0xFF00, a: 2, hl: 0x9999 };
+            const rd = diffRegisters(rA, rB);
+            assert(rd.length === 2, 'only the registers that differ', String(rd.length));
+            assert(rd[0].name === 'a' && rd[1].name === 'hl', 'in a fixed order',
+                   rd.map(r => r.name).join(','));
+            assert(diffRegisters(rA, rA).length === 0, 'and none when they agree');
+            assert(diffRegisters(null, rA).length === 0, 'nothing compares to nothing');
+
+            section('The whole comparison');
+
+            const runA = { trace: a, memory: m1, registers: rA };
+            const runB = { trace: b, memory: m2, registers: rB };
+            const cmp = compareRuns(runA, runB);
+            assert(cmp.diverged && cmp.at.index === 2, 'compareRuns finds the divergence');
+            assert(cmp.context.common.length > 0, 'with its context');
+            assert(cmp.memory.first === 10, 'the memory difference');
+            assert(cmp.registers.length === 2, 'and the register difference');
+            assert(cmp.truncated === false, 'and says neither run was cut short');
+
+            const cut = { trace: { ...a, truncated: true }, memory: m1, registers: rA };
+            assert(compareRuns(cut, runB).truncated === true,
+                   'a run that hit its limit is flagged, because it proves nothing past its end');
+            assert(compareRuns({ trace: a }, { trace: same }).diverged === false,
+                   'two identical runs compare as identical');
+
+            section('The recorder, against the real CPU');
+
+            // Two runs of the same code with one byte changed: they agree until
+            // the conditional that reads it, and part company there
+            function runOnce(flagValue) {
+                const sp = makeSpectrum();
+                const prog = [
+                    0x3E, flagValue,        // 8000: LD A,n
+                    0xB7,                   // 8002: OR A
+                    0x28, 0x04,             // 8003: JR Z,+4    -> 8009
+                    0x3E, 0x11,             // 8005: LD A,$11
+                    0x18, 0x02,             // 8007: JR +2      -> 800B
+                    0x3E, 0x22,             // 8009: LD A,$22
+                    0x76,                   // 800B: HALT
+                ];
+                prog.forEach((b, i) => sp.memory.write(0x8000 + i, b));
+                sp.cpu.pc = 0x8000;
+                sp.startExecTrace({ limit: 64 });
+                for (let i = 0; i < 12; i++) sp.cpu.step();
+                return sp.stopExecTrace();
+            }
+            const t1 = runOnce(0), t2 = runOnce(1);
+            assert(t1.count > 0 && t2.count > 0, 'the recorder records',
+                   `${t1.count}/${t2.count}`);
+            assert(pcOf(t1.pcs[0]) === 0x8000, 'starting where the CPU did',
+                   pcOf(t1.pcs[0]).toString(16));
+            const real = firstDivergence(t1, t2);
+            assert(!!real, 'the two runs diverge');
+            assert(real && real.index === 3, 'after the three instructions they share',
+                   real ? String(real.index) : '');
+            assert(real && pcOf(real.a.pc) === 0x8009 && pcOf(real.b.pc) === 0x8005,
+                   'one takes the jump and the other does not',
+                   real ? `${real.a.pc.toString(16)}/${real.b.pc.toString(16)}` : '');
+
+            // Identical inputs give identical traces — without that the whole
+            // method is worthless, because every comparison would diverge
+            assert(firstDivergence(runOnce(0), runOnce(0)) === null,
+                   'and the same input twice gives no divergence at all');
+
+            section("The recorder's limits");
+
+            const sp2 = makeSpectrum();
+            [0x00, 0x18, 0xFD].forEach((b, i) => sp2.memory.write(0x9000 + i, b));  // NOP; JR -3
+            sp2.cpu.pc = 0x9000;
+            sp2.startExecTrace({ limit: 5 });
+            for (let i = 0; i < 40; i++) sp2.cpu.step();
+            const cutShort = sp2.stopExecTrace();
+            assert(cutShort.count === 5, 'the limit is a hard ceiling', String(cutShort.count));
+            assert(cutShort.truncated === true, 'and a trace that hit it says so');
+
+            // Only the range asked for
+            const sp3 = makeSpectrum();
+            sp3.memory.write(0x9000, 0xCD); sp3.memory.write(0x9001, 0x00); sp3.memory.write(0x9002, 0x40);
+            sp3.cpu.pc = 0x9000;
+            sp3.startExecTrace({ limit: 64, from: 0x8000, to: 0xFFFF });
+            for (let i = 0; i < 6; i++) sp3.cpu.step();
+            const filtered = sp3.stopExecTrace();
+            assert([...filtered.pcs].every(e => pcOf(e) >= 0x8000),
+                   'a range filter keeps the ROM out of the trace',
+                   [...filtered.pcs].map(e => pcOf(e).toString(16)).join(','));
+
+            // Recording costs nothing once it is off
+            const sp4 = makeSpectrum();
+            sp4.startExecTrace({ limit: 8 });
+            sp4.stopExecTrace();
+            assert(sp4.cpu.onFetch === null, 'and the fetch hook goes away when it stops');
+
+            log(`\n=== ${passed} passed, ${failed} failed ===`, failed ? 'fail' : 'pass');
+        }
+        run().catch(e => {
+            failed++;
+            log('  run() threw: ' + (e && e.message), 'fail');
+            log(`\n=== ${passed} passed, ${failed} failed ===`, 'fail');
+        });
+    </script>
+</body>
+</html>

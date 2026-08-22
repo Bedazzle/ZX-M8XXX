@@ -1,7 +1,7 @@
 // sjasmplus-js v0.10.22 - Z80 Assembler for ZX Spectrum
 // Z80 Instruction Encoder - Part 2: LD and ALU instructions
 
-import { InstructionEncoder, Z80Asm } from './instructions.js';
+import { InstructionEncoder, Z80Asm, DialectOptions, dialectError } from './instructions.js';
 import { ErrorCollector } from './errors.js';
 
 const ALU_CODES = { ADD: 0, ADC: 1, SUB: 2, SBC: 3, AND: 4, XOR: 5, OR: 6, CP: 7 };
@@ -334,6 +334,11 @@ InstructionEncoder.encodeALU8 = function(op, operand, addr, syms) {
 InstructionEncoder.encodeINCDEC = function(op, ops, addr, syms) {
     if (ops.length < 1) {
         ErrorCollector.error(`${op} requires at least 1 operand`);
+    }
+
+    if (ops.length > 1 && !DialectOptions.multiOperand) {
+        dialectError(`${op} with ${ops.length} operands`,
+                     `one ${op} per operand`, 'Multi-operand PUSH/INC');
     }
 
     const isINC = op === 'INC';

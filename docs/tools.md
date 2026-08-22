@@ -43,6 +43,16 @@ File analysis tool for reverse engineering. Supports TAP, TZX, SNA, Z80, SZX, RZ
   - **Not covered**: cross-block (depacker in a separate loader block), non-standard/turbo/hand-modified depacker stubs, custom/RLE packers, and partial (⅓/⅔) screens. The guaranteed route for any compression remains load + run + frame grab. (ZX0/ZX7 formats by Einar Saukas; RCS by Einar Saukas.)
   - **Timing**: the whole preview (this detection included) runs on the tick *after* the catalog/info renders, so the catalog paints first and preview work never blocks it; a timer guard drops a pending preview if another file loads before it runs. (Measured load cost is ~20 ms — any perceived "load delay" is the native OS file-open dialog, outside the app.)
 
+**Find (Hex Dump sub-tab):** searches the *selected source* — a file, a tape block, a
+disk file, a snapshot bank — in three modes. **Text** and **Hex** (`CD 21 00`, `?` for any
+byte) are the obvious two. **Encoded** is the one that matters: game text is very often
+not stored as text, and a plaintext search reports the same "nothing" whether the word is
+absent or merely enciphered. It tries plain, complemented, XOR or offset by any key, the
+character's position folded into the key, and nibble packing, and names the scheme each
+hit was wearing (`c − ($3B + i)`). **5ch** matches only the first five characters, the way
+a PAW/Quill vocabulary stores a word. Clicking a hit scrolls the dump to it, so a find
+leads into the bytes rather than being a dead end. Engine: `core/encoded-search.js`.
+
 **Bank Export/Import (Hex Dump sub-tab):**
 - Snapshot files (SNA, Z80, SZX) show per-bank sources in hex and disasm dropdowns: "Full memory" plus individual banks (0-7 for 128K, 5/2/0 for 48K). Bank 5 labeled "(screen)", bank 7 labeled "(shadow)".
 - Selecting a bank source shows the bank tools row: Addressing mode toggle, Export .bin, Import .bin, Save Modified buttons.
@@ -290,6 +300,74 @@ Notes:
   `validateRegion`); the readers are injected, so it is tested without an emulator
   in `tests/memcompare-test.html`. The panel itself is driven in
   `tests/compare-ui-test.html`.
+
+## Encoded text search (Search box, type "Encoded")
+
+The Search box beside either memory panel has a fourth mode. Hex, Dec and Text look for
+*bytes*; **Encoded** looks for a *word*, however the game happens to store it — plain,
+complemented, XOR or offset by any key, the character's position folded into the key, or
+nibble-packed. Each hit shows the decoded string with the match in bold, sixteen more
+decoded characters after it (the record around a hit is usually the point), and which
+scheme it was wearing.
+
+The three checkboxes apply: **Case** also tries upper and lower, **+128** also tries bit 7
+on the last character (the usual end-of-string marker), **5ch** matches five characters
+only, the way a PAW/Quill vocabulary stores a word.
+
+Cost does not grow with the number of schemes. Every (scheme, key) pair is encoded once
+and indexed by the byte the needle would start with, so a position in memory only verifies
+the handful of pairs that could begin there — seven schemes × 256 keys is one pass. Engine:
+`core/encoded-search.js`, also on `zxDebug.searchEncodedText` / `searchEncodedBytes`.
+
+## Tables (Search tab)
+
+Signature packs match *code* byte patterns. A data table has no opcodes to anchor on, so
+this recognises three by their shape (`core/table-scan.js`). Every candidate is a lead,
+not a proof.
+
+- **Vocabulary** — fixed-record word tables: so many characters of the word, then the
+  value the parser matches on, then its type. 5+2 and 4+2 records by default. The
+  encoding is not brute-forced: entries are space-padded, so the commonest byte in the
+  first records is almost certainly that pad, and assuming it is a space gives one key per
+  scheme to check rather than 256.
+- **Key scan** — (half-row select byte, key bit) records, in either field order, with or
+  without a payload byte between them, and with the row held as a port byte or as an index
+  0-7. Each key must be named once: a repeated pair is data that happens to fit, and
+  without that rule the recogniser runs away.
+- **Char table** — runs of printable bytes of a key-table length (39 and 40 by default,
+  the 48K ROM keeping four 39-byte tables), with enough distinct characters to be a table
+  rather than padding.
+
+**by value** is ticked by default and is the reason to have the vocabulary view at all: it
+lists the words in word-value order and marks in green the entries whose value sits far
+above the rest. A game whose words run 11, 57, 71 and then has two at 200 and 201 is
+saying what those two are for.
+
+## Diff run (Code Path tab)
+
+Run the same frames twice with one thing changed and find the first instruction at which
+the two runs part company. The slots above it in the same tab answer the *set* question —
+what did this run reach that the other didn't — and the trace-break stops at the first
+address outside a recorded baseline. Neither can say **where in time** two runs diverged,
+because a set has no order.
+
+- **frames** — how many to run each time (`runFrameHeadless`, so rendering and audio have
+  no say in where they diverge).
+- **change** — what to change before the second run: `8000=1, C000=FF`, hex address and
+  value. Leave it empty to check that the run is deterministic at all.
+- **Run** — snapshots the machine, restores it, runs, restores again, applies the change,
+  runs again, compares. **Export** writes the report as text.
+
+The report gives the shared run-up and both branches, disassembled and clickable; the
+memory runs that ended up different; and the registers. With nothing changed it must say
+*no divergence* — that is the self-check the tool rests on, and it is a real one: the panel
+restores the snapshot before the **first** run too, because loading a snapshot resets the
+frame's T-state counter, so a run from the live machine and a run from a restore start at
+different points in the frame and came out one instruction apart over two frames.
+
+A change the code never reads reports no divergence and says so, rather than inventing one.
+Engine: `core/divergence.js`; the recorder is `spectrum.startExecTrace`. The same thing is
+scriptable — see [docs/automation.md](automation.md#differential-runs).
 
 ## Runtime Behavior Profiler
 
