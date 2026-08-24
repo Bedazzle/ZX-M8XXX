@@ -342,17 +342,14 @@ import { TRDLoader } from './disk-beta.js';
                 }
             }
 
-            // Mark remaining sectors as free (HDFLAG=0, RECFLG=0)
-            for (let i = nextSector; i < sectorCount; i++) {
-                const off = i * MDRLoader.SECTOR_SIZE;
-                // Keep sector number but clear HDFLAG to mark as free
-                image[off] = 0x00;
-                image[off + 15] = 0x00;
-                image[off + 14] = MDRLoader.mdrChecksum(image, off, 14);
-                image[off + 29] = MDRLoader.mdrChecksum(image, off + 15, 14);
-                image[off + 542] = MDRLoader.mdrChecksum(image, off + 30, 512);
-            }
-
+            // Sectors from nextSector on are left exactly as createBlankMDR made
+            // them: a valid header (HDFLAG=1, HDNUMB, cartridge name, HDCHK) over
+            // an empty record. A free sector is marked by RECFLG=0, NOT by wiping
+            // the header — FORMAT writes a header to every block on the tape and
+            // it stays there for the cartridge's life. Clearing HDFLAG here made
+            // every cartridge M8XXX wrote unreadable by a real Interface 1, which
+            // hunts block headers around the loop; both real cartridges and
+            // Z80to's output carry HDFLAG=1 on all 254 blocks.
             return image;
         }
     }
@@ -372,7 +369,20 @@ import { TRDLoader } from './disk-beta.js';
                     cartridge: null,      // Uint8Array — raw MDR image (254×543 bytes)
                     writeProtect: false,
                     motorOn: false,
-                    headPos: 0            // Byte position within the cartridge tape
+                    headPos: 0,           // Byte position within the cartridge tape
+                    // Read/write state machine, after FUSE peripherals/if1.c. The
+                    // IF1 ROM will not sync to a tape unless it sees a proper
+                    // GAP → SYNC → block sequence, so the block boundaries and the
+                    // "is this block formatted" flags have to be modelled; deriving
+                    // the bits from headPos alone left the ROM hunting forever.
+                    transfered: 0,        // bytes moved within the current block
+                    maxBytes: MDRLoader.HEADER_SIZE,  // 15 for a header, 528 for a record
+                    gap: 15,
+                    sync: 15,
+                    last: 0xFF,           // last byte read (held past the block end)
+                    // One entry per block: 0..253 headers, 256..509 records.
+                    // SYNC_OK marks a formatted block.
+                    pream: new Uint8Array(512)
                 });
             }
 
@@ -420,14 +430,52 @@ import { TRDLoader } from './disk-beta.js';
             const drv = this.currentDrive;
             if (!drv || !drv.cartridge) return 0xFF;
 
-            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
-            const val = drv.cartridge[drv.headPos % tapeLen];
-            drv.headPos = (drv.headPos + 1) % tapeLen;
+            // Only the bytes belonging to the current block are fetched; reads
+            // past its end keep returning the last byte, as the real head does
+            // until the status port realigns us (FUSE port_mdr_in).
+            if (drv.transfered < drv.maxBytes) {
+                drv.last = drv.cartridge[drv.headPos];
+                this._incrementHead(drv);
+            }
+            drv.transfered++;
 
             if (this.onDiskActivity) {
                 this.onDiskActivity('read', this.activeDrive, drv.headPos);
             }
-            return val;
+            return drv.last;
+        }
+
+        // Advance one byte, wrapping at the end of the tape loop
+        _incrementHead(drv) {
+            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+            drv.headPos++;
+            if (drv.headPos >= tapeLen) drv.headPos = 0;
+        }
+
+        // Wind on to the next block boundary — the start of a header (offset 0)
+        // or of its record (offset 15) — and set up the counters for it. The IF1
+        // ROM calls this implicitly by reading the status port between blocks
+        // (FUSE microdrives_restart, called at the end of port_ctr_in).
+        _restart() {
+            for (const drv of this.drives) {
+                if (!drv.cartridge) continue;
+                let guard = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
+                while (guard-- > 0) {
+                    const off = drv.headPos % MDRLoader.SECTOR_SIZE;
+                    if (off === 0 || off === MDRLoader.HEADER_SIZE) break;
+                    this._incrementHead(drv);
+                }
+                drv.transfered = 0;
+                drv.maxBytes = (drv.headPos % MDRLoader.SECTOR_SIZE) === 0
+                    ? MDRLoader.HEADER_SIZE
+                    : MDRLoader.SECTOR_SIZE - MDRLoader.HEADER_SIZE;   // 528
+            }
+        }
+
+        // Block index for the preamble table: headers 0.., records 256..
+        _blockIndex(drv) {
+            return Math.floor(drv.headPos / MDRLoader.SECTOR_SIZE) +
+                (drv.maxBytes === MDRLoader.HEADER_SIZE ? 0 : 256);
         }
 
         /**
@@ -437,15 +485,29 @@ import { TRDLoader } from './disk-beta.js';
         writeData(val) {
             const drv = this.currentDrive;
             if (!drv || !drv.cartridge || drv.writeProtect) return;
-            if (!this.writing && !this.erasing) return;
 
-            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
-            drv.cartridge[drv.headPos % tapeLen] = val;
-            drv.headPos = (drv.headPos + 1) % tapeLen;
-
-            if (this.onDiskActivity) {
-                this.onDiskActivity('write', this.activeDrive, drv.headPos);
+            // A block is written preamble first: ten $00 then two $FF. Counting
+            // that sequence is how a block becomes "formatted", which is what
+            // makes it readable afterwards (FUSE port_mdr_out).
+            const block = this._blockIndex(drv);
+            if (drv.transfered === 0 && val === 0x00) {
+                drv.pream[block] = 1;
+            } else if (drv.transfered > 0 && drv.transfered < 10 && val === 0x00) {
+                drv.pream[block]++;
+            } else if (drv.transfered > 9 && drv.transfered < 12 && val === 0xFF) {
+                drv.pream[block]++;
+            } else if (drv.transfered === 12 && drv.pream[block] === 12) {
+                drv.pream[block] = Microdrive.SYNC_OK;
             }
+
+            if (drv.transfered > 11 && drv.transfered < drv.maxBytes + 12) {
+                drv.cartridge[drv.headPos] = val;
+                this._incrementHead(drv);
+                if (this.onDiskActivity) {
+                    this.onDiskActivity('write', this.activeDrive, drv.headPos);
+                }
+            }
+            drv.transfered++;
         }
 
         /**
@@ -458,41 +520,32 @@ import { TRDLoader } from './disk-beta.js';
          * Bits 5-7: unused (1)
          */
         readStatus() {
+            // Every line is active LOW: start all-ones and pull bits down. GAP
+            // (bit 2) and SYNC (bit 1) go low together for a 15-read window, then
+            // stay high for 15 — the cycle the IF1 ROM times its block reads
+            // against (FUSE port_ctr_in). Reading this port is also what winds
+            // the tape on to the next block, hence the _restart() below.
+            let status = 0xFF;
             const drv = this.currentDrive;
-            if (!drv || !drv.cartridge) {
-                return 0xEF | 0x10;  // Not busy is wrong — if no drive, bit 4 = busy = 1... actually bit 4 = 0 means "ready"
-                // Actually, when no drive: return $FF (all bits high, including busy)
+
+            if (drv && drv.cartridge) {
+                if (drv.pream[this._blockIndex(drv)] === Microdrive.SYNC_OK) {
+                    if (drv.gap) {
+                        drv.gap--;
+                    } else {
+                        status &= 0xF9;          // GAP + SYNC low
+                        if (drv.sync) {
+                            drv.sync--;
+                        } else {
+                            drv.gap = 15;
+                            drv.sync = 15;
+                        }
+                    }
+                }
+                if (drv.writeProtect) status &= 0xFE;
             }
 
-            let status = 0xE0;  // Bits 5-7 high (unused)
-
-            // Bit 0: write protect
-            if (drv.writeProtect) status |= 0x01;
-
-            // Bit 4: not ready (no cartridge inserted or motor off)
-            if (!drv.motorOn) {
-                status |= 0x10;
-                return status;
-            }
-
-            // Derive sync and gap from head position within sector
-            const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
-            const posInSector = drv.headPos % MDRLoader.SECTOR_SIZE;
-
-            // Gap between header and record (bytes 14-15 area)
-            // Sync at the start of header (byte 0) and start of record (byte 15)
-            if (posInSector === 0 || posInSector === MDRLoader.HEADER_SIZE) {
-                status |= 0x02;  // Sync
-            }
-            if (posInSector >= MDRLoader.HEADER_SIZE - 1 && posInSector <= MDRLoader.HEADER_SIZE) {
-                status |= 0x04;  // Gap
-            }
-
-            // Gap at end of sector (last few bytes before next sector)
-            if (posInSector >= MDRLoader.SECTOR_SIZE - 2) {
-                status |= 0x04;  // Gap
-            }
-
+            this._restart();
             return status;
         }
 
@@ -509,15 +562,22 @@ import { TRDLoader } from './disk-beta.js';
             const newCommsData = val & 0x01;
             const newCommsClk = (val >> 1) & 0x01;
 
-            // Detect rising edge on COMMS CLK
-            if (newCommsClk && !this.commsClk) {
-                // Shift data bit into shift register (MSB first → LSB)
-                this.commsShiftReg = ((this.commsShiftReg << 1) | newCommsData) & 0xFF;
-
-                // Update motor state for all drives
-                for (let i = 0; i < 8; i++) {
-                    this.drives[i].motorOn = !!(this.commsShiftReg & (1 << i));
+            // Shift the drive-select chain on the FALLING edge of COMMS CLK, and
+            // note that COMMS DATA is active low: a 0 turns drive 1's motor ON
+            // (FUSE peripherals/if1.c, port_ctr_out). Shifting on the rising edge
+            // with the data taken at face value clocked the idle high line in as
+            // a run of 1s, so several motors came on at once and the IF1 ROM
+            // answered "Microdrive not present" with a cartridge sitting in drive 1.
+            if (!newCommsClk && this.commsClk) {
+                for (let i = 7; i > 0; i--) {
+                    this.drives[i].motorOn = this.drives[i - 1].motorOn;
                 }
+                this.drives[0].motorOn = !newCommsData;
+
+                // Keep the register as a mirror of the motor lines: it is what
+                // activeDrive reads and what SZX saves.
+                this.commsShiftReg = this.drives.reduce(
+                    (reg, drv, i) => reg | (drv.motorOn ? (1 << i) : 0), 0);
             }
 
             this.commsData = newCommsData;
@@ -538,10 +598,25 @@ import { TRDLoader } from './disk-beta.js';
             const bytes = new Uint8Array(data);
             const tapeLen = MDRLoader.SECTOR_COUNT * MDRLoader.SECTOR_SIZE;
 
-            this.drives[idx].cartridge = new Uint8Array(tapeLen);
-            this.drives[idx].cartridge.set(bytes.subarray(0, Math.min(bytes.length, tapeLen)));
-            this.drives[idx].writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] !== 0 : false;
-            this.drives[idx].headPos = 0;
+            const drv = this.drives[idx];
+            drv.cartridge = new Uint8Array(tapeLen);
+            drv.cartridge.set(bytes.subarray(0, Math.min(bytes.length, tapeLen)));
+            drv.writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] !== 0 : false;
+            drv.headPos = 0;
+
+            // An inserted cartridge is already formatted: mark every header and
+            // every record as synced, or the status port would never assert
+            // GAP/SYNC and the IF1 would hunt forever (FUSE if1_mdr_insert).
+            drv.pream.fill(Microdrive.SYNC_NO);
+            for (let i = 0; i < MDRLoader.SECTOR_COUNT; i++) {
+                drv.pream[i] = Microdrive.SYNC_OK;
+                drv.pream[256 + i] = Microdrive.SYNC_OK;
+            }
+            drv.transfered = 0;
+            drv.maxBytes = MDRLoader.HEADER_SIZE;
+            drv.gap = 15;
+            drv.sync = 15;
+            drv.last = 0xFF;
         }
 
         /**
@@ -594,10 +669,19 @@ import { TRDLoader } from './disk-beta.js';
             for (const drv of this.drives) {
                 drv.motorOn = false;
                 drv.headPos = 0;
-                // Cartridge data persists across reset
+                drv.transfered = 0;
+                drv.maxBytes = MDRLoader.HEADER_SIZE;
+                drv.gap = 15;
+                drv.sync = 15;
+                drv.last = 0xFF;
+                // Cartridge data (and its formatted flags) persist across reset
             }
         }
     }
+
+    // Preamble state for a block: whether the IF1 will find sync on it
+    Microdrive.SYNC_NO = 0;
+    Microdrive.SYNC_OK = 0xFF;
 
     /**
      * OPD Loader - Opus Discovery disk format

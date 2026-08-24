@@ -968,19 +968,21 @@
         section('Microdrive - COMMS shift register');
 
         md.loadCartridge(mdr, 0);
-        // To select drive 0: shift in bit 0 = 1 → commsShiftReg bit 0 = 1
-        // Clock rising edge: data=1, clk 0→1
-        md.writeControl(0x00); // clk=0, data=0
-        md.writeControl(0x01); // data=1, clk still 0
-        md.writeControl(0x03); // clk=1 (rising edge), data=1 → shift in 1
+        // The chain shifts on the FALLING edge of COMMS CLK (bit 1) and COMMS
+        // DATA (bit 0) is active low: 0 = motor on. Verified against FUSE
+        // (peripherals/if1.c port_ctr_out) and against the real IF1 ROM, which
+        // reported "Microdrive not present" while we clocked on the rising edge
+        // and took the data at face value — that left six motors running at once.
+        md.writeControl(0x02); // clk=1, data=0 (motor-on bit presented)
+        md.writeControl(0x00); // clk 1→0: falling edge shifts it in
         assert(md.commsShiftReg === 1, 'shift reg = 1 after first shift');
         assert(md.drives[0].motorOn === true, 'drive 0 motor on');
         assert(md.activeDrive === 0, 'active drive = 0');
         assert(md.currentDrive !== null, 'currentDrive not null');
 
-        // Shift in another 0 — drive 1 stays off, drive 0 bit shifted left
-        md.writeControl(0x00); // clk=0, data=0
-        md.writeControl(0x02); // clk=1, data=0 → shift in 0
+        // Clock in an off bit: drive 0's motor bit moves along to drive 1
+        md.writeControl(0x03); // clk=1, data=1 (motor off, active low)
+        md.writeControl(0x01); // clk 1→0: falling edge
         assert(md.commsShiftReg === 2, 'shift reg = 2 after second shift');
         assert(md.drives[0].motorOn === false, 'drive 0 motor off');
         assert(md.drives[1].motorOn === true, 'drive 1 motor on');
@@ -990,9 +992,9 @@
         // Reset and select drive 0
         md.reset();
         md.loadCartridge(mdr, 0);
-        // Select drive 0
-        md.writeControl(0x01); // data=1, clk=0
-        md.writeControl(0x03); // rising edge, shift in 1
+        // Select drive 0: present an active-low motor bit, then a falling clock
+        md.writeControl(0x02); // clk=1, data=0
+        md.writeControl(0x00); // clk 1→0
         md.drives[0].motorOn = true;
         md.drives[0].headPos = 0;
 
@@ -1007,8 +1009,15 @@
 
         section('Microdrive - Write data');
 
+        // A block is written preamble-first: ten $00 then two $FF, and only then
+        // does data land on the tape. Verified by a real cartridge booting.
         md.writing = true;
         md.drives[0].headPos = 100;
+        md.drives[0].transfered = 0;
+        for (let i = 0; i < 10; i++) md.writeData(0x00);
+        md.writeData(0xFF);
+        md.writeData(0xFF);
+        assert(md.drives[0].headPos === 100, 'write: preamble does not advance the head');
         md.writeData(0x42);
         assert(md.drives[0].cartridge[100] === 0x42, 'write data: byte written');
         assert(md.drives[0].headPos === 101, 'write: headPos advanced');
@@ -1020,32 +1029,47 @@
         assert(md.drives[0].cartridge[200] !== 0x99, 'write-protected: byte NOT written');
         md.drives[0].writeProtect = false;
 
-        // Writing without write mode enabled
+        // What actually gates a write is the preamble, not the R/W flag: the IF1
+        // sets control bit 2 during reads too, so it cannot be used as a guard.
+        // A byte offered without the ten-$00/two-$FF run never reaches the tape.
         md.writing = false;
         md.drives[0].headPos = 300;
+        md.drives[0].transfered = 0;
         md.writeData(0x77);
-        assert(md.drives[0].cartridge[300] !== 0x77, 'no write mode: byte NOT written');
+        assert(md.drives[0].cartridge[300] !== 0x77, 'no preamble: byte NOT written');
 
         section('Microdrive - Status register');
 
+        // Every status line is active LOW. GAP (bit 2) and SYNC (bit 1) go low
+        // together for a 15-read window and high for the next 15; the IF1 ROM
+        // waits for 8 consecutive GAP-high reads, then 6 GAP-low, then hunts
+        // SYNC. This cycle is what makes a real cartridge boot.
         md.writing = false;
         md.drives[0].motorOn = true;
-        md.drives[0].headPos = 0; // Start of sector → sync
+        md.drives[0].headPos = 0;
+        md.drives[0].gap = 0;
+        md.drives[0].sync = 15;
         let status = md.readStatus();
-        assert((status & 0x02) !== 0, 'status: sync at sector start');
-        assert((status & 0x10) === 0, 'status: not busy (motor on)');
+        assert((status & 0x02) === 0, 'status: SYNC low inside the sync window');
+        assert((status & 0x04) === 0, 'status: GAP low inside the sync window');
 
-        // Motor off → busy
+        md.drives[0].gap = 15;
+        status = md.readStatus();
+        assert((status & 0x02) !== 0 && (status & 0x04) !== 0, 'status: both high during the gap');
+
+        // No drive selected → nothing pulled low
         md.drives[0].motorOn = false;
         status = md.readStatus();
-        assert((status & 0x10) !== 0, 'status: busy when motor off');
+        assert(status === 0xFF, 'status: all high with no drive selected');
 
-        // Write protect flag
+        // Write protect pulls bit 0 low
         md.drives[0].motorOn = true;
         md.drives[0].writeProtect = true;
         status = md.readStatus();
-        assert((status & 0x01) !== 0, 'status: write-protect bit');
+        assert((status & 0x01) === 0, 'status: write-protect bit low when protected');
         md.drives[0].writeProtect = false;
+        status = md.readStatus();
+        assert((status & 0x01) !== 0, 'status: write-protect bit high when writable');
 
         section('Microdrive - Head position wraps');
 

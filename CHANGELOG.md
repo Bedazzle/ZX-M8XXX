@@ -3,13 +3,15 @@
 All notable changes to ZX-M8XXX are documented in this file.
 
 ## v0.15.33
-- **+D (MGT) disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking the +D's own routine there and resetting the machine. Both tape traps now guard on `plusDActive`, as they already did for TR-DOS. The +D needs 48K/128K/+2/Pentagon and a disk with `+SYS`.
-- **+D: Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM read a floating bus and saw the printer as permanently busy.
-- **+D and Interface 1 are refused on +2A/+3, where they cannot page their ROM in.** The checkbox is disabled with a reason, and the Disk tab no longer offers them: a +3 used to list +D as a disk system and accept an `.mgt` into a drive nothing could read. Availability now comes from the emulator's own paging flags rather than being re-derived in the UI.
-- **Fixed: Reset appeared to eject the disk.** It hid the media indicators and cleared the catalogue, but nothing was ever ejected. Media now survives a reset, as on real hardware.
+- **Microdrive (`.mdr`) cartridges load.** The drive-select chain clocked on the wrong edge and read COMMS DATA active high, and the tape had no state machine — sync and gap were invented from the head position. Both now follow FUSE's `if1.c`.
+- **Fixed: Microdrive cartridges M8XXX wrote were unreadable on real hardware.** `buildMDR` cleared `HDFLAG` on unused sectors; a formatted cartridge keeps a header on all 254 and marks free sectors with `RECFLG=0`. `tests/pristine/ref-mdr.mdr` had the same defect and is regenerated.
+- **+D (MGT) disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking the +D's own routine there. Both tape traps now guard on `plusDActive`. Needs 48K/128K/+2/Pentagon and a disk with `+SYS`.
+- **+D: Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM saw a permanently busy printer.
+- **+D and Interface 1 are refused on +2A/+3**, where they cannot page their ROM in: the checkbox is disabled with a reason and the Disk tab no longer offers them. Availability comes from the emulator's paging flags instead of being re-derived in the UI.
+- **Fixed: Reset appeared to eject the disk.** Nothing was ever ejected — it just hid the indicators and cleared the catalogue. Media survives a reset now.
 - **Load Disk's file dialog offers only what the selected system reads** — `.trd/.scl/.zip` for TR-DOS, `.dsk` for +3DOS. The ZIP picker filters the same way.
 - **Fixed: Beta Disk stayed enabled after switching away from Pentagon**, so a +3 kept an interface nobody asked for.
-- **Fixed: a disk stayed listed on a machine that cannot read it.** Only active interfaces are listed now, and a drive is labelled `TRD:A` / `3DOS:A` when the machine has more than one disk system. Media is still kept across a switch.
+- **Fixed: a disk stayed listed on a machine that cannot read it.** Only active interfaces are listed, and drives are labelled `TRD:A` / `3DOS:A` when there is more than one system.
 - **Four macro examples in the ASM editor's Snippets ▼**: plain, with parameters, with a `REPT` loop counter, and with dot-prefixed labels local to each expansion.
 
 ## v0.15.32
