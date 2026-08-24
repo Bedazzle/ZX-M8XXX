@@ -5,7 +5,7 @@ All notable changes to ZX-M8XXX are documented in this file.
 ## v0.15.33
 - **+D (MGT) disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking the +D's own routine there and resetting the machine. Both tape traps now guard on `plusDActive`, as they already did for TR-DOS. The +D needs 48K/128K/+2/Pentagon and a disk with `+SYS`.
 - **+D: Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM read a floating bus and saw the printer as permanently busy.
-- **+D and Interface 1 say when they can't work.** Both are unavailable on +2A/+3; the checkbox is disabled there instead of silently doing nothing.
+- **+D and Interface 1 are refused on +2A/+3, where they cannot page their ROM in.** The checkbox is disabled with a reason, and the Disk tab no longer offers them: a +3 used to list +D as a disk system and accept an `.mgt` into a drive nothing could read. Availability now comes from the emulator's own paging flags rather than being re-derived in the UI.
 - **Fixed: Reset appeared to eject the disk.** It hid the media indicators and cleared the catalogue, but nothing was ever ejected. Media now survives a reset, as on real hardware.
 - **Load Disk's file dialog offers only what the selected system reads** — `.trd/.scl/.zip` for TR-DOS, `.dsk` for +3DOS. The ZIP picker filters the same way.
 - **Fixed: Beta Disk stayed enabled after switching away from Pentagon**, so a +3 kept an interface nobody asked for.

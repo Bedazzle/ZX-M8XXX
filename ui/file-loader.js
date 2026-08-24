@@ -122,10 +122,15 @@ export function initFileLoader({
         if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom())) {
             systems.push({ id: 'trd', name: 'TR-DOS', blankLabel: 'Blank TRD', drives: 4 });
         }
-        if (spectrum.plusDEnabled && spectrum.memory.hasPlusDRom()) {
+        // Ask the emulator whether the interface can actually work rather than
+        // re-deriving it: these flags also exclude +2A/+3, where neither the +D
+        // nor IF1 can page its ROM in. Re-deriving as "enabled + ROM loaded" let
+        // a +3 offer +D in the dropdown, accept an .mgt and mount it into a
+        // drive nothing could ever read.
+        if (spectrum._plusDPagingEnabled) {
             systems.push({ id: 'mgt', name: '+D', blankLabel: 'Blank MGT', drives: 2 });
         }
-        if (spectrum.if1Enabled && spectrum.memory.hasIF1Rom()) {
+        if (spectrum._if1PagingEnabled) {
             systems.push({ id: 'mdr', name: 'Microdrive', blankLabel: 'Blank MDR', drives: 4, numbered: true });
         }
         return systems;
