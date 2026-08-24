@@ -2,6 +2,16 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.15.33
+- **+D (MGT) disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking the +D's own routine there and resetting the machine. Both tape traps now guard on `plusDActive`, as they already did for TR-DOS. The +D needs 48K/128K/+2/Pentagon and a disk with `+SYS`.
+- **+D: Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM read a floating bus and saw the printer as permanently busy.
+- **+D and Interface 1 say when they can't work.** Both are unavailable on +2A/+3; the checkbox is disabled there instead of silently doing nothing.
+- **Fixed: Reset appeared to eject the disk.** It hid the media indicators and cleared the catalogue, but nothing was ever ejected. Media now survives a reset, as on real hardware.
+- **Load Disk's file dialog offers only what the selected system reads** — `.trd/.scl/.zip` for TR-DOS, `.dsk` for +3DOS. The ZIP picker filters the same way.
+- **Fixed: Beta Disk stayed enabled after switching away from Pentagon**, so a +3 kept an interface nobody asked for.
+- **Fixed: a disk stayed listed on a machine that cannot read it.** Only active interfaces are listed now, and a drive is labelled `TRD:A` / `3DOS:A` when the machine has more than one disk system. Media is still kept across a switch.
+- **Four macro examples in the ASM editor's Snippets ▼**: plain, with parameters, with a `REPT` loop counter, and with dot-prefixed labels local to each expansion.
+
 ## v0.15.32
 - **`M8XXX.md`** — the page to point an external tool at: what the emulator offers, how to ask it for the current API, and the rules the API cannot tell you. `await zxDebug.brief()` returns it plus the live member list.
 - **`await zxDebug.brief()`** — one call an external tool can be pointed at: the rules a driver needs, then everything this build can do, as one markdown string.

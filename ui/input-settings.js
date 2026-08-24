@@ -416,14 +416,19 @@ export function initInputSettings({
     // +D Interface (MGT) toggle
     function updatePlusDStatus() {
         const spectrum = getSpectrum();
-        if (!romData['plusd.rom']) {
+        // The +D cannot page its ROM in on a +2A/+3 — same as real hardware, and
+        // the reason spectrum.js gates _plusDPagingEnabled on pagingModel. Say so
+        // rather than letting the box be ticked and silently doing nothing.
+        const incompatible = spectrum.profile.pagingModel === '+2a';
+        chkPlusD.disabled = incompatible;
+        if (incompatible) {
+            plusDStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+        } else if (!romData['plusd.rom']) {
             plusDStatus.textContent = '(plusd.rom required)';
-        } else if (chkPlusD.checked) {
-            plusDStatus.textContent = '';
         } else {
             plusDStatus.textContent = '';
         }
-        btnNmiPlusD.disabled = !chkPlusD.checked || !romData['plusd.rom'];
+        btnNmiPlusD.disabled = incompatible || !chkPlusD.checked || !romData['plusd.rom'];
     }
 
     chkPlusD.addEventListener('change', () => {
@@ -495,10 +500,13 @@ export function initInputSettings({
 
     // Interface 1 (Microdrive) toggle
     function updateIF1Status() {
-        if (!romData['if1.rom']) {
+        // Interface 1 is gated on pagingModel exactly like the +D — see above
+        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        chkIF1.disabled = incompatible;
+        if (incompatible) {
+            if1Status.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+        } else if (!romData['if1.rom']) {
             if1Status.textContent = '(if1.rom required)';
-        } else if (chkIF1.checked) {
-            if1Status.textContent = '';
         } else {
             if1Status.textContent = '';
         }

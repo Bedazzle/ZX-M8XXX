@@ -111,6 +111,11 @@ export const PORT_PLUSD_SEC   = 0xF3;  // +D WD1772 sector register
 export const PORT_PLUSD_DATA  = 0xFB;  // +D WD1772 data register
 export const PORT_PLUSD_CTRL  = 0xEF;  // +D control register (write: drive/side/printer)
 export const PORT_PLUSD_PAGE  = 0xE7;  // +D paging register (read=page in, write=page out)
+// Centronics: write = printer data, read = bit 7 busy (MAME mgt.cpp case 0x76).
+// Not optional: the ROM does "IN A,($F7) / BIT 7,A / RET NZ" at $0437 on the boot
+// path, so an unimplemented port reads the floating bus, bit 7 sticks at 1, and the
+// +D concludes the printer is forever busy and soft-resets instead of booting.
+export const PORT_PLUSD_PRINT = 0xF7;
 
 // =============================================================================
 // Interface 1 / Microdrive port addresses

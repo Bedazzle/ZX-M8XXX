@@ -408,14 +408,14 @@
                         <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
                     </div>
                     <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="+D interface is currently under development" style="display: inline-block; opacity: 0.5;">
-                            <input type="checkbox" id="chkPlusD" disabled> +D Interface (MGT)
+                        <label class="checkbox-label" title="Enable +D interface for MGT disks (requires plusd.rom). Conflicts with Interface 1." style="display: inline-block;">
+                            <input type="checkbox" id="chkPlusD"> +D Interface (MGT)
                         </label>
-                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">coming soon</span>
+                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
                         <input type="file" id="romPlusDInput" class="file-input" accept=".rom,.bin" style="display:none">
                     </div>
                     <div style="margin-top: 4px;">
-                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" disabled style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
+                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
                         <button id="btnNmiPlusD" title="Trigger +D NMI (snapshot button)" disabled style="font-size: 11px; padding: 2px 10px;">NMI</button>
                     </div>
                     <div style="margin-top: 4px;">

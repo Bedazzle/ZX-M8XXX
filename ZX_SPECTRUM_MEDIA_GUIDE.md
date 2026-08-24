@@ -198,8 +198,33 @@ SAVE "filename"               — Save to disk
 ### Setup
 
 - Requires plusd.rom (8KB +D ROM).
-- Works with any machine type (48K, 128K, +2, Pentagon, etc.).
+- **Not available on the +2A/+3.** Those machines page memory differently and do
+  not give an external interface the ROM override the +D needs — true of the real
+  hardware too, and the reason `_plusDPagingEnabled` excludes `pagingModel ==='+2a'`.
+  Use 48K, 128K, +2, Pentagon or Scorpion. Ticking +D on a +3 does nothing:
+  `RUN` just answers `0 OK, 0:1` because G+DOS never intercepts.
+- **The disk must carry a `+SYS` file.** The 8KB ROM is only a bootstrap — it loads
+  G+DOS from the disk into the +D's 8KB RAM (`"SYSTEM" LOADING`, and `No "+SYS  "
+  file` when it cannot). A disk without `+SYS` cannot boot on its own, however
+  valid its catalogue looks. Put a G+DOS system disk in drive A first, or copy
+  `+SYS` onto the disk in the Explorer.
 - The +D is an external interface that pages its own ROM/RAM over the Spectrum's address space when active.
+
+### Booting a game disk
+
+Insert the disk (Settings → Disk → System `+D`, drive A, **Load Disk…**) and type:
+
+```
+RUN                           — load G+DOS, then the disk's AUTOLOAD file
+```
+
+There is no Auto Load support for the +D: `ui/auto-loader.js` covers TR-DOS and
++3DOS only, so the disk is inserted but never booted for you.
+
+**MGT is a shared container.** The same 819,200-byte .mgt format is used by the SAM
+Coupé, and such a disk opens and catalogues here but cannot run on a Spectrum. Tell
+them apart by the DOS file: a +D disk has `+SYS`, a SAM disk has `samdos2`,
+`MDOS22` or `BanzaiDos` (often with `page0-6`/`page7` memory images).
 
 ### Using the +D
 

@@ -1325,6 +1325,14 @@ import { xorChecksum } from './common.js';
                 if (this.memory.trdosActive) {
                     return false;
                 }
+                // …or the +D, for the same reason. With its ROM paged in, $0556
+                // is PUSH AF inside the +D's save-state routine, not LD-BYTES.
+                // Trapping it returned through a stack holding a pushed AF, so
+                // the +D jumped to a register pair, ran off into RAM and reset
+                // the machine — which looked like +D disk emulation was broken.
+                if (this.memory.plusDActive) {
+                    return false;
+                }
                 // No tape data or no blocks - return error immediately (no EAR emulation)
                 if (!this.tapeLoader || this.tapeLoader.getBlockCount() === 0 || !this.tapeLoader.hasMoreBlocks()) {
                     this.cpu.f &= ~0x01;  // Clear carry = error
@@ -1415,8 +1423,9 @@ import { xorChecksum } from './common.js';
             if (this.memory.profile.ramPages > 1) {
                 if (this.memory.currentRomBank !== this.memory.profile.basicRomBank) return false;
             }
-            // Don't trap under TR-DOS
+            // Don't trap under TR-DOS, or with the +D ROM paged in (see LD-BYTES)
             if (this.memory.trdosActive) return false;
+            if (this.memory.plusDActive) return false;
 
             // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
             // to distinguish LOAD (carry set) from VERIFY (carry clear), SA_BYTES is

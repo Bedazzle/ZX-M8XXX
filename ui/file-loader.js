@@ -88,6 +88,27 @@ export function initFileLoader({
         }
     }
 
+    // The image formats each disk system can actually read. Load Disk targets
+    // one system, so offering the others in the file dialog only lets the user
+    // pick a file that is then refused ("DSK disks require +3 machine") — the
+    // dialog is the right place to say no. ZIP is always allowed: it is a
+    // container, and its contents are filtered by the same list.
+    const DISK_SYSTEM_TYPES = {
+        dsk: ['dsk'],
+        trd: ['trd', 'scl'],
+        mgt: ['mgt', 'img'],
+        mdr: ['mdr']
+    };
+    const ALL_DISK_TYPES = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'];
+
+    function diskTypesFor(sys) {
+        return (sys && DISK_SYSTEM_TYPES[sys.id]) || ALL_DISK_TYPES;
+    }
+
+    function diskAcceptFor(sys) {
+        return diskTypesFor(sys).map(t => '.' + t).concat('.zip').join(',');
+    }
+
     // All disk systems currently available on this machine, in hardware order:
     // +3 has the FDC built in; Beta Disk is built into Pentagon/Scorpion (or
     // enabled with trdos.rom); +D and IF1 are optional interfaces (mutually
@@ -167,6 +188,10 @@ export function initFileLoader({
         // not just once a disk is already inserted
         const row = document.getElementById('driveSelector');
         if (row) row.style.display = systems.length > 0 ? '' : 'none';
+
+        // Load Disk's file dialog offers only what this system can read
+        const diskFileInput = document.getElementById('loadDiskFile');
+        if (diskFileInput) diskFileInput.accept = diskAcceptFor(sys);
 
         // System-specific controls: boot file injection applies to TR-DOS only
         const bootRow = document.getElementById('trdosBootRow');
@@ -805,6 +830,10 @@ export function initFileLoader({
     // Load disk button — insert a disk image into selected drive without reset/auto-load
     const loadDiskFileInput = document.getElementById('loadDiskFile');
     document.getElementById('btnLoadDisk').addEventListener('click', () => {
+        // Set here rather than once at init: the selected system changes with
+        // the dropdown and with which interfaces are enabled, and this is the
+        // moment the dialog actually opens.
+        loadDiskFileInput.accept = diskAcceptFor(getActiveDiskSystem());
         loadDiskFileInput.click();
     });
 
@@ -870,8 +899,9 @@ export function initFileLoader({
             const driveIndex = getSelectedDriveIndex();
             const result = await spectrum.loadFile(file, driveIndex);
             if (result.needsSelection) {
-                // ZIP with multiple files — filter to disk types, let user pick
-                const diskTypes = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'];
+                // ZIP with multiple files — filter to the selected system's
+                // formats (same rule as the file dialog), let user pick
+                const diskTypes = diskTypesFor(getActiveDiskSystem());
                 const diskFiles = result.files
                     .map((f, i) => ({ ...f, _idx: i }))
                     .filter(f => diskTypes.includes(f.type));
@@ -914,6 +944,7 @@ export function initFileLoader({
         updateMediaIndicator,
         updateDriveSelector,
         getSelectedDriveIndex,
+        getAvailableDiskSystems,
         showZipSelection
     };
 }

@@ -14,6 +14,7 @@ import {
     PORT_1FFD, PORT_ULAPLUS_REG, PORT_ULAPLUS_DATA,
     PORT_WD_CMD, PORT_WD_TRACK, PORT_WD_SECTOR, PORT_WD_DATA, PORT_WD_SYS,
     PORT_PLUSD_CMD, PORT_PLUSD_TRACK, PORT_PLUSD_SEC, PORT_PLUSD_DATA, PORT_PLUSD_CTRL, PORT_PLUSD_PAGE,
+    PORT_PLUSD_PRINT,
     DECODE_128K_MASK, DECODE_PLUS2A_MASK, DECODE_PLUS2A_MASK2,
     DECODE_7FFD_PLUS2A, DECODE_1FFD_PLUS2A,
     DECODE_FDC_MSR, DECODE_FDC_DATA,
@@ -1559,6 +1560,11 @@ import { Disassembler } from './disasm.js';
                     // +D paging register read ($E7) — pages in +D ROM/RAM
                     this.memory.plusDActive = true;
                     result = 0;
+                } else if (plusDActive && lowByte === PORT_PLUSD_PRINT) {
+                    // +D Centronics status ($F7): bit 7 = printer busy. No printer
+                    // is attached, so never busy — see the constant for why this
+                    // cannot just fall through to the floating bus.
+                    result = 0;
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -1819,8 +1825,11 @@ import { Disassembler } from './disasm.js';
             }
             if (plusDActive && lowByte === PORT_PLUSD_PAGE) {
                 // +D paging register write ($E7) — pages out +D ROM/RAM
-                console.log(`+D page-out @ PC=$${this.cpu.pc.toString(16).padStart(4,'0')}`);
                 this.memory.plusDActive = false;
+                return;
+            }
+            if (plusDActive && lowByte === PORT_PLUSD_PRINT) {
+                // +D Centronics data ($F7) — no printer attached, discard
                 return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
@@ -4013,8 +4022,6 @@ import { Disassembler } from './disasm.js';
             const pc = this.cpu.pc;
             if (pc === PLUSD_PAGE_IN_RST8 || pc === PLUSD_PAGE_IN_KEYNEXT ||
                 pc === PLUSD_PAGE_IN_NMI || pc === PLUSD_PAGE_IN_KEYSCAN) {
-                const names = {0x0008:'RST8',0x003A:'KEY-NEXT',0x0066:'NMI',0x028E:'KEY-SCAN'};
-                console.log(`+D page-in @ $${pc.toString(16).padStart(4,'0')} (${names[pc]})`);
                 this.memory.plusDActive = true;
             }
         }
@@ -8059,7 +8066,13 @@ import { Disassembler } from './disasm.js';
             this.machineType = type;
             this.profile = getMachineProfile(type);
             this.ayEnabled = this.profile.ayDefault;  // Update AY enabled state for new machine type
-            if (this.profile.betaDiskDefault) this.betaDiskEnabled = true;  // Enable Beta Disk for Pentagon/Scorpion
+            // Beta Disk follows the machine: built into Pentagon/Scorpion,
+            // otherwise whatever the user ticked in Settings. This used to only
+            // ever switch it ON, so Pentagon → +3 left the +3 with a Beta Disk
+            // nobody had asked for — and the TR-DOS disk still sitting in a
+            // drive A that the +3's own drive A was also claiming.
+            this.betaDiskEnabled = this.profile.betaDiskDefault ||
+                storageGet('zxm8_betaDisk') === 'true';
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
             this.ula = new ULA(this.memory, type);

@@ -18,5 +18,21 @@
     {
         "name": "Wait for any key",
         "code": "waitkey:\n    xor a                ; scan all keyboard half-rows\n    in a,($FE)\n    and 31\n    cp 31                ; 31 = nothing pressed\n    jr z,waitkey\n"
+    },
+    {
+        "name": "Macro: simple",
+        "code": "; A macro is a block of source given a name. Calling the name pastes\n; the block in — nothing is called at runtime, so there is no RET and\n; no stack cost, but every call costs its bytes again.\n\n    macro PUSHALL           ; no parameters: the plainest form\n        push af\n        push bc\n        push de\n        push hl\n        push ix\n        push iy\n        ex af,af'\n        exx                 ; from here the alternate set is the live one\n        push af\n        push bc\n        push de\n        push hl\n    endm\n\n    macro POPALL            ; the mirror image, popped in reverse\n        pop hl\n        pop de\n        pop bc\n        pop af\n        ex af,af'\n        exx\n        pop iy\n        pop ix\n        pop hl\n        pop de\n        pop bc\n        pop af\n    endm\n\nisr:\n    PUSHALL\n    ld a,2\n    out ($FE),a             ; whatever the interrupt has to do\n    POPALL\n    ei\n    reti\n"
+    },
+    {
+        "name": "Macro: with parameters",
+        "code": "; Parameters are substituted as text, so an argument can be any\n; expression the assembler can work out. The trailing '?' is the\n; sjasmplus convention that keeps a parameter name from colliding\n; with a label of the same name.\n\n    macro BORDER colour?\n        ld a,colour?\n        out ($FE),a\n    endm\n\n    macro FILLATTR attr?        ; paint the whole attribute area\n        ld hl,$5800\n        ld (hl),attr?\n        ld de,$5801\n        ld bc,767\n        ldir\n    endm\n\nstart:\n    BORDER 2                    ; red\n    FILLATTR %01000110          ; bright yellow ink on black paper\n    BORDER 7 - 2                ; an expression is fine: it pastes \"7 - 2\"\n    ret\n"
+    },
+    {
+        "name": "Macro: with a loop counter",
+        "code": "; REPT repeats a block; a second operand names a counter that runs\n; 0..count-1 inside it, so one block can generate a whole table.\n; (DUP/EDUP is the same thing under its other name.)\n\n    macro SCRTABLE rows?\n        rept rows?, y       ; y = 0,1,2,... within the block\n            dw $4000 + (y & 192) * 32 + (y & 7) * 256 + (y & 56) * 4\n        endr\n    endm\n\n    macro UNROLL_LDI n?     ; a counter is optional — plain REPT unrolls\n        rept n?\n            ldi\n        endr\n    endm\n\nlinetab:\n    SCRTABLE 192            ; 192 screen-line addresses, 384 bytes\n\ncopy8:\n    UNROLL_LDI 8            ; eight LDIs, no loop overhead\n    ret\n"
+    },
+    {
+        "name": "Macro: with internal labels",
+        "code": "; A plain label inside a macro is defined again on every call, so the\n; second call fails with \"label already defined\". A label starting with\n; a dot is local to the expansion — each call gets its own.\n\n    macro DELAY loops?\n        ld b,loops?\n.wait:                      ; local: only this expansion sees it\n        djnz .wait\n    endm\n\n    macro CLAMP max?        ; A = min(A, max?)\n        cp max? + 1\n        jr c,.done\n        ld a,max?\n.done:\n    endm\n\nstart:\n    DELAY 50\n    DELAY 200               ; same macro again, no clash\n    ld a,40\n    CLAMP 31\n    CLAMP 15\n    ret\n"
     }
 ]

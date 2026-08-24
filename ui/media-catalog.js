@@ -20,7 +20,7 @@ const TRD_LABEL_OFFSET       = 0xF5;
 const TRD_LABEL_LENGTH       = 8;
 const TRD_MIN_IMAGE_SIZE     = 0x8E7;
 
-export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector, openInExplorer, downloadFile }) {
+export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector, openInExplorer, downloadFile, getAvailableDiskSystems }) {
     const chkFlashLoad = document.getElementById('chkFlashLoad');
     const tapeLoadModeEl = document.getElementById('tapeLoadMode');
     const tapePositionEl = document.getElementById('tapePosition');
@@ -34,6 +34,25 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     // Track which drive + controller is displayed in the disk catalog
     let diskCatalogDrive = 0;
     let diskCatalogController = null;  // 'fdc'|'beta'|null
+
+    // A controller's media is only listed while its interface is on this
+    // machine. The catalogue reads spectrum.loadedBetaDisks[] and friends
+    // directly, and those survive a machine switch on purpose (switch back and
+    // the disk is still there) — so without this a TR-DOS disk loaded on
+    // Pentagon went on showing as drive A after switching to +3, where the
+    // machine cannot read it and its own drive A is something else entirely.
+    const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr' };
+    const SYSTEM_LABEL = { dsk: '3DOS', trd: 'TRD', mgt: 'MGT', mdr: 'MDR' };
+
+    function activeSystemIds() {
+        const systems = getAvailableDiskSystems && getAvailableDiskSystems();
+        return systems ? systems.map(s => s.id) : null;   // null = don't know, show all
+    }
+
+    function controllerActive(name, ids) {
+        if (ids === undefined) ids = activeSystemIds();
+        return ids === null || ids.includes(CONTROLLER_SYSTEM[name]);
+    }
 
     function updateCatalogTabs() {
         const spectrum = getSpectrum();
@@ -228,7 +247,13 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     const MDR_TYPE_NAMES = { 'File': 'File', 'PRINT': 'PRINT' };
 
     function buildDiskCatalogSection(driveIndex, isDSK, media, files, isMGT) {
-        const driveLetter = String.fromCharCode(65 + driveIndex);
+        // With two disk systems on the machine "A:" is ambiguous — the +3's
+        // drive A and TR-DOS drive A are different drives. Name the system,
+        // matching the drive tab above.
+        const ids = activeSystemIds();
+        const sysId = isDSK ? 'dsk' : isMGT ? 'mgt' : 'trd';
+        const driveLetter = ((ids && ids.length > 1) ? SYSTEM_LABEL[sysId] + ':' : '') +
+            String.fromCharCode(65 + driveIndex);
         const hasFiles = files && files.length > 0;
 
         // Header row with disk info
@@ -352,10 +377,11 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         diskCatalogController = controller;
         diskCatalogEl.innerHTML = '';
 
-        const showFdc = (!controller || controller === 'fdc') && driveIndex < 2;
-        const showBeta = (!controller || controller === 'beta') && driveIndex < 4;
-        const showPlusD = (!controller || controller === 'plusd') && driveIndex < 2;
-        const showIF1 = (!controller || controller === 'if1') && driveIndex < 8;
+        const ids = activeSystemIds();
+        const showFdc = (!controller || controller === 'fdc') && driveIndex < 2 && controllerActive('fdc', ids);
+        const showBeta = (!controller || controller === 'beta') && driveIndex < 4 && controllerActive('beta', ids);
+        const showPlusD = (!controller || controller === 'plusd') && driveIndex < 2 && controllerActive('plusd', ids);
+        const showIF1 = (!controller || controller === 'if1') && driveIndex < 8 && controllerActive('if1', ids);
         const fdcMedia = showFdc ? spectrum.loadedFDCDisks[driveIndex] : null;
         const betaMedia = showBeta ? spectrum.loadedBetaDisks[driveIndex] : null;
         const plusDMedia = showPlusD && spectrum.loadedPlusDDisks ? spectrum.loadedPlusDDisks[driveIndex] : null;
@@ -423,58 +449,62 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     function updateDiskDriveTabs() {
         const spectrum = getSpectrum();
         const tabsEl = document.getElementById('diskDriveTabs');
+        const ids = activeSystemIds();
         const fdcDrives = [];
         const betaDrives = [];
         const plusDDrives = [];
-        for (let i = 0; i < 2; i++) {
+        if (controllerActive('fdc', ids)) for (let i = 0; i < 2; i++) {
             if (spectrum.loadedFDCDisks[i] || (spectrum.loadedFDCDiskFiles[i] && spectrum.loadedFDCDiskFiles[i].length > 0)) {
                 fdcDrives.push(i);
             }
         }
-        for (let i = 0; i < 4; i++) {
+        if (controllerActive('beta', ids)) for (let i = 0; i < 4; i++) {
             if (spectrum.loadedBetaDisks[i] || (spectrum.loadedBetaDiskFiles[i] && spectrum.loadedBetaDiskFiles[i].length > 0)) {
                 betaDrives.push(i);
             }
         }
-        for (let i = 0; i < 2; i++) {
+        if (controllerActive('plusd', ids)) for (let i = 0; i < 2; i++) {
             if ((spectrum.loadedPlusDDisks && spectrum.loadedPlusDDisks[i]) ||
                 (spectrum.loadedPlusDDiskFiles && spectrum.loadedPlusDDiskFiles[i] && spectrum.loadedPlusDDiskFiles[i].length > 0)) {
                 plusDDrives.push(i);
             }
         }
         const if1Drives = [];
-        for (let i = 0; i < 8; i++) {
+        if (controllerActive('if1', ids)) for (let i = 0; i < 8; i++) {
             if ((spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[i]) ||
                 (spectrum.loadedIF1CartridgeFiles && spectrum.loadedIF1CartridgeFiles[i] && spectrum.loadedIF1CartridgeFiles[i].length > 0)) {
                 if1Drives.push(i);
             }
         }
         const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0);
-        const multiController = activeControllers > 1;
+        // Prefix the tab with its system whenever "A:" could mean two things —
+        // either because two controllers hold a disk, or because the machine
+        // has two disk systems and only one of them happens to be occupied
+        const multiController = activeControllers > 1 || (ids !== null && ids.length > 1);
 
         const tabs = [];
         if (fdcDrives.length > 0) {
             for (const drv of fdcDrives) {
                 const letter = String.fromCharCode(65 + drv);
-                tabs.push({ drive: drv, controller: 'fdc', label: multiController ? '3DOS:' + letter : letter + ':' });
+                tabs.push({ drive: drv, controller: 'fdc', label: multiController ? SYSTEM_LABEL.dsk + ':' + letter : letter + ':' });
             }
         }
         if (betaDrives.length > 0) {
             for (const drv of betaDrives) {
                 const letter = String.fromCharCode(65 + drv);
-                tabs.push({ drive: drv, controller: 'beta', label: multiController ? 'TRD:' + letter : letter + ':' });
+                tabs.push({ drive: drv, controller: 'beta', label: multiController ? SYSTEM_LABEL.trd + ':' + letter : letter + ':' });
             }
         }
         if (plusDDrives.length > 0) {
             for (const drv of plusDDrives) {
                 const letter = String.fromCharCode(65 + drv);
-                tabs.push({ drive: drv, controller: 'plusd', label: multiController ? 'MGT:' + letter : letter + ':' });
+                tabs.push({ drive: drv, controller: 'plusd', label: multiController ? SYSTEM_LABEL.mgt + ':' + letter : letter + ':' });
             }
         }
         if (if1Drives.length > 0) {
             for (const drv of if1Drives) {
                 const num = drv + 1;  // Microdrives are 1-based
-                tabs.push({ drive: drv, controller: 'if1', label: multiController ? 'MDR:' + num : num + ':' });
+                tabs.push({ drive: drv, controller: 'if1', label: multiController ? SYSTEM_LABEL.mdr + ':' + num : num + ':' });
             }
         }
         tabsEl.innerHTML = '';

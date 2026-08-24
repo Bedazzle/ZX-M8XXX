@@ -106,7 +106,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '0.15.32';
+    const APP_VERSION = '0.15.33';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -286,7 +286,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     const btnFullscreen = document.getElementById('btnFullscreen');
     const fullscreenMode = document.getElementById('fullscreenMode');
     // Forward declarations for file-loader (assigned by initFileLoader below)
-    let handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex;
+    let handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex,
+        getAvailableDiskSystems;
 
     // Machine Dropdown & Settings (extracted to ui/machine-selector.js)
     const { updateRomFileNames } = initMachineSelector({
@@ -2412,11 +2413,14 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             spectrum.updateDisplayDimensions();
             updateCanvasSize();
         }
-        // Hide media indicators (tape/disk cleared on reset)
+        // Media survives a reset: resetting a real machine does not eject its
+        // disk or tape, and spectrum.reset() leaves loadedBetaDisks /
+        // loadedPlusDDisks / loadedFDCDisks / loadedTapes alone. This used to
+        // hide the indicators and clear the catalogue, so the disk looked
+        // ejected while it was in fact still in the drive. Only the activity
+        // LED is transient.
         document.getElementById('diskActivity').style.display = 'none';
-        document.getElementById('tapeInfo').style.display = 'none';
-        document.getElementById('diskInfo').style.display = 'none';
-        mediaCatalogAPI.clearDiskCatalog();
+        mediaCatalogAPI.buildDiskCatalog();
         mediaCatalogAPI.buildTapeCatalog();
         mediaCatalogAPI.updateTapeSlotTabs();
         mediaCatalogAPI.updateRecordingStatus();
@@ -2987,15 +2991,18 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         spectrum.reset();
         disasm = null; // Reset to use fresh memory reference
 
-        // Update Beta Disk status (always on for Pentagon machines)
-        if (profile.betaDiskDefault) {
-            spectrum.betaDiskEnabled = true;
-        }
+        // setMachineType owns betaDiskEnabled now (built-in for Pentagon/
+        // Scorpion, else the saved setting) — this only refreshes the UI
         spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
         updatePlusDStatus();
         updateIF1Status();
         diskActivityAPI.setup();
+        // Which disk interfaces exist has just changed, so the catalogue and
+        // its drive tabs are stale: they were left showing the old machine's
+        // drives (a TR-DOS disk still listed as "A:" on a +3)
+        if (updateDriveSelector) updateDriveSelector();
+        mediaCatalogAPI.buildDiskCatalog();
 
         if (wasRunning) {
             spectrum.start();
@@ -3047,6 +3054,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         showMessage,
         downloadFile,
         updateDriveSelector: (...args) => updateDriveSelector(...args),
+        // Late-bound: file-loader is initialised after this one
+        getAvailableDiskSystems: () => getAvailableDiskSystems ? getAvailableDiskSystems() : null,
         openInExplorer: async (data, filename) => {
             await explorerAPI.loadData(data, filename);
             // Switch to Utils main tab
@@ -3196,7 +3205,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
 
     // File Loader (extracted to ui/file-loader.js)
-    ({ handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex } =
+    ({ handleLoadResult, updateMediaIndicator, updateDriveSelector, getSelectedDriveIndex,
+       getAvailableDiskSystems } =
         initFileLoader({
             getSpectrum: () => spectrum,
             romData,
