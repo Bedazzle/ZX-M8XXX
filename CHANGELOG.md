@@ -3,27 +3,56 @@
 All notable changes to ZX-M8XXX are documented in this file.
 
 ## v0.15.33
-- **Didaktik 40/80 (`.d40`/`.d80`) disks work** — the last format-only reader now has a controller. New `DidaktikDisk` (WD2797 on ports `$81/$83/$85/$87` plus an aux register at `$89`), a memory overlay, ROM paging and a Settings toggle. MDOS saves a program to a blank disk and loads it back after a hard reset. Syntax is the star form: `SAVE *"NAME"` / `LOAD *"NAME"` — a bare `SAVE "NAME"` goes to the tape.
-- **Didaktik: three things unlike the other interfaces.** Its ROM is **14K** (`$0000-$37FF` ROM, `$3800-$3FFF` RAM), it pages in at **`$0000`** so it boots the machine instead of the Spectrum ROM, and side select comes from bit 1 of the command byte because a WD2797 has no register holding it. Aux bits 6/7 decide whether DRQ and INTRQ may pull NMI.
-- **Fixed: DRQ was never cleared at the end of a write** (`PlusDDisk`, so the +D and Opus too). `writeSector` raised it and only `BUSY` was cleared on completion, leaving the chip telling a polling ROM it still wanted a byte for a finished command. MDOS read that as an internal error and abandoned each save after writing just its directory entry.
-- **New `tests/disk-boot-test.html` — the suite that asks whether a disk system actually works.** Three interfaces shipped broken under a fully green suite, because the tests poked our own classes: the Microdrive's asserted our own wrong model, `OPDLoader` passed while no Opus controller existed, and the +D soft-reset on boot. This one makes each interface round-trip through its own ROM — `SAVE`, hard reset, `LOAD`, and the program must run — so a wrong writer fails it. Adding a disk interface now means adding a section here.
-- **The +3 floppy had no end-to-end test either** — `tests/tests.json` has no `+3` entry, so the µPD765 and the whole +3DOS path were shipped on trust. Now covered by the same round trip; it does work.
-- **Opus Discovery (`.opd`) disks work** — the interface was read-only image support before, with no controller at all. New `OpusDisk` (WD1770 + MC6821 PIA) in `core/loaders/disk-opus.js`, a memory overlay, ROM auto-paging and a Settings toggle. The real Opus ROM catalogues a disk and lists its files.
-- **Opus: registers are memory-mapped and transfers are NMI-driven** — unlike every other interface here. The FDC and PIA sit at `$2800`/`$3000` rather than on I/O ports, and DRQ is wired to the Z80's NMI line, so each byte interrupts the CPU. Our FDC completes instantly, so the DRQ is delayed to the chip's real byte rate; without that the NMI preempts the ROM before it can set up the transfer.
-- **Fixed: a debugger panel could drive the disk controller.** Reading the Opus data register advances the sector buffer and raises a DRQ, so a memory view or watch showing `$2800` changed the machine just by being open. Inspection reads go through a new side-effect-free `Memory.peek`.
-- **Opus disks behave like every other disk system**: the main Load dialog and the Disk tab both accept them, drag-and-drop works, Blank OPD works, the Media catalogue lists the files under an `OPD:` drive tab, and projects save and restore them.
-- **Fixed: dragging an `.mgt` onto the window did nothing.** The drop handler carries its own list of extensions and `.mgt`/`.img` were never in it, so +D disks could only be opened through a file dialog. `.opd`/`.opu` are in it now too.
-- **Opus syntax is Interface 1's** — `LOAD *"m";1;"NAME"`, with `CODE`/`SCREEN$` as usual, and `CAT 1`. All six ROMs in `roms/` load and run; only `CAT 1` differs, and just the `v1.2` ROM answers it.
-- **Microdrive (`.mdr`) cartridges load.** The drive-select chain clocked on the wrong edge and read COMMS DATA active high, and the tape had no state machine — sync and gap were invented from the head position. Both now follow FUSE's `if1.c`.
-- **Fixed: Microdrive cartridges M8XXX wrote were unreadable on real hardware.** `buildMDR` cleared `HDFLAG` on unused sectors; a formatted cartridge keeps a header on all 254 and marks free sectors with `RECFLG=0`. `tests/pristine/ref-mdr.mdr` had the same defect and is regenerated.
-- **+D (MGT) disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking the +D's own routine there. Both tape traps now guard on `plusDActive`. Needs 48K/128K/+2/Pentagon and a disk with `+SYS`.
-- **+D: Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM saw a permanently busy printer.
-- **+D and Interface 1 are refused on +2A/+3**, where they cannot page their ROM in: the checkbox is disabled with a reason and the Disk tab no longer offers them. Availability comes from the emulator's paging flags instead of being re-derived in the UI.
-- **Fixed: Reset appeared to eject the disk.** Nothing was ever ejected — it just hid the indicators and cleared the catalogue. Media survives a reset now.
-- **Load Disk's file dialog offers only what the selected system reads** — `.trd/.scl/.zip` for TR-DOS, `.dsk` for +3DOS. The ZIP picker filters the same way.
+
+### Opus Discovery (new)
+
+- **`.opd` disks work.** New `OpusDisk` (WD1770 + MC6821 PIA), memory overlay, ROM paging and a Settings toggle; the interface was image-format support with no controller before.
+- **Registers are memory-mapped and transfers are NMI-driven** — unlike every other interface here. Our FDC completes instantly, so the DRQ is delayed to the chip's real byte rate; without that the NMI preempts the ROM before it can set up the transfer.
+- Only the `v1.2` ROM answers `CAT`; the v2.x, EXCOM and QuickDOS ROMs load and run programs but print nothing for it.
+
+### Didaktik 40/80 (new)
+
+- **`.d40`/`.d80` disks work** — the last format-only reader now has a controller. New `DidaktikDisk` (WD2797 plus an aux register), memory overlay, ROM paging and a Settings toggle.
+- **Three things unlike the others.** Its ROM is 14K, it pages in at `$0000` so it boots the machine instead of the Spectrum ROM, and side select comes from bit 1 of the command byte because a WD2797 has no register for it.
+- **Offered on the 48K only.** Seizing `$0000` at reset stops a 128K/+2/Pentagon booting at all — red border, no BASIC. The checkbox is disabled elsewhere with the reason. FUSE lists the peripheral for the 48K only too.
+- **Enabling it, or swapping its ROM, resets the machine.** It builds its workspace at `$0000` and nowhere else, so switching it on mid-session left MDOS with 2K of zeros and every disk command failed.
+
+### Microdrive
+
+- **`.mdr` cartridges load.** The drive-select chain clocked on the wrong edge and read COMMS DATA active high, and the tape had no state machine. Both now follow FUSE's `if1.c`.
+- **Fixed: cartridges M8XXX wrote were unreadable on real hardware.** `buildMDR` cleared `HDFLAG` on unused sectors; a formatted cartridge keeps a header on all 254. `tests/pristine/ref-mdr.mdr` is regenerated.
+
+### +D
+
+- **MGT disks work** — no longer "coming soon". The tape LD-BYTES trap fired on `$0556` without checking whether the +D ROM was paged in, wrecking its own routine there. Both tape traps now guard on `plusDActive`.
+- **Centronics port `$F7`** (read = bit 7 busy, write = data) was unimplemented, so the ROM saw a permanently busy printer.
+
+### Shared across the disk systems
+
+- **Fixed: DRQ was never cleared at the end of a write** (`PlusDDisk`, so the +D and Opus too). A polling ROM was told the chip still wanted a byte for a finished command; MDOS read that as an internal error and abandoned each save.
+- **Fixed: a debugger panel could drive the disk controller.** Reading the Opus data register advances the sector buffer and raises a DRQ, so a memory view showing `$2800` changed the machine by being open. Inspection reads go through a new side-effect-free `Memory.peek`.
+- **Fixed: `.d40`/`.d80` images were detected as TR-DOS disks** and answered "Cannot add boot". Detection now keys on the `SDOS` marker and runs first: a blank D80 satisfies `isTRD`, and it is the same 737,280 bytes as a double-sided OPD.
+- **Fixed: disks were missing from the load dialogs.** Four separate extension lists gate a format — the main Load dialog, drag-and-drop, the ZIP classifier and the ZIP picker. Didaktik was in none of them, and `.mgt` had never been in the drop handler, so dragging a +D disk in had always done nothing.
+- **+D and Interface 1 are refused on +2A/+3**, where they cannot page their ROM in. Availability comes from the emulator's paging flags instead of being re-derived in the UI.
+- **Fixed: Reset appeared to eject the disk.** Nothing was ever ejected — it just hid the indicators and cleared the catalogue.
 - **Fixed: Beta Disk stayed enabled after switching away from Pentagon**, so a +3 kept an interface nobody asked for.
 - **Fixed: a disk stayed listed on a machine that cannot read it.** Only active interfaces are listed, and drives are labelled `TRD:A` / `3DOS:A` when there is more than one system.
-- **Four macro examples in the ASM editor's Snippets ▼**: plain, with parameters, with a `REPT` loop counter, and with dot-prefixed labels local to each expansion.
+- **Load Disk's file dialog offers only what the selected system reads.** The ZIP picker filters the same way.
+
+### Testing
+
+- **New `tests/disk-boot-test.html`** — three disk systems shipped broken under a fully green suite, because the tests asserted our own classes. This one makes each interface round-trip through its own ROM: `SAVE`, hard reset, `LOAD`, and the program must run.
+- **The +3 floppy had no end-to-end test at all** — `tests/tests.json` has no `+3` entry. Now covered by the same round trip; it works.
+
+### Settings
+
+- **Settings -> Machines is grouped again**: the machine list, **Disk interfaces**, then **Emulation accuracy**. The tab previously ran machines, five unlabelled ULA toggles, then the interfaces.
+- **Disk interfaces are laid out like the machine list** — checkbox, **Load ROM**, then the loaded ROM's filename. Beta Disk gained a Load ROM button; its `trdos.rom` was only reachable through the Load ROMs dialog.
+- **Fixed: interface rows kept saying the ROM was missing after it had loaded.** ROMs arrive from `roms/` asynchronously and only three of the five rows were told when that finished.
+
+### Assembler
+
+- **Four macro examples in the Snippets menu**: plain, with parameters, with a `REPT` loop counter, and with dot-prefixed labels local to each expansion.
 
 ## v0.15.32
 - **`M8XXX.md`** — the page to point an external tool at: what the emulator offers, how to ask it for the current API, and the rules the API cannot tell you. `await zxDebug.brief()` returns it plus the live member list.

@@ -1457,7 +1457,7 @@ import { Disassembler } from './disasm.js';
             // is paged in here — it happens on its own, because the very first
             // instruction after a reset is at $0000, which is a page-in trigger.
             if (this.didaktikEnabled && this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel !== '+2a') {
+                this.profile.pagingModel === 'none') {
                 this.didaktik.reset();
                 this.memory.didaktikActive = false;
             }
@@ -1487,7 +1487,7 @@ import { Disassembler } from './disasm.js';
             // only while its ROM happens to be paged in
             return this.didaktikEnabled && this.didaktik &&
                 this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel === 'none';
         }
 
         triggerPlusDNmi() {
@@ -4095,12 +4095,16 @@ import { Disassembler } from './disasm.js';
                 this.opusEnabled &&
                 this.memory.hasOpusRom() &&
                 this.profile.pagingModel !== '+2a';
-            // Didaktik 80: same machine restriction — its 14KB ROM overlays
-            // $0000-$37FF, which +2A/+3 paging already owns.
+            // Didaktik 80 is 48K ONLY, and the reason is its own design: it pages
+            // itself in at $0000, so on a machine with a 128K ROM it takes over at
+            // reset and that ROM never boots — the screen just goes red while the
+            // Didaktik ROM, written for a 48K, runs off into RAM. Verified on 128K
+            // and Pentagon. The other interfaces wait to be entered through a hook
+            // and so can share a 128K; this one cannot.
             this._didaktikPagingEnabled =
                 this.didaktikEnabled &&
                 this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel === 'none';
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching

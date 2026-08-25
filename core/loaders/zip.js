@@ -389,7 +389,8 @@
                     name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
                     name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk') ||
                     name.endsWith('.mgt') || name.endsWith('.img') || name.endsWith('.mdr') ||
-                    name.endsWith('.opd') || name.endsWith('.opu') || name.endsWith('.wav')) {
+                    name.endsWith('.opd') || name.endsWith('.opu') ||
+                    name.endsWith('.d80') || name.endsWith('.d40') || name.endsWith('.wav')) {
                     let type;
                     if (name.endsWith('.sna')) type = 'sna';
                     else if (name.endsWith('.tzx')) type = 'tzx';
@@ -402,6 +403,7 @@
                     else if (name.endsWith('.mdr')) type = 'mdr';
                     else if (name.endsWith('.mgt') || name.endsWith('.img')) type = 'mgt';
                     else if (name.endsWith('.opd') || name.endsWith('.opu')) type = 'opd';
+                    else if (name.endsWith('.d80') || name.endsWith('.d40')) type = 'd80';
                     else if (name.endsWith('.wav')) type = 'wav';
                     else type = 'tap';
 

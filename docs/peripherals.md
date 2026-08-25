@@ -284,6 +284,24 @@ so the WD177x command engine is shared. Three things set it apart from the other
 - **It pages in at `$0000`** (and `$0008`), paging out at `$1700`, checked *before* the opcode
   fetch like the +D and IF1. `$0000` means it takes the machine over from the moment of reset
   rather than waiting to be entered through a hook — its ROM, not the Spectrum's, is what boots.
+  **That is why we offer this interface on the 48K only.** On a 128K-family machine it still
+  seizes `$0000` at reset, and a ROM written for a 48K then runs off into RAM: red border,
+  blank screen, no BASIC and no 128 menu. Reproduced on 128K and Pentagon.
+
+  Two independent things point the same way, and it is worth being precise about which is
+  which. FUSE declares the peripheral in `machines_periph_48()` only — `machines_periph_128()`
+  and `machines_periph_plus3()` do not list it, and neither does the DISCiPLE. Note what is
+  *not* restricted there: the +D sits in the shared `base_peripherals_48_128()`, which is
+  exactly why the +D works on a 128K here too. That is emulator convention agreeing with our
+  own reproduction — **not** a datasheet. No hardware source has been checked saying a real
+  D40/D80 cannot drive a Sinclair 128K. The machines it shipped for (Didaktik Gama, Didaktik M)
+  were 48K-class clones, and the Didaktik Kompakt 128K is a different machine with the drive
+  built in rather than an external D80 on a 128K.
+
+  So `_didaktikPagingEnabled` requires `pagingModel === 'none'` and the Settings checkbox is
+  disabled elsewhere. If a source turns up showing real hardware managing it, this is a bug to
+  chase rather than a restriction to keep. The other interfaces wait to be entered through a
+  hook, which is how they can share a 128K at all.
 - **The side is in the command byte.** There is no control register holding it: a WD2797 takes
   side select from bit 1 of a Type II/III command, which is where `executeCommand` reads it.
 
@@ -296,8 +314,8 @@ PPI, which is not wired to anything and reads `$FF`.
 Geometry is MDOS: 9 sectors of 512 bytes, two sides, 40 tracks (368,640 bytes) or 80
 (737,280), taken from the image size on insert.
 
-**Using it:** enable Didaktik 80 in Settings → Machines on a 48K/128K/+2/Pentagon (not +2A/+3,
-same overlay reason as the others), load a `.d40`/`.d80`, and use the **star form**:
+**Using it:** enable Didaktik 80 in Settings → Machines **on a 48K**, load a `.d40`/`.d80`,
+and use the **star form**:
 
 ```basic
 SAVE *"NAME"      LOAD *"NAME"      CAT

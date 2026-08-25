@@ -371,21 +371,55 @@ If the loaded BASIC program has no autostart line, type `RUN` after it loads.
 
 ---
 
-## 6a. Didaktik 40/80 — MDOS (D40 / D80 files)
+## 7. Didaktik 40/80 — MDOS (D40 / D80 files)
 
-The Czechoslovak Didaktik disk interface: a WD2797 controller with a 14K ROM. Needs
-**48K, 128K, +2 or Pentagon** — not +2A/+3.
+The Czechoslovak Didaktik disk interface: a WD2797 controller with a 14K ROM.
+
+### Setup
+
+- **Requires `didaktik.rom`** in `roms/`, picked up automatically. The line beside the
+  checkbox reads `(didaktik.rom required)` when it is missing, and the Load Didaktik ROM
+  button reports the byte count when you load one by hand.
+- **Which dump.** Both v1.0 builds work — `17-May-91` and `01-Sep-92`, the latter being the
+  shipped default. **v2.0 1993 does not work here**: it stops at `$0556` having issued no FDC
+  commands at all, and that is unexplained rather than expected.
+- **14K or 16K?** The interface maps 14,336 bytes (`$0000-$37FF` ROM, `$3800-$3FFF` RAM), and
+  that is what a 14K dump holds. A 16K dump is the whole window — the ROM plus 2K of the
+  interface's own RAM, captured with some disk's workspace still in it; the tails of the ones
+  in circulation literally contain MDOS filenames. Only the first 14,336 bytes are loaded, so
+  either size works.
+- **Swapping the ROM resets the machine**, for the same reason ticking the checkbox does: see
+  step 2 below.
+
+**48K only here.** Unlike every other interface, the Didaktik pages itself in at `$0000`, so it
+takes the machine over the instant it resets. On a 128K, +2 or Pentagon that machine's own ROM
+never gets to boot — you get a red border and a blank screen instead of BASIC or the 128 menu.
+The checkbox is disabled on those machines and says so.
+
+This matches FUSE, which offers the Didaktik 80 on the 48K only (and the same for the
+DISCiPLE, while the +D is offered on both). It is emulator convention plus our own
+reproduction rather than a hardware datasheet — the interface was built for the Didaktik Gama
+and Didaktik M, which are 48K-class clones.
 
 ### Running a game
 
-1. Machine dropdown → **48K** (or 128K / +2 / Pentagon).
+1. Machine dropdown → **48K**. This one is not optional: on any other machine the checkbox is
+   greyed out, because the Didaktik would stop that machine booting at all.
 2. **Settings → Machines** → tick **Didaktik 80 (D40/D80)**. `didaktik.rom` is picked up from
    `roms/` automatically. Enabling it switches the +D and Opus off — all three take over
-   `$0000-$3FFF`, and the Didaktik pages itself in at `$0000`, so it boots the machine.
-3. Load the `.d40`/`.d80` — main menu **Load → File**, the Disk tab with System = *Didaktik*,
+   `$0000-$3FFF`.
+
+   **Ticking the box resets the machine, and it has to.** The Didaktik sets its workspace up
+   at `$0000` and nowhere else, so an interface switched on mid-session has 2K of zeros where
+   MDOS expects its variables: it answers, then fails every disk command with
+   `Device unavailable`. You should land in ordinary 48K BASIC. Loading a ROM through the
+   Load Didaktik ROM button resets for the same reason.
+3. If you ever *do* see `Device unavailable`, press **Reset** — that is always the cure. It
+   means MDOS is running without a workspace.
+4. Load the `.d40`/`.d80` — main menu **Load → File**, the Disk tab with System = *Didaktik*,
    or drag it onto the window.
-4. Read the filename from the Media catalogue (`D80: A` tab).
-5. Type the command. **MDOS uses the star form:**
+5. Read the filename from the Media catalogue (`D80: A` tab).
+6. Type the command. **MDOS uses the star form:**
 
 ```
 CAT                        — catalogue the disk
@@ -401,6 +435,11 @@ SAVE *"name" LINE 10       — save with an autostart line
 - No Auto Load for Didaktik disks — type the command yourself.
 - Geometry is fixed by the image size: 368,640 bytes = 40 tracks, 737,280 = 80. Both are
   double-sided, 9 sectors of 512 bytes.
+- **A D80 is exactly the same size as a double-sided OPD** — both 737,280 bytes — so the file
+  extension cannot decide it and neither can the length. The two are told apart by the `SDOS`
+  marker MDOS writes at offset 204 of its boot sector. A blank D80 also happens to satisfy the
+  TR-DOS test, so that check runs before every other disk format; get the order wrong and a
+  `.d80` lands in the Beta Disk drive and answers `Cannot add boot`.
 
 ### Multi-drive
 
@@ -408,7 +447,7 @@ SAVE *"name" LINE 10       — save with an autostart line
 
 ---
 
-## 7. Common Notes
+## 8. Common Notes
 
 ### Auto load
 
@@ -418,6 +457,7 @@ SAVE *"name" LINE 10       — save with an autostart line
 - **MGT**: Disk is inserted but must be accessed manually (use NMI or BASIC commands above)
 - **MDR**: Cartridge is inserted but must be accessed manually (use Interface 1 BASIC commands above)
 - **OPD**: Disk is inserted but must be accessed manually (use NMI or Opus BASIC commands above)
+- **D40/D80**: Disk is inserted but must be accessed manually (`LOAD *"name"`)
 
 ### Cross-format file compatibility
 
@@ -430,6 +470,7 @@ All disk formats store the same ZX Spectrum file types (BASIC, CODE, arrays, seq
 | MGT | +D header | 9 bytes prepended to data |
 | MDR | Spectrum header | 9 bytes prepended to data |
 | OPD | Opus header | 7 bytes prepended to data |
+| D40/D80 (MDOS) | Directory entry | 32-byte entry |
 | DSK (+3DOS) | +3DOS header | 128 bytes prepended to data |
 | DSK (TOS) | TOS header | 5 or 7 bytes prepended to data |
 
@@ -439,11 +480,11 @@ Games can save to disk. All disk writes are preserved in memory. Use format-appr
 
 ---
 
-## 8. File Format Technical Details
+## 9. File Format Technical Details
 
 This chapter contains byte-level specifications for all media file formats.
 
-### 8.1 TAP format
+### 9.1 TAP format
 
 ```
 Structure: [length:2 LE][data:length bytes] repeated
@@ -467,7 +508,7 @@ Last byte of each block: XOR checksum of all preceding bytes (flag + data).
 
 File size: Variable (sum of all block lengths + 2-byte headers per block).
 
-### 8.2 TZX format
+### 9.2 TZX format
 
 Signature: `"ZXTape!\x1A"` (8 bytes) + version major(1) + minor(1)
 
@@ -494,7 +535,7 @@ Block types (each prefixed by 1-byte ID):
 
 Standard blocks ($10) use the same flag/header/data/checksum structure as TAP. Turbo blocks ($11) use custom timing for faster loading or copy protection.
 
-### 8.3 TRD format
+### 9.3 TRD format
 
 **Geometry:** 80 tracks, 2 sides, 16 sectors/track, 256 bytes/sector. Total: 640 KB (655,360 bytes). Maximum 128 files per disk.
 
@@ -530,7 +571,7 @@ Directory: track 0 (both sides), sectors 0–15 = 128 entries × 16 bytes.
 | 231 | TR-DOS ID ($10) |
 | 245–252 | Disk label (8 chars) |
 
-### 8.4 SCL format
+### 9.4 SCL format
 
 TR-DOS archive format. Contains only the file entries and their data, not the full disk geometry.
 
@@ -544,7 +585,7 @@ Last 4 bytes: CRC32 of all preceding data
 
 SCL files are converted to TRD format for use with the Beta Disk emulation.
 
-### 8.5 DSK / EDSK format (Extended Disk Image)
+### 9.5 DSK / EDSK format (Extended Disk Image)
 
 The DSK format (also known as EDSK — Extended DSK) is a disk image format originally created for Amstrad CPC emulators but also used for ZX Spectrum +3 disk images. It stores a complete low-level representation of a floppy disk including per-track sector layouts.
 
@@ -713,7 +754,7 @@ DSK images can preserve copy protection through non-standard track layouts, FDC 
 
 Some disks combine multiple protections (e.g. Remi Herbulot + KBI). Reference: [DiskImageManager](https://github.com/damieng/DiskImageManager) by Damien Guard.
 
-### 8.6 MGT format (.mgt / .img)
+### 9.6 MGT format (.mgt / .img)
 
 **Geometry:** 80 tracks, 2 sides, 10 sectors/track, 512 bytes/sector. Total: 800 KB (819,200 bytes). Maximum 80 files per disk. Maximum file size: 195 sectors = 99,840 bytes (limited by directory sector map which holds 97 track/sector pairs + partial sector).
 
@@ -745,7 +786,7 @@ Sector data: 510 data bytes + 2-byte chain pointer (track, sector of next sector
 
 Single-sided images: 819,200-byte file with side 1 all zeros.
 
-### 8.7 MDR format (Microdrive cartridge)
+### 9.7 MDR format (Microdrive cartridge)
 
 **Hardware:**
 - IF1 ROM: 8KB shadow ROM at $0000–$1FFF
@@ -791,7 +832,7 @@ Free sectors: HDFLAG=0 and RECFLG=0. Cartridge name: from first sector's HDNAME 
 
 File data includes a 9-byte Spectrum header (same as tape): `type(1) + datalen(2 LE) + param1(2 LE) + param2(2 LE) + checksum(1) + ???(1)` (param1 = autostart for BASIC, start address for CODE).
 
-### 8.8 OPD format (Opus Discovery)
+### 9.8 OPD format (Opus Discovery)
 
 **Hardware:** WD1770 FDC + MC6821 PIA, memory-mapped (not I/O ports)
 
@@ -825,3 +866,38 @@ Directory: sectors 1–7 on track 0 side 0 (16-byte entries). Entry 0 = disk lab
 Image sector = block + 1 (block 0 = sector 1, sector 0 = directory header). Raw file length = `(lastBlock - firstBlock) × 256 + (bytesInLast & $0FFF) + 1`.
 
 File data has a 7-byte header: `type(1) + datalen(2 LE) + param1(2 LE) + param2(2 LE)`. BASIC: param1=autostart, param2=progLength. CODE: param1=startAddr, param2=32768.
+
+### 9.9 D40 / D80 format (Didaktik MDOS)
+
+Raw, header-less sector dumps: logical sector N sits at offset N x 512.
+
+```
+D40   368,640 bytes = 40 tracks x 2 sides x 9 sectors x 512
+D80   737,280 bytes = 80 tracks x 2 sides x 9 sectors x 512
+```
+
+**Detection.** The `SDOS` identifier at boot-sector offset 204. Size alone is not enough: a D80
+is byte-for-byte the same length as a double-sided OPD.
+
+**Boot sector (sector 0).** Byte 177 flags (bit 4 = double-sided), 178 tracks per side,
+179 sectors per track, 192-201 disk name, 204-207 `SDOS`.
+
+**FAT** at sector 1, in MDOS's own 12-bit packing (not FAT12): even entry
+`B0 | ((B1 >> 4) << 8)`, odd `B1 | ((B0 & 0x0F) << 8)`, 341 entries per sector. A file's
+sectors chain until a value >= `0xC00`; the final sector's low 9 bits give the bytes used
+(`0xE00` = a full sector, `0xDxx` = bad). Sectors 0-13 are reserved and marked `0xDDD`.
+
+**Directory** in physical sectors 6, 8, 10, 12, 7, 9, 11, 13 — that interleave *is* the catalog
+order — holding 128 entries of 32 bytes:
+
+```
+byte 0      type character: P BASIC, B Code, N/C arrays, S snapshot, Q sequence
+                            0xE5 = deleted
+bytes 1-10  name
+bytes 11-12 length low 16 bits, with bits 16-23 at byte 21
+byte 20     attributes (0x0F on real disks)
+            start address for B files; autostart LINE for P files
+            FAT index of the file's first sector
+```
+
+A P (BASIC) file stores its program length in the field a B file uses for `0x8000`.

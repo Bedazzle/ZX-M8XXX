@@ -57,7 +57,7 @@ export function initFileLoader({
         if (type === 'tape' || ext === 'tap' || ext === 'tzx' || ext === 'wav') {
             document.getElementById('tapeLed').title = fileName;
             document.getElementById('tapeInfo').style.display = 'inline-block';
-        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img' || ext === 'opd' || ext === 'opu') {
+        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img' || ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40') {
             // Build tooltip listing all loaded drives
             const driveNames = [];
             const betaDisks = spectrum.loadedBetaDisks;
@@ -482,7 +482,7 @@ export function initFileLoader({
             const betaDiskAvailable = spectrum.profile.betaDiskDefault || spectrum.betaDiskEnabled;
             btnBootTrdos.style.display = (betaDiskAvailable && hasTrdosRom) ? 'inline-block' : 'none';
         } else if (filterTypes) {
-            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu'].includes(t));
+            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'].includes(t));
             modalTitle.textContent = isDiskFilter ? 'Select Disk to Insert' : 'Select Tape to Insert';
             modalDesc.textContent = isDiskFilter ? 'The archive contains multiple disk images:' : 'The archive contains multiple tape files:';
             btnBootTrdos.style.display = 'none';

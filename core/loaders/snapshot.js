@@ -8,6 +8,7 @@
 import { SCLLoader, TRDLoader } from './disk-beta.js';
 import { MGTLoader } from './disk-mgt.js';
 import { OPDLoader } from './disk-opus.js';
+import { DidaktikLoader } from './disk-didaktik.js';
 import { MDRLoader } from './microdrive.js';
 import { RZXLoader } from './rzx.js';
 import { SZXLoader } from './szx.js';
@@ -83,6 +84,14 @@ import { getMachineByZ80HwMode } from '../machines.js';
             // Check for TZX signature (must check before TAP)
             if (TZXLoader.isTZX(data)) return 'tzx';
 
+            // Didaktik MDOS, by the "SDOS" marker in its boot sector. This has to
+            // come before EVERY other disk check, because nothing else here is
+            // specific enough to leave it alone: a blank D80 satisfies isTRD, and
+            // it is exactly the same 737,280 bytes as a double-sided OPD. Detected
+            // as TR-DOS it reached the boot-file injector, which is where the
+            // "Cannot add boot" message came from.
+            if (DidaktikLoader.hasSdosSignature(data)) return 'd80';
+
             // Check for SCL signature
             if (SCLLoader.isSCL(data)) return 'scl';
 
@@ -97,6 +106,10 @@ import { getMachineByZ80HwMode } from '../machines.js';
 
             // Check for OPD format (Opus Discovery)
             if (OPDLoader.isOPD(data)) return 'opd';
+
+            // Didaktik without the signature — size plus a readable catalogue.
+            // Last, because those sizes overlap MGT and OPD.
+            if (DidaktikLoader.isDidaktik(data)) return 'd80';
 
             // Check for WAV format (RIFF/WAVE audio)
             if (WAVLoader.isWAV(data)) return 'wav';

@@ -54,6 +54,38 @@ export function initInputSettings({
     const opusStatus = document.getElementById('opusStatus');
     const chkDidaktik = document.getElementById('chkDidaktik');
     const didaktikStatus = document.getElementById('didaktikStatus');
+
+    // Which ROM file each interface wants, and where its name is shown. The rows
+    // mirror the machine list above: checkbox, Load ROM, filename in cyan.
+    const IFACE_ROMS = {
+        betaDisk: { rom: 'trdos.rom',    span: 'betaDiskRomName' },
+        plusD:    { rom: 'plusd.rom',    span: 'plusDRomName' },
+        if1:      { rom: 'if1.rom',      span: 'if1RomName' },
+        opus:     { rom: 'opus.rom',     span: 'opusRomName' },
+        didaktik: { rom: 'didaktik.rom', span: 'didaktikRomName' }
+    };
+    // A ROM loaded by hand keeps the name of the file the user picked; one that
+    // came from roms/ shows its canonical name, exactly as the machine rows do.
+    const ifaceRomFileNames = {};
+
+    function setIfaceRomName(key, fileName) {
+        ifaceRomFileNames[IFACE_ROMS[key].rom] = fileName;
+        updateIfaceRomName(key);
+    }
+
+    function updateIfaceRomName(key) {
+        const entry = IFACE_ROMS[key];
+        const el = document.getElementById(entry.span);
+        if (!el) return;
+        const name = ifaceRomFileNames[entry.rom] ||
+                     (romData[entry.rom] ? entry.rom : '');
+        el.textContent = name;
+        el.title = name;
+    }
+
+    function updateAllIfaceRomNames() {
+        for (const key of Object.keys(IFACE_ROMS)) updateIfaceRomName(key);
+    }
     const chkKeyboardGhosting = document.getElementById('chkKeyboardGhosting');
     const selCapsShiftKey = document.getElementById('selCapsShiftKey');
     const selSymbolShiftKey = document.getElementById('selSymbolShiftKey');
@@ -366,6 +398,7 @@ export function initInputSettings({
 
     // Beta Disk (TR-DOS) interface toggle
     function updateBetaDiskStatus() {
+        updateIfaceRomName('betaDisk');
         const spectrum = getSpectrum();
         if (spectrum.profile.betaDiskDefault) {
             betaDiskStatus.textContent = '(always on for ' + spectrum.profile.name + ')';
@@ -433,6 +466,7 @@ export function initInputSettings({
             plusDStatus.textContent = '';
         }
         btnNmiPlusD.disabled = incompatible || !chkPlusD.checked || !romData['plusd.rom'];
+        updateIfaceRomName('plusD');
     }
 
     chkPlusD.addEventListener('change', () => {
@@ -487,6 +521,7 @@ export function initInputSettings({
         reader.onload = (ev) => {
             const data = new Uint8Array(ev.target.result);
             romData['plusd.rom'] = data;
+            setIfaceRomName('plusD', file.name);
             const spectrum = getSpectrum();
             spectrum.memory.loadPlusDRom(data);
             updatePlusDStatus();
@@ -517,6 +552,33 @@ export function initInputSettings({
         updatePlusDStatus();
     }
 
+    // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
+    // ROM could only be reached through the Load ROMs... dialog, which is not
+    // where anyone looks when the status line says "(trdos.rom required)".
+    document.getElementById('btnLoadTrdosRom').addEventListener('click', () => {
+        document.getElementById('romTrdosRomInput').click();
+    });
+
+    document.getElementById('romTrdosRomInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['trdos.rom'] = data;
+            setIfaceRomName('betaDisk', file.name);
+            const spectrum = getSpectrum();
+            spectrum.memory.loadTrdosRom(data);
+            if (spectrum.trdosTrap) spectrum.trdosTrap.updateTrdosRomFlag();
+            spectrum.updateBetaDiskPagingFlag();
+            updateBetaDiskStatus();
+            notifyDiskSystems();
+            showMessage('TR-DOS ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
     // Interface 1 (Microdrive) toggle
     function updateIF1Status() {
         // Interface 1 is gated on pagingModel exactly like the +D — see above
@@ -529,6 +591,7 @@ export function initInputSettings({
         } else {
             if1Status.textContent = '';
         }
+        updateIfaceRomName('if1');
     }
 
     chkIF1.addEventListener('change', () => {
@@ -568,6 +631,7 @@ export function initInputSettings({
         reader.onload = (ev) => {
             const data = new Uint8Array(ev.target.result);
             romData['if1.rom'] = data;
+            setIfaceRomName('if1', file.name);
             const spectrum = getSpectrum();
             spectrum.memory.loadIF1Rom(data);
             updateIF1Status();
@@ -605,6 +669,7 @@ export function initInputSettings({
         } else {
             opusStatus.textContent = '';
         }
+        updateIfaceRomName('opus');
     }
 
     chkOpus.addEventListener('change', () => {
@@ -651,6 +716,7 @@ export function initInputSettings({
         reader.onload = (ev) => {
             const data = new Uint8Array(ev.target.result);
             romData['opus.rom'] = data;
+            setIfaceRomName('opus', file.name);
             const spectrum = getSpectrum();
             spectrum.memory.loadOpusRom(data);
             updateOpusStatus();
@@ -676,16 +742,22 @@ export function initInputSettings({
 
     // Didaktik 80 toggle
     function updateDidaktikStatus() {
-        // Same gate as the +D, IF1 and Opus — its 14KB ROM overlays $0000-$37FF
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        // Offered on the 48K only, unlike the other interfaces: the Didaktik pages
+        // itself in at $0000, so on any 128K-family machine it takes over at reset
+        // and that machine's own ROM never boots (red screen, no BASIC, no 128
+        // menu) — reproduced on 128K and Pentagon. FUSE lists the peripheral for
+        // the 48K only as well. That is convention plus our reproduction, not a
+        // hardware datasheet; see docs/peripherals.md.
+        const incompatible = getSpectrum().profile.pagingModel !== 'none';
         chkDidaktik.disabled = incompatible;
         if (incompatible) {
-            didaktikStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            didaktikStatus.textContent = '48K only — it pages in at $0000 and would stop a 128K booting';
         } else if (!romData['didaktik.rom']) {
             didaktikStatus.textContent = '(didaktik.rom required)';
         } else {
             didaktikStatus.textContent = '';
         }
+        updateIfaceRomName('didaktik');
     }
 
     chkDidaktik.addEventListener('change', () => {
@@ -715,9 +787,22 @@ export function initInputSettings({
         spectrum.updateBetaDiskPagingFlag();
         updateDidaktikStatus();
         notifyDiskSystems();
-        showMessage(chkDidaktik.checked ?
-            'Didaktik 80 enabled (D40/D80 disks)' :
-            'Didaktik 80 disabled');
+
+        // Reset on the way in. The Didaktik sets its workspace up at $0000 and
+        // nowhere else, so switching it on mid-session leaves MDOS with 2K of
+        // zeros: the interface answers, then fails every disk command with
+        // "Device unavailable". The Opus gets away without this because it
+        // re-initialises from its $0048 interrupt hook every frame. Resetting is
+        // also what you would do with the real thing — you would not plug an
+        // interface into a running Spectrum.
+        if (chkDidaktik.checked && spectrum._didaktikPagingEnabled) {
+            spectrum.reset();
+            showMessage('Didaktik 80 enabled (D40/D80 disks) — machine reset so MDOS can start');
+        } else {
+            showMessage(chkDidaktik.checked ?
+                'Didaktik 80 enabled (D40/D80 disks)' :
+                'Didaktik 80 disabled');
+        }
     });
 
     document.getElementById('btnLoadDidaktikRom').addEventListener('click', () => {
@@ -731,11 +816,25 @@ export function initInputSettings({
         reader.onload = (ev) => {
             const data = new Uint8Array(ev.target.result);
             romData['didaktik.rom'] = data;
+            setIfaceRomName('didaktik', file.name);
             const spectrum = getSpectrum();
             spectrum.memory.loadDidaktikRom(data);
+            spectrum.updateBetaDiskPagingFlag();
             updateDidaktikStatus();
             notifyDiskSystems();
-            showMessage('Didaktik 80 ROM loaded (' + data.length + ' bytes)');
+            // Same reason the checkbox resets: MDOS only builds its workspace at
+            // $0000, so a ROM swapped in mid-session is never actually entered —
+            // the machine keeps running with whatever the old one left behind and
+            // every disk command answers "Device unavailable". Swapping the ROM on
+            // real hardware means pulling the interface apart, so a reset is if
+            // anything the gentler version.
+            if (spectrum._didaktikPagingEnabled) {
+                spectrum.reset();
+                showMessage('Didaktik 80 ROM loaded (' + data.length +
+                            ' bytes) — machine reset so MDOS can start');
+            } else {
+                showMessage('Didaktik 80 ROM loaded (' + data.length + ' bytes)');
+            }
         };
         reader.readAsArrayBuffer(file);
         e.target.value = '';
@@ -753,6 +852,11 @@ export function initInputSettings({
         spectrum.updateBetaDiskPagingFlag();
         updateDidaktikStatus();
     }
+
+    // The ROM auto-load from roms/ is async and usually lands after this panel
+    // is built, so paint the filenames once here and again whenever a status
+    // refresh runs.
+    updateAllIfaceRomNames();
 
     // Boot Manager (extracted to ui/boot-manager.js)
     const bootAPI = initBootManager({ showMessage });
@@ -836,6 +940,7 @@ export function initInputSettings({
         getUpdateIF1Status: () => updateIF1Status,
         updateOpusStatus,
         updateDidaktikStatus,
+        updateAllIfaceRomNames,
         updateMouseStatus,
         gamepadAPI,
         bootAPI

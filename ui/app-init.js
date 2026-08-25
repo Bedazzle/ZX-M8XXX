@@ -262,6 +262,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         getDisplayAPI: () => displayAPI,
         getUpdateBetaDiskStatus: () => updateBetaDiskStatus,
         getUpdatePlusDStatus: () => updatePlusDStatus,
+        getRefreshIfaceStatuses: () => refreshIfaceStatuses,
         getUpdateIF1Status: () => updateIF1Status,
         getUpdateRomFileNames: () => updateRomFileNames,
         getUpdateDriveSelector: () => updateDriveSelector
@@ -3042,6 +3043,17 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             initBootManager,
             onDiskSystemsChanged: () => { if (updateDriveSelector) updateDriveSelector(); }
         });
+
+    // Refresh every disk-interface row at once. ROMs arrive from roms/ asynchronously,
+    // usually after the Settings panel has been built, so the rows have to be told
+    // when that finishes or they keep saying the ROM is missing.
+    function refreshIfaceStatuses() {
+        updateBetaDiskStatus();
+        updatePlusDStatus();
+        updateIF1Status();
+        updateOpusStatus();
+        updateDidaktikStatus();
+    }
 
     // Autofire (extracted to ui/autofire.js)
     const autofireAPI = initAutofire({

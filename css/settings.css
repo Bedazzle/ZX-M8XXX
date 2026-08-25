@@ -267,3 +267,55 @@
     font-size: 10px;
     white-space: nowrap;
 }
+
+/* Disk-interface rows in Settings -> Machines.
+   Same shape as the machine list built by ui/machine-selector.js: checkbox,
+   Load ROM, then the loaded filename in cyan. The name column is a fixed width
+   so the buttons line up down the column even though "+D Interface (MGT)" and
+   "Interface 1 (Microdrive)" are very different lengths. */
+.iface-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 8px;
+    margin-bottom: 2px;
+}
+
+.iface-row .iface-name {
+    white-space: nowrap;
+    /* A fixed basis, not min-width: the names differ by a few pixels
+       ("Interface 1 (Microdrive)" is the longest) and min-width lets each row
+       grow to its own content, so the Load ROM buttons end up a few px apart. */
+    flex: 0 0 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.iface-row .iface-rom-btn {
+    font-size: 10px;
+    padding: 1px 5px;
+    flex: 0 0 auto;
+}
+
+.iface-row .iface-rom-name {
+    color: var(--cyan);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 90px;
+}
+
+.iface-row .iface-status {
+    color: var(--text-dim);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Accuracy toggles have no Load ROM column to line up with, so they get a wider
+   name cell than the interface rows -- "ULA Snow (I = $40-$7F)" needs it. */
+.iface-row .iface-name.wide {
+    flex: 0 0 230px;
+}

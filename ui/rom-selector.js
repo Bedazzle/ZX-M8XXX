@@ -1,6 +1,13 @@
 // rom-selector.js — ROM selector modal, auto-load, validation, drag & drop (extracted from index.html)
 
-export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status, getUpdateRomFileNames, getUpdateDriveSelector }) {
+export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status, getRefreshIfaceStatuses, getUpdateRomFileNames, getUpdateDriveSelector }) {
+    // Every disk interface's status line at once. This used to be three
+    // separate getters, and adding Opus and Didaktik silently missed both —
+    // their rows still read "(opus.rom required)" with the ROM sitting loaded.
+    function refreshIfaceStatuses() {
+        const fn = getRefreshIfaceStatuses && getRefreshIfaceStatuses();
+        if (typeof fn === 'function') fn();
+    }
     function showMessage(text, type) { getShowMessage()(text, type); }
     const romData = {};    // { 'filename': ArrayBuffer, ... }
 
@@ -266,18 +273,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         spectrum.start();
 
         // Update disk interface statuses after machine type is finalized and ROMs loaded
-        const updateBetaDiskStatus = getUpdateBetaDiskStatus();
-        if (typeof updateBetaDiskStatus === 'function') {
-            updateBetaDiskStatus();
-        }
-        const updatePlusDStatus = getUpdatePlusDStatus();
-        if (typeof updatePlusDStatus === 'function') {
-            updatePlusDStatus();
-        }
-        const updateIF1Status = getUpdateIF1Status();
-        if (typeof updateIF1Status === 'function') {
-            updateIF1Status();
-        }
+        refreshIfaceStatuses();
 
         showMessage('Emulator started');
     }
@@ -409,24 +405,9 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                 const romFile = ROM_TYPE_TO_FILE[type];
                 if (romFile) romFileNames[romFile] = file.name;
                 showMessage(label + ' loaded');
-                if (type === 'trdos') {
-                    const updateBetaDiskStatus = getUpdateBetaDiskStatus();
-                    if (typeof updateBetaDiskStatus === 'function') {
-                        updateBetaDiskStatus();
-                    }
-                }
-                if (type === 'plusd') {
-                    const updatePlusDStatus = getUpdatePlusDStatus();
-                    if (typeof updatePlusDStatus === 'function') {
-                        updatePlusDStatus();
-                    }
-                }
-                if (type === 'if1') {
-                    const updateIF1Status = getUpdateIF1Status();
-                    if (typeof updateIF1Status === 'function') {
-                        updateIF1Status();
-                    }
-                }
+                // Any interface ROM may have arrived; refresh them all rather
+                // than trying to remember which types exist
+                refreshIfaceStatuses();
             }
             input.value = '';
         });

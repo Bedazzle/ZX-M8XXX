@@ -171,6 +171,43 @@
             }
 
             // ---------------------------------------------------------------
+            section('An image reaches the right drive in the first place');
+            {
+                // Getting the disk to the correct controller is part of "does the
+                // disk system work", and it is decided by CONTENT, not extension.
+                // Two traps live here: a D80 is exactly the same 737,280 bytes as
+                // a double-sided OPD, and a blank D80 also satisfies isTRD — so
+                // before the Didaktik check was moved to the front of detectType,
+                // a .d80 was detected as TR-DOS and reached the boot-file
+                // injector, which answered "Cannot add boot".
+                const { DidaktikLoader, TRDLoader } = await import('../core/loaders.js');
+                const det = (d) => sp.snapshotLoader.detectType(d, '');   // no filename: content only
+
+                const d80 = DidaktikLoader.createBlankD80('T');
+                const opdDs = OPDLoader.createBlankOPD(2);
+                assert(d80.length === opdDs.length,
+                       'a D80 and a double-sided OPD really are the same size',
+                       d80.length + ' vs ' + opdDs.length);
+                assert(DidaktikLoader.hasSdosSignature(d80) &&
+                       !DidaktikLoader.hasSdosSignature(opdDs),
+                       'only the MDOS one carries the SDOS marker that tells them apart');
+
+                for (const [name, img, want] of [
+                    ['D80', d80, 'd80'],
+                    ['D40', DidaktikLoader.createBlankD40('T'), 'd80'],
+                    ['OPD single-sided', OPDLoader.createBlankOPD(1), 'opd'],
+                    ['OPD double-sided', opdDs, 'opd'],
+                    ['MDR', MDRLoader.createBlankMDR('T'), 'mdr'],
+                    ['TRD', TRDLoader.buildTRD([], 'T'), 'trd'],
+                    ['MGT', new Uint8Array(819200), 'mgt']
+                ]) {
+                    const got = det(img);
+                    assert(got === want, name + ' is detected as ' + want,
+                           'got ' + got);
+                }
+            }
+
+            // ---------------------------------------------------------------
             section('Opus Discovery — a program survives SAVE, reset and LOAD');
             {
                 // The v1.2 ROM: every Opus ROM loads, but this is the one whose

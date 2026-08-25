@@ -26,6 +26,20 @@ import { PlusDDisk } from './disk-mgt.js';
         }
 
         // Known raw image sizes (track × sides × sectors × 512)
+        /**
+         * The unambiguous half of isDidaktik: the "SDOS" identifier an MDOS boot
+         * sector carries at offset 204. Format detection needs this on its own,
+         * because a D80 and a double-sided OPD are both exactly 737,280 bytes and
+         * a D40 is a plausible size for other formats too — so the size-plus-
+         * catalogue fallback below cannot be allowed to run before those.
+         */
+        static hasSdosSignature(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            return bytes.length > 207 &&
+                bytes[204] === 0x53 && bytes[205] === 0x44 &&
+                bytes[206] === 0x4F && bytes[207] === 0x53;
+        }
+
         static isDidaktik(data) {
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             if (bytes.length < 14 * 512) return false;

@@ -375,80 +375,103 @@
             <div class="settings-subtab-content" id="settings-machines">
             <div class="settings-tab-content">
                 <div class="settings-section">
-                    <div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Choose which machines appear in the toolbar dropdown:</div>
+                    <!-- Load ROMs... opens the dialog covering every ROM on this
+                         tab, machines and interfaces alike, so it belongs at the
+                         top with the intro rather than orphaned under the last
+                         group it happens to follow. -->
+                    <div style="color: var(--text-secondary); font-size: 11px; margin-bottom: 6px;">Choose which machines appear in the toolbar dropdown:</div>
+                    <div style="margin-bottom: 10px;">
+                        <button id="btnSettingsLoadRoms" class="control-btn" style="font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
+                    </div>
                     <div id="machineCheckboxes"></div>
-                    <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up." style="margin-top: 8px; display: inline-block;">
-                        <input type="checkbox" id="chkLateTimings"> Late Timings
-                    </label>
-                    <label class="checkbox-label" title="Pentagon ULA attribute prefetch (-5T). When enabled, matches ZXMAK2/Spectaculator/SpecEmu multicolor timing. Default (off) matches Unreal Speccy/FUSE." style="margin-top: 4px; display: inline-block;">
-                        <input type="checkbox" id="chkPentagonPrefetch"> Pentagon Attr Prefetch
-                    </label>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="ULA snow: with the I register set to $40-$7F the Z80's refresh address lands in contended RAM, and the ULA puts the byte from the bus on screen instead of the display byte. Machines with contended memory only (not Pentagon)." style="display: inline-block;">
-                            <input type="checkbox" id="chkUlaSnow"> ULA Snow (I = $40-$7F)
-                        </label>
-                        <span id="ulaSnowStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Ink/paper edge skew: the Ferranti ULA switches into ink later than back to paper, so an ink pixel is slightly narrower than a paper one. Only the first pixel of each ink run is affected, so ordinary graphics barely change — but a one-pixel checkerboard drawn with white ink reads darker than the same pattern drawn with white paper. Ferranti machines only (48K/128K/+2), not the +2A/+3 gate array or the clones." style="display: inline-block;">
-                            <input type="checkbox" id="chkInkSkew"> ULA Ink Edge Skew
-                        </label>
-                        <span id="inkSkewStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="PAL composite (RF) simulation: models the single wire a TV is given, so fine dither whose frequency lands on the colour subcarrier is demodulated as colour. This is the only way &quot;Chromatrons Attack&quot; is visible — its $A5/$5A dither is flat grey on an RGB monitor and magenta/green on a TV. Stable only where the pixel clock is locked to the subcarrier (128K/+2/+2A/+3); on a 48K or a Pentagon the phase drifts, which is dot crawl." style="display: inline-block;">
-                            <input type="checkbox" id="chkPalComposite"> PAL Composite (RF)
-                        </label>
-                        <span id="palCompositeStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom). Always enabled for Pentagon." style="display: inline-block;">
+                    <!-- Disk interfaces. Same row shape as the machine list above:
+                         checkbox, Load ROM, the loaded filename in cyan. A label
+                         column keeps the buttons aligned down the column even
+                         though the interface names differ in length. -->
+                    <div style="color: var(--text-secondary); font-size: 11px; margin: 8px 0 4px; font-weight: bold;">Disk interfaces</div>
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom). Always enabled for Pentagon.">
                             <input type="checkbox" id="chkBetaDisk"> Beta Disk (TR-DOS)
                         </label>
-                        <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <button id="btnLoadTrdosRom" class="control-btn iface-rom-btn" title="Load TR-DOS ROM file (trdos.rom)">Load ROM</button>
+                        <input type="file" id="romTrdosRomInput" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="betaDiskRomName" class="iface-rom-name"></span>
+                        <span id="betaDiskStatus" class="iface-status"></span>
                     </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable +D interface for MGT disks (requires plusd.rom). Conflicts with Interface 1." style="display: inline-block;">
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable +D interface for MGT disks (requires plusd.rom). Conflicts with Interface 1, Opus and Didaktik.">
                             <input type="checkbox" id="chkPlusD"> +D Interface (MGT)
                         </label>
-                        <span id="plusDStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <button id="btnLoadPlusDRom" class="control-btn iface-rom-btn" title="Load +D ROM file (plusd.rom)">Load ROM</button>
                         <input type="file" id="romPlusDInput" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="plusDRomName" class="iface-rom-name"></span>
+                        <button id="btnNmiPlusD" class="control-btn iface-rom-btn" title="Trigger +D NMI (snapshot button)" disabled>NMI</button>
+                        <span id="plusDStatus" class="iface-status"></span>
                     </div>
-                    <div style="margin-top: 4px;">
-                        <button id="btnLoadPlusDRom" title="Load +D ROM file (plusd.rom)" style="font-size: 11px; padding: 2px 10px;">Load +D ROM</button>
-                        <button id="btnNmiPlusD" title="Trigger +D NMI (snapshot button)" disabled style="font-size: 11px; padding: 2px 10px;">NMI</button>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable Interface 1 for Microdrive cartridges (requires if1.rom). Conflicts with +D." style="display: inline-block;">
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable Interface 1 for Microdrive cartridges (requires if1.rom). Conflicts with +D.">
                             <input type="checkbox" id="chkIF1"> Interface 1 (Microdrive)
                         </label>
-                        <span id="if1Status" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <button id="btnLoadIF1Rom" class="control-btn iface-rom-btn" title="Load Interface 1 ROM file (if1.rom)">Load ROM</button>
                         <input type="file" id="romIF1Input" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="if1RomName" class="iface-rom-name"></span>
+                        <span id="if1Status" class="iface-status"></span>
                     </div>
-                    <div style="margin-top: 4px;">
-                        <button id="btnLoadIF1Rom" title="Load Interface 1 ROM file (if1.rom)" style="font-size: 11px; padding: 2px 10px;">Load IF1 ROM</button>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable Opus Discovery for OPD disks (requires opus.rom). Conflicts with +D." style="display: inline-block;">
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable Opus Discovery for OPD disks (requires opus.rom). Conflicts with +D and Didaktik.">
                             <input type="checkbox" id="chkOpus"> Opus Discovery (OPD)
                         </label>
-                        <span id="opusStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <button id="btnLoadOpusRom" class="control-btn iface-rom-btn" title="Load Opus Discovery ROM file (opus.rom)">Load ROM</button>
                         <input type="file" id="romOpusInput" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="opusRomName" class="iface-rom-name"></span>
+                        <span id="opusStatus" class="iface-status"></span>
                     </div>
-                    <div style="margin-top: 4px;">
-                        <button id="btnLoadOpusRom" title="Load Opus Discovery ROM file (opus.rom)" style="font-size: 11px; padding: 2px 10px;">Load Opus ROM</button>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <label class="checkbox-label" title="Enable Didaktik 80 for D40/D80 MDOS disks (requires didaktik.rom). Conflicts with +D and Opus." style="display: inline-block;">
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable Didaktik 80 for D40/D80 MDOS disks (48K only; conflicts with +D and Opus).">
                             <input type="checkbox" id="chkDidaktik"> Didaktik 80 (D40/D80)
                         </label>
-                        <span id="didaktikStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <button id="btnLoadDidaktikRom" class="control-btn iface-rom-btn" title="Load Didaktik 80 ROM file (didaktik.rom)">Load ROM</button>
                         <input type="file" id="romDidaktikInput" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="didaktikRomName" class="iface-rom-name"></span>
+                        <span id="didaktikStatus" class="iface-status"></span>
                     </div>
-                    <div style="margin-top: 4px;">
-                        <button id="btnLoadDidaktikRom" title="Load Didaktik 80 ROM file (didaktik.rom)" style="font-size: 11px; padding: 2px 10px;">Load Didaktik ROM</button>
+
+                    <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Emulation accuracy</div>
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up.">
+                            <input type="checkbox" id="chkLateTimings"> Late Timings
+                        </label>
                     </div>
-                    <button id="btnSettingsLoadRoms" style="margin-top: 10px; font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="Pentagon ULA attribute prefetch (-5T). When enabled, matches ZXMAK2/Spectaculator/SpecEmu multicolor timing. Default (off) matches Unreal Speccy/FUSE.">
+                            <input type="checkbox" id="chkPentagonPrefetch"> Pentagon Attr Prefetch
+                        </label>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="ULA snow: with the I register set to $40-$7F the Z80's refresh address lands in contended RAM, and the ULA puts the byte from the bus on screen instead of the display byte. Machines with contended memory only (not Pentagon).">
+                            <input type="checkbox" id="chkUlaSnow"> ULA Snow (I = $40-$7F)
+                        </label>
+                        <span id="ulaSnowStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="Ink/paper edge skew: the Ferranti ULA switches into ink later than back to paper, so an ink pixel is slightly narrower than a paper one. Only the first pixel of each ink run is affected, so ordinary graphics barely change &mdash; but a one-pixel checkerboard drawn with white ink reads darker than the same pattern drawn with white paper. Ferranti machines only (48K/128K/+2), not the +2A/+3 gate array or the clones.">
+                            <input type="checkbox" id="chkInkSkew"> ULA Ink Edge Skew
+                        </label>
+                        <span id="inkSkewStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="PAL composite (RF) simulation: models the single wire a TV is given, so fine dither whose frequency lands on the colour subcarrier is demodulated as colour. This is the only way &quot;Chromatrons Attack&quot; is visible &mdash; its $A5/$5A dither is flat grey on an RGB monitor and magenta/green on a TV. Stable only where the pixel clock is locked to the subcarrier (128K/+2/+2A/+3); on a 48K or a Pentagon the phase drifts, which is dot crawl.">
+                            <input type="checkbox" id="chkPalComposite"> PAL Composite (RF)
+                        </label>
+                        <span id="palCompositeStatus" class="iface-status"></span>
+                    </div>
+
                 </div>
             </div>
             </div><!-- settings-machines -->
