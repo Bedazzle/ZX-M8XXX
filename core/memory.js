@@ -13,7 +13,8 @@ import {
     PAGE_SIZE, BANK_MASK, SLOT1_START, SLOT2_START, SLOT3_START,
     DECODE_128K_MASK, DECODE_PLUS2A_MASK, DECODE_7FFD_PLUS2A,
     DECODE_PLUS2A_MASK2, DECODE_1FFD_PLUS2A,
-    P7FFD_RAM_MASK, P7FFD_SCREEN_BIT, P7FFD_ROM_BIT, P7FFD_LOCK_BIT, P7FFD_P1024_EXT
+    P7FFD_RAM_MASK, P7FFD_SCREEN_BIT, P7FFD_ROM_BIT, P7FFD_LOCK_BIT, P7FFD_P1024_EXT,
+    DIDAKTIK_ROM_SIZE, DIDAKTIK_RAM_START
 } from './constants.js';
 
     export class Memory {
@@ -54,6 +55,21 @@ import {
             // Interface 1 (Microdrive) state
             this.if1Active = false;      // True when IF1 ROM paged in at 0x0000-0x1FFF
             this.if1Rom = null;          // 8KB ROM (Uint8Array)
+
+            // Opus Discovery state. Unlike every other interface here the Opus
+            // puts its FDC and PIA in the MEMORY map rather than on I/O ports,
+            // so reads and writes in $2800-$37FF have to reach the controller.
+            this.opusActive = false;     // True when the Opus window is paged in
+            this.opusRom = null;         // 8KB ROM (Uint8Array)
+            this.opusRam = new Uint8Array(2048);  // 2KB RAM at 0x2000-0x27FF
+            this.opusDisk = null;        // OpusDisk instance (register window)
+
+            // Didaktik 80 state. Its ROM is 14KB, not 8KB like the others, and
+            // it covers $0000-$37FF with 2KB of RAM above it — so the overlay
+            // fills the whole bottom 16KB.
+            this.didaktikActive = false;
+            this.didaktikRom = null;              // 14KB ROM (Uint8Array)
+            this.didaktikRam = new Uint8Array(2048);  // 2KB RAM at 0x3800-0x3FFF
 
             // Watchpoint callbacks
             this.onRead = null;  // function(addr, val) - called on read
@@ -109,6 +125,10 @@ import {
             this.plusDActive = false;
             this.plusDRam.fill(0);
             this.if1Active = false;
+            this.opusActive = false;
+            this.opusRam.fill(0);
+            this.didaktikActive = false;
+            this.didaktikRam.fill(0);
         }
 
         loadRom(data, bank = 0) {
@@ -179,6 +199,38 @@ import {
             return false;
         }
 
+        // Load Didaktik 80 ROM. The interface maps 14KB ($0000-$37FF); the dumps
+        // in circulation are 14336 or 16384 bytes, so take the first 14336.
+        loadDidaktikRom(data) {
+            this.didaktikRom = new Uint8Array(DIDAKTIK_ROM_SIZE);
+            const src = new Uint8Array(data);
+            this.didaktikRom.set(src.subarray(0, Math.min(src.length, DIDAKTIK_ROM_SIZE)));
+        }
+
+        hasDidaktikRom() {
+            if (!this.didaktikRom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.didaktikRom[i] !== 0) return true;
+            }
+            return false;
+        }
+
+        // Load Opus Discovery ROM (8KB)
+        loadOpusRom(data) {
+            this.opusRom = new Uint8Array(8192);
+            const src = new Uint8Array(data);
+            this.opusRom.set(src.subarray(0, Math.min(src.length, 8192)));
+        }
+
+        // Check if Opus Discovery ROM is loaded
+        hasOpusRom() {
+            if (!this.opusRom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.opusRom[i] !== 0) return true;
+            }
+            return false;
+        }
+
         read(addr) {
             // Note: addr is pre-masked by caller (z80.js readByte)
             let val;
@@ -186,6 +238,33 @@ import {
             // Interface 1 ROM overlay: 0x0000-0x1FFF only (8KB shadow ROM)
             if (this.if1Active && addr < 0x2000) {
                 val = this.if1Rom[addr];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
+            // Opus Discovery overlay: 0x0000-0x1FFF ROM, 0x2000-0x27FF RAM,
+            // 0x2800-0x2FFF WD1770, 0x3000-0x37FF MC6821 PIA, 0x3800+ unmapped.
+            // Priority sits between IF1 and +D, matching FUSE.
+            if (this.opusActive && addr < SLOT1_START) {
+                if (addr < 0x2000) {
+                    val = this.opusRom ? this.opusRom[addr] : 0xFF;
+                } else if (addr < 0x2800) {
+                    val = this.opusRam[addr - 0x2000];
+                } else {
+                    // Register window — reads here have side effects on the FDC
+                    val = this.opusDisk ? this.opusDisk.readMemory(addr) : 0xFF;
+                }
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
+            // Didaktik 80 overlay: 0x0000-0x37FF = 14KB ROM, 0x3800-0x3FFF = 2KB RAM
+            if (this.didaktikActive && addr < SLOT1_START) {
+                if (addr < DIDAKTIK_RAM_START) {
+                    val = this.didaktikRom ? this.didaktikRom[addr] : 0xFF;
+                } else {
+                    val = this.didaktikRam[addr - DIDAKTIK_RAM_START];
+                }
                 if (this.onRead) this.onRead(addr, val);
                 return val;
             }
@@ -230,9 +309,44 @@ import {
             return val;
         }
 
+        /**
+         * Read for inspection — the debugger, watches, memory search, exporters.
+         * Identical to read() everywhere except the Opus register window, which
+         * has side effects: reading the WD1770 data register advances the sector
+         * buffer and raises a DRQ NMI, and reading the PIA's port A clears bit 6.
+         * A memory panel showing $2800 must not drive the disk controller.
+         */
+        peek(addr) {
+            if (this.opusActive && this.opusDisk && addr >= 0x2800 && addr < SLOT1_START) {
+                const val = this.opusDisk.peekMemory(addr);
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+            return this.read(addr);
+        }
+
         write(addr, val) {
             // Note: addr and val are pre-masked by caller (z80.js writeByte)
             if (this.onWrite) this.onWrite(addr, val);
+
+            // Opus write: RAM at 0x2000-0x27FF, registers above it. The ROM at
+            // 0x0000-0x1FFF ignores writes, as does 0x3800 and up.
+            if (this.opusActive && addr < SLOT1_START) {
+                if (addr >= 0x2000 && addr < 0x2800) {
+                    this.opusRam[addr - 0x2000] = val;
+                } else if (addr >= 0x2800 && this.opusDisk) {
+                    this.opusDisk.writeMemory(addr, val);
+                }
+                return;
+            }
+
+            // Didaktik write: only its 2KB RAM at the top of the overlay takes it
+            if (this.didaktikActive && addr < SLOT1_START) {
+                if (addr >= DIDAKTIK_RAM_START) {
+                    this.didaktikRam[addr - DIDAKTIK_RAM_START] = val;
+                }
+                return;
+            }
 
             // +D RAM write: 0x2000-0x3FFF is writable when +D is active
             if (this.plusDActive && addr >= 0x2000 && addr < SLOT1_START) {

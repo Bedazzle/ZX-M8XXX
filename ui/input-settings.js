@@ -50,6 +50,10 @@ export function initInputSettings({
     const btnNmiPlusD = document.getElementById('btnNmiPlusD');
     const chkIF1 = document.getElementById('chkIF1');
     const if1Status = document.getElementById('if1Status');
+    const chkOpus = document.getElementById('chkOpus');
+    const opusStatus = document.getElementById('opusStatus');
+    const chkDidaktik = document.getElementById('chkDidaktik');
+    const didaktikStatus = document.getElementById('didaktikStatus');
     const chkKeyboardGhosting = document.getElementById('chkKeyboardGhosting');
     const selCapsShiftKey = document.getElementById('selCapsShiftKey');
     const selSymbolShiftKey = document.getElementById('selSymbolShiftKey');
@@ -447,6 +451,21 @@ export function initInputSettings({
             updateIF1Status();
             showMessage('+D enabled — Interface 1 disabled (conflicting ports $E7/$EF)');
         }
+        // Mutual exclusion with the Opus: both page in at $0008 over $0000-$3FFF
+        if (chkPlusD.checked && chkOpus.checked) {
+            chkOpus.checked = false;
+            spectrum.opusEnabled = false;
+            storageSet('zxm8_opus', false);
+            updateOpusStatus();
+            showMessage('+D enabled — Opus Discovery disabled (both page in at $0008)');
+        }
+        if (chkPlusD.checked && chkDidaktik.checked) {
+            chkDidaktik.checked = false;
+            spectrum.didaktikEnabled = false;
+            storageSet('zxm8_didaktik', false);
+            updateDidaktikStatus();
+            showMessage('+D enabled — Didaktik 80 disabled (both overlay $0000-$3FFF)');
+        }
         spectrum.updateBetaDiskPagingFlag();
         updatePlusDStatus();
         notifyDiskSystems();
@@ -573,6 +592,168 @@ export function initInputSettings({
         updateIF1Status();
     }
 
+    // Opus Discovery toggle
+    function updateOpusStatus() {
+        // Gated on pagingModel exactly like the +D and IF1 — the Opus overlays
+        // $0000-$3FFF, which +2A/+3 paging already owns.
+        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        chkOpus.disabled = incompatible;
+        if (incompatible) {
+            opusStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+        } else if (!romData['opus.rom']) {
+            opusStatus.textContent = '(opus.rom required)';
+        } else {
+            opusStatus.textContent = '';
+        }
+    }
+
+    chkOpus.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.opusEnabled = chkOpus.checked;
+        storageSet('zxm8_opus', chkOpus.checked);
+        if (chkOpus.checked && romData['opus.rom'] && !spectrum.memory.hasOpusRom()) {
+            spectrum.memory.loadOpusRom(romData['opus.rom']);
+        }
+        // Mutual exclusion with the +D: both page themselves in at $0008, and
+        // both overlay $0000-$3FFF, so only one can own that window.
+        if (chkOpus.checked && chkPlusD.checked) {
+            chkPlusD.checked = false;
+            spectrum.plusDEnabled = false;
+            storageSet('zxm8_plusD', false);
+            updatePlusDStatus();
+            showMessage('Opus Discovery enabled — +D disabled (both page in at $0008)');
+        }
+        if (chkOpus.checked && chkDidaktik.checked) {
+            chkDidaktik.checked = false;
+            spectrum.didaktikEnabled = false;
+            storageSet('zxm8_didaktik', false);
+            updateDidaktikStatus();
+            showMessage('Opus Discovery enabled — Didaktik 80 disabled (both overlay $0000-$3FFF)');
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateOpusStatus();
+        notifyDiskSystems();
+        showMessage(chkOpus.checked ?
+            'Opus Discovery enabled (OPD disks)' :
+            'Opus Discovery disabled');
+    });
+
+    // Opus ROM load button
+    document.getElementById('btnLoadOpusRom').addEventListener('click', () => {
+        document.getElementById('romOpusInput').click();
+    });
+
+    // Opus ROM file input
+    document.getElementById('romOpusInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['opus.rom'] = data;
+            const spectrum = getSpectrum();
+            spectrum.memory.loadOpusRom(data);
+            updateOpusStatus();
+            notifyDiskSystems();
+            showMessage('Opus Discovery ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';  // Allow re-loading same file
+    });
+
+    // Restore Opus setting from localStorage
+    {
+        const spectrum = getSpectrum();
+        const savedOpus = storageGet('zxm8_opus') === 'true';
+        chkOpus.checked = savedOpus;
+        spectrum.opusEnabled = savedOpus;
+        if (savedOpus && romData['opus.rom'] && !spectrum.memory.hasOpusRom()) {
+            spectrum.memory.loadOpusRom(romData['opus.rom']);
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateOpusStatus();
+    }
+
+    // Didaktik 80 toggle
+    function updateDidaktikStatus() {
+        // Same gate as the +D, IF1 and Opus — its 14KB ROM overlays $0000-$37FF
+        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        chkDidaktik.disabled = incompatible;
+        if (incompatible) {
+            didaktikStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+        } else if (!romData['didaktik.rom']) {
+            didaktikStatus.textContent = '(didaktik.rom required)';
+        } else {
+            didaktikStatus.textContent = '';
+        }
+    }
+
+    chkDidaktik.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.didaktikEnabled = chkDidaktik.checked;
+        storageSet('zxm8_didaktik', chkDidaktik.checked);
+        if (chkDidaktik.checked && romData['didaktik.rom'] && !spectrum.memory.hasDidaktikRom()) {
+            spectrum.memory.loadDidaktikRom(romData['didaktik.rom']);
+        }
+        // Mutual exclusion with the other $0000 overlays. The Didaktik pages in
+        // at $0000 itself, so it cannot share the bottom of memory with anything.
+        if (chkDidaktik.checked) {
+            for (const [chk, flag, key, name] of [
+                [chkPlusD, 'plusDEnabled', 'zxm8_plusD', '+D'],
+                [chkOpus, 'opusEnabled', 'zxm8_opus', 'Opus Discovery']
+            ]) {
+                if (chk.checked) {
+                    chk.checked = false;
+                    spectrum[flag] = false;
+                    storageSet(key, false);
+                    showMessage('Didaktik 80 enabled — ' + name + ' disabled (both page in at $0000-$3FFF)');
+                }
+            }
+            updatePlusDStatus();
+            updateOpusStatus();
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateDidaktikStatus();
+        notifyDiskSystems();
+        showMessage(chkDidaktik.checked ?
+            'Didaktik 80 enabled (D40/D80 disks)' :
+            'Didaktik 80 disabled');
+    });
+
+    document.getElementById('btnLoadDidaktikRom').addEventListener('click', () => {
+        document.getElementById('romDidaktikInput').click();
+    });
+
+    document.getElementById('romDidaktikInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['didaktik.rom'] = data;
+            const spectrum = getSpectrum();
+            spectrum.memory.loadDidaktikRom(data);
+            updateDidaktikStatus();
+            notifyDiskSystems();
+            showMessage('Didaktik 80 ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
+    // Restore Didaktik setting from localStorage
+    {
+        const spectrum = getSpectrum();
+        const savedDidaktik = storageGet('zxm8_didaktik') === 'true';
+        chkDidaktik.checked = savedDidaktik;
+        spectrum.didaktikEnabled = savedDidaktik;
+        if (savedDidaktik && romData['didaktik.rom'] && !spectrum.memory.hasDidaktikRom()) {
+            spectrum.memory.loadDidaktikRom(romData['didaktik.rom']);
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateDidaktikStatus();
+    }
+
     // Boot Manager (extracted to ui/boot-manager.js)
     const bootAPI = initBootManager({ showMessage });
 
@@ -653,6 +834,8 @@ export function initInputSettings({
         updatePlusDStatus,
         updateIF1Status,
         getUpdateIF1Status: () => updateIF1Status,
+        updateOpusStatus,
+        updateDidaktikStatus,
         updateMouseStatus,
         gamepadAPI,
         bootAPI

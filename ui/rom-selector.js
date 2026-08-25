@@ -4,7 +4,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
     function showMessage(text, type) { getShowMessage()(text, type); }
     const romData = {};    // { 'filename': ArrayBuffer, ... }
 
-    const ROM_TYPE_TO_FILE = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'scorpion': 'scorpion.rom', 'trdos': 'trdos.rom', 'plusd': 'plusd.rom', 'if1': 'if1.rom' };
+    const ROM_TYPE_TO_FILE = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'scorpion': 'scorpion.rom', 'trdos': 'trdos.rom', 'plusd': 'plusd.rom', 'if1': 'if1.rom', 'opus': 'opus.rom', 'didaktik': 'didaktik.rom' };
 
     function getRomByType(type) {
         return romData[ROM_TYPE_TO_FILE[type]] || null;
@@ -221,6 +221,14 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (romData['if1.rom'] && spec.if1Enabled) {
             spec.memory.loadIF1Rom(romData['if1.rom']);
         }
+        // Load Opus Discovery ROM if available and the Opus is enabled
+        if (romData['opus.rom'] && spec.opusEnabled) {
+            spec.memory.loadOpusRom(romData['opus.rom']);
+        }
+        // Load Didaktik 80 ROM if available and the Didaktik is enabled
+        if (romData['didaktik.rom'] && spec.didaktikEnabled) {
+            spec.memory.loadDidaktikRom(romData['didaktik.rom']);
+        }
         // Recalculate paging flags AFTER all ROMs are loaded — hasPlusDRom()/hasIF1Rom()
         // must return true for _plusDPagingEnabled/_if1PagingEnabled to be set
         spec.updateBetaDiskPagingFlag();
@@ -320,6 +328,14 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // Interface 1 ROM (for Microdrive cartridges)
         if (!seen.has('if1.rom')) {
             romPaths.push({ path: 'roms/if1.rom', file: 'if1.rom' });
+        }
+        // Opus Discovery ROM (for OPD disks)
+        if (!seen.has('opus.rom')) {
+            romPaths.push({ path: 'roms/opus.rom', file: 'opus.rom' });
+        }
+        // Didaktik 80 ROM (for D40/D80 disks)
+        if (!seen.has('didaktik.rom')) {
+            romPaths.push({ path: 'roms/didaktik.rom', file: 'didaktik.rom' });
         }
         for (const rom of romPaths) {
             try {
@@ -445,6 +461,12 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         } else if (name.includes('if1') || name === 'if1.rom' || name.includes('interface1')) {
             await loadRomFile(data, 'if1');
             showMessage('Interface 1 ROM loaded');
+        } else if (name.includes('opus') || name === 'opus.rom' || name.includes('discovery')) {
+            await loadRomFile(data, 'opus');
+            showMessage('Opus Discovery ROM loaded');
+        } else if (name.includes('didaktik') || name === 'didaktik.rom' || name.includes('d80')) {
+            await loadRomFile(data, 'didaktik');
+            showMessage('Didaktik 80 ROM loaded');
         } else if (name.includes('trdos') || name === 'trdos.rom') {
             await loadRomFile(data, 'trdos');
             showMessage('TR-DOS ROM loaded');

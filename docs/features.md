@@ -33,8 +33,8 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Beta Disk / TR-DOS | `core/loaders/disk-beta.js` | `ui/media-catalog.js` | `diskInfo`, `diskActivity` | `disk-test` | `docs/peripherals.md` |
 | +D / MGT | `core/loaders/disk-mgt.js` | `ui/input-settings.js` | `chkPlusD` | `disk-test` | `docs/peripherals.md` |
 | Interface 1 / Microdrive | `core/loaders/microdrive.js` | `ui/input-settings.js` | `chkIF1` | `disk-test` | `docs/peripherals.md` |
-| Opus (image format only) | `core/loaders/disk-opus.js` | `ui/explorer.js` | — | `loader-test` | `docs/peripherals.md` |
-| Didaktik D40/D80 | `core/loaders/disk-didaktik.js` | `ui/explorer-editors.js` | — | `disk-test` | `docs/peripherals.md` |
+| Opus Discovery (OPD) | `core/loaders/disk-opus.js` (`OPDLoader` + `OpusDisk`), `core/memory.js` (overlay), `core/spectrum.js` (paging, DRQ NMI) | `ui/input-settings.js` (`chkOpus`), `ui/file-loader.js`, `ui/explorer.js` | `chkOpus`, `opusStatus`, `btnLoadOpusRom`, `romOpusInput` | `opus-test`, `loader-test` | `docs/peripherals.md` |
+| Didaktik 40/80 (D40/D80) | `core/loaders/disk-didaktik.js` (`DidaktikLoader` + `DidaktikDisk`), `core/memory.js` (overlay), `core/spectrum.js` (paging, ports, NMI) | `ui/input-settings.js` (`chkDidaktik`), `ui/file-loader.js`, `ui/explorer-editors.js` | `chkDidaktik`, `didaktikStatus`, `btnLoadDidaktikRom`, `romDidaktikInput` | `disk-boot-test`, `disk-test` | `docs/peripherals.md` |
 | +3 FDC / DSK | `core/fdc.js` | `ui/media-catalog.js` | `diskActivity` | `fdc-test` | `docs/peripherals.md` |
 | ZIP archives | `core/loaders/zip.js` | `ui/file-loader.js` | `zipSelectModal` | `loader-test` | `docs/media.md` |
 

@@ -138,6 +138,55 @@ export const PLUSD_PAGE_IN_KEYNEXT = 0x003A;  // KEY-NEXT — token reading
 export const PLUSD_PAGE_IN_NMI     = 0x0066;  // NMI handler
 export const PLUSD_PAGE_IN_KEYSCAN = 0x028E;  // KEY-SCAN routine
 
+// Opus Discovery ROM auto-paging trigger addresses (per FUSE z80_ops.c).
+// Unlike the +D and IF1, FUSE tests these AFTER the opcode fetch rather than
+// before it — see Spectrum.updateOpusPaging for why that is equivalent here.
+export const OPUS_PAGE_IN_RST8   = 0x0008;  // RST 8 — error handler
+export const OPUS_PAGE_IN_KEYINT = 0x0048;  // KEY-INT — the ROM's ISR hook
+export const OPUS_PAGE_IN_CLOSE  = 0x1708;  // CLOSE#
+export const OPUS_PAGE_OUT_ADDR  = 0x1748;  // page out
+
+// Opus Discovery memory-mapped window (offsets within $0000-$3FFF when paged in)
+export const OPUS_RAM_START = 0x2000;  // 2KB RAM
+export const OPUS_FDC_START = 0x2800;  // WD1770 registers (address & 3)
+export const OPUS_PIA_START = 0x3000;  // MC6821 PIA registers (address & 3)
+export const OPUS_UNMAPPED  = 0x3800;  // reads as $FF
+
+// Opus DRQ → NMI delays, in T-states. The WD1770 has no timing model here, so
+// these stand in for it: MFM at 250 kbit/s is a byte every 32us = 112 T-states
+// at 3.5 MHz, and the first byte of a transfer also waits for the head to settle
+// and the sector to come round under it.
+export const OPUS_DRQ_BYTE_TSTATES  = 112;
+export const OPUS_DRQ_FIRST_TSTATES = 2500;
+
+// =============================================================================
+// Didaktik 80 (per FUSE peripherals/disk/didaktik.c)
+// =============================================================================
+
+// Its ROM is 14KB, not the 8KB every other interface here uses: $0000-$37FF is
+// ROM and $3800-$3FFF is 2KB of RAM, so the overlay fills the bottom 16KB.
+export const DIDAKTIK_ROM_SIZE  = 0x3800;  // 14336
+export const DIDAKTIK_RAM_START = 0x3800;
+export const DIDAKTIK_RAM_SIZE  = 0x0800;  // 2048
+
+// ROM paging trigger addresses. $0000 means it takes over from reset — unlike
+// every other interface, which waits to be entered through a hook.
+export const DIDAKTIK_PAGE_IN_RESET = 0x0000;
+export const DIDAKTIK_PAGE_IN_RST8  = 0x0008;
+export const DIDAKTIK_PAGE_OUT_ADDR = 0x1700;
+
+// WD2797 registers on I/O ports (low byte). Anything with bit 7 clear is the
+// 8255 PPI, which is not wired to anything and reads $FF.
+export const DIDAKTIK_PORT_MASK    = 0x00FF;
+export const DIDAKTIK_PORT_COMMAND = 0x81;  // read = status, write = command
+export const DIDAKTIK_PORT_TRACK   = 0x83;
+export const DIDAKTIK_PORT_SECTOR  = 0x85;
+export const DIDAKTIK_PORT_DATA    = 0x87;
+// Aux register, decoded with mask $F9 so $89/$8B/$8D/$8F all reach it:
+// bit 0/1 drive select, bit 2/3 motors, bit 6 DRQ->NMI, bit 7 INTRQ->NMI
+export const DIDAKTIK_PORT_AUX      = 0x89;
+export const DIDAKTIK_PORT_AUX_MASK = 0xF9;
+
 // =============================================================================
 // SNA snapshot format
 // =============================================================================

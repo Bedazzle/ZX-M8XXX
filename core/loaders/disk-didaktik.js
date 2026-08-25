@@ -6,7 +6,14 @@
  */
 
 import { writeField } from './common.js';
+import { PlusDDisk } from './disk-mgt.js';
 
+    /**
+     * Didaktik 40/80 MDOS disk loader (read-only).
+     * D40/D80 images are raw, header-less sector dumps (sector N at offset
+     * N*512). Algorithms ported from the zxspectrumutils tools d802tap.cpp /
+     * dird80.c. Supported: list catalog, extract files.
+     */
     export class DidaktikLoader {
         static get SECTOR_SIZE() { return 512; }
         static get FAT_OFFSET() { return 512; }          // FAT starts at sector 1
@@ -460,6 +467,132 @@ import { writeField } from './common.js';
     }
 
     /**
-     * SZX Loader - Modern ZX Spectrum snapshot format
-     * Used by Spectaculator, ZXSpin, Fuse, etc.
+     * Didaktik 80 disk controller: a WD2797 FDC on I/O ports, plus an aux
+     * register that owns drive select, the motors, and — unusually — whether
+     * the FDC's INTRQ and DRQ lines are allowed to pull the Z80's NMI.
+     * Register behaviour follows FUSE's peripherals/disk/didaktik.c.
+     *
+     * Three things set it apart from the other interfaces here:
+     *  - Its ROM is **14K**, not 8K: $0000-$37FF ROM, $3800-$3FFF RAM.
+     *  - It pages in at **$0000**, so it takes over from the moment of reset.
+     *  - The side is not in any control register. A WD2797 takes it from bit 1
+     *    of the Type II/III command byte, so that is where this reads it.
      */
+    export class DidaktikDisk extends PlusDDisk {
+        // Aux register ($89) bits
+        static get AUX_DRIVE_A()  { return 0x01; }
+        static get AUX_DRIVE_B()  { return 0x02; }
+        static get AUX_MOTOR_A()  { return 0x04; }
+        static get AUX_MOTOR_B()  { return 0x08; }
+        static get AUX_DATARQ_NMI() { return 0x40; }
+        static get AUX_INTRQ_NMI()  { return 0x80; }
+
+        constructor() {
+            super();
+            // MDOS geometry: 9 sectors of 512 bytes, numbered from 1, two sides
+            this.sectorsPerTrack = 9;
+            this.bytesPerSector = 512;
+            this.firstSector = 1;
+            this.tracks = 80;
+            this.sides = 2;
+
+            this.aux = 0;
+            // Raised when the FDC wants a byte, or finishes a command — each
+            // only if the matching aux bit lets it through. Spectrum turns these
+            // into a Z80 NMI.
+            this.onDataRequest = null;
+            this.onIntRequest = null;
+        }
+
+        // 368640 = 40 tracks x 2 sides x 9 x 512, 737280 = 80 x 2 x 9 x 512
+        loadDisk(data, type, driveIndex = 0) {
+            const bytes = new Uint8Array(data);
+            if (bytes.length === 80 * 2 * 9 * 512) { this.tracks = 80; this.sides = 2; }
+            else if (bytes.length === 40 * 2 * 9 * 512) { this.tracks = 40; this.sides = 2; }
+            super.loadDisk(bytes, type || 'd80', driveIndex);
+        }
+
+        createBlankDisk(label = 'BLANK', driveIndex = 0) {
+            const img = this.tracks === 40
+                ? DidaktikLoader.createBlankD40(label)
+                : DidaktikLoader.createBlankD80(label);
+            this.loadDisk(img, 'd80', driveIndex);
+            return true;
+        }
+
+        writeAux(value) {
+            this.aux = value & 0xFF;
+            // Bit 1 picks drive B, otherwise drive A — the same test FUSE makes
+            this.drive = (value & DidaktikDisk.AUX_DRIVE_B) ? 1 : 0;
+        }
+
+        executeCommand(cmd) {
+            // WD2797: Type II (read/write sector) and Type III (read/write track,
+            // read address) carry the side in bit 1 of the command. There is no
+            // control register here to hold it.
+            const typeII = (cmd & 0xC0) === 0x80;
+            const typeIII = (cmd & 0xC0) === 0xC0 && (cmd & 0xF0) !== 0xD0;
+            if (typeII || typeIII) this.side = (cmd >> 1) & 0x01;
+            super.executeCommand(cmd);
+            this._checkRequests(true);
+        }
+
+        // DRQ while a transfer has bytes left, otherwise INTRQ on completion.
+        // Both are gated by the aux register: with neither bit set the interface
+        // is in polled mode and must not interrupt at all.
+        _checkRequests(first) {
+            const transferring = (this.reading || this.writing) &&
+                this.dataBuffer && this.dataPos < this.dataLen;
+            if (transferring) {
+                if ((this.aux & DidaktikDisk.AUX_DATARQ_NMI) && this.onDataRequest) {
+                    this.onDataRequest(first);
+                }
+            } else if (this.intrq && (this.aux & DidaktikDisk.AUX_INTRQ_NMI) && this.onIntRequest) {
+                this.onIntRequest();
+            }
+        }
+
+        /**
+         * Port read. The WD2797 sits at $81/$83/$85/$87; anything with bit 7
+         * clear is the 8255 PPI, which FUSE stubs out as reading $FF.
+         */
+        read(port) {
+            const low = port & 0xFF;
+            if ((low & 0x80) === 0) return 0xFF;   // 8255 PPI — not wired up
+            switch (low) {
+                case 0x81: return this.readRegister(0);   // status
+                case 0x83: return this.readRegister(1);   // track
+                case 0x85: return this.readRegister(2);   // sector
+                case 0x87: {                              // data
+                    const value = this.readRegister(3);
+                    this._checkRequests(false);
+                    return value;
+                }
+            }
+            return 0xFF;
+        }
+
+        write(port, value) {
+            const low = port & 0xFF;
+            if ((low & 0x80) === 0) return;        // 8255 PPI — not wired up
+            // Aux is decoded with mask $F9, so $89/$8B/$8D/$8F all reach it
+            if ((low & 0xF9) === 0x89) { this.writeAux(value); return; }
+            switch (low) {
+                case 0x81: this.executeCommand(value); break;   // command
+                case 0x83: this.writeRegister(1, value); break; // track
+                case 0x85: this.writeRegister(2, value); break; // sector
+                case 0x87:                                      // data
+                    this.writeRegister(3, value);
+                    this._checkRequests(false);
+                    break;
+            }
+        }
+
+        reset() {
+            super.reset();
+            this.aux = 0;
+            this.drive = 0;
+            this.side = 0;
+        }
+    }
+

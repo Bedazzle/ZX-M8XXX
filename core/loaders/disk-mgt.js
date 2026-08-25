@@ -499,6 +499,11 @@ import { TRDLoader } from './disk-beta.js';
             this.tracks = 80;
             this.sides = 2;
 
+            // Number of the first sector on a track. MGT numbers them from 1;
+            // the Opus Discovery numbers them from 0, so OpusDisk sets this to 0
+            // and the wrap checks below follow it rather than assuming 1.
+            this.firstSector = 1;
+
             // Data transfer state
             this.dataBuffer = null;
             this.dataPos = 0;
@@ -541,7 +546,7 @@ import { TRDLoader } from './disk-beta.js';
             if ((driveIndex & 0x01) === this.drive) {
                 this.status = 0;
                 this.track = 0;
-                this.sector = 1;
+                this.sector = this.firstSector;
             }
         }
 
@@ -599,15 +604,22 @@ import { TRDLoader } from './disk-beta.js';
         // and side comes from the control register.
         // MGT image layout: cyl0/s0, cyl0/s1, cyl1/s0, cyl1/s1, ...
         getSectorOffset(track, side, sector) {
-            return ((track * 2 + side) * this.sectorsPerTrack + (sector - 1)) * this.bytesPerSector;
+            return ((track * this.sides + side) * this.sectorsPerTrack
+                    + (sector - this.firstSector)) * this.bytesPerSector;
         }
 
-        // Port read (port mapping per FUSE plusd.c)
-        read(port) {
-            const reg = port & 0xFF;
+        // One past the last sector number on a track — the multi-sector wrap point.
+        get lastSectorPlusOne() {
+            return this.firstSector + this.sectorsPerTrack;
+        }
 
-            switch (reg) {
-                case 0xE3: // Status register (WD1772 command/status)
+        // WD177x register read by register number: 0 = status, 1 = track,
+        // 2 = sector, 3 = data. The +D decodes these from I/O ports and the Opus
+        // Discovery from memory addresses, so the register behaviour lives here
+        // and each interface only supplies the decode.
+        readRegister(reg) {
+            switch (reg & 0x03) {
+                case 0: // Status register
                     if (!this.currentDisk.diskData) {
                         return this.NOT_READY;
                     }
@@ -628,20 +640,20 @@ import { TRDLoader } from './disk-beta.js';
                         return st;
                     }
 
-                case 0xEB: // Track register
+                case 1: // Track register
                     return this.track;
 
-                case 0xF3: // Sector register
+                case 2: // Sector register
                     return this.sector;
 
-                case 0xFB: // Data register
+                case 3: // Data register
                     if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
                         this._sysReadsSinceData = 0;
                         this.data = this.dataBuffer[this.dataPos++];
                         if (this.dataPos >= this.dataLen) {
                             if (this.multiSector) {
                                 this.sector++;
-                                if (this.sector > this.sectorsPerTrack) {
+                                if (this.sector >= this.lastSectorPlusOne) {
                                     this.reading = false;
                                     this.multiSector = false;
                                     this.status &= ~(this.BUSY | this.DRQ);
@@ -657,6 +669,19 @@ import { TRDLoader } from './disk-beta.js';
                         }
                     }
                     return this.data;
+            }
+            return 0xFF;
+        }
+
+        // Port read (port mapping per FUSE plusd.c)
+        read(port) {
+            const reg = port & 0xFF;
+
+            switch (reg) {
+                case 0xE3: return this.readRegister(0);  // Status
+                case 0xEB: return this.readRegister(1);  // Track
+                case 0xF3: return this.readRegister(2);  // Sector
+                case 0xFB: return this.readRegister(3);  // Data
 
                 case 0xEF: // Control register read: INTRQ/DRQ status
                     {
@@ -671,7 +696,7 @@ import { TRDLoader } from './disk-beta.js';
                                 this.status |= this.LOST_DATA;
                                 if (this.multiSector) {
                                     this.sector++;
-                                    if (this.sector > this.sectorsPerTrack) {
+                                    if (this.sector >= this.lastSectorPlusOne) {
                                         this.reading = false;
                                         this.multiSector = false;
                                         this.status &= ~(this.BUSY | this.DRQ);
@@ -694,47 +719,63 @@ import { TRDLoader } from './disk-beta.js';
             }
         }
 
-        // Port write (port mapping per FUSE plusd.c)
-        write(port, value) {
-            const reg = port & 0xFF;
-
-            switch (reg) {
-                case 0xE3: // Command register
+        // WD177x register write by register number — see readRegister.
+        writeRegister(reg, value) {
+            switch (reg & 0x03) {
+                case 0: // Command register
                     this.executeCommand(value);
                     break;
 
-                case 0xEB: // Track register
+                case 1: // Track register
                     this.track = value;
                     break;
 
-                case 0xF3: // Sector register
+                case 2: // Sector register
                     this.sector = value;
                     break;
 
-                case 0xFB: // Data register
+                case 3: // Data register
                     this.data = value;
                     if (this.writing && this.dataBuffer && this.dataPos < this.dataLen) {
                         this.dataBuffer[this.dataPos++] = value;
                         if (this.dataPos >= this.dataLen) {
                             this.flushWriteBuffer();
+                            // DRQ has to drop with BUSY at the end of a write, the
+                            // way the read paths already do it. Leaving it asserted
+                            // tells a polling ROM the chip still wants another byte
+                            // for a command that has finished — MDOS reads that as
+                            // an internal error and abandons the save after writing
+                            // only its directory entry.
                             if (this.multiSector) {
                                 this.sector++;
-                                if (this.sector > this.sectorsPerTrack) {
+                                if (this.sector >= this.lastSectorPlusOne) {
                                     this.writing = false;
                                     this.multiSector = false;
-                                    this.status &= ~this.BUSY;
+                                    this.status &= ~(this.BUSY | this.DRQ);
                                     this.intrq = true;
                                 } else {
                                     this.writeSector();
                                 }
                             } else {
                                 this.writing = false;
-                                this.status &= ~this.BUSY;
+                                this.status &= ~(this.BUSY | this.DRQ);
                                 this.intrq = true;
                             }
                         }
                     }
                     break;
+            }
+        }
+
+        // Port write (port mapping per FUSE plusd.c)
+        write(port, value) {
+            const reg = port & 0xFF;
+
+            switch (reg) {
+                case 0xE3: this.writeRegister(0, value); break;  // Command
+                case 0xEB: this.writeRegister(1, value); break;  // Track
+                case 0xF3: this.writeRegister(2, value); break;  // Sector
+                case 0xFB: this.writeRegister(3, value); break;  // Data
 
                 case 0xEF: // Control register (per FUSE: bits 0-1=drive, bit 7=side, bit 6=printer)
                     this.drive = (value & 0x03) === 2 ? 1 : 0;  // Drive select (FUSE convention)
@@ -747,7 +788,7 @@ import { TRDLoader } from './disk-beta.js';
             this.command = 0;
             this.status = 0;
             this.track = 0;
-            this.sector = 1;
+            this.sector = this.firstSector;
             this.reading = false;
             this.writing = false;
             this.dataBuffer = null;
@@ -872,13 +913,6 @@ import { TRDLoader } from './disk-beta.js';
             this.dataLen = this.bytesPerSector;
             this.reading = true;
             this.status |= this.DRQ | this.BUSY;
-
-            // DEBUG: dump first 16 bytes of sector
-            const preview = Array.from(this.dataBuffer.subarray(0, 16))
-                .map(b => b.toString(16).padStart(2, '0')).join(' ');
-            const ascii = Array.from(this.dataBuffer.subarray(0, 16))
-                .map(b => b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.').join('');
-            console.log(`+D RdSec T${this.track}:S${this.sector} @${offset}: ${preview} |${ascii}|`);
         }
 
         writeSector() {

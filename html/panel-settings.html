@@ -428,6 +428,26 @@
                     <div style="margin-top: 4px;">
                         <button id="btnLoadIF1Rom" title="Load Interface 1 ROM file (if1.rom)" style="font-size: 11px; padding: 2px 10px;">Load IF1 ROM</button>
                     </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable Opus Discovery for OPD disks (requires opus.rom). Conflicts with +D." style="display: inline-block;">
+                            <input type="checkbox" id="chkOpus"> Opus Discovery (OPD)
+                        </label>
+                        <span id="opusStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <input type="file" id="romOpusInput" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadOpusRom" title="Load Opus Discovery ROM file (opus.rom)" style="font-size: 11px; padding: 2px 10px;">Load Opus ROM</button>
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <label class="checkbox-label" title="Enable Didaktik 80 for D40/D80 MDOS disks (requires didaktik.rom). Conflicts with +D and Opus." style="display: inline-block;">
+                            <input type="checkbox" id="chkDidaktik"> Didaktik 80 (D40/D80)
+                        </label>
+                        <span id="didaktikStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
+                        <input type="file" id="romDidaktikInput" class="file-input" accept=".rom,.bin" style="display:none">
+                    </div>
+                    <div style="margin-top: 4px;">
+                        <button id="btnLoadDidaktikRom" title="Load Didaktik 80 ROM file (didaktik.rom)" style="font-size: 11px; padding: 2px 10px;">Load Didaktik ROM</button>
+                    </div>
                     <button id="btnSettingsLoadRoms" style="margin-top: 10px; font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
                 </div>
             </div>

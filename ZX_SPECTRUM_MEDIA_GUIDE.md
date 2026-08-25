@@ -321,25 +321,86 @@ The Opus Discovery was a third-party disk interface for the ZX Spectrum with 8KB
 
 ### Setup
 
-- Requires opus.rom (8KB Opus Discovery ROM)
-- Note: Opus conflicts with +D interface (both overlay $0000–$3FFF)
-- Compatible with: 48K, 128K, +2, Pentagon (NOT +2A/+3)
-- No conflict with IF1 or Beta Disk
+- Requires opus.rom (8KB Opus Discovery ROM); it is picked up from `roms/` automatically.
+- **Not available on the +2A/+3** — they page memory differently and cannot give an
+  external interface the ROM override the Opus needs, so the checkbox is disabled there
+  with a reason. Use 48K, 128K, +2 or Pentagon.
+- **Opus and +D are mutually exclusive** — both page themselves in at `$0008` over
+  `$0000–$3FFF`. Enabling one turns the other off. No conflict with IF1 or Beta Disk.
 
-### BASIC commands (Microdrive-compatible syntax)
+### Running a game, step by step
+
+1. Machine dropdown → **48K** (or 128K / +2 / Pentagon).
+2. **Settings → Machines** → tick **Opus Discovery (OPD)**. Greyed out means you are on a
+   +2A/+3; the line beside it says `(opus.rom required)` if the ROM is missing.
+3. **Load → File**, the Disk tab's **Load Disk** with System = *Opus*, or just drag the file
+   onto the window. Load Disk narrows the dialog to `.opd/.opu/.zip`.
+4. Read the filename you need from the Media catalogue — the disk appears under an
+   `OPD: A` drive tab with its files listed.
+5. Type the load command in BASIC and press ENTER.
 
 ```
-CAT 1                      — List files on drive 1
-LOAD *"m";1;"name"         — Load program from drive 1
-SAVE *"m";1;"name"         — Save program to drive 1
-MOVE "d";1 TO "d";2       — Copy entire disk (drive 1 → drive 2)
-OPEN # 4,"m";1;"filename"  — Open file on drive 1 for I/O
-OPEN # 3;"t"               — Open printer channel
+LOAD *"m";1;"name"         — load from drive 1 (BASIC; auto-runs if it has an autostart line)
+LOAD *"m";2;"name"         — load from drive 2
+LOAD *"m";1;"name"CODE     — load a CODE file to its own address
+LOAD *"m";1;"name"SCREEN$  — load a screen
+SAVE *"m";1;"name"         — save to drive 1
+CAT 1                      — list files on drive 1  (see the ROM note below)
+MOVE "d";1 TO "d";2        — copy an entire disk
+OPEN # 4,"m";1;"filename"  — open a file for I/O
 ```
 
-### NMI button
+If the loaded BASIC program has no autostart line, type `RUN` after it loads.
 
-The NMI button activates the Opus snapshot/catalog menu.
+### Traps
+
+- **The syntax is Interface 1's, not the +D's.** `LOAD *"d";1;"name"` gives
+  `Invalid argument`, and a bare `LOAD "name"` goes to the *tape* and hangs.
+- **`CAT 1` only works on the `Opus Discovery 1 v1.2` ROM.** Every ROM in `roms/` loads and
+  runs programs identically, but the v2.x, EXCOM and QuickDOS ones — including the one
+  shipped as `opus.rom` — print nothing for `CAT 1`. Read the filenames from the Media
+  catalogue instead, or load the v1.2 ROM with Settings → **Load Opus ROM**.
+- **There is no Auto Load for Opus disks.** `ui/auto-loader.js` covers TR-DOS and +3DOS
+  only, so the disk is inserted but never booted for you — type the command yourself.
+- A name that is not on the disk gives `File not found`; a drive with no disk in it gives
+  `Insert disk N, then press a key`.
+
+### Multi-drive
+
+2 drives (1–2, shown as A–B in the catalogue).
+
+---
+
+## 6a. Didaktik 40/80 — MDOS (D40 / D80 files)
+
+The Czechoslovak Didaktik disk interface: a WD2797 controller with a 14K ROM. Needs
+**48K, 128K, +2 or Pentagon** — not +2A/+3.
+
+### Running a game
+
+1. Machine dropdown → **48K** (or 128K / +2 / Pentagon).
+2. **Settings → Machines** → tick **Didaktik 80 (D40/D80)**. `didaktik.rom` is picked up from
+   `roms/` automatically. Enabling it switches the +D and Opus off — all three take over
+   `$0000-$3FFF`, and the Didaktik pages itself in at `$0000`, so it boots the machine.
+3. Load the `.d40`/`.d80` — main menu **Load → File**, the Disk tab with System = *Didaktik*,
+   or drag it onto the window.
+4. Read the filename from the Media catalogue (`D80: A` tab).
+5. Type the command. **MDOS uses the star form:**
+
+```
+CAT                        — catalogue the disk
+LOAD *"name"               — load (and auto-run, if it was saved with LINE)
+SAVE *"name"               — save
+SAVE *"name" LINE 10       — save with an autostart line
+```
+
+### Traps
+
+- **A bare `LOAD "name"` / `SAVE "name"` goes to the tape**, not the disk. The `*` is what
+  routes it to MDOS.
+- No Auto Load for Didaktik disks — type the command yourself.
+- Geometry is fixed by the image size: 368,640 bytes = 40 tracks, 737,280 = 80. Both are
+  double-sided, 9 sectors of 512 bytes.
 
 ### Multi-drive
 

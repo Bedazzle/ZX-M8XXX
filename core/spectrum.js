@@ -23,7 +23,12 @@ import {
     DECODE_P1024_MASK, DECODE_P1024_VAL,
     IF1_PORT_MASK, IF1_PORT_DATA, IF1_PORT_CTL,
     IF1_PAGE_IN_RST8, IF1_PAGE_IN_CLOSE, IF1_PAGE_OUT_ADDR,
-    PLUSD_PAGE_IN_RST8, PLUSD_PAGE_IN_KEYNEXT, PLUSD_PAGE_IN_NMI, PLUSD_PAGE_IN_KEYSCAN
+    PLUSD_PAGE_IN_RST8, PLUSD_PAGE_IN_KEYNEXT, PLUSD_PAGE_IN_NMI, PLUSD_PAGE_IN_KEYSCAN,
+    OPUS_PAGE_IN_RST8, OPUS_PAGE_IN_KEYINT, OPUS_PAGE_IN_CLOSE, OPUS_PAGE_OUT_ADDR,
+    OPUS_DRQ_BYTE_TSTATES, OPUS_DRQ_FIRST_TSTATES,
+    DIDAKTIK_PAGE_IN_RESET, DIDAKTIK_PAGE_IN_RST8, DIDAKTIK_PAGE_OUT_ADDR,
+    DIDAKTIK_PORT_COMMAND, DIDAKTIK_PORT_TRACK, DIDAKTIK_PORT_SECTOR,
+    DIDAKTIK_PORT_DATA, DIDAKTIK_PORT_AUX, DIDAKTIK_PORT_AUX_MASK
 } from './constants.js';
 import { hex8, hex16, storageGet } from './utils.js';
 import { Z80 } from './z80.js';
@@ -35,7 +40,8 @@ import {
     TapeTrapHandler, TapeSaveTrapHandler, MicRecorder, buildTZX,
     TRDOSTrapHandler, BetaDisk,
     ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader,
-    MGTLoader, PlusDDisk, MDRLoader, Microdrive
+    MGTLoader, PlusDDisk, MDRLoader, Microdrive,
+    OPDLoader, OpusDisk, DidaktikLoader, DidaktikDisk
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
 import { Disassembler } from './disasm.js';
@@ -236,6 +242,50 @@ import { Disassembler } from './disasm.js';
             this._if1PageOutPending = false;
             this.loadedIF1Cartridges = new Array(8).fill(null);   // Per-drive { data: Uint8Array, name: string }
             this.loadedIF1CartridgeFiles = new Array(8).fill(null); // Per-drive file listings
+
+            // Opus Discovery
+            this.opus = new OpusDisk();
+            this.opusEnabled = false;
+            this._opusPagingEnabled = false;
+            this.loadedOpusDisks = [null, null];                 // Per-drive { data: Uint8Array, name: string }
+            this.loadedOpusDiskFiles = [null, null];             // Per-drive file listings
+            // The Opus transfers sector data by NMI, not by polling: DRQ is wired
+            // to the Z80's NMI line. Our FDC has no timing of its own — a command
+            // completes instantly — so the delay has to be added here, or the NMI
+            // lands on the instruction after the command write and preempts the
+            // ROM before it has set up the transfer. Real figures: MFM at
+            // 250 kbit/s is one byte every 32us, which is 112 T-states at 3.5 MHz;
+            // the first byte also waits for the head to settle and the sector to
+            // come round.
+            // Didaktik 80
+            this.didaktik = new DidaktikDisk();
+            this.didaktikEnabled = false;
+            this._didaktikPagingEnabled = false;
+            this.loadedDidaktikDisks = [null, null];
+            this.loadedDidaktikDiskFiles = [null, null];
+            // Both the FDC's DRQ and its INTRQ can pull NMI, each gated by a bit
+            // of the aux register. Same instant-FDC problem as the Opus, so the
+            // same delay applies.
+            this._didaktikNmiPending = false;
+            this._didaktikDrqCountdown = 0;
+            this.didaktik.onDataRequest = (first) => {
+                this._didaktikNmiPending = true;
+                this._didaktikDrqCountdown = first ? OPUS_DRQ_FIRST_TSTATES : OPUS_DRQ_BYTE_TSTATES;
+            };
+            this.didaktik.onIntRequest = () => {
+                this._didaktikNmiPending = true;
+                this._didaktikDrqCountdown = OPUS_DRQ_BYTE_TSTATES;
+            };
+
+            this._opusNmiPending = false;
+            this._opusDrqCountdown = 0;
+            this.opus.onDataRequest = (first) => {
+                this._opusNmiPending = true;
+                this._opusDrqCountdown = first ? OPUS_DRQ_FIRST_TSTATES : OPUS_DRQ_BYTE_TSTATES;
+            };
+            // The Opus registers live in the memory map, so Memory needs the
+            // controller itself, not just a ROM image.
+            this.memory.opusDisk = this.opus;
 
             // Callback for processing TRD data before loading (used for boot injection)
             this.onBeforeTrdLoad = null; // function(data, filename) => processedData
@@ -1391,6 +1441,26 @@ import { Disassembler } from './disasm.js';
                 this.plusD.reset();
                 this.memory.plusDActive = true;
             }
+
+            // Opus reset (per FUSE opus_reset): reset the WD1770 and the PIA, and
+            // leave the interface paged OUT. The +D above pages itself in at reset
+            // to run its boot code; the Opus does not — it waits to be entered
+            // through one of its hook addresses, the first of which is normally
+            // the $0048 KEY-INT on the first maskable interrupt.
+            if (this.opusEnabled && this.memory.hasOpusRom() &&
+                this.profile.pagingModel !== '+2a') {
+                this.opus.reset();
+                this.memory.opusActive = false;
+            }
+
+            // Didaktik reset: the FDC and aux register go back to zero. Nothing
+            // is paged in here — it happens on its own, because the very first
+            // instruction after a reset is at $0000, which is a page-in trigger.
+            if (this.didaktikEnabled && this.memory.hasDidaktikRom() &&
+                this.profile.pagingModel !== '+2a') {
+                this.didaktik.reset();
+                this.memory.didaktikActive = false;
+            }
         }
 
         // ========== Port I/O ==========
@@ -1410,6 +1480,14 @@ import { Disassembler } from './disasm.js';
         _isIF1Active() {
             return this.if1Enabled && this.microdrive && this.microdrive.hasAnyCartridge() &&
                 this.memory.hasIF1Rom();
+        }
+
+        _isDidaktikActive() {
+            // Like the +D: the ports answer whenever the hardware is there, not
+            // only while its ROM happens to be paged in
+            return this.didaktikEnabled && this.didaktik &&
+                this.memory.hasDidaktikRom() &&
+                this.profile.pagingModel !== '+2a';
         }
 
         triggerPlusDNmi() {
@@ -1478,6 +1556,9 @@ import { Disassembler } from './disasm.js';
 
                 // +D interface ports (when enabled and ROM paged in or disk inserted)
                 const plusDActive = this._isPlusDActive();
+
+                // Didaktik 80 ports
+                const didaktikActive = this._isDidaktikActive();
 
                 // Beta Disk ports (Pentagon with disk inserted)
                 // Ports are accessible whenever any disk is inserted, not just when ROM is paged in
@@ -1565,6 +1646,11 @@ import { Disassembler } from './disasm.js';
                     // is attached, so never busy — see the constant for why this
                     // cannot just fall through to the floating bus.
                     result = 0;
+                } else if (didaktikActive && (lowByte === DIDAKTIK_PORT_COMMAND ||
+                           lowByte === DIDAKTIK_PORT_TRACK || lowByte === DIDAKTIK_PORT_SECTOR ||
+                           lowByte === DIDAKTIK_PORT_DATA)) {
+                    // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
+                    result = this.didaktik.read(port);
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -1718,6 +1804,9 @@ import { Disassembler } from './disasm.js';
             // +D interface ports (when enabled and ROM paged in or disk inserted)
             const plusDActive = this._isPlusDActive();
 
+            // Didaktik 80 ports
+            const didaktikActive = this._isDidaktikActive();
+
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
@@ -1830,6 +1919,14 @@ import { Disassembler } from './disasm.js';
             }
             if (plusDActive && lowByte === PORT_PLUSD_PRINT) {
                 // +D Centronics data ($F7) — no printer attached, discard
+                return;
+            }
+            if (didaktikActive && (lowByte === DIDAKTIK_PORT_COMMAND ||
+                lowByte === DIDAKTIK_PORT_TRACK || lowByte === DIDAKTIK_PORT_SECTOR ||
+                lowByte === DIDAKTIK_PORT_DATA ||
+                (lowByte & DIDAKTIK_PORT_AUX_MASK) === DIDAKTIK_PORT_AUX)) {
+                // Didaktik 80 WD2797 registers plus the aux register at $89
+                this.didaktik.write(port, val);
                 return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
@@ -2074,6 +2171,8 @@ import { Disassembler } from './disasm.js';
                 if (this._if1PagingEnabled) this.updateIF1Paging();
                 // +D ROM auto-paging ($0008/$003A/$0066/$028E page in, port $E3 bit 6 page out)
                 if (this._plusDPagingEnabled) this.updatePlusDPaging();
+                // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
+                if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
                 const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
@@ -2217,6 +2316,24 @@ import { Disassembler } from './disasm.js';
                         this.memory.if1Active = false;
                         this._if1PageOutPending = false;
                     }
+                    // Opus DRQ is wired to NMI, delayed to the chip's byte rate
+                    if (this._opusNmiPending) {
+                        this._opusDrqCountdown -= (this.cpu.tStates - _tsBefore);
+                        if (this._opusDrqCountdown <= 0) {
+                            this._opusNmiPending = false;
+                            this.cpu.nmi();
+                        }
+                    }
+                    // Didaktik DRQ/INTRQ, same deal
+                    if (this._didaktikNmiPending) {
+                        this._didaktikDrqCountdown -= (this.cpu.tStates - _tsBefore);
+                        if (this._didaktikDrqCountdown <= 0) {
+                            this._didaktikNmiPending = false;
+                            this.cpu.nmi();
+                        }
+                    }
+                    // Opus paging is checked AFTER the instruction, not before it
+                    if (this._opusPagingEnabled) this.updateOpusPaging(_csOldPC);
                     this._trackCallStack(_csOldPC, _csOldSP);
                     if (this.indirectJumps.enabled) this._trackIndirectJump(_csOldPC);
                     // Profiler: track CALL/RST entries and per-PC T-states
@@ -2719,6 +2836,8 @@ import { Disassembler } from './disasm.js';
                 if (this._if1PagingEnabled) this.updateIF1Paging();
                 // +D ROM auto-paging
                 if (this._plusDPagingEnabled) this.updatePlusDPaging();
+                // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
+                if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
@@ -2803,6 +2922,24 @@ import { Disassembler } from './disasm.js';
                         this.memory.if1Active = false;
                         this._if1PageOutPending = false;
                     }
+                    // Opus DRQ is wired to NMI, delayed to the chip's byte rate
+                    if (this._opusNmiPending) {
+                        this._opusDrqCountdown -= (this.cpu.tStates - _hlTsBefore);
+                        if (this._opusDrqCountdown <= 0) {
+                            this._opusNmiPending = false;
+                            this.cpu.nmi();
+                        }
+                    }
+                    // Didaktik DRQ/INTRQ, same deal
+                    if (this._didaktikNmiPending) {
+                        this._didaktikDrqCountdown -= (this.cpu.tStates - _hlTsBefore);
+                        if (this._didaktikDrqCountdown <= 0) {
+                            this._didaktikNmiPending = false;
+                            this.cpu.nmi();
+                        }
+                    }
+                    // Opus paging is checked AFTER the instruction, not before it
+                    if (this._opusPagingEnabled) this.updateOpusPaging(_hlCsOldPC);
                     this._trackCallStack(_hlCsOldPC, _hlCsOldSP);
                     if (this.indirectJumps.enabled) this._trackIndirectJump(_hlCsOldPC);
                     // Profiler: track CALL/RST entries and per-PC T-states
@@ -3952,6 +4089,18 @@ import { Disassembler } from './disasm.js';
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
                 this.profile.pagingModel !== '+2a';
+            // Opus Discovery paging flag: same machine restriction as the +D and
+            // IF1 — it overlays $0000-$3FFF, which +2A/+3 paging already owns.
+            this._opusPagingEnabled =
+                this.opusEnabled &&
+                this.memory.hasOpusRom() &&
+                this.profile.pagingModel !== '+2a';
+            // Didaktik 80: same machine restriction — its 14KB ROM overlays
+            // $0000-$37FF, which +2A/+3 paging already owns.
+            this._didaktikPagingEnabled =
+                this.didaktikEnabled &&
+                this.memory.hasDidaktikRom() &&
+                this.profile.pagingModel !== '+2a';
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
@@ -4023,6 +4172,59 @@ import { Disassembler } from './disasm.js';
             if (pc === PLUSD_PAGE_IN_RST8 || pc === PLUSD_PAGE_IN_KEYNEXT ||
                 pc === PLUSD_PAGE_IN_NMI || pc === PLUSD_PAGE_IN_KEYSCAN) {
                 this.memory.plusDActive = true;
+            }
+        }
+
+        /**
+         * Didaktik 80 ROM auto-paging (per FUSE z80_ops.c), checked BEFORE the
+         * opcode fetch like the +D and IF1.
+         *
+         * Page IN at $0000 or $0008, page OUT at $1700. The `$0000` is what makes
+         * this interface different from every other one here: it takes the
+         * machine over from the moment of reset rather than waiting to be entered
+         * through a hook, so its ROM — not the Spectrum's — is what boots.
+         */
+        updateDidaktikPaging() {
+            if (!this._didaktikPagingEnabled) return;
+
+            const pc = this.cpu.pc;
+            if (!this.memory.didaktikActive) {
+                if (pc === DIDAKTIK_PAGE_IN_RESET || pc === DIDAKTIK_PAGE_IN_RST8) {
+                    this.memory.didaktikActive = true;
+                }
+            } else if (pc === DIDAKTIK_PAGE_OUT_ADDR) {
+                this.memory.didaktikActive = false;
+            }
+        }
+
+        /**
+         * Opus Discovery ROM auto-paging (per FUSE z80_ops.c).
+         * Page IN at $0008 (RST 8), $0048 (the ROM's KEY-INT hook) and $1708
+         * (CLOSE#); page OUT at $1748.
+         *
+         * The ordering is what makes this one different. FUSE checks the +D and
+         * IF1 BEFORE the opcode fetch, but checks the Opus AFTER it — so the
+         * opcode comes from the Spectrum ROM while the operands come from the
+         * Opus ROM. Our cpu.execute() is atomic and cannot page mid-instruction,
+         * so this is called after the instruction with the PC it started at.
+         *
+         * That is equivalent here, and the ROMs say why. Of the four addresses
+         * only $0008 takes operands: the 48K ROM has LD HL,($5C5D) there, so we
+         * load HL from $5C5D where FUSE loads it from $0168. Either way the very
+         * next instruction is the Opus ROM's POP HL at $000B, which overwrites
+         * HL. The other three are one-byte instructions (PUSH BC, INC HL, RET),
+         * so no operand is fetched and there is nothing to disagree about.
+         */
+        updateOpusPaging(oldPC) {
+            if (!this._opusPagingEnabled) return;
+
+            if (this.memory.opusActive) {
+                if (oldPC === OPUS_PAGE_OUT_ADDR) {
+                    this.memory.opusActive = false;
+                }
+            } else if (oldPC === OPUS_PAGE_IN_RST8 || oldPC === OPUS_PAGE_IN_KEYINT ||
+                       oldPC === OPUS_PAGE_IN_CLOSE) {
+                this.memory.opusActive = true;
             }
         }
 
@@ -6682,6 +6884,16 @@ import { Disassembler } from './disasm.js';
                 return this.loadMDRImage(data, fileName, driveIndex);
             }
 
+            // Check for OPD disk images (Opus Discovery)
+            if (type === 'opd') {
+                return this.loadOPDImage(data, fileName, driveIndex);
+            }
+
+            // Check for Didaktik D40/D80 MDOS images
+            if (type === 'd80' || type === 'd40' || type === 'didaktik') {
+                return this.loadD80Image(data, fileName, driveIndex);
+            }
+
             // Check for TRD/SCL disk images (contain multiple files)
             if (type === 'trd' || type === 'scl') {
                 return this.loadDiskImage(data, type, fileName, driveIndex);
@@ -6821,6 +7033,62 @@ import { Disassembler } from './disasm.js';
                 _driveIndex: driveIndex,
                 needsMachineSwitch: false,  // +D works with any machine
                 plusDRequired: !plusDAvailable
+            };
+        }
+
+        // Load OPD image - inserts disk into the Opus Discovery
+        loadOPDImage(data, fileName, driveIndex = 0) {
+            const files = OPDLoader.listFiles(data);
+
+            // Store disk image for project save (per-drive)
+            const diskData = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+            this.loadedOpusDisks[driveIndex & 0x01] = {
+                data: diskData,
+                name: fileName
+            };
+            this.loadedOpusDiskFiles[driveIndex & 0x01] = files;
+
+            this.opus.loadDisk(diskData, 'opd', driveIndex);
+
+            const opusAvailable = this.opusEnabled && this.memory.hasOpusRom() &&
+                this.profile.pagingModel !== '+2a';
+
+            return {
+                diskInserted: true,
+                diskType: 'opd',
+                diskName: fileName,
+                fileCount: files.length,
+                _diskData: diskData,
+                _diskFiles: files,
+                _driveIndex: driveIndex,
+                needsMachineSwitch: false,
+                opusRequired: !opusAvailable
+            };
+        }
+
+        // Load a Didaktik D40/D80 MDOS image
+        loadD80Image(data, fileName, driveIndex = 0) {
+            const diskData = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+            let files = [];
+            try { files = DidaktikLoader.listFiles(diskData); } catch (e) { /* unreadable catalogue */ }
+
+            this.loadedDidaktikDisks[driveIndex & 0x01] = { data: diskData, name: fileName };
+            this.loadedDidaktikDiskFiles[driveIndex & 0x01] = files;
+            this.didaktik.loadDisk(diskData, 'd80', driveIndex);
+
+            const available = this.didaktikEnabled && this.memory.hasDidaktikRom() &&
+                this.profile.pagingModel !== '+2a';
+
+            return {
+                diskInserted: true,
+                diskType: 'd80',
+                diskName: fileName,
+                fileCount: files.length,
+                _diskData: diskData,
+                _diskFiles: files,
+                _driveIndex: driveIndex,
+                needsMachineSwitch: false,
+                didaktikRequired: !available
             };
         }
 
@@ -7091,6 +7359,12 @@ import { Disassembler } from './disasm.js';
                     return this.loadMGTImage(data, fileName, driveIndex);
                 case 'mdr':
                     return this.loadMDRImage(data, fileName, driveIndex);
+                case 'opd':
+                    return this.loadOPDImage(data, fileName, driveIndex);
+                case 'd80':
+                case 'd40':
+                case 'didaktik':
+                    return this.loadD80Image(data, fileName, driveIndex);
                 case 'rzx': throw new Error('Use loadRZX for RZX files');
                 default: throw new Error('Unknown file format');
             }
@@ -7518,6 +7792,8 @@ import { Disassembler } from './disasm.js';
                 betaDisks: this.loadedBetaDisks,
                 fdcDisks: fdcDisks,
                 plusDDisks: this.loadedPlusDDisks,
+                opusDisks: this.loadedOpusDisks,
+                didaktikDisks: this.loadedDidaktikDisks,
                 if1Cartridges: if1Cartridges,
                 tapeBlock: this.getTapeBlock()
             };
@@ -7593,6 +7869,30 @@ import { Disassembler } from './disasm.js';
                             this.loadedPlusDDisks[i] = media.plusDDisks[i];
                             try {
                                 this.loadedPlusDDiskFiles[i] = MGTLoader.listFiles(media.plusDDisks[i].data);
+                            } catch (e) { /* ignore */ }
+                        }
+                    }
+                }
+                // Restore Didaktik 80 drives
+                if (media.didaktikDisks) {
+                    for (let i = 0; i < 2; i++) {
+                        if (media.didaktikDisks[i] && media.didaktikDisks[i].data) {
+                            this.didaktik.loadDisk(media.didaktikDisks[i].data, 'd80', i);
+                            this.loadedDidaktikDisks[i] = media.didaktikDisks[i];
+                            try {
+                                this.loadedDidaktikDiskFiles[i] = DidaktikLoader.listFiles(media.didaktikDisks[i].data);
+                            } catch (e) { /* ignore */ }
+                        }
+                    }
+                }
+                // Restore Opus Discovery drives
+                if (media.opusDisks) {
+                    for (let i = 0; i < 2; i++) {
+                        if (media.opusDisks[i] && media.opusDisks[i].data) {
+                            this.opus.loadDisk(media.opusDisks[i].data, 'opd', i);
+                            this.loadedOpusDisks[i] = media.opusDisks[i];
+                            try {
+                                this.loadedOpusDiskFiles[i] = OPDLoader.listFiles(media.opusDisks[i].data);
                             } catch (e) { /* ignore */ }
                         }
                     }
@@ -8075,6 +8375,10 @@ import { Disassembler } from './disasm.js';
                 storageGet('zxm8_betaDisk') === 'true';
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
+            // The new Memory needs the Opus controller re-linked — its registers
+            // are read through the memory map, so a fresh Memory without this
+            // reference would return $FF for every FDC and PIA access.
+            this.memory.opusDisk = this.opus;
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
             this.ula.cpu = this.cpu;  // For debug access to CPU state

@@ -6,6 +6,7 @@
  */
 
 import { writeField } from './common.js';
+import { PlusDDisk } from './disk-mgt.js';
 
     export class OPDLoader {
         static get SECTORS_PER_TRACK() { return 18; }
@@ -364,8 +365,195 @@ import { writeField } from './common.js';
     }
 
     /**
-     * Didaktik 40/80 MDOS disk loader (read-only).
-     * D40/D80 images are raw, header-less sector dumps (sector N at offset
-     * N*512). Algorithms ported from the zxspectrumutils tools d802tap.cpp /
-     * dird80.c. Supported: list catalog, extract files.
+     * Opus Discovery disk controller: a WD1770 FDC and an MC6821 PIA, both
+     * reached through MEMORY addresses rather than I/O ports — the one thing
+     * that makes this interface unlike every other one here.
+     *
+     * The FDC is the same chip family as the +D's WD1772, so the command
+     * engine is inherited from PlusDDisk; only the decode, the geometry and
+     * the PIA are Opus's own. Register behaviour follows FUSE's
+     * peripherals/disk/opus.c (opus_read / opus_write / opus_6821_access).
+     *
+     * Geometry differs from MGT in every dimension: 18 sectors of 256 bytes
+     * numbered from ZERO, where MGT has 10 of 512 numbered from one.
      */
+    export class OpusDisk extends PlusDDisk {
+        constructor() {
+            super();
+
+            this.sectorsPerTrack = OPDLoader.SECTORS_PER_TRACK;  // 18
+            this.bytesPerSector = OPDLoader.BYTES_PER_SECTOR;    // 256
+            this.firstSector = 0;
+            this.tracks = 40;
+            this.sides = 1;
+            this.sector = 0;
+
+            // MC6821 PIA. Only port A is wired to anything: bit 1 selects the
+            // drive and bit 4 the side. Control register bit 2 decides whether
+            // a port A access reaches the data register or the direction
+            // register — the classic 6821 shared-address trick.
+            this.dataRegA = 0;
+            this.dataDirA = 0;
+            this.controlA = 0;
+            this.dataRegB = 0;
+            this.dataDirB = 0;
+            this.controlB = 0;
+
+            // Raised when the FDC has a byte ready (or wants one) — see
+            // _checkDataRequest. Spectrum turns this into a Z80 NMI.
+            this.onDataRequest = null;
+        }
+
+        // Opus images are raw sector dumps whose geometry is implied by their
+        // size, so the head layout has to be taken from the image rather than
+        // assumed — an SS disk is 40 tracks single-sided, a DS one 80 double.
+        loadDisk(data, type, driveIndex = 0) {
+            const bytes = new Uint8Array(data);
+            if (OPDLoader.isOPD(bytes)) {
+                this.sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
+                this.tracks = bytes.length /
+                    (this.sides * OPDLoader.SECTORS_PER_TRACK * OPDLoader.BYTES_PER_SECTOR);
+            }
+            super.loadDisk(bytes, type || 'opd', driveIndex);
+        }
+
+        createBlankDisk(label = 'BLANK', driveIndex = 0) {
+            const opd = OPDLoader.createBlankOPD(this.sides);
+            this.loadDisk(opd, 'opd', driveIndex);
+            return true;
+        }
+
+        /**
+         * MC6821 access. `dir` is 1 for a write, 0 for a read; on a read the
+         * returned value matters, on a write it does not.
+         *
+         * Two read side-effects are easy to miss and both come straight from
+         * FUSE: reading port A clears bit 6 of the data register, and reading
+         * the control register always reads bit 6 SET. Port B is unconnected
+         * and reads back 0.
+         */
+        pia(reg, data, dir) {
+            switch (reg & 0x03) {
+                case 0: // Port A: data register or data direction register
+                    if (dir) {
+                        if (this.controlA & 0x04) {
+                            this.dataRegA = data;
+                            this.drive = (data & 0x02) ? 1 : 0;
+                            this.side = (data & 0x10) ? 1 : 0;
+                        } else {
+                            this.dataDirA = data;
+                        }
+                    } else {
+                        if (this.controlA & 0x04) {
+                            this.dataRegA &= ~0x40;
+                            return this.dataRegA;
+                        }
+                        return this.dataDirA;
+                    }
+                    break;
+
+                case 1: // Port A control register
+                    if (dir) {
+                        this.controlA = data;
+                    } else {
+                        return this.controlA | 0x40;
+                    }
+                    break;
+            }
+            return 0;
+        }
+
+        /**
+         * The Opus wires the WD1770's DRQ to the Z80's NMI line — FUSE allocates
+         * the chip with WD_FLAG_DRQ and its set_datarq handler raises an NMI.
+         * So a sector is not transferred by polling the data register: every byte
+         * the chip has ready interrupts the CPU, and the handler in the Opus ROM
+         * at $0066 moves it. Without this a ROM that transfers by NMI simply
+         * waits forever, having issued its read command and got no interrupt.
+         *
+         * The callback is set by Spectrum, which defers the actual NMI to the
+         * next instruction boundary.
+         */
+        _checkDataRequest(first) {
+            const pending = (this.reading || this.writing) &&
+                this.dataBuffer && this.dataPos < this.dataLen;
+            if (pending && this.onDataRequest) this.onDataRequest(first);
+        }
+
+        readRegister(reg) {
+            const value = super.readRegister(reg);
+            if ((reg & 0x03) === 3) this._checkDataRequest(false);
+            return value;
+        }
+
+        writeRegister(reg, value) {
+            super.writeRegister(reg, value);
+            // A command may start a transfer, and a data write may leave room for
+            // the next byte — both are edges where DRQ can go active. The command
+            // case is the FIRST byte of a transfer and needs the longer delay:
+            // the ROM has housekeeping to do before it can take an interrupt.
+            const r = reg & 0x03;
+            if (r === 0) this._checkDataRequest(true);
+            else if (r === 3) this._checkDataRequest(false);
+        }
+
+        /**
+         * Read through the Opus window. ROM ($0000-$1FFF) and RAM
+         * ($2000-$27FF) are handled by the memory map, so only the register
+         * space arrives here. Anything at $3800 and above is unmapped.
+         */
+        readMemory(address) {
+            if (address >= 0x3800) return 0xFF;
+            if (address >= 0x3000) return this.pia(address, 0, 0);
+            if (address >= 0x2800) return this.readRegister(address);
+            return 0xFF;
+        }
+
+        /**
+         * The same decode with no side effects, for the debugger. Reading the
+         * data register through readMemory advances the sector buffer and raises
+         * a DRQ NMI, and reading port A clears its bit 6 — so a memory panel or a
+         * watch left pointing at $2800 would drive the disk controller merely by
+         * being on screen. Memory.peek routes inspection reads here.
+         */
+        peekMemory(address) {
+            if (address >= 0x3800) return 0xFF;
+            if (address >= 0x3000) {
+                if ((address & 0x03) === 1) return this.controlA | 0x40;
+                if ((address & 0x03) === 0) {
+                    return (this.controlA & 0x04) ? this.dataRegA : this.dataDirA;
+                }
+                return 0;
+            }
+            if (address >= 0x2800) {
+                switch (address & 0x03) {
+                    case 0: return this.currentDisk.diskData ? this.status : this.NOT_READY;
+                    case 1: return this.track;
+                    case 2: return this.sector;
+                    case 3: return this.data;
+                }
+            }
+            return 0xFF;
+        }
+
+        writeMemory(address, value) {
+            if (address < 0x2000 || address >= 0x3800) return;
+            if (address >= 0x3000) {
+                this.pia(address, value, 1);
+            } else if (address >= 0x2800) {
+                this.writeRegister(address, value);
+            }
+        }
+
+        reset() {
+            super.reset();
+            this.dataRegA = 0;
+            this.dataDirA = 0;
+            this.controlA = 0;
+            this.dataRegB = 0;
+            this.dataDirB = 0;
+            this.controlB = 0;
+            this.drive = 0;
+            this.side = 0;
+        }
+    }

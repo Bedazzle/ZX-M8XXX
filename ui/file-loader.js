@@ -1,6 +1,6 @@
 // file-loader.js — File loading, drag-drop, ZIP selection, media indicators (extracted from index.html)
 import { hex16 } from '../core/utils.js';
-import { MDRLoader } from '../core/loaders.js';
+import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
 
 export function initFileLoader({
@@ -57,7 +57,7 @@ export function initFileLoader({
         if (type === 'tape' || ext === 'tap' || ext === 'tzx' || ext === 'wav') {
             document.getElementById('tapeLed').title = fileName;
             document.getElementById('tapeInfo').style.display = 'inline-block';
-        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img') {
+        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img' || ext === 'opd' || ext === 'opu') {
             // Build tooltip listing all loaded drives
             const driveNames = [];
             const betaDisks = spectrum.loadedBetaDisks;
@@ -75,6 +75,12 @@ export function initFileLoader({
             if (plusDDisks) {
                 for (let i = 0; i < 2; i++) {
                     if (plusDDisks[i]) driveNames.push(`+D ${String.fromCharCode(65 + i)}: ${plusDDisks[i].name}`);
+                }
+            }
+            const opusDisks = spectrum.loadedOpusDisks;
+            if (opusDisks) {
+                for (let i = 0; i < 2; i++) {
+                    if (opusDisks[i]) driveNames.push(`Opus ${String.fromCharCode(65 + i)}: ${opusDisks[i].name}`);
                 }
             }
             const if1Cartridges = spectrum.loadedIF1Cartridges;
@@ -97,9 +103,11 @@ export function initFileLoader({
         dsk: ['dsk'],
         trd: ['trd', 'scl'],
         mgt: ['mgt', 'img'],
-        mdr: ['mdr']
+        mdr: ['mdr'],
+        opd: ['opd', 'opu'],
+        d80: ['d80', 'd40']
     };
-    const ALL_DISK_TYPES = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'];
+    const ALL_DISK_TYPES = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'];
 
     function diskTypesFor(sys) {
         return (sys && DISK_SYSTEM_TYPES[sys.id]) || ALL_DISK_TYPES;
@@ -132,6 +140,12 @@ export function initFileLoader({
         }
         if (spectrum._if1PagingEnabled) {
             systems.push({ id: 'mdr', name: 'Microdrive', blankLabel: 'Blank MDR', drives: 4, numbered: true });
+        }
+        if (spectrum._opusPagingEnabled) {
+            systems.push({ id: 'opd', name: 'Opus', blankLabel: 'Blank OPD', drives: 2 });
+        }
+        if (spectrum._didaktikPagingEnabled) {
+            systems.push({ id: 'd80', name: 'Didaktik', blankLabel: 'Blank D80', drives: 2 });
         }
         return systems;
     }
@@ -186,7 +200,7 @@ export function initFileLoader({
             blankBtn.textContent = '\u{1F4BE} ' + (sys ? sys.blankLabel : 'Blank Disk');
             blankBtn.title = sys
                 ? `Insert blank formatted ${sys.name} ${sys.id === 'mdr' ? 'cartridge' : 'disk'} into the selected drive`
-                : 'No disk interface active — enable Beta Disk, +D, or Interface 1 in Settings → Machines';
+                : 'No disk interface active — enable Beta Disk, +D, Interface 1 or Opus Discovery in Settings → Machines';
         }
 
         // Row is useful whenever an interface is active (Blank/Load Disk targeting),
@@ -232,7 +246,14 @@ export function initFileLoader({
         // Update media indicators based on result type
         if (result.diskInserted || result.diskFile) {
             const drv = result._driveIndex || 0;
-            const ctrl = result.isDSK ? 'fdc' : result.diskType === 'mdr' ? 'if1' : result.diskType === 'mgt' ? 'plusd' : 'beta';
+            // Anything not named here lands on 'beta', so a new disk system has
+            // to be added or its disk is catalogued as somebody else's
+            const ctrl = result.isDSK ? 'fdc'
+                : result.diskType === 'mdr' ? 'if1'
+                : result.diskType === 'mgt' ? 'plusd'
+                : result.diskType === 'opd' ? 'opus'
+                : result.diskType === 'd80' ? 'didaktik'
+                : 'beta';
             updateMediaIndicator(fileName, 'disk', drv);
             mediaCatalogAPI.buildDiskCatalog(drv, ctrl);
         } else if (result.blocks !== undefined) {
@@ -274,6 +295,16 @@ export function initFileLoader({
             let msg = `MGT disk inserted in +D ${mgtLetter}: ${result.diskName} (${result.fileCount} files).`;
             if (result.plusDRequired) {
                 msg += ' Enable +D interface and load plusd.rom in Settings to use.';
+            }
+            showMessage(msg);
+        } else if (result.diskInserted && result.diskType === 'opd') {
+            // OPD disk inserted into the Opus Discovery
+            const opdDrive = result._driveIndex || 0;
+            const opdLetter = String.fromCharCode(65 + opdDrive);
+            if (!spectrum.isRunning()) spectrum.start();
+            let msg = `OPD disk inserted in Opus ${opdLetter}: ${result.diskName} (${result.fileCount} files).`;
+            if (result.opusRequired) {
+                msg += ' Enable Opus Discovery and load opus.rom in Settings to use.';
             }
             showMessage(msg);
         } else if (result.diskInserted && result.diskType === 'mdr') {
@@ -451,7 +482,7 @@ export function initFileLoader({
             const betaDiskAvailable = spectrum.profile.betaDiskDefault || spectrum.betaDiskEnabled;
             btnBootTrdos.style.display = (betaDiskAvailable && hasTrdosRom) ? 'inline-block' : 'none';
         } else if (filterTypes) {
-            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd'].includes(t));
+            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu'].includes(t));
             modalTitle.textContent = isDiskFilter ? 'Select Disk to Insert' : 'Select Tape to Insert';
             modalDesc.textContent = isDiskFilter ? 'The archive contains multiple disk images:' : 'The archive contains multiple tape files:';
             btnBootTrdos.style.display = 'none';
@@ -684,7 +715,14 @@ export function initFileLoader({
                 }
                 spectrum.romLoaded = true;
                 showMessage('ROM loaded: ' + file.name);
-            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' || ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mdr' || ext === 'rzx' || ext === 'wav') {
+            // Every loadable extension has to be named here or a drop is silently
+            // ignored. .mgt/.img and .opd/.opu were missing, so dragging in a +D or
+            // an Opus disk did nothing at all.
+            } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' ||
+                       ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' ||
+                       ext === 'dsk' || ext === 'mdr' || ext === 'mgt' || ext === 'img' ||
+                       ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' ||
+                       ext === 'rzx' || ext === 'wav') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
                     showMessage('Please load ROM files first', 'error');
@@ -796,7 +834,7 @@ export function initFileLoader({
         const spectrum = getSpectrum();
         const sys = getActiveDiskSystem();
         if (!sys) {
-            showMessage('No disk interface active — enable Beta Disk, +D, or Interface 1 in Settings → Machines', 'error');
+            showMessage('No disk interface active — enable Beta Disk, +D, Interface 1 or Opus Discovery in Settings → Machines', 'error');
             return;
         }
         const driveIndex = getSelectedDriveIndex();
@@ -828,6 +866,10 @@ export function initFileLoader({
             result = spectrum.loadMGTImage(new Uint8Array(819200), '[blank]', driveIndex & 0x01);
         } else if (sys.id === 'mdr') {
             result = spectrum.loadMDRImage(MDRLoader.createBlankMDR('BLANK'), '[blank]', driveIndex & 0x07);
+        } else if (sys.id === 'opd') {
+            result = spectrum.loadOPDImage(OPDLoader.createBlankOPD(1), '[blank]', driveIndex & 0x01);
+        } else if (sys.id === 'd80') {
+            result = spectrum.loadD80Image(DidaktikLoader.createBlankD80('BLANK'), '[blank]', driveIndex & 0x01);
         }
         if (result) handleDiskOnlyInserted(result, '[blank]');
     });
@@ -854,6 +896,8 @@ export function initFileLoader({
                 showMessage('MGT disks require +D interface. Enable in Settings.', 'error');
             } else if (result.diskType === 'mdr') {
                 showMessage('MDR cartridges require Interface 1. Enable in Settings.', 'error');
+            } else if (result.diskType === 'opd') {
+                showMessage('OPD disks require the Opus Discovery. Enable in Settings.', 'error');
             } else {
                 if (!romData['trdos.rom']) {
                     showMessage('TR-DOS ROM required for disk images. Load trdos.rom first.', 'error');
@@ -865,7 +909,12 @@ export function initFileLoader({
         }
 
         const drv = result._driveIndex || 0;
-        const ctrl = result.isDSK ? 'fdc' : result.diskType === 'mdr' ? 'if1' : result.diskType === 'mgt' ? 'plusd' : 'beta';
+        const ctrl = result.isDSK ? 'fdc'
+            : result.diskType === 'mdr' ? 'if1'
+            : result.diskType === 'mgt' ? 'plusd'
+            : result.diskType === 'opd' ? 'opus'
+            : result.diskType === 'd80' ? 'didaktik'
+            : 'beta';
         updateMediaIndicator(fileName, 'disk', drv);
 
         // Show disk activity indicators for Beta Disk

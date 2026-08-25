@@ -10,6 +10,10 @@ import {
 } from '../constants.js';
 import { getMachineBySzxId } from '../machines.js';
 
+    /**
+     * SZX Loader - Modern ZX Spectrum snapshot format
+     * Used by Spectaculator, ZXSpin, Fuse, etc.
+     */
     export class SZXLoader {
         static isSZX(data) {
             const bytes = new Uint8Array(data);

@@ -1552,7 +1552,9 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     setOnZoomChange(() => updateSecondScreenSize());
 
     // Shared memory access wrappers (used by many UI modules via DI)
-    const readMemory = (addr) => spectrum.memory.read(addr);
+    // peek, not read: this is the inspection path (panels, watches, search,
+    // exporters), and the Opus register window changes state when read
+    const readMemory = (addr) => spectrum.memory.peek(addr);
     const getMemoryInfo = () => ({
         machineType: spectrum.memory.machineType,
         currentRomBank: spectrum.memory.currentRomBank,
@@ -2997,6 +2999,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateBetaDiskStatus();
         updatePlusDStatus();
         updateIF1Status();
+        updateOpusStatus();
+        updateDidaktikStatus();
         diskActivityAPI.setup();
         // Which disk interfaces exist has just changed, so the catalogue and
         // its drive tabs are stale: they were left showing the old machine's
@@ -3028,7 +3032,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
     
     // Input & Mouse Settings (extracted to ui/input-settings.js)
-    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateMouseStatus, gamepadAPI, bootAPI } =
+    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateMouseStatus, gamepadAPI, bootAPI } =
         initInputSettings({
             getSpectrum: () => spectrum,
             getCanvas: () => canvas,

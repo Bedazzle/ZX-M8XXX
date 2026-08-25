@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Opus Discovery Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Opus Discovery Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // The Opus Discovery is the only interface here whose FDC and PIA live in
+        // the MEMORY map rather than on I/O ports, and the only one whose data
+        // transfer is driven by an NMI. Both are easy to get subtly wrong and
+        // impossible to see from a unit test of the loader alone, so this drives
+        // the real machine: the controller through the real memory window, and
+        // then the real Opus ROM cataloguing a real disk.
+        //
+        // The last section is the one that matters. Everything above it can pass
+        // against a wrong model; a ROM printing three filenames it read off a
+        // disk cannot.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+        const hex = (n, w = 2) => '$' + n.toString(16).toUpperCase().padStart(w, '0');
+
+        // The ROM that drives the disk in the last section. All six ROMs in roms/
+        // load and run programs; only this one answers CAT 1, which is what makes
+        // it the useful one to assert against — the catalogue puts the directory
+        // on screen where a test can read it.
+        const CAT_ROM = 'Opus Discovery 1 v1.2 (1985)(Opus Supplies).rom';
+
+        function screenText(sp) {
+            const rom = sp.memory.rom[0];
+            const glyphs = new Map();
+            for (let c = 32; c < 128; c++) {
+                const base = 0x3D00 + (c - 32) * 8;
+                const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
+                if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+            }
+            const rows = [];
+            for (let row = 0; row < 24; row++) {
+                let s = '';
+                for (let col = 0; col < 32; col++) {
+                    const bytes = [];
+                    for (let y = 0; y < 8; y++) {
+                        const third = row >> 3, line = row & 7;
+                        const addr = 0x4000 | (third << 11) | (y << 8) | (line << 5) | col;
+                        bytes.push(sp.memory.read(addr));
+                    }
+                    s += glyphs.get(bytes.join(',')) || (bytes.some(b => b) ? '?' : ' ');
+                }
+                rows.push(s.replace(/\s+$/, ''));
+            }
+            return rows.join('\n');
+        }
+
+        (async () => {
+            const { OPDLoader, OpusDisk } = await import('../core/loaders.js');
+            const { parseBasicText, buildBasicProgram, buildTokenLookup } =
+                await import('../core/basic-tokens.js');
+
+            section('The app comes up with an Opus');
+            const frame = document.getElementById('app');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            const w = frame.contentWindow;
+            await w.zxDebug.ready({ machine: '48k' });
+            const sp = w.spectrum;
+            sp.stop();
+
+            const romResp = await fetch('../roms/opus.rom');
+            const haveRom = romResp.ok;
+            if (haveRom) sp.memory.loadOpusRom(await romResp.arrayBuffer());
+            sp.opusEnabled = true; sp.plusDEnabled = false; sp.if1Enabled = false;
+            sp.updateBetaDiskPagingFlag();
+            assert(haveRom, 'roms/opus.rom is present');
+            assert(sp.memory.hasOpusRom(), 'the ROM is loaded into Memory');
+            assert(sp._opusPagingEnabled, 'paging is enabled on a 48K');
+
+            section('Geometry comes from the image, not from an assumption');
+            {
+                const d = new OpusDisk();
+                assert(d.firstSector === 0, 'Opus numbers sectors from zero');
+                assert(d.sectorsPerTrack === 18, '18 sectors a track');
+                assert(d.bytesPerSector === 256, '256 bytes a sector');
+                assert(d.lastSectorPlusOne === 18, 'so the wrap point is 18, not 19');
+                d.loadDisk(new Uint8Array(OPDLoader.SS_SIZE), 'opd', 0);
+                assert(d.sides === 1 && d.tracks === 40, 'a 184320-byte image is 40 tracks, one side');
+                d.loadDisk(new Uint8Array(OPDLoader.DS_SIZE), 'opd', 0);
+                assert(d.sides === 2 && d.tracks === 80, 'a 737280-byte image is 80 tracks, two sides');
+                // The offset must agree with the format, which numbers from zero
+                assert(d.getSectorOffset(0, 0, 0) === 0, 'track 0 sector 0 is offset 0');
+                assert(d.getSectorOffset(0, 0, 1) === 256, 'sector 1 follows at 256');
+            }
+
+            section('The MGT side of the shared FDC is unchanged');
+            {
+                const { PlusDDisk } = await import('../core/loaders.js');
+                const p = new PlusDDisk();
+                assert(p.firstSector === 1, 'MGT still numbers sectors from one');
+                assert(p.lastSectorPlusOne === 11, 'and wraps after 10');
+                assert(p.getSectorOffset(1, 0, 1) === 2 * 10 * 512,
+                       'its sector offset is what it always was');
+            }
+
+            section('The register window, driven through memory');
+            const img = new Uint8Array(OPDLoader.SS_SIZE);
+            const TRACK = 3, SECTOR = 5;
+            const off = ((TRACK * 1 + 0) * 18 + SECTOR) * 256;
+            for (let i = 0; i < 256; i++) img[off + i] = (i * 7 + 11) & 0xFF;
+            sp.loadOPDImage(img, 'pattern.opd', 0);
+            sp.memory.opusActive = true;
+            const rd = (a) => sp.memory.read(a);
+            const wr = (a, v) => sp.memory.write(a, v);
+
+            wr(0x3001, 0x00); wr(0x3000, 0xFF); wr(0x3001, 0x04);
+            assert(sp.opus.dataDirA === 0xFF, 'with control bit 2 clear, port A writes the direction register');
+            assert(sp.opus.controlA === 0x04, 'the control register holds what was written');
+            assert(rd(0x3001) === 0x44, 'and reads back with bit 6 always set', hex(rd(0x3001)));
+            wr(0x3000, 0x12);
+            assert(sp.opus.drive === 1, 'port A bit 1 selects the drive');
+            assert(sp.opus.side === 1, 'port A bit 4 selects the side');
+            wr(0x3000, 0x40);
+            assert(rd(0x3000) === 0x00, 'reading port A clears its bit 6', hex(rd(0x3000)));
+            wr(0x3000, 0x00);
+            assert(rd(0x3800) === 0xFF && rd(0x3FFF) === 0xFF, '$3800 and up is unmapped');
+
+            wr(0x2801, TRACK); wr(0x2802, SECTOR);
+            assert(rd(0x2801) === TRACK && rd(0x2802) === SECTOR,
+                   'track and sector registers are at $2801 and $2802');
+            assert(rd(0x2805) === TRACK, 'the four registers repeat across the window');
+            assert(rd(0x2FFE) === SECTOR, 'all the way to $2FFF');
+
+            section('A sector read, byte for byte');
+            wr(0x2800, 0x80);
+            const got = [];
+            for (let i = 0; i < 256; i++) got.push(rd(0x2803));
+            const want = [...img.subarray(off, off + 256)];
+            const bad = got.findIndex((b, i) => b !== want[i]);
+            assert(bad === -1, '256 bytes match the image', bad >= 0 ? 'first differs at ' + bad : '');
+
+            section('A sector write goes back into the image');
+            wr(0x2801, TRACK); wr(0x2802, SECTOR); wr(0x2800, 0xA0);
+            for (let i = 0; i < 256; i++) wr(0x2803, (255 - i) & 0xFF);
+            const back = [...sp.opus.drives[0].diskData.subarray(off, off + 256)];
+            const badw = back.findIndex((b, i) => b !== ((255 - i) & 0xFF));
+            assert(badw === -1, 'the image holds what was written', badw >= 0 ? 'at ' + badw : '');
+
+            section('A debugger read must not drive the controller');
+            {
+                wr(0x2801, TRACK); wr(0x2802, SECTOR); wr(0x2800, 0x80);
+                const posBefore = sp.opus.dataPos;
+                const peeked = sp.memory.peek(0x2803);
+                assert(sp.opus.dataPos === posBefore,
+                       'peeking the data register does not advance the sector buffer',
+                       'pos ' + posBefore + ' -> ' + sp.opus.dataPos);
+                assert(peeked === sp.opus.data, 'but it still shows the register');
+                sp.opus.dataRegA = 0x40;
+                sp.memory.peek(0x3000);
+                assert(sp.opus.dataRegA === 0x40, 'peeking port A does not clear its bit 6');
+                assert(sp.memory.peek(0x3001) === (sp.opus.controlA | 0x40),
+                       'and the control register still reads with bit 6 set');
+            }
+
+            section('DRQ asks for an NMI, and not before the chip would');
+            {
+                let asked = 0, firstFlag = null;
+                sp.opus.onDataRequest = (first) => { asked++; if (firstFlag === null) firstFlag = first; };
+                sp.memory.opusActive = true;
+                wr(0x2801, TRACK); wr(0x2802, SECTOR);
+                wr(0x2800, 0x80);
+                assert(asked === 1, 'issuing a read command raises one data request');
+                assert(firstFlag === true, 'flagged as the first byte, which waits longer');
+                rd(0x2803);
+                assert(asked === 2, 'and reading a byte asks for the next');
+                // restore the real handler
+                sp.opus.onDataRequest = (first) => {
+                    sp._opusNmiPending = true;
+                    sp._opusDrqCountdown = first ? 2500 : 112;
+                };
+            }
+
+            section('The real ROM catalogues a real disk');
+            {
+                const r = await fetch('../roms/' + encodeURIComponent(CAT_ROM));
+                if (!r.ok) {
+                    log('  (skipped — ' + CAT_ROM + ' not in roms/)', 'fail');
+                    failed++;
+                } else {
+                    sp.memory.loadOpusRom(await r.arrayBuffer());
+                    sp.updateBetaDiskPagingFlag();
+
+                    const disk = OPDLoader.buildOPD([
+                        { name: 'HELLO', type: 0, data: new Uint8Array(80).fill(0x0D), autostart: 10 },
+                        { name: 'PICTURE', type: 3, data: new Uint8Array(600).fill(0x33), startAddr: 16384 },
+                        { name: 'MACHINE', type: 3, data: new Uint8Array(300).fill(0x77), startAddr: 32768 }
+                    ], 'TESTDISK', 1);
+                    sp.loadOPDImage(disk, 'test.opd', 0);
+                    sp.reset();
+                    for (let i = 0; i < 150; i++) sp.runFrameHeadless();
+                    assert([...sp.memory.opusRam].some(b => b),
+                           'the ROM has initialised its 2K workspace by now');
+
+                    const lookup = buildTokenLookup();
+                    const binary = buildBasicProgram(parseBasicText('10 CAT 1'), lookup);
+                    const rw16 = (a) => sp.memory.read(a) | (sp.memory.read(a + 1) << 8);
+                    const ww16 = (a, v) => {
+                        sp.memory.write(a, v & 0xFF); sp.memory.write(a + 1, (v >> 8) & 0xFF);
+                    };
+                    const prog = rw16(0x5C53);
+                    for (let i = 0; i < binary.length; i++) sp.memory.write(prog + i, binary[i]);
+                    const va = prog + binary.length, el = va + 1;
+                    sp.memory.write(va, 0x80);
+                    sp.memory.write(el, 0x0D); sp.memory.write(el + 1, 0x80);
+                    const wk = el + 2;
+                    ww16(0x5C4B, va); ww16(0x5C59, el); ww16(0x5C5B, el);
+                    ww16(0x5C61, wk); ww16(0x5C63, wk); ww16(0x5C65, wk);
+
+                    const cmds = [];
+                    const origW = sp.opus.writeMemory.bind(sp.opus);
+                    sp.opus.writeMemory = (a, v) => {
+                        if (a >= 0x2800 && a < 0x3000 && (a & 3) === 0) cmds.push(v);
+                        return origW(a, v);
+                    };
+                    for (const key of ['r', 'Enter']) {
+                        sp.ula.keyDown(key);
+                        for (let i = 0; i < 5; i++) sp.runFrameHeadless();
+                        sp.ula.keyUp(key);
+                        for (let i = 0; i < 5; i++) sp.runFrameHeadless();
+                    }
+                    for (let i = 0; i < 250; i++) sp.runFrameHeadless();
+                    sp.opus.writeMemory = origW;
+
+                    const scr = screenText(sp);
+                    assert(cmds.includes(0x00), 'the ROM issued a Restore');
+                    assert(cmds.some(c => (c & 0xF0) === 0x10), 'and a Seek');
+                    assert(cmds.some(c => (c & 0xE0) === 0x80), 'and a Read Sector');
+                    assert(cmds.length <= 8,
+                           'without retrying — a retry storm means the transfer failed',
+                           cmds.length + ' commands');
+                    assert(scr.includes('TESTDISK'), 'the disk label is on screen');
+                    assert(scr.includes('HELLO'), 'HELLO is catalogued');
+                    assert(scr.includes('PICTURE'), 'PICTURE is catalogued');
+                    assert(scr.includes('MACHINE'), 'MACHINE is catalogued');
+                    assert(scr.includes('0 OK'), 'and BASIC returned without an error');
+                    if (failed) log(scr.split('\n').filter(l => l.trim()).map(s => '      | ' + s).join('\n'));
+                }
+            }
+
+            section('The ways a user actually opens a disk');
+            {
+                // Each of these carries its own list of extensions, and a format
+                // missing from any one of them is silently unopenable by that route.
+                const doc = frame.contentDocument;
+                const fi = doc.getElementById('fileInput');
+                assert(fi.accept.includes('.opd') && fi.accept.includes('.opu'),
+                       'the main Load file dialog offers .opd/.opu', fi.accept);
+
+                const chk = doc.getElementById('chkOpus');
+                chk.checked = true;
+                chk.dispatchEvent(new w.Event('change'));
+                await wait(150);
+                assert(sp.opusEnabled && sp._opusPagingEnabled,
+                       'the Settings checkbox turns the interface on');
+
+                const oneFile = OPDLoader.buildOPD(
+                    [{ name: 'ONE', type: 3, data: new Uint8Array(64).fill(1), startAddr: 30000 }],
+                    'VIAUI', 1);
+
+                sp.loadedOpusDisks[0] = null; sp.loadedOpusDiskFiles[0] = null;
+                sp.loadedBetaDisks[0] = null;
+                const f = new w.File([oneFile], 'viaui.opd', { type: 'application/octet-stream' });
+                const dt = new w.DataTransfer();
+                dt.items.add(f);
+                fi.files = dt.files;
+                fi.dispatchEvent(new w.Event('change'));
+                await until(() => sp.loadedOpusDisks[0], 80, 25);
+                assert(!!sp.loadedOpusDisks[0], 'main Load puts an .opd in the Opus drive');
+                assert(!sp.loadedBetaDisks[0],
+                       'and not in the Beta drive — the controller map must know opd');
+
+                // Drag-and-drop keeps a separate allowlist of its own
+                sp.loadedOpusDisks[0] = null; sp.loadedOpusDiskFiles[0] = null;
+                const dt2 = new w.DataTransfer();
+                dt2.items.add(new w.File([oneFile], 'dropped.opd', { type: 'application/octet-stream' }));
+                w.document.dispatchEvent(new w.DragEvent('drop',
+                    { dataTransfer: dt2, bubbles: true, cancelable: true }));
+                await until(() => sp.loadedOpusDisks[0], 80, 25);
+                assert(!!sp.loadedOpusDisks[0], 'dropping an .opd on the window loads it');
+
+                // The same allowlist was missing .mgt, so check its neighbour too
+                sp.loadedPlusDDisks[0] = null; sp.loadedPlusDDiskFiles[0] = null;
+                const dt3 = new w.DataTransfer();
+                dt3.items.add(new w.File([new Uint8Array(819200)], 'dropped.mgt',
+                    { type: 'application/octet-stream' }));
+                w.document.dispatchEvent(new w.DragEvent('drop',
+                    { dataTransfer: dt3, bubbles: true, cancelable: true }));
+                await until(() => sp.loadedPlusDDisks[0], 80, 25);
+                assert(!!sp.loadedPlusDDisks[0], 'and dropping an .mgt still loads it');
+            }
+
+            section('A program loads off the disk and runs');
+            {
+                // The syntax is Interface 1's — the Discovery was built that way so
+                // IF1 software would work on it. LOAD *"d"... and a bare LOAD "NAME"
+                // both fail, so this is worth pinning down.
+                const lookup = buildTokenLookup();
+                const prog = buildBasicProgram(parseBasicText('10 PRINT "OPUSWORKS"'), lookup);
+                const disk = OPDLoader.buildOPD([
+                    { name: 'GAME', type: 0, data: prog, autostart: 10 },
+                    { name: 'BLOB', type: 3, data: new Uint8Array(256).fill(0x5A), startAddr: 40000 }
+                ], 'GAMEDISK', 1);
+                sp.loadOPDImage(disk, 'game.opd', 0);
+
+                const runLine = (src, frames = 300) => {
+                    const bin = buildBasicProgram(parseBasicText(src), lookup);
+                    const rw = (a) => sp.memory.read(a) | (sp.memory.read(a + 1) << 8);
+                    const ww = (a, v) => {
+                        sp.memory.write(a, v & 0xFF); sp.memory.write(a + 1, (v >> 8) & 0xFF);
+                    };
+                    sp.reset();
+                    for (let i = 0; i < 150; i++) sp.runFrameHeadless();
+                    const at = rw(0x5C53);
+                    for (let i = 0; i < bin.length; i++) sp.memory.write(at + i, bin[i]);
+                    const va = at + bin.length, el = va + 1;
+                    sp.memory.write(va, 0x80);
+                    sp.memory.write(el, 0x0D); sp.memory.write(el + 1, 0x80);
+                    const wk = el + 2;
+                    ww(0x5C4B, va); ww(0x5C59, el); ww(0x5C5B, el);
+                    ww(0x5C61, wk); ww(0x5C63, wk); ww(0x5C65, wk);
+                    for (const key of ['r', 'Enter']) {
+                        sp.ula.keyDown(key);
+                        for (let i = 0; i < 5; i++) sp.runFrameHeadless();
+                        sp.ula.keyUp(key);
+                        for (let i = 0; i < 5; i++) sp.runFrameHeadless();
+                    }
+                    for (let i = 0; i < frames; i++) sp.runFrameHeadless();
+                    return screenText(sp);
+                };
+
+                assert(runLine('10 LOAD *"m";1;"GAME"').includes('OPUSWORKS'),
+                       'LOAD *"m";1;"GAME" loads the program and its autostart runs it');
+
+                runLine('10 LOAD *"m";1;"BLOB"CODE');
+                assert(sp.memory.read(40000) === 0x5A && sp.memory.read(40255) === 0x5A,
+                       'LOAD ..."BLOB"CODE puts the bytes at the file\'s own address',
+                       'got ' + hex(sp.memory.read(40000)));
+
+                assert(runLine('10 LOAD *"m";1;"MISSING"').includes('File not found'),
+                       'a name that is not on the disk gives File not found');
+                assert(runLine('10 LOAD *"d";1;"GAME"').includes('Invalid argument'),
+                       'the +D style LOAD *"d" is refused, as on real hardware');
+            }
+
+            // Left until last on purpose: switching machines rebuilds Memory and
+            // the ROM banks, so anything after it would be running on a machine
+            // that has just been rebuilt rather than the one booted at the start.
+            section('Not on a +2A/+3 — the Opus cannot page its ROM in there');
+            {
+                await w.zxDebug.ready({ machine: '+3' });
+                sp.stop();
+                sp.opusEnabled = true;
+                sp.updateBetaDiskPagingFlag();
+                assert(!sp._opusPagingEnabled, '+3 refuses the Opus');
+                assert(sp.memory.opusDisk === sp.opus,
+                       'but the rebuilt Memory still knows the controller');
+                assert(sp.profile.pagingModel === '+2a', 'because of its paging model');
+            }
+
+            log('');
+            log(failed === 0 ? 'ALL PASSED' : failed + ' FAILED', failed === 0 ? 'pass' : 'fail');
+        })();
+    </script>
+</body>
+</html>

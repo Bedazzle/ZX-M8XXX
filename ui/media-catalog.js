@@ -41,8 +41,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     // the disk is still there) — so without this a TR-DOS disk loaded on
     // Pentagon went on showing as drive A after switching to +3, where the
     // machine cannot read it and its own drive A is something else entirely.
-    const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr' };
-    const SYSTEM_LABEL = { dsk: '3DOS', trd: 'TRD', mgt: 'MGT', mdr: 'MDR' };
+    const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr', opus: 'opd', didaktik: 'd80' };
+    const SYSTEM_LABEL = { dsk: '3DOS', trd: 'TRD', mgt: 'MGT', mdr: 'MDR', opd: 'OPD', d80: 'D80' };
 
     function activeSystemIds() {
         const systems = getAvailableDiskSystems && getAvailableDiskSystems();
@@ -237,7 +237,9 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const hasBeta = driveIndex < 4 && spectrum.loadedBetaDisks[driveIndex];
         const hasPlusD = driveIndex < 2 && spectrum.loadedPlusDDisks && spectrum.loadedPlusDDisks[driveIndex];
         const hasIF1 = driveIndex < 8 && spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[driveIndex];
-        return !!(hasFDC || hasBeta || hasPlusD || hasIF1);
+        const hasOpus = driveIndex < 2 && spectrum.loadedOpusDisks && spectrum.loadedOpusDisks[driveIndex];
+        const hasD80 = driveIndex < 2 && spectrum.loadedDidaktikDisks && spectrum.loadedDidaktikDisks[driveIndex];
+        return !!(hasFDC || hasBeta || hasPlusD || hasIF1 || hasOpus || hasD80);
     }
 
     // MGT file type names for catalog display
@@ -246,12 +248,18 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     // MDR (Interface 1 Microdrive) file type names for catalog display
     const MDR_TYPE_NAMES = { 'File': 'File', 'PRINT': 'PRINT' };
 
-    function buildDiskCatalogSection(driveIndex, isDSK, media, files, isMGT) {
+    // `sys` names the interface for the systems that share this renderer:
+    // 'mgt' for the +D, 'opd' for the Opus, undefined for TR-DOS. It used to be
+    // an isMGT boolean, which had no room for a third one.
+    function buildDiskCatalogSection(driveIndex, isDSK, media, files, sys) {
+        const isMGT = sys === 'mgt';
+        const isOPD = sys === 'opd';
+        const isD80 = sys === 'd80';
         // With two disk systems on the machine "A:" is ambiguous — the +3's
         // drive A and TR-DOS drive A are different drives. Name the system,
         // matching the drive tab above.
         const ids = activeSystemIds();
-        const sysId = isDSK ? 'dsk' : isMGT ? 'mgt' : 'trd';
+        const sysId = isDSK ? 'dsk' : (sys || 'trd');
         const driveLetter = ((ids && ids.length > 1) ? SYSTEM_LABEL[sysId] + ':' : '') +
             String.fromCharCode(65 + driveIndex);
         const hasFiles = files && files.length > 0;
@@ -260,8 +268,9 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const header = document.createElement('div');
         header.style.cssText = 'padding: 1px 6px; white-space: nowrap; color: var(--cyan); border-bottom: 1px solid var(--bg-secondary); margin-bottom: 2px;';
         let headerText = '';
-        if (isMGT) {
-            headerText = '\u{1F4BE} ' + driveLetter + ': ' + ((media && media.name) || 'MGT');
+        if (isMGT || isOPD || isD80) {
+            headerText = '\u{1F4BE} ' + driveLetter + ': ' +
+                ((media && media.name) || (isD80 ? 'D80' : isOPD ? 'OPD' : 'MGT'));
             if (hasFiles) headerText += ' \u2014 ' + files.length + ' files';
         } else if (isDSK) {
             if (hasFiles) {
@@ -296,8 +305,20 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 const row = document.createElement('div');
                 row.style.cssText = 'padding: 1px 6px; white-space: nowrap;';
                 const num = String(i + 1).padStart(2, ' ');
-                const name = isMGT ? f.name.padEnd(10, ' ') : f.name.padEnd(8, ' ');
-                if (isMGT) {
+                const name = (isMGT || isOPD || isD80) ? f.name.padEnd(10, ' ') : f.name.padEnd(8, ' ');
+                if (isD80) {
+                    // MDOS marks the type with one character: P BASIC, B Code
+                    const typeName = (f.typeName || '?').padEnd(7, ' ');
+                    const size = String(f.length).padStart(6, ' ');
+                    const startHex = f.startAddr ? hex16(f.startAddr) : '    ';
+                    row.textContent = num + '  ' + name + '  ' + typeName + ' ' + startHex + 'h ' + size + 'b';
+                } else if (isOPD) {
+                    // OPDLoader already resolves the type name off the file header
+                    const typeName = (f.typeName || '?').padEnd(7, ' ');
+                    const size = String(f.length).padStart(5, ' ');
+                    const startHex = f.startAddr ? hex16(f.startAddr) : '    ';
+                    row.textContent = num + '  ' + name + '  ' + typeName + ' ' + startHex + 'h ' + size + 'b';
+                } else if (isMGT) {
                     const typeName = (MGT_TYPE_NAMES[f.type] || '?').padEnd(7, ' ');
                     const size = String(f.length).padStart(5, ' ');
                     const startHex = f.startAddress !== undefined ? hex16(f.startAddress) : '    ';
@@ -320,7 +341,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 if (openInExplorer && media && media.data) {
                     row.style.cursor = 'pointer';
                     row.addEventListener('dblclick', () => {
-                        const ext = isMGT ? 'mgt' : isDSK ? 'dsk' : 'trd';
+                        const ext = isD80 ? 'd80' : isOPD ? 'opd' : isMGT ? 'mgt' : isDSK ? 'dsk' : 'trd';
                         openInExplorer(media.data, media.name || ('disk.' + ext));
                     });
                     if (!row.title) row.title = 'Double-click: open in Explorer';
@@ -382,6 +403,14 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const showBeta = (!controller || controller === 'beta') && driveIndex < 4 && controllerActive('beta', ids);
         const showPlusD = (!controller || controller === 'plusd') && driveIndex < 2 && controllerActive('plusd', ids);
         const showIF1 = (!controller || controller === 'if1') && driveIndex < 8 && controllerActive('if1', ids);
+        const showOpus = (!controller || controller === 'opus') && driveIndex < 2 && controllerActive('opus', ids);
+        const opusMedia = showOpus && spectrum.loadedOpusDisks ? spectrum.loadedOpusDisks[driveIndex] : null;
+        const opusFiles = showOpus && spectrum.loadedOpusDiskFiles ? spectrum.loadedOpusDiskFiles[driveIndex] : null;
+        const hasOpusContent = opusMedia || (opusFiles && opusFiles.length > 0);
+        const showD80 = (!controller || controller === 'didaktik') && driveIndex < 2 && controllerActive('didaktik', ids);
+        const d80Media = showD80 && spectrum.loadedDidaktikDisks ? spectrum.loadedDidaktikDisks[driveIndex] : null;
+        const d80Files = showD80 && spectrum.loadedDidaktikDiskFiles ? spectrum.loadedDidaktikDiskFiles[driveIndex] : null;
+        const hasD80Content = d80Media || (d80Files && d80Files.length > 0);
         const fdcMedia = showFdc ? spectrum.loadedFDCDisks[driveIndex] : null;
         const betaMedia = showBeta ? spectrum.loadedBetaDisks[driveIndex] : null;
         const plusDMedia = showPlusD && spectrum.loadedPlusDDisks ? spectrum.loadedPlusDDisks[driveIndex] : null;
@@ -395,7 +424,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const hasPlusDContent = plusDMedia || (plusDFiles && plusDFiles.length > 0);
         const hasIF1Content = if1Media || (if1Files && if1Files.length > 0);
 
-        if (!hasFdcContent && !hasBetaContent && !hasPlusDContent && !hasIF1Content) {
+        if (!hasFdcContent && !hasBetaContent && !hasPlusDContent && !hasIF1Content && !hasOpusContent && !hasD80Content) {
             let anyDisk = false;
             for (let i = 0; i < 4; i++) {
                 if (hasDiskInDrive(i)) { anyDisk = true; break; }
@@ -412,7 +441,13 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             buildDiskCatalogSection(driveIndex, false, betaMedia, betaFiles, false);
         }
         if (hasPlusDContent) {
-            buildDiskCatalogSection(driveIndex, false, plusDMedia, plusDFiles, true);
+            buildDiskCatalogSection(driveIndex, false, plusDMedia, plusDFiles, 'mgt');
+        }
+        if (hasOpusContent) {
+            buildDiskCatalogSection(driveIndex, false, opusMedia, opusFiles, 'opd');
+        }
+        if (hasD80Content) {
+            buildDiskCatalogSection(driveIndex, false, d80Media, d80Files, 'd80');
         }
         if (hasIF1Content) {
             buildIF1CatalogSection(driveIndex, if1Media, if1Files);
@@ -476,7 +511,21 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 if1Drives.push(i);
             }
         }
-        const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0);
+        const opusDrives = [];
+        if (controllerActive('opus', ids)) for (let i = 0; i < 2; i++) {
+            if ((spectrum.loadedOpusDisks && spectrum.loadedOpusDisks[i]) ||
+                (spectrum.loadedOpusDiskFiles && spectrum.loadedOpusDiskFiles[i] && spectrum.loadedOpusDiskFiles[i].length > 0)) {
+                opusDrives.push(i);
+            }
+        }
+        const d80Drives = [];
+        if (controllerActive('didaktik', ids)) for (let i = 0; i < 2; i++) {
+            if ((spectrum.loadedDidaktikDisks && spectrum.loadedDidaktikDisks[i]) ||
+                (spectrum.loadedDidaktikDiskFiles && spectrum.loadedDidaktikDiskFiles[i] && spectrum.loadedDidaktikDiskFiles[i].length > 0)) {
+                d80Drives.push(i);
+            }
+        }
+        const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0) + (opusDrives.length > 0 ? 1 : 0) + (d80Drives.length > 0 ? 1 : 0);
         // Prefix the tab with its system whenever "A:" could mean two things —
         // either because two controllers hold a disk, or because the machine
         // has two disk systems and only one of them happens to be occupied
@@ -499,6 +548,18 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
             for (const drv of plusDDrives) {
                 const letter = String.fromCharCode(65 + drv);
                 tabs.push({ drive: drv, controller: 'plusd', label: multiController ? SYSTEM_LABEL.mgt + ':' + letter : letter + ':' });
+            }
+        }
+        if (opusDrives.length > 0) {
+            for (const drv of opusDrives) {
+                const letter = String.fromCharCode(65 + drv);
+                tabs.push({ drive: drv, controller: 'opus', label: multiController ? SYSTEM_LABEL.opd + ':' + letter : letter + ':' });
+            }
+        }
+        if (d80Drives.length > 0) {
+            for (const drv of d80Drives) {
+                const letter = String.fromCharCode(65 + drv);
+                tabs.push({ drive: drv, controller: 'didaktik', label: multiController ? SYSTEM_LABEL.d80 + ':' + letter : letter + ':' });
             }
         }
         if (if1Drives.length > 0) {

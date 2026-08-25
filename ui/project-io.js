@@ -239,6 +239,32 @@ export function initProjectIO({
                     }
                 }
 
+                if (mediaState.didaktikDisks) {
+                    project.media.didaktikDisks = [];
+                    for (let i = 0; i < 2; i++) {
+                        if (mediaState.didaktikDisks[i] && mediaState.didaktikDisks[i].data) {
+                            project.media.didaktikDisks.push({
+                                drive: i,
+                                name: mediaState.didaktikDisks[i].name,
+                                data: arrayToBase64(mediaState.didaktikDisks[i].data)
+                            });
+                        }
+                    }
+                }
+
+                if (mediaState.opusDisks) {
+                    project.media.opusDisks = [];
+                    for (let i = 0; i < 2; i++) {
+                        if (mediaState.opusDisks[i] && mediaState.opusDisks[i].data) {
+                            project.media.opusDisks.push({
+                                drive: i,
+                                name: mediaState.opusDisks[i].name,
+                                data: arrayToBase64(mediaState.opusDisks[i].data)
+                            });
+                        }
+                    }
+                }
+
                 if (mediaState.if1Cartridges) {
                     project.media.if1Cartridges = [];
                     for (let i = 0; i < 8; i++) {
@@ -790,6 +816,24 @@ export function initProjectIO({
                             };
                         }
                     }
+                    restoreMedia.didaktikDisks = [null, null];
+                    if (project.media.didaktikDisks) {
+                        for (const entry of project.media.didaktikDisks) {
+                            restoreMedia.didaktikDisks[entry.drive] = {
+                                name: entry.name,
+                                data: Uint8Array.from(atob(entry.data), c => c.charCodeAt(0))
+                            };
+                        }
+                    }
+                    restoreMedia.opusDisks = [null, null];
+                    if (project.media.opusDisks) {
+                        for (const entry of project.media.opusDisks) {
+                            restoreMedia.opusDisks[entry.drive] = {
+                                name: entry.name,
+                                data: Uint8Array.from(atob(entry.data), c => c.charCodeAt(0))
+                            };
+                        }
+                    }
                     restoreMedia.if1Cartridges = new Array(8).fill(null);
                     if (project.media.if1Cartridges) {
                         for (const entry of project.media.if1Cartridges) {
@@ -812,6 +856,18 @@ export function initProjectIO({
                     }
                     for (let i = 0; i < 2 && !foundDisk; i++) {
                         if (spectrum.loadedPlusDDisks[i]) { mediaCatalogAPI.buildDiskCatalog(i, 'plusd'); foundDisk = true; }
+                    }
+                    for (let i = 0; i < 2 && !foundDisk; i++) {
+                        if (spectrum.loadedDidaktikDisks && spectrum.loadedDidaktikDisks[i]) {
+                            mediaCatalogAPI.buildDiskCatalog(i, 'didaktik');
+                            foundDisk = true;
+                        }
+                    }
+                    for (let i = 0; i < 2 && !foundDisk; i++) {
+                        if (spectrum.loadedOpusDisks && spectrum.loadedOpusDisks[i]) {
+                            mediaCatalogAPI.buildDiskCatalog(i, 'opus');
+                            foundDisk = true;
+                        }
                     }
                     for (let i = 0; i < 8 && !foundDisk; i++) {
                         if (spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[i]) {

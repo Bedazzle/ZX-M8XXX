@@ -167,16 +167,40 @@ External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports 
 - `buildOPD(files, label, sides)` -- serialize file list into OPD image (writes the boot sector + directory skeleton; preserves an existing disk's sector 0 when given a `baseImage`)
 - `createBlankOPD(sides)` -- create empty formatted disk image (boot sector + label entry + terminator)
 
-**Status: image format only.** `core/loaders/disk-opus.js` implements `OPDLoader` (reading and
-writing OPD images for the Explorer and file tools). There is **no Opus controller emulation** —
-the WD1770/MC6821 description below is a design note, not implemented code, and the
-`loadedOpusDisks` state it refers to does not exist.
+**Status: emulated.** `core/loaders/disk-opus.js` holds both `OPDLoader` (the image format)
+and `OpusDisk` (the controller). Disks boot: the Opus ROM catalogues a real image, and
+`tests/opus-test.html` drives the whole path and then checks the ROM's own `CAT` output.
 
-**OpusDisk class (design note, not implemented):**
-- WD1770 FDC + MC6821 PIA emulation via composition (wraps PlusDDisk internally)
-- Memory-mapped register access (not I/O ports): readFDC/writeFDC ($2800-$2FFF), readPIA/writePIA ($3000-$37FF)
-- PIA Port A bits: bit 1=drive select, bit 4=side select; Control register bit 2 gates DDR vs data
-- 0-based sector numbering via overridden `getSectorOffset`
+**OpusDisk class (`core/loaders/disk-opus.js`):**
+- WD1770 FDC + MC6821 PIA. `OpusDisk extends PlusDDisk` — the +D's WD1772 is the same
+  chip family, so the command engine is inherited and only the decode, the geometry and
+  the PIA are Opus's own. Register behaviour follows FUSE's `peripherals/disk/opus.c`.
+- **Registers are in the MEMORY map, not on I/O ports** — the one thing that makes this
+  interface unlike every other one here. `readMemory`/`writeMemory` decode the window;
+  the four WD177x registers are selected by `address & 3` and so repeat every 4 bytes
+  across `$2800-$2FFF`.
+- PIA port A: bit 1 = drive, bit 4 = side. Control register bit 2 gates data vs direction
+  register. Two read side effects that are easy to miss: reading port A **clears its bit 6**,
+  and reading the control register always returns **bit 6 set**. Port B is unconnected.
+- 0-based sector numbering. `PlusDDisk` gained a `firstSector` field (1 for MGT, 0 for Opus)
+  which `getSectorOffset` and the multi-sector wrap checks follow, so the shared FDC serves
+  both without either format hard-coding the other's numbering.
+- Geometry is taken from the image size on insert, not assumed: 184,320 = 40 tracks × 1 side,
+  737,280 = 80 × 2.
+- **`peekMemory`** is the same decode with no side effects. `Memory.peek` routes inspection
+  reads (debugger panels, watches, search, exporters) through it, because reading the data
+  register advances the sector buffer and raises a DRQ — a memory panel left showing `$2800`
+  would otherwise drive the disk controller just by being on screen.
+
+**Data transfer is by NMI, not polling.** The WD1770's DRQ is wired to the Z80's NMI line
+(FUSE allocates the chip `WD_FLAG_DRQ` and its `set_datarq` raises an NMI), so every byte the
+chip has ready interrupts the CPU and the handler in the Opus ROM moves it. Our FDC has no
+timing of its own — a command completes instantly — so the delay is added in `spectrum.js`:
+`OPUS_DRQ_BYTE_TSTATES` (112 T-states, one byte at 250 kbit/s MFM on a 3.5 MHz Z80) and
+`OPUS_DRQ_FIRST_TSTATES` for the first byte, which also waits for the head to settle. Without
+that delay the NMI lands on the instruction after the command write and preempts the ROM
+before it has set up the transfer — which shows up as the ROM retrying and then reporting
+`Disk I/O error`.
 
 **Memory paging (`core/memory.js`):**
 - `opusActive` flag: when true, $0000-$1FFF=ROM, $2000-$27FF=RAM, $2800-$2FFF=FDC, $3000-$37FF=PIA, $3800-$3FFF=unmapped ($FF)
@@ -184,26 +208,105 @@ the WD1770/MC6821 description below is a design note, not implemented code, and 
 - `loadOpusRom(data)` / `hasOpusRom()` -- 8KB ROM management
 
 **Integration (`core/spectrum.js`):**
-- `opusEnabled` flag + `_isOpusActive()` check
-- `loadOPDImage(data, fileName, driveIndex)` -- load OPD into Opus drive
-- `triggerOpusNmi()` -- pages in Opus ROM/RAM and triggers Z80 NMI
+- `opusEnabled` flag; `_opusPagingEnabled` recalculated by `updateBetaDiskPagingFlag()`
+  (which owns all the peripheral paging flags) — enabled + ROM loaded + `pagingModel !== '+2a'`
+- `loadOPDImage(data, fileName, driveIndex)` -- load OPD into an Opus drive
 - `loadedOpusDisks[0..1]` / `loadedOpusDiskFiles[0..1]` -- per-drive state
-- Opus <-> +D mutually exclusive (both overlay $0000-$3FFF); compatible with IF1 and Beta Disk
-- ROM paging (per FUSE z80_ops.c): ALL-LATE check model. Unlike IF1/+D (which page BEFORE opcode fetch), FUSE checks Opus AFTER opcode fetch. This is because the Opus ROM has a DIFFERENT instruction at $0008 (`JP $0168`) vs the Spectrum ROM (`LD HL,(nn)`). FUSE's mid-instruction paging fetches the opcode from the Spectrum ROM, then pages in Opus for operands. Since our cpu.execute() is atomic, we use all-late paging:
-  - `updateOpusPaging(oldPC)` -- AFTER cpu.execute(): page IN at $0008 (RST 8 -> Spectrum ROM's LD HL executes, PC=$000B=ENTRY_1, POP HL discards HL), $0048 (KEY_INT ISR hook), $1708 (CLOSE#); page OUT at $1748.
-  - PIA initialized to all zeros (matching FUSE). INIT_RAM2 runs on first $0048 ISR frame to configure PIA registers AND copy lookup tables from ROM to 2KB RAM -- both are essential for RST $30 (LOOKUP) dispatch.
-- `updateOpusPagingFlag()` -- recalculate `_opusPagingEnabled` flag (call when settings/ROM change)
+- Opus <-> +D mutually exclusive: both page themselves in at `$0008` over `$0000-$3FFF`.
+  Compatible with IF1 and Beta Disk (IF1 takes priority in `Memory.read`, as in FUSE)
+- Reset follows `opus_reset`: reset the WD1770 and the PIA and leave the interface paged
+  **out**. The +D pages itself in at reset to run its boot code; the Opus does not — it waits
+  to be entered through a hook, normally the `$0048` KEY-INT on the first maskable interrupt,
+  which is where it initialises its 2K workspace.
+- `this.memory.opusDisk = this.opus` — and re-linked on a machine switch, because the
+  registers are read through the memory map and a fresh `Memory` without that reference
+  returns `$FF` for every FDC and PIA access.
+
+**ROM paging is checked AFTER the opcode fetch** (per FUSE `z80_ops.c`), unlike the +D and
+IF1 which are checked before it. `updateOpusPaging(oldPC)` runs after `cpu.execute()` with the
+PC the instruction started at: page IN at `$0008` (RST 8), `$0048` (KEY-INT) and `$1708`
+(CLOSE#), page OUT at `$1748`.
+
+FUSE can page mid-instruction — it fetches the opcode from the Spectrum ROM and then the
+operands from the Opus ROM. `cpu.execute()` is atomic, so we page all-late instead, and the
+ROMs show that is equivalent at all four addresses. Only `$0008` takes operands: the 48K ROM
+has `LD HL,($5C5D)` there, so we load HL from `$5C5D` where FUSE loads it from `$0168` — and
+the very next instruction is the Opus ROM's `POP HL` at `$000B`, which overwrites HL either
+way. The other three are one-byte instructions (`PUSH BC`, `INC HL`, `RET`), so no operand is
+fetched. (Opus `$1708` is `NOP / DEC HL` against the 48K's `INC HL`: the ROM is written to
+tolerate both entry paths.)
 
 **Settings (`ui/input-settings.js`):**
-- `chkOpus` checkbox: enable/disable Opus Discovery
-- `opus.rom` file loading via ROM selector or Settings button
-- NMI button: triggers Opus snapshot (pages in ROM, CPU NMI)
+- `chkOpus` checkbox: enable/disable Opus Discovery; disabled with a reason on +2A/+3
+- `opus.rom` auto-loaded from `roms/`, or via the Load Opus ROM button / ROM drag-drop
 - Mutual exclusion: enabling Opus disables +D (and vice versa)
 - Persisted in localStorage key `zxm8_opus`
+- The Disk tab lists **Opus** as a system when `_opusPagingEnabled`, accepting `.opd`/`.opu`
+
+**Using it.** Enable Opus Discovery in Settings → Machines on a 48K/128K/+2/Pentagon and load
+an `.opd`. Disks appear in the Media catalogue under an `OPD:` drive tab and are saved into
+and restored from a project like every other disk system.
+
+**The command syntax is Interface 1's**, which is the point — the Discovery was built so IF1
+software would work on it. The device is `"m"` and the drive number is 1 or 2:
+
+```basic
+LOAD *"m";1;"GAME"            REM BASIC — auto-runs if the file has an autostart line
+LOAD *"m";1;"SCREEN"SCREEN$
+LOAD *"m";1;"BLOB"CODE
+SAVE *"m";1;"GAME"
+CAT 1
+```
+
+`LOAD *"d"...` and `LOAD "GAME"` do **not** work — the first is `Invalid argument`, the second
+falls through to the tape. A missing file gives `File not found`; a drive with no disk gives
+`Insert disk N, then press a key`.
+
+**Which ROM.** All six ROMs in `roms/` **load and run** programs — that part is the same
+everywhere. They differ on `CAT`: only `Opus Discovery 1 v1.2` answers `CAT 1`, so that is the
+ROM `tests/opus-test.html` drives. The v2.x ROMs, EXCOM and both QuickDOS versions (including
+the one shipped as `roms/opus.rom`) boot and load fine but print nothing for `CAT 1` — they
+take some other catalogue syntax, which has not been established here.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
-`DidaktikLoader` (`core/loaders.js`) reads and writes Didaktik 40/80 MDOS disk images — raw, header-less sector dumps (sector N at offset N×512). It lists/extracts catalog files, creates blank disks (`createBlankD40`/`createBlankD80` — byte-reproduce real 360K/720K MDOS formats), and supports in-place editing (add/delete/rename) for the Explorer/file-analysis tool; it does **not** emulate the Didaktik interface, so disks don't boot. Read algorithms ported from the zxspectrumutils tools (`d802tap.cpp`, `dird80.c`); the write path follows `tap2d80.cpp` from the same source.
+**Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image
+format) and `DidaktikDisk` (the controller). Disks boot: MDOS saves a program to a blank disk
+and loads it back after a hard reset, checked by `tests/disk-boot-test.html`.
+
+**DidaktikDisk (`core/loaders/disk-didaktik.js`)** — a WD2797 on I/O ports plus an aux
+register, following FUSE's `peripherals/disk/didaktik.c`. `DidaktikDisk extends PlusDDisk`,
+so the WD177x command engine is shared. Three things set it apart from the other interfaces:
+
+- **The ROM is 14K, not 8K.** `$0000-$37FF` is ROM and `$3800-$3FFF` is 2K of RAM, so the
+  overlay fills the whole bottom 16K. The dumps in circulation are 14336 or 16384 bytes;
+  `loadDidaktikRom` takes the first 14336.
+- **It pages in at `$0000`** (and `$0008`), paging out at `$1700`, checked *before* the opcode
+  fetch like the +D and IF1. `$0000` means it takes the machine over from the moment of reset
+  rather than waiting to be entered through a hook — its ROM, not the Spectrum's, is what boots.
+- **The side is in the command byte.** There is no control register holding it: a WD2797 takes
+  side select from bit 1 of a Type II/III command, which is where `executeCommand` reads it.
+
+Ports (low byte): `$81` status/command, `$83` track, `$85` sector, `$87` data. The aux register
+is decoded with mask `$F9`, so `$89/$8B/$8D/$8F` all reach it — bits 0/1 drive select, 2/3
+motors, **bit 6 lets DRQ pull NMI and bit 7 lets INTRQ**. With neither bit set the interface is
+in polled mode and must not interrupt at all. Anything with bit 7 of the port clear is the 8255
+PPI, which is not wired to anything and reads `$FF`.
+
+Geometry is MDOS: 9 sectors of 512 bytes, two sides, 40 tracks (368,640 bytes) or 80
+(737,280), taken from the image size on insert.
+
+**Using it:** enable Didaktik 80 in Settings → Machines on a 48K/128K/+2/Pentagon (not +2A/+3,
+same overlay reason as the others), load a `.d40`/`.d80`, and use the **star form**:
+
+```basic
+SAVE *"NAME"      LOAD *"NAME"      CAT
+```
+
+A bare `SAVE "NAME"` goes to the tape. It is mutually exclusive with the +D and the Opus —
+all three own `$0000-$3FFF`.
+
+`DidaktikLoader` (`core/loaders.js`) reads and writes Didaktik 40/80 MDOS disk images — raw, header-less sector dumps (sector N at offset N×512). It lists/extracts catalog files, creates blank disks (`createBlankD40`/`createBlankD80` — byte-reproduce real 360K/720K MDOS formats), and supports in-place editing (add/delete/rename) for the Explorer/file-analysis tool; the controller is `DidaktikDisk`, above. Read algorithms ported from the zxspectrumutils tools (`d802tap.cpp`, `dird80.c`); the write path follows `tap2d80.cpp` from the same source.
 
 Format:
 - **Detection**: `"SDOS"` identifier at boot-sector offset 204, or a known D40/D80 size with a valid-looking catalog.
