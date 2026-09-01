@@ -115,6 +115,8 @@ export function initDisasmNavigation({
     // Re-render immediately on display option changes (persistence lives in display-settings.js)
     document.getElementById('chkFlowBreakSpacing')?.addEventListener('change', () => updateDebugger());
     document.getElementById('chkShowPCCursor')?.addEventListener('change', () => updateDebugger());
+    document.getElementById('chkAsmComments')?.addEventListener('change', () => updateDebugger());
+    document.getElementById('chkUserComments')?.addEventListener('change', () => updateDebugger());
 
     // ---- Export visible ----
 

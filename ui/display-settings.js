@@ -1000,10 +1000,14 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     const chkFlowBreakSpacing = document.getElementById('chkFlowBreakSpacing');
     const chkShowPCCursor = document.getElementById('chkShowPCCursor');
     const chkFollowPC = document.getElementById('chkFollowPC');
+    const chkAsmComments = document.getElementById('chkAsmComments');
+    const chkUserComments = document.getElementById('chkUserComments');
 
     // Restore (default true for all)
     if (chkFlowBreakSpacing) chkFlowBreakSpacing.checked = storageGet('zxm8_flowBreakSpacing') !== 'false';
     if (chkShowPCCursor) chkShowPCCursor.checked = storageGet('zxm8_showPCCursor') !== 'false';
+    if (chkAsmComments) chkAsmComments.checked = storageGet('zxm8_showAsmComments') !== 'false';
+    if (chkUserComments) chkUserComments.checked = storageGet('zxm8_showUserComments') !== 'false';
     if (chkFollowPC) {
         chkFollowPC.checked = storageGet('zxm8_followPC') !== 'false';
         // Notify listeners (disasm toolbar disables Go/PC/address while following)
@@ -1016,6 +1020,12 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     });
     if (chkShowPCCursor) chkShowPCCursor.addEventListener('change', () => {
         storageSet('zxm8_showPCCursor', chkShowPCCursor.checked);
+    });
+    if (chkAsmComments) chkAsmComments.addEventListener('change', () => {
+        storageSet('zxm8_showAsmComments', chkAsmComments.checked);
+    });
+    if (chkUserComments) chkUserComments.addEventListener('change', () => {
+        storageSet('zxm8_showUserComments', chkUserComments.checked);
     });
     if (chkFollowPC) chkFollowPC.addEventListener('change', () => {
         storageSet('zxm8_followPC', chkFollowPC.checked);

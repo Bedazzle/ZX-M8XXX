@@ -285,6 +285,9 @@ and is skipped — and the comment dialog writes `source: ''`, so editing an imp
 makes it yours and the next build leaves it alone. `; @main`-style markers are directives to
 the build, not remarks, and are filtered out.
 
+Imported and hand-written comments can be shown separately in the disasm ⚙ options
+(`ui/comment-visibility.js`); both are on by default.
+
 The block above a routine is found by walking up from the emitting line over whole-line
 comments, stopping at a blank line — and stepping over a label-only line, since the block is
 written above `draw:`, not above the instruction that follows it.

@@ -637,6 +637,13 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
 .disasm-mnemonic {
     color: var(--cyan);
     flex-grow: 1;
+    /* Never give up width to the comment beside it. Flex items shrink to
+       min-content by default, so a long inline comment squeezed the mnemonic
+       until it wrapped and "LD L,A" came out as two lines. Comments imported
+       from an assembled source are whole sentences, where a hand-typed one
+       rarely was, which is what made this show up. */
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 .disasm-mnemonic .op {
     color: var(--accent);
@@ -818,6 +825,13 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
     color: #7a7;
     font-style: italic;
     margin-left: 8px;
+    /* Take what is left of the row and cut cleanly; the full text is in the
+       title attribute, and the same comment is on its own line above when the
+       source had a block there */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .bp-add-form {
     display: flex;

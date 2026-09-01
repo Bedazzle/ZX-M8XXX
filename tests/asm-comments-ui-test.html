@@ -237,15 +237,84 @@
                    'a ; @main line does not become a disassembly comment',
                    marker && JSON.stringify(marker.before));
 
-            section('It shows up in the disassembly');
+            section('It shows up in the disassembly, without breaking the row');
+
+            // A source comment is a whole sentence where a hand-typed one rarely
+            // was, and the row is a flex box: the comment squeezed the mnemonic
+            // until "LD L,A" wrapped onto two lines. The mnemonic must keep its
+            // width and the comment take what is left.
+            // From a clean sheet: earlier sections left hand-written comments about,
+            // and one of those would be the first commented row on screen
+            for (const c of zx.comments.getAll()) zx.comments.remove(c.address);
+            r = await buildAndInject([
+                '    org $B000',
+                '    ld l,a      ; DE = screen address of point(0,y), a comment long enough to crowd the row',
+                '    ret',
+            ].join('\n'));
+            assert(r.ok, 'the source assembles', r.out.slice(0, 120));
 
             d.querySelector('.tab-btn[data-tab="debugger"]').click();
             await wait(150);
-            zx.setRegisters({ pc: 0x8000 });
-            w.zxDebug.spectrum.cpu.pc = 0x8000;
-            const dis = d.getElementById('disassemblyView') || d.getElementById('rightDisassemblyView');
+            w.spectrum.cpu.pc = 0xB000;
+            const rightType = d.getElementById('rightPanelType');
+            rightType.value = 'disasm';
+            rightType.dispatchEvent(new w.Event('change'));
             await wait(300);
-            assert(!!dis, 'the disassembly view exists');
+
+            const row = await until(() => [...d.querySelectorAll('.disasm-line')]
+                .find(el => el.dataset.addr === '45056' && el.querySelector('.disasm-inline-comment')));
+            assert(!!row, 'a disassembly row carries the imported comment');
+            if (row) {
+                const mnem = row.querySelector('.disasm-mnemonic');
+                const cmt = row.querySelector('.disasm-inline-comment');
+                assert(/screen address/.test(cmt.textContent), 'with the source text in it',
+                       cmt.textContent.slice(0, 40));
+                // One text line each: a wrapped mnemonic is taller than its line-height
+                const lh = parseFloat(w.getComputedStyle(mnem).lineHeight) || 14;
+                assert(mnem.getBoundingClientRect().height <= lh * 1.6,
+                       'the mnemonic is not wrapped onto a second line',
+                       `h=${mnem.getBoundingClientRect().height.toFixed(1)} lh=${lh}`);
+                assert(mnem.scrollWidth <= mnem.clientWidth + 1,
+                       'and is not clipped either',
+                       `scroll=${mnem.scrollWidth} client=${mnem.clientWidth}`);
+                assert(cmt.getBoundingClientRect().right <= row.getBoundingClientRect().right + 1,
+                       'the comment stays inside the row',
+                       `cmt=${cmt.getBoundingClientRect().right.toFixed(0)} row=${row.getBoundingClientRect().right.toFixed(0)}`);
+                assert(/screen address/.test(cmt.getAttribute('title') || ''),
+                       'and the full text is in its title, since the row cuts it off');
+            }
+
+            section('Each kind of comment can be switched off');
+
+            const asmBox = d.getElementById('chkAsmComments');
+            const userBox = d.getElementById('chkUserComments');
+            assert(!!asmBox && !!userBox, 'the disasm options offer both toggles');
+
+            zx.comments.set(0xB001, { inline: 'my own note', source: '' });
+            const inlineTexts = () => [...d.querySelectorAll('.disasm-inline-comment')]
+                .map(e => e.textContent).join(' | ');
+
+            asmBox.checked = false;
+            asmBox.dispatchEvent(new w.Event('change'));
+            await wait(200);
+            assert(!/screen address/.test(inlineTexts()), 'turning off assembled comments hides them',
+                   inlineTexts().slice(0, 80));
+            assert(/my own note/.test(inlineTexts()), 'and leaves yours alone', inlineTexts().slice(0, 80));
+
+            asmBox.checked = true;
+            asmBox.dispatchEvent(new w.Event('change'));
+            userBox.checked = false;
+            userBox.dispatchEvent(new w.Event('change'));
+            await wait(200);
+            assert(/screen address/.test(inlineTexts()), 'turning off your own hides those instead',
+                   inlineTexts().slice(0, 80));
+            assert(!/my own note/.test(inlineTexts()), 'and the imported ones stay');
+
+            userBox.checked = true;
+            userBox.dispatchEvent(new w.Event('change'));
+            await wait(200);
+            assert(/screen address/.test(inlineTexts()) && /my own note/.test(inlineTexts()),
+                   'both back on shows both', inlineTexts().slice(0, 80));
 
             assert(errors.length === 0, 'no uncaught errors while driving it',
                    errors.slice(0, 3).join(' | '));

@@ -2,12 +2,17 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.16.3
+
+- **Fixed: a long comment broke the disassembly row.** The mnemonic gave up width to the comment beside it, so `LD L,A` wrapped onto two lines. It keeps its width now; the comment is cut with an ellipsis and its full text is in the tooltip.
+- **Assembled and hand-written comments can be shown separately** (disasm ⚙ options), since a build can bring in hundreds at once. Both on by default.
+
 ## v0.16.2
 
-- **Your source comments now show up in the disassembly.** Injecting assembled code (and Debug, which injects first) copies each line's comment to the address that line assembled to, and the block above a routine to the block above it. Macro and REPT bodies are included, at every expansion.
-- **Comments you wrote in the debugger are kept.** Only the ones a build put there are refreshed, so a comment deleted from the source stops appearing while yours stay put; editing an imported comment makes it yours.
-- **Fixed: `asm-test` stopped a third of the way through and still reported green.** The TAPEND test expected a return value from something that throws, and the exception took the whole run with it.
-- **The calculator can sit in the assembler's split pane.** Pick 🖩 Calculator in the split pane's file dropdown (◫) to work out a mask or an offset without leaving the source. It is the same calculator the debugger's right panel offers — one instance, moved to whichever panel is asking, so switching tabs takes it with you.
+- **Your source comments now show up in the disassembly.** Injecting copies each line's comment to the address it assembled to, and the block above a routine to the block above it. Macro and REPT bodies are included, at every expansion.
+- **Comments you wrote in the debugger are kept.** Only the ones a build put there are refreshed, so a comment deleted from the source stops appearing. Editing an imported one makes it yours.
+- **Fixed: `asm-test` stopped a third of the way through and still reported green.** The TAPEND test expected a return value from something that throws.
+- **The calculator can sit in the assembler's split pane.** Pick 🖩 Calculator in the split pane's file dropdown (◫). It is the same one the debugger's right panel offers, moved to whichever panel you are on.
 
 ## v0.16.1
 

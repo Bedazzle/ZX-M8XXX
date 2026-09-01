@@ -197,6 +197,14 @@ address they share. Then ownership: a comment typed in the debugger survives eve
 rebuild, editing an imported one makes it yours, a comment deleted from the source is
 removed rather than stranded, and `; @main` markers stay out.
 
+It also asserts the **row geometry**, because an imported comment is a whole sentence
+where a hand-typed one rarely was: the row is a flex box, and the mnemonic gave up width
+until `LD L,A` wrapped onto two lines. The check is that the mnemonic is no taller than one
+line-height and is not clipped, that the comment stays inside the row, and that its full
+text is in the `title` — the row cuts it off with an ellipsis. And the two ⚙ toggles:
+switching off assembled comments leaves hand-written ones on screen, and the other way
+round.
+
 Its `buildAndInject` waits on the **output pane**, not the Inject button: the button is
 still enabled from the previous build, so waiting on it returns at once and injects the
 build before this one — which is how the stale-comment check first passed a source it had

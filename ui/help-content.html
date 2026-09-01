@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.16.2</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.16.3</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -265,7 +265,7 @@
                         <li>Hover over addresses to see cross-references</li>
                         <li>Subroutine separators (IDA-style) for marked routines</li>
                         <li>Syntax coloring: <span style="color:#daa520">registers</span>, <span style="color:#00aa00">numbers</span>, <span style="color:#cc66cc">chars</span></li>
-                        <li><strong>&#9881; View options</strong> menu in the toolbar: Show T-states, Follow PC (Shift+F6; while on, manual navigation is disabled), Comment on each step, AY sound on step, Flow break spacing, Show PC cursor, Step Over limit (max T-states for Step Over, default 80000)</li>
+                        <li><strong>&#9881; View options</strong> menu in the toolbar: Show T-states, Follow PC (Shift+F6; while on, manual navigation is disabled), AY sound on step, Flow break spacing, Show PC cursor, then the comment options — <strong>Assembled comments</strong> and <strong>My comments</strong> (show or hide each kind separately — a build can bring in hundreds at once, so seeing only your own notes, or only what the source said, is worth being able to ask) and Comment on each step, Step Over limit (max T-states for Step Over, default 80000)</li>
                         <li><strong>Export</strong> dropdown in the toolbar: <strong>Visible</strong> saves the on-screen disassembly as .asm; <strong>Range...</strong> opens a dialog to export an address range with options (ORG line, addresses, bytes, T-states)</li>
                         <li><strong>T-state selection</strong>: drag the mouse across instruction lines to sum their T-states (popup shows the total). A jump on the <em>last</em> line is fine: unconditional JR/JP/RET sum exactly, conditional branches show both totals (taken / not taken). CALL/RST (the subroutine's duration is unknown), mid-selection branches, loops back into the selection, HALT, block repeats, and data lines can't be summed exactly &mdash; the popup says why</li>
                         <li><strong>Ctrl+G</strong> opens the go-to palette: fuzzy-search labels or type a hex address; Enter navigates, &uarr;&darr; select, Esc closes. The <strong>ROM</strong> checkbox includes ROM labels in the search (off by default)</li>

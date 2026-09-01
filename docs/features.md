@@ -93,7 +93,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Compare tool | `ui/snapshot-parse.js` | `ui/compare-tool.js` | `compareDialog` | `snapshot-parse-test` | `docs/tools.md` |
 | Compare: memory vs memory | `core/mem-compare.js` | `ui/compare-tool.js` | `compareMemMemOptions`, `compareMemAMode` | `memcompare-test`, `compare-ui-test` | `docs/tools.md` |
 | Calculator | — | `ui/calculator.js` | `calcDialog` | `calculator-test` | — |
-| Source comments in disasm | `sjasmplus/assembler.js` (`lineMap`), `debug/managers.js` (`source`) | `ui/assembler-ui.js` (`importAsmComments`) | `btnAsmInject`, `btnAsmDebug` | `asm-test`, `asm-comments-ui-test` | `docs/assembler.md` |
+| Source comments in disasm | `sjasmplus/assembler.js` (`lineMap`), `debug/managers.js` (`source`) | `ui/assembler-ui.js` (`importAsmComments`), `ui/comment-visibility.js` | `btnAsmInject`, `btnAsmDebug`, `chkAsmComments`, `chkUserComments` | `asm-test`, `asm-comments-ui-test` | `docs/assembler.md`, `docs/debugger.md` |
 | Calculator in either panel | `ui/calc-host.js` | `ui/panel-navigator.js`, `ui/assembler-ui.js` | `rightCalculatorView`, `asmPane2Calc`, `asmPane2File` | `calc-host-test` | — |
 | Frame/PNG/GIF export | — | `ui/frame-export.js` | `btnScreenshotMain` | — | `docs/snapshot-formats.md` |
 

@@ -32,10 +32,12 @@
                                     <div id="disasmViewOptsPopover" class="disasm-opts-popover hidden">
                                         <label title="Show T-states for each instruction"><input type="checkbox" id="chkShowTstates"> Show T-states</label>
                                         <label title="Auto-scroll disassembly to the current PC — disables manual navigation"><input type="checkbox" id="chkFollowPC" checked> Follow PC <span class="opts-hint">Shift+F6</span></label>
-                                        <label title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> Comment on each step</label>
                                         <label title="Play AY sound when stepping through code"><input type="checkbox" id="chkAyDebugStep"> AY sound on step</label>
                                         <label title="Add spacing after flow control instructions (JP, JR, RET, DJNZ)"><input type="checkbox" id="chkFlowBreakSpacing" checked> Flow break spacing</label>
                                         <label title="Highlight current PC line while running (always shown when paused)"><input type="checkbox" id="chkShowPCCursor" checked> Show PC cursor</label>
+                                        <label title="Show comments carried over from an assembled source (added by Inject / Debug)"><input type="checkbox" id="chkAsmComments" checked> Assembled comments</label>
+                                        <label title="Show comments you typed in the debugger"><input type="checkbox" id="chkUserComments" checked> My comments</label>
+                                        <label title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> Comment on each step</label>
                                         <label title="Maximum T-states for Step Over (CALL/RST/DJNZ) before stopping">Step Over limit: <input type="text" id="stepOverMaxTstates" value="80000" style="width: 70px; font-family: monospace; font-size: 11px;" maxlength="10"></label>
                                     </div>
                                 </span>

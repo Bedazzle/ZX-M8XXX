@@ -3,6 +3,7 @@
 
 import { hex8, hex16, escapeHtml } from '../core/utils.js';
 import { REGION_TYPES } from '../debug/managers.js';
+import { visibleComment } from './comment-visibility.js';
 
 export function initDebuggerDisplay({
     getSpectrum, getDisasm, setDisasm,
@@ -283,7 +284,7 @@ export function initDebuggerDisplay({
             }
 
             // Get comments for this address
-            const comment = commentManager.get(line.addr);
+            const comment = visibleComment(commentManager.get(line.addr));
             let beforeHtml = '';
             let inlineHtml = '';
             let afterHtml = '';
@@ -322,7 +323,8 @@ export function initDebuggerDisplay({
                 }
                 // Inline comment
                 if (comment.inline) {
-                    inlineHtml = `<span class="disasm-inline-comment">; ${escapeHtml(comment.inline)}</span>`;
+                    // title too: the row cuts a long comment off with an ellipsis
+                    inlineHtml = `<span class="disasm-inline-comment" title="${escapeHtml(comment.inline)}">; ${escapeHtml(comment.inline)}</span>`;
                 }
                 // After comments
                 if (comment.after) {

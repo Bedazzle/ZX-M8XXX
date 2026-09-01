@@ -91,6 +91,12 @@ A comment entry carries **`source`**: `''` when the user wrote it, `'asm'` when 
 
 Pure profiler analysis shared by the debugger's Profiler and `profile-game.html`: hotspot clustering/classification (`analyzeHotspots`, `classifyHotspot`) and label generation (`generateProfilerLabels`, `generateHotspotLabels`). No DOM — memory access and the include-ROM flag are parameters
 
+## `ui/comment-visibility.js`
+
+Which comments the disassembly shows. A comment carried over from an assembled source (`source: 'asm'`) and one typed in the debugger are toggled separately, in the disasm ⚙ options — a build can bring in hundreds at once, so "only what I wrote" and "only what the source said" are different questions and each is worth asking. `visibleComment(comment)` returns it or null; an absent checkbox counts as shown, so it is safe before the markup is spliced in.
+
+Both disassembly views (`ui/debugger-display.js`, `ui/right-disasm-view.js`) render comments with the same code, so the rule lives here rather than being written twice.
+
 ## `ui/calc-host.js`
 
 Which panel currently holds the programmer calculator. It is a singleton — fixed ids (`#calcInput`, `#calcDec`, …) and handlers bound with document-wide `.calc-btn` selectors — so a second copy in the DOM would fight the first for every one of them. The debugger's right panel and the assembler's split pane therefore share one node by moving it rather than each owning an instance.
