@@ -273,6 +273,95 @@
             zx.clearBreakpoints();
             assert(zx.breakpoints().length === 0, 'and cleared');
 
+            section('start() does what the button does');
+
+            // The harness used to click #btnStartEmulator and poll spectrum.running
+            // - a dependency on a markup id, not on an API. This is the same path.
+            zx.resume();
+            assert(await zx.start() === true, 'start() on a running machine is a no-op');
+            assert(zx.spectrum.running === true, 'and leaves it running');
+            zx.pause();
+
+            section('watchPortReads: who reads the hardware');
+
+            // LD A,$FE / IN A,($FE)  -> port $FEFE (the high byte is A)
+            // LD BC,$7FFE / IN A,(C) -> port $7FFE
+            // Two different half-rows read by two different instructions: keyed by
+            // pc alone they would be one entry with the rows lost, which is the
+            // whole reason the port is part of the key.
+            zx.pokeBlock(0x8200, [0x3E, 0xFE, 0xDB, 0xFE, 0x01, 0xFE, 0x7F, 0xED, 0x78, 0xC9]);
+            zx.setRegisters({ pc: 0x8200 });
+            zx.watchPortReads(0xFE);
+            zx.step(4);
+            const preads = zx.getPortReads();
+            assert(preads.length === 2, 'one hit per (pc, port), not one per pc',
+                   JSON.stringify(preads.map(h => [h.pc.toString(16), h.port.toString(16)])));
+            const inA = preads.find(h => h.pc === 0x8202);
+            const inC = preads.find(h => h.pc === 0x8207);
+            assert(!!inA && inA.port === 0xFEFE && inA.high === 0xFE && inA.low === 0xFE,
+                   'IN A,(n) takes its high byte from A', JSON.stringify(inA));
+            assert(!!inC && inC.port === 0x7FFE && inC.high === 0x7F,
+                   'IN A,(C) takes the whole port from BC', JSON.stringify(inC));
+            assert(!!inA && inA.count === 1 && typeof inA.lastValue === 'number',
+                   'with a count and the byte the CPU got');
+            assert(!!inA && Array.isArray(inA.callers) && Array.isArray(inA.callSites),
+                   'and the same provenance triple as the memory side');
+            assert(zx.stopPortReads().length === 2, 'stopPortReads returns them');
+
+            // The mask decides what is watched, and it is ANDed with both sides
+            zx.setRegisters({ pc: 0x8200 });
+            zx.watchPortReads(0x7FFE, 0xFFFF);
+            zx.step(4);
+            const exact = zx.stopPortReads();
+            assert(exact.length === 1 && exact[0].port === 0x7FFE,
+                   'a full mask watches exactly one port', JSON.stringify(exact));
+
+            zx.setRegisters({ pc: 0x8200 });
+            zx.watchPortReads();
+            zx.step(4);
+            assert(zx.stopPortReads().length === 2, 'and no port at all watches every port');
+
+            section('saveSnapshot');
+
+            // The bytes are built in the iframe's realm, so `instanceof Uint8Array`
+            // here is false for a perfectly good Uint8Array — check the view, not
+            // the constructor
+            const isBytes = (v) => ArrayBuffer.isView(v) && v.BYTES_PER_ELEMENT === 1;
+
+            const szx = zx.saveSnapshot('szx');
+            assert(isBytes(szx) && String.fromCharCode(...szx.slice(0, 4)) === 'ZXST',
+                   'szx comes back with its magic');
+            const sna = zx.saveSnapshot('sna');
+            assert(isBytes(sna) && sna.length >= 49179,
+                   'sna is a full memory image', String(sna.length));
+            const z80 = zx.saveSnapshot();
+            assert(isBytes(z80) && z80.length > 30 && z80[6] === 0 && z80[7] === 0,
+                   'and z80 is the default, written as v2/v3', String(z80.length));
+
+            section('tapeState');
+
+            const noTape = zx.tapeState();
+            assert(noTape.loaded === false, 'no tape reports { loaded: false }, not a throw',
+                   JSON.stringify(noTape));
+
+            // Two TAP blocks: a length word, then that many bytes
+            await zx.loadFile(new Uint8Array([2, 0, 0x00, 0x00, 2, 0, 0xFF, 0x00]), 'probe.tap');
+            const t = zx.tapeState();
+            assert(t.loaded === true && t.name === 'probe.tap', 'a loaded tape names itself',
+                   JSON.stringify(t));
+            assert(t.blocks === 2 && t.loaderBlocks === 2, 'and reports how many blocks it has',
+                   JSON.stringify(t));
+            assert(t.loaderBlock === 0 && t.playerBlock === 0, 'both decks start at the first');
+            assert(t.playing === false && typeof t.phase === 'string' &&
+                   typeof t.flashLoad === 'boolean',
+                   'with the deck state a driver polls for', JSON.stringify(t));
+
+            // The two positions move independently - which is the point: one deck
+            // running past the other is invisible if you can only see one of them
+            zx.spectrum.tapeLoader.setCurrentBlock(1);
+            assert(zx.tapeState().loaderBlock === 1 && zx.tapeState().playerBlock === 0,
+                   'the flash loader moves without the real-time deck');
+
             log(`\n=== ${passed} passed, ${failed} failed ===`, failed ? 'fail' : 'pass');
         })().catch(e => {
             failed++;

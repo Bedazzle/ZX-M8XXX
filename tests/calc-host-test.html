@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Calculator Host Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Calculator Host Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // The calculator is ONE node with fixed ids, shared by the debugger's right
+        // panel and the assembler's split pane. So the thing to test is not that it
+        // computes — calculator-test does that — but that exactly one host holds it
+        // at a time and that neither is ever left showing an empty box. That only
+        // means anything against the real page, where the tabs really do hide.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 300, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d;
+
+        const wrapper = () => d.querySelector('.calc-wrapper');
+        const wrappers = () => d.querySelectorAll('.calc-wrapper').length;
+        const inAsm = () => !!d.getElementById('asmPane2Calc').contains(wrapper());
+        const inDebug = () => !!d.getElementById('rightCalculatorView').contains(wrapper());
+        // What the user sees: an element inside an inactive tab has no offsetParent
+        const onScreen = (el) => !!el && el.offsetParent !== null;
+
+        // By data-tab, not by label: the buttons' text carries a ▶ arrow span
+        const mainTab = (tab) => d.querySelector(`.tab-btn[data-tab="${tab}"]`);
+
+        // Clicking the ALREADY-ACTIVE tab collapses the container instead of
+        // showing it, and it can start collapsed, so both cases need handling
+        function showTab(tab) {
+            const btn = mainTab(tab);
+            const collapsed = () => d.getElementById('tabContainer').classList.contains('collapsed');
+            if (!btn.classList.contains('active')) btn.click();
+            else if (collapsed()) btn.click();
+        }
+
+        (async () => {
+            section('The app comes up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument;
+            await w.zxDebug.ready();
+            w.spectrum.stop();
+
+            const errors = [];
+            w.addEventListener('error', e => errors.push(e.message), true);
+
+            assert(wrappers() === 1, 'there is exactly one calculator in the page', String(wrappers()));
+            assert(inDebug(), 'and it starts in the debugger panel, its home');
+
+            section('The debugger panel still shows it');
+
+            showTab('debugger');
+            await wait(150);
+            const rightType = d.getElementById('rightPanelType');
+            rightType.value = 'calc';
+            rightType.dispatchEvent(new w.Event('change'));
+            await wait(150);
+            assert(inDebug(), 'selecting Calculator keeps it in the right panel');
+            assert(onScreen(wrapper()), 'and it is visible');
+            assert(!!d.getElementById('calcInput'), 'its input is reachable by id');
+
+            section('The assembler split pane can take it');
+
+            showTab('assembler');
+            await wait(150);
+            const split = d.getElementById('btnAsmSplit');
+            if (d.getElementById('asmPane2').classList.contains('hidden')) split.click();
+            await wait(200);
+            assert(!d.getElementById('asmPane2').classList.contains('hidden'), 'the split pane opens');
+
+            const paneFile = d.getElementById('asmPane2File');
+            const calcOption = [...paneFile.options].find(o => /calculator/i.test(o.textContent));
+            assert(!!calcOption, 'the split pane\'s file list offers the calculator');
+
+            paneFile.value = calcOption.value;
+            paneFile.dispatchEvent(new w.Event('change'));
+            await wait(200);
+
+            assert(inAsm(), 'choosing it moves the calculator into the split pane');
+            assert(wrappers() === 1, 'and does not clone it — one instance, one set of ids',
+                   String(wrappers()));
+            assert(onScreen(wrapper()), 'it is visible there');
+            assert(!onScreen(d.getElementById('asmEditor2')),
+                   'and the split editor is swapped out, not overlapped');
+
+            section('It lays out for the narrower pane');
+
+            // The debugger's panel is wide enough for a 306px keypad and a 475px
+            // history side by side; a split pane is not. Letting the history keep
+            // its width and wrap put it BELOW the keypad, which both left the space
+            // beside the keypad empty and pushed the bit field out of the pane.
+            {
+                const box = (sel) => (typeof sel === 'string' ? d.querySelector(sel) : sel)
+                    .getBoundingClientRect();
+                const pane = box('#asmPane2Calc');
+                const keys = box('.calc-container');
+                const hist = box('.calc-log');
+                const bits = box('#calcBitsPanel');
+
+                assert(hist.left >= keys.right - 1 && hist.top < keys.bottom,
+                       'the history sits beside the keypad, not wrapped below it',
+                       `keys.right=${Math.round(keys.right)} hist.left=${Math.round(hist.left)} hist.top=${Math.round(hist.top)}`);
+                assert(hist.right <= pane.right + 1 && hist.width > 40,
+                       'and fills the space to the pane edge instead of leaving it empty',
+                       `hist=${Math.round(hist.left)}..${Math.round(hist.right)} pane right=${Math.round(pane.right)}`);
+                assert(bits.top >= keys.bottom - 1, 'the bit field is below the keypad',
+                       `bits.top=${Math.round(bits.top)} keys.bottom=${Math.round(keys.bottom)}`);
+                assert(bits.width > 0 && bits.right <= pane.right + 1,
+                       'and inside the pane, not cut off to the right',
+                       `bits.right=${Math.round(bits.right)} pane.right=${Math.round(pane.right)}`);
+                assert(bits.bottom <= pane.bottom + 1,
+                       'and in view without scrolling — what the wrapped history pushed it out of',
+                       `bits.bottom=${Math.round(bits.bottom)} pane.bottom=${Math.round(pane.bottom)}`);
+                assert(onScreen(d.getElementById('calcBitsPanel')), 'and it is displayed');
+            }
+
+            section('Each host reclaims it when you go back');
+
+            // The failure this guards: the calculator stays in the assembler while
+            // the debugger's panel is still set to Calculator, so switching tabs
+            // shows an empty box with the right label on it.
+            showTab('debugger');
+            await wait(200);
+            assert(inDebug(), 'the debugger takes it back when its tab returns');
+            assert(onScreen(wrapper()), 'and it is visible, not an empty panel');
+
+            showTab('assembler');
+            await wait(200);
+            assert(inAsm(), 'the assembler takes it back in turn');
+            assert(onScreen(wrapper()), 'and it is visible there again');
+
+            section('Picking a file gives it back');
+
+            const fileOption = [...paneFile.options].find(o => !o.dataset.calc);
+            if (fileOption) {
+                paneFile.value = fileOption.value;
+                paneFile.dispatchEvent(new w.Event('change'));
+                await wait(200);
+                assert(inDebug(), 'choosing a file in the split pane parks it back home');
+                assert(onScreen(d.getElementById('asmEditor2')), 'and the split editor is back');
+                assert(!onScreen(wrapper()), 'the calculator is not on screen in the assembler tab');
+
+                // and back to the calculator, so the rest of the run is in that state
+                paneFile.value = calcOption.value;
+                paneFile.dispatchEvent(new w.Event('change'));
+                await wait(200);
+                assert(inAsm(), 'and it can be chosen again');
+            } else {
+                log('  (no file in the VFS to switch to — skipped)', 'section');
+            }
+
+            section('Closing the split gives it back too');
+
+            d.getElementById('btnAsmPane2Close').click();
+            await wait(200);
+            assert(inDebug(), 'closing the split pane parks the calculator back home');
+            assert(wrappers() === 1, 'still exactly one', String(wrappers()));
+
+            section('It still works where it lands');
+
+            split.click();               // reopen; it was left on the calculator
+            await wait(250);
+            assert(inAsm(), 'reopening the split restores the calculator choice');
+            const input = d.getElementById('calcInput');
+            input.value = 'FF';
+            input.dispatchEvent(new w.Event('input'));
+            await wait(100);
+            assert(d.getElementById('calcDec').textContent === '255',
+                   'typing in it still converts', d.getElementById('calcDec').textContent);
+
+            assert(errors.length === 0, 'no uncaught errors while driving it',
+                   errors.slice(0, 3).join(' | '));
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

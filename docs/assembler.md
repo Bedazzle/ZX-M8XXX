@@ -212,6 +212,8 @@ The popover (`btnAsmViewOpts` / `asmViewOptsPopover`) follows the same pattern a
 - **Different file**: edits write straight to `VFS.files[path].content` on input (the main editor's `syncEditorToVFS()` flow is untouched) and mark the file modified.
 - **Same file / unsaved buffer** (`pane2Path === currentOpenFile` or `null`): the panes mirror each other's content on every input, both directions — same file, two scroll positions.
 
+**Calculator in the split pane**: the file dropdown's last entry (🖩 Calculator) swaps the editor out for the programmer calculator — the same one the debugger's right panel offers, and literally the same node. It is a singleton (fixed ids, handlers bound with document-wide selectors), so `ui/calc-host.js` moves it between the two hosts instead of cloning it: each registers `(element, wants)` and `refreshCalcHost()` hands it to the first that wants it *and* is on screen, so switching tabs takes it along and neither panel is ever left showing an empty box. The pane gets `.showing-calc` (editor and line numbers `display:none`, `#asmPane2Calc` shown). The arrangement is the debugger's — keypad left, history beside it, bit field under the keypad — with one change for the narrower pane: the history gives up its fixed 475px (`flex: 1 1 0`) and takes whatever is left. Letting it keep that width and wrap was worse on both counts, leaving the space beside the keypad empty *and* pushing the bit field ~200px below the pane, where it needed scrolling to see. `calc-host-test` asserts the geometry (history beside the keypad, bit field in view) rather than just that the elements exist, because both failures render perfectly valid HTML. The option is recognised by its `data-calc` attribute rather than its value: the internal sentinel `PANE2_CALC` contains a NUL, which the HTML parser would turn into U+FFFD in an attribute. Persisted like any other choice in `zxm8_asmPane2File`.
+
 The pane reuses `highlightAsmCode()` and the `.asm-textarea`/`.asm-highlight` classes (so font-size Ctrl+/− applies); Tab inserts 4 spaces. Files can be sent to it via the file-tab right-click menu ("Open in other pane", `showTabContextMenu()`/`openInSplitPane()` — the menu also took over "Set as main file", previously a direct right-click action, plus "Close tab") or with Shift+Enter in the Ctrl+G palette. Palette navigation is pane-aware (`asmActivePane`, tracked via editor focus events): Enter (`gotoSourceLine`) targets the last-focused pane, Shift+Enter (`gotoSourceLineSplit`) the other one; with no split open both default to the main editor / open the split respectively. Search/replace, custom undo, autocomplete, and the T-state popup work only in the main pane. Width via `--asm-pane2-w` (`#asmPaneSplitter`, inverted-x, 240–1200px, key `zxm8_asmPane2Width`); split state and file persist (`zxm8_asmSplit`, `zxm8_asmPane2File`) and are restored at startup.
 
 **Source markers** — special comments in source file headers:
@@ -240,6 +242,52 @@ The pane reuses `highlightAsmCode()` and the `.asm-textarea`/`.asm-highlight` cl
 - `TAPOUT "file"[, flagbyte]` … `TAPEND` — wrap the bytes emitted between the two directives into one standard ZX tape block: `[len_lo][len_hi][flag][data…][checksum]`, where `len = data + 2` (flag + checksum), `checksum = flag XOR all data bytes`, and `flag` defaults to `0xFF`. Bytes are captured in emission order (handled via the `emit()` hook, so `ORG` jumps inside a block are honoured). Multiple `TAPOUT`/`TAPEND` pairs to the same filename append blocks. `TAPEND` without a matching `TAPOUT` (or a second `TAPOUT` before `TAPEND`) is an error.
 
 All SAVE directives capture data at the point of declaration (not end of assembly), push to `saveCommands[]`, and support `; md5: <hash>` comment verification.
+
+## Source comments in the disassembly
+
+Injecting (Project ▼ → Inject into memory, and Debug, which injects first) copies the
+source's comments into the debugger's `commentManager`, so the disassembly reads like
+the source it came from.
+
+**The line map.** `Assembler` returns `lineMap`: `[{file, line, addr, comment, depth}]`,
+one entry per source line that *emitted* bytes — a label, an `EQU` or a comment line has
+no address to hang anything on. `addr` is the logical (run) address, so `DISP`ed code maps
+where it runs. The comment is the parser's, not a `;`-split of the raw line, so a semicolon
+inside a string is not mistaken for one.
+
+Two details the implementation turns on:
+
+- **It is recorded in `processLine`, not in the pass loop.** A macro or `REPT`/`DUP` body is
+  expanded by re-entering `processLine` from inside the line that opened it, so to the pass
+  loop the whole block is a single line that emitted everything. `depth` is that nesting
+  level. Several lines can therefore claim one address, and the importer takes the
+  **shallowest that actually carries a comment**: shallowest because a macro call site is
+  what the reader wrote about that address while the body says the same thing at every call
+  — but "carries a comment" matters just as much, because `EDUP` is recorded as having
+  emitted the whole block at its first address and has no comment of its own. Preferring it
+  blindly left the first iteration of every `DUP` bare while the rest were annotated.
+
+  Each iteration and each macro call is real code at its own address, so each one gets the
+  comment: a `DUP 3` body annotates three addresses.
+- **`reconstructLine` keeps the comment.** REPT/DUP and macro bodies are stored as
+  reconstructed text and re-parsed on expansion; without the comment they came back bare and
+  a macro-heavy source produced almost nothing.
+- **The map is rebuilt every pass, in `runPasses` *and* `runPassesAsync`.** Only the final
+  pass's addresses are settled, and the UI uses the async path — a map reset in only one of
+  them accumulated across builds and, with the first entry winning, served the *previous*
+  build's comments.
+
+**Ownership** (`importAsmComments` in `ui/assembler-ui.js`) follows the rule the symbol import
+already uses. A comment carries `source: 'asm'` when it came from a build. Every one of those
+is dropped and rebuilt on each inject, so a comment deleted from the source does not stay
+stranded at an address that no longer means it. A comment with any other source is the user's
+and is skipped — and the comment dialog writes `source: ''`, so editing an imported comment
+makes it yours and the next build leaves it alone. `; @main`-style markers are directives to
+the build, not remarks, and are filtered out.
+
+The block above a routine is found by walking up from the emitting line over whole-line
+comments, stopping at a blank line — and stepping over a label-only line, since the block is
+written above `draw:`, not above the instruction that follows it.
 
 ## File Management
 

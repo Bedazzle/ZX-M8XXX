@@ -5,6 +5,7 @@ import { z80Opcodes } from '../debug/opcodes-data.js';
 import { decodeViewCodepage, AsmDetok, DETOK_FORMAT_NAMES } from '../core/asm-detok.js';
 import { beautify } from '../core/asm-beautify.js';
 import { createHighlightLayer } from './asm-highlight.js';
+import { registerCalcHost, refreshCalcHost } from './calc-host.js';
 
 export function initAssemblerUI({
     VFS,
@@ -15,6 +16,7 @@ export function initAssemblerUI({
     MD5,
     getSpectrum,
     labelManager,
+    commentManager,
     showMessage,
     updateDebugger,
     updateStatus,
@@ -2353,8 +2355,20 @@ export function initAssemblerUI({
     const asmPane2File = document.getElementById('asmPane2File');
     const asmPane2Header = document.getElementById('asmPane2Header');
     const btnAsmPane2Close = document.getElementById('btnAsmPane2Close');
+    const asmPane2Calc = document.getElementById('asmPane2Calc');
+    // The split pane can show the programmer calculator instead of a file. This
+    // sentinel is internal and never reaches the markup: the HTML parser turns a
+    // NUL in an attribute into U+FFFD, so an option value cannot carry it. The
+    // option is recognised by its data-calc attribute instead, which also stops a
+    // file that happens to share its value being mistaken for it.
+    const PANE2_CALC = '\u0000calc';
+    const calcOption = () => asmPane2File.querySelector('option[data-calc]');
     let pane2Path = null;          // null = mirror the main editor buffer
     let asmActivePane = 'main';    // last-focused editor pane ('main' | 'split')
+
+    function pane2ShowsCalc() {
+        return pane2Path === PANE2_CALC;
+    }
 
     function pane2IsMirror() {
         return pane2Path === null || pane2Path === currentOpenFile;
@@ -2363,6 +2377,7 @@ export function initAssemblerUI({
     let lastLineCount2 = -1;
 
     function pane2Render() {
+        if (pane2ShowsCalc()) return;   // the editor is swapped out for the calculator
         const layer2 = splitLayer();
         if (layer2) layer2.render(asmEditor2.value, viewCodepage());
         asmEditor2.classList.add('highlighting');  // make the textarea text transparent, like the main editor
@@ -2399,13 +2414,26 @@ export function initAssemblerUI({
         const sig = files.join('\n');
         if (asmPane2File.dataset.sig === sig) return;
         asmPane2File.dataset.sig = sig;
-        asmPane2File.innerHTML = files.length
+        asmPane2File.innerHTML = (files.length
             ? files.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')
-            : '<option value="">(editor buffer)</option>';
-        if (pane2Path && VFS.files[pane2Path]) asmPane2File.value = pane2Path;
+            : '<option value="">(editor buffer)</option>')
+            + '<option value="~calc" data-calc="1">🖩 Calculator</option>';
+        if (pane2ShowsCalc()) calcOption().selected = true;
+        else if (pane2Path && VFS.files[pane2Path]) asmPane2File.value = pane2Path;
     }
 
     function pane2LoadFile(path) {
+        // Not a file: hand the split pane to the calculator and leave the editor
+        // buffer as it was, so switching back to a file doesn't reload anything
+        if (path === PANE2_CALC) {
+            pane2Path = PANE2_CALC;
+            asmPane2.classList.add('showing-calc');
+            if (calcOption()) calcOption().selected = true;
+            storageSet('zxm8_asmPane2File', PANE2_CALC);
+            refreshCalcHost();
+            return;
+        }
+        asmPane2.classList.remove('showing-calc');
         pane2Path = (path && VFS.files[path]) ? path : null;
         asmEditor2.value = pane2IsMirror()
             ? asmEditor.value
@@ -2413,6 +2441,7 @@ export function initAssemblerUI({
         pane2Render();
         if (pane2Path && asmPane2File.value !== pane2Path) asmPane2File.value = pane2Path;
         storageSet('zxm8_asmPane2File', pane2Path || '');
+        refreshCalcHost();   // the debugger's panel takes it back
     }
 
     function pane2SetVisible(on) {
@@ -2422,21 +2451,27 @@ export function initAssemblerUI({
         btnAsmSplit.classList.toggle('active', on);
         if (!on) asmActivePane = 'main';
         storageSet('zxm8_asmSplit', on);
+        refreshCalcHost();
     }
 
     function pane2Open() {
         syncEditorToVFS();
         const files = VFS.listFiles().filter(p => !VFS.files[p].binary);
         const saved = storageGet('zxm8_asmPane2File');
-        const path = (saved && VFS.files[saved] && !VFS.files[saved].binary)
-            ? saved
-            : (currentOpenFile || files[0] || null);
+        const path = saved === PANE2_CALC ? PANE2_CALC
+            : (saved && VFS.files[saved] && !VFS.files[saved].binary)
+                ? saved
+                : (currentOpenFile || files[0] || null);
         pane2FillFileList();
+        pane2SetVisible(true);   // before loading: the calculator only moves in once the pane is on screen
         pane2LoadFile(path);
-        pane2SetVisible(true);
     }
 
     if (btnAsmSplit && asmPane2) {
+        // The calculator is a single node shared with the debugger's right panel;
+        // ui/calc-host.js moves it to whichever host is asking and on screen.
+        registerCalcHost(asmPane2Calc, () => pane2ShowsCalc() && !asmPane2.classList.contains('hidden'));
+
         // Track which pane the user last worked in (Ctrl+G targets it)
         asmEditor.addEventListener('focus', () => { asmActivePane = 'main'; });
         asmEditor2.addEventListener('focus', () => { asmActivePane = 'split'; });
@@ -2449,7 +2484,10 @@ export function initAssemblerUI({
 
         // Rebuild the file list when the dropdown is opened — the VFS may have changed
         asmPane2File.addEventListener('mousedown', pane2FillFileList);
-        asmPane2File.addEventListener('change', () => pane2LoadFile(asmPane2File.value));
+        asmPane2File.addEventListener('change', () => {
+            const opt = asmPane2File.selectedOptions[0];
+            pane2LoadFile(opt && opt.dataset.calc ? PANE2_CALC : asmPane2File.value);
+        });
 
         // Edits in the split pane: write to the VFS, or mirror into the main
         // editor when both panes show the same file (or the unsaved buffer)
@@ -3243,7 +3281,121 @@ export function initAssemblerUI({
     let assembledSaveCommands = [];  // SAVESNA/SAVETAP commands from assembly
     let assembledEntryPoint = null;  // Entry point from ; @entry or ; @start marker
     let assembledSymbols = [];       // Symbols from last assembly {name, value, type}
+    let assembledLineMap = [];       // [{file, line, addr, comment}] for lines that emitted code
     let assemblyDirty = true;        // True when source changed since last successful assembly
+
+    // ---- Source comments -> debugger comments ------------------------------
+    //
+    // The comments you wrote next to the code are the same notes you want beside
+    // the disassembly, so injecting carries them over. Ownership is the same rule
+    // the symbol import uses: a comment you typed into the debugger is yours and is
+    // never touched, one that came from a build is marked `source: 'asm'` and is
+    // replaced by the next build (so a line you deleted doesn't leave its comment
+    // stranded at an address that no longer has it).
+
+    // file -> its lines, rebuilt per import (the source may have changed since)
+    let _sourceLineCache = new Map();
+
+    // The source text as assembled — the VFS for a project, the editor otherwise
+    function sourceLinesFor(file) {
+        if (!file) return null;
+        if (_sourceLineCache.has(file)) return _sourceLineCache.get(file);
+        let content = null;
+        if (VFS.files[file] && !VFS.files[file].binary) {
+            content = VFS.files[file].content;
+        } else {
+            const want = file.replace(/\\/g, '/').toLowerCase();
+            for (const path in VFS.files) {
+                const have = path.toLowerCase();
+                if (have === want || have.endsWith('/' + want) || want.endsWith('/' + have)) {
+                    if (!VFS.files[path].binary) content = VFS.files[path].content;
+                    break;
+                }
+            }
+            if (content === null && asmEditor) content = asmEditor.value;
+        }
+        const lines = content === null ? null : content.split('\n');
+        _sourceLineCache.set(file, lines);
+        return lines;
+    }
+
+    // '; text' / '// text' -> 'text'. Markers like "; @main" are directives to the
+    // build, not remarks about the code, so they stay out of the disassembly.
+    function commentText(raw) {
+        if (!raw) return '';
+        const text = raw.replace(/^\s*(?:;+|\/\/)\s?/, '').trim();
+        return text.startsWith('@') ? '' : text;
+    }
+
+    const isCommentOnly = (s) => /^\s*(?:;|\/\/)/.test(s);
+    // A line that is only a label. The block over a routine is written above its
+    // label, not above the first instruction, so the walk up has to step over it —
+    // the label emits nothing, so it is not the line the comment is attached to.
+    const isLabelOnly = (s) => /^\s*[\w.$@]+:\s*(?:;.*|\/\/.*)?$/.test(s);
+
+    // The run of whole-line comments directly above a line — the block people put
+    // over a routine. A blank line ends it, so unrelated remarks further up are
+    // not dragged in.
+    function commentBlockAbove(file, line) {
+        const lines = sourceLinesFor(file);
+        if (!lines) return '';
+        const out = [];
+        for (let i = line - 2; i >= 0; i--) {
+            if (isLabelOnly(lines[i])) continue;
+            if (!isCommentOnly(lines[i])) break;
+            const text = commentText(lines[i]);
+            if (!text) break;          // a marker line ends the block too
+            out.unshift(text);
+            if (out.length >= 12) break;
+        }
+        return out.join('\n');
+    }
+
+    function importAsmComments() {
+        if (!commentManager || !assembledLineMap.length) return 0;
+        _sourceLineCache = new Map();
+
+        commentManager.autoSaveEnabled = false;
+        for (const c of commentManager.getAll()) {
+            if (c.source === 'asm') commentManager.remove(c.address);
+        }
+
+        // One comment per address, but several lines can claim one: a macro call and
+        // the first line of its body, or the EDUP that expanded a block and the body
+        // line inside it — the expansion runs while EDUP is processed, so EDUP is
+        // recorded as having emitted the whole block at its first address.
+        //
+        // Prefer the shallowest that actually says something. Shallowest, because the
+        // call site is what the reader wrote about that address while the body says
+        // the same thing at every call; "actually says something", because an outer
+        // line with no comment of its own must not silence the body line under it —
+        // that left the first iteration of every DUP block bare while the rest were
+        // annotated.
+        const byAddr = new Map();
+        for (const entry of assembledLineMap) {
+            const addr = entry.addr & 0xFFFF;
+            if (!byAddr.has(addr)) byAddr.set(addr, []);
+            byAddr.get(addr).push(entry);
+        }
+
+        let added = 0;
+        for (const [addr, entries] of byAddr) {
+            const existing = commentManager.get(addr);
+            if (existing && existing.source !== 'asm') continue;   // yours, leave it
+            entries.sort((a, b) => (a.depth || 0) - (b.depth || 0));   // stable: ties keep source order
+            for (const entry of entries) {
+                const inline = commentText(entry.comment);
+                const before = commentBlockAbove(entry.file, entry.line);
+                if (!inline && !before) continue;
+                commentManager.set(addr, { inline, before, source: 'asm' });
+                added++;
+                break;
+            }
+        }
+        commentManager.autoSaveEnabled = true;
+        if (added) commentManager.save();
+        return added;
+    }
 
     // Navigate to file:line in editor
     function goToFileLine(file, line) {
@@ -3573,6 +3725,7 @@ export function initAssemblerUI({
             assembledOrgAddresses = result.orgAddresses || [result.outputStart];
             assembledSaveCommands = result.saveCommands || [];
             assembledSymbols = result.symbols || [];
+            assembledLineMap = result.lineMap || [];
 
             // Parse ; @entry marker from source
             assembledEntryPoint = null;
@@ -3985,6 +4138,12 @@ export function initAssemblerUI({
                 }
 
                 showMessage(`Injected ${assembledBytes.length} bytes at ${assembledOrg.toString(16).toUpperCase()}h`);
+            }
+
+            // Carry the source's own comments over to the disassembly
+            const comments = importAsmComments();
+            if (comments > 0) {
+                showMessage(`${comments} comment${comments > 1 ? 's' : ''} from the source added to the disassembly`);
             }
 
             updateDebugger();

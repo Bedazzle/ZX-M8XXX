@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.15.33</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v0.16.2</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -247,7 +247,7 @@
                         <li>Bookmarks show panel type: рџ”Ќ disasm, рџ“¦ memory</li>
                     </ul>
                     <h5>Programmer Calculator</h5>
-                    <p>Available in the right panel dropdown. Features:</p>
+                    <p>Available in the right panel dropdown, and in the ASM tab's split pane (&#9727; button &rarr; pick &#128425; Calculator in the file dropdown) so it is at hand while writing source. It is one calculator shared by both &mdash; the history follows it &mdash; and it moves to whichever panel you are looking at. Features:</p>
                     <ul>
                         <li>Input in HEX, DEC, OCT, or BIN with simultaneous display of all bases</li>
                         <li>8/16/32-bit modes with signed/unsigned display</li>
@@ -1058,6 +1058,8 @@
                         <li><strong>Export…</strong> - Save source files as ZIP</li>
                         <li><strong>Share to clipboard</strong> - Copy entire project to clipboard as a compressed text string. Includes source files, binary includes, machine type (48K/128K/Pentagon/Pentagon 1024/Scorpion/etc. — important for extended memory), and hardware settings (Beta Disk, ULAplus, IF1, +D, late timings, AY on 48K). Paste it in a chat, email, or forum to share with others. Whitespace added by email clients or messengers is stripped automatically on import</li>
                         <li><strong>Inject into memory</strong> - Write assembled bytes to emulator memory without starting the debugger</li>
+                        <li><strong>Your comments come with the code.</strong> Injecting (and Debug, which injects first) copies the source's comments into the disassembly: the remark at the end of a line becomes the inline comment at the address that line assembled to, and the block of whole-line comments above a routine becomes the block above it in the disassembly. Comments inside a macro or REPT body land at <em>each</em> expansion &mdash; a <code>DUP 3</code> body annotates three addresses, since each copy is real code at its own address. Where a macro call and its first body line share an address, the call site's comment wins. Lines like <code>; @main</code> are build markers, not remarks, so they stay out.</li>
+                        <li><strong>A comment you typed in the debugger is never overwritten</strong>, and neither is an imported one you have since edited &mdash; editing makes it yours. The rest are refreshed on every inject, so a comment deleted from the source disappears from the disassembly instead of being stranded at an address that no longer means that.</li>
                         <li><strong>Clear all</strong> - Clear editor and reset project</li>
                     </ul>
                     <h5>Snippets</h5>
@@ -1124,6 +1126,7 @@ start:  ...</pre>
                     <ul>
                         <li>The right pane has its own file dropdown &mdash; edit two project files side by side</li>
                         <li>Selecting the same file (or having no project files) mirrors content live between panes &mdash; edit one file in two places</li>
+                        <li>The dropdown's last entry, <strong>&#128425; Calculator</strong>, puts the programmer calculator in the split pane instead of a file &mdash; a mask or an offset without leaving the source. It is the same calculator the debugger's right panel offers, so it moves to whichever tab you are on and keeps its history</li>
                         <li>Drag the bar between the panes to resize; the split state is remembered</li>
                         <li>Search, undo history, and the T-state popup work in the left (main) pane</li>
                     </ul>

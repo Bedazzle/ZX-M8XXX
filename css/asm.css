@@ -814,6 +814,43 @@
     flex: 0 0 var(--asm-pane2-w, 50%);
     border-left: 1px solid var(--bg-button);
 }
+/* Split pane showing the calculator instead of a file: swap the editor out
+   rather than hiding it behind, so the pane's scrollbars belong to the calculator */
+.asm-pane-calc {
+    display: none;
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+}
+.asm-pane.showing-calc .asm-line-numbers,
+.asm-pane.showing-calc .asm-editor-wrap {
+    display: none;
+}
+.asm-pane.showing-calc .asm-pane-calc {
+    display: block;
+}
+/* Keep the debugger's arrangement — keypad left, history beside it, bit field
+   under the keypad — and just let the history give up its fixed 475px, taking
+   whatever the split pane leaves instead. Letting it wrap below the keypad was
+   worse on both counts: it left the space beside the keypad empty AND pushed the
+   bit field off the bottom of the pane, which is the one part that has to stay in
+   view next to source. */
+.asm-pane-calc .calc-top-row {
+    flex-wrap: nowrap;
+    align-items: stretch;
+}
+.asm-pane-calc .calc-log {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    height: auto;
+}
+/* Shrink to the bits themselves, as in the debugger, rather than stretching to
+   the pane and leaving a gap inside the panel */
+.asm-pane-calc .calc-bits-panel {
+    width: auto;
+    align-self: flex-start;
+}
 /* Split-pane header lives in the tabs row, aligned above the second pane,
    so both panes' line rows start at the same height */
 .asm-tabs-row {

@@ -492,6 +492,112 @@
         }
     }
 
+    // ==================== RZX PARSE TESTS ====================
+
+    // A minimal but complete recording: header, creator block, and one uncompressed
+    // input block of two frames (the second repeating the first's inputs).
+    function buildRZX() {
+        const creator = new Uint8Array(22);          // 20-byte name + major/minor
+        for (let i = 0; i < 6; i++) creator[i] = 'M8XXX '.charCodeAt(i);
+        creator[20] = 1;
+
+        const frames = [100, 0, 1, 0, 0xBF,          // fetch 100, 1 input byte
+                        50, 0, 0xFF, 0xFF];          // fetch 50, repeat previous
+        const input = new Uint8Array(13 + frames.length);
+        input[0] = 2;                                // numFrames (u32 LE)
+        input.set(frames, 13);                       // flags 0 => uncompressed
+
+        const out = new Uint8Array(10 + 5 + creator.length + 5 + input.length);
+        out.set([0x52, 0x5A, 0x58, 0x21, 0, 13], 0); // "RZX!" v0.13
+        let o = 10;
+        for (const [id, body] of [[0x10, creator], [0x80, input]]) {
+            const len = 5 + body.length;
+            out[o] = id;
+            out[o + 1] = len & 0xFF; out[o + 2] = (len >> 8) & 0xFF;
+            out.set(body, o + 5);
+            o += len;
+        }
+        return out;
+    }
+
+    async function runRZXParseTests() {
+        section('RZX - parse() input forms');
+
+        const rzx = buildRZX();
+
+        {
+            const l = new RZXLoader();
+            await l.parse(rzx);
+            assert(l.totalFrames === 2, 'Uint8Array parses', `frames: ${l.totalFrames}`);
+            assert(l.frames[0].fetchCount === 100 && l.frames[0].inputs[0] === 0xBF,
+                   'first frame decoded', JSON.stringify(l.frames[0]));
+            assert(l.frames[1].inputs[0] === 0xBF, 'repeat-inputs frame decoded');
+            assert(l.creatorInfo && l.creatorInfo.name === 'M8XXX',
+                   'creator block decoded', l.creatorInfo && l.creatorInfo.name);
+        }
+        {
+            const l = new RZXLoader();
+            await l.parse(rzx.buffer.slice(0));
+            assert(l.totalFrames === 2, 'ArrayBuffer parses', `frames: ${l.totalFrames}`);
+        }
+        {
+            // A view at a non-zero byteOffset — the buffer holds padding either side,
+            // so parsing it proves the slice arithmetic, not just that it accepts a view
+            const padded = new Uint8Array(rzx.length + 16);
+            padded.set(rzx, 8);
+            const l = new RZXLoader();
+            await l.parse(padded.subarray(8, 8 + rzx.length));
+            assert(l.totalFrames === 2, 'view at a byteOffset parses', `frames: ${l.totalFrames}`);
+        }
+        {
+            // The regression this section exists for: a buffer created in another realm
+            // is a genuine ArrayBuffer, but `instanceof ArrayBuffer` here is false. That
+            // is what a host page's fetch() hands a loader running in its own context,
+            // and parse() used to reject it — taking replayRZX/mapRun with it.
+            const f = document.createElement('iframe');
+            f.style.display = 'none';
+            document.body.appendChild(f);
+            try {
+                const foreign = new f.contentWindow.ArrayBuffer(rzx.length);
+                new Uint8Array(foreign).set(rzx);
+                assert(!(foreign instanceof ArrayBuffer),
+                       'cross-realm buffer fails instanceof (the whole point)');
+
+                const l = new RZXLoader();
+                let err = null;
+                try { await l.parse(foreign); } catch (e) { err = e; }
+                assert(err === null, 'cross-realm ArrayBuffer parses',
+                       err ? err.message : '');
+                assert(l.totalFrames === 2, 'and yields the same frames',
+                       `frames: ${l.totalFrames}`);
+
+                const l2 = new RZXLoader();
+                let err2 = null;
+                try { await l2.parse(new f.contentWindow.Uint8Array(foreign)); }
+                catch (e) { err2 = e; }
+                assert(err2 === null && l2.totalFrames === 2,
+                       'cross-realm Uint8Array parses too',
+                       err2 ? err2.message : `frames: ${l2.totalFrames}`);
+            } finally {
+                f.remove();
+            }
+        }
+        {
+            const l = new RZXLoader();
+            let err = null;
+            try { await l.parse(null); } catch (e) { err = e; }
+            assert(err !== null, 'null still rejected', err ? err.message : 'no throw');
+        }
+        {
+            const bad = new Uint8Array(16);
+            const l = new RZXLoader();
+            let err = null;
+            try { await l.parse(bad); } catch (e) { err = e; }
+            assert(err !== null && /signature/i.test(err.message),
+                   'a non-RZX buffer still rejected', err ? err.message : 'no throw');
+        }
+    }
+
     // ==================== TAP TESTS ====================
 
     function runTAPTests() {
@@ -1720,6 +1826,7 @@
         log(`Started: ${new Date().toLocaleTimeString()}`, 'info');
 
         runFormatDetection();
+        await runRZXParseTests();
         runTAPTests();
         runTRDTests();
         runSCLTests();
@@ -1739,6 +1846,7 @@
     // Expose to buttons
     window.runAll = runAll;
     window.runFormatDetection = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runFormatDetection(); };
+    window.runRZXParseTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); return runRZXParseTests(); };
     window.runTAPTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runTAPTests(); };
     window.runTRDTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runTRDTests(); };
     window.runSCLTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runSCLTests(); };

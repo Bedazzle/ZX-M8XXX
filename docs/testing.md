@@ -5,7 +5,18 @@ CLAUDE.md lists the suites and the command.
 
 ## `tests/asm-test.html`
 
-Z80 assembler test suite — instructions, directives, expressions, macros, built-in editor snippets (`data/asm-snippets.json`)
+Z80 assembler test suite — instructions, directives, expressions, macros, built-in editor
+snippets (`data/asm-snippets.json`), and the **line map** (`lineMap`): one entry per line
+that emitted, the parser's comment rather than a `;`-split of the raw line, settled
+addresses, per-expansion entries for `DUP` and macro bodies with their nesting `depth`, and
+that a second **async** build does not keep the first one's lines.
+
+**This suite reports green when it aborts.** `runAllTests` awaits each group with no
+`catch`, so an exception out of one stops the run and everything after it silently never
+executes — while the runner still says "all green", because nothing *failed*. It sat like
+that at the TAPEND test, which expected a return value from something that reports by
+throwing (fixed: it uses `tryAsm`). If a group you added seems to contribute no asserts,
+this is why: check the pass count actually rose.
 
 ## `tests/asm-highlight-test.html`
 
@@ -173,6 +184,37 @@ restore start at different points in the frame and came out one instruction apar
 one byte changed diverges at the conditional that reads it with both branches
 disassembled, a byte the code never reads changes nothing and says so, `nonsense` and
 `8000=zz` are refused rather than guessed at, and the export holds the report.
+
+## `tests/asm-comments-ui-test.html`
+
+Source comments reaching the disassembly, driven in the real app because it spans the
+assembler, the comment manager and the editor. Injecting carries a line's own comment to
+the address it assembled to and the block above a routine to the block above it; every
+copy of an unrolled `DUP` body is annotated, **including the first** — `EDUP` is recorded
+as having emitted the whole block at that address and, having no comment of its own, used
+to win there and leave iteration one bare. A macro call beats its first body line at the
+address they share. Then ownership: a comment typed in the debugger survives every
+rebuild, editing an imported one makes it yours, a comment deleted from the source is
+removed rather than stranded, and `; @main` markers stay out.
+
+Its `buildAndInject` waits on the **output pane**, not the Inject button: the button is
+still enabled from the previous build, so waiting on it returns at once and injects the
+build before this one — which is how the stale-comment check first passed a source it had
+never assembled.
+
+## `tests/calc-host-test.html`
+
+The programmer calculator is a singleton — fixed ids, handlers bound with document-wide
+selectors — shared by the debugger's right panel and the assembler's split pane, so what
+this asserts is not that it computes (`calculator-test` does that) but that exactly one
+exists at all times, that each host reclaims it when its tab returns (leaving it behind
+showed an empty box with the right label on it), and that it still converts wherever it
+lands. It also asserts the split pane's **geometry** — history beside the keypad, bit field
+in view — because both ways of getting that wrong render perfectly valid HTML with every
+element present.
+
+Two things it has to work around: clicking an already-active `.tab-btn` collapses the tab
+container instead of showing it, and the container can start collapsed.
 
 ## `tests/api-manifest-test.html`
 

@@ -45,6 +45,24 @@ Resolves `{ machineType, romLoaded, running }`, or rejects with a message naming
 ROM file it couldn't get. `zxDebug.ensureRom(machineType)` loads a machine's ROM
 without switching to it.
 
+**Starting the machine — `await zxDebug.start()`.** The app opens with the ROM
+modal up and the machine stopped; `ready()` gets a ROM into memory but does not
+start anything.
+
+```js
+await zxDebug.start();                    // current machine
+await zxDebug.start({ machine: '128k' }); // switch machine, then start
+```
+
+This is the Start Emulator button's own path — the machine falls back to 48K if its
+ROM is missing, the ROMs are applied, the modal closes, and the machine is reset
+before it runs — so every side effect matches a real start. Clicking
+`#btnStartEmulator` from a driver works today but depends on a markup id rather than
+on an API, and polling `spectrum.running` afterwards depends on `start()` having
+succeeded silently. This resolves `true`, or throws saying what state the machine is
+actually in. It **resets**, so call it before loading anything; calling it on a
+running machine is a no-op.
+
 This matters more than it looks. `window.spectrum` and `window.zxDebug` appear during
 module init, but ROMs are fetched **asynchronously** — a driver that grabs `spectrum`
 and starts running immediately executes a blank `$0000-$3FFF`: every ROM call and RST
@@ -103,6 +121,22 @@ recording's true end.
 - **Bound every replay loop.** Even with the termination fix, cap frame loops
   (`replayRZX`'s `maxFrames`, or your own counter) so a desync or a bad file can't
   spin forever.
+- **Recording a map costs several times a bare replay, and blowing the budget is
+  silent.** The process is cut off before `--dump-dom`, so you get zero bytes and no
+  result file — indistinguishable from a crash. Measured on an 85,488-frame recording:
+
+  | run | budget | outcome |
+  |---|---|---|
+  | replay only | 800 s | completed, `atEnd: true` |
+  | replay + `enableMap(true, {fast:true, paged:true})` | 900 s | **truncated, no output** |
+  | replay + the same map | 3200 s | completed, 85,488 frames |
+
+  `fast` mode is already the cheap path — it is still far above a bare replay, so
+  budget for the map, not for the replay you timed without it.
+- **Check `atEnd` and the frame count against a known-good unmapped run before
+  trusting a coverage map.** A truncated playthrough yields a perfectly plausible map
+  whose "never executed" set is meaningless — and "never executed" is usually the
+  whole reason for building one.
 
 ## What this build has (`capabilities`, `help`, `require`)
 
@@ -280,6 +314,23 @@ const { ranges, pages } = zx.ranges();  // [{start,end,type:'code'|'db'|'text'}]
 - **`rangesByPage(opts)`** — just the per-page ranges `{[label]: {ranges, pages}}`
   (paged mode only; `{}` otherwise). Use this to disassemble each bank separately.
 
+**The `''` key is where most of a 128K game is, and it is not named after a bank.**
+Banks 5 and 2 sit at `$4000` and `$8000` and never move, so they carry no page suffix
+and their coverage lands in `''` — not under `'5'` and `'2'`. Asking "what did bank 2
+execute?" by looking for the key `2` gets nothing back, and on a game whose resident
+engine lives in bank 2 that reads as *never executed*. The data is there; split `''`
+by address instead:
+
+```js
+const fixed = zx.rangesByPage()[''].ranges;
+const bank5 = fixed.filter(r => r.start >= 0x4000 && r.start < 0x8000);   // $4000 slot
+const bank2 = fixed.filter(r => r.start >= 0x8000 && r.start < 0xC000);   // $8000 slot
+```
+
+A `'5'` or `'2'` key means something different: the game paged that bank to `$C000` as
+well. On the +2A/+3 in special paging mode nothing is fixed, so all four slots are
+labelled and `''` does not appear.
+
 ## Debug managers
 
 `zx.labels`, `zx.regions`, `zx.comments`, `zx.xrefs` are the live manager
@@ -328,6 +379,35 @@ Each returns `[{ pc, count, callers, callSites }]`, most-frequent first:
 
 A **0-hit** result across a long replay is strong evidence a "buffer" is dead during
 play (corroborate with static unreachability — silence in one recording is not proof).
+
+### Who reads a port
+
+The three above answer *who touches this address*. `watchPortReads` answers *who reads
+the hardware*, which is the question a controls hunt or a loader trace actually asks.
+
+```js
+zx.watchPortReads(0xFE);            // every keyboard half-row (low byte $FE)
+zx.watchPortReads(0xFFFD, 0xFFFF);  // exactly the AY register port
+zx.watchPortReads();                // every port
+// ... run frames ...
+const hits = zx.stopPortReads();    // getPortReads() reads without stopping
+```
+
+`port` is matched under `mask`, which is ANDed with both sides; the default `0x00FF`
+matches on the low byte alone. Hits come back most-frequent first as
+`[{ pc, port, high, low, bank, count, lastValue, callers, callSites }]` — the same
+provenance triple as the memory side, plus:
+
+- `port` / `high` / `low` — hits are keyed by **(pc, port)**, not by `pc`. For the
+  keyboard the low byte is always `$FE` and carries nothing: the half-row select in
+  the **high** byte is the entire content, so a scan loop comes back as one entry per
+  row it selected rather than one entry that lost them.
+- `bank` — the memory page the reading instruction sits in, so a ROM read and a game
+  read at the same address stay apart.
+- `lastValue` — the byte the CPU got, which for a keyboard row is the key state.
+
+`pc` is the CPU's own `_instrPC`, set on every instruction, so it is the address of
+the `IN` and is not disturbed by the debugger reading memory.
 
 ## Calling a routine directly
 
@@ -400,6 +480,27 @@ const csv = zx.exportCallGraphCsv();  // Ghidra CSV, callee-indexed ("who calls 
 callers (`called from $8005(3) $8200 [2 callers]`), the form the naming workflow
 wants. Diff it against Ghidra's static xrefs to isolate the runtime-only (computed)
 edges. Off by default; recorded only while enabled.
+
+## Where the tape is (`tapeState`)
+
+There are two decks and they move independently: the flash loader (driven by the ROM
+trap) and the real-time player (driven by T-states). `tapeState()` reports both.
+
+```js
+const t = zx.tapeState();
+// { loaded, name, type, slot, blocks, loaderBlock, loaderBlocks,
+//   playerBlock, playerBlocks, playing, phase, flashLoad }
+```
+
+This is the single most diagnostic number for a multiload. `loaderBlock: 2` against
+`playerBlock: 27` says the deck ran 25 blocks past the level the game is still asking
+for — a positioning problem that no amount of retimed keystrokes will fix, and one
+that is otherwise invisible. `blocks` is how a driver knows the deck ran off the end.
+
+The two totals differ on purpose: a TZX gives the player every block and the loader
+only the TAP-compatible subset, so read each position against its own count. Returns
+`{ loaded: false }` rather than throwing when there is no tape — it is meant to be
+polled every frame.
 
 ## Deterministic boot / auto-load
 
@@ -515,6 +616,10 @@ Options: `onProgress(frame,total)`, `progressEvery` (default 1000), `maxFrames`
   bytes (a decode that looks byte-shifted between two builds is usually this, not a
   real shift). Returns `{ name, bytes, lastModified, result }` — log `lastModified` and
   you know which build you measured.
+- **`saveSnapshot(format)`** — the live machine as a `Uint8Array`: `'z80'` (default),
+  `'sna'` or `'szx'`. `z80` and `szx` carry 128K paging; `szx` also carries peripheral
+  state (AY, disk, Microdrive). Pair it with `report()` to hand a snapshot back out of
+  a headless run.
 - **`version`** — the app version string (matches `APP_VERSION`).
 
 ## Keyboard (and ghosting)

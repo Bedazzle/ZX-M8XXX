@@ -387,7 +387,10 @@ export function initDialogs({
             separator: commentSeparator.checked,
             before: commentBeforeInput.value,
             inline: commentInlineInput.value,
-            after: commentAfterInput.value
+            after: commentAfterInput.value,
+            // Editing by hand makes it yours: a comment imported from an assembled
+            // source is replaced by the next inject, an edited one is left alone
+            source: ''
         };
 
         commentManager.set(addr, newComment);

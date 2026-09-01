@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ASM Comments → Disassembly Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>ASM Comments → Disassembly Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // Injecting assembled code carries the source's comments into the
+        // debugger's comment manager, so the disassembly reads like the source.
+        // The rule that needs testing is ownership: a comment you typed into the
+        // debugger is yours and survives every rebuild, one that came from a build
+        // is replaced by the next — including being removed when its line goes.
+        // Only the real app can be asked that, since it spans the assembler, the
+        // manager and the editor.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d, zx;
+
+        const SRC = [
+            '    org $8000',
+            '',
+            '; Draw one row of the sprite',
+            '; HL points at the pattern',
+            'draw:',
+            '    ld a,5          ; rows to do',
+            '    ld (count),a    ; keep it',
+            '    ret             ; done',
+            '',
+            'count:',
+            '    db 0            ; the counter',
+        ].join('\n');
+
+        // Type a source into the editor and press Assemble, then Inject.
+        // Wait on the OUTPUT PANE, not on the Inject button: the button is still
+        // enabled from the previous build, so waiting for it returns at once and
+        // injects the build before this one — which is exactly the bug that made
+        // the stale-comment check pass a source it had never assembled.
+        async function buildAndInject(src) {
+            const ed = d.getElementById('asmEditor');
+            const outEl = d.getElementById('asmOutput');
+            ed.value = src;
+            ed.dispatchEvent(new w.Event('input'));
+            await wait(80);
+            outEl.textContent = '';
+            d.getElementById('btnAsmAssemble').click();
+            await until(() => /OK:|error/i.test(outEl.textContent) || null);
+            const out = outEl.textContent;
+            if (/error/i.test(out) || !/OK:/.test(out)) return { ok: false, out };
+            d.getElementById('btnAsmInject').click();
+            await wait(250);
+            return { ok: true, out };
+        }
+
+        const commentAt = (addr) => zx.comments.get(addr);
+
+        (async () => {
+            section('The app comes up');
+            const up = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!up, 'emulator boots in the iframe');
+            if (!up) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument; zx = w.zxDebug;
+            await zx.ready();
+            w.spectrum.stop();
+
+            const errors = [];
+            w.addEventListener('error', e => errors.push(e.message), true);
+
+            // Start from a clean sheet — a previous run's comments persist
+            for (const c of zx.comments.getAll()) zx.comments.remove(c.address);
+
+            d.querySelector('.tab-btn[data-tab="assembler"]').click();
+            await wait(150);
+
+            section('Injecting carries the comments over');
+
+            let r = await buildAndInject(SRC);
+            assert(r.ok, 'the source assembles', r.out.slice(0, 120));
+
+            const ldA = commentAt(0x8000);      // ld a,5
+            assert(!!ldA, 'the first instruction has a comment');
+            assert(ldA && ldA.inline === 'rows to do', 'the inline comment, without its semicolon',
+                   ldA && JSON.stringify(ldA.inline));
+            assert(ldA && /Draw one row of the sprite/.test(ldA.before || ''),
+                   'the block above the label becomes the before-comment',
+                   ldA && JSON.stringify(ldA.before));
+            assert(ldA && /HL points at the pattern/.test(ldA.before || ''),
+                   'all of it, not just the last line');
+            assert(ldA && ldA.source === 'asm', 'and it is marked as coming from a build',
+                   ldA && ldA.source);
+
+            const ret = commentAt(0x8005);      // ld (count),a is 3 bytes
+            assert(ret && ret.inline === 'done', 'a later instruction is at its own address',
+                   ret && JSON.stringify(ret.inline));
+
+            const data = commentAt(0x8006);     // db 0
+            assert(data && data.inline === 'the counter', 'data lines are commented too',
+                   data && JSON.stringify(data.inline));
+
+            assert(!commentAt(0x8001) && !commentAt(0x8004),
+                   'nothing lands mid-instruction');
+
+            section('A comment you wrote is never overwritten');
+
+            zx.comments.set(0x8000, { inline: 'mine', before: 'my own note', source: '' });
+            r = await buildAndInject(SRC);
+            assert(r.ok, 'the source still assembles');
+            const mine = commentAt(0x8000);
+            assert(mine && mine.inline === 'mine' && /my own note/.test(mine.before || ''),
+                   'the hand-written comment survives a rebuild', mine && JSON.stringify(mine));
+            assert(mine && mine.source !== 'asm', 'and stays yours', mine && mine.source);
+            assert(commentAt(0x8005) && commentAt(0x8005).inline === 'done',
+                   'while the others are still imported');
+
+            section('Editing an imported comment makes it yours');
+
+            // What the comment dialog does: writing over one clears the mark
+            zx.comments.set(0x8005, { inline: 'reworded by hand', source: '' });
+            r = await buildAndInject(SRC);
+            assert(commentAt(0x8005) && commentAt(0x8005).inline === 'reworded by hand',
+                   'an edited comment is not replaced by the next build',
+                   commentAt(0x8005) && JSON.stringify(commentAt(0x8005).inline));
+
+            section('A comment follows its line');
+
+            // Change the text and drop the last line: the old comment must not be
+            // left stranded at an address the source no longer describes
+            const CHANGED = [
+                '    org $8000',
+                '',
+                '; Draw one row of the sprite',
+                '; HL points at the pattern',
+                'draw:',
+                '    ld a,7          ; rows to do, more of them now',
+                '    ld (count),a    ; keep it',
+                '    ret             ; done',
+                '',
+                'count:',
+                '    db 0',
+            ].join('\n');
+            r = await buildAndInject(CHANGED);
+            assert(r.ok, 'the changed source assembles');
+            assert(!commentAt(0x8006),
+                   'a comment removed from the source is removed from the disassembly',
+                   JSON.stringify(commentAt(0x8006)));
+            assert(commentAt(0x8000) && commentAt(0x8000).inline === 'mine',
+                   'and yours is still there', JSON.stringify(commentAt(0x8000)));
+
+            section('Every copy of an unrolled body is annotated');
+
+            // Each iteration is real code at its own address, so each gets the
+            // comment. The first one is the case to watch: the EDUP line is recorded
+            // as having emitted the whole block at that same address, and being the
+            // outer line it used to win with its own empty comment.
+            r = await buildAndInject([
+                '    org $A000',
+                '    dup 3',
+                '    nop        ; tick',
+                '    edup',
+                '    ret        ; end',
+            ].join('\n'));
+            assert(r.ok, 'the DUP source assembles', r.out.slice(0, 120));
+            const ticks = [0xA000, 0xA001, 0xA002].map(a => commentAt(a));
+            assert(ticks.every(c => c && c.inline === 'tick'),
+                   'all three iterations carry the body comment',
+                   JSON.stringify(ticks.map(c => c && c.inline)));
+            assert(commentAt(0xA003) && commentAt(0xA003).inline === 'end',
+                   'and the line after the block is its own');
+
+            // A macro body behaves the same, but the call site wins where they meet
+            r = await buildAndInject([
+                '    macro STEP',
+                '    inc a      ; bump it',
+                '    endm',
+                '    org $A100',
+                '    STEP       ; first call',
+                '    STEP       ; second call',
+            ].join('\n'));
+            assert(r.ok, 'the macro source assembles', r.out.slice(0, 120));
+            assert(commentAt(0xA100) && commentAt(0xA100).inline === 'first call',
+                   'the call site wins over the body line at the shared address',
+                   commentAt(0xA100) && JSON.stringify(commentAt(0xA100).inline));
+            assert(commentAt(0xA101) && commentAt(0xA101).inline === 'second call',
+                   'and the second call is annotated with its own',
+                   commentAt(0xA101) && JSON.stringify(commentAt(0xA101).inline));
+
+            section('Build markers are not comments');
+
+            r = await buildAndInject([
+                '; @main',
+                '    org $9000',
+                '    nop     ; @entry is a marker, this is not',
+                '    ret',
+            ].join('\n'));
+            const marker = commentAt(0x9000);
+            assert(!marker || !/@main/.test(marker.before || ''),
+                   'a ; @main line does not become a disassembly comment',
+                   marker && JSON.stringify(marker.before));
+
+            section('It shows up in the disassembly');
+
+            d.querySelector('.tab-btn[data-tab="debugger"]').click();
+            await wait(150);
+            zx.setRegisters({ pc: 0x8000 });
+            w.zxDebug.spectrum.cpu.pc = 0x8000;
+            const dis = d.getElementById('disassemblyView') || d.getElementById('rightDisassemblyView');
+            await wait(300);
+            assert(!!dis, 'the disassembly view exists');
+
+            assert(errors.length === 0, 'no uncaught errors while driving it',
+                   errors.slice(0, 3).join(' | '));
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

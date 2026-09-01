@@ -1,5 +1,6 @@
 // Panel navigation — switching panel types, address navigation, go-to functions
 import { hex16 } from '../core/utils.js';
+import { registerCalcHost, refreshCalcHost } from './calc-host.js';
 
 export function initPanelNavigator({
     getSpectrum, getDisasm,
@@ -31,6 +32,11 @@ export function initPanelNavigator({
     const memoryAddressInput = document.getElementById('memoryAddress');
     const disasmBookmarksBar = document.getElementById('disasmBookmarks');
     const memoryBookmarksBar = document.getElementById('memoryBookmarks');
+
+    // This panel is the calculator's home. Registering first makes it the winner
+    // when both hosts are somehow on screen, which is also where it parks.
+    registerCalcHost(document.getElementById('rightCalculatorView'),
+                     () => getRightPanelType() === 'calc');
 
     // ========== Panel Type Switching ==========
     function switchLeftPanelType(type) {
@@ -105,6 +111,8 @@ export function initPanelNavigator({
             if (bookmarksBar) bookmarksBar.style.display = '';
         }
 
+        // The assembler's split pane may be holding the calculator — claim it back
+        refreshCalcHost();
         updateRightPanel();
         getUpdateBookmarkButtons()(memoryBookmarksBar, getRightBookmarks(), 'right');
     }

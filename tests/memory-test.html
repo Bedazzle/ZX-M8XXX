@@ -95,6 +95,11 @@
 
 <script type="module">
     import { Memory } from '../core/memory.js';
+    import { Spectrum } from '../core/spectrum.js';
+
+    // The auto-map's page label reads nothing but `this.memory`, so it can be asked
+    // about a bare Memory without building a machine.
+    const pageLabel = (mem, addr) => Spectrum.prototype._autoMapPage.call({ memory: mem }, addr);
 
     const logEl = document.getElementById('log');
     const summaryEl = document.getElementById('summary');
@@ -543,6 +548,50 @@
             assert(mem.read(0x8000) === 0xCC, 'slot 2 writable');
             mem.write(0xC000, 0xDD);
             assert(mem.read(0xC000) === 0xDD, 'slot 3 writable');
+        }
+
+        section('+2A - Auto-map page labels follow special paging');
+
+        {
+            // Every slot is RAM in special paging mode, so every slot must be labelled.
+            // Labelling only slot 0 put slots 1-2 in the unpaged bucket, where two
+            // configs' different banks collapsed onto one address.
+            const mem = new Memory('+2a');
+
+            mem.write1FFD(0x03);                    // config 1: 4,5,6,7
+            assert(pageLabel(mem, 0x0000) === '4', 'config 1 slot 0 = 4', pageLabel(mem, 0x0000));
+            assert(pageLabel(mem, 0x4000) === '5', 'config 1 slot 1 = 5', pageLabel(mem, 0x4000));
+            assert(pageLabel(mem, 0x8000) === '6', 'config 1 slot 2 = 6', pageLabel(mem, 0x8000));
+            assert(pageLabel(mem, 0xC000) === '7', 'config 1 slot 3 = 7', pageLabel(mem, 0xC000));
+
+            mem.write1FFD(0x07);                    // config 3: 4,7,6,3
+            assert(pageLabel(mem, 0x4000) === '7', 'config 3 moves slot 1 to 7', pageLabel(mem, 0x4000));
+            assert(pageLabel(mem, 0xC000) === '3', 'config 3 slot 3 = 3', pageLabel(mem, 0xC000));
+
+            // Slot 3 comes from specialBanks here, not currentRamBank
+            mem.currentRamBank = 1;
+            assert(pageLabel(mem, 0xC000) === '3', 'slot 3 ignores currentRamBank in special mode',
+                   pageLabel(mem, 0xC000));
+
+            mem.write1FFD(0x00);                    // back to normal paging
+            assert(pageLabel(mem, 0x0000) === 'R0', 'normal mode labels ROM', pageLabel(mem, 0x0000));
+            assert(pageLabel(mem, 0x4000) === null, 'and leaves fixed RAM unlabelled', String(pageLabel(mem, 0x4000)));
+            assert(pageLabel(mem, 0x8000) === null, 'both fixed slots', String(pageLabel(mem, 0x8000)));
+            assert(pageLabel(mem, 0xC000) === '1', 'slot 3 back to currentRamBank', pageLabel(mem, 0xC000));
+        }
+
+        {
+            // 48K has no pages at all; 128K labels ROM and slot 3 only
+            const m48 = new Memory('48k');
+            assert(pageLabel(m48, 0x0000) === null && pageLabel(m48, 0xC000) === null,
+                   '48K is never paged');
+
+            const m128 = new Memory('128k');
+            m128.writePaging(0x02);
+            assert(pageLabel(m128, 0x0000) === 'R0', '128K ROM 0', pageLabel(m128, 0x0000));
+            assert(pageLabel(m128, 0xC000) === '2', '128K slot 3 follows 7FFD', pageLabel(m128, 0xC000));
+            assert(pageLabel(m128, 0x4000) === null && pageLabel(m128, 0x8000) === null,
+                   'banks 5 and 2 are the unpaged bucket');
         }
 
         section('+2A - Return to normal paging');

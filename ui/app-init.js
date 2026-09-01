@@ -28,6 +28,7 @@ import { GameMapper } from '../tools/game-mapper.js';
 import { SignaturePackManager } from '../debug/signature-pack-manager.js';
 import { TestRunner } from '../tools/test-runner.js';
 import { initCalculator } from './calculator.js';
+import { initCalcHost } from './calc-host.js';
 import { initCompareTool } from './compare-tool.js';
 import { initExplorer } from './explorer.js';
 import { initTextScanner } from './text-scanner.js';
@@ -106,7 +107,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '0.15.33';
+    const APP_VERSION = '0.16.2';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -145,8 +146,11 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         getUpdateTraceList: () => updateTraceList
     });
 
-    // Programmer Calculator (extracted to calculator.js)
+    // Programmer Calculator (extracted to calculator.js). One instance, shared
+    // between the debugger's right panel and the assembler's split pane — calc-host
+    // moves it to whichever is asking (registration happens in those two modules).
     const calculatorAPI = initCalculator();
+    initCalcHost();
 
     // Game Browser (extracted to game-browser.js)
     const gameBrowserAPI = initGameBrowser();
@@ -537,6 +541,32 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             }
         },
 
+        // Start the machine the way the Start Emulator button does, so every side
+        // effect matches a real start: the machine falls back to 48K if its ROM
+        // is missing, the ROMs are applied, the ROM modal closes, and the machine
+        // is reset before it runs. A driver that clicks `#btnStartEmulator`
+        // instead is depending on a markup id, not on an API.
+        //
+        //   await zxDebug.start();                  // current machine
+        //   await zxDebug.start({ machine: '128k' });
+        //
+        // Note the reset: call this BEFORE loading anything. Already running is a
+        // no-op returning true, so it is safe to call twice.
+        async start({ machine = null, timeoutMs = 15000 } = {}) {
+            if (spectrum.running) return true;
+            await this.ready(machine ? { machine, timeoutMs } : { timeoutMs });
+            initializeEmulator();
+            if (!spectrum.running) {
+                // start() refuses silently without a ROM, and ready() has just
+                // said there is one — so say what actually happened rather than
+                // leaving a driver polling a flag that will never turn over.
+                throw new Error(
+                    `zxDebug.start: the machine did not start (machine=${spectrum.machineType}, ` +
+                    `romLoaded=${spectrum.romLoaded})`);
+            }
+            return true;
+        },
+
         // Load a machine's ROM file if it isn't loaded yet, and page it in when
         // it belongs to the current machine. Returns true if the ROM is present.
         async ensureRom(machineType = spectrum.machineType) {
@@ -628,6 +658,25 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         watchExec(lo, hi) { spectrum.startExecProvenance(lo, hi); },
         getExec() { return spectrum.getExecProvenance(); },
         stopExec() { return spectrum.stopExecProvenance(); },
+
+        // Who reads a PORT. The three above answer "who touches this address";
+        // this answers "who reads the hardware", which is the question a controls
+        // or loader hunt actually asks. Hits are keyed by (pc, port), because for
+        // the keyboard the low byte is always $FE and carries nothing — the
+        // half-row select in the HIGH byte is the entire content, so a scan loop
+        // comes back as one entry per row it selected:
+        //
+        //   zxDebug.watchPortReads(0xFE);          // every keyboard row
+        //   zxDebug.watchPortReads(0xFFFD, 0xFFFF) // exactly the AY register port
+        //   zxDebug.watchPortReads();              // every port
+        //
+        // [{pc, port, high, low, bank, count, lastValue, callers, callSites}],
+        // most-frequent first — the same provenance triple as the memory side.
+        watchPortReads(port = null, mask = 0x00FF) {
+            spectrum.startPortReadProvenance(port, mask);
+        },
+        getPortReads() { return spectrum.getPortReadProvenance(); },
+        stopPortReads() { return spectrum.stopPortReadProvenance(); },
 
         // ---- Call a routine directly ----
         // For effects normally reachable only through menus or movement the
@@ -1186,6 +1235,23 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         // The recorder on its own, for a driver that wants to drive the frames
         startExecTrace(opts) { return spectrum.startExecTrace(opts || {}); },
         stopExecTrace() { return spectrum.stopExecTrace(); },
+        // Where the tape is: which block the flash loader and the real-time deck
+        // have each reached. The one number that tells a multiload apart from a
+        // timing problem — loaderBlock 2 against playerBlock 27 says the deck ran
+        // 25 blocks past the level the game is still asking for, which no amount
+        // of retimed keystrokes will fix.
+        //
+        // The two totals differ on purpose: a TZX gives the player every block and
+        // the loader only the TAP-compatible subset, so read each position against
+        // its own count. `{ loaded: false }` when there is no tape, rather than a
+        // throw — this is meant to be polled every frame.
+        tapeState() { return spectrum.getTapeState(); },
+
+        // The live machine as a snapshot, without going through the Save menu.
+        // 'z80' and 'szx' carry 128K paging and (szx) peripheral state; 'sna' is
+        // the smallest and the most widely read.
+        saveSnapshot(format = 'z80') { return spectrum.saveSnapshot(format); },
+
         async loadFile(fileOrBytes, name) {
             const f = (fileOrBytes instanceof File) ? fileOrBytes : new File([fileOrBytes], name || 'file.bin');
             return spectrum.loadFile(f);
@@ -2156,6 +2222,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         MD5,
         getSpectrum: () => spectrum,
         labelManager,
+        commentManager,
         showMessage,
         updateDebugger,
         updateStatus,

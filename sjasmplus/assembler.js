@@ -30,6 +30,13 @@ export const Assembler = {
     pass: 0,
     changed: false,       // Did any label value change this pass?
     saveCommands: [],     // Output save directives
+    // Where each source line that emitted code ended up: [{file, line, addr, comment}].
+    // Rebuilt every pass, so what is returned is the final pass's — the only one
+    // whose addresses are settled. Carries the line's own comment because the
+    // parser already separated it from the code, strings and all.
+    lineMap: [],
+    emitCount: 0,         // bytes emitted this pass; the map uses it to spot a line that emitted
+    lineDepth: 0,         // processLine nesting: 0 at the top, deeper inside a macro/REPT body
     tapeCapture: null,    // Active TAPOUT capture: { filename, flag, bytes:[] } between TAPOUT/TAPEND
     md5Associations: {},  // filename -> MD5 hash from MD5CHECK macro
     
@@ -212,6 +219,12 @@ export const Assembler = {
             // Process all lines
             let lineCount = 0;
             const totalLines = this.lines.length;
+            // Rebuilt every pass, in both this loop and the async one: only the
+            // final pass's addresses are settled, and an accumulating map would
+            // hand the caller the previous build's lines as well
+            this.lineMap = [];
+            this.emitCount = 0;
+            this.lineDepth = 0;
             for (const line of this.lines) {
                 lineCount++;
                 // Track current source location for error reporting
@@ -304,7 +317,8 @@ export const Assembler = {
             symbols: SymbolTable.export(),
             passes: this.pass,
             warnings: ErrorCollector.warnings,
-            saveCommands: this.saveCommands
+            saveCommands: this.saveCommands,
+            lineMap: this.lineMap
         };
     },
 
@@ -342,6 +356,12 @@ export const Assembler = {
 
             let lineCount = 0;
             const totalLines = this.lines.length;
+            // Rebuilt every pass, in both this loop and the async one: only the
+            // final pass's addresses are settled, and an accumulating map would
+            // hand the caller the previous build's lines as well
+            this.lineMap = [];
+            this.emitCount = 0;
+            this.lineDepth = 0;
             for (const line of this.lines) {
                 lineCount++;
                 AsmMemory.currentLine = line.line;
@@ -439,7 +459,8 @@ export const Assembler = {
             symbols: SymbolTable.export(),
             passes: this.pass,
             warnings: ErrorCollector.warnings,
-            saveCommands: this.saveCommands
+            saveCommands: this.saveCommands,
+            lineMap: this.lineMap
         };
     },
 
@@ -735,7 +756,30 @@ export const Assembler = {
     },
 
     // Process a single line
+    // Records where each line's bytes went, then does the work. Wrapping rather
+    // than recording in the pass loop is what catches a macro or REPT body: those
+    // are expanded by re-entering processLine from inside the line that opened
+    // them, so from the loop's point of view the whole block is one line.
+    // `depth` says how deep that nesting was, so a caller with two entries at one
+    // address can prefer the outer line — the macro call site and its comment.
     processLine(line) {
+        const emitBefore = this.emitCount;
+        const addrBefore = this.currentAddress & 0xFFFF;
+        this.lineDepth++;
+        try {
+            this._processLine(line);
+        } finally {
+            this.lineDepth--;
+        }
+        // A line that emitted nothing (a label, an EQU, a comment) has no address
+        // of its own to hang anything on. The cap is for a pathological REPT.
+        if (this.emitCount > emitBefore && this.lineMap.length < 200000) {
+            this.lineMap.push({ file: line.file, line: line.line, addr: addrBefore,
+                                comment: line.comment || '', depth: this.lineDepth });
+        }
+    },
+
+    _processLine(line) {
         // Track total lines processed (including macro expansions)
         this.linesProcessed = (this.linesProcessed || 0) + 1;
         if (this.progressCallback && this.linesProcessed % 5000 === 0) {
@@ -1010,6 +1054,12 @@ export const Assembler = {
             if (line.operands.length > 0) {
                 result += ' ' + line.operands.join(', ');
             }
+        }
+        // Keep the line's comment. The text is re-parsed, so a trailing comment is
+        // read back as one — and without it a REPT/DUP body or a macro body loses
+        // every remark it was written with, which the line map then can't report.
+        if (line.comment) {
+            result += (result.endsWith(' ') ? '' : ' ') + line.comment;
         }
         return result;
     },
@@ -3010,6 +3060,7 @@ export const Assembler = {
     // Emit a byte to output
     emit(byte) {
         const b = byte & 0xFF;
+        this.emitCount++;
 
         // TAPOUT: capture emitted bytes (in emission order) into the active tape block
         if (this.tapeCapture) {

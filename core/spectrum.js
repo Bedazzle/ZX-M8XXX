@@ -350,6 +350,13 @@ import { Disassembler } from './disasm.js';
             this.readProvenance = { enabled: false, lo: 0, hi: -1, byPc: new Map() };
             this.execProvenance = { enabled: false, lo: 0, hi: -1, byPc: new Map() };
 
+            // And for port reads, keyed by (pc, port) rather than pc alone —
+            // see startPortReadProvenance in core/debug-instrument.js.
+            this.portReadProvenance = {
+                enabled: false, port: null, mask: 0x00FF,
+                limit: 4096, truncated: false, byKey: new Map()
+            };
+
             // Runtime behavior profiler - tracks per-subroutine behavior for auto-labeling
             this.profiler = {
                 enabled: false,
@@ -1747,6 +1754,12 @@ import { Disassembler } from './disasm.js';
             // RZX recording - record all port read results
             if (this.rzxRecording && this.rzxRecordCurrentFrame) {
                 this.rzxRecordCurrentFrame.inputs.push(result);
+            }
+
+            // Port-read provenance: which instruction reads which port. Last, so
+            // `result` is the value the CPU actually gets (RZX playback included).
+            if (this.portReadProvenance.enabled) {
+                this._notePortRead(port, result);
             }
 
             return result;
@@ -8095,6 +8108,43 @@ import { Disassembler } from './disasm.js';
         }
 
         /**
+         * Where the tape is — the single most diagnostic thing about a multiload.
+         *
+         * There are two decks, and they move independently: the flash loader
+         * (`tapeLoader`, driven by the ROM trap) and the real-time player
+         * (`tapePlayer`, driven by T-states). A driver that can only see one of
+         * them cannot tell "the game is waiting for a block" from "the deck ran
+         * 25 blocks past the one it is asking for", and ends up retiming
+         * keystrokes to fix a positioning problem.
+         *
+         * The two block counts differ on purpose: a TZX gives the player every
+         * block and the loader only the TAP-compatible subset, so `loaderBlock`
+         * and `playerBlock` must each be read against their own total. Returns
+         * `{ loaded: false }` rather than throwing when there is no tape, since
+         * this is meant to be polled every frame.
+         */
+        getTapeState() {
+            const tape = this.loadedTapes[this.activeTapeSlot];
+            const loaderBlocks = this.tapeLoader.blocks.length;
+            const playerBlocks = this.tapePlayer.blocks.length;
+            if (!tape && !loaderBlocks && !playerBlocks) return { loaded: false };
+            return {
+                loaded: true,
+                name: tape ? tape.name : null,
+                type: tape ? tape.type : null,
+                slot: this.activeTapeSlot,
+                blocks: playerBlocks || loaderBlocks,
+                loaderBlock: this.tapeLoader.currentBlock,
+                loaderBlocks,
+                playerBlock: this.tapePlayer.currentBlock,
+                playerBlocks,
+                playing: this.tapePlayer.isPlaying(),
+                phase: this.tapePlayer.phase,
+                flashLoad: this.tapeFlashLoad,
+            };
+        }
+
+        /**
          * Start real-time tape playback
          */
         playTape() {
@@ -9201,20 +9251,27 @@ import { Disassembler } from './disasm.js';
         // fixed RAM 0x4000-0xBFFF and all of 48K). The single source of truth shared by
         // getAutoMapKey (rich mode) and the paged fast bitsets, so their page identity
         // can never diverge. ROM banks are prefixed 'R'; RAM pages are bare numbers.
+        //
+        // Slots 1 and 2 are normally banks 5 and 2 and never move, so they get no suffix
+        // and their coverage lands in the default entry. Under +2A/+3 special paging
+        // every slot comes from specialBanks and they DO move — config 3 puts bank 7 at
+        // 0x4000 where configs 1-2 put bank 5 — so all four are labelled there, or the
+        // default entry would union two different banks at one address, which is the
+        // exact collapse paged mode exists to stop.
         _autoMapPage(addr) {
-            if (this.memory.machineType === '48k') return null;
+            const mem = this.memory;
+            if (mem.machineType === '48k') return null;
+            // +2A/+3 special paging: all 4 slots are RAM, none of them fixed
+            if (mem.specialPagingMode) return String(mem.specialBanks[addr >> 14]);
             // 128K/Pentagon: track pages for ROM and paged RAM
             if (addr < SLOT1_START) {
-                const mem = this.memory;
-                // +2A/+3 special paging: all 4 slots are RAM
-                if (mem.specialPagingMode) return String(mem.specialBanks[0]);
                 // Pentagon 1024 / Scorpion: RAM page 0 mapped over ROM
                 if (mem.ramInRomMode || mem.scorpionRamInRomMode) return '0';
                 // ROM (includes TR-DOS, IF1, +D, Opus overlays — all are ROM code)
                 return 'R' + mem.currentRomBank;
             } else if (addr >= SLOT3_START) {
                 // Paged RAM at slot 3
-                return String(this.memory.currentRamBank);
+                return String(mem.currentRamBank);
             }
             // Fixed RAM (4000-BFFF) - no page suffix
             return null;

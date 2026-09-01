@@ -44,11 +44,11 @@ here that would go stale.
 | **breakpoints** | Execution breakpoints |
 | **registers** | Reading and setting the register file |
 | **map** | The execution-based code/data map — what is code, what is data |
-| **provenance** | Which instruction read, wrote, called or jumped where |
+| **provenance** | Which instruction read, wrote, called or jumped where, and which read a port |
 | **differential** | Running twice with one thing changed, and finding where they diverge |
 | **managers** | The debugger's own labels, regions, comments, xrefs, pokes |
 | **keyboard** | Pressing keys without a keyboard |
-| **media** | Loading tapes, disks, snapshots, RZX |
+| **media** | Loading tapes, disks, snapshots, RZX; saving a snapshot; where the tape has got to |
 | **hooks** | Raw per-access callbacks |
 | **ui** | Handles onto UI subsystems |
 
@@ -56,10 +56,13 @@ here that would go stale.
 
 These are the things `help()` cannot tell you. Each has cost someone a session.
 
-1. **`await zxDebug.ready()` before anything.** `window.spectrum` and `window.zxDebug`
-   appear during module init, but ROMs load *asynchronously*. A driver that starts early
-   runs a blank `$0000-$3FFF`: every ROM call becomes a NOP sled, the program wanders off,
-   and it looks like a deep problem instead of a race.
+1. **`await zxDebug.ready()` before anything, then `await zxDebug.start()`.**
+   `window.spectrum` and `window.zxDebug` appear during module init, but ROMs load
+   *asynchronously*. A driver that starts early runs a blank `$0000-$3FFF`: every ROM call
+   becomes a NOP sled, the program wanders off, and it looks like a deep problem instead of
+   a race. `ready()` gets the ROM in; `start()` starts the machine the way the UI's own
+   button does — don't click the button from a driver, that is a markup id, not an API.
+   `start()` resets, so call it before loading anything.
 
 2. **If it isn't on `zxDebug`, say so — don't reimplement it.** `zxDebug.spectrum` is an
    escape hatch and **not a stable interface**; the planned `Spectrum` refactor will move

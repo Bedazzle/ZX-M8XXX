@@ -588,10 +588,14 @@ export function initCalculator() {
         }
     });
 
-    // Keyboard support for calculator
+    // Keyboard support for calculator.
+    // Ask the calculator itself whether it is on screen rather than the debugger's
+    // panel: it also lives in the assembler's split pane, and ui/calc-host.js moves
+    // it between the two. offsetParent is null for anything inside an inactive tab
+    // or a hidden panel, which covers both hosts without knowing about either.
     function isCalcTabActive() {
-        const calcView = document.getElementById('rightCalculatorView');
-        return calcView && calcView.style.display !== 'none';
+        const wrapper = document.querySelector('.calc-wrapper');
+        return !!(wrapper && wrapper.offsetParent !== null);
     }
 
     // Keyboard support for calculator

@@ -81,11 +81,21 @@ ZX0/ZX7 (de)compressors (formats by Einar Saukas) with output-capped, back-refer
 
 ## `debug/managers.js`
 
-Pure data managers: PersistentManager base class (per-file localStorage persistence) + LabelManager, RegionManager, CommentManager, OperandFormatManager
+Pure data managers: PersistentManager base class (per-file localStorage persistence) + LabelManager, RegionManager, CommentManager, OperandFormatManager.
+
+`PersistentManager.save()` persists once, for a caller that turned `autoSaveEnabled` off to make a batch of changes and doesn't want one localStorage write per item.
+
+A comment entry carries **`source`**: `''` when the user wrote it, `'asm'` when it was carried over from an assembled source (see [assembler.md](assembler.md#source-comments-in-the-disassembly)). It persists — without it a reload would make every imported comment look hand-written and the next inject would refuse to refresh it. The comment dialog writes `source: ''`, so editing an imported comment makes it the user's and later builds leave it alone.
 
 ## `tools/profiler-analysis.js`
 
 Pure profiler analysis shared by the debugger's Profiler and `profile-game.html`: hotspot clustering/classification (`analyzeHotspots`, `classifyHotspot`) and label generation (`generateProfilerLabels`, `generateHotspotLabels`). No DOM — memory access and the include-ROM flag are parameters
+
+## `ui/calc-host.js`
+
+Which panel currently holds the programmer calculator. It is a singleton — fixed ids (`#calcInput`, `#calcDec`, …) and handlers bound with document-wide `.calc-btn` selectors — so a second copy in the DOM would fight the first for every one of them. The debugger's right panel and the assembler's split pane therefore share one node by moving it rather than each owning an instance.
+
+A host registers `(element, wants)`; `refreshCalcHost()` gives the calculator to the first host that both wants it and is on screen, else parks it at `#rightCalculatorView`. "On screen" is settled by `offsetParent`, which is null for anything inside an inactive tab, so no host needs to know about the others. Called from `switchRightPanelType`, from the split pane's load/close, and from a `.tab-btn` click listener — without the last one, switching tabs left the other panel showing an empty box with the right label on it.
 
 ## `ui/basic-editor.js`
 
@@ -261,7 +271,9 @@ Step/runtime trace UI: history navigation, slider, export, screen revert via mem
 
 ## `sjasmplus/assembler.js`
 
-Multi-pass assembly orchestration, directives (ORG/EQU/DB/DW/DS/INCLUDE/MACRO/STRUCT/SAVE*), instruction encoding dispatch
+Multi-pass assembly orchestration, directives (ORG/EQU/DB/DW/DS/INCLUDE/MACRO/STRUCT/SAVE*), instruction encoding dispatch.
+
+Also returns **`lineMap`** — `[{file, line, addr, comment, depth}]`, one entry per source line that emitted bytes — which is how the debugger shows a source comment beside the code that line produced. Recorded in the `processLine` wrapper rather than the pass loop, so a macro or `REPT`/`DUP` body (expanded by re-entering `processLine`) is mapped per expansion; `depth` is that nesting level. Rebuilt every pass in **both** `runPasses` and `runPassesAsync`. `reconstructLine` keeps each line's comment for the same reason — REPT/macro bodies are stored as text and re-parsed. [Details](assembler.md#source-comments-in-the-disassembly)
 
 ## `sjasmplus/lua.js`
 

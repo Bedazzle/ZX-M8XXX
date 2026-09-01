@@ -74,6 +74,8 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Signature packs | `debug/signature-pack-manager.js` | `ui/signature-packs-ui.js` | `sigPacksList` | `sigpack-test` | `docs/tools.md` |
 | Headless API | `ui/app-init.js` (`window.zxDebug`) | — | — | (per-feature) | `docs/automation.md` |
 | API manifest / capabilities | `core/api-manifest.js` | `ui/app-init.js` (`capabilities`, `help`, `require`) | — | `api-manifest-test` | `docs/automation.md` |
+| Port-read provenance | `core/debug-instrument.js` (`startPortReadProvenance`), `core/spectrum.js` (`portRead`) | `ui/app-init.js` (`watchPortReads`) | — | `api-manifest-test` | `docs/automation.md` |
+| Tape position (both decks) | `core/spectrum.js` (`getTapeState`) | `ui/app-init.js` (`tapeState`) | — | `api-manifest-test` | `docs/automation.md` |
 
 ## Tools
 
@@ -91,6 +93,8 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Compare tool | `ui/snapshot-parse.js` | `ui/compare-tool.js` | `compareDialog` | `snapshot-parse-test` | `docs/tools.md` |
 | Compare: memory vs memory | `core/mem-compare.js` | `ui/compare-tool.js` | `compareMemMemOptions`, `compareMemAMode` | `memcompare-test`, `compare-ui-test` | `docs/tools.md` |
 | Calculator | — | `ui/calculator.js` | `calcDialog` | `calculator-test` | — |
+| Source comments in disasm | `sjasmplus/assembler.js` (`lineMap`), `debug/managers.js` (`source`) | `ui/assembler-ui.js` (`importAsmComments`) | `btnAsmInject`, `btnAsmDebug` | `asm-test`, `asm-comments-ui-test` | `docs/assembler.md` |
+| Calculator in either panel | `ui/calc-host.js` | `ui/panel-navigator.js`, `ui/assembler-ui.js` | `rightCalculatorView`, `asmPane2Calc`, `asmPane2File` | `calc-host-test` | — |
 | Frame/PNG/GIF export | — | `ui/frame-export.js` | `btnScreenshotMain` | — | `docs/snapshot-formats.md` |
 
 ## Adding a feature: the usual six files

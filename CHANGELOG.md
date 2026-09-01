@@ -2,6 +2,27 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.16.2
+
+- **Your source comments now show up in the disassembly.** Injecting assembled code (and Debug, which injects first) copies each line's comment to the address that line assembled to, and the block above a routine to the block above it. Macro and REPT bodies are included, at every expansion.
+- **Comments you wrote in the debugger are kept.** Only the ones a build put there are refreshed, so a comment deleted from the source stops appearing while yours stay put; editing an imported comment makes it yours.
+- **Fixed: `asm-test` stopped a third of the way through and still reported green.** The TAPEND test expected a return value from something that throws, and the exception took the whole run with it.
+- **The calculator can sit in the assembler's split pane.** Pick 🖩 Calculator in the split pane's file dropdown (◫) to work out a mask or an offset without leaving the source. It is the same calculator the debugger's right panel offers — one instance, moved to whichever panel is asking, so switching tabs takes it with you.
+
+## v0.16.1
+
+- **Fixed: `loadRZX()` rejected genuine ArrayBuffers.** `parse()` checked with `instanceof`, which is false for a buffer from another realm — what a host page's `fetch()` hands a headless driver. `replayRZX()` and `mapRun({rzxUrl})` were unusable from outside the page.
+- **Fixed: the paged auto-map mislabelled +2A/+3 special paging.** Only slot 0 was labelled, so different banks collapsed onto one address. The paging signature couldn't tell the four configs apart either.
+
+## v0.16.0
+
+### Automation API
+
+- **`tapeState()`** — where the tape is: the block the flash loader and the block the real-time deck have each reached, plus name, phase and totals. The two decks move independently, and a multiload stalling because the deck ran 25 blocks past the level the game is asking for is invisible if you can only see one of them.
+- **`start()`** — start the machine the way the Start Emulator button does. Drivers were clicking `#btnStartEmulator` and polling `spectrum.running`, which depends on a markup id rather than on an API.
+- **`watchPortReads()` / `getPortReads()` / `stopPortReads()`** — which instruction reads a port, with the same `callers`/`callSites` triple as the memory provenance. Hits are keyed by (pc, port): for the keyboard the low byte is always `$FE`, so the half-row select in the high byte is the whole content, and keying by pc alone would lose it.
+- **`saveSnapshot(format)`** — the live machine as `.z80`, `.sna` or `.szx` bytes.
+
 ## v0.15.33
 
 ### Opus Discovery (new)

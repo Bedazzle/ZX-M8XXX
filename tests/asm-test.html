@@ -1317,12 +1317,17 @@ VAL:            EQU 42
                 assertBytes(toCmds[1].blockData, [0x04, 0x00, 0xFF, 0x34, 0x12, 0xD9], 'TAPOUT block framing (default flag)');
             }
 
-            // TAPEND without a preceding TAPOUT is an error.
-            result = asm(`
+            // TAPEND without a preceding TAPOUT is an error. It is REPORTED BY
+            // THROWING, so asm() never returns here — this assert used to take the
+            // exception out through runAllTests, which stopped the suite dead at
+            // this line and still reported green, because nothing had failed.
+            const tapend = tryAsm(`
                 ORG $8000
                 TAPEND
             `);
-            assert(!result.success, 'TAPEND without TAPOUT is an error');
+            assert(!tapend.ok, 'TAPEND without TAPOUT is an error');
+            assert(/TAPEND without TAPOUT/.test(tapend.err), 'and says which directive is unmatched',
+                   tapend.err);
         }
 
         // ==================== RUN ALL ====================
@@ -2061,6 +2066,103 @@ VAL:            EQU 42
             }
         }
 
+        // The map that lets the debugger show a source comment beside the code the
+        // line produced. Only lines that EMIT get an entry, and only the final
+        // pass's addresses are meaningful.
+        async function runLineMapTests() {
+            section('Line map: source line -> address');
+            const build = (src, opts) => Assembler.assemble(src, 'main.asm', [], opts || {});
+
+            {
+                const r = build([
+                    '    org $8000',       // 1: emits nothing
+                    'start:  ; the label line emits nothing either',
+                    '    ld a,5      ; load it',
+                    '    ret         ; and go back'
+                ].join('\n'));
+                const map = r.lineMap;
+                assert(Array.isArray(map) && map.length === 2,
+                       'one entry per emitting line, none for org or a bare label',
+                       map ? `${map.length}: ${map.map(m => m.line).join(',')}` : 'missing');
+                assert(map[0].addr === 0x8000 && map[0].line === 3,
+                       'the first emitting line is at the ORG', map[0] && `${map[0].line}@${map[0].addr.toString(16)}`);
+                assert(map[1].addr === 0x8002 && map[1].line === 4,
+                       'and the next follows its bytes', map[1] && `${map[1].line}@${map[1].addr.toString(16)}`);
+                assert(/load it/.test(map[0].comment) && /go back/.test(map[1].comment),
+                       'each entry carries that line\'s own comment', JSON.stringify(map.map(m => m.comment)));
+                assert(map[0].file === 'main.asm', 'and the file it came from', map[0].file);
+            }
+            {
+                // A ';' inside a string is not a comment — the reason the map carries
+                // the parser's idea of the comment rather than the raw line text
+                const r = build(['    org $8000', '    db "a;b"   ; real one'].join('\n'));
+                assert(r.lineMap.length === 1 && /real one/.test(r.lineMap[0].comment)
+                       && !/a;b/.test(r.lineMap[0].comment),
+                       'a semicolon inside a string is not taken for a comment',
+                       JSON.stringify(r.lineMap[0].comment));
+            }
+            {
+                // Addresses must be the settled ones, not an early pass's
+                const r = build([
+                    '    org $8000',
+                    '    jp later      ; forward reference',
+                    'later:',
+                    '    nop           ; here'
+                ].join('\n'));
+                const last = r.lineMap[r.lineMap.length - 1];
+                assert(last.addr === 0x8003, 'a forward reference does not shift the addresses',
+                       last.addr.toString(16));
+            }
+            {
+                // The async path is the one the UI uses, and it resets its own pass
+                // state — a map that accumulated there handed the caller the previous
+                // build's lines as well, with the stale comments winning.
+                const src = (n) => ['    org $8000', `    ld a,${n}   ; take ${n}`, '    ret'].join('\n');
+                await Assembler.assembleAsync(src(1), 'main.asm', [], {});
+                const r2 = await Assembler.assembleAsync(src(2), 'main.asm', [], {});
+                const emitting = r2.lineMap.filter(m => /take/.test(m.comment));
+                assert(emitting.length === 1, 'a second async build does not keep the first one\'s lines',
+                       `${emitting.length}: ${JSON.stringify(emitting.map(m => m.comment))}`);
+                assert(emitting[0].comment.includes('take 2'), 'and carries the current comment',
+                       emitting[0].comment);
+            }
+            {
+                // A macro body is expanded by re-entering processLine, so its lines
+                // are mapped at depth 1; the call site sits at the same address with
+                // depth 0, which is how a caller tells the two apart.
+                const r = build([
+                    '    macro SETUP',
+                    '    ld a,1     ; inside the macro',
+                    '    ld b,2     ; second body line',
+                    '    endm',
+                    '    org $8000',
+                    '    SETUP      ; call site'
+                ].join('\n'));
+                assert(r.success, 'the macro assembles', (r.errors && r.errors[0] || {}).message);
+                const at8000 = r.lineMap.filter(m => m.addr === 0x8000);
+                assert(at8000.length === 2, "the call and the body's first line share an address",
+                       String(at8000.length));
+                const outer = at8000.find(m => m.depth === 0);
+                assert(outer && /call site/.test(outer.comment),
+                       'the shallower entry is the call site', outer && outer.comment);
+                assert(at8000.some(m => m.depth > 0 && /inside the macro/.test(m.comment)),
+                       'and the deeper one is the body line');
+                const second = r.lineMap.find(m => m.addr === 0x8002);
+                assert(second && /second body line/.test(second.comment),
+                       'later body lines get their own addresses', second && second.comment);
+            }
+            {
+                // Each unrolled copy is its own place in memory, so each gets an entry
+                const r = build(['    org $8000', '    dup 3', '    nop  ; body', '    edup'].join('\n'));
+                const bodies = r.lineMap.filter(m => /body/.test(m.comment));
+                assert(bodies.length === 3, 'a DUP body is mapped once per iteration',
+                       String(bodies.length));
+                assert(bodies[0].addr === 0x8000 && bodies[2].addr === 0x8002,
+                       'each at its own address',
+                       bodies.map(b => b.addr.toString(16)).join(','));
+            }
+        }
+
         async function runAllTests() {
             clearLog();
             log('Running all assembler tests...', 'info');
@@ -2078,6 +2180,7 @@ VAL:            EQU 42
             await runMacroTests();
             await runConditionalTests();
             await runAdvancedTests();
+            await runLineMapTests();
 
             log('\n=== COMPLETE ===', 'section');
         }

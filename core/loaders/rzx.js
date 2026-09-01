@@ -24,12 +24,19 @@
         }
 
         async parse(data) {
-            // Normalize input to ArrayBuffer
+            // Normalize input to ArrayBuffer.
+            //
+            // Test the shape, not the constructor. `instanceof` compares against the
+            // current realm's ArrayBuffer, so a buffer fetched by a host page and handed
+            // to this module — the normal shape of a headless driver — failed the check
+            // and a genuine recording was rejected. That took replayRZX() and
+            // mapRun({rzxUrl}) with it, since both parse through here. isRZX() above and
+            // every other loader in this tree already coerce; match them.
             let buffer;
-            if (data instanceof ArrayBuffer) {
-                buffer = data;
-            } else if (data instanceof Uint8Array) {
+            if (ArrayBuffer.isView(data)) {
                 buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            } else if (data && typeof data.byteLength === 'number') {
+                buffer = data;      // an ArrayBuffer from any realm — used as-is, no copy
             } else {
                 throw new Error('RZX parse: expected ArrayBuffer or Uint8Array');
             }

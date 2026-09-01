@@ -31,7 +31,10 @@ export const DebugInstrumentation = {
             | ((m.specialPagingMode ? 1 : 0) << 10)
             | ((m.ramInRomMode ? 1 : 0) << 11)
             | ((m.scorpionRamInRomMode ? 1 : 0) << 12)
-            | ((m.specialBanks[0] & 63) << 13);
+            // The special-paging config, not specialBanks[0]: configs 1-3 all start at
+            // bank 4, so that byte cannot tell them apart and the per-slot cache went
+            // stale across a config change.
+            | ((((m.port1FFD >> 1) & 3)) << 13);
     },
 
     // Lazily allocate + return the touched-bitset triple for a page label.
@@ -198,6 +201,83 @@ export const DebugInstrumentation = {
 
     getExecProvenance() {
         return this._provenanceList(this.execProvenance);
+    },
+
+    // Record which instruction reads a PORT, and who called it. The memory
+    // provenance above answers "who touches this address"; this answers the
+    // question a controls or loader hunt actually asks, which is who reads the
+    // hardware — and with *which* port, because for the keyboard the low byte is
+    // always $FE and carries nothing: the half-row select in the high byte is the
+    // entire content. So the key is (pc, port), not pc, and a scan loop comes back
+    // as one entry per row it selected rather than one entry that lost them.
+    //
+    // `port` is null for "every port". `mask` is ANDed with both sides, so the
+    // default $00FF matches on the low byte alone: watchPortReads(0xFE) is every
+    // keyboard row, watchPortReads(0xFFFD, 0xFFFF) is exactly the AY register port.
+    startPortReadProvenance(port = null, mask = 0x00FF, limit = 4096) {
+        this.portReadProvenance = {
+            enabled: true,
+            port: port === null ? null : (port & 0xFFFF),
+            mask: mask & 0xFFFF,
+            limit: limit > 0 ? limit : 4096,
+            truncated: false,
+            byKey: new Map()      // pc * 0x10000 + port -> { count, lastValue, callers, callSites }
+        };
+    },
+
+    stopPortReadProvenance() {
+        const out = this.getPortReadProvenance();
+        this.portReadProvenance.enabled = false;
+        return out;
+    },
+
+    // [{ pc, port, high, low, bank, count, lastValue, callers, callSites }],
+    // most-frequent first.
+    getPortReadProvenance() {
+        const prov = this.portReadProvenance;
+        const out = [];
+        for (const [key, e] of prov.byKey) {
+            const port = key & 0xFFFF;
+            out.push({
+                pc: (key / 0x10000) | 0,
+                port,
+                high: (port >> 8) & 0xFF,
+                low: port & 0xFF,
+                bank: e.bank,
+                count: e.count,
+                lastValue: e.lastValue,
+                callers: e.callers.slice(),
+                callSites: e.callSites.slice(),
+            });
+        }
+        return out.sort((a, b) => b.count - a.count);
+    },
+
+    // Called from Spectrum.portRead for every IN once enabled. The PC is the CPU's
+    // own `_instrPC`, set on every instruction, rather than the debugger's
+    // `_currentInstrPC`, which only the stepping paths maintain.
+    _notePortRead(port, value) {
+        const prov = this.portReadProvenance;
+        if (prov.port !== null && (port & prov.mask) !== (prov.port & prov.mask)) return;
+        const pc = this.cpu._instrPC & 0xFFFF;
+        const key = pc * 0x10000 + (port & 0xFFFF);
+        let e = prov.byKey.get(key);
+        if (!e) {
+            // Same trade as _noteProvenance: the call stack is copied once per
+            // key, because it rarely differs and copying it per hit would cost
+            // more than the recording.
+            if (prov.byKey.size >= prov.limit) { prov.truncated = true; return; }
+            e = {
+                count: 0,
+                lastValue: 0,
+                bank: this._autoMapPage(pc),
+                callers: this._debugCallStack.map(x => x.addr),
+                callSites: this._debugCallStack.map(x => x.caller),
+            };
+            prov.byKey.set(key, e);
+        }
+        e.count++;
+        e.lastValue = value & 0xFF;
     },
 
     // Record which instructions write into [lo, hi] (inclusive). Cheap enough

@@ -30,6 +30,12 @@ export class PersistentManager {
         storageSet(key, JSON.stringify(this._serialize()));
     }
 
+    // Persist once, for a caller that turned autoSaveEnabled off to make a batch of
+    // changes and doesn't want one localStorage write per item.
+    save() {
+        this._autoSave();
+    }
+
     _autoLoad() {
         this._clearData();
         const key = this._storageKey();
@@ -325,7 +331,8 @@ export class CommentManager extends PersistentManager {
                 before: c.before || '',
                 inline: c.inline || '',
                 after: c.after || '',
-                separator: c.separator || false
+                separator: c.separator || false,
+                source: c.source || ''
             });
         }
     }
@@ -342,7 +349,12 @@ export class CommentManager extends PersistentManager {
             before: comment.before !== undefined ? comment.before : (existing.before || ''),
             inline: comment.inline !== undefined ? comment.inline : (existing.inline || ''),
             after: comment.after !== undefined ? comment.after : (existing.after || ''),
-            separator: comment.separator !== undefined ? comment.separator : (existing.separator || false)
+            separator: comment.separator !== undefined ? comment.separator : (existing.separator || false),
+            // Who wrote it: '' for the user, 'asm' for a comment carried over from an
+            // assembled source. Editing one by hand drops the mark, so the next inject
+            // leaves it alone. It has to persist, or a reload would make every imported
+            // comment look hand-written and the next inject would refuse to refresh it.
+            source: comment.source !== undefined ? comment.source : (existing.source || '')
         };
         // Remove if all empty
         if (!entry.before && !entry.inline && !entry.after && !entry.separator) {
