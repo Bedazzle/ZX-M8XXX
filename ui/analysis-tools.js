@@ -1,7 +1,7 @@
 // analysis-tools.js — Auto-map tracking, XRef controls, Code-Flow Analysis (extracted from index.html)
 
 import { REGION_TYPES } from '../debug/managers.js';
-import { hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrSigil, parseAddr } from '../core/addr-format.js';
 
 export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
                                      regionManager, labelManager, xrefManager, subroutineManager,
@@ -169,8 +169,8 @@ export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
                 timestamp: new Date().toISOString()
             });
             btnAutoMapSnap.style.background = 'var(--green)';
-            const pcHex = hex16(cpu.pc);
-            showMessage(`Snap captured at PC=$${pcHex} (frame boundary) - continue running to collect code paths, then Export`);
+            const pcStr = fmtAddrSigil(cpu.pc);
+            showMessage(`Snap captured at PC=${pcStr} (frame boundary) - continue running to collect code paths, then Export`);
         };
 
         if (spectrum.isRunning()) {
@@ -214,7 +214,7 @@ export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
         const endAddr = (startAddr + 0x1000) & 0xffff;
         const count = xrefManager.scanRange(startAddr, endAddr);
         updateXrefStats();
-        showMessage(`Scanned ${hex16(startAddr)}-${hex16(endAddr)}: ${count} refs found`);
+        showMessage(`Scanned ${fmtAddr(startAddr)}-${fmtAddr(endAddr)}: ${count} refs found`);
     });
 
     btnXrefScanAll.addEventListener('click', async () => {
@@ -390,8 +390,8 @@ export function initAnalysisTools({ getSpectrum, getDisasm, setExportSnapshot,
         const extraText = cfaExtraEntries.value.trim();
         if (extraText) {
             for (const part of extraText.split(',')) {
-                const addr = parseInt(part.trim(), 16);
-                if (!isNaN(addr)) {
+                const addr = parseAddr(part.trim());
+                if (addr !== null) {
                     entries.add(addr & 0xFFFF);
                 }
             }

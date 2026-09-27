@@ -1,5 +1,6 @@
 // call-graph.js — Visual call graph from profiler data (canvas-based tree)
 import { hex16 } from '../core/utils.js';
+import { fmtAddrSigil } from '../core/addr-format.js';
 
 export function initCallGraph({ labelManager, goToAddress, showMessage }) {
     const btnCallGraph = document.getElementById('btnCallGraph');
@@ -218,7 +219,7 @@ export function initCallGraph({ labelManager, goToAddress, showMessage }) {
             ctx.font = '12px monospace';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.fillText(`$${hex16(hoveredNode.addr)} ${hoveredNode.name}  calls: ${hoveredNode.callCount}`, tooltipX, tooltipY);
+            ctx.fillText(`${fmtAddrSigil(hoveredNode.addr)} ${hoveredNode.name}  calls: ${hoveredNode.callCount}`, tooltipX, tooltipY);
         }
     }
 

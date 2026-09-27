@@ -126,9 +126,20 @@
                             <option value="spectrum">Shadow: Spectrum</option>
                         </select>
                         <label style="margin-left: 8px; display: none;" id="secondScreenAddrLabel">
-                            Addr: <input type="text" id="secondScreenAddr" value="C000"
+                            Addr: <input type="text" id="secondScreenAddr" data-hint-num="addr" value="C000"
                                 style="width: 40px; font-family: monospace; font-size: 11px;"
-                                maxlength="4" title="Start address (hex) for buffer display">
+                                maxlength="5" data-hint-base="addr" title="Start address ({BASE}) for buffer display">
+                        </label>
+                    </div>
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <label class="checkbox-label" title="Show addresses in the debugger as decimal (65535) instead of hex (FFFF). Ports follow this too. Byte values and opcode bytes have their own settings below.">
+                            <input type="checkbox" id="chkDecAddresses"> Decimal addresses
+                        </label>
+                        <label class="checkbox-label" style="margin-left: 15px;" title="Show byte values as decimal (255) instead of hex (FF) — the memory dump, poke and watch values, the AY registers. Independent of the other two settings.">
+                            <input type="checkbox" id="chkDecValues"> Decimal values
+                        </label>
+                        <label class="checkbox-label" style="margin-left: 15px;" title="Show the opcode bytes beside a disassembled instruction as decimal (33 0 176) instead of hex (21 00 B0). Independent of the other two.">
+                            <input type="checkbox" id="chkDecOpcodes"> Decimal opcodes
                         </label>
                     </div>
                 </div>

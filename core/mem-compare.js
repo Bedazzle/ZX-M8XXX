@@ -13,23 +13,23 @@
 //
 // Pure: the readers are injected, so this tests without an emulator.
 
+import { fmtAddr, fmtAddrSigil } from './addr-format.js';
+
 export const BANK_SIZE = 0x4000;
 export const ADDR_SPACE = 0x10000;
 
 // Human-readable name for a region's start, used in the diff listing
 export function regionLabel(region) {
-    const hex = (v, n) => v.toString(16).toUpperCase().padStart(n, '0');
-    if (region.mode === 'bank') return `bank ${region.bank}:$${hex(region.addr & 0x3FFF, 4)}`;
-    return `$${hex(region.addr & 0xFFFF, 4)}`;
+    if (region.mode === 'bank') return `bank ${region.bank}:${fmtAddrSigil(region.addr & 0x3FFF)}`;
+    return fmtAddrSigil(region.addr & 0xFFFF);
 }
 
 // Address of byte `offset` within a region, formatted for display
 export function regionAddress(region, offset) {
-    const hex = (v, n) => v.toString(16).toUpperCase().padStart(n, '0');
     if (region.mode === 'bank') {
-        return `${region.bank}:${hex((region.addr + offset) & 0x3FFF, 4)}`;
+        return `${region.bank}:${fmtAddr((region.addr + offset) & 0x3FFF)}`;
     }
-    return hex((region.addr + offset) & 0xFFFF, 4);
+    return fmtAddr((region.addr + offset) & 0xFFFF);
 }
 
 // Reject what can't be read before anything is read, so the reason names the

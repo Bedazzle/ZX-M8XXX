@@ -1,5 +1,6 @@
 // struct-mapper.js — Struct field access mapper (monitor reads/writes at offsets from base)
-import { hex8, hex16, escapeHtml } from '../core/utils.js';
+import { hex8, escapeHtml } from '../core/utils.js';
+import { fmtAddrSigil, fmtByte, parseAddr as readAddr, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initStructMapper({
     startStructMapper, stopStructMapper, readMemory, getSpectrum,
@@ -38,7 +39,7 @@ export function initStructMapper({
             mapping = true;
             btnSmStart.textContent = 'Stop';
             btnSmStart.classList.add('active');
-            smStatus.textContent = `(mapping ${baseReg || '$' + hex16(baseAddr)} +0..+${maxOffset})`;
+            smStatus.textContent = `(mapping ${baseReg || fmtAddrSigil(baseAddr)} +0..+${maxOffset})`;
             smResults.innerHTML = '';
         } else {
             const results = stopStructMapper();
@@ -55,12 +56,11 @@ export function initStructMapper({
         }
     });
 
+    // The Settings switch decides how a bare number is read; $ 0x # and a trailing
+    // h still force hex. -1 keeps the callers' existing "not an address" test.
     function parseAddr(str) {
-        str = (str || '').trim();
-        if (!str) return -1;
-        if (str.startsWith('$')) str = str.slice(1);
-        else if (str.startsWith('0x') || str.startsWith('0X')) str = str.slice(2);
-        return parseInt(str, 16);
+        const v = readAddr(str);
+        return v === null ? -1 : v;
     }
 
     function getLabel(addr) {
@@ -122,10 +122,10 @@ export function initStructMapper({
             html += `<td style="padding:2px 4px;color:var(--cyan);font-weight:bold">+${hex8(offset)}</td>`;
 
             // Address
-            html += `<td style="padding:2px 4px;color:var(--text-secondary)">$${hex16(addr)}</td>`;
+            html += `<td style="padding:2px 4px;color:var(--text-secondary)">${fmtAddrSigil(addr)}</td>`;
 
             // Current value
-            html += `<td style="padding:2px 4px">${hex8(curVal)}</td>`;
+            html += `<td style="padding:2px 4px">${fmtByte(curVal)}</td>`;
 
             // Reads summary
             html += '<td style="padding:2px 4px;text-align:right">';
@@ -152,7 +152,7 @@ export function initStructMapper({
                 const maxC = String(entries[0][1]).length; // sorted desc, first is widest
                 for (const [pc, count] of entries) {
                     const lbl = getLabel(pc);
-                    const display = lbl ? escapeHtml(lbl) : `$${hex16(pc)}`;
+                    const display = lbl ? escapeHtml(lbl) : fmtAddrSigil(pc);
                     const disasmResult = disassembleAt ? disassembleAt(pc) : null;
                     const mnemonic = disasmResult ? disasmResult.mnemonic || '' : '';
                     out += `<div style="margin-left:8px">`;
@@ -207,6 +207,9 @@ export function initStructMapper({
         if (smResults) smResults.innerHTML = '';
     }
 
+    // Hex or decimal: the results table lists an address per field.
+    onNumberBaseChange(() => { if (lastResults) renderResults(lastResults); });
+
     return {
         stopMapping() {
             stopMappingCleanup();
@@ -232,7 +235,7 @@ export function initStructMapper({
                     smBaseReg.value = data.config.baseReg;
                 } else {
                     smBaseReg.value = '';
-                    smBaseAddr.value = '$' + hex16(data.config.baseAddr);
+                    smBaseAddr.value = fmtAddrSigil(data.config.baseAddr);
                 }
                 smMaxOffset.value = data.config.maxOffset;
             }

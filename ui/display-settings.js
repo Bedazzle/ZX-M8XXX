@@ -1,5 +1,6 @@
 // display-settings.js — Audio, fullscreen, quicksave, display invert, ULAplus, palette (extracted from index.html)
 import { storageGet, storageSet } from '../core/utils.js';
+import { setAddrBase, setValueBase, setOpcodeBase } from '../core/addr-format.js';
 import { createSaveSlots } from '../core/save-slots.js';
 
 export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadResult, updateCanvasSize }) {
@@ -1030,6 +1031,62 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     if (chkFollowPC) chkFollowPC.addEventListener('change', () => {
         storageSet('zxm8_followPC', chkFollowPC.checked);
     });
+
+    // ===== Address base (hex / decimal) =====
+    // Display only: it changes how an address is written, never what is stored or
+    // exported. Applied before the first render so the debugger opens in the base
+    // it was left in; panels redraw themselves through onNumberBaseChange().
+    const chkDecAddresses = document.getElementById('chkDecAddresses');
+    // Also stamped on <html>, so CSS can size a boxed field for the wider base.
+    // A decimal register changes width as it counts (999 -> 1000), which would
+    // make the whole register block twitch on every step without a floor.
+    const applyAddrBase = (dec) => {
+        setAddrBase(dec ? 'dec' : 'hex');
+        document.documentElement.dataset.addrBase = dec ? 'dec' : 'hex';
+    };
+    const applyValueBase = (dec) => {
+        setValueBase(dec ? 'dec' : 'hex');
+        document.documentElement.dataset.valueBase = dec ? 'dec' : 'hex';
+    };
+    const applyOpcodeBase = (dec) => {
+        setOpcodeBase(dec ? 'dec' : 'hex');
+        document.documentElement.dataset.opcodeBase = dec ? 'dec' : 'hex';
+    };
+    if (chkDecAddresses) {
+        chkDecAddresses.checked = storageGet('zxm8_decAddresses') === 'true';   // Default hex
+        applyAddrBase(chkDecAddresses.checked);
+        chkDecAddresses.addEventListener('change', () => {
+            storageSet('zxm8_decAddresses', chkDecAddresses.checked);
+            applyAddrBase(chkDecAddresses.checked);
+            showMessage(chkDecAddresses.checked ? 'Addresses: decimal' : 'Addresses: hex');
+        });
+    }
+
+    // A byte is not an address, so it gets its own switch: a hex dump with decimal
+    // addresses is sensible, and so is a decimal dump with hex addresses.
+    const chkDecValues = document.getElementById('chkDecValues');
+    if (chkDecValues) {
+        chkDecValues.checked = storageGet('zxm8_decValues') === 'true';   // Default hex
+        applyValueBase(chkDecValues.checked);
+        chkDecValues.addEventListener('change', () => {
+            storageSet('zxm8_decValues', chkDecValues.checked);
+            applyValueBase(chkDecValues.checked);
+            showMessage(chkDecValues.checked ? 'Values: decimal' : 'Values: hex');
+        });
+    }
+
+    // And a third for the opcode bytes: decimal-only assembly is a real background,
+    // and the byte column is where that shows.
+    const chkDecOpcodes = document.getElementById('chkDecOpcodes');
+    if (chkDecOpcodes) {
+        chkDecOpcodes.checked = storageGet('zxm8_decOpcodes') === 'true';   // Default hex
+        applyOpcodeBase(chkDecOpcodes.checked);
+        chkDecOpcodes.addEventListener('change', () => {
+            storageSet('zxm8_decOpcodes', chkDecOpcodes.checked);
+            applyOpcodeBase(chkDecOpcodes.checked);
+            showMessage(chkDecOpcodes.checked ? 'Opcodes: decimal' : 'Opcodes: hex');
+        });
+    }
 
     // ===== Step Over T-state limit =====
 

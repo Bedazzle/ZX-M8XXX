@@ -7,6 +7,16 @@
 // Explorer rather than to a copy.
 
 import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
+// The Explorer shows two kinds of number that both follow the address switch: a
+// load/start address, and an OFFSET into a .tap/.trd/.dsk. They are not the same
+// thing, but a user who asked for decimal wants both -- an offset column left in
+// hex beside a decimal load address reads as a bug. Bytes follow the value switch
+// and the disassembly's byte column the opcode one, exactly as in the debugger.
+// hex16 stays where a number is written OUT (an export filename), never shown.
+import {
+    fmtAddr, fmtAddrCol, fmtAddrH, fmtAddrSigil, fmtByte, fmtByteCol, byteColWidth,
+    fmtOpcode, parseAddr, onNumberBaseChange
+} from '../core/addr-format.js';
 import { isFlowBreak } from './mnemonic-format.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { SLOT1_START, SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE } from '../core/constants.js';
@@ -1061,7 +1071,7 @@ export function initExplorerViews(xp) {
                 sectorData = xp.explorerData.slice(offset, offset + size);
             }
             sectorValue = `sector:flat:${offset}:${size}`;
-            label = `Sector T${cyl} S${head} #${sec.id} (${size} bytes @ $${offset.toString(16).toUpperCase()})`;
+            label = `Sector T${cyl} S${head} #${sec.id} (${size} bytes @ ${fmtAddrSigil(offset)})`;
         } else if (xp.explorerParsed.dskImage) {
             // DSK: use C/H/R addressing
             sectorData = xp.explorerParsed.dskImage.readSector(cyl, head, sec.id);
@@ -1187,7 +1197,7 @@ export function initExplorerViews(xp) {
                 const currentAddr = baseAddr + offset;
                 const result = disasm.disassemble(currentAddr);
                 const instrLen = result.length || 1;
-                const bytesHex = result.bytes.map(b => hex8(b)).join(' ');
+                const bytesHex = result.bytes.map(b => fmtOpcode(b)).join(' ');
                 let mnemonic = result.mnemonic || '???';
                 const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
                 if (addrMatch) {
@@ -1197,7 +1207,7 @@ export function initExplorerViews(xp) {
                         mnemonic = mnemonic.replace(addrMatch[0], `<span class="dl">${label}</span>`);
                     }
                 }
-                bootHtml += `<span class="da">${hex16(currentAddr)}</span>  <span class="dm">${mnemonic.padEnd(20)}</span> <span class="db">; ${bytesHex}</span>\n`;
+                bootHtml += `<span class="da">${fmtAddrCol(currentAddr)}</span>  <span class="dm">${mnemonic.padEnd(20)}</span> <span class="db">; ${bytesHex}</span>\n`;
                 instrCount++;
                 offset += instrLen;
                 // Stop after unconditional JP or JR (not conditional)
@@ -1243,7 +1253,11 @@ export function initExplorerViews(xp) {
 
                 let detail = '';
                 if (file.plus3Type === 3 && file.loadAddress !== undefined) {
-                    detail = `${file.loadAddress} ($${hex16(file.loadAddress)})`;
+                    // "1234 ($04D2)" gives the value both ways; in decimal that is the same
+                    // number twice, so the pair collapses to one.
+                    detail = fmtAddr(file.loadAddress) === String(file.loadAddress)
+                        ? `${file.loadAddress}`
+                        : `${file.loadAddress} ($${hex16(file.loadAddress)})`;
                 } else if (file.plus3Type === 0 && file.autostart !== undefined && file.autostart < 32768) {
                     detail = 'LINE ' + file.autostart;
                 }
@@ -1475,7 +1489,7 @@ export function initExplorerViews(xp) {
             if (block.headerTypeId === 3) {
                 document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
                 xp.explorerDisasmSource.value = idx.toString();
-                xp.explorerDisasmAddr.value = hex16(block.startAddress);
+                xp.explorerDisasmAddr.value = fmtAddr(block.startAddress);
                 xp.explorerDisasmLen.value = Math.min(block.fileLength, 4096);
                 explorerRenderDisasm();
                 return;
@@ -1529,7 +1543,7 @@ export function initExplorerViews(xp) {
             if (file.ext === 'C') {
                 document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
                 xp.explorerDisasmSource.value = idx.toString();
-                xp.explorerDisasmAddr.value = hex16(file.startAddress);
+                xp.explorerDisasmAddr.value = fmtAddr(file.startAddress);
                 xp.explorerDisasmLen.value = Math.min(file.length, 4096);
                 explorerRenderDisasm();
                 return;
@@ -1576,7 +1590,7 @@ export function initExplorerViews(xp) {
             if (file.ext === 'C') {
                 document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
                 xp.explorerDisasmSource.value = idx.toString();
-                xp.explorerDisasmAddr.value = hex16(file.startAddr);
+                xp.explorerDisasmAddr.value = fmtAddr(file.startAddr);
                 xp.explorerDisasmLen.value = Math.min(file.length, 4096);
                 explorerRenderDisasm();
                 return;
@@ -1617,7 +1631,7 @@ export function initExplorerViews(xp) {
             if (file.type === 'B') {
                 document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
                 xp.explorerDisasmSource.value = idx.toString();
-                xp.explorerDisasmAddr.value = hex16(file.startAddr);
+                xp.explorerDisasmAddr.value = fmtAddr(file.startAddr);
                 xp.explorerDisasmLen.value = Math.min(file.length, 4096);
                 explorerRenderDisasm();
                 return;
@@ -1664,7 +1678,7 @@ export function initExplorerViews(xp) {
             if (file.plus3Type === 3 && file.loadAddress !== undefined) {
                 document.querySelector('.explorer-subtab[data-subtab="disasm"]').click();
                 xp.explorerDisasmSource.value = idx.toString();
-                xp.explorerDisasmAddr.value = hex16(file.loadAddress);
+                xp.explorerDisasmAddr.value = fmtAddr(file.loadAddress);
                 xp.explorerDisasmLen.value = Math.min(file.size, 4096);
                 explorerRenderDisasm();
                 return;
@@ -1696,7 +1710,7 @@ export function initExplorerViews(xp) {
             for (let i = 0; i < xp.explorerBlocks.length; i++) {
                 const block = xp.explorerBlocks[i];
                 if (block.blockType === 'header' && block.headerType === 3) {
-                    disasmOpts.push(`<option value="${i}">Block ${i + 1}: ${block.name} @ ${hex16(block.startAddress)}</option>`);
+                    disasmOpts.push(`<option value="${i}">Block ${i + 1}: ${block.name} @ ${fmtAddr(block.startAddress)}</option>`);
                 }
             }
             for (let i = 0; i < xp.explorerBlocks.length; i++) {
@@ -1704,7 +1718,7 @@ export function initExplorerViews(xp) {
                 if (block.blockType === 'data') {
                     const prevBlock = i > 0 ? xp.explorerBlocks[i - 1] : null;
                     const name = prevBlock && prevBlock.blockType === 'header' ? prevBlock.name : `Block ${i + 1}`;
-                    const addr = prevBlock && prevBlock.startAddress !== undefined ? ` @ ${hex16(prevBlock.startAddress)}` : '';
+                    const addr = prevBlock && prevBlock.startAddress !== undefined ? ` @ ${fmtAddr(prevBlock.startAddress)}` : '';
                     if (!prevBlock || prevBlock.headerType !== 3) {
                         disasmOpts.push(`<option value="data:${i}">${name} data${addr} (${block.length} bytes)</option>`);
                     }
@@ -1732,7 +1746,7 @@ export function initExplorerViews(xp) {
                 const block = xp.explorerBlocks[i];
                 if ((block.id === 0x10 || block.id === 0x11) && block.headerTypeId === 3) {
                     // Bytes header — disasm source
-                    disasmOpts.push(`<option value="${i}">Block ${i + 1}: ${block.fileName} @ ${hex16(block.startAddress)}</option>`);
+                    disasmOpts.push(`<option value="${i}">Block ${i + 1}: ${block.fileName} @ ${fmtAddr(block.startAddress)}</option>`);
                 }
             }
             for (let i = 0; i < xp.explorerBlocks.length; i++) {
@@ -1741,7 +1755,7 @@ export function initExplorerViews(xp) {
                     // Data block — disasm + hex source
                     const prevBlock = i > 0 ? xp.explorerBlocks[i - 1] : null;
                     const name = prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.headerType ? prevBlock.fileName : `Block ${i + 1}`;
-                    const addr = prevBlock && prevBlock.startAddress !== undefined ? ` @ ${hex16(prevBlock.startAddress)}` : '';
+                    const addr = prevBlock && prevBlock.startAddress !== undefined ? ` @ ${fmtAddr(prevBlock.startAddress)}` : '';
                     if (!prevBlock || prevBlock.headerTypeId !== 3) {
                         disasmOpts.push(`<option value="data:${i}">${name} data${addr} (${block.dataLength} bytes)</option>`);
                     }
@@ -1766,9 +1780,9 @@ export function initExplorerViews(xp) {
                     basicSources.push(i.toString());
                     disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
                 } else if (file.ext === 'C') {
-                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddress)}</option>`);
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${fmtAddr(file.startAddress)}</option>`);
                 } else if (file.ext === 'D') {
-                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddress)}</option>`);
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${fmtAddr(file.startAddress)}</option>`);
                 }
                 hexOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
             }
@@ -1796,7 +1810,7 @@ export function initExplorerViews(xp) {
                     basicSources.push(i.toString());
                     disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
                 } else if (file.ext === 'C') {
-                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddr)} (${file.length} bytes)</option>`);
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${fmtAddr(file.startAddr)} (${file.length} bytes)</option>`);
                 } else {
                     disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
                 }
@@ -1813,7 +1827,7 @@ export function initExplorerViews(xp) {
                     basicSources.push(i.toString());
                     disasmOpts.push(`<option value="basic:${i}">${displayName} (BASIC @ 5CCB)</option>`);
                 } else if (file.type === 'B') {
-                    disasmOpts.push(`<option value="${i}">${displayName} @ ${hex16(file.startAddr)} (${file.length} bytes)</option>`);
+                    disasmOpts.push(`<option value="${i}">${displayName} @ ${fmtAddr(file.startAddr)} (${file.length} bytes)</option>`);
                 } else {
                     disasmOpts.push(`<option value="${i}">${displayName} (${file.length} bytes)</option>`);
                 }
@@ -1827,7 +1841,7 @@ export function initExplorerViews(xp) {
                     basicOpts.push(`<option value="0">${trimName}.${f.ext}</option>`);
                     basicSources.push('0');
                 }
-                disasmOpts.push(`<option value="0">${trimName}.${f.ext} @ ${hex16(f.startAddress)}</option>`);
+                disasmOpts.push(`<option value="0">${trimName}.${f.ext} @ ${fmtAddr(f.startAddress)}</option>`);
                 hexOpts.push(`<option value="0">${trimName}.${f.ext} (${f.length} bytes)</option>`);
             }
         } else if (xp.explorerParsed.type === 'dsk') {
@@ -1837,7 +1851,7 @@ export function initExplorerViews(xp) {
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 const displayName = file.name + (file.ext ? '.' + file.ext : '');
-                const addrStr = file.loadAddress !== undefined ? ` @ ${hex16(file.loadAddress)}` : '';
+                const addrStr = file.loadAddress !== undefined ? ` @ ${fmtAddr(file.loadAddress)}` : '';
                 if (file.plus3Type === 0) {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
@@ -1910,13 +1924,13 @@ export function initExplorerViews(xp) {
                 const blockIdx = parseInt(source.slice(5));
                 const prevBlock = blockIdx > 0 ? xp.explorerBlocks[blockIdx - 1] : null;
                 if (prevBlock && prevBlock.blockType === 'header' && prevBlock.startAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(prevBlock.startAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(prevBlock.startAddress);
                 }
             } else {
                 const blockIdx = parseInt(source);
                 const headerBlock = xp.explorerBlocks[blockIdx];
                 if (headerBlock && headerBlock.startAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(headerBlock.startAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(headerBlock.startAddress);
                 }
             }
         } else if (xp.explorerParsed.type === 'tzx') {
@@ -1924,13 +1938,13 @@ export function initExplorerViews(xp) {
                 const blockIdx = parseInt(source.slice(5));
                 const prevBlock = blockIdx > 0 ? xp.explorerBlocks[blockIdx - 1] : null;
                 if (prevBlock && (prevBlock.id === 0x10 || prevBlock.id === 0x11) && prevBlock.startAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(prevBlock.startAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(prevBlock.startAddress);
                 }
             } else {
                 const blockIdx = parseInt(source);
                 const headerBlock = xp.explorerBlocks[blockIdx];
                 if (headerBlock && headerBlock.startAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(headerBlock.startAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(headerBlock.startAddress);
                 }
             }
         } else if (xp.explorerParsed.type === 'trd' || xp.explorerParsed.type === 'scl' || xp.explorerParsed.type === 'mgt' || xp.explorerParsed.type === 'mdr') {
@@ -1940,7 +1954,7 @@ export function initExplorerViews(xp) {
                 const fileIdx = parseInt(source);
                 const file = xp.explorerParsed.files[fileIdx];
                 if (file && file.startAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(file.startAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(file.startAddress);
                 }
             }
         } else if (xp.explorerParsed.type === 'opd' || xp.explorerParsed.type === 'didaktik') {
@@ -1950,7 +1964,7 @@ export function initExplorerViews(xp) {
                 const fileIdx = parseInt(source);
                 const file = xp.explorerParsed.files[fileIdx];
                 if (file && file.startAddr !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(file.startAddr);
+                    xp.explorerDisasmAddr.value = fmtAddr(file.startAddr);
                 }
             }
         } else if (xp.explorerParsed.type === 'dsk') {
@@ -1960,7 +1974,7 @@ export function initExplorerViews(xp) {
                 const fileIdx = parseInt(source);
                 const file = xp.explorerParsed.files[fileIdx];
                 if (file && file.loadAddress !== undefined) {
-                    xp.explorerDisasmAddr.value = hex16(file.loadAddress);
+                    xp.explorerDisasmAddr.value = fmtAddr(file.loadAddress);
                 } else {
                     xp.explorerDisasmAddr.value = '0000';
                 }
@@ -1970,7 +1984,7 @@ export function initExplorerViews(xp) {
         } else if (source && source.startsWith('bank:')) {
             const bankNum = parseInt(source.slice(5));
             if (xp.explorerBankAddressMode === 'logical') {
-                xp.explorerDisasmAddr.value = hex16(xp.explorerGetBankLogicalAddr(bankNum));
+                xp.explorerDisasmAddr.value = fmtAddr(xp.explorerGetBankLogicalAddr(bankNum));
             } else {
                 xp.explorerDisasmAddr.value = '0000';
             }
@@ -1980,7 +1994,7 @@ export function initExplorerViews(xp) {
     });
 
     function explorerRenderDisasm() {
-        const addr = parseInt(xp.explorerDisasmAddr.value, 16) || 0;
+        const addr = parseAddr(xp.explorerDisasmAddr.value) || 0;
         const len = parseInt(xp.explorerDisasmLen.value, 10) || 256;
         const source = xp.explorerDisasmSource.value;
 
@@ -2028,7 +2042,7 @@ export function initExplorerViews(xp) {
                     const dataBlock = xp.explorerBlocks[blockIdx + 1];
                     data = dataBlock.data.slice(1, -1);
                     baseAddr = headerBlock.startAddress || 0;
-                    xp.explorerDisasmAddr.value = hex16(baseAddr);
+                    xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
                 }
             }
         } else if (source && xp.explorerParsed.type === 'tzx') {
@@ -2052,7 +2066,7 @@ export function initExplorerViews(xp) {
                     if (dataBlock && dataBlock.data) {
                         data = dataBlock.data.slice(1, -1);
                         baseAddr = headerBlock.startAddress || 0;
-                        xp.explorerDisasmAddr.value = hex16(baseAddr);
+                        xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
                     }
                 }
             }
@@ -2090,7 +2104,7 @@ export function initExplorerViews(xp) {
                         data = xp.explorerData.slice(file.offset, file.offset + fullSize);
                     }
                     baseAddr = file.startAddress || 0;
-                    xp.explorerDisasmAddr.value = hex16(baseAddr);
+                    xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
                 }
             }
         } else if (source && xp.explorerParsed.type === 'opd') {
@@ -2109,7 +2123,7 @@ export function initExplorerViews(xp) {
                     const raw = OPDLoader.extractFile(xp.explorerData, file);
                     data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
                     baseAddr = file.startAddr || 0;
-                    xp.explorerDisasmAddr.value = hex16(baseAddr);
+                    xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
                 }
             }
         } else if (source && xp.explorerParsed.type === 'didaktik') {
@@ -2119,14 +2133,14 @@ export function initExplorerViews(xp) {
                 const raw = DidaktikLoader.extractFile(xp.explorerData, file);
                 data = raw && file.length < raw.length ? raw.slice(0, file.length) : raw;
                 baseAddr = source.startsWith('basic:') ? 0x5CCB : (file.startAddr || 0);
-                if (!source.startsWith('basic:')) xp.explorerDisasmAddr.value = hex16(baseAddr);
+                if (!source.startsWith('basic:')) xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
             }
         } else if (source && xp.explorerParsed.type === 'hobeta') {
             const f = xp.explorerParsed.file;
             if (f) {
                 data = f.data;
                 baseAddr = f.startAddress;
-                xp.explorerDisasmAddr.value = hex16(baseAddr);
+                xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
             }
         } else if (source && xp.explorerParsed.type === 'dsk') {
             if (source === 'boot') {
@@ -2152,7 +2166,7 @@ export function initExplorerViews(xp) {
                         data = rawData ? rawData.slice(0, file.size) : rawData;
                     }
                     baseAddr = (file.loadAddress !== undefined) ? file.loadAddress : 0;
-                    xp.explorerDisasmAddr.value = hex16(baseAddr);
+                    xp.explorerDisasmAddr.value = fmtAddr(baseAddr);
                 }
             }
         } else if (!source && xp.explorerData) {
@@ -2187,7 +2201,7 @@ export function initExplorerViews(xp) {
 
             const result = disasm.disassemble(currentAddr);
             const instrLen = result.length || 1;
-            const bytesHex = result.bytes.map(b => hex8(b)).join(' ');
+            const bytesHex = result.bytes.map(b => fmtOpcode(b)).join(' ');
 
             let mnemonic = result.mnemonic || '???';
             const addrMatch = mnemonic.match(/([0-9A-F]{4})h/i);
@@ -2199,7 +2213,7 @@ export function initExplorerViews(xp) {
                 }
             }
 
-            html += `<span class="da">${hex16(currentAddr)}</span>  <span class="dm">${mnemonic.padEnd(20)}</span> <span class="db">; ${bytesHex}</span>\n`;
+            html += `<span class="da">${fmtAddrCol(currentAddr)}</span>  <span class="dm">${mnemonic.padEnd(20)}</span> <span class="db">; ${bytesHex}</span>\n`;
 
             if (isFlowBreak(mnemonic)) {
                 html += '\n';
@@ -2223,7 +2237,7 @@ export function initExplorerViews(xp) {
             // Set address/length defaults for bank
             const bankNum = parseInt(source.slice(5));
             if (xp.explorerBankAddressMode === 'logical') {
-                xp.explorerHexAddr.value = hex16(xp.explorerGetBankLogicalAddr(bankNum));
+                xp.explorerHexAddr.value = fmtAddr(xp.explorerGetBankLogicalAddr(bankNum));
             } else {
                 xp.explorerHexAddr.value = '0000';
             }
@@ -2240,7 +2254,7 @@ export function initExplorerViews(xp) {
         if (source && source.startsWith('bank:')) {
             const bankNum = parseInt(source.slice(5));
             if (xp.explorerBankAddressMode === 'logical') {
-                xp.explorerHexAddr.value = hex16(xp.explorerGetBankLogicalAddr(bankNum));
+                xp.explorerHexAddr.value = fmtAddr(xp.explorerGetBankLogicalAddr(bankNum));
             } else {
                 xp.explorerHexAddr.value = '0000';
             }
@@ -2256,7 +2270,7 @@ export function initExplorerViews(xp) {
         const bankData = xp.explorerExtractBank(bankNum);
         if (!bankData) return;
 
-        const addr = parseInt(xp.explorerHexAddr.value, 16) || 0;
+        const addr = parseAddr(xp.explorerHexAddr.value) || 0;
         const len = parseInt(xp.explorerHexLen.value, 10) || 16384;
         let startOffset, exportLen;
         if (xp.explorerBankAddressMode === 'logical') {
@@ -2293,7 +2307,7 @@ export function initExplorerViews(xp) {
             const bankData = xp.explorerExtractBank(bankNum);
             if (!bankData) return;
 
-            const addr = parseInt(xp.explorerHexAddr.value, 16) || 0;
+            const addr = parseAddr(xp.explorerHexAddr.value) || 0;
             let writeOffset;
             if (xp.explorerBankAddressMode === 'logical') {
                 const logicalBase = xp.explorerGetBankLogicalAddr(bankNum);
@@ -2490,7 +2504,7 @@ export function initExplorerViews(xp) {
     });
 
     function explorerRenderHexDump() {
-        const addr = parseInt(xp.explorerHexAddr.value, 16) || 0;
+        const addr = parseAddr(xp.explorerHexAddr.value) || 0;
         const len = parseInt(xp.explorerHexLen.value, 10) || 256;
         const source = xp.explorerHexSource.value;
 
@@ -2627,19 +2641,21 @@ export function initExplorerViews(xp) {
             let bytesHex = '';
             let ascii = '';
 
+            // A gap in the byte column costs whatever a byte costs in this base.
+            const gap = ' '.repeat(byteColWidth() + 1);
             for (let i = 0; i < 16; i++) {
                 if (offset + i < data.length) {
                     const b = data[offset + i];
-                    bytesHex += hex8(b) + ' ';
+                    bytesHex += fmtByteCol(b) + ' ';
                     ascii += (b >= 32 && b < 127) ? String.fromCharCode(b) : '.';
                 } else {
-                    bytesHex += '   ';
+                    bytesHex += gap;
                     ascii += ' ';
                 }
                 if (i === 7) bytesHex += ' ';
             }
 
-            html += `<span class="ha">${hex16(lineAddr)}</span>  <span class="hb">${bytesHex}</span>  <span class="hc">${escapeHtml(ascii)}</span>\n`;
+            html += `<span class="ha">${fmtAddrCol(lineAddr)}</span>  <span class="hb">${bytesHex}</span>  <span class="hc">${escapeHtml(ascii)}</span>\n`;
         }
 
         xp.explorerHexOutput.innerHTML = html || '<div class="explorer-empty">No data</div>';
@@ -2742,7 +2758,7 @@ export function initExplorerViews(xp) {
                     .map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.').join('');
             }
             return `<div class="explorer-find-hit" data-off="${h.addr}">` +
-                   `<span class="ha">${hex16(h.addr)}</span> ` +
+                   `<span class="ha">${fmtAddrCol(h.addr)}</span> ` +
                    `<span class="hc">${escapeHtml(preview)}</span>` +
                    (h.label ? ` <span class="he">${escapeHtml(h.label)}</span>` : '') +
                    `</div>`;
@@ -2762,7 +2778,7 @@ export function initExplorerViews(xp) {
             // The dump is addressed, the search is offset-based: two sources put
             // their first byte somewhere other than 0
             const addr = explorerFindBaseAddr() + off;
-            xp.explorerHexAddr.value = hex16(Math.max(0, addr - (addr % 16)));
+            xp.explorerHexAddr.value = fmtAddr(Math.max(0, addr - (addr % 16)));
             explorerRenderHexDump();
         });
     }
@@ -3114,7 +3130,7 @@ export function initExplorerViews(xp) {
             const vars = xp.explorerReadSnapshotWord(0x5C4B); // VARS sysvar
 
             if (prog < 0x4000 || prog >= 0xFFFF) {
-                xp.explorerBasicOutput.innerHTML = '<div class="explorer-empty">PROG system variable points outside RAM (0x' + prog.toString(16).padStart(4, '0') + ')</div>';
+                xp.explorerBasicOutput.innerHTML = '<div class="explorer-empty">PROG system variable points outside RAM (' + fmtAddrSigil(prog) + ')</div>';
                 return;
             }
 
@@ -3125,8 +3141,8 @@ export function initExplorerViews(xp) {
 
             data = xp.explorerReadSnapshotBlock(prog, basicLen);
             explorerBasicInfoHeader = `<div style="font-size:10px;color:var(--text-secondary);margin-bottom:8px">` +
-                `PROG=${hex16(prog)}h ` +
-                `VARS=${hex16(vars)}h ` +
+                `PROG=${fmtAddrH(prog)} ` +
+                `VARS=${fmtAddrH(vars)} ` +
                 `(${basicLen} bytes)</div>`;
         }
 
@@ -3140,7 +3156,7 @@ export function initExplorerViews(xp) {
             const lines = decodeBasicProgram(data);
 
             if (lines.length === 0) {
-                const hexBytes = Array.from(data.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                const hexBytes = Array.from(data.slice(0, 16)).map(b => fmtByte(b)).join(' ');
                 xp.explorerBasicOutput.innerHTML = `<div class="explorer-empty">No BASIC lines found<br><span style="font-size:10px;color:var(--text-secondary)">First 16 bytes: ${hexBytes}</span></div>`;
                 xp.explorerBasicRawData = null;
                 return;
@@ -3305,10 +3321,23 @@ export function initExplorerViews(xp) {
             xp.explorerDisasmSource.value = foundSource;
         }
 
-        xp.explorerDisasmAddr.value = hex16(addr);
+        xp.explorerDisasmAddr.value = fmtAddr(addr);
         xp.explorerDisasmLen.value = 256;
 
         explorerRenderDisasm();
+    });
+
+    // The views hold rendered text, so they have to be drawn again when the switch
+    // is thrown -- otherwise the dump stays in the base it happened to be built in
+    // until something else reloads it. Only what is actually on screen: rendering
+    // a hidden panel would read boxes belonging to a file that is no longer open.
+    onNumberBaseChange(() => {
+        // Only a view that has already drawn something: an empty one has no file
+        // behind it, and rendering it would read boxes belonging to nothing.
+        const drawn = (el) => el && el.textContent && el.textContent.trim().length > 0
+                              && !el.querySelector('.explorer-empty');
+        if (drawn(xp.explorerHexOutput)) explorerRenderHexDump();
+        if (drawn(xp.explorerDisasmOutput)) explorerRenderDisasm();
     });
 
     return {

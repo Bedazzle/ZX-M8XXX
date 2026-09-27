@@ -10,15 +10,21 @@ const ExpressionParser = {
     pos: 0,
     symbols: null,      // Symbol table for label resolution
     currentAddress: 0,  // $ value
-    sectionStart: 0,    // $$ value
+
+    // What only the assembler knows, injected rather than imported so the parser
+    // stays testable on its own:
+    //   physical   the output address while inside DISP ($$$), null outside it
+    //   pageOf(a)  the memory page address `a` falls in, via the DEVICE slot map
+    //   readByte(a) reads assembled memory for {x} / {b x}, or null with no DEVICE
+    ctx: null,
 
     // Parse and evaluate expression from tokens
-    evaluate(tokens, symbols = {}, currentAddress = 0, sectionStart = 0) {
+    evaluate(tokens, symbols = {}, currentAddress = 0, ctx = null) {
         this.tokens = tokens;
         this.pos = 0;
         this.symbols = symbols;
         this.currentAddress = currentAddress;
-        this.sectionStart = sectionStart;
+        this.ctx = ctx;
 
         if (tokens.length === 0) {
             return { value: 0, undefined: true };
@@ -428,6 +434,36 @@ const ExpressionParser = {
             return { value: this.currentAddress, undefined: false };
         }
 
+        // {x} reads a WORD out of the assembled image, {b x} a BYTE. Only
+        // meaningful in virtual device mode -- with no DEVICE there is no image to
+        // read, and a braced operand there is the legacy STRUCT wrapper instead
+        // (see Assembler.evaluate), so this primary is never reached.
+        if (this.check(TokenType.LBRACE) && this.ctx && this.ctx.readByte) {
+            this.advance();
+            let size = 2;
+            const t = this.peek();
+            // "b" is the size keyword only when something follows it: {b} on its
+            // own is a word read of a label called b.
+            if (t && t.type === TokenType.IDENTIFIER && /^b$/i.test(t.value) &&
+                this.peek(1) && this.peek(1).type !== TokenType.RBRACE) {
+                this.advance();
+                size = 1;
+            }
+            const addr = this.parseLogicalOr();
+            if (!this.match(TokenType.RBRACE)) {
+                ErrorCollector.error("Expected '}'");
+            }
+            if (addr.undefined) {
+                return { value: 0, undefined: true, symbol: addr.symbol };
+            }
+            const a = addr.value & 0xFFFF;
+            const read = this.ctx.readByte;
+            const value = size === 1
+                ? read(a) & 0xFF
+                : ((read(a) & 0xFF) | ((read((a + 1) & 0xFFFF) & 0xFF) << 8));
+            return { value, undefined: false };
+        }
+
         // Identifier - label or symbol
         if (this.check(TokenType.IDENTIFIER)) {
             const token = this.advance();
@@ -445,6 +481,30 @@ const ExpressionParser = {
                 }
             }
 
+            // sjasmplus sigils: $$ page, $$$ physical address, $$$$ physical page.
+            // The lexer glues any following name on, so this is one token.
+            let sigil = 0;
+            if (name.charCodeAt(0) === 36 /* $ */) {
+                const m = /^(\$+)([\s\S]*)$/.exec(name);
+                sigil = m[1].length;
+                name = m[2];
+                if (name === '') {
+                    // $$ is to $ what $$lab is to lab, so it goes through the same
+                    // applySigil as the rest. Until v1.0.0 it meant the last ORG
+                    // instead -- NASM's "section start", which this engine inherited
+                    // from the standalone sjasmplus-js it grew out of.
+                    if (sigil === 2) {
+                        return { value: this.applySigil(2, this.currentAddress, this.currentAddress),
+                                 undefined: false };
+                    }
+                    // $$$ / $$$$ -- the address the bytes are really going to, and
+                    // its page. Outside DISP that is just the program counter.
+                    const phys = (this.ctx && this.ctx.physical != null)
+                        ? this.ctx.physical : this.currentAddress;
+                    return { value: this.applySigil(sigil, phys & 0xFFFF, phys & 0xFFFF), undefined: false };
+                }
+            }
+
             // Handle @ prefix (absolute reference - skip module prefix)
             let isAbsolute = false;
             if (name.startsWith('@') && name.length > 1) {
@@ -452,71 +512,13 @@ const ExpressionParser = {
                 isAbsolute = true;
             }
 
-            // $$ - section start
-            if (name === '$$') {
-                return { value: this.sectionStart, undefined: false };
+            if (sigil) {
+                const sym = this.resolveName(name, isAbsolute, token);
+                if (sym.undefined) return sym;
+                const phys = (sym.physical != null) ? sym.physical : sym.value;
+                return { value: this.applySigil(sigil, sym.value, phys), undefined: false };
             }
-
-            // Check for temp label reference (1B, 1F, 2B, 2F, etc.)
-            const tempMatch = /^(\d+)([BF])$/i.exec(name);
-            if (tempMatch) {
-                const result = SymbolTable.parseTemp(name, this.currentAddress, token.line);
-                if (result) {
-                    return result;
-                }
-                return { value: 0, undefined: true };
-            }
-
-            // Resolve via module scope: innermost MODULE prefix → outer → global
-            // (depth 0 = the raw name, i.e. global or an already-qualified name).
-            // A module-local symbol shadows an outer/global one of the same name
-            // (matching sjasmplus). Undefined forward-reference placeholders are
-            // skipped so the walk keeps looking outward for a DEFINED symbol; a
-            // genuine forward ref (only placeholders exist) stays undefined.
-            // @-absolute and .local names skip the prefix walk.
-            if (this.symbols) {
-                const mods = (!isAbsolute && !name.startsWith('.') &&
-                    typeof SymbolTable !== 'undefined' && SymbolTable.modules) ? SymbolTable.modules : [];
-                let pendingUndef = null;
-                for (let depth = mods.length; depth >= 0; depth--) {
-                    const fn = (depth > 0 ? mods.slice(0, depth).join('.') + '.' : '') + name;
-                    if (!(fn in this.symbols)) continue;
-                    const sym = this.symbols[fn];
-                    const isUndef = (typeof sym === 'object') && (sym.undefined || false);
-                    if (isUndef) { if (pendingUndef === null) pendingUndef = fn; continue; }
-                    if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[fn]) {
-                        SymbolTable.symbols[fn].used = true;
-                    }
-                    return (typeof sym === 'object') ? { value: sym.value, undefined: false } : { value: sym, undefined: false };
-                }
-                if (pendingUndef !== null) {
-                    if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[pendingUndef]) {
-                        SymbolTable.symbols[pendingUndef].used = true;
-                    }
-                    return { value: 0, undefined: true, symbol: name };
-                }
-            }
-
-            // For local labels (starting with . only), try resolving with local prefix
-            if (name.startsWith('.') &&
-                typeof SymbolTable !== 'undefined' && SymbolTable.localPrefix) {
-                const fullName = SymbolTable.localPrefix + name;
-                if (this.symbols && fullName in this.symbols) {
-                    const sym = this.symbols[fullName];
-                    // Mark as used in the actual SymbolTable
-                    if (SymbolTable.symbols && SymbolTable.symbols[fullName]) {
-                        SymbolTable.symbols[fullName].used = true;
-                    }
-                    if (typeof sym === 'object') {
-                        return { value: sym.value, undefined: sym.undefined || false };
-                    }
-                    return { value: sym, undefined: false };
-                }
-            }
-
-            // Undefined symbol — register as forward reference so checkUndefined() can catch it
-            SymbolTable.reference(name, ErrorCollector.currentLine, ErrorCollector.currentFile);
-            return { value: 0, undefined: true, symbol: name };
+            return this.resolveName(name, isAbsolute, token);
         }
 
         // If we get here, unexpected token — or nothing at all, which means the
@@ -529,15 +531,98 @@ const ExpressionParser = {
         }
 
         return { value: 0, undefined: true };
+    },
+
+    // $$name -> page of the logical address, $$$name -> the physical address,
+    // $$$$name -> page of the physical address. Both pages go through the DEVICE
+    // slot map; with no device there are no pages, so 0.
+    applySigil(sigil, logical, physical) {
+        if (sigil === 3) return physical & 0xFFFF;
+        // Every page form is virtual-device-only: with no DEVICE there is no slot
+        // map and so no page to name. Say so rather than answering 0 -- returning a
+        // plausible number for a question that has no answer is how the old $$ went
+        // sixty releases without anyone noticing what it meant.
+        if (!this.ctx || !this.ctx.pageOf) {
+            ErrorCollector.error('Memory pages need a DEVICE (use DEVICE ZXSPECTRUM128 or similar)');
+            return 0;
+        }
+        return this.ctx.pageOf(sigil === 2 ? logical : physical) & 0xFF;
+    },
+
+    // The symbol lookup, split out so a sigil can wrap it without duplicating the
+    // module/local/forward-reference walk below.
+    resolveName(name, isAbsolute, token) {
+        // Check for temp label reference (1B, 1F, 2B, 2F, etc.)
+        const tempMatch = /^(\d+)([BF])$/i.exec(name);
+        if (tempMatch) {
+            const result = SymbolTable.parseTemp(name, this.currentAddress, token.line);
+            if (result) {
+                return result;
+            }
+            return { value: 0, undefined: true };
+        }
+
+        // Resolve via module scope: innermost MODULE prefix → outer → global
+        // (depth 0 = the raw name, i.e. global or an already-qualified name).
+        // A module-local symbol shadows an outer/global one of the same name
+        // (matching sjasmplus). Undefined forward-reference placeholders are
+        // skipped so the walk keeps looking outward for a DEFINED symbol; a
+        // genuine forward ref (only placeholders exist) stays undefined.
+        // @-absolute and .local names skip the prefix walk.
+        if (this.symbols) {
+            const mods = (!isAbsolute && !name.startsWith('.') &&
+                typeof SymbolTable !== 'undefined' && SymbolTable.modules) ? SymbolTable.modules : [];
+            let pendingUndef = null;
+            for (let depth = mods.length; depth >= 0; depth--) {
+                const fn = (depth > 0 ? mods.slice(0, depth).join('.') + '.' : '') + name;
+                if (!(fn in this.symbols)) continue;
+                const sym = this.symbols[fn];
+                const isUndef = (typeof sym === 'object') && (sym.undefined || false);
+                if (isUndef) { if (pendingUndef === null) pendingUndef = fn; continue; }
+                if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[fn]) {
+                    SymbolTable.symbols[fn].used = true;
+                }
+                return (typeof sym === 'object')
+                    ? { value: sym.value, undefined: false, physical: sym.physical }
+                    : { value: sym, undefined: false };
+            }
+            if (pendingUndef !== null) {
+                if (typeof SymbolTable !== 'undefined' && SymbolTable.symbols && SymbolTable.symbols[pendingUndef]) {
+                    SymbolTable.symbols[pendingUndef].used = true;
+                }
+                return { value: 0, undefined: true, symbol: name };
+            }
+        }
+
+        // For local labels (starting with . only), try resolving with local prefix
+        if (name.startsWith('.') &&
+            typeof SymbolTable !== 'undefined' && SymbolTable.localPrefix) {
+            const fullName = SymbolTable.localPrefix + name;
+            if (this.symbols && fullName in this.symbols) {
+                const sym = this.symbols[fullName];
+                // Mark as used in the actual SymbolTable
+                if (SymbolTable.symbols && SymbolTable.symbols[fullName]) {
+                    SymbolTable.symbols[fullName].used = true;
+                }
+                if (typeof sym === 'object') {
+                    return { value: sym.value, undefined: sym.undefined || false, physical: sym.physical };
+                }
+                return { value: sym, undefined: false };
+            }
+        }
+
+        // Undefined symbol — register as forward reference so checkUndefined() can catch it
+        SymbolTable.reference(name, ErrorCollector.currentLine, ErrorCollector.currentFile);
+        return { value: 0, undefined: true, symbol: name };
     }
 };
 
 // Helper function to parse expression from source string
-export function parseExpression(source, symbols = {}, currentAddress = 0, sectionStart = 0) {
+export function parseExpression(source, symbols = {}, currentAddress = 0, ctx = null) {
     const lexer = new Lexer(source);
     const tokens = lexer.tokenize().filter(t =>
         t.type !== TokenType.NEWLINE && t.type !== TokenType.EOF
     );
-    return ExpressionParser.evaluate(tokens, symbols, currentAddress, sectionStart);
+    return ExpressionParser.evaluate(tokens, symbols, currentAddress, ctx);
 }
 

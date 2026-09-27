@@ -18,7 +18,7 @@
                                 <option value="memdump">Memory</option>
                             </select>
                             <div class="memory-controls left-disasm-controls">
-                                <input type="text" id="disasmAddress" placeholder="0000" maxlength="4" value="" title="Address (hex) — press Enter to go">
+                                <input type="text" id="disasmAddress" data-hint-base="addr" placeholder="{$0000}" maxlength="5" value="" title="Address — press Enter to go. {BASE} unless you write $ 0x # or a trailing h, which always mean hex">
                                 <button id="btnDisasmPC" title="Go to current PC">PC</button>
                                 <button id="btnDisasmPgUp" title="Navigate Back (Alt+Left)">◀</button>
                                 <button id="btnDisasmPgDn" title="Navigate Forward (Alt+Right)">▶</button>
@@ -38,12 +38,13 @@
                                         <label title="Show comments carried over from an assembled source (added by Inject / Debug)"><input type="checkbox" id="chkAsmComments" checked> Assembled comments</label>
                                         <label title="Show comments you typed in the debugger"><input type="checkbox" id="chkUserComments" checked> My comments</label>
                                         <label title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> Comment on each step</label>
+                                        <label title="Allow writing below $4000 — needed to assemble over a ROM row or edit a ROM byte. Same switch as the one by the hex dump"><input type="checkbox" id="chkRomEditDisasm"> Edit ROM</label>
                                         <label title="Maximum T-states for Step Over (CALL/RST/DJNZ) before stopping">Step Over limit: <input type="text" id="stepOverMaxTstates" value="80000" style="width: 70px; font-family: monospace; font-size: 11px;" maxlength="10"></label>
                                     </div>
                                 </span>
                             </div>
                             <div class="memory-controls left-memdump-controls" style="display:none">
-                                <input type="text" id="leftMemAddress" placeholder="0000" maxlength="4" value="0000" title="Address (hex) — press Enter to go">
+                                <input type="text" id="leftMemAddress" data-hint-base="addr" placeholder="{$0000}" maxlength="5" value="0000" title="Address — press Enter to go. {BASE} unless you write $ 0x # or a trailing h, which always mean hex">
                                 <button id="btnLeftMemPC" title="Go to PC">PC</button>
                                 <button id="btnLeftMemSP" title="Go to SP">SP</button>
                                 <button id="btnLeftMemHL" title="Go to HL">HL</button>
@@ -139,7 +140,7 @@
                                     <option value="calc">Calculator</option>
                                 </select>
                                 <div class="memory-controls right-memdump-controls">
-                                    <input type="text" id="memoryAddress" placeholder="0000" maxlength="4" value="0000" title="Address (hex) — press Enter to go">
+                                    <input type="text" id="memoryAddress" data-hint-base="addr" placeholder="{$0000}" maxlength="5" value="0000" title="Address — press Enter to go. {BASE} unless you write $ 0x # or a trailing h, which always mean hex">
                                     <button id="btnMemoryPC" title="Go to PC">PC</button>
                                     <button id="btnMemorySP" title="Go to SP">SP</button>
                                     <button id="btnMemoryHL" title="Go to HL">HL</button>
@@ -150,7 +151,7 @@
                                     <label class="memory-option" title="Allow editing ROM area"><input type="checkbox" id="chkRomEdit">Edit ROM</label>
                                 </div>
                                 <div class="memory-controls right-disasm-controls" style="display:none">
-                                    <input type="text" id="rightDisasmAddress" placeholder="0000" maxlength="4" value="" title="Address (hex) — press Enter to go">
+                                    <input type="text" id="rightDisasmAddress" data-hint-base="addr" placeholder="{$0000}" maxlength="5" value="" title="Address — press Enter to go. {BASE} unless you write $ 0x # or a trailing h, which always mean hex">
                                     <button id="btnRightDisasmPC" title="Go to current PC">PC</button>
                                     <button id="btnRightDisasmPgUp" title="Navigate Back">◀</button>
                                     <button id="btnRightDisasmPgDn" title="Navigate Forward">▶</button>
@@ -339,7 +340,7 @@
                                 <option value="screen_bitmap">Write Bitmap</option>
                                 <option value="screen_attr">Write Attr</option>
                             </select>
-                            <input type="text" id="triggerAddrInput" placeholder="ADDR" maxlength="15" title="Examples: 4000, 4000-4FFF, 5:C000, FE&FF"><label id="triggerPxLabel" class="hidden" style="font-size:11px;margin:0 5px 0 0;cursor:pointer;display:inline-flex;align-items:center;gap:1px;"><input type="checkbox" id="triggerPxMode" style="margin:0;padding:0;width:12px;height:12px;">px</label>
+                            <input type="text" id="triggerAddrInput" placeholder="ADDR" maxlength="15" data-hint-base="addr" title="Examples: {$4000}, {$4000}-{$4FFF}, 5:{$C000}, {$FE}&amp;{$FF} — read as {BASE}. A port follows the same switch; $ 0x # or a trailing h always mean hex"><label id="triggerPxLabel" class="hidden" style="font-size:11px;margin:0 5px 0 0;cursor:pointer;display:inline-flex;align-items:center;gap:1px;"><input type="checkbox" id="triggerPxMode" style="margin:0;padding:0;width:12px;height:12px;">px</label>
                             <input type="text" id="triggerCondInput" placeholder="if..." maxlength="30" title="Condition: A==0, val==FF, port&FE==FE">
                             <input type="number" id="triggerSkipInput" placeholder="skip" min="0" value="0" title="Skip count: number of hits to skip before breaking" style="width: 45px;">
                             <select id="triggerScreenSelect" class="hidden" title="Screen target" style="width: auto;">
@@ -383,7 +384,7 @@
                     <!-- Watches Panel -->
                     <div class="panel-tab-content" id="panel-watches">
                         <div class="watches-controls">
-                            <input type="text" id="watchAddrInput" placeholder="[P:]Addr" maxlength="7" title="Address (hex), e.g. 4000 or 5:C000">
+                            <input type="text" id="watchAddrInput" placeholder="[P:]Addr" maxlength="8" data-hint-base="addr" title="Address, e.g. {$4000} or 5:{$C000} — read as {BASE}; $ 0x # or a trailing h always mean hex">
                             <input type="text" id="watchNameInput" placeholder="Name" maxlength="16" title="Watch name (optional)">
                             <button id="btnWatchAdd" title="Add memory watch (max 10)">+</button>
                             <button id="btnWatchClear" title="Clear all watches">Clear</button>
@@ -405,8 +406,8 @@
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Analyze:</span>
-                                <input type="text" id="cfaExtraEntries" placeholder="Extra entries (hex, comma-sep)"
-                                       style="width:160px" title="Additional entry point addresses, e.g. 8000,9000">
+                                <input type="text" id="cfaExtraEntries" data-hint-base="addr" placeholder="Extra entries, comma-sep"
+                                       style="width:160px" title="Additional entry point addresses, comma separated — read as {BASE}, e.g. {$8000},{$9000}">
                                 <button id="btnCfaRun" title="Static code-flow analysis from entry points">Flow</button>
                                 <label class="search-option" title="Skip ROM area (0000-3FFF)">
                                     <input type="checkbox" id="chkCfaSkipRom" checked> Skip ROM
@@ -457,7 +458,7 @@
                                 </select>
                                 <button id="btnPokeSearch" title="Search candidates">Search</button>
                                 <button id="btnPokeReset" title="Reset search">Reset</button>
-                                <input type="text" id="pokeFilterValue" placeholder="Val" maxlength="2" style="width:28px;margin-left:4px" title="Hex value to filter by last snap">
+                                <input type="text" id="pokeFilterValue" data-hint-num="value" placeholder="Val" maxlength="2" style="width:28px;margin-left:4px" data-hint-base="value" title="Value ({BASE}) to filter by last snap">
                                 <button id="btnPokeFilter" title="Filter candidates: keep only addresses where last snap equals value">Filter</button>
                                 <label title="Skip screen memory (4000-5BFF)" style="font-size:11px;color:var(--text-secondary);margin-left:5px;cursor:pointer"><input type="checkbox" id="pokeSkipScreen" checked>Skip screen</label>
                                 <button id="btnPokeTrace" title="Trace memory writes for blacklist">Trace</button>
@@ -510,15 +511,15 @@
                             <div class="tools-group-label">monitors</div>
                             <div class="tools-row">
                                 <span class="search-label">Write mon:</span>
-                                <input type="text" id="writeMonAddr" placeholder="addr" maxlength="6" style="width:50px" title="Hex address to monitor for writes">
+                                <input type="text" id="writeMonAddr" data-hint-num="addr" placeholder="addr" maxlength="6" style="width:50px" data-hint-base="addr" title="Address ({BASE}) to monitor for writes">
                                 <button id="btnWriteMon" title="Monitor writes to address — play game, trigger collision, then stop">Monitor</button>
                                 <span id="writeMonStatus" class="poke-status"></span>
                                 <div id="writeMonResults" class="write-mon-results"></div>
                             </div>
                             <div class="tools-row">
                                 <span class="search-label">Read mon:</span>
-                                <input type="text" id="readMonAddr" placeholder="addr" maxlength="6" style="width:50px"
-                                    title="Hex address to monitor for reads (find collision detection)">
+                                <input type="text" id="readMonAddr" data-hint-num="addr" placeholder="addr" maxlength="6" style="width:50px"
+                                    data-hint-base="addr" title="Address ({BASE}) to monitor for reads (find collision detection)">
                                 <button id="btnReadMon" title="Monitor reads from address — find code that checks this value. Results include backward slice: traces where comparison registers were loaded.">Monitor</button>
                                 <span id="readMonStatus" class="poke-status"></span>
                                 <div id="readMonResults" class="write-mon-results"></div>
@@ -591,13 +592,13 @@
                                 <button id="btnCpFilter" title="Apply filter">Apply</button>
                                 <button id="btnCpFilterWrites" title="Preset: DEC|SUB|SBC|CP" style="font-size:10px;padding:2px 4px">Writes</button>
                                 <button id="btnCpFilterBranch" title="Preset: conditional branches" style="font-size:10px;padding:2px 4px">Branch</button>
-                                <input type="text" id="cpFilterFrom" placeholder="from" maxlength="4"
+                                <input type="text" id="cpFilterFrom" data-hint-num="addr" placeholder="from" maxlength="4"
                                     style="width:36px;margin-left:6px"
-                                    title="Start address (hex)">
+                                    data-hint-base="addr" title="Start address ({BASE})">
                                 <span style="color:var(--text-secondary);font-size:11px">&ndash;</span>
-                                <input type="text" id="cpFilterTo" placeholder="to" maxlength="4"
+                                <input type="text" id="cpFilterTo" data-hint-num="addr" placeholder="to" maxlength="4"
                                     style="width:36px"
-                                    title="End address (hex)">
+                                    data-hint-base="addr" title="End address ({BASE})">
                                 <span id="cpFilterStatus" class="automap-stats"></span>
                             </div>
                             <div class="cp-results" id="cpResults"></div>
@@ -605,7 +606,7 @@
                                 <span class="search-label" title="Run the same frames twice with one thing changed, and find the first instruction at which the two runs part company. The slots above answer what a run reached; this answers where they diverged">Diff run:</span>
                                 <label class="search-option" title="Frames to run each time">frames <input type="number" id="drFrames" value="25" min="1" max="500" style="width:42px"></label>
                                 <input type="text" id="drChange" placeholder="8000=1, C000=FF" style="width:110px"
-                                       title="What to change before the second run: hex address=value, comma separated. Leave empty to check that the run is deterministic at all">
+                                       data-hint-base="addr" title="What to change before the second run: address=value in {BASE}, comma separated. Leave empty to check that the run is deterministic at all">
                                 <button id="btnDiffRun" title="Save the state, run it, restore, apply the change, run it again, and compare">Run</button>
                                 <button id="btnDiffExport" title="Export the comparison as text">Export</button>
                                 <span id="drStatus" class="automap-stats"></span>
@@ -621,8 +622,8 @@
                                     <option value="IX" selected>IX</option>
                                     <option value="IY">IY</option>
                                 </select>
-                                <input type="text" id="smBaseAddr" placeholder="addr" maxlength="4" style="width:40px"
-                                    title="Base address (hex) — used when Base is 'Fixed'">
+                                <input type="text" id="smBaseAddr" data-hint-num="addr" placeholder="addr" maxlength="4" style="width:40px"
+                                    data-hint-base="addr" title="Base address ({BASE}) — used when Base is 'Fixed'">
                                 <span class="search-label">Size:</span>
                                 <input type="number" id="smMaxOffset" value="32" min="1" max="255" style="width:40px"
                                     title="Maximum offset to monitor (1-255)">

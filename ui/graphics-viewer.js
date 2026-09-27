@@ -2,6 +2,7 @@
 
 import { REGION_TYPES } from '../debug/managers.js';
 import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrH, parseAddr, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRegion, getAllRegions, getRAMPage, isRunning, showMessage, goToAddress, goToMemoryAddress, updateDebugger, openOcrExtractDialog }) {
     // DOM lookups
@@ -93,7 +94,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         gfxSelectedBank = parseInt(gfxBank.value);
         gfxBank.size = 1;
         gfxSpriteAddress = gfxSpriteAddress & gfxAddrMask();
-        gfxAddress.value = hex16(gfxSpriteAddress);
+        gfxAddress.value = fmtAddr(gfxSpriteAddress);
         updateGraphicsViewer();
     });
     gfxBank.addEventListener('mousedown', () => {
@@ -318,9 +319,9 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         }
 
         // Update info
-        const addrHex = hex16(gfxSpriteAddress);
+        const addrStr = fmtAddrH(gfxSpriteAddress);
         const bankStr = gfxSelectedBank >= 0 ? ` [Bank ${gfxSelectedBank}]` : '';
-        gfxInfo.textContent = `${addrHex}h: ${params.widthPx}x${params.heightRows}${bankStr}`;
+        gfxInfo.textContent = `${addrStr}: ${params.widthPx}x${params.heightRows}${bankStr}`;
     }
 
     function updateGfxSpinnerButtons() {
@@ -357,7 +358,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
 
     function gfxNavigate(delta) {
         gfxSpriteAddress = (gfxSpriteAddress + delta) & gfxAddrMask();
-        gfxAddress.value = hex16(gfxSpriteAddress);
+        gfxAddress.value = fmtAddr(gfxSpriteAddress);
         updateGraphicsViewer();
     }
 
@@ -453,8 +454,8 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
     // Address input
     gfxAddress.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            gfxSpriteAddress = (parseInt(gfxAddress.value, 16) || 0) & gfxAddrMask();
-            gfxAddress.value = hex16(gfxSpriteAddress);
+            gfxSpriteAddress = (parseAddr(gfxAddress.value) || 0) & gfxAddrMask();
+            gfxAddress.value = fmtAddr(gfxSpriteAddress);
             gfxViewAddress = gfxSpriteAddress;
             updateGraphicsViewer();
         }
@@ -476,7 +477,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         const step = params.charMode ? 1 : params.widthBytes;
         const delta = e.deltaY > 0 ? step : -step;
         gfxSpriteAddress = (gfxSpriteAddress + delta) & gfxAddrMask();
-        gfxAddress.value = hex16(gfxSpriteAddress);
+        gfxAddress.value = fmtAddr(gfxSpriteAddress);
         updateGraphicsViewer();
     }, { passive: false });
 
@@ -519,7 +520,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         const memInfo = getMemoryInfo();
         let addrStr;
         if (memInfo.machineType === '48k') {
-            addrStr = hex16(addr) + 'h';
+            addrStr = fmtAddrH(addr);
         } else {
             // 128K: show page:address
             let page;
@@ -528,7 +529,7 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
             else if (addr < 0xC000) page = '2';
             else page = memInfo.currentRamBank.toString();
             const offset = addr & 0x3FFF;
-            addrStr = page + ':' + hex16(offset) + 'h';
+            addrStr = page + ':' + fmtAddrH(offset);
         }
 
         // Show tooltip near cursor
@@ -863,6 +864,9 @@ export function initGraphicsViewer({ readMemory, getMemoryInfo, getRegion, addRe
         URL.revokeObjectURL(url);
         showMessage(`Exported ${graphicsRegions.length} sprites to ${filename}`);
     });
+
+    // Hex or decimal: the address box and the info line under the preview.
+    onNumberBaseChange(() => updateGraphicsViewer());
 
     return {
         updateGraphicsViewer,

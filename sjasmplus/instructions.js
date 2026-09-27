@@ -240,6 +240,12 @@ export const InstructionEncoder = {
         }
     },
 
+    // What Assembler.exprContext() builds, plus the $$ value: an instruction
+    // operand is an expression like any other, so `ld hl,$$$lab` and
+    // `ld a,{b $8000}` have to see the same DISP/DEVICE state a DW does. Set by
+    // the assembler before each encode; null when the encoder is driven directly.
+    exprContext: null,
+
     // Evaluate operand expression
     evalExpr(op, symbols, currentAddress) {
         // Remove parentheses if indirect
@@ -260,7 +266,7 @@ export const InstructionEncoder = {
             expr = idxMatch[1];
         }
 
-        return parseExpression(expr, symbols, currentAddress);
+        return parseExpression(expr, symbols, currentAddress, this.exprContext);
     },
 
     // Main encoder dispatch table

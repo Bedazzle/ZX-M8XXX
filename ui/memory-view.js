@@ -2,8 +2,8 @@
 // inline byte editor, mouse selection, scroll wheel
 // Extracted from index.html
 
-import { hex8, hex16 } from '../core/utils.js';
-import { REGION_TYPES } from '../debug/managers.js';
+import { fmtByte, parseByte, getValueBase, onNumberBaseChange } from '../core/addr-format.js';
+import { createMemDumpRenderer } from './mem-dump-render.js';
 
 export function initMemoryView({
     getSpectrum, getDisasm, regionManager,
@@ -11,6 +11,10 @@ export function initMemoryView({
     getMemorySnapshot, updateDebugger, getGoToMemoryAddress,
     MEMORY_LINES, LEFT_MEMORY_LINES, BYTES_PER_LINE
 }) {
+    // Both dumps draw their rows with this — see ui/mem-dump-render.js.
+    const { renderDump } = createMemDumpRenderer({
+        getSpectrum, getDisasm, regionManager, getMemorySnapshot
+    });
     // DOM elements
     const memoryView = document.getElementById('memoryView');
     const leftMemoryView = document.getElementById('leftMemoryView');
@@ -32,6 +36,8 @@ export function initMemoryView({
     let rightBytesPerLine = BYTES_PER_LINE;
     let leftBytesPerLine = BYTES_PER_LINE;
     let asciiCharWidth = 0;
+    let addrColWidth = 0;
+    let byteCellWidth = 0;
 
     function calcBytesPerLine(view, fixedExtra, current) {
         if (!view.clientWidth) return current;  // hidden view: keep last value
@@ -45,8 +51,31 @@ export function initMemoryView({
             asciiCharWidth = probe.getBoundingClientRect().width / 4 || 7;
             probe.remove();
         }
-        const avail = view.clientWidth - 36 - fixedExtra;  // minus address column + margins
-        const perByte = 18 + asciiCharWidth;
+        if (!addrColWidth) {
+            // .memory-addr is sized in ch and holds ADDR_COL_WIDTH characters, so it is
+            // the same box in hex and decimal. Measured, not assumed: it used to be a
+            // hard-coded 36 that stopped matching the CSS the moment the column grew.
+            const probe = document.createElement('span');
+            probe.className = 'memory-addr';
+            probe.style.position = 'absolute';
+            probe.style.visibility = 'hidden';
+            probe.textContent = '00000';
+            view.appendChild(probe);
+            addrColWidth = probe.getBoundingClientRect().width || 45;
+            probe.remove();
+        }
+        const avail = view.clientWidth - addrColWidth - fixedExtra;  // minus address column + margins
+        if (!byteCellWidth) {
+            const probe = document.createElement('span');
+            probe.className = 'memory-byte';
+            probe.style.position = 'absolute';
+            probe.style.visibility = 'hidden';
+            probe.textContent = '000';
+            view.appendChild(probe);
+            byteCellWidth = probe.getBoundingClientRect().width || 18;
+            probe.remove();
+        }
+        const perByte = byteCellWidth + asciiCharWidth;
         if (avail >= 32 * perByte) return 32;
         if (avail >= 16 * perByte) return 16;
         return 8;
@@ -54,92 +83,21 @@ export function initMemoryView({
 
     function updateMemoryView() {
         const spectrum = getSpectrum();
-        const memorySnapshot = getMemorySnapshot();
-        const disasm = getDisasm();
-        const memoryViewAddress = getMemoryViewAddress();
         if (!spectrum.memory || memoryEditingAddr !== null) return;
 
         rightBytesPerLine = calcBytesPerLine(memoryView, 20, rightBytesPerLine);
-        let html = '';
-        for (let line = 0; line < MEMORY_LINES; line++) {
-            const lineAddr = (memoryViewAddress + line * rightBytesPerLine) & 0xffff;
-
-            // Address
-            html += `<div class="memory-line"><span class="memory-addr" data-addr="${lineAddr}">${hex16(lineAddr)}</span>`;
-
-            // Hex bytes
-            html += '<span class="memory-hex">';
-            for (let i = 0; i < rightBytesPerLine; i++) {
-                const addr = (lineAddr + i) & 0xffff;
-                const byte = spectrum.memory.read(addr);
-                const changed = memorySnapshot && memorySnapshot[addr] !== byte;
-                let cls = changed ? 'memory-byte changed' : 'memory-byte';
-                // Check for breakpoints
-                if (spectrum.hasBreakpointAt(addr)) {
-                    cls += ' has-bp';
-                }
-                // Check for watchpoints
-                const wps = spectrum.getWatchpoints();
-                for (const wp of wps) {
-                    if (addr >= wp.start && addr <= wp.end) {
-                        if (wp.read && wp.write) cls += ' has-wp';
-                        else if (wp.read) cls += ' has-wp-r';
-                        else if (wp.write) cls += ' has-wp-w';
-                        break;
-                    }
-                }
-                // Check for memory regions
-                const region = regionManager.get(addr);
-                if (region && region.type !== REGION_TYPES.CODE) {
-                    cls += ` region-${region.type}`;
-                }
-                const lowByte = byte & 0x7F;
-                const isPrintableLow = lowByte >= 32 && lowByte < 127;
-                let asciiChar = '';
-                if (byte >= 32 && byte < 127) {
-                    asciiChar = ` '${String.fromCharCode(byte)}'`;
-                } else if ((byte & 0x80) && isPrintableLow) {
-                    asciiChar = ` '${String.fromCharCode(lowByte)}'+$80`;
-                }
-                let tip = `Addr: ${hex16(addr)} (${addr})\nValue: ${hex8(byte)} (${byte})${asciiChar}`;
-                if (region && region.type !== REGION_TYPES.CODE) {
-                    tip += `\nRegion: ${region.type}${region.comment ? ' - ' + region.comment : ''}`;
-                }
-                // Add disassembly (if disassembler available)
-                if (disasm) {
-                    const instr = disasm.disassemble(addr);
-                    const bytes = instr.bytes.map(b => hex8(b)).join(' ');
-                    tip += `\n${instr.mnemonic} [${bytes}]`;
-                }
-                html += `<span class="${cls}" data-addr="${addr}" title="${tip}">${hex8(byte)}</span>`;
-            }
-            html += '</span>';
-
-            // ASCII representation
-            html += '<span class="memory-ascii">';
-            const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            for (let i = 0; i < rightBytesPerLine; i++) {
-                const addr = (lineAddr + i) & 0xffff;
-                const byte = spectrum.memory.read(addr);
-                const isPrintable = byte >= 32 && byte < 127;
-                const char = isPrintable ? String.fromCharCode(byte) : byte === 0 ? '\u25A0' : '.';
-                const changed = memorySnapshot && memorySnapshot[addr] !== byte;
-                const asciiRegion = regionManager.get(addr);
-                let cls = isPrintable ? 'printable' : byte === 0 ? 'null-byte' : '';
-                if (changed) cls += ' changed';
-                if (asciiRegion && asciiRegion.type === REGION_TYPES.TEXT) {
-                    cls += ' region-text';
-                }
-                if (asciiSelectionStart !== null && addr >= asciiSelStart && addr <= asciiSelEnd) {
-                    cls += ' ascii-selected';
-                }
-                html += `<span class="${cls.trim()}" data-addr="${addr}">${char}</span>`;
-            }
-            html += '</span></div>';
-        }
-
-        memoryView.innerHTML = html;
+        memoryView.innerHTML = renderDump({
+            startAddr: getMemoryViewAddress(),
+            lines: MEMORY_LINES,
+            bytesPerLine: rightBytesPerLine,
+            // The right panel is the full one: changed bytes, breakpoint and
+            // watchpoint marks, and the per-byte tooltip.
+            showChanged: true,
+            showBreakpoints: true,
+            showWatchpoints: true,
+            showTooltips: true,
+            asciiSelectionStart, asciiSelectionEnd
+        });
 
         // Reapply selection if active
         if (memSelectionStart !== null) {
@@ -151,8 +109,10 @@ export function initMemoryView({
         if (activeEditInput && memoryEditingAddr !== null) {
             const spectrum = getSpectrum();
             if (save) {
-                const newValue = parseInt(activeEditInput.value, 16);
-                if (!isNaN(newValue) && newValue >= 0 && newValue <= 255) {
+                // Read in the base the cell was printed in -- a field that shows 255
+                // must not read it as $255.
+                const newValue = parseByte(activeEditInput.value);
+                if (newValue !== null && newValue >= 0 && newValue <= 255) {
                     spectrum.memory.writeDebug(memoryEditingAddr, newValue);
                 }
             }
@@ -180,8 +140,8 @@ export function initMemoryView({
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'memory-edit-input';
-        input.value = hex8(currentValue);
-        input.maxLength = 2;
+        input.value = fmtByte(currentValue);
+        input.maxLength = getValueBase() === 'dec' ? 3 : 2;
         activeEditInput = input;
 
         byteElement.textContent = '';
@@ -384,59 +344,31 @@ export function initMemoryView({
     // Left panel memory view
     function updateLeftMemoryView() {
         const spectrum = getSpectrum();
-        const leftMemoryViewAddress = getLeftMemoryViewAddress();
         if (!spectrum.memory) {
             leftMemoryView.innerHTML = '<div class="memory-line">No memory</div>';
             return;
         }
 
         leftBytesPerLine = calcBytesPerLine(leftMemoryView, 26, leftBytesPerLine);
-        let html = '';
-        for (let line = 0; line < LEFT_MEMORY_LINES; line++) {
-            const lineAddr = (leftMemoryViewAddress + line * leftBytesPerLine) & 0xffff;
-
-            // Address
-            html += `<div class="memory-line"><span class="memory-addr" data-addr="${lineAddr}">${hex16(lineAddr)}</span>`;
-
-            // Hex bytes
-            html += '<span class="memory-hex">';
-            for (let i = 0; i < leftBytesPerLine; i++) {
-                const addr = (lineAddr + i) & 0xffff;
-                const val = spectrum.memory.read(addr);
-                let cls = 'memory-byte';
-                // Check for memory regions
-                const region = regionManager.get(addr);
-                if (region && region.type !== REGION_TYPES.CODE) {
-                    cls += ` region-${region.type}`;
-                }
-                html += `<span class="${cls}" data-addr="${addr}">${hex8(val)}</span>`;
-            }
-            html += '</span>';
-
-            // ASCII representation (styled like right panel)
-            html += '<span class="memory-ascii">';
-            const asciiSelStart = asciiSelectionStart !== null ? Math.min(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            const asciiSelEnd = asciiSelectionStart !== null ? Math.max(asciiSelectionStart, asciiSelectionEnd ?? asciiSelectionStart) : -1;
-            for (let i = 0; i < leftBytesPerLine; i++) {
-                const addr = (lineAddr + i) & 0xffff;
-                const byte = spectrum.memory.read(addr);
-                const isPrintable = byte >= 32 && byte < 127;
-                const char = isPrintable ? String.fromCharCode(byte) : byte === 0 ? '\u25A0' : '.';
-                const asciiRegion = regionManager.get(addr);
-                let cls = isPrintable ? 'printable' : byte === 0 ? 'null-byte' : '';
-                if (asciiRegion && asciiRegion.type === REGION_TYPES.TEXT) {
-                    cls += ' region-text';
-                }
-                if (asciiSelectionStart !== null && addr >= asciiSelStart && addr <= asciiSelEnd) {
-                    cls += ' ascii-selected';
-                }
-                html += `<span class="${cls.trim()}" data-addr="${addr}">${char}</span>`;
-            }
-            html += '</span></div>';
-        }
-
-        leftMemoryView.innerHTML = html;
+        // The plain dump: regions and the four-byte rule, nothing else. It has never
+        // shown changed bytes, breakpoint/watchpoint marks or the tooltip \u2014 stated
+        // here by their absence rather than by which lines got copied across.
+        leftMemoryView.innerHTML = renderDump({
+            startAddr: getLeftMemoryViewAddress(),
+            lines: LEFT_MEMORY_LINES,
+            bytesPerLine: leftBytesPerLine,
+            asciiSelectionStart, asciiSelectionEnd
+        });
     }
+
+    // Hex or decimal addresses: both dumps redraw their gutter, and the column
+    // is measured again in case the switch changed its width.
+    onNumberBaseChange(() => {
+        addrColWidth = 0;
+        byteCellWidth = 0;
+        updateMemoryView();
+        updateLeftMemoryView();
+    });
 
     return {
         updateMemoryView,

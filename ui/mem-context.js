@@ -1,5 +1,5 @@
 // Memory context menus (left + right panels) and click-outside handlers
-import { hex16 } from '../core/utils.js';
+import { fmtAddr } from '../core/addr-format.js';
 
 export function initMemContext({
     labelManager, regionManager, undoManager,
@@ -38,7 +38,7 @@ export function initMemContext({
     // ---- Shared builders ----
 
     function buildMenuHtml(addr, existingLabel, existingRegion, rangeText) {
-        let menuHtml = `<div class="menu-header">Address ${hex16(addr)}</div>`;
+        let menuHtml = `<div class="menu-header">Address ${fmtAddr(addr)}</div>`;
         menuHtml += `<div class="menu-separator"></div>`;
         menuHtml += `<div data-action="disasm-left">Disasm left</div>`;
         menuHtml += `<div data-action="disasm-right">Disasm right</div>`;
@@ -146,7 +146,7 @@ export function initMemContext({
                 regionManager.remove(addr);
                 undoManager.push({
                     type: 'region',
-                    description: `Remove region ${hex16(oldRegion.start)}-${hex16(oldRegion.end)}`,
+                    description: `Remove region ${fmtAddr(oldRegion.start)}-${fmtAddr(oldRegion.end)}`,
                     undo: () => {
                         regionManager.add(oldRegion, true);
                     },
@@ -163,19 +163,19 @@ export function initMemContext({
             const wpEnd = endAddr !== null ? endAddr : addr;
             spectrum.addTrigger({ type: wpType, start: addr, end: wpEnd });
             const typeLabel = spectrum.getTriggerLabel(wpType);
-            const rangeStr = wpEnd !== addr ? `${hex16(addr)}-${hex16(wpEnd)}` : hex16(addr);
+            const rangeStr = wpEnd !== addr ? `${fmtAddr(addr)}-${fmtAddr(wpEnd)}` : fmtAddr(addr);
             showMessage(`Break on ${typeLabel} at ${rangeStr}`);
             updateDebugger();
         } else if (action === 'add-watch') {
             const label = existingLabel ? existingLabel.name : '';
             if (addWatch(addr, label)) {
-                showMessage(`Watch added: ${hex16(addr)}${label ? ' (' + label + ')' : ''}`);
+                showMessage(`Watch added: ${fmtAddr(addr)}${label ? ' (' + label + ')' : ''}`);
             }
         } else if (action === 'freeze-value') {
             if (addFreezeEditor) {
                 const label = existingLabel ? existingLabel.name : '';
                 addFreezeEditor(addr, label);
-                showMessage(`Freeze added: ${hex16(addr)}${label ? ' (' + label + ')' : ''}`);
+                showMessage(`Freeze added: ${fmtAddr(addr)}${label ? ' (' + label + ')' : ''}`);
             }
         }
     }
@@ -225,7 +225,7 @@ export function initMemContext({
         memContextMenu.className = 'label-context-menu';
 
         const rangeText = hasSelection ?
-            `${hex16(selStart)}-${hex16(selEnd)} (${selEnd - selStart + 1} bytes)` :
+            `${fmtAddr(selStart)}-${fmtAddr(selEnd)} (${selEnd - selStart + 1} bytes)` :
             '';
 
         let menuHtml = buildMenuHtml(addr, existingLabel, existingRegion, rangeText);

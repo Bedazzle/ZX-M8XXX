@@ -1,6 +1,7 @@
 // codepath.js — Code Path Tool: record and diff executed code paths (init-function pattern)
 
 import { hex16, hex8 } from '../core/utils.js';
+import { fmtAddrSigil, fmtOpcode, parseAddr, onNumberBaseChange } from '../core/addr-format.js';
 import { CODE_PATH_CONTEXT_LINES } from '../core/constants.js';
 
 export function initCodePath({
@@ -259,7 +260,7 @@ export function initCodePath({
 
         const addrSpan = document.createElement('span');
         addrSpan.className = 'cp-addr';
-        addrSpan.textContent = '$' + hex16(instr.addr);
+        addrSpan.textContent = fmtAddrSigil(instr.addr);
 
         const mnemonicSpan = document.createElement('span');
         mnemonicSpan.className = 'cp-mnemonic';
@@ -267,7 +268,7 @@ export function initCodePath({
 
         const bytesSpan = document.createElement('span');
         bytesSpan.className = 'cp-bytes';
-        bytesSpan.textContent = instr.bytes.map(b => hex8(b)).join(' ');
+        bytesSpan.textContent = instr.bytes.map(b => fmtOpcode(b)).join(' ');
 
         instrDiv.appendChild(markerSpan);
         instrDiv.appendChild(addrSpan);
@@ -291,7 +292,7 @@ export function initCodePath({
             const pageStr = block.page ? ` [${block.page}]` : '';
             const header = document.createElement('div');
             header.className = 'cp-block-header';
-            header.textContent = `$${hex16(block.start)}\u2013$${hex16(endAddr)}${pageStr} (${totalBytes}B)`;
+            header.textContent = `${fmtAddrSigil(block.start)}\u2013${fmtAddrSigil(endAddr)}${pageStr} (${totalBytes}B)`;
             header.addEventListener('click', () => goToAddress(block.start));
             blockDiv.appendChild(header);
 
@@ -353,8 +354,8 @@ export function initCodePath({
 
         const filterStr = cpFilterText.value.trim().toUpperCase();
         const terms = filterStr ? filterStr.split('|').filter(t => t.length > 0) : [];
-        const addrFrom = cpFilterFrom.value.trim() ? parseInt(cpFilterFrom.value.trim(), 16) || 0 : 0;
-        const addrTo = cpFilterTo.value.trim() ? parseInt(cpFilterTo.value.trim(), 16) || 0xFFFF : 0xFFFF;
+        const addrFrom = cpFilterFrom.value.trim() ? parseAddr(cpFilterFrom.value) ?? 0 : 0;
+        const addrTo = cpFilterTo.value.trim() ? parseAddr(cpFilterTo.value) ?? 0xFFFF : 0xFFFF;
         const active = hasActiveFilter();
 
         const blockDivs = cpResults.querySelectorAll('.cp-block');
@@ -386,8 +387,8 @@ export function initCodePath({
 
         const filterStr = cpFilterText.value.trim().toUpperCase();
         const terms = filterStr ? filterStr.split('|').filter(t => t.length > 0) : [];
-        const addrFrom = cpFilterFrom.value.trim() ? parseInt(cpFilterFrom.value.trim(), 16) || 0 : 0;
-        const addrTo = cpFilterTo.value.trim() ? parseInt(cpFilterTo.value.trim(), 16) || 0xFFFF : 0xFFFF;
+        const addrFrom = cpFilterFrom.value.trim() ? parseAddr(cpFilterFrom.value) ?? 0 : 0;
+        const addrTo = cpFilterTo.value.trim() ? parseAddr(cpFilterTo.value) ?? 0xFFFF : 0xFFFF;
 
         return diffResults.filter(block => blockMatchesFilter(block, terms, addrFrom, addrTo));
     }
@@ -522,6 +523,9 @@ export function initCodePath({
     });
 
     // --- Public API ---
+
+    // Hex or decimal: every instruction row shows its address.
+    onNumberBaseChange(() => { if (diffResults) renderResults(diffResults); });
 
     return {
         stopRecording() {

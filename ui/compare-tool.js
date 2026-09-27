@@ -1,6 +1,7 @@
 // compare-tool.js — Snapshot/binary comparison tool (extracted from index.html)
 import { SLOT1_START, SLOT2_START, SLOT3_START, SCREEN_BITMAP, SCREEN_AFTER } from '../core/constants.js';
 import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrCol, fmtAddrSigil, fmtByte, parseAddr } from '../core/addr-format.js';
 import { parseSnapshotFile as parseSnapshot } from './snapshot-parse.js';
 import { readRegion, diffRegions, validateRegion, regionAddress, regionLabel,
          availableLength, sameRegion } from '../core/mem-compare.js';
@@ -200,7 +201,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
     function readMemRegionForm(modeSel, bankInput, addrInput, side) {
         const mode = modeSel && modeSel.style.display === 'none' ? 'paged'
                                                                 : (modeSel ? modeSel.value : 'paged');
-        const addr = parseInt((addrInput.value || '').trim(), 16);
+        const addr = parseAddr(addrInput.value) ?? NaN;
         const region = {
             mode,
             addr: isNaN(addr) ? NaN : addr,
@@ -220,7 +221,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         const b = readMemRegionForm(compareMemBMode, compareMemBBank, compareMemBAddr, 'B');
         if (b.error) { alert(b.error); return; }
 
-        const wanted = parseInt((compareMemLength.value || '').trim(), 16);
+        const wanted = parseAddr((compareMemLength.value || '').trim()) ?? NaN;
         if (isNaN(wanted) || wanted <= 0) { alert('Length must be a hex number of bytes'); return; }
 
         if (sameRegion(a.region, b.region)) {
@@ -283,8 +284,8 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             for (const block of result.blocks) {
                 for (let i = 0; i < block.length && list.length < 500; i++) {
                     const off = block.offset + i;
-                    list.push(`<div style="color:#ff6b6b">${regionAddress(regA, off)}: ${hex8(bytesA[off])}` +
-                              ` vs ${regionAddress(regB, off)}: ${hex8(bytesB[off])}</div>`);
+                    list.push(`<div style="color:#ff6b6b">${regionAddress(regA, off)}: ${fmtByte(bytesA[off])}` +
+                              ` vs ${regionAddress(regB, off)}: ${fmtByte(bytesB[off])}</div>`);
                 }
             }
             if (result.count > list.length) {
@@ -309,8 +310,8 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
                     const b = inRange ? bytesB[off] : null;
                     const isDiff = inRange && a !== b;
                     const style = isDiff ? 'color:#ff6b6b;font-weight:bold' : '';
-                    hexA += `<span style="${style}">${a !== null ? hex8(a) : '--'}</span> `;
-                    hexB += `<span style="${style}">${b !== null ? hex8(b) : '--'}</span> `;
+                    hexA += `<span style="${style}">${a !== null ? fmtByte(a) : '--'}</span> `;
+                    hexB += `<span style="${style}">${b !== null ? fmtByte(b) : '--'}</span> `;
                     ascA += `<span style="${style}">${a !== null ? escapeHtmlChar(a) : '.'}</span>`;
                     ascB += `<span style="${style}">${b !== null ? escapeHtmlChar(b) : '.'}</span>`;
                 }
@@ -468,15 +469,15 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
                         const b = offsetB + off < dataB.byteLength ? dataB[offsetB + off] : null;
                         const isDiff = diff && diff.isDiff;
                         const diffStyle = isDiff ? 'color:#ff6b6b;font-weight:bold' : '';
-                        hexA += `<span style="${diffStyle}">${a !== null ? hex8(a) : '--'}</span> `;
-                        hexB += `<span style="${diffStyle}">${b !== null ? hex8(b) : '--'}</span> `;
+                        hexA += `<span style="${diffStyle}">${a !== null ? fmtByte(a) : '--'}</span> `;
+                        hexB += `<span style="${diffStyle}">${b !== null ? fmtByte(b) : '--'}</span> `;
                         const ascCharA = a !== null ? escapeHtmlChar(a) : '.';
                         const ascCharB = b !== null ? escapeHtmlChar(b) : '.';
                         ascA += `<span style="${diffStyle}">${ascCharA}</span>`;
                         ascB += `<span style="${diffStyle}">${ascCharB}</span>`;
                     }
-                    rows.push(`<div style="white-space:nowrap">${hex16(lineStart)}: ${hexA}|${ascA}|</div>`);
-                    rows.push(`<div style="white-space:nowrap;color:var(--cyan)">${hex16(lineStart)}: ${hexB}|${ascB}|</div>`);
+                    rows.push(`<div style="white-space:nowrap">${fmtAddrCol(lineStart)}: ${hexA}|${ascA}|</div>`);
+                    rows.push(`<div style="white-space:nowrap;color:var(--cyan)">${fmtAddrCol(lineStart)}: ${hexB}|${ascB}|</div>`);
                 }
                 html += rows.join('') + '<hr style="border-color:var(--border);margin:5px 0">';
                 i = endI;
@@ -486,7 +487,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             // Simple list
             const lines = diffs.slice(0, 500).map(d => {
                 const color = d.isDiff ? 'color:#ff6b6b' : '';
-                return `<div style="${color}">${hex16(d.offset)}: ${d.a !== null ? hex8(d.a) : '--'} vs ${d.b !== null ? hex8(d.b) : '--'}${d.isDiff ? ' ◄' : ''}</div>`;
+                return `<div style="${color}">${fmtAddrCol(d.offset)}: ${d.a !== null ? fmtByte(d.a) : '--'} vs ${d.b !== null ? fmtByte(d.b) : '--'}${d.isDiff ? ' ◄' : ''}</div>`;
             });
             if (diffs.length > 500) lines.push(`<div>... and ${diffs.length - 500} more</div>`);
             return { count: diffs.filter(d => d.isDiff).length, html: lines.join('') };
@@ -557,8 +558,8 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         function regCell(name, a, b, is16bit) {
             if (a === undefined || b === undefined) return '';
             const isDiff = a !== b;
-            const valA = is16bit ? hex16(a) : hex8(a);
-            const valB = is16bit ? hex16(b) : hex8(b);
+            const valA = is16bit ? fmtAddr(a) : fmtByte(a);
+            const valB = is16bit ? fmtAddr(b) : fmtByte(b);
             const color = isDiff ? 'color:#ff6b6b;font-weight:bold' : '';
             const marker = isDiff ? ' ◄' : '';
             return `<span style="${color}">${name.padEnd(4)} ${valA} ${valB}${marker}</span>`;
@@ -611,7 +612,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
             const pageDiff = snapA.port7FFD !== snapB.port7FFD;
             const pageColor = pageDiff ? 'color:#ff6b6b;font-weight:bold' : '';
             const pageMarker = pageDiff ? ' ◄' : '';
-            html += `<div style="white-space:nowrap;${pageColor}">7FFD ${hex8(snapA.port7FFD)} ${hex8(snapB.port7FFD)}${pageMarker}</div>`;
+            html += `<div style="white-space:nowrap;${pageColor}">7FFD ${fmtByte(snapA.port7FFD)} ${fmtByte(snapB.port7FFD)}${pageMarker}</div>`;
         }
         html += '</div>';
 
@@ -726,16 +727,16 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
                         const b = memB[off];
                         const isDiff = diff && diff.isDiff;
                         const diffStyle = isDiff ? 'color:#ff6b6b;font-weight:bold' : '';
-                        hexA += `<span style="${diffStyle}">${hex8(a)}</span> `;
-                        hexB += `<span style="${diffStyle}">${hex8(b)}</span> `;
+                        hexA += `<span style="${diffStyle}">${fmtByte(a)}</span> `;
+                        hexB += `<span style="${diffStyle}">${fmtByte(b)}</span> `;
                         // ASCII - always wrap in span, with red for differences
                         const ascCharA = escapeHtmlChar(a);
                         const ascCharB = escapeHtmlChar(b);
                         ascA += `<span style="${diffStyle}">${ascCharA}</span>`;
                         ascB += `<span style="${diffStyle}">${ascCharB}</span>`;
                     }
-                    linesA += `<div style="white-space:nowrap">${hex16(lineStart)}: ${hexA}|${ascA}|</div>`;
-                    linesB += `<div style="white-space:nowrap">${hex16(lineStart)}: ${hexB}|${ascB}|</div>`;
+                    linesA += `<div style="white-space:nowrap">${fmtAddrCol(lineStart)}: ${hexA}|${ascA}|</div>`;
+                    linesB += `<div style="white-space:nowrap">${fmtAddrCol(lineStart)}: ${hexB}|${ascB}|</div>`;
                 }
                 linesA += '<hr style="border-color:var(--border);margin:3px 0">';
                 linesB += '<hr style="border-color:var(--border);margin:3px 0">';
@@ -760,7 +761,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
 
             const lines = pageDiffs.map(d => {
                 const color = d.isDiff ? 'color:#ff6b6b' : '';
-                return `<div style="${color}">${hex16(d.offset)}: ${hex8(d.a)} vs ${hex8(d.b)}${d.isDiff ? ' ◄' : ''}</div>`;
+                return `<div style="${color}">${fmtAddrCol(d.offset)}: ${fmtByte(d.a)} vs ${fmtByte(d.b)}${d.isDiff ? ' ◄' : ''}</div>`;
             });
             return lines.join('');
         }
@@ -923,7 +924,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         const showEqual = chkCompareShowEqual.checked;
         const showHexDump = chkCompareHexDump.checked;
 
-        const startAddr = parseInt(compareMemBinStart.value, 16);
+        const startAddr = parseAddr(compareMemBinStart.value) ?? NaN;
         if (isNaN(startAddr) || startAddr < 0 || startAddr > 0xFFFF) {
             alert('Invalid start address');
             return;
@@ -953,7 +954,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
 
         if (length < binData.length) {
             compareHeaderResults.style.display = 'block';
-            compareHeaderTable.innerHTML = `<div style="color:var(--yellow)">File truncated: ${binData.length} bytes from $${hex16(startAddr)} would exceed $FFFF, comparing first ${length} bytes</div>`;
+            compareHeaderTable.innerHTML = `<div style="color:var(--yellow)">File truncated: ${binData.length} bytes from ${fmtAddrSigil(startAddr)} would exceed ${fmtAddrSigil(0xFFFF)}, comparing first ${length} bytes</div>`;
         }
 
         if (result.count === 0) {
@@ -962,7 +963,7 @@ export function initCompareTool({ RZXLoader, SZXLoader, getEmulatorState }) {
         } else {
             compareDataResults.style.display = 'block';
             const blocksNote = result.totalBlocks ? `, ${result.totalBlocks} blocks` : '';
-            compareDiffCount.textContent = `${result.count} bytes differ${blocksNote} (${length} bytes from $${hex16(startAddr)})`;
+            compareDiffCount.textContent = `${result.count} bytes differ${blocksNote} (${length} bytes from ${fmtAddrSigil(startAddr)})`;
             compareDataTable.innerHTML = result.html;
             updateComparePagination();
         }

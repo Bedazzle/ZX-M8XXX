@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v0.16.3</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v26.09.03</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -227,6 +227,16 @@
                 <div class="fullhelp-section hidden" id="help-debugger">
                     <h4>Debugger</h4>
                     <p>The built-in debugger provides comprehensive tools for development and reverse engineering.</p>
+                    <h5>Hex or Decimal Numbers</h5>
+                    <p><strong>Settings &rarr; Display</strong> has three independent checkboxes. They change how the interface <em>writes</em> a number, never what the app reads from a file or writes out.</p>
+                    <ul>
+                        <li><strong>Decimal addresses</strong> &mdash; addresses everywhere, and <strong>ports</strong> too, since a port is an address in I/O space: <code>B000</code> becomes <code>45056</code>, <code>7FFD</code> becomes <code>32765</code>. The Explorer follows it as well, for file <em>offsets</em> as much as load addresses.</li>
+                        <li><strong>Decimal values</strong> &mdash; byte values: the memory dumps and their editors, watches, POKE, <code>I</code>/<code>R</code> and the AY registers. <code>03</code> becomes <code>3</code>, which is what you want when you are hunting a lives counter.</li>
+                        <li><strong>Decimal opcodes</strong> &mdash; only the byte column beside a disassembled instruction: <code>21 00 B0</code> becomes <code>33 0 176</code>, for anyone who learned assembly from books that listed opcodes as decimal POKEs.</li>
+                    </ul>
+                    <p>Any combination works &mdash; a decimal dump under hex addresses, or the reverse.</p>
+                    <p><strong>Typing</strong>: every box reads the base it prints in, so <code>12345</code> means twelve thousand in decimal mode. <code>$</code>, <code>0x</code>, <code>#</code> or a trailing <code>h</code> force hex in either mode, which is how you reach <code>$FFFF</code> without leaving decimal. There is no decimal suffix on purpose: <code>004D</code> is a real address, so a trailing <code>d</code> could not be told from a digit. Tooltips and their examples follow the current base, and throwing a switch converts whatever is already in a box &mdash; so a typed <code>16384</code> does not silently become <code>$16384</code>.</p>
+                    <p><strong>What never changes</strong>: everything the app writes out &mdash; ASM and disassembly exports, project files, <code>.pok</code>, signature packs, the trace export, export filenames &mdash; and the <code>window.zxDebug</code> API, where <code>addBreakpoint('8000')</code> still means <code>$8000</code>. Sector ids and TZX block ids also stay hex, being identifiers their format specs write that way.</p>
                     <h5>Registers View</h5>
                     <p>Shows all Z80 registers including the alternate set (AF', BC', DE', HL'). Flags are displayed as visual indicators: S, Z, H, P/V, N, C.</p>
                     <p><strong>О"T (Delta T-states)</strong>: Accumulated T-states since the last breakpoint fired. Useful for measuring cycle-exact timing between breakpoints. The counter accumulates through steps, runs, and all execution modes. Resets to 0 when any breakpoint fires (exec, memory, or port).</p>
@@ -1378,6 +1388,7 @@ start:  ...</pre>
                 <div class="fullhelp-section hidden" id="help-explorer">
                     <h4>Explorer</h4>
                     <p>The Explorer tab analyzes ZX Spectrum file formats without loading them into the emulator.</p>
+                    <p>Its numbers follow <strong>Settings &rarr; Display &rarr; Decimal addresses</strong>: both a file's load address and a position <em>inside</em> the file (the hex dump's offset column, find results, sector positions). Byte values and the disassembly's byte column follow their own switches. Export filenames keep their hex, as do sector and TZX block ids.</p>
                     <h5>Supported Formats</h5>
                     <table>
                         <tr><th>Format</th><th>Description</th></tr>

@@ -27,6 +27,50 @@ Machine integration, memory banking, tape handling, IF1/Microdrive, Opus Discove
 
 **The observation surface**, split out of `spectrum.js` and mixed into `Spectrum.prototype` (`Object.assign` at the end of spectrum.js), so every call site is unchanged: auto-map coverage (`setAutoMapEnabled`/`setAutoMapFast`/`getAutoMapBits`/`get`/`setAutoMapData`, `getAutoMapKey`/`parseAutoMapKey`), read/write/exec provenance, indirect-jump resolution and the runtime call graph. The hot-path hooks stay in spectrum.js; this is the control and reporting surface
 
+## `core/addr-format.js`
+
+Hex or decimal numbers (pure, DOM-free). **Three independent bases** — addresses
+(`fmtAddr`, `parseAddr`), byte values (`fmtByte`, `parseByte`) and opcode bytes
+(`fmtOpcode`) — with one listener list (`onNumberBaseChange`) so a panel subscribes once.
+
+Column formatters exist because a switch must not reflow anything: `fmtAddrCol` /
+`fmtAddrColRight` pad an address to a fixed 5 characters with NBSP, and `fmtByteCol` /
+`byteColWidth` give a byte 2 characters in hex and 3 in decimal (a text dump also needs
+the width for the gap where its data runs out mid-line). `fmtAddrSigil` and `fmtAddrH`
+drop the `$` and the trailing `h` in decimal, where they would be a lie about the base.
+`fmtAddrPair` renders the Explorer's `4660 ($1234)` twin, collapsing to one number when
+both halves would read the same.
+
+`parseAddr` takes an explicit `$`/`0x`/`#`/trailing-`h` as hex whatever the switch says,
+and `opts.base` overrides the switch — which is how a box's contents are converted *from*
+the base they were last rendered in. **There is no `d` suffix**: `004D` is a real address.
+Nonsense returns `null` rather than 0, so a mistyped `FE&FF` is refused instead of
+silently becoming `$00FE`.
+
+`specToHex` / `portSpecToHex` rewrite a typed `5:C000` or `4000-4FFF` back into hex at the
+UI edge, so `core/spectrum.js` and the `window.zxDebug` API keep their hex-only contract
+however the screen is set.
+
+**The rule the whole module exists to enforce: a field that prints in the chosen base must
+read in it too.** A box that displayed decimal while parsing hex turned a typed `12345`
+into `$2345`.
+
+## `ui/number-hints.js`
+
+Tooltips, placeholders and box contents follow the switch. A hint writes `{BASE}` where
+the word belongs and `{$4000}` for a worked example — printed as typed in hex, as its
+value in decimal — and declares `data-hint-base="addr"` or `"value"`; the template is
+kept in a dataset entry so substitution is redone from it and never compounds.
+
+`data-hint-num` additionally converts what is **in** the box, parsing it in the base it
+was last rendered in (the module remembers). Without that, `16384` typed in decimal is
+read as `$16384` the moment the switch is thrown. Anything that is not one plain number
+— a range, `5:C000`, a comma list — is left exactly as the user typed it.
+
+**Initialised before every other consumer** in `app-init.js`. Listeners fire in
+registration order, so a view that redrew first would read a box still written in the base
+that has just been left.
+
 ## `core/loaders.js`
 
 **Barrel** — re-exports everything in `core/loaders/`; existing `import { X } from './loaders.js'` sites are unaffected
@@ -95,7 +139,17 @@ Pure profiler analysis shared by the debugger's Profiler and `profile-game.html`
 
 Which comments the disassembly shows. A comment carried over from an assembled source (`source: 'asm'`) and one typed in the debugger are toggled separately, in the disasm ⚙ options — a build can bring in hundreds at once, so "only what I wrote" and "only what the source said" are different questions and each is worth asking. `visibleComment(comment)` returns it or null; an absent checkbox counts as shown, so it is safe before the markup is spliced in.
 
-Both disassembly views (`ui/debugger-display.js`, `ui/right-disasm-view.js`) render comments with the same code, so the rule lives here rather than being written twice.
+Both disassembly views render comments with the same code — `ui/disasm-line-render.js` — so the rule lives here rather than being written twice.
+
+## `ui/disasm-line-render.js`
+
+One disassembly row, rendered once for both views. `createDisasmLineRenderer(deps)` → `{renderLine, renderLines}`; `renderLines(lines, ctx)` returns the whole view's HTML.
+
+The debugger draws a row in two places — the main view (`ui/debugger-display.js`) and the right panel (`ui/right-disasm-view.js`) — and each used to carry its own copy of the markup: region marker, comments, subroutine banner, fold start/end markers, the long-label variant. 125 of `right-disasm-view.js`'s 171 lines were line-for-line identical to the other, so a disassembly feature had to be written twice or was silently missing from one panel. It had already gone wrong: the right panel's breakpoint dot had no `title`, so its tooltip was absent for no reason anyone chose. (`ui/comment-visibility.js` exists for the same reason — one rule lifted out of the two copies. This lifts the row.)
+
+What actually differs between the views lives in `ctx`: the main view marks the trace line (`traceViewAddress`) and can rewrite a row's bytes from the trace record, since paging may have moved since — it passes `prepareLine`. The right panel passes `traceViewAddress: null` and no `prepareLine`, which turns both off without a branch in the renderer. Everything else is one code path, and `tests/disasm-render-test` asserts the two panels produce byte-for-byte identical HTML.
+
+User text — a comment, a region comment, a subroutine or fold name — is escaped on the way in. A region comment used to go into the marker's `title` raw, so a region commented `a "quoted" note` closed the attribute early and the browser ate the marker letter along with the rest of the tag; both panels had it.
 
 ## `ui/calc-host.js`
 
@@ -189,7 +243,17 @@ Clickable on-screen ZX keyboard (⌨ toolbar toggle; floating `position:fixed` b
 
 ## `ui/memory-view.js`
 
-Right + left panel hex dump (bytes per line adapt to panel width: 8/16/32), inline byte editor, hex/ASCII mouse selection with Ctrl+C copy, scroll wheel (DI: getSpectrum, getDisasm, regionManager, getMemoryViewAddress, getLeftMemoryViewAddress, getMemorySnapshot, updateDebugger, getGoToMemoryAddress)
+Right + left panel hex dump (bytes per line adapt to panel width: 8/16/32), inline byte editor, hex/ASCII mouse selection with Ctrl+C copy, scroll wheel (DI: getSpectrum, getDisasm, regionManager, getMemoryViewAddress, getLeftMemoryViewAddress, getMemorySnapshot, updateDebugger, getGoToMemoryAddress). The rows themselves come from `ui/mem-dump-render.js`; what is left here is the width measurement, the editor and the mouse.
+
+## `ui/mem-dump-render.js`
+
+One hex-dump row, rendered once for both dumps. `createMemDumpRenderer(deps)` → `{renderDump}`; `renderDump(opts)` returns the whole dump's HTML.
+
+The right and left dumps each used to carry their own copy of the markup — the ASCII column was eighteen line-for-line identical lines in both, and v1.0.0's four-byte rule had to be written into each of them separately.
+
+Unlike the two disassembly views, the two dumps are **not** identical and are not meant to be: the left one has never shown changed-byte highlighting, breakpoint or watchpoint marks, or the per-byte tooltip. Each of those is now an explicit flag (`showChanged`, `showBreakpoints`, `showWatchpoints`, `showTooltips`) rather than being implied by which lines someone remembered to copy — so what the panels differ in is stated in one place, and granting the left dump any of them is a one-word edit. `tests/memdump-render-test` pins both halves of that split: what is shared (address column, the four-byte rule, region classes, the whole ASCII column, the byte text) and what is right-only.
+
+The per-byte tooltip deliberately gives both bases at once (`Addr: 8003 (32771)`) — it is where you go to find out what a byte *is*, so it does not follow the display switch.
 
 ## `ui/mem-context.js`
 
@@ -209,7 +273,7 @@ Auto-map tracking, XRef controls, Code-Flow Analysis (DI: getSpectrum, getDisasm
 
 ## `ui/debugger-display.js`
 
-Register rendering (REGS, SYSTEM, Pages, AY R0–R13), disassembly view, sub-panel dispatch (DI: getSpectrum, getDisasm, traceManager, regEditorAPI, labelManager, regionManager, etc.)
+Register rendering (REGS, SYSTEM, Pages, AY R0–R13), disassembly view, sub-panel dispatch (DI: getSpectrum, getDisasm, traceManager, regEditorAPI, subroutineManager, foldManager, xrefManager, renderDisasmLines, etc.). The rows themselves come from `ui/disasm-line-render.js`; what is left here is which address to show (follow PC or a stored one), the trace override, and the fan-out to every other sub-panel.
 
 ## `ui/display-settings.js`
 

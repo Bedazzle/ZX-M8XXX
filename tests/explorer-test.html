@@ -178,6 +178,21 @@
                 assert(/HELLO/.test(info), 'SCL files are listed');
             });
 
+            // A BASIC file's autostart line is not in the catalogue: TR-DOS writes
+            // $80 $AA and the line after the program. Reading it once threw a
+            // ReferenceError that took the whole TRD/SCL info panel down.
+            await part('Disk: BASIC autostart line', async () => {
+                const prog = new Uint8Array(24);
+                prog.set([0x80, 0xAA, 0x0A, 0x00], 20);
+                const basic = [{ name: 'boot', ext: 'B', data: prog,
+                                 length: 20, programLength: 20, sectors: 1 }];
+                const trdInfo = await loadIntoExplorer(TRDLoader.buildTRD(basic, 'PROBE'), 'basic.trd');
+                assert(/boot/.test(trdInfo), 'TRD with a BASIC file renders', trdInfo.slice(0, 80));
+                assert(/LINE 10/.test(trdInfo), 'TRD shows the BASIC autostart line', trdInfo.slice(0, 200));
+                const sclInfo = await loadIntoExplorer(SCLLoader.buildSCL(basic), 'basic.scl');
+                assert(/LINE 10/.test(sclInfo), 'SCL shows the BASIC autostart line', sclInfo.slice(0, 200));
+            });
+
             await part('Hex and text views', async () => {
                 await loadIntoExplorer(makeSNA(), 'probe.sna');
                 const hexBtn = d.getElementById('btnExplorerHex');
@@ -193,6 +208,77 @@
                 } else {
                     assert(false, 'hex button exists');
                 }
+            });
+
+            await part('Addresses and offsets follow the hex/decimal switch', async () => {
+                // The Explorer shows two kinds of number: a file's load address and a
+                // position INSIDE the file. Both follow Settings -> Display, because an
+                // offset column left in hex beside a decimal load address reads as a bug.
+                const decBox = d.getElementById('chkDecAddresses');
+                const setBase = async (dec) => {
+                    decBox.checked = dec;
+                    decBox.dispatchEvent(new w.Event('change'));
+                    await wait(250);
+                };
+                const firstAddr = () => {
+                    const t = d.getElementById('explorerHexOutput').textContent || '';
+                    return (t.trim().split(/\s+/)[0] || '');
+                };
+                const bytesOf = () => {
+                    const t = d.getElementById('explorerHexOutput').textContent || '';
+                    return t.trim().split(/\s+/).slice(1, 4).join(' ');
+                };
+
+                await setBase(false);
+                await loadIntoExplorer(makeSNA(), 'probe.sna');
+                d.getElementById('btnExplorerHex')?.click();
+                await until(() => (d.getElementById('explorerHexOutput').textContent || '').length > 40);
+                const hexAddr = firstAddr();
+                const hexBytes = bytesOf();
+                assert(/^[0-9A-F]{4}$/.test(hexAddr), 'in hex the offset column is four hex digits',
+                       hexAddr);
+
+                await setBase(true);
+                const decAddr = firstAddr();
+                assert(/^[0-9]+$/.test(decAddr) && Number(decAddr) === parseInt(hexAddr, 16),
+                       'in decimal it is the same offset written in decimal',
+                       `${hexAddr} -> ${decAddr}`);
+                assert(bytesOf() === hexBytes,
+                       'and the byte column does NOT move -- bytes have their own switch',
+                       `${hexBytes} -> ${bytesOf()}`);
+
+                const box = d.getElementById('explorerHexAddr');
+                assert(/^[0-9]+$/.test(box.value),
+                       'the address box converted rather than keeping its digits', box.value);
+                assert(/decimal/.test(box.title), 'and its tooltip says so', box.title);
+
+                const trd = TRDLoader.buildTRD(trdFiles, 'PROBE');
+                const infoDec = await loadIntoExplorer(trd, 'probe.trd');
+                assert(/32768/.test(infoDec) && !/\$8000/.test(infoDec),
+                       'a load address is decimal, without the hex twin beside it',
+                       (infoDec.match(/.{0,30}32768.{0,20}/) || [''])[0]);
+
+                // No reload here: loading the same filename twice makes the wait
+                // condition true before the new render, which is a race. The panel
+                // redraws itself on the switch, so just throw it and read again.
+                await setBase(false);
+                const infoHex = d.getElementById('explorerInfoOutput').textContent || '';
+                assert(/\$8000/.test(infoHex), 'and in hex the pair comes back',
+                       JSON.stringify(infoHex.slice(Math.max(0, infoHex.indexOf('32768') - 60),
+                                                     infoHex.indexOf('32768') + 60)));
+
+                // The tape block list is its own renderer, so it gets its own check:
+                // a TAP CODE header's start address is the number a user reads most
+                // often in this panel.
+                await setBase(true);
+                const tapDec = await loadIntoExplorer(makeTAP(), 'probe.tap');
+                assert(/Start address:\s*32768/.test(tapDec) && !/\$8000/.test(tapDec),
+                       'a TAP header start address is decimal too',
+                       (tapDec.match(/Start address:.{0,12}/) || [''])[0]);
+                await setBase(false);
+                const tapHex = d.getElementById('explorerInfoOutput').textContent || '';
+                assert(/Start address:\s*\$8000/.test(tapHex), 'and hex brings the sigil back',
+                       (tapHex.match(/Start address:.{0,12}/) || [''])[0]);
             });
 
             await part('Switching files clears the previous one', async () => {
@@ -268,6 +354,56 @@
                 const toolbar = d.getElementById('editorSharedToolbar');
                 assert(!!toolbar && !toolbar.classList.contains('hidden'),
                        'the editor toolbar is available for a disk image');
+            });
+
+            await part('Edit: TRD BASIC autostart LINE', async () => {
+                // The box a BASIC row opens is its LINE, written into the $80 $AA
+                // trailer after the program -- not the Addr box a CODE row gets.
+                const prog = new Uint8Array(24);
+                prog.set([0x80, 0xAA, 0x0A, 0x00], 20);
+                const basic = [{ name: 'boot', ext: 'B', data: prog, length: 20, programLength: 20, sectors: 1 },
+                               trdFiles[0]];
+                clickTab('Edit');
+                await wait(250);
+                await loadIntoExplorer(TRDLoader.buildTRD(basic, 'PROBE'), 'line.trd');
+                clickTab('Edit');
+                const rowOf = (name) => [...d.querySelectorAll('#editorPanels .disk-row')]
+                    .find(r => (r.querySelector('.file-name') || {}).textContent === name);
+                const openRow = async (name) => {
+                    (await until(() => rowOf(name))).click();
+                    rowOf(name).click();   // re-found: the first click may re-render the list
+                    return await until(() => d.querySelector('#editorPanels .editor-inline-edit'));
+                };
+                const lineOf = (name) => ((rowOf(name) || d).querySelector('.file-addr') || {}).textContent;
+                const status = () => [...d.querySelectorAll('#editorPanels *')]
+                    .map(e => e.textContent).join(' ');
+
+                let edit = await openRow('boot');
+                const box = edit && edit.querySelector('[data-field="line"]');
+                assert(!!box, 'a BASIC row opens a LINE box');
+                assert(!!box && box.value === '10', 'holding the current line', box && box.value);
+                assert(!edit.querySelector('[data-field="addr"]'), 'and no Addr box');
+
+                box.value = '99999';
+                edit.querySelector('[data-action="disk-apply"]').click();
+                await wait(100);
+                assert(/LINE must be/.test(status()), 'a line past 9999 is refused');
+                assert(lineOf('boot') === 'LINE 10', 'and the old line stays', lineOf('boot'));
+
+                box.value = '250';
+                edit.querySelector('[data-action="disk-apply"]').click();
+                await wait(150);
+                assert(lineOf('boot') === 'LINE 250', 'Apply writes the new line', lineOf('boot'));
+
+                edit = await openRow('boot');
+                edit.querySelector('[data-field="line"]').value = '';
+                edit.querySelector('[data-action="disk-apply"]').click();
+                await wait(150);
+                assert(lineOf('boot') === '', 'an empty box clears it', lineOf('boot'));
+
+                edit = await openRow('HELLO');
+                assert(!!edit.querySelector('[data-field="addr"]') && !edit.querySelector('[data-field="line"]'),
+                       'a CODE row still opens an Addr box');
             });
 
             await part('Hex Dump: Find, including the encoded ladder', async () => {

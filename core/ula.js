@@ -7,7 +7,8 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 import { applySnow, applySnowLine, snowActive, snowRange, DISPLAY_BYTES, M1Log, SnowCalibration } from './ula-snow.js';
-import { applyInkSkew, inkSkewFor } from './ula-inkskew.js';
+import { inkSkewFor } from './ula-inkskew.js';
+import { renderCell, cellContext } from './ula-blit.js';
 import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
     // PC keys that can act as the ZX modifiers (Caps Shift / Symbol Shift).
@@ -1289,36 +1290,10 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                 const inkSkew = this.inkSkew;
                 let prevInkBit = 0;
+                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaplus.palette32 : null, flashActive, inkSkew);
                 for (let col = 0; col < 32; col++) {
-                    const pixelByte = screenRam[pixelAddr + col];
-                    const attr = screenRam[attrAddr + col];
-
-                    let inkColor, paperColor;
-                    if (ulaPlusActive) {
-                        const clut = ((attr >> 6) & 0x03) << 4;
-                        inkColor = ulaplus.palette32[clut + (attr & 0x07)];
-                        paperColor = ulaplus.palette32[clut + 8 + ((attr >> 3) & 0x07)];
-                    } else {
-                        let ink = attr & 0x07;
-                        let paper = (attr >> 3) & 0x07;
-                        const bright = (attr & 0x40) ? 8 : 0;
-                        if ((attr & 0x80) && flashActive) {
-                            const tmp = ink; ink = paper; paper = tmp;
-                        }
-                        inkColor = pal32[ink + bright];
-                        paperColor = pal32[paper + bright];
-                    }
-
-                    const baseOffset = rowOffset + (col << 3);
-                    fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                    fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                    fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                    fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                    fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                    fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                    fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                    fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                    if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                    prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+                        screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
                 }
             }
         }
@@ -1553,6 +1528,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                         // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                         const inkSkew = this.inkSkew;
                         let prevInkBit = 0;
+                        const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
                             const attrOffset = attrRowOffset + col;
@@ -1577,33 +1553,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                                 attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                             }
 
-                            let inkColor, paperColor;
-                            if (ulaPlusActive) {
-                                // ULAplus: CLUT from bits 7,6; ink from bits 2-0; paper from bits 5-3
-                                const clut = ((attr >> 6) & 0x03) << 4;
-                                inkColor = ulaPal32[clut + (attr & 0x07)];
-                                paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                            } else {
-                                let ink = attr & 0x07;
-                                let paper = (attr >> 3) & 0x07;
-                                const bright = (attr & 0x40) ? 8 : 0;
-                                if ((attr & 0x80) && flashActive) {
-                                    const tmp = ink; ink = paper; paper = tmp;
-                                }
-                                inkColor = pal32[ink + bright];
-                                paperColor = pal32[paper + bright];
-                            }
-
-                            const baseOffset = rowOffset + (col << 3);
-                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                            if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                            prevInkBit = renderCell(cellCtx, rowOffset + (col << 3), pixelByte, attr, prevInkBit);
                         }
                     } else {
                         // Fast path: no attribute changes, use optimized 32-bit writes
@@ -1632,39 +1582,15 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                         // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                         const inkSkew = this.inkSkew;
                         let prevInkBit = 0;
+                        // Which ULAplus palette applies is fixed for the line, so it is
+                        // resolved here rather than re-tested on every column as it was.
+                        const linePal = ulaPlusActive
+                            ? (this.hadPaletteChanges ? ulaPal32ForLine : ulaplus.palette32)
+                            : null;
+                        const cellCtx = cellContext(fb32, pal32, linePal, flashActive, inkSkew);
                         for (let col = 0; col < 32; col++) {
-                            const pixelByte = screenRam[pixelAddr + col];
-                            const attr = screenRam[attrAddr + col];
-
-                            let inkColor, paperColor;
-                            if (ulaPlusActive) {
-                                // ULAplus: CLUT from bits 7,6; ink from bits 2-0; paper from bits 5-3
-                                const clut = ((attr >> 6) & 0x03) << 4;
-                                const ulaPal32 = this.hadPaletteChanges ? ulaPal32ForLine : ulaplus.palette32;
-                                inkColor = ulaPal32[clut + (attr & 0x07)];
-                                paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                            } else {
-                                let ink = attr & 0x07;
-                                let paper = (attr >> 3) & 0x07;
-                                const bright = (attr & 0x40) ? 8 : 0;
-                                if ((attr & 0x80) && flashActive) {
-                                    const tmp = ink; ink = paper; paper = tmp;
-                                }
-                                inkColor = pal32[ink + bright];
-                                paperColor = pal32[paper + bright];
-                            }
-
-                            // Write 8 pixels using 32-bit array
-                            const baseOffset = rowOffset + (col << 3);
-                            fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                            fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                            fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                            fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                            fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                            fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                            fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                            fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                            if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                            prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+                                screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
                         }
                     }
                 }
@@ -1757,6 +1683,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
                         const attrOffset = attrRowOffset + col;
@@ -1781,68 +1708,17 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                             attr = attrInitial ? attrInitial[attrOffset] : currentAttr;
                         }
 
-                        let inkColor, paperColor;
-                        if (ulaPlusActive) {
-                            const clut = ((attr >> 6) & 0x03) << 4;
-                            inkColor = ulaPal32[clut + (attr & 0x07)];
-                            paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                        } else {
-                            let ink = attr & 0x07;
-                            let paper = (attr >> 3) & 0x07;
-                            const bright = (attr & 0x40) ? 8 : 0;
-                            if ((attr & 0x80) && flashActive) {
-                                const tmp = ink; ink = paper; paper = tmp;
-                            }
-                            inkColor = pal32[ink + bright];
-                            paperColor = pal32[paper + bright];
-                        }
-
-                        const baseOffset = rowOffset + (col << 3);
-                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                        prevInkBit = renderCell(cellCtx, rowOffset + (col << 3), pixelByte, attr, prevInkBit);
                     }
                 } else {
                     // Fast path: no attribute changes, render from current screen
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
                     for (let col = 0; col < 32; col++) {
-                        const pixelByte = screenRam[pixelAddr + col];
-                        const attr = screenRam[attrAddr + col];
-
-                        let inkColor, paperColor;
-                        if (ulaPlusActive) {
-                            const clut = ((attr >> 6) & 0x03) << 4;
-                            inkColor = ulaPal32[clut + (attr & 0x07)];
-                            paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                        } else {
-                            let ink = attr & 0x07;
-                            let paper = (attr >> 3) & 0x07;
-                            const bright = (attr & 0x40) ? 8 : 0;
-                            if ((attr & 0x80) && flashActive) {
-                                const tmp = ink; ink = paper; paper = tmp;
-                            }
-                            inkColor = pal32[ink + bright];
-                            paperColor = pal32[paper + bright];
-                        }
-
-                        const baseOffset = rowOffset + (col << 3);
-                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                        prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+                            screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
                     }
                 }
             } else {
@@ -2082,6 +1958,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                 const inkSkew = this.inkSkew;
                 let prevInkBit = 0;
+                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
                 for (let col = 0; col < 32; col++) {
                     // T-state at column start (each column = 4 T-states = 8 pixels at 2 pixels/T-state)
                     const colTstate = paperStartTstate + (col * 4);
@@ -2093,35 +1970,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     }
 
                     const screenRam = bankCache.get(currentBank);
-                    const pixelByte = screenRam[pixelAddr + col];
-                    const attr = screenRam[attrAddr + col];
-
-                    let inkColor, paperColor;
-                    if (ulaPlusActive) {
-                        const clut = ((attr >> 6) & 0x03) << 4;
-                        inkColor = ulaPal32[clut + (attr & 0x07)];
-                        paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                    } else {
-                        let ink = attr & 0x07;
-                        let paper = (attr >> 3) & 0x07;
-                        const bright = (attr & 0x40) ? 8 : 0;
-                        if ((attr & 0x80) && flashActive) {
-                            const tmp = ink; ink = paper; paper = tmp;
-                        }
-                        inkColor = pal32[ink + bright];
-                        paperColor = pal32[paper + bright];
-                    }
-
-                    const baseOffset = rowOffset + (col << 3);
-                    fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                    fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                    fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                    fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                    fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                    fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                    fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                    fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                    if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                    prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+                        screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
                 }
             }
         }
@@ -2588,36 +2438,10 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
                     for (let col = 0; col < 32; col++) {
-                        const pixelByte = screenRam[pixelAddr + col];
-                        const attr = screenRam[attrAddr + col];
-
-                        let inkColor, paperColor;
-                        if (ulaPlusActive) {
-                            const clut = ((attr >> 6) & 0x03) << 4;
-                            inkColor = ulaPal32[clut + (attr & 0x07)];
-                            paperColor = ulaPal32[clut + 8 + ((attr >> 3) & 0x07)];
-                        } else {
-                            let ink = attr & 0x07;
-                            let paper = (attr >> 3) & 0x07;
-                            const bright = (attr & 0x40) ? 8 : 0;
-                            if ((attr & 0x80) && flashActive) {
-                                const tmp = ink; ink = paper; paper = tmp;
-                            }
-                            inkColor = pal32[ink + bright];
-                            paperColor = pal32[paper + bright];
-                        }
-
-                        const baseOffset = rowOffset + (col << 3);
-                        fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
-                        fb32[baseOffset + 1] = (pixelByte & 0x40) ? inkColor : paperColor;
-                        fb32[baseOffset + 2] = (pixelByte & 0x20) ? inkColor : paperColor;
-                        fb32[baseOffset + 3] = (pixelByte & 0x10) ? inkColor : paperColor;
-                        fb32[baseOffset + 4] = (pixelByte & 0x08) ? inkColor : paperColor;
-                        fb32[baseOffset + 5] = (pixelByte & 0x04) ? inkColor : paperColor;
-                        fb32[baseOffset + 6] = (pixelByte & 0x02) ? inkColor : paperColor;
-                        fb32[baseOffset + 7] = (pixelByte & 0x01) ? inkColor : paperColor;
-                        if (inkSkew) prevInkBit = applyInkSkew(fb32, baseOffset, pixelByte, inkColor, paperColor, prevInkBit, inkSkew);
+                        prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+                            screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
                     }
                 }
             } else {

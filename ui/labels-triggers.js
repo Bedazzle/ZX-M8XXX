@@ -1,6 +1,7 @@
 // Labels & triggers list rendering — trigger list, breakpoints, watchpoints, labels
 
-import { hex16, escapeHtml } from '../core/utils.js';
+import { escapeHtml } from '../core/utils.js';
+import { fmtAddr, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initLabelsTriggers({ getSpectrum, labelManager }) {
     const triggerList = document.getElementById('triggerList');
@@ -102,7 +103,7 @@ export function initLabelsTriggers({ getSpectrum, labelManager }) {
         }
 
         labelsList.innerHTML = labels.map(label => {
-            const addrStr = label.page !== null ? `${label.page}:${hex16(label.address)}` : hex16(label.address);
+            const addrStr = label.page !== null ? `${label.page}:${fmtAddr(label.address)}` : fmtAddr(label.address);
             const commentHtml = label.comment ? `<span class="label-comment">${escapeHtml(label.comment)}</span>` : '';
             const sourceTag = label.source === 'profiler' ? '<span class="label-source-tag">P</span>' :
                               label.source === 'asm' ? '<span class="label-source-tag">A</span>' : '';
@@ -122,6 +123,9 @@ export function initLabelsTriggers({ getSpectrum, labelManager }) {
             </div>`;
         }).join('');
     }
+
+    // Hex or decimal: breakpoint descriptions and the labels list carry addresses.
+    onNumberBaseChange(() => { updateTriggerList(); updateLabelsList(); });
 
     return { updateTriggerList, updateBreakpointList, updateWatchpointList,
              updatePortBreakpointList, updateLabelsList };

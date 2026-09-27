@@ -1,5 +1,5 @@
 // port-logging.js — Port I/O logging and trace filter controls (extracted from index.html)
-import { hex8, hex16 } from '../core/utils.js';
+import { fmtPort } from '../core/addr-format.js';
 
 export function initPortLogging({ getSpectrum, showMessage }) {
     const chkPortLog = document.getElementById('chkPortLog');
@@ -70,7 +70,7 @@ export function initPortLogging({ getSpectrum, showMessage }) {
             portFilterList.innerHTML = '<div class="no-breakpoints">All ports (no filter)</div>';
             portFilterStatus.textContent = '';
         } else {
-            const portHex = v => v > 0xFF ? hex16(v) : hex8(v);
+            const portHex = v => fmtPort(v);
             portFilterList.innerHTML = filters.map((f, i) => {
                 const desc = portHex(f.port) + '&' + portHex(f.mask);
                 return `<div class="trigger-item" data-index="${i}">

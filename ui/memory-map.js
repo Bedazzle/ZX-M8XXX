@@ -1,5 +1,6 @@
 // memory-map.js — Memory Map / Heatmap dialog (extracted from index.html)
 import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtByte } from '../core/addr-format.js';
 import { SLOT1_START, SCREEN_AFTER } from '../core/constants.js';
 import { exportCtl, exportGhidraCsv, exportSym } from '../core/map-export.js';
 
@@ -464,12 +465,12 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
             const readCount = heatmapData.read.get(key) || 0;
             const writeCount = heatmapData.written.get(key) || 0;
 
-            info = `${hex16(addr)}: E:${execCount} R:${readCount} W:${writeCount}`;
+            info = `${fmtAddr(addr)}: E:${execCount} R:${readCount} W:${writeCount}`;
             if (label) info += ` [${label.name}]`;
 
             const addrHi = hex8(addr >> 8);
             const addrLo = hex8(addr & 0xFF);
-            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})`;
+            infoText = `Address: ${fmtAddr(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})`;
             infoText += `\nExecuted: ${execCount.toLocaleString()} times`;
             infoText += `\nRead: ${readCount.toLocaleString()} times`;
             infoText += `\nWritten: ${writeCount.toLocaleString()} times`;
@@ -478,12 +479,12 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
             const region = regionManager.get(addr);
             const type = region ? region.type : (val === 0 ? 'Zero' : 'Unmapped');
 
-            info = `${hex16(addr)}: ${hex8(val)} - ${type}`;
+            info = `${fmtAddr(addr)}: ${fmtByte(val)} - ${type}`;
             if (label) info += ` [${label.name}]`;
 
             const addrHi = hex8(addr >> 8);
             const addrLo = hex8(addr & 0xFF);
-            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})\nType: ${type}`;
+            infoText = `Address: ${fmtAddr(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})\nType: ${type}`;
             if (region && region.comment) infoText += `\n${region.comment}`;
             if (label) infoText += `\nLabel: ${label.name}`;
         }

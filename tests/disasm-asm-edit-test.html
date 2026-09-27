@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Disassembly Row Editing Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Disassembly Row Editing Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // Typing an instruction into a disassembly row, driven the way a user does
+        // it: double-click the mnemonic, type, press Enter. core/asm-line.js is
+        // tested on its own in asm-line-test; what this asserts is the part that
+        // only exists in the real app -- that the box opens on the right row with
+        // the row's own text in it, that the bytes reach memory, that the rows
+        // afterwards show what is really there whether the new instruction is
+        // shorter or longer, that a refusal changes nothing, and that one edit is
+        // one undo.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d;
+
+        const BASE = 0x8000;
+        //  8000  3E 05        LD A,05h      two bytes
+        //  8002  21 34 12     LD HL,1234h   three
+        //  8005  CD 00 90     CALL 9000h    three, and a label goes on the target
+        //  8008  00           NOP
+        //  8009  78           LD A,B
+        //  800A  C9           RET
+        const CODE = [0x3E, 0x05, 0x21, 0x34, 0x12, 0xCD, 0x00, 0x90, 0x00, 0x78, 0xC9,
+                      0x00, 0x00, 0x00, 0x00, 0x00];
+
+        const hx = (a) => a.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        function bytesAt(addr, n) {
+            const out = [];
+            for (let i = 0; i < n; i++) out.push(w.zxDebug.peek(addr + i));
+            return out;
+        }
+        const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+        function plant() {
+            CODE.forEach((b, i) => w.zxDebug.poke(BASE + i, b));
+        }
+
+        const leftView = () => d.getElementById('disassemblyView');
+        const rightView = () => d.getElementById('rightDisassemblyView');
+        const rowIn = (view, addr) => view.querySelector(`.disasm-line[data-addr="${addr}"]`);
+        const rowAddrs = (view) => Array.from(view.querySelectorAll('.disasm-line'))
+            .map(el => parseInt(el.dataset.addr, 10));
+        const box = () => d.querySelector('.disasm-asm-input');
+
+        function goTo(inputId, value) {
+            const inp = d.getElementById(inputId);
+            inp.value = value;
+            inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }
+
+        function openRow(addr, view = leftView()) {
+            const row = rowIn(view, addr);
+            if (!row) return null;
+            const mnemonic = row.querySelector('.disasm-mnemonic');
+            mnemonic.dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
+            return box();
+        }
+        function typeAndEnter(input, text) {
+            if (text !== null) input.value = text;
+            input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }
+        function pressEscape(input) {
+            input.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }
+        // What the row at `addr` reads, with the box (if any) out of the way.
+        function rowText(addr, view = leftView()) {
+            const row = rowIn(view, addr);
+            if (!row) return null;
+            return row.querySelector('.disasm-mnemonic').textContent.trim().replace(/\s+/g, ' ');
+        }
+
+        (async () => {
+          try {
+            section('The app comes up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument;
+            await w.zxDebug.ready();
+            w.spectrum.stop();
+            await wait(150);
+
+            d.getElementById('chkFollowPC').checked = false;
+            plant();
+            goTo('disasmAddress', '8000');
+            await wait(250);
+            assert(!!rowIn(leftView(), BASE), 'the fixture is on screen at 8000');
+
+            section('The box opens on the row, holding the row\'s own text');
+            {
+                const input = openRow(BASE);
+                assert(!!input, 'double-clicking the mnemonic opens an input');
+                assert(input && /LD\s+A/i.test(input.value), 'prefilled with the instruction that is there',
+                       input && input.value);
+                // Enter with nothing changed must be a no-op: the text a row prints
+                // has to read back as the bytes it printed it from.
+                typeAndEnter(input, null);
+                await wait(120);
+                assert(!box(), 'Enter closes the box');
+                assert(same(bytesAt(BASE, 2), [0x3E, 0x05]), 'and an unchanged row writes the same bytes back',
+                       hx(bytesAt(BASE, 2)));
+            }
+
+            section('A new instruction of the same length');
+            {
+                const input = openRow(BASE);
+                typeAndEnter(input, 'ld b,10');
+                await wait(120);
+                assert(same(bytesAt(BASE, 2), [0x06, 0x0A]), 'LD B,10 is written as 06 0A', hx(bytesAt(BASE, 2)));
+                assert(/LD\s+B/i.test(rowText(BASE) || ''), 'and the row shows it', rowText(BASE));
+                assert(rowAddrs(leftView()).includes(0x8002), 'the following instruction is where it was');
+            }
+
+            section('A shorter one leaves the rest of the old bytes alone');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(0x8002);          // LD HL,1234h — three bytes
+                typeAndEnter(input, 'ret');
+                await wait(150);
+                assert(w.zxDebug.peek(0x8002) === 0xC9, 'RET is written at 8002',
+                       String(w.zxDebug.peek(0x8002)));
+                assert(same(bytesAt(0x8003, 2), [0x34, 0x12]), 'the two bytes it did not need are untouched',
+                       hx(bytesAt(0x8003, 2)));
+                const addrs = rowAddrs(leftView());
+                assert(addrs.includes(0x8002) && addrs.includes(0x8003),
+                       'and the leftovers get rows of their own', addrs.map(a => a.toString(16)).join(','));
+            }
+
+            section('A longer one runs into the next instruction, and the rows say so');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(BASE);            // LD A,05h — two bytes
+                typeAndEnter(input, 'ld hl,0C000h');    // three
+                await wait(150);
+                assert(same(bytesAt(BASE, 3), [0x21, 0x00, 0xC0]), 'the three bytes are written', hx(bytesAt(BASE, 3)));
+                const addrs = rowAddrs(leftView());
+                assert(!addrs.includes(0x8002), 'the instruction that was at 8002 is gone');
+                assert(addrs.includes(0x8003), 'and the next row starts inside what used to be there',
+                       addrs.map(a => a.toString(16)).join(','));
+            }
+
+            section('Where a same-size encoding exists, it is the one used');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(BASE);            // two bytes
+                typeAndEnter(input, 'nop');
+                await wait(150);
+                assert(same(bytesAt(BASE, 2), [0xDD, 0x00]),
+                       'NOP over a two-byte instruction is the two-byte NOP', hx(bytesAt(BASE, 2)));
+                assert((rowText(BASE) || '').toUpperCase().startsWith('NOP'), 'the row reads NOP', rowText(BASE));
+                assert(rowAddrs(leftView()).includes(0x8002), 'and nothing after it moved');
+                assert(w.zxDebug.peek(0x8002) === 0x21, 'the next instruction is intact');
+            }
+
+            section('Refused input changes nothing and keeps the box open');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(BASE);
+                typeAndEnter(input, 'frobnicate a,b');
+                await wait(120);
+                assert(!!box(), 'the box is still there to fix the typo');
+                assert(box() && box().classList.contains('error'), 'and it is marked as wrong');
+                assert(same(bytesAt(BASE, 2), [0x3E, 0x05]), 'memory is untouched', hx(bytesAt(BASE, 2)));
+                // ...and it can be fixed without reopening it. XOR A is one byte,
+                // so over a two-byte instruction it goes in as the two-byte
+                // encoding, by the same rule as NOP above.
+                typeAndEnter(box(), 'xor a');
+                await wait(150);
+                assert(!box() && same(bytesAt(BASE, 2), [0xDD, 0xAF]), 'fixing it in place works',
+                       hx(bytesAt(BASE, 2)));
+                assert((rowText(BASE) || '').toUpperCase().startsWith('XOR A'),
+                       'and the row reads XOR A', rowText(BASE));
+            }
+
+            section('Escape cancels');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(BASE);
+                input.value = 'ret';
+                pressEscape(input);
+                await wait(120);
+                assert(!box(), 'the box closes');
+                assert(same(bytesAt(BASE, 2), [0x3E, 0x05]), 'and nothing was written', hx(bytesAt(BASE, 2)));
+                assert(/LD\s+A/i.test(rowText(BASE) || ''), 'the row shows what it did before', rowText(BASE));
+            }
+
+            section('Labels: as an operand, and defined on the row');
+            {
+                plant();
+                w.zxDebug.labels.add({ address: 0x9000, name: 'draw_screen' });
+                goTo('disasmAddress', '8000');
+                await wait(200);
+                const shown = rowText(0x8005) || '';
+                assert(/draw_screen/.test(shown), 'the row prints the label instead of the address', shown);
+                // Round trip: what the row prints must read back as what it printed.
+                const input = openRow(0x8005);
+                assert(/draw_screen/.test(input.value), 'and the box holds the label too', input.value);
+                typeAndEnter(input, null);
+                await wait(150);
+                assert(same(bytesAt(0x8005, 3), [0xCD, 0x00, 0x90]), 'Enter on it writes the same call back',
+                       hx(bytesAt(0x8005, 3)));
+
+                const input2 = openRow(0x8005);
+                typeAndEnter(input2, 'jp draw_screen');
+                await wait(150);
+                assert(same(bytesAt(0x8005, 3), [0xC3, 0x00, 0x90]), 'and a label typed into a new instruction resolves',
+                       hx(bytesAt(0x8005, 3)));
+
+                const input3 = openRow(0x8008);
+                typeAndEnter(input3, 'again: nop');
+                await wait(150);
+                const added = w.zxDebug.labels.get(0x8008);
+                assert(!!added && added.name === 'again', 'a label written on the row is kept',
+                       added && added.name);
+                assert(w.zxDebug.peek(0x8008) === 0x00, 'and the instruction after it is assembled too');
+            }
+
+            section('One edit, one undo');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(0x8002);          // LD HL,1234h
+                typeAndEnter(input, 'ld de,0');
+                await wait(150);
+                assert(same(bytesAt(0x8002, 3), [0x11, 0x00, 0x00]), 'the edit went in', hx(bytesAt(0x8002, 3)));
+                d.dispatchEvent(new w.KeyboardEvent('keydown', { ctrlKey: true, code: 'KeyZ', key: 'z', bubbles: true }));
+                await wait(200);
+                assert(same(bytesAt(0x8002, 3), [0x21, 0x34, 0x12]), 'Ctrl+Z puts the old instruction back',
+                       hx(bytesAt(0x8002, 3)));
+            }
+
+            section('The right panel edits the same way');
+            {
+                plant();
+                const rightType = d.getElementById('rightPanelType');
+                rightType.value = 'disasm';
+                rightType.dispatchEvent(new w.Event('change'));
+                await wait(200);
+                goTo('rightDisasmAddress', '8000');
+                await wait(250);
+                assert(!!rowIn(rightView(), BASE), 'the right panel shows the fixture');
+                const input = openRow(BASE, rightView());
+                assert(!!input, 'double-clicking a row there opens a box too');
+                typeAndEnter(input, 'scf');
+                await wait(150);
+                assert(w.zxDebug.peek(BASE) === 0x37, 'and it writes', String(w.zxDebug.peek(BASE)));
+            }
+
+            section('The context menu offers it as well');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const row = rowIn(leftView(), BASE);
+                row.dispatchEvent(new w.MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }));
+                await wait(80);
+                const menu = d.querySelector('.label-context-menu');
+                const item = menu && Array.from(menu.querySelectorAll('div'))
+                    .find(el => el.dataset.action === 'asm-edit');
+                assert(!!item, 'the menu has an "Edit instruction" entry');
+                if (item) {
+                    item.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+                    await wait(120);
+                    assert(!!box(), 'and it opens the box on that row');
+                    if (box()) pressEscape(box());
+                }
+            }
+
+            section('A ROM row needs the Edit ROM box, which is in the disasm ⚙');
+            {
+                const romBox = d.getElementById('chkRomEditDisasm');
+                const memBox = d.getElementById('chkRomEdit');
+                assert(!!romBox, 'the disasm options have an Edit ROM box');
+                assert(romBox && !romBox.checked, 'and it starts off');
+
+                goTo('disasmAddress', '0000');
+                await wait(200);
+                const was = w.zxDebug.peek(0x0000);
+                const input = openRow(0x0000);
+                assert(!!input, 'a ROM row opens an editor like any other');
+                typeAndEnter(input, 'ret');
+                await wait(150);
+                assert(!!box(), 'the box stays open when the write is refused');
+                assert(w.zxDebug.peek(0x0000) === was, 'and ROM is untouched',
+                       String(w.zxDebug.peek(0x0000)));
+
+                romBox.checked = true;
+                romBox.dispatchEvent(new w.Event('change'));
+                await wait(80);
+                assert(memBox.checked === true, 'ticking it ticks the one by the hex dump too');
+                assert(w.spectrum.memory.allowRomEdit === true, 'and the machine allows the write');
+
+                typeAndEnter(box(), 'ret');
+                await wait(150);
+                assert(!box() && w.zxDebug.peek(0x0000) === 0xC9, 'now it goes in',
+                       String(w.zxDebug.peek(0x0000)));
+
+                memBox.checked = false;
+                memBox.dispatchEvent(new w.Event('change'));
+                await wait(80);
+                assert(romBox.checked === false, 'and unticking either one unticks both');
+                assert(w.spectrum.memory.allowRomEdit === false, 'ROM is protected again');
+                w.zxDebug.poke(0x0000, was);
+                goTo('disasmAddress', '8000');
+                await wait(200);
+            }
+
+            section('The view stops redrawing under an open box');
+            {
+                plant();
+                goTo('disasmAddress', '8000');
+                await wait(150);
+                const input = openRow(BASE);
+                input.value = 'ld c,7';
+                // Anything that would normally redraw the disassembly.
+                const tst = d.getElementById('chkShowTstates');
+                tst.checked = !tst.checked;
+                tst.dispatchEvent(new w.Event('change'));
+                await wait(120);
+                assert(box() === input, 'the box survives a refresh', box() ? 'a different box' : 'gone');
+                typeAndEnter(box(), null);
+                await wait(150);
+                assert(same(bytesAt(BASE, 2), [0x0E, 0x07]), 'and what was typed is still what gets written',
+                       hx(bytesAt(BASE, 2)));
+            }
+
+            log('\n' + (failed === 0 ? 'All tests passed.' : `${failed} failed.`), failed === 0 ? 'pass' : 'fail');
+          } catch (e) {
+            failed++;
+            log('EXCEPTION: ' + (e && e.stack || e), 'fail');
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+          }
+        })();
+    </script>
+</body>
+</html>

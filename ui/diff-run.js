@@ -12,6 +12,7 @@
 // it was. core/divergence.js does the comparing; this drives the runs.
 
 import { hex16, hex8 } from '../core/utils.js';
+import { fmtAddr, fmtAddrSigil, fmtByteSigil, parseAddr, parseByte, onNumberBaseChange } from '../core/addr-format.js';
 import { compareRuns, pcOf } from '../core/divergence.js';
 
 export function initDiffRun({ getSpectrum, disassembleAt, getLabel, goToAddress,
@@ -32,9 +33,13 @@ export function initDiffRun({ getSpectrum, disassembleAt, getLabel, goToAddress,
         for (const part of String(text || '').split(',')) {
             const t = part.trim();
             if (!t) continue;
-            const m = /^([0-9a-fA-F]{1,4})\s*=\s*([0-9a-fA-F]{1,2})$/.exec(t);
-            if (!m) return { error: `"${t}" is not addr=value in hex` };
-            out.push({ addr: parseInt(m[1], 16) & 0xFFFF, value: parseInt(m[2], 16) & 0xFF });
+            const m = /^(\S+)\s*=\s*(\S+)$/.exec(t);
+            const addr = m && parseAddr(m[1]);
+            const value = m && parseByte(m[2]);
+            if (!m || addr === null || value === null) {
+                return { error: `"${t}" is not addr=value` };
+            }
+            out.push({ addr: addr & 0xFFFF, value: value & 0xFF });
         }
         return { changes: out };
     }
@@ -123,7 +128,7 @@ export function initDiffRun({ getSpectrum, disassembleAt, getLabel, goToAddress,
 
     const pcLink = (pc) => {
         const label = getLabel ? getLabel(pc) : null;
-        return `<span class="dr-pc" data-addr="${pc}">${hex16(pc)}${label ? ' ' + label : ''}</span>`;
+        return `<span class="dr-pc" data-addr="${pc}">${fmtAddr(pc)}${label ? ' ' + label : ''}</span>`;
     };
 
     function instrLine(pc) {
@@ -138,7 +143,7 @@ export function initDiffRun({ getSpectrum, disassembleAt, getLabel, goToAddress,
     function render(report) {
         const { cmp, frames, changes, counts } = report;
         const changeText = changes.length
-            ? changes.map(c => `$${hex16(c.addr)}=$${hex8(c.value)}`).join(' ')
+            ? changes.map(c => `${fmtAddrSigil(c.addr)}=${fmtByteSigil(c.value)}`).join(' ')
             : 'nothing';
 
         if (!cmp.diverged) {
@@ -239,6 +244,9 @@ export function initDiffRun({ getSpectrum, disassembleAt, getLabel, goToAddress,
         const el = e.target.closest('.dr-pc');
         if (el) goToAddress(parseInt(el.dataset.addr, 10));
     });
+
+    // Hex or decimal: the report names the instruction the two runs disagreed on.
+    onNumberBaseChange(() => { if (lastReport) render(lastReport); });
 
     return { doRun, getReport: () => lastReport };
 }

@@ -100,6 +100,21 @@ function run(){
            `runFrame=${spA.memory.read(0xBF00)} headless=${spB.memory.read(0xBF00)}`);
     assert(!!spA.cpu.iff1 === !!spB.cpu.iff1, 'same interrupt-enable state either way');
 
+    // Application tests set audioSuppressed on the machine. It has to hold even
+    // for an audio object that is already enabled: the app creates its audio on
+    // the first click, which can be the click that started the tests.
+    section('Both steppers stay silent while audio is suppressed');
+    for (const step of ['runFrame', 'runFrameHeadless']) {
+        const sp = makeMachine('48k'); setupHaltLoop(sp);
+        let frames = 0;
+        sp.audio = { enabled: true, processFrame() { frames++; }, stop() {} };
+        sp[step]();
+        assert(frames === 1, `${step}: an enabled audio object gets the frame`, `frames=${frames}`);
+        sp.audioSuppressed = true;
+        for (let f = 0; f < 3; f++) sp[step]();
+        assert(frames === 1, `${step}: a suppressed machine generates no audio`, `frames=${frames}`);
+    }
+
     summaryEl.textContent = `Passed: ${passed}  Failed: ${failed}  Total: ${passed+failed}`;
     summaryEl.className = failed > 0 ? 'fail' : 'pass';
 }

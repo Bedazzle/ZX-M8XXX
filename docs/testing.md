@@ -9,7 +9,19 @@ Z80 assembler test suite — instructions, directives, expressions, macros, buil
 snippets (`data/asm-snippets.json`), and the **line map** (`lineMap`): one entry per line
 that emitted, the parser's comment rather than a `;`-split of the raw line, settled
 addresses, per-expansion entries for `DUP` and macro bodies with their nesting `depth`, and
-that a second **async** build does not keep the first one's lines.
+that a second **async** build does not keep the first one's lines. `runDollarOperatorTests`
+covers the sjasmplus address/page operators — `$$$`/`$$$$`, the three sigil-plus-label
+forms and `{x}`/`{b x}`. It also pins the **v1.0.0 change to bare `$$`** (the last `ORG`
+before it, the page of `$` now), including that it agrees with `$$lab` at the same address
+and that the old `$-$$` block offset errors rather than returning a plausible small number.
+
+Two asserts in that group were written **vacuous**, and both are easy to write again:
+`db {b addr}` is indistinguishable from `db {addr}`, because a `DB` cuts the word down to
+the same byte the byte read returns — the size only shows in a `DW`. And `$$$$` proves
+nothing unless the displaced address and the physical one sit in slots holding **different
+pages**; `org $8000 / page 2 / disp $C000` puts page 2 on both sides. Both were found by
+breaking the implementation on purpose and seeing which asserts stayed green, which is the
+check worth repeating when adding to this group.
 
 **This suite reports green when it aborts.** `runAllTests` awaits each group with no
 `catch`, so an exception out of one stops the run and everything after it silently never
@@ -17,6 +29,14 @@ executes — while the runner still says "all green", because nothing *failed*. 
 that at the TAPEND test, which expected a return value from something that reports by
 throwing (fixed: it uses `tryAsm`). If a group you added seems to contribute no asserts,
 this is why: check the pass count actually rose.
+
+## `tests/asm-line-test.html`
+
+One-line assembler tests (`core/asm-line.js`) — the operand forms, undocumented opcodes, expressions, `$`, labels as operands and a label defined on the line, the data directives and the refusal of the source-file ones, and every way bad input is turned down (unknown mnemonic, missing operand, undefined label named in the message, a JR out of range, two instructions in one row). The sharp one is a **round trip**: 35 byte sequences are disassembled and the text fed straight back, which is what pressing Enter on an unchanged row does — it is what catches the `FFh`/`0FFh` fix-up. Then the size rule (`NOP` over two bytes is `DD 00`, `LD A,5` is *not* padded to three, no three-byte NOP is invented) with the chosen encodings **run on the real Z80**, since they are only safe if the CPU agrees with the disassembler. Finally that the ASM panel's dialect switches and collected errors survive an edit
+
+## `tests/disasm-asm-edit-test.html`
+
+Editing an instruction in a disassembly row, driven in the real app: double-click the mnemonic, type, Enter. The box opens on the right row holding the row's own text (and Enter unchanged writes the same bytes back), a same-length instruction leaves the rows around it alone, a shorter one leaves the old bytes showing as rows of their own, a longer one eats the next instruction and the rows say so, `NOP` over two bytes goes in as the two-byte encoding, a refusal keeps the box open and memory untouched, Esc cancels, labels resolve and one written on the row is kept, one edit is one Ctrl+Z, the right panel and the context menu both do it, and a refresh cannot throw the box away mid-word
 
 ## `tests/asm-highlight-test.html`
 
@@ -40,7 +60,7 @@ Import Foreign dialog tests — synthetic TRD/SCL/ZIP/Hobeta fixtures driven thr
 
 ## `tests/halt-int-test.html`
 
-HALT + interrupt tests — a frame-start INT landing on a not-yet-executed HALT enters the halt state first so the handler returns to PC+1 (snapshot resume on an EI/HALT main loop, e.g. Shock megademo)
+HALT + interrupt tests — a frame-start INT landing on a not-yet-executed HALT enters the halt state first so the handler returns to PC+1 (snapshot resume on an EI/HALT main loop, e.g. Shock megademo). Also that both steppers generate no audio while `audioSuppressed` is set, even with an enabled audio object — what keeps the application tests silent
 
 ## `tests/disk-boot-test.html`
 
@@ -127,6 +147,45 @@ Pristine (golden) byte-for-byte comparison: extracts files from a reference disk
 ## `tests/explorer-test.html`
 
 Explorer UI tests — drives the **real** Explorer in an iframe over `index.html` (it is built around the app's DOM, so it can't be unit-tested in isolation): loads synthetic SNA/TAP/TRD/SCL fixtures through the file input and checks the info panels, catalogues, hex dump, and that switching files clears the previous one. Sections are independent, so one failure doesn't abort the run
+
+## `tests/addr-format-test.html`
+
+Address/value/opcode base tests (`core/addr-format.js`), no emulator needed: in hex every
+formatter is `hex16`/`hex8` digit for digit, the address column is a fixed 5 characters in
+**both** bases (NBSP-padded, so a column sized for hex does not reflow when `65535` replaces
+`FFFF`), the three bases move independently, one listener hears all three and a listener that
+throws does not stop the others, and `parseAddr` reads back what the user typed — an explicit
+`$`/`0x`/`#`/`h` beats the switch, a bare `FFFF` cannot be decimal, and nonsense returns null
+rather than 0. Also `specToHex`/`portSpecToHex` (the UI-edge translation that keeps the core
+hex-only), `fmtByteCol` (2 characters in hex, 3 in decimal) and `fmtAddrPair` (the
+`4660 ($1234)` twin that collapses to one number in decimal).
+
+**There is no `d` suffix and there must not be one.** `004D` is a real address, so a trailing
+`d` cannot be told from a hex digit; an early cut of `parseAddr` read `004D` as 4.
+
+## `tests/addr-base-ui-test.html`
+
+The three switches driven in the **real** app (128 asserts). The checkboxes are in
+Settings → Display and default to hex; the disassembly, both memory dumps, the registers, the
+stack, the trace, POKE and the operand inside an instruction all redraw when one is thrown;
+the address column is the same width and the same box in both bases; an address box reads and
+writes the base that is on while `$`/`h` still force hex; a breakpoint typed in decimal reaches
+the core as hex; the 16-bit registers follow while the 8-bit ones do not; a decimal register
+keeps its box width as it counts (so the block does not twitch on every step); and the choice
+is remembered. Also the memory dump's four-byte rule, the hints, and the boxes that were
+converted last.
+
+Four traps this suite exists to catch, each of which produced a **passing but empty** assert
+first:
+
+- **`showTab` must never click an active tab.** That collapses the container, and every width
+  assertion then passes at 0px.
+- **`.memory-byte` has a hard width**, so both `getBoundingClientRect()` and `scrollWidth` read
+  18px whether or not `255` fits. Measure the text with `document.createRange()`.
+- **A `border-left` does not widen a `border-box` cell** — it takes the pixel from the digits
+  instead, so compare the text against the **content** box, not the border box.
+- **A rule drawn per cell is not continuous.** A cell is 16px in a 20px row pitch, so assert
+  that consecutive rows' rules touch, not merely that they exist.
 
 ## `tests/mapexport-test.html`
 

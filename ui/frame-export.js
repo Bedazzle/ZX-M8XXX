@@ -5,6 +5,7 @@ import {
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
 import { hex8, crc32 } from '../core/utils.js';
+import { fmtByte } from '../core/addr-format.js';
 
 export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusState, getMemoryBlock, readMemory, isRunning, startEmulator, stopEmulator, setOnFrame, getAy, showMessage, getRAMPage, getRamPages, getActiveScreenData }) {
 
@@ -1696,7 +1697,7 @@ export function initFrameExport({ getScreenCanvas, getDimensions, getUlaPlusStat
                 const detected = detectBitmapPattern(frames[0].bitmap);
                 if (detected) {
                     fillPattern = detected;
-                    showMessage(`Detected pattern: ${Array.from(detected).map(b => hex8(b)).join(' ')}`);
+                    showMessage(`Detected pattern: ${Array.from(detected).map(b => fmtByte(b)).join(' ')}`);
                 } else {
                     // Pattern not consistent - ask user
                     const choice = await showPatternChoiceDialog();

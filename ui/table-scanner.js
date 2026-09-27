@@ -9,7 +9,8 @@
 // that sit far above the rest. That ordering is the point: a game whose words
 // run 11, 57, 71 and then has two at 200 and 201 is saying what those two are.
 
-import { hex16, escapeHtml } from '../core/utils.js';
+import { escapeHtml } from '../core/utils.js';
+import { fmtAddrCol } from '../core/addr-format.js';
 import { findKeyScanTables, findCharTables, findWordTables,
          byValue, outliers } from '../core/table-scan.js';
 
@@ -59,7 +60,7 @@ export function initTableScanner({ readMemory, showMessage, goToMemoryAddress })
 
     function row(addr, label, body, html = false) {
         return `<div class="text-scan-result" data-addr="${addr}">` +
-               `<span class="addr">${hex16(addr)}</span> ` +
+               `<span class="addr">${fmtAddrCol(addr)}</span> ` +
                `<span class="tscan-label">${escapeHtml(label)}</span> ` +
                `<span class="preview">${html ? body : escapeHtml(body)}</span></div>`;
     }

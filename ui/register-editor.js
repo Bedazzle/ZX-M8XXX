@@ -1,5 +1,5 @@
 // Register editing functionality — inline edit, flag toggle, EXA/EXX swap
-import { hex16 } from '../core/utils.js';
+import { fmtAddr, parseAddr } from '../core/addr-format.js';
 
 export function initRegisterEditor({ getSpectrum, updateDebugger, addWatch, showMessage }) {
     const mainRegisters = document.getElementById('mainRegisters');
@@ -147,21 +147,12 @@ export function initRegisterEditor({ getSpectrum, updateDebugger, addWatch, show
             return;
         }
 
-        // Parse hex (with or without suffix) or decimal
-        if (valueStr.endsWith('H')) {
-            value = parseInt(valueStr.slice(0, -1), 16);
-        } else if (valueStr.startsWith('$') || valueStr.startsWith('0X')) {
-            value = parseInt(valueStr.replace('$', '').replace('0X', ''), 16);
-        } else if (/^[0-9A-F]+$/.test(valueStr) && valueStr.length > 2) {
-            // Likely hex if all hex chars and longer than 2 chars
-            value = parseInt(valueStr, 16);
-        } else if (/^[0-9]+$/.test(valueStr)) {
-            value = parseInt(valueStr, 10);
-        } else {
-            value = parseInt(valueStr, 16);
-        }
+        // Read it in the base the panel is showing. $ 0x # and a trailing h still
+        // force hex. This replaced a length heuristic under which `10` was decimal
+        // and `100` was hex, which could not survive a decimal display anyway.
+        value = parseAddr(valueStr);
 
-        if (isNaN(value)) return;
+        if (value === null || isNaN(value)) return;
 
         // Mask to appropriate bits
         const mask = bits === 8 ? 0xFF : 0xFFFF;
@@ -278,7 +269,7 @@ export function initRegisterEditor({ getSpectrum, updateDebugger, addWatch, show
         if (value === null) return;
         const name = nameSpan.textContent.trim();
         addWatch(value, name);
-        if (showMessage) showMessage(`Watch added: $${hex16(value)} (${name})`);
+        if (showMessage) showMessage(`Watch added: ${fmtAddr(value)} (${name})`);
     }
 
     mainRegisters.addEventListener('dblclick', handleRegisterDblClick);

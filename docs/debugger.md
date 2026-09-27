@@ -1,4 +1,4 @@
-# Debugger: Layout Splitters, T-State Selection, Step Over, Trace History, Port I/O Log, Shadow Screen, Instruction History
+# Debugger: Layout Splitters, T-State Selection, Step Over, Trace History, Port I/O Log, Shadow Screen, Hex/Decimal, Instruction History
 
 ## Layout Splitters
 
@@ -126,6 +126,46 @@ Displays an alternate screen view below the main canvas. Supports shadow bank di
 
 **Visibility lifecycle**: `updateSecondScreenOptions()` + `updateSecondScreenVisibility()` called on dropdown change, machine change, and reset. SCR indicator hidden on 48K. Shadow screen container visible whenever mode is not 'none' (linear/spectrum work on 48K).
 
+## Hex or decimal numbers
+
+Settings -> Display has three independent checkboxes. They change how the interface
+*writes* a number; they never change what the app reads or writes out.
+
+| Checkbox | Covers | Example |
+|----------|--------|---------|
+| Decimal addresses | Addresses everywhere, and **ports** (a port is an address in I/O space) | `B000` -> `45056`, `7FFD` -> `32765` |
+| Decimal values | Byte values: memory dumps and their editors, watches, POKE, `I`/`R`, the AY registers | `03` -> `3` |
+| Decimal opcodes | Only the byte column beside a disassembled instruction | `21 00 B0` -> `33 0 176` |
+
+Any combination is valid -- a decimal dump under hex addresses, or the reverse.
+
+**Typing.** Every box reads the base it prints in, so `12345` means twelve thousand
+in decimal mode. `$`, `0x`, `#` or a trailing `h` force hex in either mode, which is
+how you reach `$FFFF` without leaving decimal. There is deliberately no decimal
+suffix: `004D` is a real address, so a trailing `d` could not be told from a digit.
+Nonsense is refused rather than read as 0 -- `FE&FF` typed as an address used to
+become a breakpoint on `$00FE`.
+
+**Nothing shifts when you throw a switch.** An address occupies a fixed five
+characters in either base (`FFFF` is padded with an invisible one), boxed fields are
+sized per base in CSS, and a decimal register keeps its width as it counts from 999
+to 1000 -- otherwise the register block would twitch on every step. The contents of
+a box are converted too, so `16384` does not silently become `$16384`.
+
+**Hints follow.** A tooltip or placeholder writes `{BASE}` for the word and
+`{$4000}` for a worked example, and `ui/number-hints.js` substitutes both -- so the
+breakpoint box's examples read `4000, FE&FF` in hex and `16384, 254&255` in decimal
+instead of contradicting the sentence they sit in.
+
+**What never moves**: everything the app writes out. ASM and disassembly exports,
+project files, `.pok`, signature packs, the trace export, export filenames, and the
+`window.zxDebug` API -- `addBreakpoint('8000')` still means `$8000` whatever the
+screen shows. Two things stay hex on screen as well: a **sector id** and a **TZX
+block id**, which are identifiers their format specs write that way.
+
+The Explorer follows the address switch for both load addresses and **file offsets**
+-- an offset column left in hex beside a decimal load address reads as a bug.
+
 ## Instruction History Popup
 
 Displays the last 10 actually-executed instructions. Click the **System** heading in the register panel to open a popup showing each instruction's address, disassembled mnemonic, and captured hex bytes.
@@ -139,6 +179,50 @@ Displays the last 10 actually-executed instructions. Click the **System** headin
 **Ring buffer** (`core/z80.js`): `cpu.instrHistory[0..9]` — pre-allocated entries `{ pc, bytes: Uint8Array(6), len }`. `cpu.instrHistoryIdx` is the write cursor. Cleared on `reset()`.
 
 **Popup** (`index.html`): `#pcHistoryPopup` positioned below `#btnPcHistory`. Click a row to navigate to that address via `navigateToAddress()`. Closes on click outside, Escape, or re-click on heading.
+
+## Editing an instruction in place
+
+**Double-click the mnemonic** on a disassembly row (either panel), or right-click →
+**Edit instruction**. A box opens holding that row's text; **Enter** assembles it
+and writes the bytes, **Esc** cancels, and losing focus cancels too — a half-typed
+instruction is not something to write into a running program because the mouse
+moved. If it will not assemble, the box stays open with a red border and the
+status line says why, so the typo can be fixed where it is.
+
+The box is `ui/disasm-asm-edit.js`. **Anything the ASM panel accepts** is accepted
+here, because it is the same encoder: `core/asm-line.js` drives sjasmplus's
+`Parser` and `InstructionEncoder` directly, rather than `Assembler.assemble()`,
+which would reset the panel's symbol table and VFS. So every operand form works,
+and expressions, `$`, undocumented opcodes, the alternative mnemonics,
+`DB`/`DW`/`DS` — and **labels**: operands resolve against the debugger's labels
+and the ROM labels, so `CALL init_screen` works, and a label written on the row
+(`loop: djnz loop`) is added at that address.
+
+The box starts out holding exactly what the row printed, so Enter on an unchanged
+row writes the same bytes back. That round trip needs one fix-up: the disassembler
+prints `FFh`, and a sjasmplus number may not start with a letter, so a hex literal
+that does gets its leading zero here.
+
+**Length.** The assembler is told how long the instruction being replaced is, and
+where the typed instruction has more than one encoding it uses the one of that
+length — `NOP` over a two-byte instruction is `DD 00`, not `00` with a stray byte
+after it, and `XOR A` over one is `DD AF`. The candidates are made by prefixing the
+redundant index prefix and then **verified with our own disassembler**: a candidate
+is used only if it decodes back to the same mnemonic at the wanted length, so the
+row still says what it does. (`DD 3E 05` runs as `LD A,5` on the CPU but the
+disassembler splits it, so it is not offered.)
+
+Nothing is ever padded to *fit*: a shorter instruction writes its bytes and the
+rest of the old one stays where it was, appearing as rows of its own; a longer one
+runs into the next instruction and the rows show that. Both fall out of drawing
+the view from memory rather than from anything cached.
+
+One edit is **one undo** (Ctrl+Z), whatever the lengths were. A write below $4000
+needs **Edit ROM**, and is refused before anything is written rather than half-way
+through. That box appears twice — in the disasm **⚙** options and beside the hex
+dump whose byte editor it gates — because the memory one is hidden exactly when
+the panel is showing disassembly. It is one flag on the machine: either box sets
+it and both follow.
 
 ## Pick Fold End Mode
 

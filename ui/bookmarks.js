@@ -1,6 +1,6 @@
 // bookmarks.js — Bookmark management for left/right debugger panels (extracted from index.html)
 
-import { hex16 } from '../core/utils.js';
+import { fmtAddr, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initBookmarks({
     getSpectrum,
@@ -30,13 +30,13 @@ export function initBookmarks({
             if (bm !== null && typeof bm === 'object') {
                 // New format: {addr, type}
                 const emoji = typeEmoji[bm.type] || '';
-                btn.textContent = `${emoji}${hex16(bm.addr)}`;
+                btn.textContent = `${emoji}${fmtAddr(bm.addr)}`;
                 btn.classList.add('set');
                 btn.classList.toggle('type-mismatch', bm.type !== currentType);
-                btn.title = `${bm.type}: ${hex16(bm.addr)} (Click: go, Right-click: set, Ctrl+click: clear)`;
+                btn.title = `${bm.type}: ${fmtAddr(bm.addr)} (Click: go, Right-click: set, Ctrl+click: clear)`;
             } else if (bm !== null) {
                 // Legacy format: just address (assume current panel type)
-                btn.textContent = hex16(bm);
+                btn.textContent = fmtAddr(bm);
                 btn.classList.add('set');
                 btn.classList.remove('type-mismatch');
             } else {
@@ -174,6 +174,12 @@ export function initBookmarks({
 
     // Setup right panel bookmarks
     setupBookmarkHandlers(memoryBookmarksBar, getRightBookmarks(), 'right');
+
+    // Hex or decimal: each bookmark button is labelled with its address.
+    onNumberBaseChange(() => {
+        updateBookmarkButtons(disasmBookmarksBar, getLeftBookmarks(), 'left');
+        updateBookmarkButtons(memoryBookmarksBar, getRightBookmarks(), 'right');
+    });
 
     return { updateBookmarkButtons, setupBookmarkHandlers };
 }

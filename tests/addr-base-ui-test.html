@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Address Base (hex/dec) UI Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Address Base (hex/dec) UI Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // Settings → Display → "Decimal addresses" switches how the interface
+        // writes an address. Only the real app can be asked whether the panels
+        // actually redraw when it is thrown, and whether the column keeps its
+        // width — 65535 is a character wider than FFFF, so a column sized for hex
+        // would reflow. Everything else about the base lives in
+        // addr-format-test.html, which needs no emulator.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d, zx, box;
+
+        const ADDR = 0xB000;                 // plain RAM, so no label steals the column
+        const NBSP = '\u00A0';
+
+        // The address cell of the row for ADDR, in whichever disassembly view has it.
+        function addrCell() {
+            const row = [...d.querySelectorAll('.disasm-line')]
+                .find(el => el.dataset.addr === String(ADDR));
+            return row ? row.querySelector('.disasm-addr') : null;
+        }
+        // Clicking an already-active tab COLLAPSES the container, which leaves every
+        // panel at zero width -- and a width assertion then passes without measuring
+        // anything. Two of the ones below did exactly that until this was added.
+        function showTab(name) {
+            const btn = d.querySelector(`.tab-btn[data-tab="${name}"]`);
+            const collapsed = () => d.getElementById('tabContainer').classList.contains('collapsed');
+            if (!btn.classList.contains('active')) btn.click();
+            else if (collapsed()) btn.click();
+        }
+
+        async function setValues(dec) {
+            const box = d.getElementById('chkDecValues');
+            box.checked = dec;
+            box.dispatchEvent(new w.Event('change'));
+            await wait(250);
+        }
+
+        async function setOpcodes(dec) {
+            const box = d.getElementById('chkDecOpcodes');
+            box.checked = dec;
+            box.dispatchEvent(new w.Event('change'));
+            await wait(250);
+        }
+
+        async function setBase(dec) {
+            box.checked = dec;
+            box.dispatchEvent(new w.Event('change'));
+            await wait(250);
+        }
+
+        (async () => {
+            section('The app comes up');
+            const up = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!up, 'emulator boots in the iframe');
+            if (!up) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument; zx = w.zxDebug;
+            await zx.ready();
+            w.spectrum.stop();
+
+            section('The switch is in Settings → Display');
+            box = d.getElementById('chkDecAddresses');
+            assert(!!box, 'there is a "Decimal addresses" checkbox');
+            if (!box) { log('\n=== ABORTED ===', 'fail'); return; }
+            assert(box.closest('#settings-display') !== null, 'and it lives in the Display sub-tab');
+            assert(box.checked === false, 'hex is the default, so nothing changes for anyone who ignores it');
+
+            // Put something recognisable at ADDR and show it.
+            for (let i = 0; i < 16; i++) zx.poke(ADDR + i, 0x00);   // NOP NOP NOP…
+            showTab('debugger');
+            await wait(150);
+            w.spectrum.cpu.pc = ADDR;
+            const rightType = d.getElementById('rightPanelType');
+            rightType.value = 'disasm';
+            rightType.dispatchEvent(new w.Event('change'));
+            await wait(300);
+
+            section('The disassembly address column follows the switch');
+            const cell = await until(addrCell);
+            assert(!!cell, 'the disassembly shows the row for ' + ADDR.toString(16).toUpperCase());
+            if (!cell) { log('\n=== ABORTED ===', 'fail'); return; }
+
+            const hexText = addrCell().textContent;
+            assert(hexText.startsWith('B000'), 'in hex it reads B000', JSON.stringify(hexText));
+
+            await setBase(true);
+            const decText = addrCell().textContent;
+            assert(decText.startsWith('45056'), 'ticking the box redraws it as 45056 — no reload, no manual refresh',
+                   JSON.stringify(decText));
+
+            section('The column keeps its width, so nothing reflows');
+            assert(hexText.length === decText.length,
+                   'hex and decimal occupy the same number of characters',
+                   JSON.stringify([hexText, decText]));
+            assert(hexText === 'B000' + NBSP,
+                   'hex is padded with an NBSP, which innerHTML will not collapse away',
+                   JSON.stringify(hexText));
+
+            section('And back again');
+            await setBase(false);
+            assert(addrCell().textContent === hexText, 'unticking restores exactly what was there before',
+                   JSON.stringify(addrCell().textContent));
+
+            section('The choice is remembered');
+            await setBase(true);
+            assert(w.localStorage.getItem('zxm8_decAddresses') === 'true',
+                   'ticking it is written to storage',
+                   String(w.localStorage.getItem('zxm8_decAddresses')));
+            await setBase(false);
+            assert(w.localStorage.getItem('zxm8_decAddresses') === 'false',
+                   'and so is unticking it');
+
+            section('Nothing that is not an address moved');
+            {
+                await setBase(true);
+                // A memory dump is bytes, not addresses: it must stay hex whatever
+                // the switch says, or it stops being a hex dump.
+                const bytes = [...d.querySelectorAll('.disasm-line')]
+                    .find(el => el.dataset.addr === String(ADDR))
+                    ?.querySelector('.disasm-bytes');
+                if (bytes) {
+                    assert(/^[0-9A-F ]+$/.test(bytes.textContent.trim()),
+                           'the opcode bytes beside the instruction are still hex',
+                           JSON.stringify(bytes.textContent));
+                } else {
+                    assert(true, 'the row shows no byte column in this layout (nothing to check)');
+                }
+                await setBase(false);
+            }
+
+            section('The memory dump gutter follows it too');
+            {
+                const rt = d.getElementById('rightPanelType');
+                rt.value = 'memdump';
+                rt.dispatchEvent(new w.Event('change'));
+                await wait(150);
+                const box2 = d.getElementById('memoryAddress');
+                box2.value = 'B000';
+                box2.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await wait(250);
+
+                const gutter = () => [...d.querySelectorAll('#memoryView .memory-addr')]
+                    .find(el => el.dataset.addr === String(ADDR));
+                const g = await until(gutter);
+                assert(!!g, 'the dump shows the line starting at ' + ADDR.toString(16).toUpperCase());
+                if (g) {
+                    const hexGut = gutter().textContent;
+                    const wide = gutter().getBoundingClientRect().width;
+                    assert(wide > 0, 'the dump is actually on screen, so the widths below mean something',
+                           `${wide.toFixed(1)}px`);
+                    assert(hexGut === 'B000' + NBSP, 'in hex the gutter reads B000, padded to five',
+                           JSON.stringify(hexGut));
+
+                    await setBase(true);
+                    const decGut = gutter().textContent;
+                    assert(decGut === '45056', 'and 45056 with the switch on', JSON.stringify(decGut));
+                    assert(decGut.length === hexGut.length, 'the same width, so the dump does not reflow');
+                    assert(Math.abs(gutter().getBoundingClientRect().width - wide) < 0.5,
+                           'and the gutter box itself does not move',
+                           `${wide.toFixed(1)} -> ${gutter().getBoundingClientRect().width.toFixed(1)}`);
+
+                    // The bytes are values, not addresses: a hex dump in decimal is unreadable.
+                    const row = gutter().parentElement;
+                    const bytes = [...row.querySelectorAll('.memory-byte')].map(e => e.textContent);
+                    assert(bytes.length > 0 && bytes.every(s => /^[0-9A-F]{2}$/.test(s)),
+                           'the bytes beside it are still two hex digits',
+                           JSON.stringify(bytes.slice(0, 6)));
+
+                    await setBase(false);
+                    assert(gutter().textContent === hexGut, 'and it goes back');
+                }
+            }
+
+            section('Address boxes read and write the base that is on');
+            {
+                const memBox = d.getElementById('memoryAddress');
+                const goMem = async (text) => {
+                    memBox.value = text;
+                    memBox.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                    await wait(200);
+                };
+                const shown = () => [...d.querySelectorAll('#memoryView .memory-addr')][0].dataset.addr;
+
+                await setBase(false);
+                await goMem('4000');
+                assert(shown() === '16384', 'in hex mode 4000 goes to 16384', shown());
+                assert(memBox.value === '4000', 'and the box shows it in hex', memBox.value);
+
+                await setBase(true);
+                assert(memBox.value === '16384', 'throwing the switch rewrites the box itself',
+                       memBox.value);
+                assert(memBox.maxLength >= 5, 'and the box will hold five digits', String(memBox.maxLength));
+                assert(memBox.scrollWidth <= memBox.clientWidth + 1,
+                       'without the text being cut off',
+                       `scroll=${memBox.scrollWidth} client=${memBox.clientWidth}`);
+
+                await goMem('45056');
+                assert(shown() === '45056', 'and now a typed 45056 means 45056, not 0x45056', shown());
+
+                // An explicit radix still wins, which is what makes a pasted address work.
+                await goMem('$4000');
+                assert(shown() === '16384', 'a typed $4000 is still 16384 with decimal on', shown());
+                await goMem('C000h');
+                assert(shown() === '49152', 'and so is C000h', shown());
+
+                // Nonsense must not jump to 0 -- the view stays where it was.
+                await goMem('zzz');
+                assert(shown() === '49152', 'nonsense is refused rather than read as address 0', shown());
+
+                await setBase(false);
+                assert(memBox.value === 'C000', 'and switching back writes hex again', memBox.value);
+            }
+
+            section('Ctrl+G finds an address in the base that is on');
+            {
+                const openGoto = async () => {
+                    d.dispatchEvent(new w.KeyboardEvent('keydown',
+                        { key: 'g', ctrlKey: true, bubbles: true, cancelable: true }));
+                    await wait(150);
+                    return d.getElementById('gotoPaletteInput');
+                };
+                const gi = await openGoto();
+                assert(!!gi, 'the palette opens');
+                if (gi) {
+                    await setBase(true);
+                    gi.value = '45056';
+                    gi.dispatchEvent(new w.Event('input'));
+                    await wait(150);
+                    const rows = [...d.querySelectorAll('#gotoPaletteList .goto-addr')].map(e => e.textContent);
+                    assert(rows.some(s => s === '45056'),
+                           'typing 45056 offers that address, written in decimal',
+                           JSON.stringify(rows.slice(0, 4)));
+                    gi.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                    await wait(100);
+                    await setBase(false);
+                }
+            }
+            section('A breakpoint is typed and listed in the base that is on');
+            {
+                zx.clearBreakpoints();
+                d.querySelector('.panel-tab-btn[data-panel="breakpoints"]')?.click();
+                await wait(150);
+                const spec = d.getElementById('triggerAddrInput');
+                const addBtn = d.getElementById('btnAddTrigger');
+                assert(!!spec && !!addBtn, 'the breakpoints tab offers an address box');
+                if (spec && addBtn) {
+                    await setBase(true);
+                    spec.value = '45056';
+                    addBtn.click();
+                    await wait(200);
+                    const desc = () => [...d.querySelectorAll('#triggerList .trigger-desc')]
+                        .map(e => e.textContent.trim());
+                    assert(desc().some(s => s.startsWith('45056')),
+                           'typing 45056 with decimal on breaks at 45056, and says so',
+                           JSON.stringify(desc()));
+                    assert(zx.breakpoints().some(b => b.start === 0xB000),
+                           'and the breakpoint the core holds is B000',
+                           JSON.stringify(zx.breakpoints()));
+
+                    await setBase(false);
+                    assert(desc().some(s => s.startsWith('B000')),
+                           'the same breakpoint reads B000 with the switch off',
+                           JSON.stringify(desc()));
+
+                    // A range, and the page prefix that is a bank number rather than an address.
+                    zx.clearBreakpoints();
+                    await setBase(true);
+                    spec.value = '16384-16399';
+                    addBtn.click();
+                    await wait(200);
+                    const bp = zx.breakpoints()[0];
+                    assert(bp && bp.start === 0x4000 && bp.end === 0x400F,
+                           'a decimal range becomes 4000-400F', JSON.stringify(bp));
+                    await setBase(false);
+                    zx.clearBreakpoints();
+                    await wait(100);
+                }
+            }
+            section('The register block follows it, and stays still while stepping');
+            {
+                w.spectrum.cpu.pc = ADDR;
+                w.spectrum.cpu.h = 0xB0; w.spectrum.cpu.l = 0x00;
+                const val = (name) => {
+                    const item = [...d.querySelectorAll('#mainRegisters .register-item, #indexRegisters .register-item')]
+                        .find(el => el.querySelector('.register-name').textContent === name);
+                    return item ? item.querySelector('.register-value') : null;
+                };
+
+                await setBase(false);
+                w.zxDebug.step(); await wait(150);
+                assert(val('PC') && /^[0-9A-F]{4}$/.test(val('PC').textContent),
+                       'in hex PC is four hex digits', val('PC') && val('PC').textContent);
+                const hexWidth = val('HL').getBoundingClientRect().width;
+                assert(hexWidth > 0, 'the register block is actually on screen',
+                       `${hexWidth.toFixed(1)}px`);
+
+                await setBase(true);
+                assert(/^[0-9]+$/.test(val('PC').textContent),
+                       'with the switch on it is decimal', val('PC').textContent);
+                assert(val('HL').textContent === '45056', 'and HL reads 45056', val('HL').textContent);
+
+                // 8-bit registers are values, not addresses.
+                const i8 = [...d.querySelectorAll('#indexRegisters .register-item')]
+                    .find(el => el.querySelector('.register-name').textContent === 'I');
+                assert(i8 && /^[0-9A-F]{2}$/.test(i8.querySelector('.register-value').textContent),
+                       'I is a byte and stays two hex digits',
+                       i8 && i8.querySelector('.register-value').textContent);
+
+                // The width floor: a decimal register must not resize as it counts.
+                // Redraw without stepping -- a step runs whatever is at PC and could
+                // put HL back, which would make this pass without measuring anything.
+                const wideBefore = val('HL').getBoundingClientRect().width;
+                w.spectrum.cpu.h = 0x00; w.spectrum.cpu.l = 0x09;   // HL = 9
+                w.zxDebug.refresh ? w.zxDebug.refresh() : null;
+                d.getElementById('chkDecAddresses').dispatchEvent(new w.Event('change'));
+                await wait(200);
+                assert(val('HL').textContent === '9',
+                       'a small value prints as 9, with no padding digits', val('HL').textContent);
+                const wideAfter = val('HL').getBoundingClientRect().width;
+                assert(Math.abs(wideAfter - wideBefore) < 0.5,
+                       'but its box is the same width, so the block does not twitch',
+                       `45056 -> ${wideBefore.toFixed(1)}px, 9 -> ${wideAfter.toFixed(1)}px`);
+                assert(wideAfter > hexWidth - 0.5,
+                       'and the decimal box is at least as wide as the hex one',
+                       `hex ${hexWidth.toFixed(1)}px, dec ${wideAfter.toFixed(1)}px`);
+
+                assert(d.documentElement.dataset.addrBase === 'dec',
+                       'the base is stamped on the document, which is what sizes it',
+                       String(d.documentElement.dataset.addrBase));
+                await setBase(false);
+                assert(d.documentElement.dataset.addrBase === 'hex', 'and it goes back');
+            }
+
+            section('A register is edited in the base that is on');
+            {
+                const hl = () => (w.spectrum.cpu.h << 8) | w.spectrum.cpu.l;
+                const setHL = async (text) => {
+                    const item = [...d.querySelectorAll('#mainRegisters .register-item')]
+                        .find(el => el.querySelector('.register-name').textContent === 'HL');
+                    const span = item.querySelector('.register-value');
+                    span.click();
+                    await wait(120);
+                    const inp = item.querySelector('input') || span;
+                    inp.value = text;
+                    inp.textContent = text;
+                    inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                    await wait(200);
+                };
+                await setBase(true);
+                await setHL('45056');
+                assert(hl() === 0xB000, 'typing 45056 with decimal on sets HL to B000',
+                       hl().toString(16));
+                await setHL('$4000');
+                assert(hl() === 0x4000, 'and an explicit $4000 still means 4000', hl().toString(16));
+                await setBase(false);
+                await setHL('C000');
+                assert(hl() === 0xC000, 'in hex mode a bare C000 is C000', hl().toString(16));
+            }
+            section('The stack and the trace row follow it as well');
+            {
+                // A return address on the stack is an address like any other.
+                w.spectrum.cpu.sp = 0xBFF0;
+                zx.poke(0xBFF0, 0x00); zx.poke(0xBFF1, 0xB0);   // holds B000
+                await setBase(false);
+                w.zxDebug.step(); await wait(200);
+                const stackVals = () => [...d.querySelectorAll('#stackView .stack-value')]
+                    .map(e => e.textContent.trim());
+                assert(stackVals().some(s => s === 'B000'), 'in hex the stack shows B000',
+                       JSON.stringify(stackVals().slice(0, 4)));
+                await setBase(true);
+                assert(stackVals().some(s => s === '45056'), 'and 45056 with the switch on',
+                       JSON.stringify(stackVals().slice(0, 4)));
+                await setBase(false);
+
+                // The trace row: its PC column and its 16-bit registers.
+                const traceTab = d.querySelector('.panel-tab-btn[data-panel="trace"]');
+                if (traceTab) {
+                    traceTab.click();
+                    await wait(150);
+                    d.getElementById('chkTraceEnabled').checked = true;
+                    w.spectrum.cpu.pc = ADDR;
+                    w.zxDebug.step(); w.zxDebug.step();
+                    await wait(250);
+                    const pcs = () => [...d.querySelectorAll('#traceList .addr')]
+                        .map(e => e.textContent.trim());
+                    const hexPcs = pcs();
+                    await setBase(true);
+                    const decPcs = pcs();
+                    assert(hexPcs.length > 0, 'the trace has rows to check',
+                           JSON.stringify(hexPcs.slice(0, 3)));
+                    assert(hexPcs.every(s => /^[0-9A-F]{4}$/.test(s)),
+                           'in hex every trace PC is four hex digits', JSON.stringify(hexPcs.slice(0, 3)));
+                    assert(decPcs.length === hexPcs.length && decPcs.every(s => /^[0-9]+$/.test(s)),
+                           'and the list redraws itself in decimal', JSON.stringify(decPcs.slice(0, 3)));
+                    await setBase(false);
+                }
+            }
+            section('The POKE manager lists its addresses in the base that is on');
+            {
+                d.querySelector('.panel-tab-btn[data-panel="pokes"]')?.click();
+                await wait(150);
+                zx.pokes.pokeClearAll();
+                zx.pokes.addPoke('probe', 0xB000, 0x00, 0xFF);
+                await wait(200);
+                const addrs = () => [...d.querySelectorAll('#pokeList .poke-patch-addr')]
+                    .map(e => e.textContent.trim()).filter(s => s);
+                await setBase(false);
+                assert(addrs().some(s => s === '$B000'), 'in hex the row reads $B000',
+                       JSON.stringify(addrs().slice(0, 4)));
+                await setBase(true);
+                assert(addrs().some(s => s === '45056'),
+                       'and 45056 with the switch on -- the $ goes with the base',
+                       JSON.stringify(addrs().slice(0, 4)));
+                await setBase(false);
+
+                // What you type into an Addr box must come back as the same address.
+                // These two boxes read hex while the row beside them printed decimal,
+                // so 12345 went in as $12345, masked to $2345, and came out as 9029.
+                await setBase(true);
+                d.getElementById('editorAddName').value = 'probe-ed';
+                d.getElementById('editorAddAddr').value = '12345';
+                d.getElementById('btnEditorAdd').click();
+                await wait(200);
+                const edAddrs = [...d.querySelectorAll('.poke-editor-addr')]
+                    .map(e => e.textContent.trim());
+                assert(edAddrs.includes('12345'),
+                       'a memory editor added at 12345 reads back as 12345, not 9029',
+                       JSON.stringify(edAddrs.slice(0, 8)));
+
+                d.getElementById('pokeAddName').value = 'probe-poke';
+                d.getElementById('pokeAddAddr').value = '12345';
+                d.getElementById('pokeAddNormal').value = '00';
+                d.getElementById('pokeAddPoke').value = 'FF';
+                d.getElementById('btnPokeAdd').click();
+                await wait(200);
+                const entry = zx.pokes.getPokeData().pokes.find(e => e.name === 'probe-poke');
+                assert(!!entry, 'the poke was added');
+                if (entry) {
+                    // getPokeData is the saved form, so it is hex: 12345 = $3039.
+                    assert(entry.patches[0][0] === '3039',
+                           'a poke typed at 12345 lands on 12345 ($3039), not $2345',
+                           JSON.stringify(entry.patches[0]));
+                    assert(entry.patches[0][2] === 'FF',
+                           'while the byte beside it is still read as hex -- FF, not 255 refused',
+                           JSON.stringify(entry.patches[0]));
+                }
+                await setBase(false);
+                zx.pokes.pokeClearAll();
+            }
+            section('The operand inside an instruction follows it too');
+            {
+                showTab('debugger');
+                // LD HL,B000h / LD A,FFh / JP B000h at ADDR
+                const code = [0x21, 0x00, 0xB0, 0x3E, 0xFF, 0xC3, 0x00, 0xB0];
+                code.forEach((b, i) => zx.poke(ADDR + i, b));
+                w.spectrum.cpu.pc = ADDR;
+                const rt2 = d.getElementById('rightPanelType');
+                rt2.value = 'disasm';
+                rt2.dispatchEvent(new w.Event('change'));
+                await wait(300);
+
+                const mnem = (addr) => {
+                    const row = [...d.querySelectorAll('.disasm-line')]
+                        .find(el => el.dataset.addr === String(addr));
+                    return row ? row.querySelector('.disasm-mnemonic').textContent.trim() : null;
+                };
+
+                await setBase(false);
+                const ldHex = await until(() => mnem(ADDR));
+                assert(/B000h/.test(ldHex || ''), 'in hex the operand reads B000h', String(ldHex));
+                assert(/FFh/.test(mnem(ADDR + 3) || ''), 'and a byte operand reads FFh',
+                       String(mnem(ADDR + 3)));
+
+                await setBase(true);
+                assert(/(^|[^0-9])45056([^0-9]|$)/.test(mnem(ADDR) || ''),
+                       'with the switch on the 16-bit operand is 45056, and the h goes with it',
+                       String(mnem(ADDR)));
+                assert(!/45056h/.test(mnem(ADDR) || ''), 'never 45056h, which would be a lie',
+                       String(mnem(ADDR)));
+                assert(/FFh/.test(mnem(ADDR + 3) || ''),
+                       'but the byte operand is still FFh -- a bit pattern, not an address',
+                       String(mnem(ADDR + 3)));
+                assert(/45056/.test(mnem(ADDR + 5) || ''), 'a jump target follows it as well',
+                       String(mnem(ADDR + 5)));
+
+                // Still clickable: data-addr carries the number, not the text.
+                const row = [...d.querySelectorAll('.disasm-line')]
+                    .find(el => el.dataset.addr === String(ADDR));
+                const op = row && row.querySelector('.disasm-operand-addr');
+                assert(op && op.dataset.addr === String(0xB000),
+                       'and clicking it still navigates to B000', op && op.dataset.addr);
+                await setBase(false);
+            }
+            section('Values have their own switch, and the dump keeps its grid');
+            {
+                showTab('debugger');
+                const rt3 = d.getElementById('rightPanelType');
+                rt3.value = 'memdump';
+                rt3.dispatchEvent(new w.Event('change'));
+                await wait(150);
+                for (let i = 0; i < 16; i++) zx.poke(ADDR + i, i === 0 ? 3 : 0xFF);
+                const box2 = d.getElementById('memoryAddress');
+                box2.value = 'B000';
+                box2.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await wait(250);
+
+                const cell = () => d.querySelector(`#memoryView .memory-byte[data-addr="${ADDR}"]`);
+                const cells = () => [...d.querySelectorAll('#memoryView .memory-byte')].slice(0, 4)
+                    .map(e => e.textContent.trim());
+
+                await setBase(true);
+                await setValues(false);
+                const c0 = await until(cell);
+                assert(!!c0, 'the dump shows the line');
+                assert(cell().textContent === '03', 'with hex values the byte reads 03',
+                       cell().textContent);
+                const hexCellW = cell().getBoundingClientRect().width;
+                assert(hexCellW > 0, 'the dump is on screen', `${hexCellW.toFixed(1)}px`);
+
+                await setValues(true);
+                assert(cell().textContent === '3',
+                       'with decimal values it reads 3 -- which is the point, spotting a counter',
+                       cell().textContent);
+                assert(cells()[1] === '255', 'and FF reads 255', JSON.stringify(cells()));
+                assert(d.documentElement.dataset.valueBase === 'dec',
+                       'the value base is stamped on the document, separately from the address one');
+                assert(d.documentElement.dataset.addrBase === 'dec',
+                       'both are decimal at this point');
+
+                // The grid must stay square: 3 and 255 occupy the same cell.
+                const wide3 = cell().getBoundingClientRect().width;
+                const wide255 = [...d.querySelectorAll('#memoryView .memory-byte')][1]
+                    .getBoundingClientRect().width;
+                assert(Math.abs(wide3 - wide255) < 0.5,
+                       'a one-digit byte and a three-digit one are the same width',
+                       `3 -> ${wide3.toFixed(1)}px, 255 -> ${wide255.toFixed(1)}px`);
+                // .memory-byte has a HARD width and no overflow container, so neither the
+                // box measurement nor scrollWidth can see a byte spilling out of its cell:
+                // both read 18px whether or not 255 fits. Measure the TEXT with a Range.
+                const c255 = [...d.querySelectorAll('#memoryView .memory-byte')][1];
+                const range = d.createRange();
+                range.selectNodeContents(c255);
+                const textW = range.getBoundingClientRect().width;
+                assert(textW <= c255.getBoundingClientRect().width + 0.1,
+                       'and 255 fits inside its cell rather than spilling into the next',
+                       `text ${textW.toFixed(1)}px, cell ${c255.getBoundingClientRect().width.toFixed(1)}px`);
+                assert(wide255 > hexCellW - 0.5, 'the decimal cell is at least as wide as the hex one',
+                       `hex ${hexCellW.toFixed(1)}px, dec ${wide255.toFixed(1)}px`);
+
+                // Right-aligned, not centred: 3 / 12 / 255 only read as a column when
+                // the units line up. Compare the right edge of the TEXT, not the cell.
+                const textRight = (el) => {
+                    const r = d.createRange();
+                    r.selectNodeContents(el);
+                    return r.getBoundingClientRect().right;
+                };
+                const cellRight = (el) => el.getBoundingClientRect().right;
+                const short = cell();                                  // '3'
+                assert(Math.abs((cellRight(short) - textRight(short)) -
+                                (cellRight(c255) - textRight(c255))) < 0.5,
+                       'a one-digit byte and a three-digit one end in the same column',
+                       `3 gap ${(cellRight(short) - textRight(short)).toFixed(1)}px, ` +
+                       `255 gap ${(cellRight(c255) - textRight(c255)).toFixed(1)}px`);
+
+                // The two switches are independent.
+                await setBase(false);
+                assert(cell().textContent === '3', 'hex addresses over a decimal dump is allowed',
+                       cell().textContent);
+                const gut = [...d.querySelectorAll('#memoryView .memory-addr')][0].textContent;
+                assert(gut.startsWith('B000'), 'the gutter went back to hex on its own', JSON.stringify(gut));
+
+                await setValues(false);
+                assert(cell().textContent === '03', 'and back');
+            }
+            section('The dump rules a line every four bytes');
+            {
+                // A thin rule after the 4th, 8th and 12th byte, so a column can be
+                // counted at a glance. It must cost the digits nothing: box-sizing is
+                // border-box, so a border-left would come out of the cell's own width
+                // and squeeze a three-digit decimal byte. An inset shadow paints over
+                // the edge without touching the box model.
+                const row = d.querySelector('#memoryView .memory-line');
+                const cs = [...row.querySelectorAll('.memory-byte')];
+                const marked = cs.map((c, i) => c.classList.contains('group-start') ? i : -1)
+                                 .filter(i => i >= 0);
+                assert(cs.length === 16, 'the dump is 16 bytes wide here', String(cs.length));
+                assert(JSON.stringify(marked) === '[4,8,12]',
+                       'the rule falls after the 4th, 8th and 12th byte', JSON.stringify(marked));
+                const w0 = cs[0].getBoundingClientRect().width;
+                const w4 = cs[4].getBoundingClientRect().width;
+                assert(Math.abs(w0 - w4) < 0.01, 'a ruled cell is the same width as a plain one',
+                       `plain ${w0.toFixed(2)}px, ruled ${w4.toFixed(2)}px`);
+                const colW = row.querySelector('.memory-hex').getBoundingClientRect().width;
+                assert(Math.abs(colW - cs.length * w0) < 0.5,
+                       'so the hex column is still exactly 16 cells wide',
+                       `${colW.toFixed(1)}px vs ${(cs.length * w0).toFixed(1)}px`);
+                // It must also be CONTINUOUS down the column. A cell is 16px tall in a
+                // 20px row pitch, so a rule confined to the cell breaks into dashes that
+                // cannot be followed by eye -- which is exactly how the first cut of this
+                // looked. The pseudo-element overhangs to cover the pitch.
+                const ruleSpan = (cell) => {
+                    const st = w.getComputedStyle(cell, '::before');
+                    const top = cell.getBoundingClientRect().top + parseFloat(st.top);
+                    return { top, bottom: top + parseFloat(st.height), bg: st.backgroundColor };
+                };
+                const spans = [...d.querySelectorAll('#memoryView .memory-line')].slice(0, 3)
+                    .map(r => ruleSpan(r.querySelectorAll('.memory-byte')[4]));
+                assert(spans[0].bg !== 'rgba(0, 0, 0, 0)' && spans[0].bg !== 'transparent',
+                       'the rule is painted', spans[0].bg);
+                const gaps = [spans[1].top - spans[0].bottom, spans[2].top - spans[1].bottom];
+                assert(gaps.every(g => Math.abs(g) < 0.01),
+                       'and runs unbroken from one row into the next',
+                       gaps.map(g => g.toFixed(2) + 'px').join(', '));
+
+                // The wider decimal cell must not move it.
+                await setValues(true);
+                const cs2 = [...d.querySelectorAll('#memoryView .memory-line')[0]
+                              .querySelectorAll('.memory-byte')];
+                const marked2 = cs2.map((c, i) => c.classList.contains('group-start') ? i : -1)
+                                   .filter(i => i >= 0);
+                assert(JSON.stringify(marked2) === '[4,8,12]',
+                       'decimal values keep the rule in the same three places',
+                       JSON.stringify(marked2));
+                const d0 = cs2[0].getBoundingClientRect().width;
+                assert(Math.abs(d0 - cs2[4].getBoundingClientRect().width) < 0.01,
+                       'and it still costs no width there',
+                       `${d0.toFixed(2)}px vs ${cs2[4].getBoundingClientRect().width.toFixed(2)}px`);
+                // The box measurement cannot see a squeeze -- the cell keeps its 22px
+                // either way -- so measure the digits against the CONTENT box, which is
+                // what a border would have taken from.
+                const ruled = cs2[4];
+                const rr = d.createRange();
+                rr.selectNodeContents(ruled);
+                const rs = w.getComputedStyle(ruled);
+                const content = ruled.getBoundingClientRect().width -
+                    parseFloat(rs.paddingLeft) - parseFloat(rs.paddingRight) -
+                    parseFloat(rs.borderLeftWidth) - parseFloat(rs.borderRightWidth);
+                assert(rr.getBoundingClientRect().width <= content + 0.1,
+                       'a three-digit byte still fits the ruled cell',
+                       `text ${rr.getBoundingClientRect().width.toFixed(1)}px, ` +
+                       `content ${content.toFixed(1)}px`);
+                const rd = [...d.querySelectorAll('#memoryView .memory-line')].slice(0, 2)
+                    .map(r => ruleSpan(r.querySelectorAll('.memory-byte')[4]));
+                assert(Math.abs(rd[1].top - rd[0].bottom) < 0.01,
+                       'and the rule is unbroken in decimal too',
+                       `${(rd[1].top - rd[0].bottom).toFixed(2)}px`);
+                await setValues(false);
+            }
+            section('Values reach the watches, pokes, trace and the 8-bit operand');
+            {
+                showTab('debugger');
+                await setBase(false);
+
+                // A watch value.
+                d.querySelector('.panel-tab-btn[data-panel="watches"]').click();
+                await wait(150);
+                zx.poke(ADDR, 3);
+                const wIn = d.getElementById('watchAddrInput');
+                wIn.value = 'B000';
+                d.getElementById('btnWatchAdd').click();
+                await wait(250);
+                // The row prints WATCH_BYTES bytes side by side; the first is at B000.
+                const wBytes = () => (d.querySelector('#watchesList .watch-bytes') ||
+                                      d.getElementById('watchesList')).textContent.trim().split(/\s+/);
+                await setValues(false);
+                assert(wBytes()[0] === '03', 'a watch byte reads 03 in hex',
+                       JSON.stringify(wBytes().slice(0, 6)));
+                await setValues(true);
+                assert(wBytes()[0] === '3', 'and 3 with decimal values on',
+                       JSON.stringify(wBytes().slice(0, 6)));
+
+                // A poke's orig/new bytes.
+                d.querySelector('.panel-tab-btn[data-panel="pokes"]').click();
+                await wait(150);
+                zx.pokes.pokeClearAll();
+                zx.pokes.addPoke('vals', 0xB000, 0x00, 0xFF);
+                await wait(200);
+                const pokeText = () => d.getElementById('pokeList').textContent;
+                assert(/255/.test(pokeText()), 'a poke value reads 255 with decimal values on',
+                       pokeText().slice(0, 80));
+                await setValues(false);
+                assert(/\$FF/.test(pokeText()), 'and $FF in hex -- the $ goes with the value base',
+                       pokeText().slice(0, 80));
+                zx.pokes.pokeClearAll();
+
+                // The 8-bit operand inside an instruction.
+                const code = [0x21, 0x00, 0xB0, 0x3E, 0xFF];   // LD HL,B000h / LD A,FFh
+                code.forEach((b, i) => zx.poke(ADDR + i, b));
+                w.spectrum.cpu.pc = ADDR;
+                const rt4 = d.getElementById('rightPanelType');
+                rt4.value = 'disasm';
+                rt4.dispatchEvent(new w.Event('change'));
+                await wait(300);
+                const mn = (addr) => {
+                    const row = [...d.querySelectorAll('.disasm-line')]
+                        .find(el => el.dataset.addr === String(addr));
+                    return row ? row.querySelector('.disasm-mnemonic').textContent.trim() : null;
+                };
+                await setValues(true);
+                await until(() => mn(ADDR + 3));
+                assert(/A,255/.test(mn(ADDR + 3) || ''), 'LD A,FFh becomes LD A,255',
+                       String(mn(ADDR + 3)));
+                assert(/B000h/.test(mn(ADDR) || ''),
+                       'while the 16-bit operand is still hex -- the two switches are separate',
+                       String(mn(ADDR)));
+                // The opcode bytes are an encoding, not a datum.
+                const bytesCell = [...d.querySelectorAll('.disasm-line')]
+                    .find(el => el.dataset.addr === String(ADDR))?.querySelector('.disasm-bytes');
+                if (bytesCell) {
+                    assert(/^[0-9A-F ]+$/.test(bytesCell.textContent.trim()),
+                           'and the opcode bytes stay hex under the value switch',
+                           JSON.stringify(bytesCell.textContent));
+                }
+                await setValues(false);
+                assert(/A,FFh/.test(mn(ADDR + 3) || ''), 'and back to FFh', String(mn(ADDR + 3)));
+            }
+            section('A port breakpoint is typed and listed in the address base');
+            {
+                zx.clearBreakpoints();
+                d.querySelector('.panel-tab-btn[data-panel="breakpoints"]').click();
+                await wait(150);
+                const spec2 = d.getElementById('triggerAddrInput');
+                const type2 = d.getElementById('triggerType');
+                type2.value = 'port_out';
+                type2.dispatchEvent(new w.Event('change'));
+                await wait(100);
+
+                await setBase(true);
+                spec2.value = '32765';                     // 7FFD, as a BASIC listing writes it
+                d.getElementById('btnAddTrigger').click();
+                await wait(200);
+                const desc2 = () => [...d.querySelectorAll('#triggerList .trigger-desc')]
+                    .map(e => e.textContent.trim());
+                assert(desc2().some(s => s.startsWith('32765')),
+                       'typing 32765 with decimal addresses on breaks on port 7FFD and says so',
+                       JSON.stringify(desc2()));
+
+                await setValues(true);
+                assert(desc2().some(s => s.startsWith('32765')),
+                       'and the VALUE switch does not touch it -- a port number is an address',
+                       JSON.stringify(desc2()));
+                await setValues(false);
+
+                await setBase(false);
+                assert(desc2().some(s => s.startsWith('7FFD')),
+                       'the same breakpoint reads 7FFD with the switch off', JSON.stringify(desc2()));
+
+                zx.clearBreakpoints();
+                type2.value = 'exec';
+                type2.dispatchEvent(new w.Event('change'));
+                await wait(100);
+            }
+            section('Opcode bytes have their own switch');
+            {
+                showTab('debugger');
+                const code2 = [0x21, 0x00, 0xB0];        // LD HL,B000h -> 33 0 176
+                code2.forEach((b, i) => zx.poke(ADDR + i, b));
+                w.spectrum.cpu.pc = ADDR;
+                const rt5 = d.getElementById('rightPanelType');
+                rt5.value = 'disasm';
+                rt5.dispatchEvent(new w.Event('change'));
+                await wait(300);
+                const bytesOf = () => {
+                    const row = [...d.querySelectorAll('.disasm-line')]
+                        .find(el => el.dataset.addr === String(ADDR));
+                    const cell = row && row.querySelector('.disasm-bytes');
+                    return cell ? cell.textContent.trim() : null;
+                };
+
+                await setOpcodes(false);
+                await setValues(true);          // data decimal, opcodes not
+                const hexBytes = await until(bytesOf);
+                assert(/^21 00 B0/.test(hexBytes || ''),
+                       'the opcode column stays hex while the value switch is on',
+                       String(hexBytes));
+
+                await setOpcodes(true);
+                assert(/^33 0 176/.test(bytesOf() || ''),
+                       'and reads 33 0 176 once opcodes are switched to decimal',
+                       String(bytesOf()));
+                assert(d.documentElement.dataset.opcodeBase === 'dec',
+                       'the opcode base is stamped on the document, separately again');
+
+                // The column is a fixed 80px box; three decimal bytes must fit it.
+                const cell5 = [...d.querySelectorAll('.disasm-line')]
+                    .find(el => el.dataset.addr === String(ADDR)).querySelector('.disasm-bytes');
+                const rg = d.createRange();
+                rg.selectNodeContents(cell5);
+                assert(rg.getBoundingClientRect().width <= cell5.getBoundingClientRect().width + 0.5,
+                       'and three decimal opcodes fit the byte column',
+                       `text ${rg.getBoundingClientRect().width.toFixed(1)}px, ` +
+                       `cell ${cell5.getBoundingClientRect().width.toFixed(1)}px`);
+
+                await setValues(false);
+                assert(/^33 0 176/.test(bytesOf() || ''),
+                       'the value switch does not drag the opcode column back',
+                       String(bytesOf()));
+                await setOpcodes(false);
+                assert(/^21 00 B0/.test(bytesOf() || ''), 'and back to hex', String(bytesOf()));
+            }
+            section('The hints say which base the box is in');
+            {
+                // A tooltip that says "hex" while the box reads decimal is the same
+                // lie as a box that prints one base and parses the other, told in
+                // words. The hint carries a {BASE} token that follows the switch.
+                showTab('debugger');
+                await setBase(false);
+                await setValues(false);
+                const memBox = d.getElementById('memoryAddress');
+                const trig = d.getElementById('triggerAddrInput');
+                const filt = d.getElementById('pokeFilterValue');
+                assert(/hex/.test(memBox.title) && !/\{BASE\}/.test(memBox.title),
+                       'in hex the address box says hex, and the token is substituted',
+                       memBox.title);
+                await setBase(true);
+                assert(/decimal/.test(memBox.title) && !/hex(?!\.)/.test(memBox.title.split(';')[0]),
+                       'in decimal it says decimal', memBox.title);
+                assert(/decimal/.test(trig.title),
+                       'the breakpoint box follows too', trig.title);
+                assert(!/Ports are always hex/.test(trig.title),
+                       'and no longer claims ports are always hex', trig.title);
+                // A worked example must move with the word. "Examples: 4000, FE&FF --
+                // read as decimal" contradicts itself and hands the user values that
+                // are unusable in the base it just named.
+                assert(/16384/.test(trig.title) && !/4000/.test(trig.title),
+                       'and its examples are written in decimal too', trig.title);
+                assert(/254&255/.test(trig.title), 'the port example as well', trig.title);
+                assert(memBox.placeholder === '0',
+                       'and the placeholder stops suggesting four hex digits',
+                       memBox.placeholder);
+                // The value hint follows the VALUE switch, not the address one.
+                assert(/hex/.test(filt.title) && !/decimal/.test(filt.title),
+                       'a byte box stays hex while only addresses went decimal', filt.title);
+                await setValues(true);
+                assert(/decimal/.test(filt.title), 'and follows its own switch', filt.title);
+                await setValues(false);
+                await setBase(false);
+                assert(/hex/.test(memBox.title) && /hex/.test(filt.title),
+                       'both come back', memBox.title + ' | ' + filt.title);
+                assert(/4000/.test(trig.title) && /FE&FF/.test(trig.title),
+                       'and the examples read as hex again', trig.title);
+                assert(memBox.placeholder === '0000', 'placeholder too', memBox.placeholder);
+            }
+            section('No hint outgrows its box in either base');
+            {
+                // "decimal" is four characters longer than "hex", so a placeholder
+                // that just fitted in hex can be cut off once the switch is thrown --
+                // which is how "Extra entries (decimal, c" reached the screen.
+                const panels = ['breakpoints', 'watches', 'analysis', 'search',
+                                'codepath', 'struct'];
+                async function clippedPlaceholders() {
+                    const bad = [];
+                    for (const p of panels) {
+                        d.querySelector(`.panel-tab-btn[data-panel="${p}"]`)?.click();
+                        await wait(60);
+                        for (const el of d.querySelectorAll('input[data-hint-base]')) {
+                            if (!el.offsetParent || !el.placeholder) continue;
+                            const keep = el.value;
+                            el.value = el.placeholder;
+                            const over = el.scrollWidth - el.clientWidth;
+                            el.value = keep;
+                            if (over > 1) bad.push(`${el.id} "${el.placeholder}" +${over}px`);
+                        }
+                    }
+                    return bad;
+                }
+                await setBase(false);
+                const badHex = await clippedPlaceholders();
+                assert(badHex.length === 0, 'in hex every placeholder fits its box',
+                       badHex.join('; '));
+                await setBase(true);
+                const badDec = await clippedPlaceholders();
+                assert(badDec.length === 0, 'and still fits once the word grows to "decimal"',
+                       badDec.join('; '));
+                await setBase(false);
+                showTab('debugger');
+            }
+            section('The boxes that were still hex-only now read the switch');
+            {
+                // Each of these parsed hex whatever the setting said, so a hint
+                // promising decimal would have been a lie.
+                await setBase(true);
+                const start = d.getElementById('binExportStart');
+                const len = d.getElementById('binExportLength');
+                start.value = '16384';                       // $4000
+                start.dispatchEvent(new w.Event('change'));
+                len.value = '256';
+                len.dispatchEvent(new w.Event('change'));
+                const end = d.getElementById('binExportEnd');
+                assert(end.value === '16639', 'binary export reads and writes decimal',
+                       `start ${start.value}, len ${len.value}, end ${end.value}`);
+                // Throwing the switch must convert what is IN the box. Leaving the
+                // digits alone would turn 16384 into $16384 the moment the parser
+                // changed base -- the very bug this rework exists to remove.
+                await setBase(false);
+                assert(start.value === '4000', 'and the switch converts the box, not just the label',
+                       start.value);
+                assert(end.value === '40FF', 'every field in the group, together', end.value);
+                assert(len.value === '0100', 'the length as well', len.value);
+            }
+            // Leave the app as it was found — this storage is shared with every
+            // other suite that boots index.html.
+            w.localStorage.removeItem('zxm8_decAddresses');
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

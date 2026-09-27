@@ -134,13 +134,13 @@
                     </div>
                     <div class="settings-row" style="gap: 4px; align-items: center;">
                         <label style="font-size: 11px; min-width: 30px;">Start</label>
-                        <input type="text" id="binExportStart" maxlength="4" value="4000" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Start address (hex)">
+                        <input type="text" id="binExportStart" data-hint-num="addr" maxlength="5" data-hint-base="addr" value="4000" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Start address ({BASE})">
                         <label style="font-size: 11px; min-width: 18px;">Len</label>
-                        <input type="text" id="binExportLength" maxlength="4" value="1B00" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Length in bytes (hex)">
+                        <input type="text" id="binExportLength" data-hint-num="addr" maxlength="5" data-hint-base="addr" value="1B00" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Length in bytes ({BASE})">
                         <label style="font-size: 11px; min-width: 18px;">End</label>
-                        <input type="text" id="binExportEnd" maxlength="4" value="5AFF" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="End address inclusive (hex)">
+                        <input type="text" id="binExportEnd" data-hint-num="addr" maxlength="5" data-hint-base="addr" value="5AFF" style="width: 42px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="End address inclusive ({BASE})">
                         <label style="font-size: 11px; min-width: auto;">Byte</label>
-                        <input type="text" id="binFillByte" maxlength="2" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte (hex)">
+                        <input type="text" id="binFillByte" data-hint-num="value" maxlength="3" data-hint-base="value" value="00" style="width: 24px; font-family: monospace; font-size: 11px; text-transform: uppercase;" title="Fill byte ({BASE})">
                         <button id="btnBinFill" class="frame-grab-btn" title="Fill the Start..End range with the fill byte (default 00 clears it)">Fill</button>
                     </div>
                     <div class="settings-row frame-export-controls" style="margin-top: 2px;">

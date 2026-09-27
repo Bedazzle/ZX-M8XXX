@@ -100,6 +100,9 @@ def run_suite(browser, port, name, timeout):
     try:
         cmd = [browser, '--headless=new', '--disable-gpu', '--no-first-run',
                '--no-default-browser-check', '--disable-extensions',
+               # Suites click through the real app, and the first click starts
+               # its audio -- which would then play the test run at full speed.
+               '--mute-audio',
                f'--user-data-dir={udd}', '--virtual-time-budget=300000',
                '--dump-dom', f'http://127.0.0.1:{port}/tests/{name}.html']
         t0 = time.time()

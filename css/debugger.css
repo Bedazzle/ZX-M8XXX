@@ -118,6 +118,15 @@
     margin-left: 2px;
     display: inline-block;
 }
+/* A 16-bit register is four characters in hex and up to five in decimal, and a
+   decimal one changes width as it counts (999 -> 1000). Without a floor the whole
+   register block would twitch on every step, so give it the width of the base that
+   is on -- hex is unchanged, decimal is one character wider and then still. */
+.register-value.reg16 { min-width: 4ch; }
+[data-addr-base="dec"] .register-value.reg16 { min-width: 5ch; }
+.stack-addr, .stack-value { min-width: 4ch; display: inline-block; }
+[data-addr-base="dec"] .stack-addr,
+[data-addr-base="dec"] .stack-value { min-width: 5ch; }
 .register-value.editable {
     cursor: pointer;
     border-bottom: 1px dashed var(--text-secondary);
@@ -647,6 +656,27 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
 }
 .disasm-mnemonic .op {
     color: var(--accent);
+}
+/* Typing an instruction into a row (ui/disasm-asm-edit.js). It sits inside the
+   mnemonic cell, so it takes the row's font and leaves the address, bytes and
+   comment columns where they are. Red border = it would not assemble. */
+.disasm-asm-input {
+    width: 100%;
+    min-width: 120px;
+    height: 16px;
+    padding: 0 2px;
+    margin: 0;
+    font-family: inherit;
+    font-size: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--cyan);
+    border-radius: 2px;
+    color: var(--text-primary);
+    outline: none;
+    box-sizing: border-box;
+}
+.disasm-asm-input.error {
+    border-color: var(--accent);
 }
 /* Operand syntax colors */
 .disasm-reg {
@@ -1320,7 +1350,9 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
 }
 .memory-addr {
     color: var(--text-secondary);
-    width: 36px;
+    /* Five characters: FFFF padded, or 65535. Sized in ch so the gutter is the
+       same box in both bases and the dump does not reflow when the switch is thrown. */
+    width: 5ch;
     flex-shrink: 0;
     cursor: pointer;
 }
@@ -1336,6 +1368,9 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
 #leftMemoryView .memory-hex {
     margin-right: 14px;
 }
+/* A byte is two characters in hex and up to three in decimal. Sizing the cell
+   per base keeps the grid square in both -- and the bytes-per-line fit measures
+   this cell rather than assuming it. */
 .memory-byte {
     color: var(--text-primary);
     width: 18px;
@@ -1345,6 +1380,35 @@ body.light-theme .disasm-label-operand.disasm-operand-addr {
     cursor: pointer;
     border-radius: 2px;
     display: inline-block;
+}
+[data-value-base="dec"] .memory-byte {
+    /* Right-aligned, not centred: a dump of 3 / 12 / 255 only reads as a column
+       when the units line up. box-sizing is border-box globally, so the padding
+       comes out of the 22px and the three digits (18.2px) still fit. */
+    width: 22px;
+    text-align: right;
+    padding-right: 2px;
+}
+/* Thin rule every four bytes. Drawn as an absolutely positioned pseudo-element,
+   not a border-left: box-sizing is border-box, so a border would come out of the
+   cell's own 18/22px and leave the digits a pixel less room -- in decimal a
+   three-digit byte already fills most of the cell.
+   The overhang is what makes the rule CONTINUOUS. A cell is 16px tall but the row
+   pitch is 20px (1px of line padding each side, and the 16px cell sits in an 18px
+   row body), so anything confined to the cell breaks into dashes the eye cannot
+   follow down the column. 2px top and bottom spans the pitch exactly. */
+.memory-byte.group-start {
+    position: relative;
+}
+.memory-byte.group-start::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: -2px;
+    bottom: -2px;
+    width: 1px;
+    background: var(--border-primary);
+    pointer-events: none;
 }
 .memory-byte:hover {
     background: var(--bg-button);

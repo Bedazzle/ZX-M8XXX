@@ -1,5 +1,5 @@
 // Trigger handlers — breakpoint/watchpoint/port/tape/disk trigger UI and callbacks
-import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtByte, fmtPort, specToHex, portSpecToHex } from '../core/addr-format.js';
 
 export function initTriggerHandlers({
     getSpectrum, setDisasmViewAddress, showMessage,
@@ -41,7 +41,9 @@ export function initTriggerHandlers({
             triggerAddrInput.placeholder = 'TT:SS';
             triggerAddrInput.disabled = false;
         } else if (type.startsWith('port')) {
-            triggerAddrInput.placeholder = 'PORT[&MASK]';
+            // The box holds about seven characters, so the full syntax never fitted
+            // and was shown cut off. It is in the tooltip instead.
+            triggerAddrInput.placeholder = 'PORT';
             triggerAddrInput.disabled = false;
         } else if (type === 'screen_bitmap') {
             triggerAddrInput.placeholder = triggerPxMode.checked ? 'X,Y,W,H' : 'C,R,W,H';
@@ -50,7 +52,7 @@ export function initTriggerHandlers({
             triggerAddrInput.placeholder = 'C,R,W,H';
             triggerAddrInput.disabled = false;
         } else {
-            triggerAddrInput.placeholder = '[P:]ADDR[-END]';
+            triggerAddrInput.placeholder = 'ADDR';
             triggerAddrInput.disabled = false;
         }
     });
@@ -118,7 +120,10 @@ export function initTriggerHandlers({
             triggerSpec = { type, col, row, w, h, pixelMode: isPixel, screen, start: 0, end: 0 };
         } else if (type.startsWith('port')) {
             if (!addrStr) return;
-            const parsed = spectrum.parsePortSpec(addrStr);
+            // Same rule as an address spec: the core parses hex, the box follows
+            // the switch, so what was typed is rewritten before it gets there.
+            const hexPort = portSpecToHex(addrStr);
+            const parsed = hexPort === null ? null : spectrum.parsePortSpec(hexPort);
             if (!parsed) {
                 showMessage('Invalid port address', 'error');
                 return;
@@ -126,7 +131,10 @@ export function initTriggerHandlers({
             triggerSpec = { type, start: parsed.port, end: parsed.port, mask: parsed.mask };
         } else {
             if (!addrStr) return;
-            const parsed = spectrum.parseAddressSpec(addrStr);
+            // The core (and so the automation API) parses hex; the box follows the
+            // hex/decimal switch, so what was typed is rewritten before it gets there.
+            const hexSpec = specToHex(addrStr);
+            const parsed = hexSpec === null ? null : spectrum.parseAddressSpec(hexSpec);
             if (!parsed) {
                 showMessage('Invalid address', 'error');
                 return;
@@ -208,7 +216,7 @@ export function initTriggerHandlers({
 
     // Breakpoint/Watchpoint/Port hit callbacks (for compatibility)
     getSpectrum().onBreakpoint = (addr) => {
-        showMessage(`Breakpoint hit at ${hex16(addr)}`);
+        showMessage(`Breakpoint hit at ${fmtAddr(addr)}`);
         setDisasmViewAddress(null); // Force disasm to show PC
         openDebuggerPanel();
         updateDebugger();
@@ -217,8 +225,8 @@ export function initTriggerHandlers({
 
     getSpectrum().onWatchpoint = (wp) => {
         const typeStr = wp.type === 'read' ? 'Read' : 'Write';
-        const instrInfo = wp.instrPC !== undefined ? ` by ${hex16(wp.instrPC)}` : '';
-        showMessage(`Break on ${typeStr} at ${hex16(wp.addr)} = ${hex8(wp.val)}${instrInfo}`);
+        const instrInfo = wp.instrPC !== undefined ? ` by ${fmtAddr(wp.instrPC)}` : '';
+        showMessage(`Break on ${typeStr} at ${fmtAddr(wp.addr)} = ${fmtByte(wp.val)}${instrInfo}`);
         // Navigate disasm to the instruction that triggered the watchpoint (not current PC which may be in ISR)
         if (wp.instrPC !== undefined) {
             setDisasmViewAddress(wp.instrPC);
@@ -233,9 +241,9 @@ export function initTriggerHandlers({
 
     getSpectrum().onPortBreakpoint = (pb) => {
         const dirStr = pb.direction === 'in' ? 'IN' : 'OUT';
-        const portHex = hex16(pb.port);
+        const portHex = fmtPort(pb.port);
         let msg = `Port breakpoint: ${dirStr} ${portHex}`;
-        if (pb.val !== undefined) msg += ` = ${hex8(pb.val)}`;
+        if (pb.val !== undefined) msg += ` = ${fmtByte(pb.val)}`;
         showMessage(msg);
         setDisasmViewAddress(null); // Force disasm to show PC
         openDebuggerPanel();
@@ -244,7 +252,7 @@ export function initTriggerHandlers({
     };
 
     getSpectrum().onCodePathHit = (addr) => {
-        showMessage(`Code path diverged at $${hex16(addr)}`);
+        showMessage(`Code path diverged at ${fmtAddr(addr)}`);
         setDisasmViewAddress(null);
         openDebuggerPanel();
         updateDebugger();

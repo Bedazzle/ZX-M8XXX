@@ -2,6 +2,35 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.09.03
+
+- **Edit instructions directly in disassembly.**
+
+## v26.09.02
+
+- **TRD/SCL editor: autostart LINE is editable.**
+- **Fixed: Explorer failed on TRD/SCL with BASIC files.**
+- **Fixed: wrong autostart line for some BASIC programs.**
+- **Fixed: sound during application tests.**
+- **Fixed: Pentagon disk tests reported "No disk".**
+
+## v26.09.01
+
+- **Version numbers are dates now**: `YY.MM.NN`, NN counting the releases in that month.
+- **sjasmplus address and page operators**: `$$`, `$$$`, `$$$$`, `$$lab`, `$$$lab`, `$$$$lab`, `{x}`, `{b x}`.
+- **Breaking: `$$` is the current page, not the last `ORG`.** `$-$$` no longer gives a block offset.
+- **Numbers can be shown in decimal** (Settings → Display), off by default. Separate toggles for addresses, byte values and opcode bytes — `45056` for `B000`, `3` for `03`, `33 0 176` for `21 00 B0` — in any combination.
+- **Every box reads the base it prints in.** `$`, `0x`, `#` or a trailing `h` always force hex.
+- **The memory dump rules a thin line** after the 4th, 8th and 12th byte.
+- **Tooltips and placeholders say which base the box is in**, and throwing a switch converts what is already in the box.
+- **The Explorer follows it too** — file offsets as well as load addresses, in the hex dump, the disassembly, the file lists and the editors. Sector and TZX block ids stay hex; so does an export filename.
+- **Fixed: application tests failed with the Kempston port off, or a disk interface on, in Settings.** The runner pins both per test now.
+- **Fixed: a region comment containing a `"` broke the disassembly row.**
+- **Fixed: the right panel's breakpoint dots had no tooltip.**
+- **Fixed: `{$8000}` gave $8000 instead of the value stored there.**
+- **Fixed: editing a register guessed the base from the length.** Over two characters was hex, so `100` meant $100 while `10` meant ten. It follows the panel's base now.
+- **Fixed: `FE&FF` typed in the address box became a breakpoint on $00FE**, because `parseInt` stopped at the `&`. The box refuses it now; `spectrum.parseAddressSpec()` is unchanged.
+
 ## v0.16.3
 
 - **Fixed: a long comment broke the disassembly row.** The mnemonic gave up width to the comment beside it, so `LD L,A` wrapped onto two lines. It keeps its width now; the comment is cut with an ellipsis and its full text is in the tooltip.

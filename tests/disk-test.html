@@ -98,7 +98,7 @@
 
 <script type="module">
     import { TRDLoader, SCLLoader, TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
-    import { extractTrdFileDescriptor, addMetaFromDescriptor, shapeBasicEntry, isMonoloader, trdBasicAutostartLine, splitMonoloader } from '../ui/disk-file-copy.js';
+    import { extractTrdFileDescriptor, addMetaFromDescriptor, shapeBasicEntry, isMonoloader, trdBasicAutostartLine, setTrdBasicAutostart, splitMonoloader } from '../ui/disk-file-copy.js';
     import { parseSpecscii, encodeBannerEntries, decodeBannerNames, gridToSpecscii, bannerNamesToSpecscii, isBannerName, lastContentRow, simulateListPrint, BANNER_MAX_ROWS } from '../core/specscii.js';
 
     const logEl = document.getElementById('log');
@@ -2186,8 +2186,8 @@
         // treated as a monoloader, and round-trips program+vars + trailer.
         const progVars = new Uint8Array(300); // 2 sectors, no appended CODE
         for (let i = 0; i < progVars.length; i++) progVars[i] = (i * 3 + 1) & 0xFF;
-        progVars[300 - 4] = 0x80; progVars[300 - 3] = 0xAA; progVars[300 - 2] = 20; progVars[300 - 1] = 0;
         const normData = new Uint8Array(2 * 256); normData.set(progVars);
+        normData.set([0x80, 0xAA, 20, 0], 300);   // the trailer follows the program + vars
         const normSrc = { name: 'LOADER', ext: 'B', startAddress: 0, length: 300, programLength: 200, sectors: 2, data: normData };
 
         assert(!isMonoloader(300, 2), 'normal BASIC not flagged as monoloader (300 B in 2 sectors)');
@@ -2195,7 +2195,7 @@
         assert(!n.desc.verbatim, 'normal BASIC extracted without verbatim');
         assert(n.length === 300, `normal BASIC length preserved (got ${n.length})`);
         assert(n.programLength === 200, `normal BASIC vars offset preserved (got ${n.programLength})`);
-        assert(trdBasicAutostartLine(n.data) === 20, 'normal BASIC autostart trailer survives the round-trip');
+        assert(trdBasicAutostartLine(n.data, n.length) === 20, 'normal BASIC autostart trailer survives the round-trip');
 
         // Negative: a normal CODE file slices to its declared length as before.
         const ncData = new Uint8Array(2 * 256);
@@ -2226,6 +2226,51 @@
         const spc = splitMonoloader(codeSrc); // CODE @0x8000, length 89, 23 sectors
         assert(spc.loader.ext === 'C' && spc.loader.startAddress === 0x8000, 'split CODE loader keeps C type + start 0x8000');
         assert(spc.payload.ext === 'C' && spc.payload.length === 23 * 256 - 89, 'split CODE payload is the remaining allocation');
+
+        section('TR-DOS BASIC autostart trailer');
+        // The trailer is at `length`, not wherever 0x80 0xAA first appears: a
+        // program can hold those bytes itself (0x80 is a block-graphics character).
+        const decoy = new Uint8Array(256);
+        decoy.set([0x80, 0xAA, 99, 0], 10);   // inside the program
+        decoy.set([0x80, 0xAA, 30, 0], 50);   // the real trailer
+        assert(trdBasicAutostartLine(decoy, 50) === 30, 'the line is read at `length`, past a decoy 0x80 0xAA in the program');
+        assert(trdBasicAutostartLine(decoy, 40) === -1, 'no trailer at `length` is no autostart, not a search');
+        decoy.set([0x00, 0x80], 52);
+        assert(trdBasicAutostartLine(decoy, 50) === -1, 'a line of 32768 or more is no autostart');
+
+        const mk = (length, sectors, trailer) => {
+            const data = new Uint8Array(sectors * 256).fill(0xEE);
+            if (trailer) data.set(trailer, length);
+            return { data, length, sectors };
+        };
+        let f = mk(50, 1, [0x80, 0xAA, 10, 0]);
+        assert(setTrdBasicAutostart(f, 1234) === null && trdBasicAutostartLine(f.data, 50) === 1234,
+               'an existing trailer takes the new line');
+        assert(f.data[54] === 0xEE, 'and nothing past the trailer is touched');
+        setTrdBasicAutostart(f, null);
+        assert(bytesEqual(f.data.subarray(50, 54), new Uint8Array([0x80, 0xAA, 0x00, 0x80])),
+               'clearing it writes 0x8000, keeping the marker');
+
+        f = mk(50, 1, null);
+        assert(setTrdBasicAutostart(f, 0) === null && trdBasicAutostartLine(f.data, 50) === 0,
+               'a file with no trailer gets one (LINE 0 is a real line)');
+        f = mk(50, 1, null);
+        assert(setTrdBasicAutostart(f, null) === null && f.data[50] === 0xEE, 'clearing a file with no trailer changes nothing');
+
+        f = mk(254, 1, null);
+        assert(setTrdBasicAutostart(f, 10) === null && f.sectors === 2 && f.data.length === 512,
+               'a trailer that does not fit takes one more sector');
+        assert(trdBasicAutostartLine(f.data, 254) === 10, 'and is readable across the sector boundary');
+        f = mk(254, 1, null);
+        assert(/full/i.test(setTrdBasicAutostart(f, 10, 0) || '') && f.sectors === 1, 'but not on a full disk');
+
+        f = mk(89, 23, null);   // monoloader: the bytes after the program are its code
+        const before = f.data.slice();
+        assert(!!setTrdBasicAutostart(f, 10) && bytesEqual(f.data, before),
+               'a monoloader without a trailer is refused, its code untouched');
+        f = mk(89, 23, [0x80, 0xAA, 0, 0]);
+        assert(setTrdBasicAutostart(f, 20) === null && trdBasicAutostartLine(f.data, 89) === 20,
+               'a monoloader that has a trailer can still change it');
     }
 
     function runBannerTests() {

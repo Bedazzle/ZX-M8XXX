@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>One-Line Assembler Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>One-Line Assembler Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/asm-line.js turns what someone typed on a disassembly row into the
+        // bytes to write there. Three things are worth pinning:
+        //
+        //   1. It accepts what the ASM panel accepts -- every operand form, the
+        //      undocumented opcodes, expressions, `$`, and labels -- because it
+        //      drives the same encoder. The sharpest test of that is a ROUND TRIP:
+        //      disassemble a byte sequence, feed the text straight back, and get
+        //      the same bytes. That is also exactly what the row does when someone
+        //      opens an editor and presses Enter without changing anything.
+        //   2. The size rule: where an instruction has more than one encoding, the
+        //      one matching the instruction being replaced wins.
+        //   3. An alternative encoding is only offered when the CPU really runs it
+        //      as the same instruction -- asserted here against the real Z80, not
+        //      against a table.
+        import { assembleLine, altEncoding, normalizeHexLiterals } from '../core/asm-line.js';
+        import { Disassembler } from '../core/disasm.js';
+        import { Z80 } from '../core/z80.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        const hx = (bytes) => Array.from(bytes || []).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => v === b[i]);
+
+        class Mem {
+            constructor() { this.ram = new Uint8Array(0x10000); }
+            read(addr) { return this.ram[addr & 0xffff]; }
+            write(addr, val) { this.ram[addr & 0xffff] = val & 0xff; }
+        }
+
+        function asmBytes(text, opts) {
+            const r = assembleLine(text, opts);
+            return r.error ? null : r.bytes;
+        }
+        function assertAsm(text, expected, opts = {}) {
+            const r = assembleLine(text, Object.assign({ address: 0x8000 }, opts));
+            assert(!r.error && same(r.bytes, expected), `${text}  ->  ${hx(expected)}`,
+                   r.error || hx(r.bytes));
+        }
+        function assertError(text, what, opts = {}) {
+            const r = assembleLine(text, Object.assign({ address: 0x8000 }, opts));
+            assert(!!r.error, `refused: ${what}`, r.error ? '' : `assembled to ${hx(r.bytes)}`);
+        }
+
+        (async () => {
+
+            section('The ordinary cases');
+            assertAsm('nop', [0x00]);
+            assertAsm('ld a,5', [0x3E, 0x05]);
+            assertAsm('LD A,5', [0x3E, 0x05]);
+            assertAsm('  ld   a , 5  ', [0x3E, 0x05]);
+            assertAsm('ld hl,$1234', [0x21, 0x34, 0x12]);
+            assertAsm('ld hl,1234h', [0x21, 0x34, 0x12]);
+            assertAsm('ld hl,#1234', [0x21, 0x34, 0x12]);
+            assertAsm('ld hl,4660', [0x21, 0x34, 0x12]);
+            assertAsm('ld a,%10101010', [0x3E, 0xAA]);
+            assertAsm("ld a,'A'", [0x3E, 0x41]);
+            assertAsm('ret', [0xC9]);
+            assertAsm('ret nz', [0xC0]);
+            assertAsm('call 9000h', [0xCD, 0x00, 0x90]);
+            assertAsm('jp (hl)', [0xE9]);
+            assertAsm('ld (ix+5),a', [0xDD, 0x77, 0x05]);
+            assertAsm('bit 7,(iy-3)', [0xFD, 0xCB, 0xFD, 0x7E]);
+            assertAsm('out (0feh),a', [0xD3, 0xFE]);
+            assertAsm('rst 38h', [0xFF]);
+            assertAsm("ex af,af'", [0x08]);
+            assertAsm('ldir', [0xED, 0xB0]);
+
+            section('Undocumented opcodes are allowed — this is a debugger');
+            assertAsm('sll b', [0xCB, 0x30]);
+            assertAsm('ld ixh,5', [0xDD, 0x26, 0x05]);
+            assertAsm('in f,(c)', [0xED, 0x70]);
+
+            section('Expressions, $ and labels');
+            assertAsm('ld hl,$+3', [0x21, 0x03, 0x80]);
+            assertAsm('ld a,2*8+1', [0x3E, 0x11]);
+            assertAsm('jr $', [0x18, 0xFE]);
+            assertAsm('call start', [0xCD, 0x00, 0x40], { symbols: { start: 0x4000 } });
+            assertAsm('ld hl,scr+1', [0x21, 0x01, 0x40], { symbols: { scr: 0x4000 } });
+            {
+                // A label the row itself defines comes back for the caller to keep,
+                // and the instruction after it still assembles.
+                const r = assembleLine('loop: djnz loop', { address: 0x8000 });
+                assert(r.label === 'loop' && same(r.bytes, [0x10, 0xFE]),
+                       'a label and an instruction on one line', r.error || `${r.label} ${hx(r.bytes)}`);
+                const only = assembleLine('entry:', { address: 0x8000 });
+                assert(only.label === 'entry' && only.bytes.length === 0,
+                       'a label on its own writes nothing', only.error || hx(only.bytes));
+            }
+
+            section('A row reads back what it printed');
+            {
+                // The disassembler writes FFh, not 0FFh, and sjasmplus reads a number
+                // only when it starts with a digit. Without the fix-up none of the
+                // high hex bytes below would come back.
+                assert(normalizeHexLiterals('ld a,FFh') === 'ld a,0FFh', 'FFh gets its leading zero');
+                assert(normalizeHexLiterals('ld a,05h') === 'ld a,05h', 'a literal that already starts with a digit is left alone');
+                assert(normalizeHexLiterals('push af') === 'push af', 'PUSH is not a hex number');
+                assert(normalizeHexLiterals('call beefh', { beefh: 1 }) === 'call beefh',
+                       'a defined symbol that looks like hex stays a symbol');
+                assert(normalizeHexLiterals('db "FFh"') === 'db "FFh"', 'text inside quotes is untouched');
+
+                // The round trip: every one of these is disassembled and the text is
+                // fed straight back in. This is what pressing Enter on an unchanged
+                // row does.
+                const CASES = [
+                    [0x00], [0x3E, 0xFF], [0x21, 0xCD, 0xAB], [0xCD, 0x00, 0x90],
+                    [0xC3, 0xFF, 0xFF], [0x18, 0x0A], [0x20, 0xF6], [0x10, 0xFE],
+                    [0x08], [0xD9], [0xE9], [0xF9], [0x76], [0xC9], [0xFF],
+                    [0xDD, 0x7E, 0x05], [0xFD, 0x77, 0xFB], [0xDD, 0x21, 0x00, 0x40],
+                    [0xCB, 0x27], [0xCB, 0x7E], [0xDD, 0xCB, 0x05, 0xC6],
+                    [0xED, 0xB0], [0xED, 0x47], [0xED, 0x52], [0xED, 0x43, 0x00, 0x40],
+                    [0xDB, 0xFE], [0xD3, 0xFE], [0xED, 0x78],
+                    [0x3A, 0x00, 0x5C], [0x32, 0xFF, 0xFF], [0xFE, 0xA0], [0xC6, 0x0F],
+                    [0xDD, 0x24], [0xDD, 0x2E, 0xF0], [0xCB, 0x30]
+                ];
+                const mem = new Mem();
+                const dis = new Disassembler(mem);
+                const base = 0x8000;
+                let ok = 0, bad = [];
+                for (const bytes of CASES) {
+                    mem.ram.fill(0);
+                    bytes.forEach((b, i) => { mem.ram[base + i] = b; });
+                    const line = dis.disassemble(base);
+                    const back = asmBytes(line.mnemonic, { address: base });
+                    if (same(back, bytes)) ok++;
+                    else bad.push(`${hx(bytes)} -> "${line.mnemonic}" -> ${back ? hx(back) : assembleLine(line.mnemonic, { address: base }).error}`);
+                }
+                assert(bad.length === 0, `all ${CASES.length} disassembled instructions assemble back to themselves`,
+                       bad.slice(0, 4).join('\n      '));
+                assert(ok === CASES.length, `${ok}/${CASES.length} round-tripped`);
+            }
+
+            section('Data, and only the data directives');
+            assertAsm('db 1,2,3', [1, 2, 3]);
+            assertAsm('defb 0FFh', [0xFF]);
+            assertAsm('db "AB",0', [0x41, 0x42, 0x00]);
+            assertAsm('dz "A"', [0x41, 0x00]);
+            assertAsm('dw 1234h,0', [0x34, 0x12, 0x00, 0x00]);
+            assertAsm('ds 3', [0, 0, 0]);
+            assertAsm('ds 2,0FFh', [0xFF, 0xFF]);
+            assertError('org 8000h', 'ORG is a source directive, not an instruction');
+            assertError('include "x.asm"', 'INCLUDE belongs to a file, not a row');
+            assertError('db 300', 'a byte that does not fit');
+
+            section('Bad input is refused, not guessed at');
+            assertError('', 'an empty line');
+            assertError('   ', 'blank space');
+            assertError('frobnicate a,b', 'an instruction that does not exist');
+            assertError('ld a,', 'a missing operand');
+            assertError('ld a,b,c', 'too many operands');
+            assertError('nop a', 'an operand on an instruction that takes none');
+            assertError('call nowhere', 'an undefined label');
+            assertError('ld hl,4000h\nld de,0', 'two instructions in one row');
+            assertError('jr 9000h', 'a JR out of range', { address: 0x8000 });
+            {
+                const r = assembleLine('call nowhere', { address: 0x8000 });
+                assert(/nowhere/.test(r.error || ''), 'and the undefined label is named', r.error);
+                const j = assembleLine('jr 9000h', { address: 0x8000 });
+                assert(/range/i.test(j.error || ''), 'and the out-of-range jump says so', j.error);
+            }
+
+            section('The encoding that matches the size being replaced wins');
+            {
+                // The rule: replacing a 2-byte instruction with NOP should not leave a
+                // stray byte behind when a 2-byte NOP exists.
+                const one = assembleLine('nop', { address: 0x8000, replaceLength: 1 });
+                assert(same(one.bytes, [0x00]), 'NOP over one byte is 00', hx(one.bytes));
+                const two = assembleLine('nop', { address: 0x8000, replaceLength: 2 });
+                assert(same(two.bytes, [0xDD, 0x00]), 'NOP over two bytes is DD 00', hx(two.bytes));
+                assert(!!two.note, 'and it says the size decided it', two.note);
+                const none = assembleLine('nop', { address: 0x8000 });
+                assert(same(none.bytes, [0x00]), 'with no size to match, the short one', hx(none.bytes));
+
+                const ldab = assembleLine('ld a,b', { address: 0x8000, replaceLength: 2 });
+                assert(same(ldab.bytes, [0xDD, 0x78]), 'LD A,B over two bytes is DD 78', hx(ldab.bytes));
+                const cpb = assembleLine('cp b', { address: 0x8000, replaceLength: 2 });
+                assert(same(cpb.bytes, [0xDD, 0xB8]), 'CP B over two bytes is DD B8', hx(cpb.bytes));
+
+                // Refused: the CPU would run DD 3E 05 as LD A,5, but the disassembler
+                // splits it, so the row would not say what it does.
+                const lda5 = assembleLine('ld a,5', { address: 0x8000, replaceLength: 3 });
+                assert(same(lda5.bytes, [0x3E, 0x05]), 'LD A,5 is not padded to three bytes', hx(lda5.bytes));
+                // Refused: DD 7E takes a displacement, so it is a different instruction.
+                const ldahl = assembleLine('ld a,(hl)', { address: 0x8000, replaceLength: 2 });
+                assert(same(ldahl.bytes, [0x7E]), 'LD A,(HL) is not padded (DD 7E is LD A,(IX+d))', hx(ldahl.bytes));
+                // Refused: two prefixes in a row disassemble as a stray byte.
+                const three = assembleLine('nop', { address: 0x8000, replaceLength: 3 });
+                assert(same(three.bytes, [0x00]), 'no three-byte NOP is invented', hx(three.bytes));
+                // Nothing is ever padded to reach a size the user did not ask for.
+                const longer = assembleLine('ld hl,0', { address: 0x8000, replaceLength: 1 });
+                assert(same(longer.bytes, [0x21, 0x00, 0x00]), 'a longer instruction is written as it is', hx(longer.bytes));
+
+                assert(altEncoding([0x00], 2, 0x8000) !== null, 'altEncoding finds the two-byte NOP');
+                assert(altEncoding([0x00], 1, 0x8000) === null, 'and asks for nothing when the size already matches');
+            }
+
+            section('The CPU agrees with the disassembler about those encodings');
+            {
+                // The alternative encodings are chosen because our disassembler decodes
+                // them back to the same mnemonic. That is only safe if the CPU executes
+                // them as the same instruction, so run them.
+                function run(bytes, before = {}) {
+                    const mem = new Mem();
+                    bytes.forEach((b, i) => { mem.ram[0x8000 + i] = b; });
+                    const cpu = new Z80(mem);
+                    cpu.portRead = () => 0xFF;
+                    cpu.portWrite = () => {};
+                    cpu.pc = 0x8000;
+                    Object.assign(cpu, before);
+                    cpu.step();
+                    return cpu;
+                }
+                const nop2 = run([0xDD, 0x00], { a: 0x5A, hl: 0x1234 });
+                assert(nop2.pc === 0x8002, 'DD 00 advances PC by two', String(nop2.pc));
+                assert(nop2.a === 0x5A && nop2.hl === 0x1234, 'and changes nothing else');
+
+                const ld = run([0xDD, 0x78], { a: 0, b: 0x42 });
+                assert(ld.a === 0x42 && ld.pc === 0x8002, 'DD 78 really is LD A,B', `a=${ld.a} pc=${ld.pc}`);
+
+                const plain = run([0x00], { a: 0x5A });
+                assert(plain.pc === 0x8001 && plain.a === 0x5A, 'and the one-byte NOP still is one');
+            }
+
+            section('The caller\'s assembler state is left alone');
+            {
+                // The ASM panel shares this encoder. Assembling a row must not reset
+                // its dialect switches or swallow its errors.
+                const { DialectOptions } = await import('../sjasmplus/instructions.js');
+                const { ErrorCollector } = await import('../sjasmplus/errors.js');
+                DialectOptions.undocumented = false;
+                ErrorCollector.errors = [{ message: 'a build error from before' }];
+                ErrorCollector.warnings = [];
+                assembleLine('sll b', { address: 0x8000 });
+                assembleLine('frobnicate', { address: 0x8000 });
+                assert(DialectOptions.undocumented === false, 'the dialect switch is put back');
+                assert(ErrorCollector.errors.length === 1, 'and the previous build\'s errors are still there',
+                       String(ErrorCollector.errors.length));
+                DialectOptions.undocumented = true;
+                ErrorCollector.errors = [];
+            }
+
+            if (failed === 0) log('\nAll tests passed.', 'pass');
+        })();
+    </script>
+</body>
+</html>

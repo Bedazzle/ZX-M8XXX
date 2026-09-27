@@ -7,7 +7,7 @@
 // can navigate back/forward between grabbed screens. Each page has its own region;
 // new pages copy the region from the last capture.
 
-import { hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrSigil, parseAddr } from '../core/addr-format.js';
 
 export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFile }) {
 
@@ -1609,7 +1609,7 @@ export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFi
 
     function openExtractDialog(address, bank) {
         if (address !== undefined) {
-            extractAddrInput.value = hex16(address);
+            extractAddrInput.value = fmtAddr(address);
         }
         if (bank !== undefined && bank >= 0) {
             extractBankInput.value = bank;
@@ -1736,8 +1736,8 @@ export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFi
     // Extract to Charset
     btnExtractDo.addEventListener('click', () => {
         const addrStr = extractAddrInput.value.trim();
-        const address = parseInt(addrStr, 16);
-        if (isNaN(address) || address < 0 || address > 0xFFFF) {
+        const address = parseAddr(addrStr);
+        if (address === null || address < 0 || address > 0xFFFF) {
             showMessage('Invalid address');
             return;
         }
@@ -1756,12 +1756,12 @@ export function initTextRipper({ readMemory, getRAMPage, showMessage, downloadFi
         const targetCs = session.charsets.find(c => c.id === targetId);
         const csName = targetCs ? ` → ${targetCs.name}` : '';
         const bankNote = bank >= 0 ? ` (bank ${bank})` : '';
-        showMessage(`Extracted ${added} glyphs from $${hex16(address)}${bankNote}${csName}`);
+        showMessage(`Extracted ${added} glyphs from ${fmtAddrSigil(address)}${bankNote}${csName}`);
     });
 
     // Load ROM Font — shortcut: $3D00, 96 chars, sequential, Spectrum ASCII map
     btnExtractRom.addEventListener('click', () => {
-        extractAddrInput.value = '3D00';
+        extractAddrInput.value = fmtAddr(0x3D00);
         extractBankInput.value = '';
         extractCountInput.value = '96';
         extractColsInput.value = '1';

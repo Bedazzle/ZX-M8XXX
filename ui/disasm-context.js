@@ -20,6 +20,7 @@ export function initDisasmContext({
     dialogs,
     closeMemContextMenu, closeLeftMemContextMenu,
     showMessage, updateDebugger, updateLabelsList,
+    startAsmEdit,
     goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
     getRightPanelType,
     readMemory, addPoke, getInstrLength,
@@ -224,6 +225,10 @@ export function initDisasmContext({
         menuHtml += `<div data-action="mem-left">Memory left</div>`;
         menuHtml += `<div data-action="mem-right">Memory right</div>`;
         menuHtml += `<div class="menu-separator"></div>`;
+        if (startAsmEdit) {
+            menuHtml += `<div data-action="asm-edit">Edit instruction</div>`;
+            menuHtml += `<div class="menu-separator"></div>`;
+        }
         if (existingLabel) {
             menuHtml += `<div data-action="edit">Edit label "${existingLabel.name}"</div>`;
             menuHtml += `<div data-action="delete" class="danger">Delete label</div>`;
@@ -321,7 +326,13 @@ export function initDisasmContext({
     function handleContextMenuAction(action, addr, lineAddr) {
         const existingLabel = labelManager.get(addr);
 
-        if (action === 'disasm-left') {
+        if (action === 'asm-edit') {
+            // The menu item acts on the ROW, not on an operand address it was
+            // opened over: it is the instruction that gets rewritten.
+            closeLabelContextMenu();
+            startAsmEdit(lineAddr);
+            return;
+        } else if (action === 'disasm-left') {
             goToLeftDisasm(addr);
         } else if (action === 'disasm-right') {
             goToRightDisasm(addr);

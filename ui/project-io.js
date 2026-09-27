@@ -1,6 +1,7 @@
 // Project Save/Load — serializes/restores all emulator state (init-function pattern, DI)
 
 import { hex16, arrayToBase64, storageSet } from '../core/utils.js';
+import { fmtAddr } from '../core/addr-format.js';
 
 export function initProjectIO({
     getSpectrum,
@@ -391,21 +392,21 @@ export function initProjectIO({
                 if (project.debugger.disasmAddress !== undefined) {
                     setDisasmViewAddress(project.debugger.disasmAddress);
                     if (project.debugger.disasmAddress !== null) {
-                        disasmAddressInput.value = hex16(project.debugger.disasmAddress);
+                        disasmAddressInput.value = fmtAddr(project.debugger.disasmAddress);
                     }
                 }
                 if (project.debugger.memoryAddress !== undefined) {
                     setMemoryViewAddress(project.debugger.memoryAddress);
-                    memoryAddressInput.value = hex16(project.debugger.memoryAddress);
+                    memoryAddressInput.value = fmtAddr(project.debugger.memoryAddress);
                 }
                 if (project.debugger.leftMemoryAddress !== undefined) {
                     setLeftMemoryViewAddress(project.debugger.leftMemoryAddress);
-                    leftMemAddressInput.value = hex16(project.debugger.leftMemoryAddress);
+                    leftMemAddressInput.value = fmtAddr(project.debugger.leftMemoryAddress);
                 }
                 if (project.debugger.rightDisasmAddress !== undefined) {
                     setRightDisasmViewAddress(project.debugger.rightDisasmAddress);
                     if (project.debugger.rightDisasmAddress !== null) {
-                        rightDisasmAddressInput.value = hex16(project.debugger.rightDisasmAddress);
+                        rightDisasmAddressInput.value = fmtAddr(project.debugger.rightDisasmAddress);
                     }
                 }
 

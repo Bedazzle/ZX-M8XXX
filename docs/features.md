@@ -53,6 +53,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Feature | Logic | UI | Markup | Test | Docs |
 |---------|-------|----|--------|------|------|
 | Assembler core | `sjasmplus/*.js` | `ui/assembler-ui.js` | `asmEditor`, `asmOutput` | `asm-test` | `docs/assembler.md` |
+| Address/page operators | `sjasmplus/lexer.js`, `sjasmplus/expression.js` (`applySigil`), `sjasmplus/labels.js` (`physical`), `sjasmplus/assembler.js` (`exprContext`) | — | — | `asm-test` | `docs/assembler.md` |
 | Project files / VFS | `sjasmplus/vfs.js` | `ui/assembler-ui.js` (`addProjectFiles`) | `asmFileSelect` | `asm-vfs-test` | `docs/assembler.md` |
 | LUA scripting | `sjasmplus/lua.js` | `ui/assembler-ui.js` | — | `lua-test` | `docs/assembler.md` |
 | Syntax highlighting | `ui/asm-highlight.js` | `ui/assembler-ui.js` | `.asm-highlight` | `asm-highlight-test` | `docs/assembler.md` |
@@ -66,12 +67,17 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Feature | Logic | UI | Markup | Test | Docs |
 |---------|-------|----|--------|------|------|
 | Disassembly | `core/disasm.js` | `ui/debugger-display.js`, `ui/disasm-*.js` | `disassemblyView` | `disasm-test` | `docs/debugger.md` |
+| Disassembly row (both panels) | `ui/disasm-line-render.js` | `ui/debugger-display.js`, `ui/right-disasm-view.js` | `disassemblyView`, `rightDisassemblyView` | `disasm-render-test` | `docs/architecture.md` |
+| Memory dump row (both panels) | `ui/mem-dump-render.js` | `ui/memory-view.js` | `memoryView`, `leftMemoryView` | `memdump-render-test` | `docs/architecture.md` |
+| Edit an instruction in the disasm | `core/asm-line.js` | `ui/disasm-asm-edit.js`, `ui/disasm-context.js` (`asm-edit`) | `disassemblyView`, `rightDisassemblyView`, `.disasm-asm-input`, `chkRomEditDisasm`/`chkRomEdit` | `asm-line-test`, `disasm-asm-edit-test` | `docs/debugger.md` |
+| Character cell blit (all render paths) | `core/ula-blit.js` | `core/ula.js` | — | `ula-blit-test` | `docs/rendering.md` |
 | Breakpoints | `core/spectrum.js` | `ui/step-controls.js` | `breakpointsList` | `breakpoint-test` | `docs/debugger.md` |
 | Trace | `debug/trace-manager.js` | `ui/trace-display.js` | `traceList` | `debug-test` | `docs/debugger.md` |
 | Labels / regions / comments | `debug/managers.js` | `ui/labels-panel.js`, `ui/mem-context.js` | `labelsList` | `debug-test` | `docs/debugger.md` |
 | Auto-map + exports | `core/debug-instrument.js`, `core/map-export.js` | `ui/memory-map.js`, `ui/analysis-tools.js` | `memoryMapDialog` | `mapexport-test` | `docs/tools.md` |
 | Profiler | `tools/profiler-analysis.js` | `ui/profiler-ui.js` | `profilerPanel` | `profiler-analysis-test` | `docs/tools.md` |
 | Signature packs | `debug/signature-pack-manager.js` | `ui/signature-packs-ui.js` | `sigPacksList` | `sigpack-test` | `docs/tools.md` |
+| Hex / decimal display | `core/addr-format.js` | `ui/display-settings.js`, `ui/number-hints.js` | `chkDecAddresses`, `chkDecValues`, `chkDecOpcodes` | `addr-format-test`, `addr-base-ui-test` | `docs/debugger.md` |
 | Headless API | `ui/app-init.js` (`window.zxDebug`) | — | — | (per-feature) | `docs/automation.md` |
 | API manifest / capabilities | `core/api-manifest.js` | `ui/app-init.js` (`capabilities`, `help`, `require`) | — | `api-manifest-test` | `docs/automation.md` |
 | Port-read provenance | `core/debug-instrument.js` (`startPortReadProvenance`), `core/spectrum.js` (`portRead`) | `ui/app-init.js` (`watchPortReads`) | — | `api-manifest-test` | `docs/automation.md` |

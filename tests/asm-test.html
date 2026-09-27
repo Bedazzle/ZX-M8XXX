@@ -2163,6 +2163,134 @@ VAL:            EQU 42
             }
         }
 
+        // The sjasmplus address/page operators. Each is a sigil glued to the front
+        // of a name (or standing alone), which the lexer has to hand over as ONE
+        // token: as two ("$$" then "lab") the expression parser sees a stray
+        // identifier after a finished expression and every one of these failed to
+        // assemble at all.
+        //
+        // $$ was the odd one out until v1.0.0: it meant the last ORG -- NASM's
+        // "section start", inherited from the standalone sjasmplus-js this engine
+        // grew out of, and never tested beyond the lexer. It is the page of $ now,
+        // which is what sjasmplus means and what makes it consistent with $$lab.
+        async function runDollarOperatorTests() {
+            // A construct that no longer parses THROWS, and a throw would abort
+            // the rest of the section -- which reads as "all green" with quietly
+            // fewer asserts. Turn it into a failed assert instead.
+            const bytes = (src) => {
+                try { return Assembler.assemble(src).output; }
+                catch (e) { assert(false, 'assembles at all', e.message); return null; }
+            };
+            const D = '    device zxspectrum128\n';
+
+            section('$ is the address, $$ is its page');
+
+            assertBytes(bytes('    org $8000\n    dw $\n'), [0x00, 0x80],
+                        '$ is the program counter');
+            assertBytes(bytes(D + '    org $C000\n    page 5\n    db $$\n'), [0x05],
+                        '$$ is the page the program counter is in');
+            assertBytes(bytes(D + '    org $C000\n    page 3\n    db $$\n'), [0x03],
+                        'and it follows the page, not the address');
+            assertBytes(bytes(D + '    org $C000\n    page 6\n    ld a,$$\n'), [0x3E, 0x06],
+                        'in an instruction operand as well as a DB');
+
+            // The whole point of the change: $$ is to $ what $$lab is to lab.
+            assertBytes(bytes(D + '    org $C000\n    page 5\nlab: db $$, $$lab\n'),
+                        [0x05, 0x05], '$$ agrees with $$lab at the same address');
+
+            // It used to be the last ORG (NASM's "section start"), so `$-$$` was the
+            // offset into the ORG block. That reading is gone, and gone loudly:
+            // there are no pages without a DEVICE, so the old idiom errors rather
+            // than quietly returning a small number that looks like an offset.
+            {
+                const r = tryAsm('    org $8000\n    nop\n    dw $-$$\n');
+                assert(!r.ok && /DEVICE/i.test(r.err),
+                       'the old $-$$ block offset is refused, naming DEVICE', r.err);
+            }
+            assert(!tryAsm('    org $8000\n    dw $$\n').ok,
+                   '$$ with no DEVICE is an error, not page 0');
+            assert(!tryAsm('    org $8000\nlab: db $$lab\n').ok,
+                   'and so is $$lab, for the same reason');
+
+            section('$$$ / $$$$ - the physical address and its page');
+
+            assertBytes(bytes('    org $8000\n    disp $C000\n    dw $$$\n    ent\n'),
+                        [0x00, 0x80], 'inside DISP, $$$ is where the bytes really go');
+            assertBytes(bytes('    org $8000\n    disp $C000\n    dw $\n    ent\n'),
+                        [0x00, 0xC0], 'while $ stays the displaced address');
+            assertBytes(bytes('    org $8000\n    dw $$$\n'), [0x00, 0x80],
+                        'outside DISP the two are the same');
+            // page 7 goes to slot 3, where the DISPLACED address lands; the
+            // physical one is $8000, in slot 2, which zxspectrum128 leaves on page
+            // 2. The two answers have to differ or this proves nothing -- with
+            // `page 2` here they were both 2 and the assert held either way.
+            assertBytes(bytes(D + '    org $8000\n    page 7\n    disp $C000\n    db $$$$\n    ent\n'),
+                        [0x02], '$$$$ is the page the PHYSICAL address falls in');
+            assertBytes(bytes(D + '    org $8000\n    page 7\n    disp $C000\n    db $$$$ = 7\n    ent\n'),
+                        [0x00], 'and not the displaced address, whose page is 7 here');
+
+            section('The same four, applied to a label');
+
+            assertBytes(bytes(D + '    org $C000\n    page 5\nlab: nop\n    db $$lab\n'),
+                        [0x00, 0x05], '$$lab is the page the label lives in');
+            assertBytes(bytes(D + '    org $C000\n    page 3\nlab: nop\n    db $$lab\n'),
+                        [0x00, 0x03], 'and it follows the page, not the address');
+            assertBytes(bytes(D + '    org $8000\n    disp $C000\nlab: nop\n    ent\n    dw $$$lab\n'),
+                        [0x00, 0x00, 0x80], '$$$lab is where a DISP label really sits');
+            assertBytes(bytes(D + '    org $8000\n    disp $C000\nlab: nop\n    ent\n    dw lab\n'),
+                        [0x00, 0x00, 0xC0], 'while the bare label is still the displaced one');
+            assertBytes(bytes(D + '    org $C000\n    page 6\n    disp $4000\nlab: nop\n    ent\n    db $$$$lab\n'),
+                        [0x00, 0x06], '$$$$lab is the page of the physical address');
+            assertBytes(bytes(D + '    org $8000\n    disp $C000\nlab: nop\n    ent\n    ld hl,$$$lab\n'),
+                        [0x00, 0x21, 0x00, 0x80], 'and all of them reach an instruction operand');
+            assertBytes(bytes(D + '    org $C000\n    page 4\nlab: nop\npg: equ $$lab\n    db pg\n'),
+                        [0x00, 0x04], 'and an EQU');
+
+            assert(!tryAsm('    org $8000\n    dw $$$$$\n').ok,
+                   'five dollars is an error, not a silently truncated four');
+
+            section('{x} and {b x} read the assembled image');
+
+            assertBytes(bytes(D + '    org $8000\n    dw $BEEF\n    dw {$8000}\n'),
+                        [0xEF, 0xBE, 0xEF, 0xBE], '{x} reads a word back');
+            assertBytes(bytes(D + '    org $8000\n    db $99,$77\n    db {b $8000}\n'),
+                        [0x99, 0x77, 0x99], '{b x} reads one byte');
+            assertBytes(bytes(D + '    org $8000\n    db $99,$77\n    db {b $8001}\n'),
+                        [0x99, 0x77, 0x77], 'from the address it was given');
+            // Into a DB, a word read is cut down to the same byte the byte read
+            // gives -- so the size only shows somewhere wider than a byte.
+            assertBytes(bytes(D + '    org $8000\n    db $99,$77\n    dw {b $8000}\n'),
+                        [0x99, 0x77, 0x99, 0x00], '{b x} is ONE byte, not a word cut down to one');
+            assertBytes(bytes(D + '    org $8000\n    dw $0002\n    dw 1+{$8000}\n'),
+                        [0x02, 0x00, 0x03, 0x00], 'and it is an operand like any other');
+            assertBytes(bytes(D + '    org $8000\n    db $42\n    ld a,{b $8000}\n'),
+                        [0x42, 0x3E, 0x42], 'in an instruction as well as a DB');
+
+            // "b" is the size keyword only when something follows it, so a label
+            // called b is still readable as a word.
+            assertBytes(bytes(D + '    org $8000\n    dw $1234\nb:  equ $8000\n    dw {b}\n'),
+                        [0x34, 0x12, 0x34, 0x12], '{b} on its own is a word read of a label called b');
+
+            // The read is a convergence input: the byte is not there on the first
+            // pass, and the value it gave last pass is compared to force another.
+            {
+                const r = asm(D + '    org $8000\n    dw {tgt}\n    org $9000\ntgt: dw $1234\n');
+                assertBytes(r.success ? r.output.slice(0, 2) : null, [0x34, 0x12],
+                            'a read of an address filled in later still converges');
+            }
+
+            // With no DEVICE there is no image to read, so a braced operand keeps
+            // its other sjasmplus meaning -- the STRUCT wrapper.
+            section('Braces without a DEVICE are still the STRUCT wrapper');
+
+            assertBytes(bytes('    struct P\nx  byte 7\ny  byte 9\n    ends\n' +
+                              '    org $8000\n    P {1,2}\n    P\n'),
+                        [0x01, 0x02, 0x07, 0x09], 'a struct instantiated with and without values');
+            assertBytes(bytes(D + '    struct P\nx  byte 7\ny  byte 9\n    ends\n' +
+                              '    org $8000\n    P {1,2}\n    P\n'),
+                        [0x01, 0x02, 0x07, 0x09], 'and the same with a DEVICE set');
+        }
+
         async function runAllTests() {
             clearLog();
             log('Running all assembler tests...', 'info');
@@ -2181,6 +2309,7 @@ VAL:            EQU 42
             await runConditionalTests();
             await runAdvancedTests();
             await runLineMapTests();
+            await runDollarOperatorTests();
 
             log('\n=== COMPLETE ===', 'section');
         }

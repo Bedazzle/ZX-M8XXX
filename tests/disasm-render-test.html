@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Disassembly Row Rendering Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Disassembly Row Rendering Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // The debugger draws a disassembly row in two places -- the main view and the
+        // right panel -- and for a long time each had its own copy of the markup. The
+        // copies drifted: the right panel's breakpoint dot had no tooltip, for no
+        // reason anyone chose. ui/disasm-line-render.js now renders the row once, so
+        // the thing worth asserting is the invariant that made it worth doing:
+        //
+        //   given the same address and the same options, the two panels produce
+        //   BYTE-FOR-BYTE the same HTML.
+        //
+        // That only means anything against the real page, where the managers, the
+        // disassembler and the option checkboxes are the real ones -- so this drives
+        // index.html in an iframe rather than calling the renderer directly.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        const frame = document.getElementById('app');
+        let w, d;
+
+        const BASE = 0x8000;
+        // Enough shapes in one stretch to exercise every branch of the row: an
+        // instruction with a label, one whose label is too long for the column,
+        // a call, a flow break, and a run of bytes to mark as data.
+        const CODE = [
+            0x21, 0x34, 0x12,   // ld hl,$1234
+            0xCD, 0x00, 0x90,   // call $9000
+            0x3E, 0x05,         // ld a,5
+            0xC9,               // ret
+            0x00,               // nop
+            0xC3, 0x00, 0x80,   // jp $8000
+            0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0xF9, 0xF8,
+            0x76,               // halt
+            0x18, 0xFE,         // jr $
+            0, 0, 0, 0, 0, 0, 0, 0
+        ];
+
+        const leftHtml = () => d.getElementById('disassemblyView').innerHTML;
+        const rightHtml = () => d.getElementById('rightDisassemblyView').innerHTML;
+        // The two panels are different widths, so whitespace between the spans is
+        // not the same; the markup is. Compare normalised.
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+
+        // Reports WHERE the two panels parted company — the only useful thing to
+        // know when this fails.
+        function assertSame(a, b, name) {
+            let at = -1;
+            for (let i = 0; i < Math.max(a.length, b.length); i++) {
+                if (a[i] !== b[i]) { at = i; break; }
+            }
+            assert(a === b, name, at < 0 ? '' :
+                `first difference at ${at}\n      left : ${a.slice(Math.max(0, at - 70), at + 70)}\n      right: ${b.slice(Math.max(0, at - 70), at + 70)}`);
+        }
+
+        function goTo(inputId, value) {
+            const inp = d.getElementById(inputId);
+            inp.value = value;
+            inp.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        }
+
+        (async () => {
+          // Without this an exception mid-suite just stops the run: the summary
+          // shows fewer passes and no failure, which reads as a shorter green run.
+          try {
+            section('The app comes up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.zxDebug);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            w = frame.contentWindow; d = frame.contentDocument;
+            await w.zxDebug.ready();
+            w.spectrum.stop();
+            await wait(150);
+
+            section('A stretch of code with every decoration on it');
+
+            CODE.forEach((b, i) => w.zxDebug.poke(BASE + i, b));
+            w.zxDebug.labels.add({ address: BASE, name: 'start' });
+            w.zxDebug.labels.add({ address: BASE + 3, name: 'a_very_long_label_name_that_wraps' });
+            w.zxDebug.labels.add({ address: BASE + 6, name: 'mid' });
+            w.zxDebug.regions.add({ start: BASE + 14, end: BASE + 21, type: 'db', comment: 'raw bytes' });
+            w.zxDebug.regions.add({ start: BASE + 22, end: BASE + 22, type: 'text',
+                                    comment: 'a "quoted" & <tagged> note' });
+            w.zxDebug.comments.set(BASE, { before: 'entry point\nsecond line', inline: 'sets hl', separator: true });
+            w.zxDebug.comments.set(BASE + 3, { after: 'returns with a in a', inline: 'call out' });
+            w.zxDebug.comments.set(BASE + 8, { inline: 'a <script> & "quotes"' });
+            w.zxDebug.addBreakpoint('8000');
+            w.zxDebug.addBreakpoint('8006');
+            assert(true, 'labels, regions, comments and breakpoints planted');
+
+            // Both panels showing disassembly, at the same address, with the same
+            // options -- otherwise the comparison below proves nothing.
+            d.getElementById('chkFollowPC').checked = false;
+            d.getElementById('chkShowPCCursor').checked = true;
+            d.getElementById('chkFlowBreakSpacing').checked = true;
+            d.getElementById('chkShowTstates').checked = true;
+            const rightTstates = d.getElementById('chkRightShowTstates');
+            if (rightTstates) rightTstates.checked = true;
+
+            const rightType = d.getElementById('rightPanelType');
+            rightType.value = 'disasm';
+            rightType.dispatchEvent(new w.Event('change'));
+            await wait(150);
+            goTo('disasmAddress', '8000');
+            goTo('rightDisasmAddress', '8000');
+            await wait(400);
+
+            const L = norm(leftHtml());
+            const R = norm(rightHtml());
+            assert(L.length > 2000, 'the main view rendered something substantial', String(L.length));
+            assert(R.length > 2000, 'so did the right panel', String(R.length));
+
+            section('The two panels draw the same row');
+
+            // This is the whole point of the shared renderer.
+            assertSame(L, R, 'byte-for-byte identical HTML from both panels');
+
+            section('And the row carries everything it should');
+
+            const has = (re, what) => assert(re.test(L), what,
+                                             re.source.slice(0, 60));
+            has(/class="disasm-bp active" data-addr="32768" title="Toggle breakpoint"/,
+                'a breakpoint dot is active and has its tooltip');
+            has(/class="disasm-bp " data-addr="32771" title="Toggle breakpoint"/,
+                'a dot with no breakpoint still has the tooltip');
+            has(/class="disasm-separator"/, 'the comment separator line');
+            has(/class="disasm-comment-line"[^>]*>; entry point/, 'a multi-line before comment');
+            has(/class="disasm-inline-comment" title="sets hl"/, 'an inline comment, in the row and in its title');
+            has(/class="disasm-comment-line"[^>]*>; returns with a in a/, 'an after comment');
+            has(/class="disasm-label-row"/, 'a label too long for the column gets its own row');
+            has(/class="disasm-line[^"]*has-long-label"/, 'and the row is marked as such');
+            has(/class="disasm-region region-type-db"[^>]*>B</, 'a db region shows its B marker');
+            // The text region's comment contains a double quote. Before the shared
+            // renderer that closed the title attribute early, and the browser ate the
+            // marker letter and half the row's tag with it.
+            has(/class="disasm-region region-type-text"[^>]*>T</, 'a text region shows its T marker');
+            assert(!/quoted"=""/.test(L), 'a quote in a region comment does not break out of the title',
+                   (L.match(/.{0,60}quoted.{0,40}/) || [''])[0]);
+            has(/class="disasm-tstates"/, 'T-states are shown when the option is on');
+            has(/class="disasm-line flow-break/, 'a flow break gets its spacing class');
+
+            section('HTML in user text is escaped, not executed');
+
+            // A comment is user text and reaches the row through innerHTML.
+            assert(!/<script>/.test(L), 'a comment containing <script> is not injected raw');
+            assert(/&lt;script&gt;/.test(L), 'it is escaped',
+                   (L.match(/.{0,40}script.{0,20}/) || [''])[0]);
+            // A region comment lands in an attribute value, which the serializer
+            // gives back with < intact -- so the check that means something is that
+            // the tag it sits in is still one well-formed tag, above.
+            assert(/title="TEXT: a &quot;quoted&quot;/.test(L) || /title="TEXT: a "/.test(L) === false,
+                   'and a region comment stays inside its title attribute',
+                   (L.match(/title="TEXT:.{0,50}/) || [''])[0]);
+
+            section('Options reach both panels the same way');
+
+            d.getElementById('chkShowTstates').checked = false;
+            if (rightTstates) rightTstates.checked = false;
+            goTo('disasmAddress', '8000');
+            goTo('rightDisasmAddress', '8000');
+            await wait(400);
+            const L2 = norm(leftHtml()), R2 = norm(rightHtml());
+            assert(!/class="disasm-tstates"/.test(L2), 'T-states off removes them from the main view');
+            assert(!/class="disasm-tstates"/.test(R2), 'and from the right panel');
+            assertSame(L2, R2, 'the two panels still agree');
+
+            d.getElementById('chkFlowBreakSpacing').checked = false;
+            goTo('disasmAddress', '8000');
+            goTo('rightDisasmAddress', '8000');
+            await wait(400);
+            assert(!/flow-break/.test(norm(leftHtml())), 'flow-break spacing off removes the class');
+            assertSame(norm(leftHtml()), norm(rightHtml()), 'and both panels drop it together');
+
+            section('A fold, made the way a user makes one');
+
+            // Through the real context menu and dialog, because folds are the one
+            // decoration no API plants for us -- and both panels have to show it.
+            // Both T-states boxes back on — the previous section turned them off,
+            // and each panel has its own.
+            d.getElementById('chkShowTstates').checked = true;
+            if (rightTstates) rightTstates.checked = true;
+            d.getElementById('chkFlowBreakSpacing').checked = true;
+            goTo('disasmAddress', '8000');
+            goTo('rightDisasmAddress', '8000');
+            await wait(300);
+
+            // By position in the view, not by computed address: a data region draws
+            // several bytes per row, so BASE+n is not necessarily the start of a row.
+            const rows = () => [...d.querySelectorAll('#disassemblyView .disasm-line')];
+            const rightClick = (el) => el.dispatchEvent(new w.MouseEvent('contextmenu',
+                { bubbles: true, clientX: 100, clientY: 100 }));
+
+            const allRows = rows();
+            assert(allRows.length > 8, 'the main view has rows to fold', String(allRows.length));
+            rightClick(allRows[3]);
+            await wait(100);
+            const menu = d.querySelector('.label-context-menu');
+            assert(!!menu, 'right-clicking a row opens the context menu');
+
+            const addFold = menu && menu.querySelector('[data-action="add-fold"]');
+            assert(!!addFold, 'the menu offers "Create fold block..."');
+            addFold.click();
+            await wait(100);
+
+            // Pick mode: the next click on a row sets the fold end.
+            rows()[7].click();
+            await wait(150);
+            const foldDlg = d.getElementById('foldDialog');
+            assert(!foldDlg.classList.contains('hidden'), 'picking an end opens the fold dialog');
+
+            d.getElementById('foldNameInput').value = 'data table';
+            d.getElementById('btnFoldSave').click();
+            await wait(400);
+
+            const L3 = norm(leftHtml()), R3 = norm(rightHtml());
+            assert(/class="disasm-user-fold-start"/.test(L3), 'the fold start marker is drawn',
+                   (L3.match(/.{0,20}user-fold-start.{0,60}/) || [''])[0]);
+            assert(/class="disasm-user-fold-end"/.test(L3), 'and the end marker');
+            assert(/data table/.test(L3), 'both carry the name the user gave it');
+            assertSame(L3, R3, 'and the right panel drew exactly the same thing');
+
+            const toggle = d.querySelector('#disassemblyView .disasm-fold-toggle');
+            assert(!!toggle, 'the fold start carries a collapse toggle');
+            toggle.click();
+            await wait(400);
+            const L4 = norm(leftHtml()), R4 = norm(rightHtml());
+            assert(/class="disasm-fold-summary/.test(L4), 'clicking it collapses the fold to a summary row',
+                   (L4.match(/.{0,10}fold-summary.{0,80}/) || [''])[0]);
+            assert(/class="fold-stats">\(\d+ bytes\)/.test(L4), 'the summary reports the byte count',
+                   (L4.match(/fold-stats.{0,30}/) || [''])[0]);
+            assertSame(L4, R4, 'the collapsed row matches in the right panel too');
+
+            section('Done');
+          } catch (err) {
+            assert(false, 'the suite ran to the end', String(err && err.stack || err));
+          }
+          log(`\n${passed} passed, ${failed} failed`, failed ? 'fail' : 'pass');
+          document.title = failed ? 'FAIL' : 'PASS';
+        })();
+    </script>
+</body>
+</html>

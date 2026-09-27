@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ULA Cell Blit Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>ULA Cell Blit Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // An attribute byte picks two colours, a pixel byte picks which of the two
+        // each of eight pixels gets. core/ula.js had SEVEN copies of that, so every
+        // rendering feature had to be threaded through all seven and a copy that
+        // missed one gave a bug on one path only. core/ula-blit.js is the one copy.
+        //
+        // The interesting test is not a handful of examples but the whole input
+        // space: 256 attributes x 256 pixel bytes, flash on and off, ULAplus on and
+        // off, checked against the decode written out longhand here. 262,144 cells
+        // per configuration, and it runs in well under a second.
+        import { renderCell, cellContext } from '../core/ula-blit.js';
+        import { applyInkSkew } from '../core/ula-inkskew.js';
+
+        const TEST_VERSION = '1.0.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // Palettes with no repeated entries, so a wrong index cannot pass by luck.
+        const pal32 = new Uint32Array(16);
+        for (let i = 0; i < 16; i++) pal32[i] = (0xFF000000 | (0x010203 * (i + 1))) >>> 0;
+        const ulaPal = new Uint32Array(64);
+        for (let i = 0; i < 64; i++) ulaPal[i] = (0xFF000000 | (0x030507 * (i + 1))) >>> 0;
+
+        // The decode, written out longhand. This is the specification the seven
+        // copies were each an instance of.
+        function referenceColours(attr, flashActive, ulaPlus) {
+            if (ulaPlus) {
+                const clut = ((attr >> 6) & 0x03) << 4;
+                return [ulaPal[clut + (attr & 0x07)],
+                        ulaPal[clut + 8 + ((attr >> 3) & 0x07)]];
+            }
+            let ink = attr & 0x07;
+            let paper = (attr >> 3) & 0x07;
+            const bright = (attr & 0x40) ? 8 : 0;
+            if ((attr & 0x80) && flashActive) { const t = ink; ink = paper; paper = t; }
+            return [pal32[ink + bright], pal32[paper + bright]];
+        }
+
+        section('Every attribute, every pixel byte');
+
+        for (const ulaPlus of [false, true]) {
+            for (const flashActive of [false, true]) {
+                const fb = new Uint32Array(16);
+                const ctx = cellContext(fb, pal32, ulaPlus ? ulaPal : null, flashActive, 0);
+                let bad = '';
+                let checked = 0;
+                outer:
+                for (let attr = 0; attr < 256 && !bad; attr++) {
+                    const [ink, paper] = referenceColours(attr, flashActive, ulaPlus);
+                    for (let pixelByte = 0; pixelByte < 256; pixelByte++) {
+                        fb.fill(0xDEADBEEF);
+                        renderCell(ctx, 4, pixelByte, attr, 0);
+                        for (let bit = 0; bit < 8; bit++) {
+                            const want = (pixelByte & (0x80 >> bit)) ? ink : paper;
+                            if (fb[4 + bit] !== want) {
+                                bad = `attr $${attr.toString(16)} byte $${pixelByte.toString(16)} pixel ${bit}: got ${fb[4 + bit]} want ${want}`;
+                                break outer;
+                            }
+                        }
+                        // and nothing outside the eight it owns
+                        if (fb[3] !== 0xDEADBEEF || fb[12] !== 0xDEADBEEF) {
+                            bad = `wrote outside its 8 pixels at attr $${attr.toString(16)}`;
+                            break outer;
+                        }
+                        checked++;
+                    }
+                }
+                const label = `${ulaPlus ? 'ULAplus' : 'normal '} flash=${flashActive ? 'on ' : 'off'}`;
+                assert(!bad, `${label}: all 65536 attribute/pixel combinations match the reference`, bad);
+                assert(checked === 65536 || !!bad, `${label}: and all of them were actually checked`, String(checked));
+            }
+        }
+
+        section('The pieces of the attribute byte');
+
+        {
+            const fb = new Uint32Array(16);
+            const ctx = cellContext(fb, pal32, null, false, 0);
+            // ink 3, paper 5, no bright, no flash
+            renderCell(ctx, 0, 0b10000000, (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[3], 'bit 7 set takes the ink colour');
+            assert(fb[1] === pal32[5], 'bit 7 clear takes the paper colour');
+
+            fb.fill(0);
+            renderCell(ctx, 0, 0b10000000, 0x40 | (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[3 + 8], 'bit 6 (BRIGHT) moves both into the top half of the palette');
+            assert(fb[1] === pal32[5 + 8], 'paper too');
+
+            // flash only swaps while the flash phase says so
+            fb.fill(0);
+            renderCell(ctx, 0, 0b10000000, 0x80 | (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[3], 'bit 7 of the attribute (FLASH) does nothing on the off phase');
+
+            const ctxFlash = cellContext(fb, pal32, null, true, 0);
+            fb.fill(0);
+            renderCell(ctxFlash, 0, 0b10000000, 0x80 | (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[5], 'and swaps ink for paper on the on phase');
+            assert(fb[1] === pal32[3], 'both ways round');
+
+            fb.fill(0);
+            renderCell(ctxFlash, 0, 0b10000000, (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[3], 'a cell without the FLASH bit is left alone on the on phase');
+        }
+
+        section('ULAplus takes a different route entirely');
+
+        {
+            const fb = new Uint32Array(16);
+            const ctx = cellContext(fb, pal32, ulaPal, false, 0);
+            // CLUT 2, ink 1, paper 6
+            const attr = (2 << 6) | (6 << 3) | 1;
+            renderCell(ctx, 0, 0b10000000, attr, 0);
+            assert(fb[0] === ulaPal[(2 << 4) + 1], 'ink comes from the CLUT the top two bits choose');
+            assert(fb[1] === ulaPal[(2 << 4) + 8 + 6], 'paper from the same CLUT, offset by 8');
+
+            // BRIGHT and FLASH are not bright and flash under ULAplus -- bits 7 and 6
+            // are the CLUT number, which is why they must not reach the flash branch.
+            fb.fill(0);
+            const ctxFlash = cellContext(fb, pal32, ulaPal, true, 0);
+            renderCell(ctxFlash, 0, 0b10000000, attr, 0);
+            assert(fb[0] === ulaPal[(2 << 4) + 1],
+                   'the flash phase does not swap anything under ULAplus');
+        }
+
+        section('The palette array IS the ULAplus flag');
+
+        {
+            const fb = new Uint32Array(16);
+            const attr = (2 << 6) | (6 << 3) | 1;
+            const off = cellContext(fb, pal32, null, false, 0);
+            renderCell(off, 0, 0b10000000, attr, 0);
+            const plain = fb[0];
+            fb.fill(0);
+            const on = cellContext(fb, pal32, ulaPal, false, 0);
+            renderCell(on, 0, 0b10000000, attr, 0);
+            assert(fb[0] !== plain, 'passing a ULAplus palette switches the decode');
+            assert(cellContext(fb, pal32, undefined, false, 0).ulaPal32 === null,
+                   'undefined is normalised to null, so there is one falsy value not two');
+        }
+
+        section('The ink bit handed to the next cell');
+
+        {
+            const fb = new Uint32Array(16);
+            // No skew: the caller's prevInkBit must come back untouched, because the
+            // old code only assigned it inside `if (inkSkew)`.
+            const noSkew = cellContext(fb, pal32, null, false, 0);
+            assert(renderCell(noSkew, 0, 0b11111111, 0x07, 0) === 0,
+                   'with no skew the value is handed straight back (0)');
+            assert(renderCell(noSkew, 0, 0b00000000, 0x07, 1) === 1,
+                   'and again (1), whatever the pixels were');
+
+            // With skew: whatever applyInkSkew returns, which is the last pixel's bit.
+            const skewed = cellContext(fb, pal32, null, false, 0.25);
+            assert(renderCell(skewed, 0, 0b00000001, 0x07, 0) === 1,
+                   'with skew, a cell ending in ink reports 1');
+            assert(renderCell(skewed, 0, 0b00000010, 0x07, 0) === 0,
+                   'and one ending in paper reports 0');
+        }
+
+        section('The skew filter really runs, and only when asked');
+
+        {
+            const attr = 0x07;              // ink 7, paper 0
+            const pixelByte = 0b11110000;   // an ink run starting at pixel 0
+
+            const plain = new Uint32Array(16);
+            renderCell(cellContext(plain, pal32, null, false, 0), 0, pixelByte, attr, 0);
+
+            const skewed = new Uint32Array(16);
+            renderCell(cellContext(skewed, pal32, null, false, 0.25), 0, pixelByte, attr, 0);
+
+            assert(plain[0] !== skewed[0], 'the pixel starting the ink run is blended when skew is on');
+            assert(plain[1] === skewed[1], 'the rest of the run is not');
+            assert(plain[4] === skewed[4], 'nor is paper');
+
+            // and it is the same blend the filter does on its own
+            const byHand = new Uint32Array(16);
+            renderCell(cellContext(byHand, pal32, null, false, 0), 0, pixelByte, attr, 0);
+            applyInkSkew(byHand, 0, pixelByte, pal32[7], pal32[0], 0, 0.25);
+            assert(byHand.every((v, i) => v === skewed[i]),
+                   'renderCell with skew equals renderCell without, then applyInkSkew');
+        }
+
+        section('Done');
+        log(`\n${passed} passed, ${failed} failed`, failed ? 'fail' : 'pass');
+        document.title = failed ? 'FAIL' : 'PASS';
+    </script>
+</body>
+</html>

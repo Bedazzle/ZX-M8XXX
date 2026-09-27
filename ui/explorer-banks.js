@@ -5,7 +5,13 @@
 // reassigned on every load, so `ctx` passes them as getters: read
 // ctx.explorerParsed at the point of use, never cache it.
 import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
+// Addresses, offsets and 16-bit registers follow the address switch; bytes and
+// 8-bit registers the value switch -- the same split the debugger's panels use.
+// A TZX block id and a sector id are left in hex: they are identifiers the format
+// specs write that way, not numbers the user is reading off a machine.
+import { fmtAddr, fmtAddrSigil, fmtAddrPair, fmtByte } from '../core/addr-format.js';
 import { SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE } from '../core/constants.js';
+import { trdBasicAutostartLine } from './disk-file-copy.js';
 
 export function initExplorerBanks(ctx) {
 
@@ -180,7 +186,7 @@ export function initExplorerBanks(ctx) {
 
                 html += `<div class="${blockClass}" data-block-index="${i}">`;
                 html += `<div class="explorer-block-header">${i + 1}: ${block.typeName}</div>`;
-                html += `<div class="explorer-block-meta">Flag: ${block.flag} ($${hex8(block.flag)}) | Length: ${block.length - 2} bytes | Checksum: ${hex8(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
+                html += `<div class="explorer-block-meta">Flag: ${fmtByte(block.flag)} | Length: ${block.length - 2} bytes | Checksum: ${fmtByte(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
                 html += `<div class="explorer-block-details">`;
                 html += `<span class="label">Filename:</span> <span class="filename">"${block.name}"</span><br>`;
                 const tapPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.dataLength);
@@ -192,7 +198,7 @@ export function initExplorerBanks(ctx) {
                     html += `<br><span class="label">Autostart:</span> ${block.autostart !== null ? block.autostart : 'None'}`;
                 } else if (block.headerType === 3) {
                     // Bytes/CODE
-                    html += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
+                    html += `<br><span class="label">Start address:</span> <span class="value">${fmtAddrSigil(block.startAddress)}</span>`;
                 } else if (block.headerType === 1 || block.headerType === 2) {
                     // Number/Character array
                     html += `<br><span class="label">Variable name:</span> ${String.fromCharCode((block.param1 & 0x3F) + 0x40)}`;
@@ -204,7 +210,7 @@ export function initExplorerBanks(ctx) {
                 const afterHeader = i > 0 && ctx.explorerBlocks[i - 1].blockType === 'header';
                 html += `<div class="explorer-block data-block" data-block-index="${i}"${afterHeader ? ' style="margin-left:18px"' : ''}>`;
                 html += `<div class="explorer-block-header">${i + 1}: Data</div>`;
-                html += `<div class="explorer-block-meta">Flag: ${block.flag} ($${hex8(block.flag)}) | Length: ${block.length - 2} bytes | Checksum: ${hex8(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
+                html += `<div class="explorer-block-meta">Flag: ${fmtByte(block.flag)} | Length: ${block.length - 2} bytes | Checksum: ${fmtByte(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
                 html += `</div>`;
             }
         }
@@ -255,7 +261,7 @@ export function initExplorerBanks(ctx) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
                         if (block.startAddress !== undefined) {
-                            details += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
+                            details += `<br><span class="label">Start address:</span> <span class="value">${fmtAddrSigil(block.startAddress)}</span>`;
                         }
                     } else if (block.dataBlock) {
                         details = `<span class="label">Data length:</span> ${block.dataLength - 2} bytes`;
@@ -277,7 +283,7 @@ export function initExplorerBanks(ctx) {
                             details += `<br><span class="label">Autostart:</span> ${block.autostart}`;
                         }
                         if (block.startAddress !== undefined) {
-                            details += `<br><span class="label">Start address:</span> <span class="value">$${hex16(block.startAddress)}</span>`;
+                            details += `<br><span class="label">Start address:</span> <span class="value">${fmtAddrSigil(block.startAddress)}</span>`;
                         }
                     } else if (block.dataBlock) {
                         details = `<span class="label">Data length:</span> ${block.dataLength - 2} bytes`;
@@ -414,20 +420,20 @@ export function initExplorerBanks(ctx) {
                 <tr><th>Version</th><td>${ctx.explorerParsed.version}</td></tr>
                 <tr><th>Machine</th><td>${machineType} (hwMode=${ctx.explorerParsed.hwMode})</td></tr>
                 <tr><th>Compressed</th><td>${ctx.explorerParsed.compressed ? 'Yes' : 'No'}</td></tr>
-                ${ctx.explorerParsed.is128 ? `<tr><th>Port 7FFD</th><td>${hex8(ctx.explorerParsed.port7FFD)}</td></tr>` : ''}
+                ${ctx.explorerParsed.is128 ? `<tr><th>Port 7FFD</th><td>${fmtByte(ctx.explorerParsed.port7FFD)}</td></tr>` : ''}
             </table>
         </div>`;
 
         html += `<div class="explorer-info-section">
             <div class="explorer-info-header">Registers</div>
             <table class="explorer-info-table">
-                <tr><th>PC</th><td>${hex16(r.PC)}</td><th>SP</th><td>${hex16(r.SP)}</td></tr>
-                <tr><th>AF</th><td>${hex16(r.AF)}</td><th>AF'</th><td>${hex16(r.AFa)}</td></tr>
-                <tr><th>BC</th><td>${hex16(r.BC)}</td><th>BC'</th><td>${hex16(r.BCa)}</td></tr>
-                <tr><th>DE</th><td>${hex16(r.DE)}</td><th>DE'</th><td>${hex16(r.DEa)}</td></tr>
-                <tr><th>HL</th><td>${hex16(r.HL)}</td><th>HL'</th><td>${hex16(r.HLa)}</td></tr>
-                <tr><th>IX</th><td>${hex16(r.IX)}</td><th>IY</th><td>${hex16(r.IY)}</td></tr>
-                <tr><th>I</th><td>${hex8(r.I)}</td><th>R</th><td>${hex8(r.R)}</td></tr>
+                <tr><th>PC</th><td>${fmtAddr(r.PC)}</td><th>SP</th><td>${fmtAddr(r.SP)}</td></tr>
+                <tr><th>AF</th><td>${fmtAddr(r.AF)}</td><th>AF'</th><td>${fmtAddr(r.AFa)}</td></tr>
+                <tr><th>BC</th><td>${fmtAddr(r.BC)}</td><th>BC'</th><td>${fmtAddr(r.BCa)}</td></tr>
+                <tr><th>DE</th><td>${fmtAddr(r.DE)}</td><th>DE'</th><td>${fmtAddr(r.DEa)}</td></tr>
+                <tr><th>HL</th><td>${fmtAddr(r.HL)}</td><th>HL'</th><td>${fmtAddr(r.HLa)}</td></tr>
+                <tr><th>IX</th><td>${fmtAddr(r.IX)}</td><th>IY</th><td>${fmtAddr(r.IY)}</td></tr>
+                <tr><th>I</th><td>${fmtByte(r.I)}</td><th>R</th><td>${fmtByte(r.R)}</td></tr>
                 <tr><th>IM</th><td>${r.IM}</td><th>IFF1</th><td>${r.IFF1}</td></tr>
                 <tr><th>Border</th><td>${r.border}</td><th>IFF2</th><td>${r.IFF2}</td></tr>
             </table>
@@ -473,13 +479,13 @@ export function initExplorerBanks(ctx) {
             html += `<div class="explorer-info-section">
                 <div class="explorer-info-header">Registers</div>
                 <table class="explorer-info-table">
-                    <tr><th>PC</th><td>${hex16(r.PC)}</td><th>SP</th><td>${hex16(r.SP)}</td></tr>
-                    <tr><th>AF</th><td>${hex16(r.AF)}</td><th>AF'</th><td>${hex16(r.AFa)}</td></tr>
-                    <tr><th>BC</th><td>${hex16(r.BC)}</td><th>BC'</th><td>${hex16(r.BCa)}</td></tr>
-                    <tr><th>DE</th><td>${hex16(r.DE)}</td><th>DE'</th><td>${hex16(r.DEa)}</td></tr>
-                    <tr><th>HL</th><td>${hex16(r.HL)}</td><th>HL'</th><td>${hex16(r.HLa)}</td></tr>
-                    <tr><th>IX</th><td>${hex16(r.IX)}</td><th>IY</th><td>${hex16(r.IY)}</td></tr>
-                    <tr><th>I</th><td>${hex8(r.I)}</td><th>R</th><td>${hex8(r.R)}</td></tr>
+                    <tr><th>PC</th><td>${fmtAddr(r.PC)}</td><th>SP</th><td>${fmtAddr(r.SP)}</td></tr>
+                    <tr><th>AF</th><td>${fmtAddr(r.AF)}</td><th>AF'</th><td>${fmtAddr(r.AFa)}</td></tr>
+                    <tr><th>BC</th><td>${fmtAddr(r.BC)}</td><th>BC'</th><td>${fmtAddr(r.BCa)}</td></tr>
+                    <tr><th>DE</th><td>${fmtAddr(r.DE)}</td><th>DE'</th><td>${fmtAddr(r.DEa)}</td></tr>
+                    <tr><th>HL</th><td>${fmtAddr(r.HL)}</td><th>HL'</th><td>${fmtAddr(r.HLa)}</td></tr>
+                    <tr><th>IX</th><td>${fmtAddr(r.IX)}</td><th>IY</th><td>${fmtAddr(r.IY)}</td></tr>
+                    <tr><th>I</th><td>${fmtByte(r.I)}</td><th>R</th><td>${fmtByte(r.R)}</td></tr>
                     <tr><th>IM</th><td>${r.IM}</td><th>IFF1</th><td>${r.IFF1}</td></tr>
                     <tr><th>Border</th><td>${r.border}</td><th>IFF2</th><td>${r.IFF2}</td></tr>
                 </table>
@@ -494,7 +500,7 @@ export function initExplorerBanks(ctx) {
         for (const chunk of ctx.explorerParsed.chunks) {
             html += `<div class="explorer-block">
                 <span class="explorer-block-type">${chunk.id}</span>
-                <span class="explorer-block-size">${chunk.size} bytes @ ${hex16(chunk.offset)}</span>
+                <span class="explorer-block-size">${chunk.size} bytes @ ${fmtAddr(chunk.offset)}</span>
             </div>`;
         }
 
@@ -551,13 +557,13 @@ export function initExplorerBanks(ctx) {
             html += `<div class="explorer-info-section">
                 <div class="explorer-info-header">Embedded ${snapType} Snapshot (${is128 ? '128K' : '48K'})</div>
                 <table class="explorer-info-table">
-                    <tr><th>PC</th><td>${hex16(r.PC)}</td><th>SP</th><td>${hex16(r.SP)}</td></tr>
-                    <tr><th>AF</th><td>${hex16(r.AF)}</td><th>AF'</th><td>${hex16(r.AFa)}</td></tr>
-                    <tr><th>BC</th><td>${hex16(r.BC)}</td><th>BC'</th><td>${hex16(r.BCa)}</td></tr>
-                    <tr><th>DE</th><td>${hex16(r.DE)}</td><th>DE'</th><td>${hex16(r.DEa)}</td></tr>
-                    <tr><th>HL</th><td>${hex16(r.HL)}</td><th>HL'</th><td>${hex16(r.HLa)}</td></tr>
-                    <tr><th>IX</th><td>${hex16(r.IX)}</td><th>IY</th><td>${hex16(r.IY)}</td></tr>
-                    <tr><th>I</th><td>${hex8(r.I)}</td><th>R</th><td>${hex8(r.R)}</td></tr>
+                    <tr><th>PC</th><td>${fmtAddr(r.PC)}</td><th>SP</th><td>${fmtAddr(r.SP)}</td></tr>
+                    <tr><th>AF</th><td>${fmtAddr(r.AF)}</td><th>AF'</th><td>${fmtAddr(r.AFa)}</td></tr>
+                    <tr><th>BC</th><td>${fmtAddr(r.BC)}</td><th>BC'</th><td>${fmtAddr(r.BCa)}</td></tr>
+                    <tr><th>DE</th><td>${fmtAddr(r.DE)}</td><th>DE'</th><td>${fmtAddr(r.DEa)}</td></tr>
+                    <tr><th>HL</th><td>${fmtAddr(r.HL)}</td><th>HL'</th><td>${fmtAddr(r.HLa)}</td></tr>
+                    <tr><th>IX</th><td>${fmtAddr(r.IX)}</td><th>IY</th><td>${fmtAddr(r.IY)}</td></tr>
+                    <tr><th>I</th><td>${fmtByte(r.I)}</td><th>R</th><td>${fmtByte(r.R)}</td></tr>
                     <tr><th>IM</th><td>${r.IM}</td><th>Border</th><td>${r.border}</td></tr>
                 </table>
             </div>`;
@@ -918,7 +924,7 @@ export function initExplorerBanks(ctx) {
         const fileData = file.data
             ? file.data
             : (file.offset != null ? ctx.explorerData.slice(file.offset, file.offset + file.sectors * 256) : null);
-        return trdBasicAutostartLine(fileData);
+        return trdBasicAutostartLine(fileData, file.length);
     }
 
     function explorerRenderTRDInfo() {
@@ -942,7 +948,7 @@ export function initExplorerBanks(ctx) {
             const typeName = trdTypeNames[file.ext] || file.ext;
             let detail = '';
             if (file.ext === 'C') {
-                detail = `${file.startAddress} ($${hex16(file.startAddress)})`;
+                detail = fmtAddrPair(file.startAddress);
             } else if (file.ext === 'B') {
                 const autostart = trdGetBasicAutostart(file);
                 if (autostart >= 0) detail = `LINE ${autostart}`;
@@ -1015,7 +1021,7 @@ export function initExplorerBanks(ctx) {
             const typeName = trdTypeNames[file.ext] || file.ext;
             let detail = '';
             if (file.ext === 'C') {
-                detail = `${file.startAddress} ($${hex16(file.startAddress)})`;
+                detail = fmtAddrPair(file.startAddress);
             } else if (file.ext === 'B') {
                 const autostart = trdGetBasicAutostart(file);
                 if (autostart >= 0) detail = `LINE ${autostart}`;
@@ -1067,7 +1073,7 @@ export function initExplorerBanks(ctx) {
             let detail = '';
             if (file.mgtType === 4 || file.mgtType === 7 || file.mgtType === 19 || file.mgtType === 20) {
                 // CODE or SCREEN$ (G+DOS 4/7, SAMDOS 19/20)
-                detail = `${file.startAddress} ($${hex16(file.startAddress)})`;
+                detail = fmtAddrPair(file.startAddress);
             } else if ((file.mgtType === 1 || file.mgtType === 16) && file.autostart != null && file.autostart < 0x8000) {
                 detail = `LINE ${file.autostart}`;
             }
@@ -1113,7 +1119,7 @@ export function initExplorerBanks(ctx) {
                 const f = files[i];
                 let detail = '';
                 if (f.ext === 'C') {
-                    detail = `${f.startAddress} ($${hex16(f.startAddress)})`;
+                    detail = fmtAddrPair(f.startAddress);
                 } else if (f.ext === 'B' && f.autorunLine >= 0) {
                     detail = `LINE ${f.autorunLine}`;
                 }
@@ -1164,7 +1170,7 @@ export function initExplorerBanks(ctx) {
                 const f = ctx.explorerParsed.files[i];
                 let detail = '';
                 if (f.type === 3) {
-                    detail = `${f.startAddr} ($${hex16(f.startAddr)})`;
+                    detail = fmtAddrPair(f.startAddr);
                 } else if (f.type === 0 && f.autostart != null && f.autostart < 0x8000) {
                     detail = `LINE ${f.autostart}`;
                 }
@@ -1217,7 +1223,7 @@ export function initExplorerBanks(ctx) {
                 const f = files[i];
                 let detail = '';
                 if (f.type === 'B') {
-                    detail = `${f.startAddr} ($${hex16(f.startAddr)})`;
+                    detail = fmtAddrPair(f.startAddr);
                 } else if (f.type === 'P' && f.startAddr && f.startAddr < 0x8000) {
                     detail = `LINE ${f.startAddr}`;
                 }
@@ -1267,7 +1273,7 @@ export function initExplorerBanks(ctx) {
                 <tr><th>Name</th><td>${f.name.replace(/\s+$/, '')}</td></tr>
                 <tr><th>Extension</th><td>${f.ext} (${ctx.explorerParsed.typeName})</td></tr>
                 <tr><th>Data length</th><td>${f.length.toLocaleString()} bytes</td></tr>
-                <tr><th>Start address</th><td>$${hex16(f.startAddress)}</td></tr>
+                <tr><th>Start address</th><td>${fmtAddrSigil(f.startAddress)}</td></tr>
             </table>
         </div>`;
     }

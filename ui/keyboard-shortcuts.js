@@ -1,6 +1,6 @@
 // Keyboard Shortcuts — global keydown handler (init-function pattern, DI)
 
-import { hex16 } from '../core/utils.js';
+import { fmtAddr } from '../core/addr-format.js';
 
 export function initKeyboardShortcuts({
     getSpectrum,
@@ -197,7 +197,7 @@ export function initKeyboardShortcuts({
                     if (addr !== null) {
                         addr = (addr + delta) & 0xffff;
                         setDisasmViewAddress(addr);
-                        disasmAddressInput.value = hex16(addr);
+                        disasmAddressInput.value = fmtAddr(addr);
                         updateDebugger();
                     }
                 } else {
@@ -254,7 +254,7 @@ export function initKeyboardShortcuts({
                         if (addr !== null) {
                             addr = (addr + delta) & 0xffff;
                             setDisasmViewAddress(addr);
-                            disasmAddressInput.value = hex16(addr);
+                            disasmAddressInput.value = fmtAddr(addr);
                             updateDebugger();
                         }
                     } else {
@@ -297,7 +297,7 @@ export function initKeyboardShortcuts({
                         if (addr !== null) {
                             addr = (addr + delta) & 0xffff;
                             setDisasmViewAddress(addr);
-                            disasmAddressInput.value = hex16(addr);
+                            disasmAddressInput.value = fmtAddr(addr);
                             updateDebugger();
                         }
                     } else {

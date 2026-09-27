@@ -1,5 +1,7 @@
 // poke-manager.js — POKE Manager (extracted from index.html)
 import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrSigil, fmtByte, fmtByteSigil, fmtWord, parseAddr, parseByte,
+         onNumberBaseChange } from '../core/addr-format.js';
 
 import { parsePok, looksLikePok, pokTrainersToEntries } from '../core/pok.js';
 
@@ -132,9 +134,9 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
         if (ed.type === 'word') {
             const lo = readMemory(ed.addr);
             const hi = readMemory((ed.addr + 1) & 0xffff);
-            input.value = hex16((hi << 8) | lo);
+            input.value = fmtWord((hi << 8) | lo);
         } else {
-            input.value = hex8(readMemory(ed.addr));
+            input.value = fmtByte(readMemory(ed.addr));
         }
     }
 
@@ -223,14 +225,14 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
                     patchLine.className = 'poke-patch';
                     const addrLink = document.createElement('span');
                     addrLink.className = 'poke-patch-addr';
-                    addrLink.textContent = `$${hex16(p.addr)}`;
+                    addrLink.textContent = fmtAddrSigil(p.addr);
                     addrLink.title = 'Go to address in disassembly';
                     addrLink.addEventListener('click', (e) => {
                         e.stopPropagation();
                         if (goToAddress) goToAddress(p.addr);
                     });
                     patchLine.appendChild(addrLink);
-                    const valText = `: $${hex8(p.normal)} \u2192 $${hex8(p.poke)}`;
+                    const valText = `: ${fmtByteSigil(p.normal)} \u2192 ${fmtByteSigil(p.poke)}`;
                     patchLine.appendChild(document.createTextNode(valText));
                     if (p.hint) {
                         const hintSpan = document.createElement('span');
@@ -250,9 +252,9 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
                             inp.className = 'poke-patch-input';
                             return inp;
                         };
-                        const inAddr = mkInput(hex16(p.addr), '38px', 'Addr');
-                        const inOrig = mkInput(hex8(p.normal), '22px', 'Orig');
-                        const inPoke = mkInput(hex8(p.poke), '22px', 'Poke');
+                        const inAddr = mkInput(fmtAddr(p.addr), '38px', 'Addr');
+                        const inOrig = mkInput(fmtByte(p.normal), '22px', 'Orig');
+                        const inPoke = mkInput(fmtByte(p.poke), '22px', 'Poke');
                         const inHint = mkInput(p.hint || '', '50px', 'Hint');
                         patchLine.appendChild(inAddr);
                         patchLine.appendChild(inOrig);
@@ -262,9 +264,10 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
 
                         const finish = (save) => {
                             if (save) {
-                                p.addr = parsePokeValue(inAddr.value);
-                                p.normal = parsePokeValue(inOrig.value) & 0xff;
-                                p.poke = parsePokeValue(inPoke.value) & 0xff;
+                                // An address, not a byte: it follows the hex/decimal switch.
+                                p.addr = parseAddr(inAddr.value) ?? p.addr;
+                                p.normal = (parseByte(inOrig.value) ?? p.normal) & 0xff;
+                                p.poke = (parseByte(inPoke.value) ?? p.poke) & 0xff;
                                 const h = inHint.value.trim();
                                 if (h) p.hint = h; else delete p.hint;
                             }
@@ -347,7 +350,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
 
                 const addrSpan = document.createElement('span');
                 addrSpan.className = 'poke-editor-addr';
-                addrSpan.textContent = hex16(ed.addr);
+                addrSpan.textContent = fmtAddr(ed.addr);
                 addrSpan.title = 'Go to address in disassembly';
                 addrSpan.style.cursor = 'pointer';
                 addrSpan.addEventListener('click', (e) => {
@@ -364,7 +367,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
 
                 const writeEditorValue = () => {
                     if (!readMemory) return;
-                    const val = parsePokeValue(input.value);
+                    const val = parseByte(input.value);
                     if (ed.type === 'word') {
                         writePoke(ed.addr, val & 0xff);
                         writePoke((ed.addr + 1) & 0xffff, (val >> 8) & 0xff);
@@ -387,9 +390,9 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
                 spinUp.title = 'Increment';
                 spinUp.addEventListener('click', () => {
                     if (!readMemory) return;
-                    const cur = parsePokeValue(input.value) & max;
+                    const cur = (parseByte(input.value) ?? 0) & max;
                     const nv = cur >= max ? 0 : cur + 1;
-                    input.value = digits === 4 ? hex16(nv) : hex8(nv);
+                    input.value = digits === 4 ? fmtWord(nv) : fmtByte(nv);
                     writeEditorValue();
                 });
                 const spinDown = document.createElement('button');
@@ -397,9 +400,9 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
                 spinDown.title = 'Decrement';
                 spinDown.addEventListener('click', () => {
                     if (!readMemory) return;
-                    const cur = parsePokeValue(input.value) & max;
+                    const cur = (parseByte(input.value) ?? 0) & max;
                     const nv = cur <= 0 ? max : cur - 1;
-                    input.value = digits === 4 ? hex16(nv) : hex8(nv);
+                    input.value = digits === 4 ? fmtWord(nv) : fmtByte(nv);
                     writeEditorValue();
                 });
                 spinDiv.appendChild(spinUp);
@@ -494,9 +497,11 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
         if (!name || !addr || !normal || !poke) return;
 
         const patch = {
-            addr: parsePokeValue(addr),
-            normal: parsePokeValue(normal) & 0xff,
-            poke: parsePokeValue(poke) & 0xff
+            // An address follows the hex/decimal switch. parsePokeValue is for the
+            // byte columns beside it and must not: a poke value of 10 is $10.
+            addr: parseAddr(addr) ?? 0,
+            normal: (parseByte(normal) ?? 0) & 0xff,
+            poke: (parseByte(poke) ?? 0) & 0xff
         };
         if (hint) patch.hint = hint;
 
@@ -523,7 +528,7 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
 
         pokeEditorEntries.push({
             name,
-            addr: parsePokeValue(addr),
+            addr: parseAddr(addr) ?? 0,
             type
         });
 
@@ -577,6 +582,10 @@ export function initPokeManager({ readMemory, writePoke, showMessage, goToAddres
     renderPokeManager();
 
     // Public API
+    // Hex or decimal: each poke row shows its address, and the patch editor
+    // holds one in an input box.
+    onNumberBaseChange(() => renderPokeManager());
+
     return {
         loadPokeJSON,
         loadPokFile,

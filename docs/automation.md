@@ -183,6 +183,15 @@ through it, that is a gap in this API; say so rather than building on it.
 
 ## Primitives (memory, search, disassembly, stepping)
 
+**The API is hex-only, and the display setting does not reach it.** Settings → Display
+can put the *interface* in decimal (addresses, byte values and opcode bytes, three
+independent switches — see `docs/debugger.md`), but a string handed to the API is read
+as hex whatever the screen shows: `zx.addBreakpoint('8000')` is `$8000`, never 32768.
+The UI translates at its own edge (`specToHex` in `core/addr-format.js`), so a driver
+written before the switch existed keeps working, and a screenshot of a decimal panel is
+not evidence about what the API will accept. Numbers you pass as numbers are, as ever,
+just numbers — `0x8000` and `32768` are the same argument.
+
 The plain operations a driver needs constantly. All of this was already inside the app;
 none of it was reachable except through `zxDebug.spectrum`, so every tool that wanted to
 read a byte reached into emulator internals.

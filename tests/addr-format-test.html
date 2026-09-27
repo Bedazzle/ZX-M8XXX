@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Address Format Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Address Format Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // core/addr-format.js is pure — no DOM, no emulator. It decides how the
+        // interface writes a 16-bit address, and reads one back from a text field.
+        import { getAddrBase, setAddrBase, onNumberBaseChange,
+                 fmtAddr, fmtAddrCol, fmtAddrColRight, fmtAddrSigil, fmtAddrH, parseAddr, specToHex,
+                 getValueBase, setValueBase, fmtByte, fmtWord, fmtByteSigil, parseByte,
+                 fmtPort, portSpecToHex, getOpcodeBase, setOpcodeBase, fmtOpcode,
+                 ADDR_COL_WIDTH } from '../core/addr-format.js';
+        import { hex16 } from '../core/utils.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        const NBSP = '\u00A0';
+
+        (async () => {
+
+            section('The default is hex, and hex is what the app always wrote');
+            {
+                assert(getAddrBase() === 'hex', 'the module starts in hex');
+                let same = true;
+                for (const a of [0, 1, 0x0F, 0x100, 0x4000, 0x8000, 0xABCD, 0xFFFF]) {
+                    if (fmtAddr(a) !== hex16(a)) { same = false; break; }
+                }
+                assert(same, 'in hex mode fmtAddr is hex16, digit for digit');
+                assert(fmtAddr(0) === '0000', 'zero keeps its four digits');
+                assert(fmtAddr(0x1234) === '1234', 'and so does a middling address');
+            }
+
+            section('Switching bases');
+            {
+                assert(setAddrBase('dec') === true, 'a real change reports true');
+                assert(getAddrBase() === 'dec', 'and takes effect');
+                assert(setAddrBase('dec') === false, 'setting the base it already has changes nothing');
+                assert(fmtAddr(0xFFFF) === '65535', 'FFFF reads as 65535');
+                assert(fmtAddr(0) === '0', 'and zero is a bare 0, not 00000');
+                assert(fmtAddr(0x4000) === '16384', '4000 reads as 16384');
+
+                setAddrBase('anything else');
+                assert(getAddrBase() === 'hex', 'an unrecognised base falls back to hex, never to garbage');
+            }
+
+            section('Values are masked to 16 bits');
+            {
+                setAddrBase('hex');
+                assert(fmtAddr(0x1FFFF) === 'FFFF', 'a value past 64K wraps rather than growing the column');
+                setAddrBase('dec');
+                assert(fmtAddr(0x1FFFF) === '65535', 'the same in decimal');
+                assert(fmtAddr(-1) === '65535', 'and a negative is read as its two-complement address');
+                setAddrBase('hex');
+            }
+
+            section('Column width — the whole point of the padding');
+            {
+                // 65535 is one character wider than FFFF. A column padded to a fixed
+                // width is sized once and does not reflow when the switch is thrown.
+                setAddrBase('hex');
+                const hexCol = [0, 0x4000, 0xFFFF].map(fmtAddrCol);
+                setAddrBase('dec');
+                const decCol = [0, 0x4000, 0xFFFF].map(fmtAddrCol);
+
+                assert(hexCol.every(s => s.length === ADDR_COL_WIDTH) &&
+                       decCol.every(s => s.length === ADDR_COL_WIDTH),
+                       `every address is exactly ${ADDR_COL_WIDTH} characters in both bases`,
+                       JSON.stringify([hexCol, decCol]));
+                assert(hexCol[2] === 'FFFF' + NBSP, 'hex is padded to five with one NBSP');
+                assert(decCol[2] === '65535', 'the widest decimal needs no padding at all');
+                assert(decCol[0] === '0' + NBSP.repeat(4), 'and a short decimal is padded out to the same width');
+
+                assert(!hexCol[2].includes(' '), 'the pad is NBSP, not a space that innerHTML would collapse');
+
+                setAddrBase('hex');
+                assert(fmtAddrCol(0xFFFF).startsWith('FFFF'), 'the left-aligned form keeps its digits first');
+                assert(fmtAddrColRight(0xFFFF) === NBSP + 'FFFF', 'the right-aligned form pads in front');
+                setAddrBase('dec');
+                assert(fmtAddrColRight(0x400) === NBSP + '1024', 'so decimal numbers line up on their last digit');
+                setAddrBase('hex');
+            }
+
+            section('The $ in front of an address is a claim about the base');
+            {
+                setAddrBase('hex');
+                assert(fmtAddrSigil(0xB000) === '$B000', 'hex keeps the $ the app has always written');
+                assert(fmtAddrH(0xB000) === 'B000h', "and the assembler's trailing h where that is the style");
+                setAddrBase('dec');
+                assert(fmtAddrSigil(0xB000) === '45056', 'decimal drops it -- $45056 would be a lie',
+                       fmtAddrSigil(0xB000));
+                assert(fmtAddrH(0xB000) === '45056', 'and drops the h for the same reason',
+                       fmtAddrH(0xB000));
+                assert(parseAddr(fmtAddrH(0xB000)) === 0xB000 && parseAddr('B000h') === 0xB000,
+                       'either form reads back to the address it names');
+                setAddrBase('hex');
+            }
+            section('Listeners');
+            {
+                const seen = [];
+                const off = onNumberBaseChange(b => seen.push(b));
+                setAddrBase('dec');
+                setAddrBase('dec');          // no change, so no call
+                setAddrBase('hex');
+                assert(JSON.stringify(seen) === '["dec","hex"]',
+                       'a listener hears every real change and nothing else', JSON.stringify(seen));
+
+                off();
+                setAddrBase('dec');
+                assert(seen.length === 2, 'and stops hearing them once it unsubscribes');
+                setAddrBase('hex');
+            }
+            {
+                // One bad listener must not stop the panels after it from redrawing.
+                const reached = [];
+                const offA = onNumberBaseChange(() => { throw new Error('boom'); });
+                const offB = onNumberBaseChange(() => reached.push('b'));
+                setAddrBase('dec');
+                assert(reached.length === 1, 'a listener that throws does not block the rest');
+                offA(); offB();
+                setAddrBase('hex');
+            }
+
+            section('Reading an address the user typed — an explicit radix always wins');
+            {
+                for (const base of ['hex', 'dec']) {
+                    setAddrBase(base);
+                    assert(parseAddr('$8000') === 0x8000, `$8000 is 32768 in ${base} mode`);
+                    assert(parseAddr('0x8000') === 0x8000, `0x8000 is 32768 in ${base} mode`);
+                    assert(parseAddr('#8000') === 0x8000, `#8000 is 32768 in ${base} mode`);
+                    assert(parseAddr('8000h') === 0x8000, `8000h is 32768 in ${base} mode`);
+                    assert(parseAddr('C000h') === 0xC000, `C000h is 49152 in ${base} mode, leading digit or not`);
+                    // No `d` suffix: 004D is a real hex address, so `004d` cannot also mean 4.
+                    assert(parseAddr('123d') === 0x123D, `there is no decimal suffix, so 123d is hex in ${base} mode`);
+                }
+                setAddrBase('hex');
+            }
+
+            section('...and a bare number follows the switch');
+            {
+                setAddrBase('hex');
+                assert(parseAddr('8000') === 0x8000, 'in hex mode a bare 8000 is 32768');
+                assert(parseAddr('ffff') === 0xFFFF, 'lower case is fine');
+                setAddrBase('dec');
+                assert(parseAddr('8000') === 8000, 'in decimal mode the same text is 8000');
+                assert(parseAddr('65535') === 65535, 'and the top of memory is 65535');
+                // A number with a hex-only digit cannot be decimal whatever the switch says,
+                // so an address pasted from a hex listing still resolves.
+                assert(parseAddr('FFFF') === 0xFFFF, 'a bare FFFF is still hex in decimal mode — it cannot be anything else');
+                assert(parseAddr('4a00') === 0x4A00, 'and so is 4a00');
+                setAddrBase('hex');
+            }
+
+            section('...and the base can be forced, for a field that is always one or the other');
+            {
+                setAddrBase('hex');
+                assert(parseAddr('100', { base: 'dec' }) === 100, 'an explicitly decimal field reads 100 as a hundred');
+                setAddrBase('dec');
+                assert(parseAddr('100', { base: 'hex' }) === 0x100, 'and an explicitly hex one reads it as 256');
+                setAddrBase('hex');
+            }
+
+            section('...and nonsense is rejected rather than read as zero');
+            {
+                for (const bad of ['', '   ', 'xyz', '$', '0x', '$zz', '12g4', '1.5', '--3', null, undefined]) {
+                    assert(parseAddr(bad) === null, JSON.stringify(bad) + ' is refused');
+                }
+                assert(parseAddr(' 8000 ') === 0x8000, 'but surrounding whitespace is not nonsense');
+                assert(parseAddr(NBSP + '8000') === 0x8000, 'nor is the NBSP the column padding leaves behind');
+            }
+
+            section('An address spec is rewritten into the hex the core parses');
+            {
+                setAddrBase('hex');
+                assert(specToHex('4000') === '4000', 'a single address passes through');
+                assert(specToHex('4000-4FFF') === '4000-4FFF', 'so does a range');
+                assert(specToHex('5:C000') === '5:C000', 'and one with a page prefix');
+                assert(specToHex('R0:0000') === 'R0:0000', 'including a ROM page');
+
+                setAddrBase('dec');
+                assert(specToHex('16384') === '4000', 'in decimal 16384 becomes 4000');
+                assert(specToHex('16384-20479') === '4000-4FFF', 'and a decimal range becomes a hex one');
+                assert(specToHex('5:49152') === '5:C000', 'the page number is left alone -- it was never an address',
+                       String(specToHex('5:49152')));
+                assert(specToHex('$4000') === '4000', 'an explicit $ still means hex');
+                assert(specToHex('C000h') === 'C000', 'and so does a trailing h');
+
+                // parseInt('FE&FF', 16) quietly returned 254, so a mistyped port spec
+                // used to become a breakpoint on address $00FE.
+                setAddrBase('hex');
+                assert(specToHex('FE&FF') === null, 'a port spec is refused, not silently truncated');
+                assert(specToHex('4000-zz') === null, 'a range with an unreadable end is refused');
+                assert(specToHex('') === null && specToHex(null) === null, 'and so is nothing at all');
+            }
+            section('Values have their own switch, independent of addresses');
+            {
+                setAddrBase('hex'); setValueBase('hex');
+                assert(getValueBase() === 'hex', 'values start in hex too');
+                assert(fmtByte(0xFF) === 'FF' && fmtByte(0) === '00' && fmtByte(3) === '03',
+                       'a hex byte is two digits, zero-padded');
+
+                setValueBase('dec');
+                assert(fmtByte(0xFF) === '255' && fmtByte(3) === '3',
+                       'a decimal byte is written plainly -- 3 lives reads as 3');
+                assert(getAddrBase() === 'hex',
+                       'and the address base did not move with it -- they are separate switches');
+
+                setAddrBase('dec'); setValueBase('hex');
+                assert(fmtAddr(0xB000) === '45056' && fmtByte(0xFF) === 'FF',
+                       'the other way round works too: decimal addresses over a hex dump');
+
+                assert(fmtByte(0x1FF) === 'FF', 'a byte is masked to 8 bits');
+                setValueBase('dec');
+                assert(fmtByte(0x1FF) === '255', 'in either base');
+
+                // Reading a typed byte follows the VALUE base, not the address one.
+                setAddrBase('hex'); setValueBase('dec');
+                assert(parseByte('10') === 10, 'with decimal values a typed 10 is ten');
+                assert(parseByte('$10') === 0x10, 'but $10 is still sixteen');
+                assert(parseByte('FF') === 255, 'and a bare FF can only be hex');
+                setValueBase('hex');
+                assert(parseByte('10') === 0x10, 'with hex values a typed 10 is sixteen');
+                assert(parseByte('zz') === null, 'nonsense is refused, as with an address');
+
+                setAddrBase('hex'); setValueBase('hex');
+            }
+
+            section('One listener hears both switches');
+            {
+                const seen = [];
+                const off = onNumberBaseChange((a, v) => seen.push(a + '/' + v));
+                setAddrBase('dec');
+                setValueBase('dec');
+                setValueBase('dec');          // no change, so no call
+                assert(JSON.stringify(seen) === '["dec/hex","dec/dec"]',
+                       'a panel subscribes once and is told about either', JSON.stringify(seen));
+                off();
+                setAddrBase('hex'); setValueBase('hex');
+            }
+            section('A port is an address, just in I/O space');
+            {
+                setAddrBase('hex'); setValueBase('hex');
+                assert(fmtPort(0xFE) === 'FE', 'a byte-wide port keeps two digits');
+                assert(fmtPort(0x7FFD) === '7FFD', 'and a word-wide one keeps four');
+                assert(fmtPort(0xFE, true) === '00FE', 'unless it is declared 16-bit');
+
+                setAddrBase('dec');
+                assert(fmtPort(0x7FFD) === '32765',
+                       'in decimal it reads 32765 -- which is how every BASIC listing writes it',
+                       fmtPort(0x7FFD));
+                assert(fmtPort(0xFE) === '254', 'and FE reads 254');
+                setValueBase('dec');
+                setValueBase('hex');
+                assert(fmtPort(0xFE) === '254',
+                       'the VALUE switch does not touch it -- a port number is an address');
+
+                // A typed port spec is rewritten into the hex the core parses.
+                assert(portSpecToHex('32765') === '7FFD', 'a decimal port becomes 7FFD',
+                       String(portSpecToHex('32765')));
+                assert(portSpecToHex('254&255') === 'FE&FF', 'and so does one with a mask',
+                       String(portSpecToHex('254&255')));
+                setAddrBase('hex');
+                assert(portSpecToHex('FE&FF') === 'FE&FF', 'a hex spec passes through');
+                assert(portSpecToHex('zz') === null && portSpecToHex('FE&zz') === null,
+                       'and nonsense in either half is refused');
+                setAddrBase('hex'); setValueBase('hex');
+            }
+
+            section('A 16-bit value is not an address');
+            {
+                setAddrBase('dec'); setValueBase('hex');
+                assert(fmtWord(0x1000) === '1000' && fmtAddr(0x1000) === '4096',
+                       'a memory word follows the value switch, an address follows its own');
+                setValueBase('dec');
+                assert(fmtWord(0x1000) === '4096', 'and the word moves when the value switch does');
+                assert(fmtByteSigil(0xFF) === '255', 'the $ on a byte goes with the value base');
+                setValueBase('hex');
+                assert(fmtByteSigil(0xFF) === '$FF', 'and comes back with it');
+                setAddrBase('hex');
+            }
+            section('Opcodes have a third switch of their own');
+            {
+                setAddrBase('hex'); setValueBase('hex'); setOpcodeBase('hex');
+                assert(getOpcodeBase() === 'hex', 'opcodes start in hex');
+                assert(fmtOpcode(0x21) === '21' && fmtOpcode(0x00) === '00',
+                       'a hex opcode is two digits, zero-padded');
+
+                setOpcodeBase('dec');
+                assert(fmtOpcode(0x21) === '33' && fmtOpcode(0xB0) === '176',
+                       'LD HL,nn reads as 33 for someone who learned decimal assembly');
+                assert(fmtByte(0x21) === '21' && fmtAddr(0x21) === '0021',
+                       'and neither of the other two moved with it');
+
+                setValueBase('dec');
+                setOpcodeBase('hex');
+                assert(fmtOpcode(0x21) === '21' && fmtByte(0x21) === '33',
+                       'the reverse works too: decimal data over a hex opcode column');
+
+                setAddrBase('hex'); setValueBase('hex'); setOpcodeBase('hex');
+            }
+
+            section('One listener still hears all three');
+            {
+                const seen = [];
+                const off = onNumberBaseChange((a, v, o) => seen.push([a, v, o].join('/')));
+                setAddrBase('dec');
+                setValueBase('dec');
+                setOpcodeBase('dec');
+                setOpcodeBase('dec');          // no change, so no call
+                assert(JSON.stringify(seen) ===
+                       '["dec/hex/hex","dec/dec/hex","dec/dec/dec"]',
+                       'each switch announces itself once, with all three states',
+                       JSON.stringify(seen));
+                off();
+                setAddrBase('hex'); setValueBase('hex'); setOpcodeBase('hex');
+            }
+            section('Round trip');
+            {
+                for (const base of ['hex', 'dec']) {
+                    setAddrBase(base);
+                    let ok = true, bad = null;
+                    for (let a = 0; a <= 0xFFFF; a += 7) {
+                        if (parseAddr(fmtAddrCol(a)) !== a) { ok = false; bad = a; break; }
+                    }
+                    assert(ok, `in ${base} mode every address survives format then parse, padding and all`,
+                           bad === null ? '' : 'first failure at ' + bad);
+                }
+                setAddrBase('hex');
+                assert(getAddrBase() === 'hex', 'the suite leaves the module in hex');
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

@@ -25,7 +25,7 @@ sjasmplus-compatible Z80 assembler. Multi-pass (up to 10 passes) with forward re
 - Unary operators: `+`, `-`, `~`, `!`, `HIGH`, `LOW`, `NOT`, `ABS`, `DEFINED` (parentheses optional)
 - Word forms of the binary operators, as sjasmplus has them (`parser.cpp` `needa()`): `AND` = `&`, `OR` = `|`, `XOR` = `^`, `MOD` = `%`, `SHL`/`SHR` = `<<`/`>>` — same precedence as the symbol, case-insensitive. Matched by `ExpressionParser.matchWord()` in **operator position only**, so a source may still have a label called `and` or `or` and read it as one everywhere a value can go
 - All operations propagate `undefined` flag -- if any operand is undefined, result is `{ value: 0, undefined: true }`
-- `$` = current address, `$$` = section start
+- `$` = current address, `$$` = the memory page it is in (see **Address and page operators** below)
 - Temp label references: `1B`/`1F` etc. via `SymbolTable.parseTemp()`
 
 **Error reporting** (`errors.js` + `assembler-ui.js`):
@@ -404,6 +404,62 @@ The assembler supports undocumented Z80 half-index register operands: IXH, IXL, 
 - `:` after a column-1 identifier is always a label terminator (even if the name matches an instruction)
 - Macro names followed by `:` then an instruction/directive are expanded as macros: `GET_BIT : jr nc,label` = expand `GET_BIT` macro, then `JR NC,label`
 - Label-only lines always define a label, even if the name matches a macro (case-insensitive): `wait_key_down:` defines a label even when a `WAIT_KEY_DOWN` macro exists
+
+## Address and page operators (`lexer.js`, `expression.js`)
+
+sjasmplus writes the program counter, the memory page and the DISP physical
+address as a run of `$` signs, optionally with a label glued straight on:
+
+| written | is |
+|---|---|
+| `$` | the program counter |
+| `$$` | the memory page the program counter is in |
+| `$$$` | the *physical* program counter — where the bytes go, inside a `DISP` block |
+| `$$$$` | the memory page that physical address falls in |
+| `$$lab` | the page `lab` lives in |
+| `$$$lab` | where `lab` physically sits, when it was defined inside `DISP` |
+| `$$$$lab` | the page of that physical address |
+| `{x}` | the WORD at address `x` in the assembled image |
+| `{b x}` | the BYTE at `x` |
+
+Three things about how they are implemented are worth knowing:
+
+- **The sigil and the name are ONE token.** `$$lab` lexed as `$$` then `lab`
+  left the expression parser looking at a stray identifier after a finished
+  expression, and every sigil-plus-name form failed to assemble at all. The
+  lexer reads the whole run of `$` and glues any following name on
+  (`lexer.js`); `ExpressionParser.applySigil` then does the page/physical
+  lookup around the ordinary symbol resolution, which is why a sigil works on a
+  module-qualified or local name too.
+- **`$$$lab` needs the label's physical address**, which is not its value —
+  inside `DISP` the value is the displaced one. `SymbolTable.define` records
+  `physical` alongside `value`, equal to it outside a `DISP` block.
+- **`{x}` is virtual-device-only, and that settles a syntax clash.** A braced
+  operand is also sjasmplus's `STRUCT` wrapper (`P {1,2}`). With no `DEVICE`
+  there is no assembled image to read, so `Assembler.evaluate` keeps stripping
+  the braces as it always did; with a `DEVICE` the braces are a memory read.
+- **The read is a convergence input.** sjasmplus reads memory only on the last
+  pass, because earlier ones hold whatever the pass before wrote. This
+  assembler does not know which pass is last until it converges, so instead
+  `readByteForExpr` compares each byte against the one that address gave last
+  pass and sets `changed` when they differ — a `{x}` naming an address filled in
+  later resolves the same way a forward label reference does.
+
+They work wherever an expression does — `DB`/`DW`, `EQU`, and instruction
+operands (`ld hl,$$$lab`, `ld a,{b $8000}`). Instruction operands are evaluated
+by `InstructionEncoder.evalExpr`, which used to call `parseExpression` with no
+context at all, so none of them worked there; it is handed one now.
+
+**`$$` changed meaning in v1.0.0.** It used to be the address of the last `ORG`,
+so `$-$$` was the offset into that block — NASM's "section start", which this
+engine inherited from the standalone `sjasmplus-js` it grew out of and which was
+never tested beyond the lexer tokenising it. It is the page of `$` now: what
+sjasmplus means, and what makes it consistent with `$$lab` being the page of
+`lab`. The old idiom does not silently return something else — there are no pages
+without a `DEVICE`, so `$-$$` in a plain source is now an error naming `DEVICE`.
+For the offset into a block, put a label at its start and subtract that.
+
+Tests: `runDollarOperatorTests` in `tests/asm-test.html`.
 
 ## Syntax Highlighting (`assembler-ui.js`)
 

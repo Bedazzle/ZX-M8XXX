@@ -13,6 +13,45 @@ Audio output uses `AudioWorklet` when available (secure contexts: HTTPS or local
 - **Late Timings**: ULA timing checkbox in Settings -> Machines (near Load ROMs button). Applies 1T shift for warmed Ferranti ULA. Only affects 48K/128K/+2/+2A/+3 — Pentagon uses a non-Ferranti ULA with no early/late drift. Stored in localStorage key `zxm8_lateTiming`.
 - **Pentagon Attr Prefetch**: Checkbox in Settings -> Machines. When enabled, shifts the ULA attribute read point 5T earlier (`pentagonAttrOffset = -5`) for Pentagon/Pentagon 1024/Scorpion machines, matching the multicolor behavior of ZXMAK2, Spectaculator, and SpecEmu. Default (off) matches Unreal Speccy and FUSE. Stored in localStorage key `zxm8_pentagonPrefetch`. Fine-tunable via console: `spectrum.setPentagonAttrOffset(n)`.
 
+## One character cell (`core/ula-blit.js`)
+
+Every rendering path ends at the same place: an attribute byte picks two colours,
+a pixel byte picks which of the two each of eight pixels gets. `core/ula.js` used
+to write that out **seven** times — in `_renderCatchUpPaper`, both paths of
+`renderScanline`, both paths of `renderPaperLine`, `renderDeferredPaper` and
+`renderFrame` — each with its own ULAplus branch, its own flash swap, its own
+BRIGHT handling, its own eight writes and its own call into the ink-skew filter.
+
+That is where every rendering feature lands. ULA snow, the Ferranti ink edge skew
+and PAL composite each had to be threaded through all seven, and a copy that missed
+one would give a bug visible on one rendering path only — the same shape as the
+`runFrame` vs `runFrameHeadless` HALT disagreement that has its own test suite.
+
+```js
+const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+for (let col = 0; col < 32; col++) {
+    prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
+        screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
+}
+```
+
+Two things worth knowing:
+
+- **A null `ulaPal32` is what "ULAplus off" means.** The presence of the array is
+  the flag, so there is no second boolean to fall out of step with it. Which
+  ULAplus palette applies is the *caller's* question — the live one, a per-scanline
+  one rebuilt for a raster effect, or a per-group one for HAM256 — and it is
+  resolved before the loop, not re-tested per column as one copy used to.
+- **`prevInkBit` is handed straight back when there is no skew**, exactly as
+  `if (inkSkew) prevInkBit = ...` left the caller's local alone. Nothing reads it in
+  that case, but returning the real last bit instead would be a silent difference.
+
+This is the hot path, so the cost was measured rather than assumed: against the
+loop written inline, on a synthetic 192×256 screen, 3000 iterations × 8 rounds with
+the order alternated (timings drift downward through a run, so a fixed A-then-B
+order flatters B), the call comes out at **−1.2%** plain and **−4.2%** with ULAplus
+— nothing outside the noise; V8 inlines it — with identical pixels from both forms.
+
 ## Scanline Rendering and Double-Buffer Design
 
 **Scanline rendering timing**: Scanlines are rendered at **line END** (`(line+1) * tstatesPerLine`), not at paper start. This is critical for Nirvana-style multicolor engines that write attributes "racing the beam" -- the CPU must have executed past the entire line so all attribute writes are recorded in `attrChanges` before the T-state lookup resolves them per-column. Paper-start rendering breaks multicolor because `renderScanline` fires before the CPU has written the beam-racing attributes.

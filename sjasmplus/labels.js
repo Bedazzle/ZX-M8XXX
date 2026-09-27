@@ -67,8 +67,10 @@ export const SymbolTable = {
         return this.findDefinedInScope(name) || (this.getModulePrefix() + name);
     },
 
-    // Define a label
-    define(name, value, line = null, file = null, type = 'label') {
+    // Define a label. `physical` is where the bytes actually go when the label sits
+    // inside a DISP block, which is what $$$name and $$$$name report; outside DISP
+    // it is the same as `value`.
+    define(name, value, line = null, file = null, type = 'label', physical = null) {
         const fullName = this.getFullName(name);
         
         // Check for redefinition (unless it's a pass update for same label)
@@ -87,6 +89,7 @@ export const SymbolTable = {
 
         this.symbols[fullName] = {
             value: value,
+            physical: physical === null ? value : physical,
             type: type,
             defined: true,
             used: this.symbols[fullName]?.used || false,
@@ -314,6 +317,7 @@ export const SymbolTable = {
             if (sym) {
                 obj[name] = {
                     value: sym.value,
+                    physical: sym.physical,
                     undefined: !sym.defined
                 };
             }

@@ -268,13 +268,13 @@ export class TestRunner {
         const startTime = performance.now();
         let totalFramesRun = 0;
 
-        // Suppress audio output during tests — disable sample generation entirely
-        // so no sound reaches speakers regardless of AudioContext state.
-        // Beeper/AY port writes still happen for timing accuracy, but processFrame()
-        // skips all sample generation when enabled=false.
-        const audio = this.spectrum.audio;
-        const audioWasEnabled = audio && audio.enabled;
-        if (audio) audio.enabled = false;
+        // No sound during tests: frames run far faster than real time, so any
+        // output is an overflowing buffer. Beeper/AY port writes still happen for
+        // timing accuracy; only sample generation stops. The flag is on the
+        // machine, not on spectrum.audio -- that is created on the first click,
+        // which can be the very click that started this run.
+        const audioWasSuppressed = this.spectrum.audioSuppressed;
+        this.spectrum.audioSuppressed = true;
 
         // Remember the shadow-screen mode so it can be restored after the batch —
         // a 48K test forces unsupported modes (Full/Bitmap) off via the
@@ -360,10 +360,7 @@ export class TestRunner {
             this.elements.btnAbort.classList.add('hidden');
             this.elements.progressSection.classList.add('hidden');
 
-            // Restore audio output (re-enable only if it was enabled before tests)
-            if (audio && audioWasEnabled) {
-                audio.enabled = true;
-            }
+            this.spectrum.audioSuppressed = audioWasSuppressed;
 
             // Always update canvas size after tests (in case dimensions changed)
             if (typeof this._callbacks.updateCanvasSize === 'function') {
@@ -412,6 +409,12 @@ export class TestRunner {
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
+        const savedKempston = this.spectrum.kempstonEnabled;
+        const savedInterfaces = {
+            beta: this.spectrum.betaDiskEnabled, plusD: this.spectrum.plusDEnabled,
+            if1: this.spectrum.if1Enabled, opus: this.spectrum.opusEnabled,
+            didaktik: this.spectrum.didaktikEnabled
+        };
         const savedGhosting = this.spectrum.ula.keyboardGhosting;
         const savedSnow = this.spectrum.ula.snowEnabled;
         const savedInkSkew = this.spectrum.ula.inkSkewOverride;
@@ -448,6 +451,24 @@ export class TestRunner {
                 for (let i = 0; i < 2; i++) this.spectrum.fdc.ejectDisk(i);
             }
 
+            // Disk interfaces: off unless a test asks. Each pages a ROM in over
+            // the Spectrum's own, so one left on in Settings rewrites the screen.
+            // BEFORE the reset, not after: the +D pages its ROM in AT reset, and
+            // clearing the flag afterwards cannot un-page it -- which is why the
+            // first attempt at this still left venom failing at 62.92%. The paging
+            // flags are cached, so they are recomputed here too.
+            // A machine with Beta Disk built in (Pentagon, Scorpion) keeps it: the
+            // profile pages the TR-DOS ROM in, but the controller's ports answer
+            // only while betaDiskEnabled is set, so clearing it left TR-DOS
+            // booting and reporting "No disk". Only the Settings toggle is ignored.
+            this.spectrum.betaDiskEnabled = test.betaDisk === true ||
+                !!this.spectrum.profile.betaDiskDefault;
+            this.spectrum.plusDEnabled = test.plusD === true;
+            this.spectrum.if1Enabled = test.if1 === true;
+            this.spectrum.opusEnabled = test.opus === true;
+            this.spectrum.didaktikEnabled = test.didaktik === true;
+            this.spectrum.updateBetaDiskPagingFlag();
+
             // Reset and load file
             this.spectrum.reset();
 
@@ -468,6 +489,16 @@ export class TestRunner {
             // change a test's port reads (FADF/FBDF/FFDF); a test that needs it
             // sets "kempstonMouse": true.
             this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
+
+            // Kempston JOYSTICK port: on unless a test says otherwise. Same
+            // reasoning as the mouse, but the default is the other way round,
+            // because with the port OFF $1F is unclaimed and the game reads the
+            // FLOATING BUS instead of a clean "nothing pressed". Venom does
+            // exactly that: it saw a fire press, started, and its title-screen
+            // expectation failed by 10% of the picture -- which looked like a
+            // rendering regression and was a Settings checkbox.
+            this.spectrum.kempstonEnabled = test.kempston !== false;
+
 
             // Keyboard ghosting: same reasoning — it changes what port 0xFE
             // returns for held keys, so the global toggle must not decide a
@@ -545,6 +576,13 @@ export class TestRunner {
             this.spectrum.setLateTimings(savedLateTimings);
             // Restore Kempston Mouse enable (the global Settings state)
             this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
+            this.spectrum.kempstonEnabled = savedKempston;
+            this.spectrum.betaDiskEnabled = savedInterfaces.beta;
+            this.spectrum.plusDEnabled = savedInterfaces.plusD;
+            this.spectrum.if1Enabled = savedInterfaces.if1;
+            this.spectrum.opusEnabled = savedInterfaces.opus;
+            this.spectrum.didaktikEnabled = savedInterfaces.didaktik;
+            this.spectrum.updateBetaDiskPagingFlag();
             this.spectrum.ula.setKeyboardGhosting(savedGhosting);
             this.spectrum.ula.setSnowEffect(savedSnow);
             this.spectrum.ula.setInkSkew(savedInkSkew);
@@ -1540,6 +1578,12 @@ export class TestRunner {
         const savedFullBorder = this.spectrum.ula.fullBorderMode;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
+        const savedKempston = this.spectrum.kempstonEnabled;
+        const savedInterfaces = {
+            beta: this.spectrum.betaDiskEnabled, plusD: this.spectrum.plusDEnabled,
+            if1: this.spectrum.if1Enabled, opus: this.spectrum.opusEnabled,
+            didaktik: this.spectrum.didaktikEnabled
+        };
         const savedGhosting = this.spectrum.ula.keyboardGhosting;
         const savedSnow = this.spectrum.ula.snowEnabled;
         const savedInkSkew = this.spectrum.ula.inkSkewOverride;
@@ -1590,6 +1634,24 @@ export class TestRunner {
             previewCanvas.height = dims.height;
             const previewCtx = previewCanvas.getContext('2d');
 
+            // Disk interfaces: off unless a test asks. Each pages a ROM in over
+            // the Spectrum's own, so one left on in Settings rewrites the screen.
+            // BEFORE the reset, not after: the +D pages its ROM in AT reset, and
+            // clearing the flag afterwards cannot un-page it -- which is why the
+            // first attempt at this still left venom failing at 62.92%. The paging
+            // flags are cached, so they are recomputed here too.
+            // A machine with Beta Disk built in (Pentagon, Scorpion) keeps it: the
+            // profile pages the TR-DOS ROM in, but the controller's ports answer
+            // only while betaDiskEnabled is set, so clearing it left TR-DOS
+            // booting and reporting "No disk". Only the Settings toggle is ignored.
+            this.spectrum.betaDiskEnabled = test.betaDisk === true ||
+                !!this.spectrum.profile.betaDiskDefault;
+            this.spectrum.plusDEnabled = test.plusD === true;
+            this.spectrum.if1Enabled = test.if1 === true;
+            this.spectrum.opusEnabled = test.opus === true;
+            this.spectrum.didaktikEnabled = test.didaktik === true;
+            this.spectrum.updateBetaDiskPagingFlag();
+
             // Full reset including tape state
             this.spectrum.reset();
             this.spectrum.tapeLoader.rewind();
@@ -1610,6 +1672,10 @@ export class TestRunner {
             // Kempston Mouse: off by default so the global Settings toggle can't
             // change the test's port reads; a test sets "kempstonMouse": true to use it.
             this.spectrum.kempstonMouseEnabled = test.kempstonMouse === true;
+            // Kempston joystick port: on unless the test says otherwise -- with it
+            // off, $1F is unclaimed and the program reads the floating bus.
+            this.spectrum.kempstonEnabled = test.kempston !== false;
+
             this.spectrum.ula.setKeyboardGhosting(test.keyboardGhosting === true);
 
             // ULA snow and the ink/paper edge skew: both change what reaches the
@@ -1705,6 +1771,13 @@ export class TestRunner {
             this.spectrum.setLateTimings(savedLateTimings);
             // Restore Kempston Mouse enable (the global Settings state)
             this.spectrum.kempstonMouseEnabled = savedKempstonMouse;
+            this.spectrum.kempstonEnabled = savedKempston;
+            this.spectrum.betaDiskEnabled = savedInterfaces.beta;
+            this.spectrum.plusDEnabled = savedInterfaces.plusD;
+            this.spectrum.if1Enabled = savedInterfaces.if1;
+            this.spectrum.opusEnabled = savedInterfaces.opus;
+            this.spectrum.didaktikEnabled = savedInterfaces.didaktik;
+            this.spectrum.updateBetaDiskPagingFlag();
             this.spectrum.ula.setKeyboardGhosting(savedGhosting);
             this.spectrum.ula.setSnowEffect(savedSnow);
             this.spectrum.ula.setInkSkew(savedInkSkew);

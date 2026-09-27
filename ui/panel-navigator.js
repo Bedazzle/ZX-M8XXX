@@ -1,5 +1,5 @@
 // Panel navigation — switching panel types, address navigation, go-to functions
-import { hex16 } from '../core/utils.js';
+import { fmtAddr, onNumberBaseChange } from '../core/addr-format.js';
 import { registerCalcHost, refreshCalcHost } from './calc-host.js';
 
 export function initPanelNavigator({
@@ -104,7 +104,7 @@ export function initPanelNavigator({
             const spectrum = getSpectrum();
             if (getRightDisasmViewAddress() === null && spectrum.cpu) {
                 setRightDisasmViewAddress(spectrum.cpu.pc);
-                rightDisasmAddressInput.value = hex16(spectrum.cpu.pc);
+                rightDisasmAddressInput.value = fmtAddr(spectrum.cpu.pc);
             }
         } else if (type === 'calc') {
             calcView.style.display = '';
@@ -140,7 +140,7 @@ export function initPanelNavigator({
         addr = addr & 0xffff;
         switchLeftPanelType('memdump');
         setLeftMemoryViewAddress(addr);
-        leftMemAddressInput.value = hex16(addr);
+        leftMemAddressInput.value = fmtAddr(addr);
         updateLeftMemoryView();
     }
 
@@ -148,7 +148,7 @@ export function initPanelNavigator({
         addr = addr & 0xffff;
         switchRightPanelType('memdump');
         setMemoryViewAddress(addr);
-        memoryAddressInput.value = hex16(addr);
+        memoryAddressInput.value = fmtAddr(addr);
         updateMemoryView();
     }
 
@@ -170,7 +170,7 @@ export function initPanelNavigator({
         } else {
             setDisasmViewAddress(addr);
         }
-        disasmAddressInput.value = hex16(addr);
+        disasmAddressInput.value = fmtAddr(addr);
         switchLeftPanelType('disasm');
         updateDebugger();
     }
@@ -188,7 +188,7 @@ export function initPanelNavigator({
         }
         navPushHistory(addr, 'right');
         setRightDisasmViewAddress(addr);
-        rightDisasmAddressInput.value = hex16(addr);
+        rightDisasmAddressInput.value = fmtAddr(addr);
         switchRightPanelType('disasm');
         getUpdateRightDisassemblyView()();
     }
@@ -231,7 +231,7 @@ export function initPanelNavigator({
         addr = addr & 0xffff;
         if (panel === 'right') {
             setRightDisasmViewAddress(addr);
-            rightDisasmAddressInput.value = hex16(addr);
+            rightDisasmAddressInput.value = fmtAddr(addr);
             getUpdateRightDisassemblyView()();
         } else {
             const disasm = getDisasm();
@@ -240,7 +240,7 @@ export function initPanelNavigator({
             } else {
                 setDisasmViewAddress(addr);
             }
-            disasmAddressInput.value = hex16(addr);
+            disasmAddressInput.value = fmtAddr(addr);
             updateDebugger();
         }
     }
@@ -275,16 +275,32 @@ export function initPanelNavigator({
     // Go to address in left memory view
     function goToLeftMemoryAddress(addr) {
         setLeftMemoryViewAddress(addr & 0xffff);
-        leftMemAddressInput.value = hex16(addr & 0xffff);
+        leftMemAddressInput.value = fmtAddr(addr & 0xffff);
         updateLeftMemoryView();
     }
 
     // Go to address in right disasm view
     function goToRightDisasmAddress(addr) {
         setRightDisasmViewAddress(addr & 0xffff);
-        rightDisasmAddressInput.value = hex16(addr & 0xffff);
+        rightDisasmAddressInput.value = fmtAddr(addr & 0xffff);
         getUpdateRightDisassemblyView()();
     }
+
+    // Hex or decimal: the four navigation boxes are rewritten in the new base.
+    // Their contents are an address the user can edit, so they are unpadded --
+    // a leading NBSP would be selected and typed over.
+    //
+    // Called once here as well as on every change, because the base is restored
+    // from storage by display-settings.js and the two modules do not initialise in
+    // a guaranteed order: the boxes carry a literal value="0000" from the markup.
+    function refreshAddressInputs() {
+        if (disasmAddressInput) disasmAddressInput.value = fmtAddr(getDisasmViewAddress());
+        if (rightDisasmAddressInput) rightDisasmAddressInput.value = fmtAddr(getRightDisasmViewAddress());
+        if (memoryAddressInput) memoryAddressInput.value = fmtAddr(getMemoryViewAddress());
+        if (leftMemAddressInput) leftMemAddressInput.value = fmtAddr(getLeftMemoryViewAddress());
+    }
+    onNumberBaseChange(refreshAddressInputs);
+    refreshAddressInputs();
 
     return {
         switchLeftPanelType, switchRightPanelType,

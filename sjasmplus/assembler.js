@@ -22,7 +22,8 @@ export const Assembler = {
     // State
     currentAddress: 0,
     physicalAddress: null,  // During DISP, tracks actual output location (null = not in DISP)
-    sectionStart: 0,
+    memReads: new Map(),    // {x} reads made this pass, and the pass before
+    prevMemReads: new Map(),
     output: [],           // Output bytes array
     outputStart: 0,       // Starting address of output
     orgAddresses: [],     // All ORG addresses encountered
@@ -46,13 +47,14 @@ export const Assembler = {
         this._warnedBelowStart = false;
         this.currentAddress = 0;
         this.physicalAddress = null;
-        this.sectionStart = 0;
         this.output = [];
         this.outputStart = 0;
         this.orgAddresses = [];
         this.lines = [];
         this.pass = 0;
         this.changed = false;
+        this.prevMemReads = new Map();
+        this.memReads = new Map();
         this.macroCount = 0;
         this.macroDefinition = null;
         this.reptState = null;
@@ -188,13 +190,16 @@ export const Assembler = {
             this.changed = false;
             this.currentAddress = 0;
             this.physicalAddress = null;
-            this.sectionStart = 0;
             this.output = [];
             this.outputStart = 0;
             this.macroDefinition = null;
             this.macroCount = 0;
             this.reptState = null;
             this.labelsThisPass = new Map();  // detects a label defined twice in one pass
+            // {x} reads carried over from the previous pass, so a byte that
+            // moved forces another one (see readByteForExpr)
+            this.prevMemReads = this.memReads;
+            this.memReads = new Map();
             this.luaLine = null;
             this.includeStack = [];
             this.saveCommands = [];
@@ -332,13 +337,16 @@ export const Assembler = {
             this.changed = false;
             this.currentAddress = 0;
             this.physicalAddress = null;
-            this.sectionStart = 0;
             this.output = [];
             this.outputStart = 0;
             this.macroDefinition = null;
             this.macroCount = 0;
             this.reptState = null;
             this.labelsThisPass = new Map();  // detects a label defined twice in one pass
+            // {x} reads carried over from the previous pass, so a byte that
+            // moved forces another one (see readByteForExpr)
+            this.prevMemReads = this.memReads;
+            this.memReads = new Map();
             this.luaLine = null;
             this.includeStack = [];
             this.saveCommands = [];
@@ -716,7 +724,7 @@ export const Assembler = {
                 return isNew;
             },
             getAddress: () => self.currentAddress,
-            setAddress: (a) => { self.currentAddress = a & 0xFFFF; self.sectionStart = self.currentAddress; },
+            setAddress: (a) => { self.currentAddress = a & 0xFFFF; },
             addByte: (b) => self.emit(b & 0xFF),
             addWord: (w) => { self.emit(w & 0xFF); self.emit((w >> 8) & 0xFF); },
             getByte: (a) => (AsmMemory.readByte ? AsmMemory.readByte(a & 0xFFFF) & 0xFF : 0),
@@ -1079,7 +1087,8 @@ export const Assembler = {
 
         // Regular label
         const oldValue = SymbolTable.getValue(label);
-        const fullName = SymbolTable.define(label, this.currentAddress, lineNum, file);
+        const fullName = SymbolTable.define(label, this.currentAddress, lineNum, file, 'label',
+            this.physicalAddress !== null ? this.physicalAddress : this.currentAddress);
 
         // Two definitions of the same label in one pass: the symbol table can't tell
         // that from a new pass re-defining it, so it used to surface only as a
@@ -1323,7 +1332,6 @@ export const Assembler = {
                 }
             }
             this.currentAddress = val.value;
-            this.sectionStart = val.value;
         }
     },
 
@@ -3007,6 +3015,7 @@ export const Assembler = {
             return;
         }
 
+        InstructionEncoder.exprContext = this.exprContext();
         const result = InstructionEncoder.encode(
             line.instruction,
             line.operands,
@@ -3124,11 +3133,45 @@ export const Assembler = {
         }
     },
 
-    // Evaluate an expression
+    // What the expression parser cannot work out for itself: the DISP physical
+    // address, the DEVICE page map, and the assembled image. Built once and
+    // refreshed, because evaluate() is called for every operand of every line.
+    exprContext() {
+        let ctx = this._exprCtx;
+        if (!ctx) {
+            this._exprPageOf = (a) => this.labelPageFor(a);
+            this._exprReadByte = (a) => this.readByteForExpr(a);
+            ctx = this._exprCtx = { physical: null, pageOf: null, readByte: null };
+        }
+        ctx.physical = this.physicalAddress;
+        // Both are null without a DEVICE, which is how the parser knows there are no
+        // pages and no image -- one flag, not two that can disagree.
+        ctx.pageOf = AsmMemory.device ? this._exprPageOf : null;
+        ctx.readByte = AsmMemory.device ? this._exprReadByte : null;
+        return ctx;
+    },
+
+    // The byte {x} and {b x} read. sjasmplus does this only on the last pass,
+    // because earlier ones hold whatever the pass before them wrote. This
+    // assembler doesn't know which pass is last until it converges, so the read is
+    // made a convergence input instead: a byte that differs from the one this
+    // address gave last pass forces another pass, exactly as a moved label does.
+    readByteForExpr(addr) {
+        const a = addr & 0xFFFF;
+        const value = AsmMemory.readByte(a) & 0xFF;
+        if (this.prevMemReads.get(a) !== value) {
+            this.changed = true;
+        }
+        this.memReads.set(a, value);
+        return value;
+    },
+
     // Evaluate an expression
     evaluate(expr, line) {
-        // Strip outer braces — sjasmplus uses {expr} for struct field defaults
-        if (expr.startsWith('{') && expr.endsWith('}')) {
+        // A braced operand is sjasmplus's {expr} STRUCT wrapper when there is no
+        // DEVICE, and its memory read when there is one -- the read is documented
+        // as virtual-device-only, so the device settles which of the two this is.
+        if (!AsmMemory.device && expr.startsWith('{') && expr.endsWith('}')) {
             expr = expr.slice(1, -1).trim();
         }
 
@@ -3142,7 +3185,7 @@ export const Assembler = {
             return { value: 0, undefined: true };
         }
 
-        return parseExpression(expr, SymbolTable.toObject(), this.currentAddress, this.sectionStart);
+        return parseExpression(expr, SymbolTable.toObject(), this.currentAddress, this.exprContext());
     }
 };
 

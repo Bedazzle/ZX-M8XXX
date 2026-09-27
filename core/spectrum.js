@@ -31,6 +31,7 @@ import {
     DIDAKTIK_PORT_DATA, DIDAKTIK_PORT_AUX, DIDAKTIK_PORT_AUX_MASK
 } from './constants.js';
 import { hex8, hex16, storageGet } from './utils.js';
+import { fmtAddr, fmtPort } from './addr-format.js';
 import { Z80 } from './z80.js';
 import { Memory } from './memory.js';
 import { ULA } from './ula.js';
@@ -100,6 +101,10 @@ import { Disassembler } from './disasm.js';
 
             // Audio manager (initialized on user interaction due to browser autoplay policy)
             this.audio = null;
+            // True while automated tests run: no samples are generated. It lives here,
+            // not on this.audio, because the audio is created lazily on the first
+            // click -- which can be the click that starts the tests.
+            this.audioSuppressed = false;
 
             // Beeper state tracking for audio generation
             this.beeperChanges = [];      // Array of {tStates, level} for frame
@@ -2631,7 +2636,7 @@ import { Disassembler } from './disasm.js';
             }
 
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
-            if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
+            if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
                 // Also suppress tape audio briefly after returning from high speed
                 const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
@@ -3045,7 +3050,7 @@ import { Disassembler } from './disasm.js';
             }
 
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
-            if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
+            if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
                 // Also suppress tape audio briefly after returning from high speed
                 const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
@@ -5989,7 +5994,7 @@ import { Disassembler } from './disasm.js';
         }
         
         formatPortBreakpoint(pb) {
-            const hexFn = pb.is16bit ? hex16 : hex8;
+            const hexFn = (v) => fmtPort(v, pb.is16bit);
             const defaultMask = pb.is16bit ? 0xFFFF : 0xFF;
             let str = hexFn(pb.port);
             if (pb.mask !== defaultMask) {
@@ -6387,7 +6392,7 @@ import { Disassembler } from './disasm.js';
 
             if (isPort) {
                 // Port trigger
-                const hexFn = t.start > 0xff ? hex16 : hex8;
+                const hexFn = (v) => fmtPort(v, t.start > 0xff);
                 const defaultMask = t.start > 0xff ? 0xffff : 0xff;
                 str = hexFn(t.start);
                 if (t.mask !== defaultMask) {
@@ -6398,9 +6403,11 @@ import { Disassembler } from './disasm.js';
                 if (t.page !== null) {
                     str += (typeof t.page === 'string' ? t.page : t.page.toString()) + ':';
                 }
-                str += hex16(t.start);
+                // Display only -- parseAddressSpec still reads and the API still
+                // takes hex, so a script's addBreakpoint('8000') never changes meaning.
+                str += fmtAddr(t.start);
                 if (t.end !== t.start) {
-                    str += '-' + hex16(t.end);
+                    str += '-' + fmtAddr(t.end);
                 }
             }
 

@@ -13,17 +13,47 @@
 // tail (the v0.15.13 bug this guards). This matches what the Hex Dump / File
 // Info viewers already show (`sectors × 256` for every TR-DOS/SCL type).
 
-// Scan a BASIC file's data for the 0x80 0xAA autostart trailer.
+// The autostart trailer TR-DOS SAVE writes after a BASIC program: 0x80, 0xAA, then
+// the line as LE16. It starts at `length` (catalogue bytes 9-10, program +
+// variables), so it is read there rather than searched for: 0x80 is a
+// block-graphics character, and a scan could stop inside the program itself.
 // Returns the line number, or -1 for "no autostart" (line >= 32768 or absent).
-export function trdBasicAutostartLine(data) {
-    if (!data || data.length < 4) return -1;
-    for (let i = 0; i < data.length - 3; i++) {
-        if (data[i] === 0x80 && data[i + 1] === 0xAA) {
-            const line = data[i + 2] | (data[i + 3] << 8);
-            return line < 32768 ? line : -1;  // >= 32768 = no autostart
+export function trdBasicAutostartLine(data, length) {
+    if (!data || length == null || length + 4 > data.length) return -1;
+    if (data[length] !== 0x80 || data[length + 1] !== 0xAA) return -1;
+    const line = data[length + 2] | (data[length + 3] << 8);
+    return line < 32768 ? line : -1;
+}
+
+// Set a BASIC file's autostart line in place; `line` null means none (0x8000).
+// `f` = { data, length, sectors }, with data holding whole sectors. An existing
+// trailer is overwritten. Otherwise one is written at `length`, taking one more
+// sector when it does not fit -- unless the file is a monoloader, whose bytes
+// past `length` are its code. Returns an error message, or null.
+export function setTrdBasicAutostart(f, line, freeSectors = Infinity) {
+    const at = f.length;
+    const value = line == null ? 0x8000 : line;
+    const hasTrailer = at + 4 <= f.data.length && f.data[at] === 0x80 && f.data[at + 1] === 0xAA;
+    if (!hasTrailer) {
+        if (line == null) return null;
+        if (isMonoloader(at, f.sectors)) {
+            return 'No autostart bytes to change, and adding them would overwrite the code after the program';
         }
+        const need = Math.ceil((at + 4) / 256);
+        if (need > f.sectors) {
+            if (need > 255) return 'File too large (max 255 sectors)';
+            if (need - f.sectors > freeSectors) return 'Disk full (not enough free sectors)';
+            const grown = new Uint8Array(need * 256);
+            grown.set(f.data.subarray(0, f.sectors * 256));
+            f.data = grown;
+            f.sectors = need;
+        }
+        f.data[at] = 0x80;
+        f.data[at + 1] = 0xAA;
     }
-    return -1;
+    f.data[at + 2] = value & 0xFF;
+    f.data[at + 3] = (value >> 8) & 0xFF;
+    return null;
 }
 
 // True when a file's sector allocation exceeds what its declared length needs —
@@ -44,7 +74,7 @@ export function extractTrdFileDescriptor(f, opts = {}) {
         // Monoloader (any type): carry the whole allocation verbatim and keep the
         // source catalogue entry (length/start/programLength) so the copy is byte-
         // and directory-identical to the source.
-        const line = isBasic ? trdBasicAutostartLine(f.data) : -1;
+        const line = isBasic ? trdBasicAutostartLine(f.data, f.length) : -1;
         return {
             name,
             ext: f.ext,
@@ -63,7 +93,7 @@ export function extractTrdFileDescriptor(f, opts = {}) {
 
     if (isBasic) {
         // Normal BASIC: length = program+vars total, programLength = vars offset.
-        const line = trdBasicAutostartLine(f.data);
+        const line = trdBasicAutostartLine(f.data, f.length);
         return {
             name, ext: f.ext, type: 0, addr: 0,
             autostart: (line >= 0 && line < 32768) ? line : null,

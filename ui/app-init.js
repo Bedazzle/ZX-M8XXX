@@ -19,6 +19,7 @@ import { AsmMemory } from '../sjasmplus/memory.js';
 import { MD5 } from '../sjasmplus/md5.js';
 import { REGION_TYPES, OPERAND_FORMATS, LabelManager, RegionManager, CommentManager, OperandFormatManager } from '../debug/managers.js';
 import { hex8, hex16, escapeHtml, downloadFile, arrayToBase64, storageGet, storageSet } from '../core/utils.js';
+import { parseAddr, parseByte, fmtAddr, fmtByte, fmtAddrSigil, fmtByteSigil, fmtOpcode } from '../core/addr-format.js';
 import { XRefManager } from '../debug/xref-manager.js';
 import { SubroutineManager } from '../debug/subroutine-manager.js';
 import { FoldManager } from '../debug/fold-manager.js';
@@ -52,6 +53,7 @@ import { buildRanges, buildRangesFromBits, buildRangesFromPagedBits, exportCtl, 
 import { initExportAsm } from './export-asm.js';
 import { initAnalysisTools } from './analysis-tools.js';
 import { initDisplaySettings } from './display-settings.js';
+import { initNumberHints } from './number-hints.js';
 import { initAssemblerUI } from './assembler-ui.js';
 import { initAsmSnippets } from './asm-snippets.js';
 import { initVirtualKeyboard } from './virtual-keyboard.js';
@@ -93,11 +95,13 @@ import { initDisasmGenerator } from './disasm-generator.js';
 import { initPanelNavigator } from './panel-navigator.js';
 import { initDiskActivity } from './disk-activity.js';
 import { initMemoryView } from './memory-view.js';
+import { createDisasmLineRenderer } from './disasm-line-render.js';
 import { initRightDisasmView } from './right-disasm-view.js';
 import { initDebuggerDisplay } from './debugger-display.js';
 import { initTriggerHandlers } from './trigger-handlers.js';
 import { initStepControls } from './step-controls.js';
 import { initDisasmNavigation } from './disasm-navigation.js';
+import { initDisasmAsmEdit } from './disasm-asm-edit.js';
 import { initLabelsPanel } from './labels-panel.js';
 import { initPsgPlayer } from './psg-player.js';
 import { initBasicEditor } from './basic-editor.js';
@@ -107,7 +111,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '0.16.3';
+    const APP_VERSION = '26.09.03';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -1592,7 +1596,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         const parsed = parseInt(savedAddr, 16);
         if (!isNaN(parsed)) {
             secondScreenCustomAddr = parsed & 0xFFFF;
-            secondScreenAddrInput.value = hex16(secondScreenCustomAddr);
+            secondScreenAddrInput.value = fmtAddr(secondScreenCustomAddr);
         }
     }
     secondScreenSelect.value = secondScreenMode;
@@ -1606,11 +1610,12 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
 
     secondScreenAddrInput.addEventListener('change', () => {
-        const parsed = parseInt(secondScreenAddrInput.value, 16);
-        if (!isNaN(parsed)) {
+        const parsed = parseAddr(secondScreenAddrInput.value);
+        if (parsed !== null) {
             secondScreenCustomAddr = parsed & 0xFFFF;
-            secondScreenAddrInput.value = hex16(secondScreenCustomAddr);
-            storageSet('zxm8_secondScreenAddr', secondScreenAddrInput.value);
+            secondScreenAddrInput.value = fmtAddr(secondScreenCustomAddr);
+            // Stored as hex whatever the box shows -- what the app writes out never moves.
+            storageSet('zxm8_secondScreenAddr', hex16(secondScreenCustomAddr));
             if (secondScreenMode === 'linear' || secondScreenMode === 'spectrum') renderSecondScreen();
         }
     });
@@ -1862,8 +1867,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     
     memoryAddressInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            const addr = parseInt(memoryAddressInput.value, 16);
-            if (!isNaN(addr)) goToMemoryAddress(addr);
+            const addr = parseAddr(memoryAddressInput.value);
+            if (addr !== null) goToMemoryAddress(addr);
         }
     });
     
@@ -1887,16 +1892,31 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         goToMemoryAddress(memoryViewAddress + MEMORY_LINES * getRightBytesPerLine());
     });
 
+    // One disassembly row, rendered once for both views (ui/disasm-line-render.js).
+    // Two panels drawing the same row from two copies of the markup is how the
+    // right panel came to be missing the breakpoint tooltip the left one has.
+    const { renderLines: renderDisasmLines } = createDisasmLineRenderer({
+        subroutineManager, labelManager, foldManager, commentManager, regionManager,
+        getCurrentPage, formatAddrColumn, replaceMnemonicAddresses,
+        formatMnemonic, isFlowBreak
+    });
+
     // Right panel disassembly view (extracted to ui/right-disasm-view.js)
     const { updateRightDisassemblyView } = initRightDisasmView({
         getSpectrum: () => spectrum, getDisasm: () => disasm,
-        subroutineManager, labelManager, foldManager,
-        commentManager, regionManager,
-        getCurrentPage, formatAddrColumn, replaceMnemonicAddresses,
-        formatMnemonic, isFlowBreak, disassembleWithFolding,
+        disassembleWithFolding, renderDisasmLines,
         getRightDisasmViewAddress: () => rightDisasmViewAddress,
         getLabelDisplayMode: () => labelDisplayMode.value,
         DISASM_LINES
+    });
+
+    // Typing an instruction into a disassembly row (ui/disasm-asm-edit.js).
+    // Before the display, which asks it whether a box is open before redrawing.
+    const asmEditAPI = initDisasmAsmEdit({
+        getSpectrum: () => spectrum,
+        getDisasm: () => disasm,
+        labelManager, getCurrentPage, undoManager,
+        showMessage, updateDebugger, updateLabelsList
     });
 
     // Debugger display (extracted to ui/debugger-display.js)
@@ -1905,11 +1925,9 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         getDisasm: () => disasm,
         setDisasm: (d) => { disasm = d; },
         DisassemblerClass: Disassembler,
-        regEditorAPI, traceManager,
-        regionManager, commentManager, subroutineManager, foldManager, labelManager,
-        xrefManager,
-        getCurrentPage, formatAddrColumn, replaceMnemonicAddresses,
-        formatMnemonic, isFlowBreak, disassembleWithFolding,
+        regEditorAPI, asmEditAPI, traceManager,
+        subroutineManager, foldManager, xrefManager,
+        disassembleWithFolding, renderDisasmLines,
         getDisasmViewAddress: () => disasmViewAddress,
         setDisasmViewAddress: (v) => { disasmViewAddress = v; },
         getDisasmLastLineAddr: () => disasmLastLineAddr,
@@ -1941,8 +1959,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     // Left panel memory controls
     leftMemAddressInput?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            const addr = parseInt(leftMemAddressInput.value, 16);
-            if (!isNaN(addr)) goToLeftMemoryAddress(addr);
+            const addr = parseAddr(leftMemAddressInput.value);
+            if (addr !== null) goToLeftMemoryAddress(addr);
         }
     });
     document.getElementById('btnLeftMemPC')?.addEventListener('click', () => {
@@ -2012,12 +2030,19 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateMemoryView();
     });
 
-    // ROM edit checkbox
-    chkRomEdit.addEventListener('change', () => {
-        if (spectrum.memory) {
-            spectrum.memory.allowRomEdit = chkRomEdit.checked;
-        }
-    });
+    // "Edit ROM" is one flag on the machine with two boxes: beside the hex dump,
+    // whose byte editor it gates, and in the disasm ⚙, because assembling over a
+    // ROM row needs it too and that box is hidden whenever the panel shows
+    // disassembly. Each sets the flag and mirrors the other, so they cannot
+    // disagree about what is actually allowed.
+    const romEditBoxes = [chkRomEdit, document.getElementById('chkRomEditDisasm')]
+        .filter(Boolean);
+    for (const box of romEditBoxes) {
+        box.addEventListener('change', () => {
+            if (spectrum.memory) spectrum.memory.allowRomEdit = box.checked;
+            for (const other of romEditBoxes) other.checked = box.checked;
+        });
+    }
 
     // Instruction history popup (click "System" heading)
     {
@@ -2048,7 +2073,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
                     const addrStr = hex16(entry.pc);
                     let bytesStr = '';
                     for (let j = 0; j < entry.len; j++) {
-                        bytesStr += hex8(entry.bytes[j]) + ' ';
+                        bytesStr += fmtOpcode(entry.bytes[j]) + ' ';
                     }
                     html += '<div class="ph-instr" data-addr="' + entry.pc + '">'
                         + '<span class="ph-addr">' + addrStr + '</span> '
@@ -2106,6 +2131,13 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     }
 
     // Explorer (extracted to explorer.js)
+    // Tooltips, placeholders and the boxes' own contents follow the switch. FIRST,
+    // before any panel registers a redraw: listeners fire in registration order, so
+    // a view that redrew ahead of this would read a box still written in the base
+    // that has just been left. The display settings apply the stored choice later
+    // and the change reaches this like any other.
+    initNumberHints();
+
     const explorerAPI = initExplorer({
         DSKLoader, Disassembler, SZXLoader, RZXLoader, ZipLoader,
         pako: window.pako,
@@ -2459,6 +2491,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         goToLeftDisasm, goToRightDisasm, goToLeftMemory, goToRightMemory,
         getRightPanelType: () => rightPanelType,
         readMemory,
+        startAsmEdit: (addr) => asmEditAPI.startEdit(addr),
         addPoke: pokeManagerAPI.addPoke,
         getInstrLength: (addr) => disasm ? disasm.disassemble(addr).length : 1,
         getDisasmSelection: () => disasmNavAPI.getSelectionRange()
@@ -3356,36 +3389,37 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         const binStatus = document.getElementById('binStatus');
         let lastEditedField = 'length'; // track whether user last edited Length or End
 
-        function parseBinHex(input) {
-            const v = parseInt(input.value, 16);
-            return isNaN(v) ? -1 : v;
+        // These boxes print in the chosen base, so they must read in it too.
+        function parseBinAddr(input) {
+            const v = parseAddr(input.value);
+            return v === null ? -1 : v;
         }
 
         function syncBinFields(source) {
-            const start = parseBinHex(binStart);
+            const start = parseBinAddr(binStart);
             if (start < 0 || start > 0xFFFF) return;
             if (source === 'length') {
-                let len = parseBinHex(binLength);
+                let len = parseBinAddr(binLength);
                 if (len < 0) return;
                 if (len < 1) len = 1;
                 if (start + len > 0x10000) len = 0x10000 - start;
-                binLength.value = hex16(len);
-                binEnd.value = hex16(start + len - 1);
+                binLength.value = fmtAddr(len);
+                binEnd.value = fmtAddr(start + len - 1);
                 lastEditedField = 'length';
             } else if (source === 'end') {
-                let end = parseBinHex(binEnd);
+                let end = parseBinAddr(binEnd);
                 if (end < 0) return;
                 if (end < start) end = start;
                 if (end > 0xFFFF) end = 0xFFFF;
-                binEnd.value = hex16(end);
-                binLength.value = hex16(end - start + 1);
+                binEnd.value = fmtAddr(end);
+                binLength.value = fmtAddr(end - start + 1);
                 lastEditedField = 'end';
             } else if (source === 'start') {
                 if (lastEditedField === 'end') {
                     // Clamp end if it fell below new start
-                    let end = parseBinHex(binEnd);
+                    let end = parseBinAddr(binEnd);
                     if (end >= 0 && end < start) {
-                        binEnd.value = hex16(start);
+                        binEnd.value = fmtAddr(start);
                     }
                     syncBinFields('end');
                 } else {
@@ -3399,9 +3433,9 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         binEnd.addEventListener('change', () => syncBinFields('end'));
 
         document.getElementById('btnBinExport').addEventListener('click', () => {
-            const start = parseBinHex(binStart);
-            const end = parseBinHex(binEnd);
-            const len = parseBinHex(binLength);
+            const start = parseBinAddr(binStart);
+            const end = parseBinAddr(binEnd);
+            const len = parseBinAddr(binLength);
             if (start < 0 || start > 0xFFFF) {
                 binStatus.textContent = 'Invalid start address';
                 return;
@@ -3436,7 +3470,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             const reader = new FileReader();
             reader.onload = () => {
                 const data = new Uint8Array(reader.result);
-                const start = parseBinHex(binStart);
+                const start = parseBinAddr(binStart);
                 if (start < 0 || start > 0xFFFF) {
                     binStatus.textContent = 'Invalid start address';
                     return;
@@ -3457,9 +3491,9 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         // Fill the Start..End range with a single byte (default 00 — clears memory)
         const binFillByte = document.getElementById('binFillByte');
         document.getElementById('btnBinFill').addEventListener('click', () => {
-            const start = parseBinHex(binStart);
-            const end = parseBinHex(binEnd);
-            const len = parseBinHex(binLength);
+            const start = parseBinAddr(binStart);
+            const end = parseBinAddr(binEnd);
+            const len = parseBinAddr(binLength);
             if (start < 0 || start > 0xFFFF) {
                 binStatus.textContent = 'Invalid start address';
                 return;
@@ -3472,7 +3506,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
                 binStatus.textContent = 'Invalid length';
                 return;
             }
-            const byte = parseInt(binFillByte.value, 16);
+            const byte = parseByte(binFillByte.value) ?? NaN;
             if (isNaN(byte) || byte < 0 || byte > 0xFF) {
                 binStatus.textContent = 'Invalid fill byte';
                 return;
@@ -3480,7 +3514,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             spectrum.memory.setBlock(start, new Uint8Array(len).fill(byte));
             spectrum.renderToScreen();
             updateDebugger();
-            binStatus.textContent = 'Filled ' + len + ' bytes at $' + hex16(start) + ' with $' + hex8(byte);
+            binStatus.textContent = 'Filled ' + len + ' bytes at ' + fmtAddrSigil(start) + ' with ' + fmtByteSigil(byte);
         });
 
         // Screen fill patterns (Binary section). Extensible — add an entry to

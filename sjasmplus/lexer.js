@@ -444,18 +444,37 @@ export class Lexer {
             return this.readNumber();
         }
 
-        // $ can be current address or hex prefix
+        // $ can be current address, a hex prefix, or one of the sjasmplus sigils:
+        // $$ (page), $$$ (physical address), $$$$ (physical page). Each may be
+        // followed immediately by a label name -- $$lab, $$$lab, $$$$lab -- which
+        // has to arrive as ONE token, because as two ("$$" then "lab") the
+        // expression parser sees a stray identifier after a complete expression.
         if (ch === '$') {
             if (/[0-9a-fA-F]/.test(this.peek(1))) {
                 return this.readNumber();
             }
-            this.advance();
-            // $$ for start of section
-            if (this.peek() === '$') {
-                this.advance();
-                return new Token(TokenType.IDENTIFIER, '$$', startLine, startCol);
+            let dollars = 0;
+            while (this.peek() === '$') { this.advance(); dollars++; }
+            if (dollars > 4) {
+                ErrorCollector.error(`Unknown operator '${'$'.repeat(dollars)}'`, startLine);
+                dollars = 4;
             }
-            return new Token(TokenType.DOLLAR, '$', startLine, startCol);
+            if (dollars === 1) {
+                return new Token(TokenType.DOLLAR, '$', startLine, startCol);
+            }
+            let name = '$'.repeat(dollars);
+            // A local label may follow ($$.loop); a bare '.' may not.
+            if (this.peek() === '.' && IDENT_PART().test(this.peek(1))) {
+                name += this.advance();
+            }
+            while (this.pos < this.source.length) {
+                const c = this.peek();
+                if (IDENT_PART().test(c) || c === '@') { name += this.advance(); continue; }
+                // MODULE.label / STRUCT.field, but only when a name really follows
+                if (c === '.' && IDENT_PART().test(this.peek(1))) { name += this.advance(); continue; }
+                break;
+            }
+            return new Token(TokenType.IDENTIFIER, name, startLine, startCol);
         }
 
         // # can be hex prefix or stringification

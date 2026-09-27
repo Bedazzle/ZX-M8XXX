@@ -1,5 +1,6 @@
 // watches.js — Memory Watches (extracted from index.html)
-import { hex8, hex16, storageGet, storageSet } from '../core/utils.js';
+import { hex8, storageGet, storageSet } from '../core/utils.js';
+import { fmtAddr, fmtByte, parseAddr, specToHex, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddressSpec, getLabel, showMessage }) {
     // DOM lookups
@@ -82,7 +83,7 @@ export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddres
             const addrSpan = document.createElement('span');
             addrSpan.className = 'watch-addr';
             const pagePrefix = watch.page !== null ? `${watch.page}:` : '';
-            addrSpan.textContent = pagePrefix + hex16(watch.addr);
+            addrSpan.textContent = pagePrefix + fmtAddr(watch.addr);
 
             // Name/label display
             const nameSpan = document.createElement('span');
@@ -146,7 +147,7 @@ export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddres
                 const byte = readWatchByte(watch, i);
                 currentBytes[i] = byte;
                 const changed = watch.prevBytes[i] !== byte;
-                const hexVal = hex8(byte);
+                const hexVal = fmtByte(byte);
                 if (changed) {
                     bytesHtml += `<span class="changed">${hexVal}</span> `;
                 } else {
@@ -177,13 +178,15 @@ export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddres
             }
 
             let addr, page = null;
-            const parsed = parseAddressSpec(addrStr);
+            const hexSpec = specToHex(addrStr);
+            const parsed = hexSpec === null ? null : parseAddressSpec(hexSpec);
             if (parsed) {
                 addr = parsed.start;
                 page = parsed.page;
             } else {
                 // Fallback: try simple hex parse
-                addr = parseInt(addrStr, 16);
+                addr = parseAddr(addrStr);
+                if (addr === null) addr = NaN;
                 if (isNaN(addr) || addr < 0 || addr > 0xFFFF) {
                     showMessage('Invalid address', 'error');
                     watchAddrInput.focus();
@@ -204,7 +207,7 @@ export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddres
             watchAddrInput.value = '';
             watchNameInput.value = '';
             const pageStr = page !== null ? `${page}:` : '';
-            showMessage(`Watch added: ${pageStr}${hex16(addr)}${name ? ' (' + name + ')' : ''}`);
+            showMessage(`Watch added: ${pageStr}${fmtAddr(addr)}${name ? ' (' + name + ')' : ''}`);
         });
     } else {
         console.error('btnWatchAdd not found');
@@ -258,6 +261,9 @@ export function initWatches({ readMemory, getMemoryInfo, getRamBank, parseAddres
     // Load watches on startup
     loadWatches();
     renderWatches();
+
+    // Hex or decimal: each row shows its address.
+    onNumberBaseChange(() => renderWatches());
 
     return { updateWatchValues, renderWatches, saveWatches, setWatches, getWatchBytesCount, getWatches, addWatch };
 }

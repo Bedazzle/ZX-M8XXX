@@ -1,6 +1,6 @@
 // Stack view & call stack display — value highlighting, context menus, navigation
 
-import { hex16 } from '../core/utils.js';
+import { fmtAddr } from '../core/addr-format.js';
 
 export function initStackView({
     getSpectrum, labelManager, traceManager, getCurrentPage,
@@ -49,8 +49,8 @@ export function initStackView({
             const pointer = isCurrent ? '<span class="stack-pointer">◄</span>' : '';
 
             html += `<div class="${classes}" data-addr="${addr}" data-value="${value}">` +
-                    `<span class="stack-addr">${hex16(addr)}</span>` +
-                    `<span class="stack-value">${hex16(value)}</span>` +
+                    `<span class="stack-addr">${fmtAddr(addr)}</span>` +
+                    `<span class="stack-value">${fmtAddr(value)}</span>` +
                     `${pointer}</div>`;
 
             previousStackValues[valueKey] = value;
@@ -85,7 +85,7 @@ export function initStackView({
             const intMark = entry.isInt ? ' <span class="call-label">INT</span>' : '';
             const cls = i === stack.length - 1 ? 'stack-entry current' : 'stack-entry';
             html += `<div class="${cls}" data-value="${addr}">` +
-                    `<span class="stack-value">${hex16(addr)}</span>${intMark}${labelStr}</div>`;
+                    `<span class="stack-value">${fmtAddr(addr)}</span>${intMark}${labelStr}</div>`;
         }
 
         if (!html) {
@@ -117,10 +117,10 @@ export function initStackView({
         stackContextMenu = document.createElement('div');
         stackContextMenu.className = 'stack-context-menu';
         stackContextMenu.innerHTML = `
-            <div data-action="disasm-left">Disasm left → ${hex16(value)}</div>
-            <div data-action="disasm-right">Disasm right → ${hex16(value)}</div>
-            <div data-action="memory-left">Memory left → ${hex16(value)}</div>
-            <div data-action="memory-right">Memory right → ${hex16(value)}</div>
+            <div data-action="disasm-left">Disasm left → ${fmtAddr(value)}</div>
+            <div data-action="disasm-right">Disasm right → ${fmtAddr(value)}</div>
+            <div data-action="memory-left">Memory left → ${fmtAddr(value)}</div>
+            <div data-action="memory-right">Memory right → ${fmtAddr(value)}</div>
         `;
         stackContextMenu.style.left = e.clientX + 'px';
         stackContextMenu.style.top = e.clientY + 'px';
@@ -171,10 +171,10 @@ export function initStackView({
         stackContextMenu = document.createElement('div');
         stackContextMenu.className = 'stack-context-menu';
         stackContextMenu.innerHTML = `
-            <div data-action="disasm-addr">Disassembly → ${hex16(addr)}</div>
-            <div data-action="disasm-value">Disassembly → ${hex16(value)}</div>
-            <div data-action="memory-addr">Memory → ${hex16(addr)}</div>
-            <div data-action="memory-value">Memory → ${hex16(value)}</div>
+            <div data-action="disasm-addr">Disassembly → ${fmtAddr(addr)}</div>
+            <div data-action="disasm-value">Disassembly → ${fmtAddr(value)}</div>
+            <div data-action="memory-addr">Memory → ${fmtAddr(addr)}</div>
+            <div data-action="memory-value">Memory → ${fmtAddr(value)}</div>
         `;
         stackContextMenu.style.left = e.clientX + 'px';
         stackContextMenu.style.top = e.clientY + 'px';

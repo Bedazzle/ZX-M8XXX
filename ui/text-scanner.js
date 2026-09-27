@@ -1,5 +1,6 @@
 // text-scanner.js — Text Scanner (extracted from index.html)
-import { hex16, escapeHtml } from '../core/utils.js';
+import { escapeHtml } from '../core/utils.js';
+import { fmtAddrCol } from '../core/addr-format.js';
 
 export function initTextScanner({ readMemory, getMemoryInfo, getRamBank, getRom, showMessage, goToMemoryAddress }) {
 
@@ -105,7 +106,7 @@ export function initTextScanner({ readMemory, getMemoryInfo, getRamBank, getRom,
             const termIcon = r.termType === 'bit7' ? '⁷' : r.termType === 'null' ? '∅' : '';
             const bankLabel = r.bank ? `<span class="bank">${r.bank}</span>` : '';
             html += `<div class="text-scan-result" data-addr="${r.addr}" data-bank="${r.bank || ''}" title="${r.termType}-terminated${r.bank ? ' (' + r.bank + ')' : ''}">
-                    <span class="addr">${hex16(r.addr)}</span>${bankLabel}
+                    <span class="addr">${fmtAddrCol(r.addr)}</span>${bankLabel}
                     <span class="len">${r.len}${termIcon}</span>
                     <span class="text">${textHtml}</span>
                 </div>`;

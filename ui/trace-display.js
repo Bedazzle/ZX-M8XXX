@@ -1,5 +1,6 @@
 // Trace Display & Controls — step trace UI, navigation, export
 import { hex8, hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrCol, fmtByte, fmtOpcode, fmtPort, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disassembler,
                                     getTraceViewAddress, setTraceViewAddress,
@@ -167,7 +168,7 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
                 const instr = entryDisasm.disassemble(entry.pc);
                 instrText = instr.mnemonic;
             } else {
-                instrText = entry.bytes.slice(0, 3).map(b => hex8(b)).join(' ');
+                instrText = entry.bytes.slice(0, 3).map(b => fmtOpcode(b)).join(' ');
             }
 
             const classes = ['trace-entry'];
@@ -178,7 +179,7 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
             let portsHtml = '';
             if (entry.ports && entry.ports.length > 0) {
                 const portStrs = entry.ports.map(p =>
-                    `${p.dir === 'in' ? 'IN' : 'OUT'}(${hex16(p.port)})=${hex8(p.val)}`
+                    `${p.dir === 'in' ? 'IN' : 'OUT'}(${fmtPort(p.port)})=${fmtByte(p.val)}`
                 );
                 portsHtml = `<span class="ports">${portStrs.join(' ')}</span>`;
             }
@@ -186,35 +187,35 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
             // Format memory operations if present
             let memHtml = '';
             if (entry.mem && entry.mem.length > 0) {
-                const memStrs = entry.mem.map(m => `[${hex16(m.addr)}]=${hex8(m.val)}`);
+                const memStrs = entry.mem.map(m => `[${fmtAddr(m.addr)}]=${fmtByte(m.val)}`);
                 const suffix = entry.mem.length >= 8 ? '...' : '';
                 memHtml = `<span class="memops">${memStrs.join(' ')}${suffix}</span>`;
             }
 
             // Build register string — only show registers that changed
             const regParts = [];
-            if (isFirst || !prev || entry.af !== prev.af) regParts.push(`AF=${hex16(entry.af)}`);
-            if (isFirst || !prev || entry.bc !== prev.bc) regParts.push(`BC=${hex16(entry.bc)}`);
-            if (isFirst || !prev || entry.de !== prev.de) regParts.push(`DE=${hex16(entry.de)}`);
-            if (isFirst || !prev || entry.hl !== prev.hl) regParts.push(`HL=${hex16(entry.hl)}`);
-            if (isFirst || !prev || entry.sp !== prev.sp) regParts.push(`SP=${hex16(entry.sp)}`);
-            if (isFirst || !prev || entry.ix !== prev.ix) regParts.push(`IX=${hex16(entry.ix)}`);
-            if (isFirst || !prev || entry.iy !== prev.iy) regParts.push(`IY=${hex16(entry.iy)}`);
+            if (isFirst || !prev || entry.af !== prev.af) regParts.push(`AF=${fmtAddr(entry.af)}`);
+            if (isFirst || !prev || entry.bc !== prev.bc) regParts.push(`BC=${fmtAddr(entry.bc)}`);
+            if (isFirst || !prev || entry.de !== prev.de) regParts.push(`DE=${fmtAddr(entry.de)}`);
+            if (isFirst || !prev || entry.hl !== prev.hl) regParts.push(`HL=${fmtAddr(entry.hl)}`);
+            if (isFirst || !prev || entry.sp !== prev.sp) regParts.push(`SP=${fmtAddr(entry.sp)}`);
+            if (isFirst || !prev || entry.ix !== prev.ix) regParts.push(`IX=${fmtAddr(entry.ix)}`);
+            if (isFirst || !prev || entry.iy !== prev.iy) regParts.push(`IY=${fmtAddr(entry.iy)}`);
             if (includeAlt) {
-                if (isFirst || !prev || entry.af_ !== prev.af_) regParts.push(`AF'=${hex16(entry.af_)}`);
-                if (isFirst || !prev || entry.bc_ !== prev.bc_) regParts.push(`BC'=${hex16(entry.bc_)}`);
-                if (isFirst || !prev || entry.de_ !== prev.de_) regParts.push(`DE'=${hex16(entry.de_)}`);
-                if (isFirst || !prev || entry.hl_ !== prev.hl_) regParts.push(`HL'=${hex16(entry.hl_)}`);
+                if (isFirst || !prev || entry.af_ !== prev.af_) regParts.push(`AF'=${fmtAddr(entry.af_)}`);
+                if (isFirst || !prev || entry.bc_ !== prev.bc_) regParts.push(`BC'=${fmtAddr(entry.bc_)}`);
+                if (isFirst || !prev || entry.de_ !== prev.de_) regParts.push(`DE'=${fmtAddr(entry.de_)}`);
+                if (isFirst || !prev || entry.hl_ !== prev.hl_) regParts.push(`HL'=${fmtAddr(entry.hl_)}`);
             }
             if (includeSys) {
-                if (isFirst || !prev || entry.i !== prev.i) regParts.push(`I=${hex8(entry.i)}`);
-                if (isFirst || !prev || entry.r !== prev.r) regParts.push(`R=${hex8(entry.r)}`);
+                if (isFirst || !prev || entry.i !== prev.i) regParts.push(`I=${fmtByte(entry.i)}`);
+                if (isFirst || !prev || entry.r !== prev.r) regParts.push(`R=${fmtByte(entry.r)}`);
                 if (isFirst || !prev || entry.im !== prev.im) regParts.push(`IM=${entry.im}`);
             }
             const regsHtml = regParts.length > 0 ? `<span class="regs">${regParts.join(' ')}</span>` : '';
 
             html += `<div class="${classes.join(' ')}" data-idx="${globalIdx}">` +
-                `<span class="addr">${hex16(entry.pc)}</span>` +
+                `<span class="addr">${fmtAddrCol(entry.pc)}</span>` +
                 `<span class="instr">${instrText}</span>` +
                 regsHtml + portsHtml + memHtml +
                 `</div>`;
@@ -252,7 +253,7 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
         updateDebugger();  // Update registers to show trace entry values
         // Navigate disasm to the traced PC
         goToAddress(entry.pc);
-        showMessage(`Viewing trace: ${hex16(entry.pc)}`);
+        showMessage(`Viewing trace: ${fmtAddr(entry.pc)}`);
     }
 
     chkTraceEnabled.addEventListener('change', () => {
@@ -464,6 +465,9 @@ export function initTraceDisplay({ traceManager, getSpectrum, getDisasm, Disasse
     });
 
     // Expose API
+    // Hex or decimal: every row carries a PC and a set of 16-bit registers.
+    onNumberBaseChange(() => updateTraceList());
+
     return {
         updateTraceList,
         updateTraceStatus,

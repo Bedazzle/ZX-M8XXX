@@ -8,10 +8,13 @@
 // get/set pairs and `ctx.explorerParsed = x` writes through to the Explorer.
 
 import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
+// A start address follows the switch. A BASIC file's LINE is not an address --
+// it is a line number, decimal in every base -- so it keeps parseInt(.., 10).
+import { fmtAddr, fmtAddrPair, parseAddr } from '../core/addr-format.js';
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames,
          bannerNamesToSpecscii, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
-import { shapeBasicEntry, isMonoloader, splitMonoloader } from './disk-file-copy.js';
+import { shapeBasicEntry, isMonoloader, splitMonoloader, setTrdBasicAutostart } from './disk-file-copy.js';
 
 export function initExplorerEditors(ctx) {
 
@@ -533,7 +536,7 @@ export function initExplorerEditors(ctx) {
             const typeName = trdTypeNames[file.ext] || file.ext;
             let addrText = '';
             if (file.ext === 'C') {
-                addrText = `${file.startAddress} ($${hex16(file.startAddress)})`;
+                addrText = fmtAddrPair(file.startAddress);
             } else if (file.ext === 'B') {
                 const autostart = ctx.trdGetBasicAutostart(file);
                 if (autostart >= 0) addrText = `LINE ${autostart}`;
@@ -556,7 +559,14 @@ export function initExplorerEditors(ctx) {
                     html += `<option value="${e}"${file.ext === e ? ' selected' : ''}>${e}</option>`;
                 }
                 html += '</select>';
-                html += `<input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
+                if (file.ext === 'B') {
+                    // A BASIC file has no start address; the box is its autostart LINE
+                    // (decimal in every base, empty = none).
+                    const line = ctx.trdGetBasicAutostart(file);
+                    html += `<input type="text" value="${line >= 0 ? line : ''}" data-field="line" maxlength="4" placeholder="LINE" title="Autostart line (empty = none)" class="editor-input editor-input-short">`;
+                } else {
+                    html += `<input type="text" value="${fmtAddr(file.startAddress)}" data-field="addr" maxlength="5" placeholder="Addr" class="editor-input editor-input-short">`;
+                }
                 html += `<button class="editor-apply-btn" data-action="disk-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -971,8 +981,24 @@ export function initExplorerEditors(ctx) {
         const nameInput = editRow.querySelector('[data-field="name"]');
         const extSelect = editRow.querySelector('[data-field="ext"]');
         const addrInput = editRow.querySelector('[data-field="addr"]');
+        const lineInput = editRow.querySelector('[data-field="line"]');
 
         const file = panel.diskFiles[idx];
+        // Refuse a bad LINE before changing anything, so Apply is all or nothing.
+        let line = null;
+        if (lineInput && lineInput.value.trim() !== '') {
+            const v = lineInput.value.trim();
+            line = /^\d{1,4}$/.test(v) ? parseInt(v, 10) : NaN;
+            if (isNaN(line)) {
+                panel.dom.statusSpan.textContent = 'LINE must be 0-9999, or empty for none';
+                return;
+            }
+        }
+        if (lineInput && file.ext === 'B') {
+            const free = ctx.TRD_TOTAL_SECTORS - diskEditorTotalSectors(panel);
+            const err = setTrdBasicAutostart(file, line, free);
+            if (err) { panel.dom.statusSpan.textContent = err; return; }
+        }
         if (nameInput) {
             file.name = (nameInput.value + '        ').substring(0, 8);
         }
@@ -982,7 +1008,7 @@ export function initExplorerEditors(ctx) {
         // For BASIC ('B') files bytes 9-10 hold the program+vars length,
         // not a start address — don't let the addr field clobber it
         if (addrInput && file.ext !== 'B') {
-            file.startAddress = parseInt(addrInput.value, 16) || 0;
+            file.startAddress = parseAddr(addrInput.value) || 0;
         }
 
         panel.expandedBlock = -1;
@@ -1072,7 +1098,7 @@ export function initExplorerEditors(ctx) {
             html += '<span class="editor-block-info">';
             let addrDetail = '<span class="file-addr"></span>';
             if (file.mgtType === 4 || file.mgtType === 7 || file.mgtType === 19 || file.mgtType === 20) {
-                addrDetail = `<span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
+                addrDetail = `<span class="file-addr">${fmtAddrPair(file.startAddress)}</span>`;
             } else if ((file.mgtType === 1 || file.mgtType === 16) && file.autostart != null && file.autostart < 0x8000) {
                 addrDetail = `<span class="file-addr">LINE ${file.autostart}</span>`;
             }
@@ -1095,7 +1121,7 @@ export function initExplorerEditors(ctx) {
                     html += `<option value="${k}"${file.mgtType === parseInt(k) ? ' selected' : ''}>${v}</option>`;
                 }
                 html += '</select>';
-                html += `<input type="text" value="${hex16(file.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
+                html += `<input type="text" value="${fmtAddr(file.startAddress)}" data-field="addr" maxlength="5" placeholder="Addr" class="editor-input editor-input-short">`;
                 html += `<button class="editor-apply-btn" data-action="mgt-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
             }
@@ -1204,7 +1230,7 @@ export function initExplorerEditors(ctx) {
             file.tapeType = tapeTypeMap[newType] !== undefined ? tapeTypeMap[newType] : 3;
         }
         if (addrInput) {
-            file.startAddress = parseInt(addrInput.value, 16) || 0;
+            file.startAddress = parseAddr(addrInput.value) || 0;
         }
 
         panel.expandedBlock = -1;
@@ -1299,7 +1325,7 @@ export function initExplorerEditors(ctx) {
             html += `<span class="file-name">${file.name.replace(/\s+$/, '')}</span>`;
             html += `<span class="file-flag"></span>`;
             html += `<span class="file-mgttype">${file.typeName}</span>`;
-            if (file.ext === 'C') html += `<span class="file-addr">${file.startAddress} ($${hex16(file.startAddress)})</span>`;
+            if (file.ext === 'C') html += `<span class="file-addr">${fmtAddrPair(file.startAddress)}</span>`;
             else if (file.ext === 'B' && file.autorunLine >= 0) html += `<span class="file-addr">LINE ${file.autorunLine}</span>`;
             else html += `<span class="file-addr"></span>`;
             html += `<span class="file-size">${file.dataLength}</span>`;
@@ -1541,7 +1567,7 @@ export function initExplorerEditors(ctx) {
             const trimName = f.name.replace(/\s+$/, '');
             let addrDetail = '<span class="file-addr"></span>';
             if (f.type === 3) {
-                addrDetail = `<span class="file-addr">${f.startAddr || 0} ($${hex16(f.startAddr || 0)})</span>`;
+                addrDetail = `<span class="file-addr">${fmtAddrPair(f.startAddr || 0)}</span>`;
             } else if (f.type === 0 && f.autostart != null && f.autostart < 0x8000) {
                 addrDetail = `<span class="file-addr">LINE ${f.autostart}</span>`;
             }
@@ -1566,7 +1592,7 @@ export function initExplorerEditors(ctx) {
                 html += `<input type="text" data-field="name" value="${escapeHtml(trimName)}" maxlength="10" placeholder="Name" class="editor-input">`;
                 html += `<select data-field="opdtype" class="editor-input">${typeOptions}</select>`;
                 if (f.type === 3) {
-                    html += `<input type="text" data-field="addr" value="${hex16(f.startAddr || 0)}" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
+                    html += `<input type="text" data-field="addr" value="${fmtAddr(f.startAddr || 0)}" maxlength="5" placeholder="Addr" class="editor-input editor-input-short">`;
                 }
                 html += `<button class="editor-apply-btn" data-action="opd-apply" data-idx="${i}">Apply</button>`;
                 html += '</div>';
@@ -1614,7 +1640,7 @@ export function initExplorerEditors(ctx) {
             file.ext = extMap[newType] || 'C';
         }
         if (addrInput) {
-            file.startAddr = parseInt(addrInput.value, 16) || 0;
+            file.startAddr = parseAddr(addrInput.value) || 0;
         }
 
         panel.expandedBlock = -1;
@@ -1715,7 +1741,7 @@ export function initExplorerEditors(ctx) {
             const selected = panel.selection.has(i);
             let addrDetail = '<span class="file-addr"></span>';
             if (f.type === 'B') {
-                addrDetail = `<span class="file-addr">${f.startAddr} ($${hex16(f.startAddr)})</span>`;
+                addrDetail = `<span class="file-addr">${fmtAddrPair(f.startAddr)}</span>`;
             } else if (f.type === 'P' && f.startAddr > 0 && f.startAddr < 0x8000) {
                 addrDetail = `<span class="file-addr">LINE ${f.startAddr}</span>`;
             }
@@ -1732,7 +1758,7 @@ export function initExplorerEditors(ctx) {
             if (panel.expandedBlock === i) {
                 const isBasic = f.type === 'P';
                 const addrLabel = isBasic ? 'LINE' : 'Addr';
-                const addrVal = isBasic ? String(f.startAddr) : hex16(f.startAddr || 0);
+                const addrVal = isBasic ? String(f.startAddr) : fmtAddr(f.startAddr || 0);
                 html += `<div class="editor-inline-edit" data-edit-idx="${i}">`;
                 html += `<input type="text" data-field="name" value="${escapeHtml(f.name)}" maxlength="10" placeholder="Name" class="editor-input">`;
                 html += `<input type="text" data-field="addr" value="${addrVal}" maxlength="5" placeholder="${addrLabel}" class="editor-input editor-input-short">`;
@@ -1867,7 +1893,8 @@ export function initExplorerEditors(ctx) {
         let bytes = panel.rawData;
         if (nameInput) bytes = DidaktikLoader.renameFile(bytes, f, nameInput.value);
         if (addrInput) {
-            const v = parseInt(addrInput.value, f.type === 'P' ? 10 : 16);
+            const v = f.type === 'P' ? parseInt(addrInput.value, 10)
+                                     : (parseAddr(addrInput.value) ?? NaN);
             if (!isNaN(v)) bytes = DidaktikLoader.setStartAddr(bytes, f.firstSec, v);
         }
         panel.rawData = bytes;
@@ -1974,7 +2001,7 @@ export function initExplorerEditors(ctx) {
             const typeName = file.headerSize ? (typeNames[file.plus3Type] || '?') : '';
             html += `<span class="file-plus3type">${typeName}</span>`;
             let dskAddrText = '';
-            if (file.plus3Type === 3 && file.loadAddress !== undefined) dskAddrText = `${file.loadAddress} ($${hex16(file.loadAddress)})`;
+            if (file.plus3Type === 3 && file.loadAddress !== undefined) dskAddrText = fmtAddrPair(file.loadAddress);
             else if (file.plus3Type === 0 && file.autostart !== undefined && file.autostart < 0x8000) dskAddrText = `LINE ${file.autostart}`;
             html += `<span class="file-addr">${dskAddrText}</span>`;
             html += `<span class="file-size">${file.size}</span>`;

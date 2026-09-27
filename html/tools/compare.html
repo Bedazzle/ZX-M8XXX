@@ -31,7 +31,7 @@
                         </select>
                         <select id="compareMemABank" class="cmp-bank" title="RAM bank number"></select>
                         <span class="cmp-at">at $</span>
-                        <input type="text" id="compareMemAAddr" class="cmp-addr" maxlength="4" value="0000" title="Start address (hex)">
+                        <input type="text" id="compareMemAAddr" data-hint-num="addr" class="cmp-addr" maxlength="5" value="0000" data-hint-base="addr" title="Start address ({BASE})">
                     </div>
                     <div class="settings-row cmp-mem-row">
                         <span class="settings-row-label">Region B:</span>
@@ -41,11 +41,11 @@
                         </select>
                         <select id="compareMemBBank" class="cmp-bank" title="RAM bank number"></select>
                         <span class="cmp-at">at $</span>
-                        <input type="text" id="compareMemBAddr" class="cmp-addr" maxlength="4" value="0000" title="Start address (hex)">
+                        <input type="text" id="compareMemBAddr" data-hint-num="addr" class="cmp-addr" maxlength="5" value="0000" data-hint-base="addr" title="Start address ({BASE})">
                     </div>
                     <div class="settings-row cmp-mem-row">
                         <span class="settings-row-label">Length:</span>
-                        <input type="text" id="compareMemLength" class="cmp-addr" maxlength="5" value="4000" title="Number of bytes (hex). Shortened if it would run past the end of the address space or of a bank">
+                        <input type="text" id="compareMemLength" data-hint-num="addr" class="cmp-addr" maxlength="5" value="4000" data-hint-base="addr" title="Number of bytes ({BASE}). Shortened if it would run past the end of the address space or of a bank">
                         <span id="compareMemHint" class="cmp-hint"></span>
                     </div>
                 </div>
@@ -65,7 +65,7 @@
                 <!-- Memory vs Binary address -->
                 <div id="compareMemBinOptions" style="display:none;align-items:center;gap:8px;font-size:12px">
                     <label style="color:var(--text-secondary)">Start address:</label>
-                    <input type="text" id="compareMemBinStart" maxlength="4" value="0000" style="width:42px;font-family:monospace;font-size:11px;text-transform:uppercase" title="Memory start address (hex) — binary file is compared against memory starting at this address">
+                    <input type="text" id="compareMemBinStart" data-hint-num="addr" maxlength="4" value="0000" style="width:42px;font-family:monospace;font-size:11px;text-transform:uppercase" data-hint-base="addr" title="Memory start address ({BASE}) — binary file is compared against memory starting at this address">
                 </div>
 
                 <!-- Compare Options -->

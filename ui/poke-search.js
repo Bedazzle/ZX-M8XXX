@@ -1,5 +1,6 @@
 // poke-search.js — POKE Search / Memory Scanner (extracted from index.html)
-import { hex8, hex16, escapeHtml } from '../core/utils.js';
+import { escapeHtml } from '../core/utils.js';
+import { fmtAddr, fmtAddrCol, fmtAddrSigil, fmtByte, parseAddr, parseByte, getValueBase } from '../core/addr-format.js';
 import { SLOT1_START } from '../core/constants.js';
 
 export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, showMessage, goToMemoryAddress, startWriteMonitor, stopWriteMonitor, startReadMonitor, stopReadMonitor, disassembleAt, goToAddress, startComparisonBreakpoint, stopComparisonBreakpoint, startRegisterTracker, stopRegisterTracker }) {
@@ -70,8 +71,8 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
         let html = addrs.map(addr => {
             const val = lastSnap ? lastSnap[addr] : 0;
             const hist = pokeValueHistory.get(addr);
-            const tip = hist ? hist.map(v => hex8(v)).join(' \u2192 ') : '';
-            return `<span class="poke-result" data-addr="${addr}" title="${tip}"><span class="addr">${hex16(addr)}</span><span class="val">${hex8(val)}</span></span>`;
+            const tip = hist ? hist.map(v => fmtByte(v)).join(' \u2192 ') : '';
+            return `<span class="poke-result" data-addr="${addr}" title="${tip}"><span class="addr">${fmtAddrCol(addr)}</span><span class="val">${fmtByte(val)}</span></span>`;
         }).join('');
         if (pokeCandidates.size > 100) {
             html += `<span class="poke-status">...and ${pokeCandidates.size - 100} more</span>`;
@@ -234,11 +235,12 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             showMessage('No candidates to filter', 'error');
             return;
         }
-        if (!/^[0-9A-Fa-f]{1,2}$/.test(valStr)) {
-            showMessage('Enter hex value (00-FF)', 'error');
+        const targetValue = parseByte(valStr);
+        if (targetValue === null) {
+            showMessage(getValueBase() === 'dec' ? 'Enter a value (0-255)'
+                                                 : 'Enter a hex value (00-FF)', 'error');
             return;
         }
-        const targetValue = parseInt(valStr, 16);
 
         // Save pre-filter state (only if not already filtered)
         if (!pokePreFilterCandidates) {
@@ -325,12 +327,11 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
 
     // ========== Write Monitor ==========
 
+    // The Settings switch decides how a bare number is read; $ 0x # and a trailing
+    // h still force hex. -1 keeps the callers' existing "not an address" test.
     function parseMonAddr(str) {
-        str = str.trim();
-        if (!str) return -1;
-        if (str.startsWith('$')) str = str.slice(1);
-        else if (str.startsWith('0x') || str.startsWith('0X')) str = str.slice(2);
-        return parseInt(str, 16);
+        const v = parseAddr(str);
+        return v === null ? -1 : v;
     }
 
     function analyzeWriteMonitorHits(hits) {
@@ -386,13 +387,13 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             // Unique value transitions (deduplicate)
             const transSet = new Set();
             for (const t of group.transitions) {
-                transSet.add(hex8(t.old) + '\u2192' + hex8(t.new));
+                transSet.add(fmtByte(t.old) + '\u2192' + fmtByte(t.new));
             }
             const transStr = [...transSet].join(', ');
 
             html += '<div class="write-mon-entry">';
             // Line 1: instruction + values + count
-            html += `<span class="wm-instr" data-addr="${group.pc}">$${hex16(group.pc)}: ${escapeHtml(instrText)}</span>`;
+            html += `<span class="wm-instr" data-addr="${group.pc}">${fmtAddrSigil(group.pc)}: ${escapeHtml(instrText)}</span>`;
             html += `<span class="wm-vals">[${transStr}]</span>`;
             if (group.hits.length > 1) {
                 html += `<span class="wm-count">\u00d7${group.hits.length}</span>`;
@@ -405,7 +406,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                     let chainHtml = '\u2190 ';
                     const callers = [...chain].reverse(); // innermost first already, reverse for outer-to-inner display
                     chainHtml += callers.map(e => {
-                        let label = `$${hex16(e.addr)}`;
+                        let label = `${fmtAddrSigil(e.addr)}`;
                         if (e.isInt) label += '(INT)';
                         return `<span class="wm-addr" data-addr="${e.addr}">${label}</span>`;
                     }).join(' \u2190 ');
@@ -428,7 +429,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                         if (callerInstr) callerLen = callerInstr.length || 3;
                     } catch (e) { /* ignore */ }
                     const callerMnemonic = callerInstr ? callerInstr.mnemonic : 'CALL ???';
-                    html += `<div class="wm-nop">\u25b8 NOP ${callerLen} bytes at <span class="wm-addr" data-addr="${innermost.caller}">$${hex16(innermost.caller)}</span> (${escapeHtml(callerMnemonic)})</div>`;
+                    html += `<div class="wm-nop">\u25b8 NOP ${callerLen} bytes at <span class="wm-addr" data-addr="${innermost.caller}">${fmtAddrSigil(innermost.caller)}</span> (${escapeHtml(callerMnemonic)})</div>`;
                 }
             }
 
@@ -459,7 +460,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             writeMonitoring = true;
             btnWriteMon.textContent = 'Stop';
             btnWriteMon.classList.add('active');
-            writeMonStatus.textContent = `(watching $${hex16(addr)})`;
+            writeMonStatus.textContent = `(watching ${fmtAddrSigil(addr)})`;
             writeMonResults.innerHTML = '';
         } else {
             // Stop monitoring
@@ -536,11 +537,11 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             } catch (e) { /* ignore */ }
 
             // Unique values read
-            const valsStr = [...group.values].map(v => hex8(v)).join(', ');
+            const valsStr = [...group.values].map(v => fmtByte(v)).join(', ');
 
             html += '<div class="write-mon-entry">';
             // Line 1: instruction + values + count
-            html += `<span class="wm-instr" data-addr="${group.pc}">$${hex16(group.pc)}: ${escapeHtml(instrText)}</span>`;
+            html += `<span class="wm-instr" data-addr="${group.pc}">${fmtAddrSigil(group.pc)}: ${escapeHtml(instrText)}</span>`;
             html += `<span class="wm-vals">[${valsStr}]</span>`;
             if (group.hits.length > 1) {
                 html += `<span class="wm-count">\u00d7${group.hits.length}</span>`;
@@ -553,7 +554,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                     const ctxInfo = disassembleAt(contextPC);
                     if (ctxInfo) {
                         const ctxText = ctxInfo.mnemonic || '???';
-                        html += `<div class="wm-chain" style="opacity:0.7">\u25b8 <span class="wm-addr" data-addr="${contextPC}">$${hex16(contextPC)}</span>: ${escapeHtml(ctxText)}</div>`;
+                        html += `<div class="wm-chain" style="opacity:0.7">\u25b8 <span class="wm-addr" data-addr="${contextPC}">${fmtAddrSigil(contextPC)}</span>: ${escapeHtml(ctxText)}</div>`;
                         contextPC += ctxInfo.length || 1;
                     } else {
                         break;
@@ -568,7 +569,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                     let chainHtml = '\u2190 ';
                     const callers = [...chain].reverse();
                     chainHtml += callers.map(e => {
-                        let label = `$${hex16(e.addr)}`;
+                        let label = `${fmtAddrSigil(e.addr)}`;
                         if (e.isInt) label += '(INT)';
                         return `<span class="wm-addr" data-addr="${e.addr}">${label}</span>`;
                     }).join(' \u2190 ');
@@ -603,7 +604,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             readMonitoring = true;
             btnReadMon.textContent = 'Stop';
             btnReadMon.classList.add('active');
-            readMonStatus.textContent = `(watching $${hex16(addr)})`;
+            readMonStatus.textContent = `(watching ${fmtAddrSigil(addr)})`;
             readMonResults.innerHTML = '';
         } else {
             // Stop monitoring
@@ -739,7 +740,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                 cmpBreakActive = true;
                 btnCmpBreak.textContent = 'Stop';
                 btnCmpBreak.classList.add('active');
-                cmpBreakStatus.textContent = `($${hex16(addrA)} ${op} $${hex16(addrB)})`;
+                cmpBreakStatus.textContent = `(${fmtAddrSigil(addrA)} ${op} ${fmtAddrSigil(addrB)})`;
             } else {
                 stopComparisonBreakpoint();
                 cmpBreakActive = false;
@@ -785,7 +786,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                 rtTracking = true;
                 btnRtTrack.textContent = 'Stop';
                 btnRtTrack.classList.add('active');
-                rtStatus.textContent = `(tracking ${reg} at $${hex16(pc)})`;
+                rtStatus.textContent = `(tracking ${reg} at ${fmtAddrSigil(pc)})`;
                 rtResults.innerHTML = '';
             } else {
                 const values = stopRegisterTracker();
@@ -820,14 +821,14 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
         const min = Math.min(...allVals);
         const max = Math.max(...allVals);
         const mode = sorted[0][0];
-        rtStatus.textContent = `(${values.length} samples, ${dist.size} unique, range: ${isWide ? hex16(min) : hex8(min)}-${isWide ? hex16(max) : hex8(max)}, mode: ${isWide ? hex16(mode) : hex8(mode)})`;
+        rtStatus.textContent = `(${values.length} samples, ${dist.size} unique, range: ${isWide ? fmtAddr(min) : fmtByte(min)}-${isWide ? fmtAddr(max) : fmtByte(max)}, mode: ${isWide ? fmtAddr(mode) : fmtByte(mode)})`;
 
         // Histogram
         let html = '';
         const top = sorted.slice(0, 32);
         for (const [val, count] of top) {
             const pct = (count / maxCount * 100).toFixed(0);
-            const valStr = isWide ? hex16(val) : hex8(val);
+            const valStr = isWide ? fmtAddr(val) : fmtByte(val);
             html += `<div style="display:flex;align-items:center;gap:4px;padding:1px 2px">`;
             html += `<span style="width:${isWide ? 36 : 20}px;text-align:right;color:var(--cyan)">${valStr}</span>`;
             html += `<span style="flex:1;height:10px;background:var(--bg-tertiary);position:relative"><span style="position:absolute;left:0;top:0;bottom:0;width:${pct}%;background:var(--cyan)"></span></span>`;
@@ -878,11 +879,11 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
             } catch (e) { /* ignore */ }
 
             // Unique values read
-            const valsStr = [...group.values].map(v => hex8(v)).join(', ');
+            const valsStr = [...group.values].map(v => fmtByte(v)).join(', ');
 
             html += '<div class="write-mon-entry">';
             // Line 1: instruction + values + count
-            html += `<span class="wm-instr" data-addr="${group.pc}">$${hex16(group.pc)}: ${escapeHtml(instrText)}</span>`;
+            html += `<span class="wm-instr" data-addr="${group.pc}">${fmtAddrSigil(group.pc)}: ${escapeHtml(instrText)}</span>`;
             html += `<span class="wm-vals">[${valsStr}]</span>`;
             if (group.hits.length > 1) {
                 html += `<span class="wm-count">\u00d7${group.hits.length}</span>`;
@@ -897,7 +898,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                     if (ctxInfo) {
                         const ctxText = ctxInfo.mnemonic || '???';
                         contextInstrs.push({ addr: contextPC, mnemonic: ctxText, length: ctxInfo.length });
-                        html += `<div class="wm-chain" style="opacity:0.7">\u25b8 <span class="wm-addr" data-addr="${contextPC}">$${hex16(contextPC)}</span>: ${escapeHtml(ctxText)}</div>`;
+                        html += `<div class="wm-chain" style="opacity:0.7">\u25b8 <span class="wm-addr" data-addr="${contextPC}">${fmtAddrSigil(contextPC)}</span>: ${escapeHtml(ctxText)}</div>`;
                         contextPC += ctxInfo.length || 1;
                     } else {
                         break;
@@ -911,7 +912,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                 for (const reg of regs) {
                     const source = findRegisterSource(ctx.addr, reg);
                     if (source) {
-                        html += `<div class="wm-chain" style="color:var(--cyan);opacity:0.8">\u25c2 ${reg} from <span class="wm-addr" data-addr="${source.addr}">$${hex16(source.addr)}</span>: ${escapeHtml(source.mnemonic)}</div>`;
+                        html += `<div class="wm-chain" style="color:var(--cyan);opacity:0.8">\u25c2 ${reg} from <span class="wm-addr" data-addr="${source.addr}">${fmtAddrSigil(source.addr)}</span>: ${escapeHtml(source.mnemonic)}</div>`;
                     }
                 }
             }
@@ -923,7 +924,7 @@ export function initPokeSearch({ readMemory, startWriteTrace, stopWriteTrace, sh
                     let chainHtml = '\u2190 ';
                     const callers = [...chain].reverse();
                     chainHtml += callers.map(e => {
-                        let label = `$${hex16(e.addr)}`;
+                        let label = `${fmtAddrSigil(e.addr)}`;
                         if (e.isInt) label += '(INT)';
                         return `<span class="wm-addr" data-addr="${e.addr}">${label}</span>`;
                     }).join(' \u2190 ');

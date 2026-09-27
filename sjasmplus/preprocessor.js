@@ -35,7 +35,7 @@ export const Preprocessor = {
         let active = false;
         
         if (parentActive) {
-            const val = parseExpression(expr, symbols, 0, 0);
+            const val = parseExpression(expr, symbols, 0);
             // Treat undefined as 0 (matches sjasmplus behavior)
             // This allows conditional assembly to converge properly
             active = val.value !== 0;
@@ -108,7 +108,7 @@ export const Preprocessor = {
             this.ifStack.slice(0, -1).every(f => f.active);
         
         if (parentActive && !frame.wasActive) {
-            const val = parseExpression(expr, symbols, 0, 0);
+            const val = parseExpression(expr, symbols, 0);
             // Treat undefined as 0 (matches sjasmplus behavior)
             frame.active = val.value !== 0;
             if (frame.active) frame.wasActive = true;

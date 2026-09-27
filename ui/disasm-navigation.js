@@ -1,6 +1,7 @@
 // Disasm navigation — address controls, scroll, click handlers, export dialog
 
 import { hex16 } from '../core/utils.js';
+import { fmtAddr, parseAddr, onNumberBaseChange } from '../core/addr-format.js';
 
 export function initDisasmNavigation({
     getSpectrum, getDisasm, downloadFile,
@@ -60,7 +61,7 @@ export function initDisasmNavigation({
 
     disasmAddressInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            const addr = parseInt(disasmAddressInput.value, 16);
+            const addr = parseAddr(disasmAddressInput.value);
             if (!isNaN(addr)) goToDisasmAddr(addr);
         }
     });
@@ -117,6 +118,9 @@ export function initDisasmNavigation({
     document.getElementById('chkShowPCCursor')?.addEventListener('change', () => updateDebugger());
     document.getElementById('chkAsmComments')?.addEventListener('change', () => updateDebugger());
     document.getElementById('chkUserComments')?.addEventListener('change', () => updateDebugger());
+    // Hex <-> decimal addresses: the switch lives in Settings, both disassembly
+    // views redraw from here.
+    onNumberBaseChange(() => { updateDebugger(); updateRightDisassemblyView?.(); });
 
     // ---- Export visible ----
 
@@ -228,7 +232,7 @@ export function initDisasmNavigation({
                 viewAddr = (viewAddr + scrollLines * 2) & 0xffff;
             }
             setDisasmViewAddress(viewAddr);
-            disasmAddressInput.value = hex16(viewAddr);
+            disasmAddressInput.value = fmtAddr(viewAddr);
             updateDebugger();
         }
     }, { passive: false });
@@ -546,7 +550,7 @@ export function initDisasmNavigation({
 
     rightDisasmAddressInput?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            const addr = parseInt(rightDisasmAddressInput.value, 16);
+            const addr = parseAddr(rightDisasmAddressInput.value);
             if (!isNaN(addr)) goToRightDisasmAddress(addr);
         }
     });

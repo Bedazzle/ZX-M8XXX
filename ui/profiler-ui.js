@@ -2,6 +2,7 @@
 
 import { REGION_TYPES } from '../debug/managers.js';
 import { hex16 } from '../core/utils.js';
+import { fmtAddr, fmtAddrSigil } from '../core/addr-format.js';
 import {
     generateProfilerLabels as analysisLabels,
     analyzeHotspots as analysisHotspots,
@@ -61,9 +62,9 @@ export function initProfilerUI({
             const row = document.createElement('div');
             row.style.cssText = 'cursor:pointer;padding:1px 4px;font-family:monospace';
             row.className = 'hover-highlight';
-            const addrHex = hex16(hs.startAddr);
+            const addrStr = fmtAddrSigil(hs.startAddr);
             const size = hs.endAddr - hs.startAddr + 1;
-            row.textContent = `${hs.percentage.padStart(5)}%  $${addrHex}  ${hs.classification}  (${size}B)`;
+            row.textContent = `${hs.percentage.padStart(5)}%  ${addrStr}  ${hs.classification}  (${size}B)`;
             row.addEventListener('click', () => goToAddress(hs.startAddr));
             container.appendChild(row);
         }
@@ -170,7 +171,7 @@ export function initProfilerUI({
             row.style.cssText = 'cursor:pointer;padding:1px 4px;font-family:monospace;font-size:11px';
             row.className = 'hover-highlight';
             const addrSpan = document.createElement('span');
-            addrSpan.textContent = `$${hex16(sub.addr)} `;
+            addrSpan.textContent = `${fmtAddrSigil(sub.addr)} `;
             addrSpan.style.color = 'var(--cyan)';
             row.appendChild(addrSpan);
             const nameSpan = document.createElement('span');

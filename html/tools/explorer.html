@@ -69,7 +69,8 @@
                             <span class="explorer-label">Source:</span>
                             <select id="explorerDisasmSource" class="explorer-select"></select>
                             <span class="explorer-label">Address:</span>
-                            <input type="text" id="explorerDisasmAddr" value="0000" maxlength="4" class="explorer-input addr">
+                            <input type="text" id="explorerDisasmAddr" value="0000" maxlength="5" class="explorer-input addr"
+                                   data-hint-base="addr" data-hint-num="addr" title="Address ({BASE}), e.g. {$8000}">
                             <span class="explorer-label">Length:</span>
                             <input type="number" id="explorerDisasmLen" value="256" min="1" max="65536" class="explorer-input len">
                             <button id="btnExplorerDisasm" class="explorer-btn">Disassemble</button>
@@ -85,7 +86,8 @@
                             <span class="explorer-label">Source:</span>
                             <select id="explorerHexSource" class="explorer-select"></select>
                             <span class="explorer-label">Address:</span>
-                            <input type="text" id="explorerHexAddr" value="0000" maxlength="4" class="explorer-input addr">
+                            <input type="text" id="explorerHexAddr" value="0000" maxlength="5" class="explorer-input addr"
+                                   data-hint-base="addr" data-hint-num="addr" title="Address or offset ({BASE}), e.g. {$8000}">
                             <span class="explorer-label">Length:</span>
                             <input type="number" id="explorerHexLen" value="256" min="16" max="65536" class="explorer-input len">
                             <button id="btnExplorerHex" class="explorer-btn">View</button>
@@ -270,7 +272,8 @@
                     </div>
                     <div id="tapAddAddrRow" style="margin-bottom:8px">
                         <label style="color:var(--text-secondary);font-size:11px">Start address:</label>
-                        <input type="text" id="tapAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                        <input type="text" id="tapAddAddr" value="8000" maxlength="5" style="width:60px;font-size:12px;margin-left:4px"
+                               data-hint-base="addr" data-hint-num="addr" placeholder="{BASE}">
                     </div>
                     <div id="tapAddAutoRow" style="margin-bottom:8px;display:none">
                         <label style="color:var(--text-secondary);font-size:11px">Autostart line:</label>
@@ -282,7 +285,8 @@
                     </div>
                     <div id="tapAddFlagRow" style="margin-bottom:8px;display:none">
                         <label style="color:var(--text-secondary);font-size:11px">Flag byte:</label>
-                        <input type="text" id="tapAddFlag" value="FF" maxlength="2" style="width:32px;font-size:12px;margin-left:4px" placeholder="hex">
+                        <input type="text" id="tapAddFlag" value="FF" maxlength="3" style="width:32px;font-size:12px;margin-left:4px"
+                               data-hint-base="value" data-hint-num="value" placeholder="{BASE}">
                     </div>
                     <div id="tapAddPauseRow" style="margin-bottom:8px;display:none">
                         <label style="color:var(--text-secondary);font-size:11px">Pause (ms):</label>
@@ -366,7 +370,8 @@
                     </div>
                     <div style="margin-bottom:8px">
                         <label style="color:var(--text-secondary);font-size:11px">Start address:</label>
-                        <input type="text" id="diskAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                        <input type="text" id="diskAddAddr" value="8000" maxlength="5" style="width:60px;font-size:12px;margin-left:4px"
+                               data-hint-base="addr" data-hint-num="addr" placeholder="{BASE}">
                     </div>
                     <div style="margin-bottom:8px">
                         <span id="diskAddFileInfo" class="explorer-file-size"></span>
@@ -400,7 +405,8 @@
                     </div>
                     <div id="dskAddAddrRow" style="margin-bottom:8px">
                         <label style="color:var(--text-secondary);font-size:11px">Load address:</label>
-                        <input type="text" id="dskAddAddr" value="8000" maxlength="4" style="width:60px;font-size:12px;margin-left:4px" placeholder="hex">
+                        <input type="text" id="dskAddAddr" value="8000" maxlength="5" style="width:60px;font-size:12px;margin-left:4px"
+                               data-hint-base="addr" data-hint-num="addr" placeholder="{BASE}">
                     </div>
                     <div id="dskAddAutoRow" style="margin-bottom:8px;display:none">
                         <label style="color:var(--text-secondary);font-size:11px">Autostart line:</label>

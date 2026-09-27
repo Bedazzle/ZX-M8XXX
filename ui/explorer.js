@@ -1,5 +1,11 @@
 // explorer.js — File analysis tool (extracted from index.html)
 import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
+// Addresses and offsets follow the address switch, bytes the value one. hex16
+// stays where a number is written OUT -- an export filename must not change
+// shape because of a display setting.
+import {
+    fmtAddr, fmtAddrPair, fmtByte, parseAddr, parseByte, onNumberBaseChange
+} from '../core/addr-format.js';
 import { isFlowBreak } from './mnemonic-format.js';
 import {
     SLOT1_START,
@@ -1912,13 +1918,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // Helper to render register table
     function explorerRenderRegsTable(r) {
         return `<table class="explorer-info-table">
-            <tr><th>PC</th><td>${hex16(r.PC)}</td><th>SP</th><td>${hex16(r.SP)}</td></tr>
-            <tr><th>AF</th><td>${hex16(r.AF)}</td><th>AF'</th><td>${hex16(r.AFa)}</td></tr>
-            <tr><th>BC</th><td>${hex16(r.BC)}</td><th>BC'</th><td>${hex16(r.BCa)}</td></tr>
-            <tr><th>DE</th><td>${hex16(r.DE)}</td><th>DE'</th><td>${hex16(r.DEa)}</td></tr>
-            <tr><th>HL</th><td>${hex16(r.HL)}</td><th>HL'</th><td>${hex16(r.HLa)}</td></tr>
-            <tr><th>IX</th><td>${hex16(r.IX)}</td><th>IY</th><td>${hex16(r.IY)}</td></tr>
-            <tr><th>I</th><td>${hex8(r.I)}</td><th>R</th><td>${hex8(r.R)}</td></tr>
+            <tr><th>PC</th><td>${fmtAddr(r.PC)}</td><th>SP</th><td>${fmtAddr(r.SP)}</td></tr>
+            <tr><th>AF</th><td>${fmtAddr(r.AF)}</td><th>AF'</th><td>${fmtAddr(r.AFa)}</td></tr>
+            <tr><th>BC</th><td>${fmtAddr(r.BC)}</td><th>BC'</th><td>${fmtAddr(r.BCa)}</td></tr>
+            <tr><th>DE</th><td>${fmtAddr(r.DE)}</td><th>DE'</th><td>${fmtAddr(r.DEa)}</td></tr>
+            <tr><th>HL</th><td>${fmtAddr(r.HL)}</td><th>HL'</th><td>${fmtAddr(r.HLa)}</td></tr>
+            <tr><th>IX</th><td>${fmtAddr(r.IX)}</td><th>IY</th><td>${fmtAddr(r.IY)}</td></tr>
+            <tr><th>I</th><td>${fmtByte(r.I)}</td><th>R</th><td>${fmtByte(r.R)}</td></tr>
             <tr><th>IM</th><td>${r.IM}</td><th>IFF2</th><td>${r.IFF2}</td></tr>
             <tr><th>Border</th><td>${r.border}</td><th></th><td></td></tr>
         </table>`;
@@ -3121,7 +3127,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 `<span class="file-name">${e.name}</span>` +
                 `<span class="file-flag"></span>` +
                 `<span class="file-ext">${typeLabel}</span>` +
-                `<span class="file-addr">${e.addr} ($${hex16(e.addr)})</span>` +
+                `<span class="file-addr">${fmtAddrPair(e.addr)}</span>` +
                 `<span class="file-size">${e.length}</span>` +
                 `</span></div>`;
         }
@@ -3562,7 +3568,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (block.headerType === 0) {
             h += `<input type="number" value="${block.autostart !== null ? block.autostart : ''}" data-field="autostart" min="0" max="9999" placeholder="off" title="BASIC autostart line — leave blank for no auto-run" class="editor-input editor-input-short">`;
         } else if (block.headerType === 3) {
-            h += `<input type="text" value="${hex16(block.startAddress)}" data-field="addr" maxlength="4" placeholder="Addr" class="editor-input editor-input-short">`;
+            h += `<input type="text" value="${fmtAddr(block.startAddress)}" data-field="addr" maxlength="5" placeholder="Addr" class="editor-input editor-input-short">`;
         }
         h += `<button class="editor-apply-btn" data-action="apply" data-idx="${i}">Apply</button>`;
         h += '</div>';
@@ -3695,7 +3701,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
         editorRenderLabelBar(panel);
         let html = editorColHeaderHtml();
-        const tapeFlag = (b) => (b && b.data && b.data.length) ? `$${hex8(b.data[0])}` : '';
+        const tapeFlag = (b) => (b && b.data && b.data.length) ? fmtByte(b.data[0]) : '';
         let rowNum = 0;
         for (let i = 0; i < panel.blocks.length; i++) {
             const block = panel.blocks[i];
@@ -3714,7 +3720,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // name/address; the load address lives in the game's own loader).
             if (isRawTurbo) {
                 const hdr = block.tzxId === 0x11 ? 18 : 10;
-                const tflag = block.rawBytes.length > hdr ? `$${hex8(block.rawBytes[hdr])}` : '';
+                const tflag = block.rawBytes.length > hdr ? fmtByte(block.rawBytes[hdr]) : '';
                 const kind = block.tzxId === 0x11 ? 'Turbo' : 'Pure data';
                 let rc = 'editor-block-row data-row';
                 if (block.deleted) rc += ' disk-deleted';
@@ -3730,7 +3736,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (editorPairLock.checked && isHeader && editorIsPairHeader(panel, i)) {
                 const isPairSel = isSel || panel.selection.has(i + 1);
                 let addrText = '';
-                if (block.headerType === 3) addrText = `${block.startAddress} ($${hex16(block.startAddress)})`;
+                if (block.headerType === 3) addrText = fmtAddrPair(block.startAddress);
                 else if (block.headerType === 0 && block.autostart !== null) addrText = `LINE ${block.autostart}`;
                 const pairDeleted = block.deleted || (panel.blocks[i + 1] && panel.blocks[i + 1].deleted);
                 html += `<div class="editor-block-row disk-row${pairDeleted ? ' disk-deleted' : ''}${isPairSel ? ' selected' : ''}" data-block-idx="${i}">`;
@@ -3751,7 +3757,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             if (isHeader) {
                 // Lone header (no matching data) \u2014 columnar like a pair so sizes stay aligned
                 let hAddr = '';
-                if (block.headerType === 3) hAddr = `${block.startAddress} ($${hex16(block.startAddress)})`;
+                if (block.headerType === 3) hAddr = fmtAddrPair(block.startAddress);
                 else if (block.headerType === 0 && block.autostart !== null) hAddr = `LINE ${block.autostart}`;
                 const hTurbo = editorBlockIsTurbo(block) ? ' <span class="dim" title="Turbo timing ($11)">\u26a1</span>' : '';
                 html += `<span class="dim">${++rowNum}:</span><span class="file-name">${block.name.replace(/\s+$/, '')}</span><span class="file-flag">${tapeFlag(block)}</span><span class="file-ext">${editorTapeTypeLabel(block.headerType)}${hTurbo}</span><span class="file-addr">${hAddr}</span><span class="file-size">${block.data ? block.data.length - 2 : 17}</span>`;
@@ -5157,7 +5163,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 param2 = panel.blocks[idx].dataLength;
             } else if (newType === 3) {
                 const addrInput = editRow.querySelector('[data-field="addr"]');
-                param1 = addrInput ? parseInt(addrInput.value, 16) || 0 : 0;
+                param1 = addrInput ? parseAddr(addrInput.value) || 0 : 0;
             }
             editorUpdateHeaderBlock(panel, idx, newName, newType, param1, param2);
             if (panel.fileType === 'tzx') {
@@ -5444,7 +5450,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     ? hobetaFile.name.replace(/\s+$/, '').substring(0, 8)
                     : file.name.replace(/\.[^.]+$/, '').substring(0, 8);
                 diskAddName.value = baseName;
-                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
                     (hobetaFile ? ' [Hobeta]' : '') +
@@ -5460,7 +5466,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const sectors = Math.ceil(fileData.length / 512);
                 diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
-                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
                     hobTag + (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
@@ -5494,7 +5500,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const sectors = Math.ceil(fileData.length / OPDLoader.BYTES_PER_SECTOR);
                 diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
-                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''})` +
                     hobTag + (tooLarge ? ` \u2014 max ${maxSize.toLocaleString()}` : '');
@@ -5510,7 +5516,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 const sectors = Math.ceil(fileData.length / DidaktikLoader.SECTOR_SIZE);
                 diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
-                diskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                diskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 diskAddExt.value = hobetaFile ? hobetaFile.ext : 'C';
                 diskAddFileInfo.textContent = `${fileData.length.toLocaleString()} bytes (${sectors} sector${sectors !== 1 ? 's' : ''}, ${free} free)` +
                     hobTag + (tooLarge ? ` — disk full` : '');
@@ -5527,7 +5533,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 dskAddName.value = baseName;
                 dskAddExt.value = ext;
                 dskAddType.value = dmap ? dmap[0] : '3';
-                dskAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                dskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 dskAddAuto.value = '';
                 dskAddAddrRow.style.display = '';
                 dskAddAutoRow.style.display = 'none';
@@ -5559,7 +5565,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 tapAddFlagRow.style.display = 'none';
                 tapAddPauseRow.style.display = panel.fileType === 'tzx' ? '' : 'none';
                 tapAddPause.value = '1000';
-                tapAddAddr.value = hobetaFile ? hex16(hobetaFile.startAddress) : '8000';
+                tapAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
                 tapAddAuto.value = '';
                 tapAddVar.value = 'A';
                 tapAddFlag.value = 'FF';
@@ -5711,11 +5717,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const type = parseInt(tapAddType.value);
         const pause = panel.fileType === 'tzx' ? (parseInt(tapAddPause.value) || 1000) : undefined;
         if (type === -1) {
-            const flag = parseInt(tapAddFlag.value, 16) || 0xFF;
+            const flag = parseByte(tapAddFlag.value) ?? 0xFF;
             editorAddHeaderlessBlock(panel, panel.pendingFileData, flag & 0xFF, pause);
         } else {
             const name = tapAddName.value || 'untitled';
-            const startAddr = parseInt(tapAddAddr.value, 16) || 0;
+            const startAddr = parseAddr(tapAddAddr.value) || 0;
             const autostart = tapAddAuto.value;
             const varLetter = tapAddVar.value;
             // For a BASIC Hobeta the variables offset (program length) was stashed on
@@ -5739,7 +5745,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         if (!panel.pendingFileData) return;
         const name = diskAddName.value || 'untitled';
         const ext = diskAddExt.value || 'C';
-        const addr = parseInt(diskAddAddr.value, 16) || 0;
+        const addr = parseAddr(diskAddAddr.value) || 0;
 
         if (panel.fileType === 'mgt') {
             // Map ext to MGT type: B→1(BASIC), C→4(CODE), D→2(Num Array)
@@ -5837,7 +5843,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const name = dskAddName.value || 'untitled';
         const ext = dskAddExt.value || '';
         const type = parseInt(dskAddType.value);
-        const addr = parseInt(dskAddAddr.value, 16) || 0;
+        const addr = parseAddr(dskAddAddr.value) || 0;
         const autostart = dskAddAuto.value;
         const err = dskEditorAddFile(panel, panel.pendingFileData, name, ext, type, addr, autostart);
         if (err) {
@@ -6047,6 +6053,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerRenderFileInfo();
         document.querySelector('.explorer-subtab[data-subtab="info"]').click();
     }
+
+    // The info panel is rendered text like the other views, so it goes stale when
+    // the switch is thrown. Redrawn in place -- autoSwitchTab false, or changing a
+    // setting would yank the user onto the Info tab.
+    onNumberBaseChange(() => {
+        if (explorerParsed) explorerRenderFileInfo(false);
+    });
 
     return { loadData };
 

@@ -1,5 +1,6 @@
 // memory-search.js — Memory Search for right and left panels (extracted from index.html)
-import { hex8, hex16, escapeHtml } from '../core/utils.js';
+import { escapeHtml } from '../core/utils.js';
+import { fmtAddrCol, fmtByte } from '../core/addr-format.js';
 import { searchEncoded, searchNibblePacked, decodeAt } from '../core/encoded-search.js';
 
 export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, goToLeftMemoryAddress }) {
@@ -201,7 +202,7 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
             const note = m.note ? ` · ${escapeHtml(m.note)}` : '';
             return `<div class="search-result" data-addr="${m.addr}" data-idx="${idx}"
                          title="${escapeHtml(m.label)}${note}">
-                    <span class="addr">${hex16(m.addr)}</span>
+                    <span class="addr">${fmtAddrCol(m.addr)}</span>
                     <span class="preview"><b>${head}</b>${tail}</span>
                     <span class="search-enc">${escapeHtml(m.label)}</span>
                 </div>`;
@@ -223,10 +224,10 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
             // Show preview of bytes at this address
             let preview = '';
             for (let i = 0; i < Math.min(8, patternLen + 4); i++) {
-                preview += hex8(readMemory((addr + i) & 0xffff)) + ' ';
+                preview += fmtByte(readMemory((addr + i) & 0xffff)) + ' ';
             }
             return `<div class="search-result" data-addr="${addr}" data-idx="${idx}">
-                    <span class="addr">${hex16(addr)}</span>
+                    <span class="addr">${fmtAddrCol(addr)}</span>
                     <span class="preview">${preview.trim()}</span>
                 </div>`;
         }).join('') + (results.length > 20 ? `<div class="search-info">...and ${results.length - 20} more</div>` : '');
@@ -354,10 +355,10 @@ export function initMemorySearch({ readMemory, showMessage, goToMemoryAddress, g
         leftSearchResults.innerHTML = results.slice(0, 20).map((addr, idx) => {
             let preview = '';
             for (let i = 0; i < Math.min(8, patternLen + 4); i++) {
-                preview += hex8(readMemory((addr + i) & 0xffff)) + ' ';
+                preview += fmtByte(readMemory((addr + i) & 0xffff)) + ' ';
             }
             return `<div class="search-result" data-addr="${addr}" data-idx="${idx}">
-                    <span class="addr">${hex16(addr)}</span>
+                    <span class="addr">${fmtAddrCol(addr)}</span>
                     <span class="preview">${preview.trim()}</span>
                 </div>`;
         }).join('') + (results.length > 20 ? `<div class="search-info">...and ${results.length - 20} more</div>` : '');

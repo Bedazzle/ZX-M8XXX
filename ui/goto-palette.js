@@ -1,7 +1,8 @@
 // goto-palette.js — Ctrl+G quick navigation: fuzzy label search + hex addresses
 // Opens a centered overlay; Enter navigates the disasm view via navigateToAddress.
 
-import { hex16, escapeHtml, storageGet, storageSet } from '../core/utils.js';
+import { escapeHtml, storageGet, storageSet } from '../core/utils.js';
+import { fmtAddr, parseAddr } from '../core/addr-format.js';
 
 export function initGotoPalette({ labelManager, navigateToAddress, openDebuggerPanel, getAsmSymbols, gotoAsmLine, gotoAsmLineSplit }) {
     const overlay = document.getElementById('gotoPalette');
@@ -53,10 +54,11 @@ export function initGotoPalette({ labelManager, navigateToAddress, openDebuggerP
         const q = input.value.trim();
         results = [];
         if (!asmMode) {
-            // Hex address forms: 8000, $8000, #8000, 0x8000
-            const m = q.match(/^[$#]?(?:0x)?([0-9a-fA-F]{1,4})$/);
-            if (m) {
-                results.push({ name: '(address)', address: parseInt(m[1], 16), src: 'addr' });
+            // 8000, $8000, #8000, 0x8000, 8000h -- and a bare number follows the
+            // hex/decimal switch, so 45056 finds B000 once decimal is on.
+            const typed = parseAddr(q);
+            if (typed !== null && typed <= 0xFFFF) {
+                results.push({ name: '(address)', address: typed, src: 'addr' });
             }
         }
         const labels = asmMode ? getAsmSymbols() : collectLabels();
@@ -86,7 +88,7 @@ export function initGotoPalette({ labelManager, navigateToAddress, openDebuggerP
                     ? `<span class="goto-addr">${r.line}</span>` +
                       `<span class="goto-name">${escapeHtml(r.name)}</span>` +
                       `<span class="goto-src">${escapeHtml(r.path.split('/').pop())}</span>`
-                    : `<span class="goto-addr">${hex16(r.address)}</span>` +
+                    : `<span class="goto-addr">${fmtAddr(r.address)}</span>` +
                       `<span class="goto-name">${escapeHtml(r.name)}</span>` +
                       `<span class="goto-src">${r.src}</span>`) +
                 '</div>').join('')
