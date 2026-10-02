@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Instruction Contention Placement</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Instruction Contention Placement</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        import { Z80 } from '../core/z80.js';
+        // Only for applyIOTimings / applyIOTimingsForRead, which are called on a
+        // stub below rather than on a real machine: they need a tick counter, a
+        // contention function and two flags, and nothing else.
+        import { Spectrum } from '../core/spectrum.js';
+
+        const TEST_VERSION = '0.0.1';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // ---- the 48K contention model, as core/spectrum.js installs it ----
+        const FROM = 14335, PER_LINE = 224, TABLE = [6, 5, 4, 3, 2, 1, 0, 0];
+        const TO = FROM + 191 * PER_LINE + 128;
+        const contended = (a) => a >= 0x4000 && a < 0x8000;
+        function delayAt(t) {
+            if (t < FROM || t >= TO) return 0;
+            const n = ((t - FROM) % PER_LINE) & 0x87;
+            return n < 8 ? TABLE[n] : 0;
+        }
+
+        const ram = new Uint8Array(65536);
+        const memory = { read: (a) => ram[a], write: (a, v) => { ram[a] = v; } };
+        const cpu = new Z80(memory);
+
+        let mcycle = 0, firstAccess = true;
+        cpu.contend = (addr) => {
+            if (contended(addr)) cpu.tStates += delayAt(cpu.tStates + mcycle);
+            mcycle += firstAccess ? 4 : 3;
+            firstAccess = false;
+        };
+        cpu.internalCycles = (n) => { mcycle += n; };
+        cpu.contendInternal = (addr, n) => {
+            if (contended(addr)) {
+                let t = cpu.tStates + mcycle, total = 0;
+                for (let i = 0; i < n; i++) { const d = delayAt(t); total += d; t += d + 1; }
+                cpu.tStates += total;
+            }
+            mcycle += n;
+        };
+        const origExec = cpu.execute.bind(cpu);
+        cpu.execute = () => { mcycle = 0; firstAccess = true; return origExec(); };
+        const origIncR = cpu.incR.bind(cpu);
+        cpu.incR = () => { if (mcycle > 0) firstAccess = true; return origIncR(); };
+
+        // ---- an independent model: FUSE's cycle list, walked by hand ----
+        // kind 'm' = a memory access of n ticks, 'i' = n internal ticks one at a time
+        function modelCost(cycles, startT) {
+            let t = startT;
+            for (const [kind, addr, n] of cycles) {
+                if (kind === 'm') {
+                    if (contended(addr)) t += delayAt(t);
+                    t += n;
+                } else {
+                    for (let i = 0; i < n; i++) {
+                        if (contended(addr)) t += delayAt(t);
+                        t += 1;
+                    }
+                }
+            }
+            return t - startT;
+        }
+
+        function run(bytes, at, startT, setup) {
+            ram.fill(0);
+            for (let i = 0; i < bytes.length; i++) ram[(at + i) & 0xffff] = bytes[i];
+            cpu.reset();
+            if (setup) setup();
+            cpu.pc = at;
+            cpu.tStates = startT;
+            cpu.execute();
+            return cpu.tStates - startT;
+        }
+
+        // Sweep the ticks around the first contended one and compare the two models.
+        function sweep(name, bytes, at, cycles, setup, from = FROM - 4, to = FROM + 40) {
+            let bad = null;
+            for (let t = from; t <= to; t++) {
+                const got = run(bytes, at, t, setup);
+                const exp = modelCost(cycles(t), t);
+                if (got !== exp) { bad = `T${t} got ${got} exp ${exp}`; break; }
+            }
+            assert(bad === null, name, bad || '');
+        }
+
+        (async () => {
+
+        section('Base lengths are untouched (code and data out of the screen)');
+        {
+            const S = 0x8000, IX = 0x9000;
+            const ix = () => { cpu.ix = IX; };
+            assert(run([0xDD, 0x7E, 0x00], S, 0, ix) === 19, 'LD A,(IX+0) is 19T');
+            assert(run([0xDD, 0x34, 0x00], S, 0, ix) === 23, 'INC (IX+0) is 23T');
+            assert(run([0xDD, 0x36, 0x00, 0x55], S, 0, ix) === 19, 'LD (IX+0),n is 19T');
+            assert(run([0xDD, 0xCB, 0x00, 0x06], S, 0, ix) === 23, 'RLC (IX+0) is 23T');
+            assert(run([0xDD, 0xCB, 0x00, 0x46], S, 0, ix) === 20, 'BIT 0,(IX+0) is 20T');
+            assert(run([0xED, 0xA1], S, 0, () => { cpu.hl = 0x9000; cpu.bc = 1; }) === 16, 'CPI is 16T');
+            assert(run([0xED, 0xB1], S, 0, () => { cpu.hl = 0x9000; cpu.bc = 2; cpu.a = 0x99; }) === 21,
+                   'CPIR repeating is 21T');
+            assert(run([0xED, 0xB1], S, 0, () => { cpu.hl = 0x9000; cpu.bc = 1; cpu.a = 0x99; }) === 16,
+                   'CPIR on the last byte is 16T');
+            assert(run([0xE3], S, 0, () => { cpu.sp = 0x9000; cpu.hl = 0x1234; }) === 19, 'EX (SP),HL is 19T');
+            assert(run([0xDD, 0xE3], S, 0, () => { cpu.sp = 0x9000; cpu.ix = 0x1234; }) === 23, 'EX (SP),IX is 23T');
+        }
+
+        section('EX (SP),HL writes the HIGH byte first, and swaps correctly');
+        {
+            const order = [];
+            const spy = { read: (a) => ram[a], write: (a, v) => { order.push(a); ram[a] = v; } };
+            const saved = cpu.memory; cpu.memory = spy;
+            ram.fill(0); ram[0x9000] = 0x78; ram[0x9001] = 0x56;
+            cpu.reset(); cpu.sp = 0x9000; cpu.hl = 0x1234; cpu.pc = 0x8000; cpu.tStates = 0;
+            ram[0x8000] = 0xE3;
+            cpu.execute();
+            cpu.memory = saved;
+            assert(order.join(',') === '36865,36864', 'sp+1 is written before sp', order.join(','));
+            assert(cpu.hl === 0x5678, 'HL takes what was on the stack', cpu.hl.toString(16));
+            assert(ram[0x9000] === 0x34 && ram[0x9001] === 0x12, 'and the stack takes HL',
+                   ram[0x9001].toString(16) + ram[0x9000].toString(16));
+        }
+
+        section('In contended memory each cycle waits where FUSE says it does');
+        {
+            const B = 0x4000, IX = 0x4100, HL = 0x4100, SP = 0x4100;
+            const ixd = (IX + 0) & 0xffff;
+
+            // pc:4,pc+1:4,pc+2:3,pc+2:1x5,ixd:3
+            sweep('LD A,(IX+0) — five internal ticks on the displacement (N-06)',
+                  [0xDD, 0x7E, 0x00], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3], ['i', B + 2, 5], ['m', ixd, 3]],
+                  () => { cpu.ix = IX; });
+
+            // pc:4,pc+1:4,pc+2:3,pc+2:1x5,ixd:3,ixd:1,ixd:3
+            sweep('INC (IX+0) — and one more between read and write',
+                  [0xDD, 0x34, 0x00], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3], ['i', B + 2, 5],
+                         ['m', ixd, 3], ['i', ixd, 1], ['m', ixd, 3]],
+                  () => { cpu.ix = IX; });
+
+            // pc:4,pc+1:4,pc+2:3,pc+3:3,pc+3:1x2,ixd:3
+            sweep('LD (IX+0),n — two internal ticks on the OPERAND instead',
+                  [0xDD, 0x36, 0x00, 0x55], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3], ['m', B + 3, 3],
+                         ['i', B + 3, 2], ['m', ixd, 3]],
+                  () => { cpu.ix = IX; });
+
+            // pc:4,pc+1:4,pc+2:3,pc+3:3,pc+3:1x2,ixd:3,ixd:1,ixd:3
+            sweep('RLC (IX+0) — two on the fourth byte, one after the read (M1-06)',
+                  [0xDD, 0xCB, 0x00, 0x06], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3], ['m', B + 3, 3],
+                         ['i', B + 3, 2], ['m', ixd, 3], ['i', ixd, 1], ['m', ixd, 3]],
+                  () => { cpu.ix = IX; });
+
+            sweep('BIT 0,(IX+0) — the same, with no write',
+                  [0xDD, 0xCB, 0x00, 0x46], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3], ['m', B + 3, 3],
+                         ['i', B + 3, 2], ['m', ixd, 3], ['i', ixd, 1]],
+                  () => { cpu.ix = IX; });
+
+            // pc:4,pc+1:4,hl:3,hl:1x5
+            sweep('CPI — five internal ticks on HL after the read',
+                  [0xED, 0xA1], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', HL, 3], ['i', HL, 5]],
+                  () => { cpu.hl = HL; cpu.bc = 1; cpu.a = 0x99; });
+
+            // pc:4,pc+1:4,hl:3,hl:1x5,hl:1x5
+            sweep('CPIR repeating — and another five for the repeat (N-05B)',
+                  [0xED, 0xB1], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', HL, 3], ['i', HL, 5], ['i', HL, 5]],
+                  () => { cpu.hl = HL; cpu.bc = 2; cpu.a = 0x99; });
+
+            // pc:4,sp:3,sp+1:3,sp+1:1,sp+1:3,sp:3,sp:1x2
+            sweep('EX (SP),HL — one internal tick after the reads, two after the writes (N-03)',
+                  [0xE3], B,
+                  () => [['m', B, 4], ['m', SP, 3], ['m', SP + 1, 3], ['i', SP + 1, 1],
+                         ['m', SP + 1, 3], ['m', SP, 3], ['i', SP, 2]],
+                  () => { cpu.sp = SP; cpu.hl = 0x1234; });
+
+            sweep('EX (SP),IX — the same with the prefix',
+                  [0xDD, 0xE3], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', SP, 3], ['m', SP + 1, 3], ['i', SP + 1, 1],
+                         ['m', SP + 1, 3], ['m', SP, 3], ['i', SP, 2]],
+                  () => { cpu.sp = SP; cpu.ix = 0x1234; });
+        }
+
+        section('A chain of prefixes is a chain of ordinary M1 fetches');
+        {
+            const S = 0x8000, B = 0x4000;
+            assert(run([0xDD, 0x00], S, 0) === 8, 'DD NOP is 8T');
+            assert(run([0xDD, 0xDD, 0x00], S, 0) === 12, 'DD DD NOP is 12T');
+            assert(run([0xDD, 0xDD, 0xDD, 0x00], S, 0) === 16, 'DD DD DD NOP is 16T');
+            assert(run([0xDD, 0xFD, 0x00], S, 0) === 12, 'DD FD NOP is 12T');
+            assert(run([0xFD, 0xDD, 0xDD, 0x00], S, 0) === 16, 'FD DD DD NOP is 16T');
+            assert(run([0xDD, 0x3E, 0x05], S, 0) === 11, 'DD LD A,n is 11T');
+            assert(run([0xDD, 0xED, 0x44], S, 0) === 12, 'DD NEG is 12T');
+
+            // Every prefix is an opcode fetch of its own, 4 ticks apart. Nothing
+            // between them may move the clock the lookups are measured from.
+            sweep('DD DD DD NOP — four fetches, 4 ticks apart (M1-07)',
+                  [0xDD, 0xDD, 0xDD, 0x00], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 4], ['m', B + 3, 4]]);
+
+            sweep('DD DD NOP — three of them',
+                  [0xDD, 0xDD, 0x00], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 4]]);
+
+            // A redundant prefix on an ordinary instruction is the same trap: the
+            // operand read after it must not be looked up four ticks late.
+            sweep('DD LD A,n — the operand read is not pushed late by the prefix',
+                  [0xDD, 0x3E, 0x05], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 3]]);
+
+            sweep('DD DD LD A,(nn) — two prefixes, then a real memory access',
+                  [0xDD, 0xDD, 0x3A, 0x00, 0x41], B,
+                  () => [['m', B, 4], ['m', B + 1, 4], ['m', B + 2, 4],
+                         ['m', B + 3, 3], ['m', B + 4, 3], ['m', 0x4100, 3]]);
+        }
+
+        section('The CPU tells the host which I/O form it is running');
+        {
+            // The wait depends on where the I/O cycle sits inside the instruction,
+            // and only the CPU knows which instruction it is. It passes the total
+            // length; core/spectrum.js maps that to an offset.
+            const seen = [];
+            cpu.portRead = (p, t) => { seen.push(['in', p, t]); return 0xff; };
+            cpu.portWrite = (p, v, t) => { seen.push(['out', p, t]); };
+            const S = 0x8000;
+            const form = (bytes, setup) => {
+                seen.length = 0;
+                run(bytes, S, 0, setup);
+                return seen[0];
+            };
+            const hl = () => { cpu.hl = 0x9000; cpu.bc = 0x41FE; };
+
+            assert(form([0xDB, 0xFE], () => { cpu.a = 0x40; })[2] === 11, 'IN A,(n) says 11');
+            assert(form([0xED, 0x78], () => { cpu.bc = 0x40FE; })[2] === 12, 'IN A,(C) says 12');
+            assert(form([0xED, 0xA2], hl)[2] === 16, 'INI says 16');
+            assert(form([0xED, 0xB2], hl)[2] === 16, 'INIR says 16');
+            assert(form([0xD3, 0xFE], () => { cpu.a = 0x40; })[2] === 11, 'OUT (n),A says 11');
+            assert(form([0xED, 0x79], () => { cpu.bc = 0x40FE; })[2] === 12, 'OUT (C),A says 12');
+            assert(form([0xED, 0xA3], hl)[2] === 16, 'OUTI says 16');
+            assert(form([0xED, 0xB3], hl)[2] === 16, 'OTIR says 16');
+
+            // OUTI drops B before it writes the port, so B=$41 addresses $40FE
+            assert(form([0xED, 0xA3], hl)[1] === 0x40FE, 'and OUTI writes $40FE with B=$41 (P-04B)');
+
+            cpu.portRead = null;
+            cpu.portWrite = null;
+        }
+
+        section('A port cycle waits where that form puts it');
+        {
+            // The real applyIOTimings / applyIOTimingsForRead, called on a stub.
+            const stub = {
+                ula: { IO_CONTENTION_ENABLED: true },
+                profile: { hasIOContention: true },
+                cpu: { tStates: 0 },
+                checkContention: (t) => delayAt(t)
+            };
+            const forRead = (port, timing, startT) => {
+                stub.cpu.tStates = startT;
+                return Spectrum.prototype.applyIOTimingsForRead.call(stub, port, timing);
+            };
+            const forWrite = (port, timing, startT) => {
+                stub.cpu.tStates = startT;
+                return Spectrum.prototype.applyIOTimings.call(stub, port, timing);
+            };
+
+            // The four port patterns, written out at a given tick.
+            function modelIO(port, at) {
+                const hi = (port >> 8) & 0xFF, lo = port & 0xFF;
+                const cont = hi >= 0x40 && hi <= 0x7F;
+                let t = at, total = 0;
+                if (cont && (lo & 1) === 0) {            // C:1, C:3
+                    let d = delayAt(t); total += d + 1; t = at + total;
+                    d = delayAt(t); total += d + 3;
+                } else if (cont) {                        // C:1 x4
+                    for (let i = 0; i < 4; i++) { total += delayAt(at + total); total += 1; }
+                } else if ((lo & 1) === 0) {              // N:1, C:3
+                    total += 1; total += delayAt(at + total) + 3;
+                } else {                                  // N:4
+                    total += 4;
+                }
+                return total;
+            }
+
+            function sweepIO(name, fn, port, timing, offset) {
+                let bad = null;
+                for (let t = FROM - 8; t <= FROM + 40; t++) {
+                    const got = fn(port, timing, t);
+                    const exp = modelIO(port, t + offset);
+                    if (got !== exp) { bad = `T${t} got ${got} exp ${exp}`; break; }
+                }
+                assert(bad === null, name, bad || '');
+            }
+
+            sweepIO('IN A,(n) from $40FE looks 7 ticks in', forRead, 0x40FE, 11, 7);
+            sweepIO('IN r,(C) from $40FE looks 8 ticks in, not 7 (P-01)', forRead, 0x40FE, 12, 8);
+            sweepIO('IN r,(C) from $40FF — the four-wait pattern (P-01D)', forRead, 0x40FF, 12, 8);
+            sweepIO('INI from $40FE looks 9 ticks in (P-04A)', forRead, 0x40FE, 16, 9);
+            sweepIO('IN r,(C) from $00FE — high byte outside, N:1 C:3', forRead, 0x00FE, 12, 8);
+
+            sweepIO('OUT (n),A to $40FE looks 7 ticks in', forWrite, 0x40FE, 11, 7);
+            sweepIO('OUT (C),r to $40FE looks 8 ticks in', forWrite, 0x40FE, 12, 8);
+            sweepIO('OUT (C),r to the ODD $40FF waits four times (P-03C)', forWrite, 0x40FF, 12, 8);
+            sweepIO('OUTI to $40FE looks 12 ticks in, after its memory read (P-04B)',
+                    forWrite, 0x40FE, 16, 12);
+            sweepIO('OUT (C),r to $00FF never waits (P-03B)', forWrite, 0x00FF, 12, 8);
+
+            // The two 16T forms must NOT agree — that is the whole point of keeping
+            // the read and write maps apart.
+            let differ = false;
+            for (let t = FROM - 2; t <= FROM + 20; t++) {
+                if (forRead(0x40FE, 16, t) !== forWrite(0x40FE, 16, t)) { differ = true; break; }
+            }
+            assert(differ, 'INI and OUTI are both 16T but do not wait alike');
+
+            // A machine whose gate array does not contend I/O gets nothing at all.
+            stub.profile.hasIOContention = false;
+            let none = true;
+            for (let t = FROM; t <= FROM + 16; t++) {
+                if (forRead(0x40FE, 12, t) !== 0 || forWrite(0x40FE, 12, t) !== 0) { none = false; break; }
+            }
+            assert(none, 'with hasIOContention false (+2A/+3, clones) a port never waits');
+            stub.profile.hasIOContention = true;
+        }
+
+        section('Outside the screen nothing waits at all');
+        {
+            const B = 0x8000, IX = 0x9000;
+            let same = true, bad = '';
+            for (let t = FROM - 4; t <= FROM + 40; t++) {
+                if (run([0xDD, 0x7E, 0x00], B, t, () => { cpu.ix = IX; }) !== 19) { same = false; bad = 'T' + t; break; }
+                if (run([0xDD, 0xCB, 0x00, 0x06], B, t, () => { cpu.ix = IX; }) !== 23) { same = false; bad = 'T' + t; break; }
+                if (run([0xE3], B, t, () => { cpu.sp = 0x9000; }) !== 19) { same = false; bad = 'T' + t; break; }
+            }
+            assert(same, 'the same instructions in uncontended RAM keep their bare length', bad);
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

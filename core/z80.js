@@ -24,6 +24,13 @@
             // baseOffset: T-states from instruction start to where internal cycles begin (optional, for accurate timing)
             this.contendInternal = null;
 
+            // Ticks owed by prefixes already fetched in THIS instruction, paid at
+            // the end of it. The contention model reads `tStates` as the
+            // instruction's START and tracks the position inside it separately, so
+            // moving `tStates` while the instruction is still running counts those
+            // ticks twice and every later cycle is looked up too late (ctprobe M1-07).
+            this._prefixTicks = 0;
+
             // Debug: trace EI/DI and interrupt handling
             this.debugInterrupts = false;
             
@@ -134,6 +141,7 @@
             this.lastQ = 0;
             this.tStates = 0;
             this.instructionCount = 0;
+            this._prefixTicks = 0;
             // Clear instruction history
             for (let i = 0; i < 10; i++) this.instrHistory[i].len = 0;
             this.instrHistoryIdx = 0;
@@ -245,12 +253,34 @@
             this.sp = (this.sp + 1) & 0xffff;
             return (hi << 8) | lo;
         }
+
+        // EX (SP),HL / EX (SP),IX / EX (SP),IY
+        // sp:3, sp+1:3, sp+1:1, sp+1:3, sp:3, sp:1x2 — the high byte is written
+        // FIRST, and the three internal cycles sit on the stack address, so with
+        // the stack in contended memory they wait (ctprobe N-03).
+        exSP(val, setReg) {
+            const spHi = (this.sp + 1) & 0xffff;
+            const lo = this.readByte(this.sp);
+            const hi = this.readByte(spHi);
+            if (this.contendInternal) this.contendInternal(spHi, 1);
+            this.writeByte(spHi, (val >> 8) & 0xff);
+            this.writeByte(this.sp, val & 0xff);
+            if (this.contendInternal) this.contendInternal(this.sp, 2);
+            const res = (hi << 8) | lo;
+            this.memptr = res;
+            setReg(res);
+        }
         
         // Port I/O
-        inPort(port) {
+        // instructionTiming tells the host WHERE in the instruction the I/O cycle
+        // sits, which is what decides the wait: 11 = IN A,(n) (7T in), 12 = IN r,(C)
+        // (8T in), 16 = INI/INIR/IND/INDR (9T in, after the 5T second fetch).
+        // OUT's block forms are 16 as well but put the port cycle 12T in, after the
+        // memory read — which is why in and out are mapped separately.
+        inPort(port, instructionTiming = 12) {
             if (this.ioContend) this.ioContend(port);
             if (this.portRead) {
-                return this.portRead(port);
+                return this.portRead(port, instructionTiming);
             }
             return 0xff;
         }
@@ -576,6 +606,13 @@
 
             const opcode = this.fetchByte();
             this.executeMain(opcode);
+
+            // Pay the prefixes now the instruction is over, so the total length is
+            // unchanged while nothing inside it saw `tStates` move.
+            if (this._prefixTicks) {
+                this.tStates += this._prefixTicks;
+                this._prefixTicks = 0;
+            }
 
             this._pushInstrHistory();
         }
@@ -1031,7 +1068,7 @@
                     this.tStates += 4;
                     break;
                 case 0xda: { const addr = this.fetchWord(); if (this.f & FLAG_C) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP C,nn
-                case 0xdb: { const port = this.fetchByte(); const portAddr = (this.a << 8) | port; this.a = this.inPort(portAddr); this.memptr = (portAddr + 1) & 0xffff; this.tStates += 11; } break; // IN A,(n)
+                case 0xdb: { const port = this.fetchByte(); const portAddr = (this.a << 8) | port; this.a = this.inPort(portAddr, 11); this.memptr = (portAddr + 1) & 0xffff; this.tStates += 11; } break; // IN A,(n)
                 case 0xdc: { const addr = this.fetchWord(); if (this.f & FLAG_C) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL C,nn
                 case 0xdd: this.executeDD(); break; // DD prefix (IX)
                 case 0xde: this.sbc8(this.fetchByte()); this.tStates += 7; break; // SBC A,n
@@ -1039,7 +1076,7 @@
                 case 0xe0: if (!(this.f & FLAG_PV)) { this.memptr = this.pc = this.pop(); this.tStates += 11; } else { this.tStates += 5; } break; // RET PO
                 case 0xe1: this.hl = this.pop(); this.tStates += 10; break; // POP HL
                 case 0xe2: { const addr = this.fetchWord(); if (!(this.f & FLAG_PV)) { this.pc = addr; } this.memptr = addr; this.tStates += 10; } break; // JP PO,nn
-                case 0xe3: { const tmp = this.readWord(this.sp); this.writeWord(this.sp, this.hl); this.memptr = this.hl = tmp; this.tStates += 19; } break; // EX (SP),HL
+                case 0xe3: { this.exSP(this.hl, (v) => { this.hl = v; }); this.tStates += 19; } break; // EX (SP),HL
                 case 0xe4: { const addr = this.fetchWord(); if (!(this.f & FLAG_PV)) { this.push(this.pc); this.pc = addr; this.tStates += 17; } else { this.tStates += 10; } this.memptr = addr; } break; // CALL PO,nn
                 case 0xe5: this.push(this.hl); this.tStates += 11; break; // PUSH HL
                 case 0xe6: this.and8(this.fetchByte()); this.tStates += 7; break; // AND n
@@ -1158,19 +1195,19 @@
                 if (opcode === 0xdd) {
                     // Another DD prefix - current DD acts as 4T NOP
                     this._splitChainPrefix(0xdd);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     this.incR();
                     this.instructionCount++;  // Chained DD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xfd) {
                     // FD overrides DD - DD acts as 4T NOP, switch to IY
                     this._splitChainPrefix(0xfd);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     return this.executeFD();
                 } else if (opcode === 0xed) {
                     // ED overrides DD - DD acts as 4T NOP
                     this._splitChainPrefix(0xed);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     return this.executeED();
                 }
             }
@@ -1195,19 +1232,19 @@
                 if (opcode === 0xfd) {
                     // Another FD prefix - current FD acts as 4T NOP
                     this._splitChainPrefix(0xfd);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     this.incR();
                     this.instructionCount++;  // Chained FD = extra M1 cycle
                     opcode = this.fetchByte();
                 } else if (opcode === 0xdd) {
                     // DD overrides FD - FD acts as 4T NOP, switch to IX
                     this._splitChainPrefix(0xdd);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     return this.executeDD();
                 } else if (opcode === 0xed) {
                     // ED overrides FD - FD acts as 4T NOP
                     this._splitChainPrefix(0xed);
-                    this.tStates += 4;
+                    this._prefixTicks += 4;
                     return this.executeED();
                 }
             }
@@ -1227,32 +1264,36 @@
         executeDDCB() {
             // No incR() or instructionCount++ here - already counted in execute() and executeDD()
             const d = this.fetchDisplacement();
+            const opAddr = this.pc;  // the fourth byte's address — the internal cycles sit here
             const opcode = this.fetchByte();
             const addr = (this.ix + d) & 0xffff;
             this.memptr = addr;
 
-            this.executeIndexedCB(opcode, addr);
+            this.executeIndexedCB(opcode, addr, opAddr);
         }
 
         executeFDCB() {
             // No incR() or instructionCount++ here - already counted in execute() and executeFD()
             const d = this.fetchDisplacement();
+            const opAddr = this.pc;  // the fourth byte's address — the internal cycles sit here
             const opcode = this.fetchByte();
             const addr = (this.iy + d) & 0xffff;
             this.memptr = addr;
 
-            this.executeIndexedCB(opcode, addr);
+            this.executeIndexedCB(opcode, addr, opAddr);
         }
         
-        executeIndexedCB(opcode, addr) {
+        executeIndexedCB(opcode, addr, opAddr) {
             const reg = opcode & 0x07;
             const op = opcode >> 3;
 
-            // 5T internal cycles with (IX/IY+d) on bus before read - apply contention
-            // FUSE timing: M1(DD/FD)+M1(CB)+M2(d)+M1(op)+5T internal+4T read+3T write = 23T
-            if (this.contendInternal) this.contendInternal(addr, 5);
+            // pc:4,pc+1:4,pc+2:3,pc+3:3,pc+3:1x2,ixd:3,ixd:1,ixd:3 — the two internal
+            // cycles before the read are on the FOURTH BYTE's address, not on IX+d,
+            // and one more follows the read (ctprobe M1-06).
+            if (this.contendInternal) this.contendInternal(opAddr, 2);
 
             let val = this.readByte(addr);
+            if (this.contendInternal) this.contendInternal(addr, 1);
             let result;
             
             if (op < 8) {
@@ -1285,6 +1326,17 @@
             }
         }
         
+        // (IX+d) / (IY+d): read the displacement, then sit on ITS address for five
+        // internal cycles before the indexed address is touched — pc+2:3,pc+2:1x5.
+        // With the code in the screen those five wait, and the access after them
+        // happens five ticks later than it would otherwise (ctprobe N-06).
+        indexedAddr(ir) {
+            const dispAddr = this.pc;
+            const d = this.fetchDisplacement();
+            if (this.contendInternal) this.contendInternal(dispAddr, 5);
+            return (ir + d) & 0xffff;
+        }
+
         // Indexed operations (IX/IY)
         executeIndexed(opcode, reg) {
             const FLAG_C = 0x01, FLAG_N = 0x02, FLAG_PV = 0x04, FLAG_H = 0x10, FLAG_Z = 0x40, FLAG_S = 0x80;
@@ -1310,27 +1362,40 @@
                 case 0x2c: setL(this.inc8(getL())); this.tStates += 8; break;
                 case 0x2d: setL(this.dec8(getL())); this.tStates += 8; break;
                 case 0x2e: setL(this.fetchByte()); this.tStates += 11; break;
-                case 0x34: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.inc8(this.readByte(addr))); this.tStates += 23; } break;
-                case 0x35: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.dec8(this.readByte(addr))); this.tStates += 23; } break;
-                case 0x36: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.fetchByte()); this.tStates += 19; } break;
+                // ...,ixd:3,ixd:1,ixd:3 — one more internal cycle between read and write
+                case 0x34: { const addr = this.indexedAddr(ir); this.memptr = addr; const v = this.inc8(this.readByte(addr)); if (this.contendInternal) this.contendInternal(addr, 1); this.writeByte(addr, v); this.tStates += 23; } break;
+                case 0x35: { const addr = this.indexedAddr(ir); this.memptr = addr; const v = this.dec8(this.readByte(addr)); if (this.contendInternal) this.contendInternal(addr, 1); this.writeByte(addr, v); this.tStates += 23; } break;
+                // LD (IX+d),n is the odd one out: pc+2:3,pc+3:3,pc+3:1x2,ixd:3 — the
+                // two internal cycles are after the OPERAND, on its address, not after
+                // the displacement, so this cannot use indexedAddr()
+                case 0x36: {
+                    const d = this.fetchDisplacement();
+                    const addr = (ir + d) & 0xffff;
+                    this.memptr = addr;
+                    const nAddr = this.pc;
+                    const n = this.fetchByte();
+                    if (this.contendInternal) this.contendInternal(nAddr, 2);
+                    this.writeByte(addr, n);
+                    this.tStates += 19;
+                } break;
                 case 0x39: setIR(this.add16(ir, this.sp)); this.tStates += 15; break;
                 
                 // LD with (IX+d)/(IY+d)
-                case 0x46: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.b = this.readByte(addr); this.tStates += 19; } break;
-                case 0x4e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.c = this.readByte(addr); this.tStates += 19; } break;
-                case 0x56: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.d = this.readByte(addr); this.tStates += 19; } break;
-                case 0x5e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.e = this.readByte(addr); this.tStates += 19; } break;
-                case 0x66: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.h = this.readByte(addr); this.tStates += 19; } break;
-                case 0x6e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.l = this.readByte(addr); this.tStates += 19; } break;
-                case 0x7e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.a = this.readByte(addr); this.tStates += 19; } break;
+                case 0x46: { const addr = this.indexedAddr(ir); this.memptr = addr; this.b = this.readByte(addr); this.tStates += 19; } break;
+                case 0x4e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.c = this.readByte(addr); this.tStates += 19; } break;
+                case 0x56: { const addr = this.indexedAddr(ir); this.memptr = addr; this.d = this.readByte(addr); this.tStates += 19; } break;
+                case 0x5e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.e = this.readByte(addr); this.tStates += 19; } break;
+                case 0x66: { const addr = this.indexedAddr(ir); this.memptr = addr; this.h = this.readByte(addr); this.tStates += 19; } break;
+                case 0x6e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.l = this.readByte(addr); this.tStates += 19; } break;
+                case 0x7e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.a = this.readByte(addr); this.tStates += 19; } break;
                 
-                case 0x70: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.b); this.tStates += 19; } break;
-                case 0x71: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.c); this.tStates += 19; } break;
-                case 0x72: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.d); this.tStates += 19; } break;
-                case 0x73: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.e); this.tStates += 19; } break;
-                case 0x74: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.h); this.tStates += 19; } break;
-                case 0x75: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.l); this.tStates += 19; } break;
-                case 0x77: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.writeByte(addr, this.a); this.tStates += 19; } break;
+                case 0x70: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.b); this.tStates += 19; } break;
+                case 0x71: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.c); this.tStates += 19; } break;
+                case 0x72: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.d); this.tStates += 19; } break;
+                case 0x73: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.e); this.tStates += 19; } break;
+                case 0x74: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.h); this.tStates += 19; } break;
+                case 0x75: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.l); this.tStates += 19; } break;
+                case 0x77: { const addr = this.indexedAddr(ir); this.memptr = addr; this.writeByte(addr, this.a); this.tStates += 19; } break;
                 
                 // Undocumented: LD with IXH/IXL/IYH/IYL
                 case 0x44: this.b = getH(); this.tStates += 8; break;
@@ -1359,14 +1424,14 @@
                 case 0x7d: this.a = getL(); this.tStates += 8; break;
                 
                 // ALU with (IX+d)/(IY+d)
-                case 0x86: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.add8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0x8e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.adc8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0x96: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.sub8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0x9e: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.sbc8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0xa6: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.and8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0xae: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.xor8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0xb6: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.or8(this.readByte(addr)); this.tStates += 19; } break;
-                case 0xbe: { const d = this.fetchDisplacement(); const addr = (ir + d) & 0xffff; this.memptr = addr; this.cp8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0x86: { const addr = this.indexedAddr(ir); this.memptr = addr; this.add8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0x8e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.adc8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0x96: { const addr = this.indexedAddr(ir); this.memptr = addr; this.sub8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0x9e: { const addr = this.indexedAddr(ir); this.memptr = addr; this.sbc8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0xa6: { const addr = this.indexedAddr(ir); this.memptr = addr; this.and8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0xae: { const addr = this.indexedAddr(ir); this.memptr = addr; this.xor8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0xb6: { const addr = this.indexedAddr(ir); this.memptr = addr; this.or8(this.readByte(addr)); this.tStates += 19; } break;
+                case 0xbe: { const addr = this.indexedAddr(ir); this.memptr = addr; this.cp8(this.readByte(addr)); this.tStates += 19; } break;
                 
                 // Undocumented ALU with IXH/IXL/IYH/IYL
                 case 0x84: this.add8(getH()); this.tStates += 8; break;
@@ -1387,15 +1452,15 @@
                 case 0xbd: this.cp8(getL()); this.tStates += 8; break;
                 
                 case 0xe1: setIR(this.pop()); this.tStates += 14; break;
-                case 0xe3: { const tmp = this.readWord(this.sp); this.writeWord(this.sp, ir); this.memptr = tmp; setIR(tmp); this.tStates += 23; } break;
+                case 0xe3: { this.exSP(ir, setIR); this.tStates += 23; } break;
                 case 0xe5: this.push(ir); this.tStates += 15; break;
                 case 0xe9: this.pc = ir; this.tStates += 8; break;
                 case 0xf9: this.sp = ir; this.tStates += 10; break;
                 
                 default:
                     // Treat as NOP for unrecognized prefixed opcodes
-                    // Add 4 T-states for the DD/FD prefix that was consumed
-                    this.tStates += 4;
+                    // The DD/FD prefix that was consumed; owed, not spent now
+                    this._prefixTicks += 4;
                     this.executeMain(opcode);
                     break;
             }
@@ -1520,6 +1585,9 @@
                 case 0xa1: // CPI
                     {
                         const val = this.readByte(this.hl);
+                        // 5 internal T-states with HL on bus after the read
+                        // (hl:3,hl:1x5 — the repeat adds another hl:1x5 below)
+                        if (this.contendInternal) this.contendInternal(this.hl, 5);
                         const result = (this.a - val) & 0xff;
                         const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.hl = (this.hl + 1) & 0xffff;
@@ -1541,7 +1609,7 @@
                 case 0xa2: // INI
                     {
                         this.memptr = (this.bc + 1) & 0xffff;
-                        const val = this.inPort(this.bc);
+                        const val = this.inPort(this.bc, 16);
                         this.b = (this.b - 1) & 0xff;
                         this.writeByte(this.hl, val);
                         this.hl = (this.hl + 1) & 0xffff;
@@ -1594,6 +1662,9 @@
                 case 0xa9: // CPD
                     {
                         const val = this.readByte(this.hl);
+                        // 5 internal T-states with HL on bus after the read
+                        // (hl:3,hl:1x5 — the repeat adds another hl:1x5 below)
+                        if (this.contendInternal) this.contendInternal(this.hl, 5);
                         const result = (this.a - val) & 0xff;
                         const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.hl = (this.hl - 1) & 0xffff;
@@ -1615,7 +1686,7 @@
                 case 0xaa: // IND
                     {
                         this.memptr = (this.bc - 1) & 0xffff;
-                        const val = this.inPort(this.bc);
+                        const val = this.inPort(this.bc, 16);
                         this.b = (this.b - 1) & 0xff;
                         this.writeByte(this.hl, val);
                         this.hl = (this.hl - 1) & 0xffff;
@@ -1682,6 +1753,9 @@
                 case 0xb1: // CPIR
                     {
                         const val = this.readByte(this.hl);
+                        // 5 internal T-states with HL on bus after the read
+                        // (hl:3,hl:1x5 — the repeat adds another hl:1x5 below)
+                        if (this.contendInternal) this.contendInternal(this.hl, 5);
                         const result = (this.a - val) & 0xff;
                         const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.bc = (this.bc - 1) & 0xffff;
@@ -1715,7 +1789,7 @@
                 case 0xb2: // INIR
                     {
                         this.memptr = (this.bc + 1) & 0xffff;
-                        const val = this.inPort(this.bc);
+                        const val = this.inPort(this.bc, 16);
                         this.b = (this.b - 1) & 0xff;
                         this.writeByte(this.hl, val);
                         this.hl = (this.hl + 1) & 0xffff;
@@ -1830,6 +1904,9 @@
                 case 0xb9: // CPDR
                     {
                         const val = this.readByte(this.hl);
+                        // 5 internal T-states with HL on bus after the read
+                        // (hl:3,hl:1x5 — the repeat adds another hl:1x5 below)
+                        if (this.contendInternal) this.contendInternal(this.hl, 5);
                         const result = (this.a - val) & 0xff;
                         const hf = (this.a ^ val ^ result) & 0x10;  // Half-carry
                         this.bc = (this.bc - 1) & 0xffff;
@@ -1863,7 +1940,7 @@
                 case 0xba: // INDR
                     {
                         this.memptr = (this.bc - 1) & 0xffff;
-                        const val = this.inPort(this.bc);
+                        const val = this.inPort(this.bc, 16);
                         this.b = (this.b - 1) & 0xff;
                         this.writeByte(this.hl, val);
                         this.hl = (this.hl - 1) & 0xffff;

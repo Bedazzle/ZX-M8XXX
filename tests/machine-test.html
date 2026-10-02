@@ -290,7 +290,14 @@
             assert(p.ramPages === 16, 'ramPages = 16');
             assert(p.romBanks === 4, 'romBanks = 4');
             assert(p.pagingModel === 'scorpion', 'pagingModel = scorpion');
-            assert(p.ulaProfile === 'pentagon', 'shares Pentagon ULA timing');
+            // It was timed as a Pentagon (71680 T/frame). A real Scorpion runs the
+            // 48K frame, 224 x 312 = 69888, and has two clone features of its own:
+            // Even M1 and the attribute bus on unused ports. ctprobe detects all
+            // three and reports 0 wrong values.
+            assert(p.ulaProfile === 'scorpion', 'has its own ULA timing, not the Pentagon one');
+            assert(p.evenM1 === true, 'Even M1: RAM opcode fetches start on an even T-state');
+            assert(p.attrBusPorts === true, 'unused ports read the attribute being fetched');
+            assert(p.hasContention === false, 'and still no memory contention');
             assert(p.betaDiskDefault === true, 'Beta Disk default');
             assert(p.trdosInRom === true, 'TR-DOS in ROM');
             assert(p.trdosRomBank === 3, 'TR-DOS in ROM bank 3');

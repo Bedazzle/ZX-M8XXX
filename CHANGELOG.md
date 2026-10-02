@@ -2,6 +2,18 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.09.05
+
+- **Timing Test added: nine-way hardware-photographed contention check.**
+
+## v26.09.04
+
+- **Contention timing inside prefixed, indexed, block and stack instructions.**
+- **Port and floating-bus timing follow the I/O cycle, 128K included.**
+- **Fix test progress label and test number.**
+- **Running tests no longer resizes the screen or changes border setting.**
+- **Scorpion: own frame timing, Even M1, attribute bus.**
+
 ## v26.09.03
 
 - **Edit instructions directly in disassembly.**

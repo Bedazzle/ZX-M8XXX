@@ -32,6 +32,20 @@ import {
 } from './constants.js';
 import { hex8, hex16, storageGet } from './utils.js';
 import { fmtAddr, fmtPort } from './addr-format.js';
+
+// Ticks from the start of an I/O instruction to its I/O cycle, keyed by the
+// instruction's total length. The two 16T forms differ because OUTI reads memory
+// before it writes the port while INI reads the port before it writes memory, so
+// the length alone does not say where the cycle is — only the direction does.
+const IO_OFFSET_READ  = { 11: 7, 12: 8, 16: 9 };   // IN A,(n) / IN r,(C) / INI
+const IO_OFFSET_WRITE = { 11: 7, 12: 8, 16: 12 };  // OUT (n),A / OUT (C),r / OUTI
+
+// Where inside the 4T I/O cycle the data is taken off the bus, which is what the
+// floating bus returns. FITTED to ctprobe's P-02 and cross-checked against
+// Woodmass's Float48K, not derived — the two agree, which is the point of having
+// both. With the I/O cycle starting 7T into IN A,(n), this puts the sample at
+// 7 + 4 = 11T, exactly the lateness both instruments measured before.
+const IO_CYCLE_READ_T = 4;
 import { Z80 } from './z80.js';
 import { Memory } from './memory.js';
 import { ULA } from './ula.js';
@@ -769,7 +783,19 @@ import { Disassembler } from './disasm.js';
                 let mcycleOffset = 0;
                 let isFirstAccess = true;
 
-                this.cpu.contend = () => {
+                // Even M1 (Scorpion): the machine holds an opcode fetch from RAM
+                // until an even T-state, so an instruction run from RAM takes its
+                // length rounded UP to an even number -- LD A,n is 8, not 7. The wait
+                // belongs to the fetch, so it lands on the next instruction's first
+                // M1; that is what makes every span come out even. ROM is not held.
+                const evenM1 = !!this.profile.evenM1;
+
+                this.cpu.contend = (addr) => {
+                    if (evenM1 && isFirstAccess &&
+                        ((this.cpu.tStates + mcycleOffset) & 1) &&
+                        !this.memory.isRomAt(addr)) {
+                        this.cpu.tStates += 1;
+                    }
                     // No contention delays — just track M-cycle offset
                     mcycleOffset += isFirstAccess ? 4 : 3;
                     isFirstAccess = false;
@@ -1251,10 +1277,14 @@ import { Disassembler } from './disasm.js';
             const isUlaPort = (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
-            // I/O contention check offset from instruction start
-            // OUT (n),A / IN A,(n): opcode (4T) + port byte (3T) = 7T before I/O cycle
-            // OUT (C),r / IN r,(C): opcode ED (4T) + opcode (4T) = 8T before I/O cycle
-            const fetchOffset = (instructionTiming === 11) ? 7 : 8;
+            // Where the I/O cycle sits inside the instruction, which is the tick the
+            // wait is looked up at:
+            //   OUT (n),A  11T: pc:4, pc+1:3, IO:4            -> 7
+            //   OUT (C),r  12T: pc:4, pc+1:4, IO:4            -> 8
+            //   OUTI/OTIR  16T: pc:4, pc+1:5, hl:3, IO:4      -> 12
+            // The block form reads memory BEFORE it writes the port, so it is 12 and
+            // not the 9 its input twin uses (see applyIOTimingsForRead).
+            const fetchOffset = IO_OFFSET_WRITE[instructionTiming] || 8;
             let totalDelay = 0;
 
             if (highByteContended) {
@@ -1305,7 +1335,7 @@ import { Disassembler } from './disasm.js';
 
         // I/O timing for IN operations (similar to applyIOTimings but with different fetch offset)
         // IN A,(n) is 11T with I/O starting at ~7T, IN r,(C) is 12T with I/O at ~8T
-        applyIOTimingsForRead(port) {
+        applyIOTimingsForRead(port, instructionTiming = 12) {
             if (!this.ula.IO_CONTENTION_ENABLED) return 0;
             // +2A/+3: no IO contention (ULA only contends on MREQ, not during IO)
             if (!this.profile.hasIOContention) return 0;
@@ -1315,8 +1345,12 @@ import { Disassembler } from './disasm.js';
             const isUlaPort = (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
-            // For IN A,(n): fetch offset is 7T (4T opcode + 3T port number)
-            const fetchOffset = 7;
+            //   IN A,(n)   11T: pc:4, pc+1:3, IO:4            -> 7
+            //   IN r,(C)   12T: pc:4, pc+1:4, IO:4            -> 8
+            //   INI/INIR   16T: pc:4, pc+1:5, IO:4, hl:3      -> 9
+            // It used to be 7 for all three: right for IN A,(n), a tick early for
+            // IN r,(C) and two early for the block forms (ctprobe P-01, P-04).
+            const fetchOffset = IO_OFFSET_READ[instructionTiming] || 8;
             let totalDelay = 0;
 
             if (highByteContended) {
@@ -1508,13 +1542,25 @@ import { Disassembler } from './disasm.js';
             this.cpu.nmi();
         }
 
-        portRead(port) {
+        portRead(port, instructionTiming = 12) {
             let result = 0xff;
 
-            // Apply I/O contention for IN operations (same pattern as OUT)
-            // IN A,(n) has I/O after 7T, IN r,(C) after 8T - use 7T as average
-            if (this.profile.ulaProfile === '48k' && this.ula.IO_CONTENTION_ENABLED) {
-                const ioDelay = this.applyIOTimingsForRead(port);
+            // I/O contention for IN. This used to be gated on ulaProfile === '48k',
+            // so a 128K or +2 never waited on a port at all although its ULA contends
+            // exactly as the 48K's does (ctprobe P-01, P-03D, P-04, P-05). The gate
+            // that belongs here is the profile's own hasIOContention, which
+            // applyIOTimingsForRead already applies — it is false on the +2A/+3,
+            // whose gate array does not contend I/O, and on the clones.
+            {
+                // When the I/O cycle happens, before any wait is added. The floating
+                // bus needs this: the byte it returns is whatever the ULA has on the
+                // bus at that moment, and `cpu.tStates` is still the INSTRUCTION's
+                // start tick (the length is added after the instruction runs). Reading
+                // it there put our bytes 11 ticks late — the one thing ctprobe P-02
+                // still complained about, and visible in Woodmass's Float48K as data
+                // appearing at tick 14350 instead of 14339.
+                this._ioCycleT = this.cpu.tStates + (IO_OFFSET_READ[instructionTiming] || 8);
+                const ioDelay = this.applyIOTimingsForRead(port, instructionTiming);
                 if (ioDelay > 4) {
                     this.cpu.tStates += (ioDelay - 4);
                 }
@@ -1711,9 +1757,17 @@ import { Disassembler } from './disasm.js';
                         result = this.ay.readRegister();
                     }
                 } else {
-                    // Floating bus: return video data being read by ULA
-                    // Only active during screen display on 48K
-                    if (this.machineType === '48k') {
+                    // Floating bus: the byte the ULA has on the bus right now.
+                    // The 48K and the 128K/+2 both have one (ctprobe P-02 read 255 for
+                    // every tick on the 128K, and so did Woodmass's Float128K); the
+                    // +2A/+3 gate array does not, and nor do the clones, which is what
+                    // hasFloatingBus says.
+                    if (this.profile.attrBusPorts) {
+                        // Scorpion: an unused port reads the ATTRIBUTE the screen
+                        // hardware is fetching (its programmer's manual), not the
+                        // alternating bitmap/attribute of a Ferranti floating bus.
+                        result = this.getAttrBusValue();
+                    } else if (this.profile.hasFloatingBus) {
                         result = this.getFloatingBusValue();
                         // Debug: log floating bus reads - only after halted INT
                         if (this.debugFloatingBus && this._floatBusLogActive && this._floatBusLogCount < 500) {
@@ -1828,20 +1882,22 @@ import { Disassembler } from './disasm.js';
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
+            // The wait is decided by the port's HIGH byte, not by whether the ULA
+            // answers: a port in $40xx-$7Fxx is contended whatever its low byte, and
+            // an odd one waits four times over. This used to sit inside the
+            // even-port branch below, so `OUT ($40FF),A` never waited at all
+            // (ctprobe P-03C). Only the BORDER is the ULA's business, and that stays
+            // where it was.
+            const tStatesBefore = this.cpu.tStates;
+            const ioDelay = this.applyIOTimings(port, instructionTiming);
+            const contentionOnly = Math.max(0, ioDelay - 4);   // ioDelay includes the 4T base
+            this.cpu.tStates += contentionOnly;
+
+            if (this.debugIOTiming && contentionOnly > 0) {
+                console.log(`IO_TIMING port=${port.toString(16)} tBefore=${tStatesBefore} ioDelay=${ioDelay} contentionOnly=${contentionOnly}`);
+            }
+
             if ((lowByte & 0x01) === 0) {
-                // Track border changes in T-states for pixel-perfect rendering
-                const tStatesBefore = this.cpu.tStates;
-                const ioDelay = this.applyIOTimings(port, instructionTiming);
-                // ioDelay includes 4T base + contention
-                const contentionOnly = Math.max(0, ioDelay - 4);
-
-                // Add contention to cpu.tStates
-                this.cpu.tStates += contentionOnly;
-
-                if (this.debugIOTiming && contentionOnly > 0) {
-                    console.log(`IO_TIMING port=${port.toString(16)} tBefore=${tStatesBefore} ioDelay=${ioDelay} contentionOnly=${contentionOnly}`);
-                }
-
                 // Border change timing
                 // Calculate frame-relative T-state when border color changes
                 // cpu.tStates accumulates from frameStartOffset, need to subtract to get frame-relative
@@ -1859,7 +1915,13 @@ import { Disassembler } from './disasm.js';
                 if (this.profile.ulaProfile === 'pentagon') {
                     ioOffset = 11;
                 } else if (this.profile.ulaProfile === '128k') {
-                    // OUT (C),r (12T) needs +4 more than OUT (n),A for ULA128 test
+                    // OUT (C),r (12T) needs +4 more than OUT (n),A for ULA128 test.
+                    // MEASURED, not derived, and the obvious derivation is WRONG: the
+                    // +4 looks like the port contention a 128K never applied (its
+                    // portRead/portWrite were gated to the 48K until that was fixed),
+                    // but making it the port offset plus one, as the 48K does, breaks
+                    // ULA128 by 6728 px and scroll17 by 5760. Whatever these two
+                    // encode, it is not that. Re-derive only with evidence.
                     ioOffset = (instructionTiming === 12) ? 13 : 9;
                 } else {
                     // 48K: instruction location affects timing
@@ -5221,8 +5283,35 @@ import { Disassembler } from './disasm.js';
         // Returns the byte the ULA is currently reading from video memory
         // When not during active display, returns 0xFF
         // Reference: https://sinclair.wiki.zxnet.co.uk/wiki/Floating_bus
+        // What the Scorpion puts on the bus for a port nobody answers: the
+        // attribute being fetched. The ULA reads one attribute per character cell,
+        // and a cell is 4 T-states, so the tick picks the cell directly -- there is
+        // no 4-on/4-off idle pattern as on a Ferranti machine.
+        //
+        // NOT verified against real hardware: the behaviour is documented, the exact
+        // tick alignment is not. ctprobe checks it against unreal-ng's grid, which
+        // its own README calls unconfirmed. Treat a disagreement as open.
+        getAttrBusValue() {
+            const t = (this._ioCycleT || this.cpu.tStates) + IO_CYCLE_READ_T;
+            const perLine = this.timing.tstatesPerLine;
+            const screenLine = Math.floor(t / perLine) - this.ula.FIRST_SCREEN_LINE;
+            if (screenLine < 0 || screenLine >= 192) return 0xff;
+            const tInLine = t % perLine;
+            // FITTED to ctprobe's Scorpion grid, which is the only reference that
+            // exists and which its own README calls unconfirmed on real hardware.
+            // The attribute leads the 48K bitmap window by two ticks. This is the
+            // single knob if a real Scorpion ever says otherwise.
+            const start = -1;
+            if (tInLine < start || tInLine >= start + 128) return 0xff;
+            const col = Math.floor((tInLine - start) / 4);
+            if (col < 0 || col > 31) return 0xff;
+            return this.memory.read(SCREEN_ATTR | ((screenLine >> 3) << 5) | col);
+        }
+
         getFloatingBusValue() {
-            const t = this.cpu.tStates;
+            // The I/O cycle's own tick, set by portRead, not the instruction's start.
+            // IO_CYCLE_READ_T is where in that 4T cycle the byte is actually taken.
+            const t = (this._ioCycleT || this.cpu.tStates) + IO_CYCLE_READ_T;
             const tstatesPerLine = this.timing.tstatesPerLine;  // 224 for 48K
             const line = Math.floor(t / tstatesPerLine);
             const tInLine = t % tstatesPerLine;
@@ -5241,7 +5330,12 @@ import { Disassembler } from './disasm.js';
             // For late timing: pattern shifts +1 T-state (first read at tInLine=4)
             // Pattern: 4 reads (bitmap,attr,bitmap,attr), 4 idle, repeating for 128 T-states
             const lateOffset = (this.lateTimings && this.profile.earlyIntTiming) ? 1 : 0;
-            const floatStart = ((this.profile.ulaProfile === '48k') ? 3 : 0) + lateOffset;
+            // Where in the line the ULA's fetch window starts, per machine. Both
+            // fitted to ctprobe P-02: the 128K was 0 and came out exactly one tick
+            // early once the sample moved to the I/O cycle. Only the 48K has the
+            // late/early switch (earlyIntTiming), and there it moves the window with
+            // the interrupt.
+            const floatStart = ((this.profile.ulaProfile === '48k') ? 3 : 1) + lateOffset;
             const floatEnd = floatStart + 128;
 
             if (tInLine < floatStart || tInLine >= floatEnd) {

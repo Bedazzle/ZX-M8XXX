@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 26.09.03** | [Changelog](CHANGELOG.md)
+**Version 26.09.05** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just serve from any webserver, local or remote.
 
@@ -160,6 +160,15 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 - **dcorp80** — ES module extraction approach ([PR #1](https://github.com/Bedazzle/ZX-M8XXX/pull/1))
 - **introspec** — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support
 - **xLook** by Dmitry Kozlov (HalfElf) & Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author
+
+## Test programs
+
+Third-party ZX Spectrum programs run by the automated tests. They keep their own
+authorship and licence; none is part of the emulator.
+
+- **[ctprobe](https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe)** — the contention probe from **unreal-ng** (alfishe), which measures to a single clock tick where inside an instruction a memory wait falls. Its measuring engine is **Jan Bobrowski**'s, as adjusted by **Patrik Rak** for his Timing Test. **GPL v3**; vendored with its sources, licence and credits in `tests/ctprobe.zip`. Its report on v26.09.03 is what drove the contention work in v26.09.05
+- **Timing Test** by **Patrik Rak**, based on **zxtests** by **Jan Bobrowski** (GPL) — measures instruction duration at each T-state across the contention boundary. Its reference values were photographed on real 48K, 128K, +2A and +3 machines, which is what makes it an independent check on our contention; vendored with its sources in `tests/timingtest.zip`
+- **Float48K / Float128K** by **Mark Woodmass** — floating-bus tests, from the [ZX Spectrum test catalogue](https://github.com/redcode/ZXSpectrum/wiki/Tests)
 
 ## Libraries & Fonts
 

@@ -16,6 +16,11 @@ const profile = getMachineProfile('128k');
 //   pagingModel              - 'none' | '128k' | '+2a' | 'pentagon1024' | 'scorpion'
 //   ulaProfile               - ULA timing: '48k' | '128k' | 'pentagon'
 //   hasContention             - Memory contention enabled (false for Pentagon/Scorpion)
+//   evenM1                    - Scorpion Even M1: an opcode fetch from RAM is held
+//                               until an even T-state, so an instruction run from RAM
+//                               takes its length rounded UP to even (LD A,n is 8)
+//   attrBusPorts              - Scorpion: a port nobody answers reads the ATTRIBUTE the
+//                               screen hardware is fetching, not a Ferranti floating bus
 //   hasIOContention           - IO port contention (false for +2A/+3/Pentagon/Scorpion)
 //   hasInternalContention     - Internal cycle contention (false for +2A/+3/Pentagon/Scorpion)
 //   contentionPattern         - '65432100' (48K/128K/+2) | '76543210' (+2A/+3) | 'none'
@@ -44,6 +49,13 @@ getMachineBySzxId(id)                 // Reverse lookup from SZX machine ID
 **Visible machines**: Users choose which machines appear in the dropdown via Settings → Machines. Default: `['48k', '128k', 'pentagon']`. Stored in localStorage key `zx-visible-machines`.
 
 **Pentagon 1024 paging**: Port 0xEFF7 bit 2 = 0 enables 1MB mode (bit 5 of 7FFD selects bank bit 5). Bit 3 = 1 maps RAM page 0 over ROM at 0x0000-0x3FFF. Port 7FFD bits 0-2 + 6,7 + (5 in 1MB mode) select from 64 RAM pages.
+
+**Scorpion ZS 256 timing**: the 48K frame, **224 x 312 = 69888 T-states**, not the Pentagon 71680 it used to be given (`ulaProfile: 'scorpion'`). No memory or I/O contention, like the other clones, but two features of its own:
+
+- **Even M1** (`evenM1`): the machine holds an opcode fetch from RAM until an even T-state. The wait belongs to the fetch, so it lands on the *next* instruction's first M1 -- which is what makes every instruction run from RAM span an even number of ticks. ROM fetches are not held, which is why TactMeter reads 069874 from ROM and 069872 from RAM. Implemented in `setupContention`'s no-contention path in `core/spectrum.js`, using `memory.isRomAt()`.
+- **Attribute bus** (`attrBusPorts`): an unused port reads the attribute byte being fetched -- one per character cell, so one per 4 T-states, with no idle half. `getAttrBusValue()`. The behaviour is in the machine's programmer's guide; **the exact tick alignment is fitted to ctprobe's grid, which its own README calls unconfirmed on real hardware**, and is a single constant if that is ever settled.
+
+`tests/tests.json` has `ctprobe-scorpion`, which reports *attr bus, Even M1*, frame 69888, and **ALL VALUES AS EXPECTED**; `TactMeterV1.0` is the independent check -- it is a program written for the machine and its numbers moved from 071680 to 069872.
 
 **Scorpion ZS 256 paging**: 256KB RAM (16 pages), 4 ROM banks in `scorpion.rom` (ROM0=128 BASIC, ROM1=48 BASIC, ROM2=Service Monitor, ROM3=TR-DOS). Port 0x7FFD decoded as `(port & 0xC002) === 0x4000` (+3-style per FUSE, NOT loose 128K decode — A14=1 required to distinguish from 1FFD). Port 0x1FFD decoded as `(port & 0xF002) === 0x1000` (+3-style, A14=0). RAM page = `((1FFD & 0x10) >> 1) | (7FFD & 0x07)` → pages 0-15 (per FUSE/ZXMAK2/UnrealSpeccy/official programmer's guide). 1FFD bits: bit 0 = RAM page 0 over ROM, bit 1 = ROM 2 select, bit 4 = RAM page high bit (+8). ROM selection is 3-way (per FUSE): 1FFD bit 1 set → ROM 2 (Service Monitor); unset → stored 7FFD bit 4 selects ROM 0/1. **Implementation note**: `scorpionPort7FFD` stores the last 7FFD value for ROM bank fallback when 1FFD bit 1 is cleared — using `currentRomBank & 1` is incorrect when transitioning from ROM 2 (gives 0 instead of the 7FFD-selected bank). TR-DOS is built into ROM bank 3 (`trdosInRom: true`, `trdosRomBank: 3`) — loaded into Beta Disk ROMCS, no separate `trdos.rom` needed. SZX machine ID: 8.
 

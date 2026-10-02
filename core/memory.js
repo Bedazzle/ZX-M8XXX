@@ -612,6 +612,15 @@ import {
             return null;
         }
         
+        // Is this address ROM as the CPU currently sees it? Only slot 0 can be,
+        // and even there a Scorpion or Pentagon 1024 may have RAM mapped over it.
+        // The Scorpion needs this: Even M1 applies to fetches from RAM, not ROM.
+        isRomAt(addr) {
+            if ((addr & 0xFFFF) >= SLOT1_START) return false;
+            if (this.trdosActive) return true;              // TR-DOS, in ROM either way
+            return !(this.ramInRomMode || this.scorpionRamInRomMode);
+        }
+
         isContended(addr) {
             if (!this.contentionEnabled) return false;
             if (!this.profile.hasContention) return false;

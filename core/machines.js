@@ -35,6 +35,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: false,
             hasContention: true,
             hasIOContention: true,          // IO ports are contended
+            hasFloatingBus: true,         // the ULA puts its screen fetch on the bus
             hasInternalContention: true,    // Internal cycles (no MREQ) are contended
             contentionPattern: '65432100',  // Delay pattern: (6,5,4,3,2,1,0,0)
             borderQuantization: true,
@@ -76,6 +77,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: true,
+            hasFloatingBus: true,         // the ULA puts its screen fetch on the bus
             hasInternalContention: true,
             contentionPattern: '65432100',
             borderQuantization: true,
@@ -112,6 +114,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: true,
+            hasFloatingBus: true,         // the ULA puts its screen fetch on the bus
             hasInternalContention: true,
             contentionPattern: '65432100',
             borderQuantization: true,
@@ -144,6 +147,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: false,         // +2A ULA only contends on MREQ, not IO
+            hasFloatingBus: false,        // gate array / clone: no
             hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
             contentionPattern: '76543210',  // Delay pattern: (7,6,5,4,3,2,1,0)
             borderQuantization: true,
@@ -176,6 +180,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: false,
             hasContention: false,
             hasIOContention: false,
+            hasFloatingBus: false,        // gate array / clone: no
             hasInternalContention: false,
             contentionPattern: 'none',
             borderQuantization: false,
@@ -208,6 +213,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: true,
             hasContention: true,
             hasIOContention: false,         // +3 ULA only contends on MREQ, not IO
+            hasFloatingBus: false,        // gate array / clone: no
             hasInternalContention: false,   // No contention on internal (non-MREQ) cycles
             contentionPattern: '76543210',  // Delay pattern: (7,6,5,4,3,2,1,0)
             borderQuantization: true,
@@ -240,6 +246,7 @@ const MACHINE_PROFILES = {
             ulaSubcarrierLock: false,
             hasContention: false,
             hasIOContention: false,
+            hasFloatingBus: false,        // gate array / clone: no
             hasInternalContention: false,
             contentionPattern: 'none',
             borderQuantization: false,
@@ -263,7 +270,7 @@ const MACHINE_PROFILES = {
             romSize: 65536,
             basicRomBank: 1,
             pagingModel: 'scorpion',
-            ulaProfile: 'pentagon',
+            ulaProfile: 'scorpion',
             // No snow: Amstrad's gate array and the clones do not do it
             hasSnow: false,
             ulaInkSkew: 0,             // nor the ink/paper edge skew
@@ -271,7 +278,10 @@ const MACHINE_PROFILES = {
             // locked, hence the dot crawl and no stable artifact colour
             ulaSubcarrierLock: false,
             hasContention: false,
+            evenM1: true,              // opcode fetches from RAM start on an even T-state
+            attrBusPorts: true,        // an unused port reads the attribute being fetched
             hasIOContention: false,
+            hasFloatingBus: false,        // gate array / clone: no
             hasInternalContention: false,
             contentionPattern: 'none',
             borderQuantization: false,

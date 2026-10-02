@@ -160,8 +160,23 @@
 .tests-progress-header {
     display: flex;
     justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
     margin-bottom: 6px;
     font-size: 12px;
+}
+/* A long test name must not run into the percentage. space-between alone
+   leaves no gap once the row is full, so "ctprobe contention probe 128K"
+   next to "43%" read as "128K43%". The name shrinks and ellipsises; the
+   number never does. */
+.tests-progress-header > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tests-progress-header > span:last-child {
+    flex: 0 0 auto;
 }
 .tests-progress-bar {
     height: 8px;

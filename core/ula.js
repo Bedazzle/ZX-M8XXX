@@ -181,6 +181,27 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 this.BORDER_TIMING_OFFSET = 0;  // No border offset needed for Pentagon
                 this.BORDER_PHASE = 0;  // Pentagon has no 4T quantization
                 this.ULA_READ_AHEAD = 0;  // Pentagon has no contention, no read-ahead needed
+            } else if (this.profile.ulaProfile === 'scorpion') {
+                // Scorpion ZS-256: the 48K picture and the 48K frame -- 224 x 312 =
+                // 69888 -- NOT the Pentagon's 71680, which is what it used to be timed
+                // as. Its own clone features (Even M1, the attribute bus) live in
+                // core/z80.js and the port read; here it is simply a 48K-shaped screen
+                // with no contention at all.
+                this.TSTATES_PER_LINE = 224;
+                this.LINES_PER_FRAME = 312;
+                this.FIRST_SCREEN_LINE = 64;
+                this.VISIBLE_LINE_OFFSET = 0;
+                this.ULA_CONTENTION_TSTATES = 0;
+                this.PAPER_START_TSTATE = 14;
+                this.TOP_LEFT_PIXEL_TSTATE = 14336;
+                this.BORDER_TIMING_OFFSET = 0;
+                this.TIMING_ADJUST = 0;
+                this.VERTICAL_LINE_DRIFT = 0;
+                this.BORDER_PHASE = 0;
+                this.CONTENTION_START_TSTATE = 14335;
+                this.CONTENTION_PATTERN = [0, 0, 0, 0, 0, 0, 0, 0];
+                this.IO_CONTENTION_ENABLED = false;   // a clone: nothing is contended
+                this.ULA_READ_AHEAD = 1;
             } else if (this.profile.ulaProfile === '128k') {
                 // 128K: 228 T-states/line × 311 lines = 70908 T-states/frame
                 // Line structure (from libspectrum): 24 left + 128 screen + 24 right + 52 retrace = 228
@@ -719,7 +740,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             // Late timing (warm ULA) = display starts 1T later = ADD 1 to TOP_LEFT_PIXEL_TSTATE
             // This shifts border LEFT (earlier in relative frame position)
             // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
-            if (this.lateTimings && this.profile.ulaProfile !== 'pentagon') {
+            if (this.lateTimings && this.profile.ulaProfile !== 'pentagon'
+                                 && this.profile.ulaProfile !== 'scorpion') {
                 this.LINE_TIMES_BASE += 1;
             }
 
@@ -2652,6 +2674,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
         // Only applies to Ferranti ULA machines (48K, 128K), not Pentagon
         setLateTimings(late) {
             if (this.profile.ulaProfile === 'pentagon') return;
+            if (this.profile.ulaProfile === 'scorpion') return;
             this.lateTimings = !!late;
             // Recalculate LINE_TIMES_BASE with new timing mode
             this.calculateLineTimes();

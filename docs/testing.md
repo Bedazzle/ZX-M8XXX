@@ -3,6 +3,70 @@
 Run everything with `python run-tests.py`. This file is the per-suite detail;
 CLAUDE.md lists the suites and the command.
 
+## Running the application tests headlessly
+
+`run-tests.py` runs `tests/*-test.html` and says nothing about the pictures. The
+application tests (`tests/tests.json`) are the screen tests — real games and demos
+run for N frames and compared with a reference PNG — and they are where a timing
+change actually shows. `python run-app-tests.py` runs them without a human in
+Tools → Tests:
+
+```
+python run-app-tests.py                  # everything enabled in tests.json
+python run-app-tests.py aquaplane 48k    # substrings: id, name, machine, category
+python run-app-tests.py --list
+python run-app-tests.py --json out.json  # the full result, with per-test diff counts
+```
+
+It serves the tree with `serve.py` (the documented harness server — ES-module MIME
+types, no-cache, and the POST endpoints `zxDebug.report()` uses), opens
+`tools/app-tests-harness.html` in headless Edge/Chrome, and polls
+`headless/apptests.json` while the run goes. **It needs `roms/` and the media in
+`tests/`**, neither of which is in git.
+
+**Read a result by running it twice** — once with the change, once against
+`git show HEAD:core/<file>.js` — and diff the two. A screen test that was already
+failing for an unrelated reason looks exactly like one the change broke, and the
+only way to tell them apart is the control run. The first time this was used, 20 of
+29 "failures" were the harness itself.
+
+Two traps found building it, both worth knowing before touching the harness:
+
+- **Call `runTests()`, never `runSingleTest()` in a loop of your own.**
+  `runFramesWithAbortCheck()` returns immediately unless `TestRunner.running` is set,
+  and only `runTests()` sets it. Driving the tests one at a time therefore runs *zero
+  frames*: snapshots still load (they are instant) and every tape and disk silently
+  loads nothing, then the test compares a bare ROM screen against the reference. It
+  does not look like a harness bug — it looks like 20 broken screen tests.
+- **The page starts the machine by itself** once the last ROM lands. A driver that
+  begins before that has its run reset from under it, so the harness waits for
+  `spectrum.running` after `zxDebug.ready()`.
+
+**Open harness bug — `systest_1.01r`.** It passes in Tools → Tests, both on its own
+and in the batch, and fails here. The emulator is not involved: the result is
+identical with and without every change made to `core/z80.js` and `core/spectrum.js`.
+Two symptoms, which is the useful part of the clue:
+
+- **in a batch** it completes but is *behind* — at frame 102 it still shows the
+  program's title screen where the reference already shows the finished results;
+- **on its own** the run never returns at all.
+
+What it is not: not Pentagon (`p128` passes alone), not TR-DOS or `.scl` (
+`global_test_1.0b` is also Pentagon + TRD + a quoted filename and passes alone), and
+not the first machine switch. What is unique to this entry is that its `diskRun` is
+`"TEST PC"` — **the only one whose filename contains a space** — and that the space
+is typed by `pressKey(' ')` in `injectDiskRunCommand`. Start there.
+
+**`--shots <dir>` writes what each failing test actually drew**, next to the
+reference for *the step that failed*, with an `index.html` putting the two side by
+side. Use it before calling anything a regression. Two cases from the first real use
+make the point: chromatrons' 41.9% diff was the 128K artifact colours going from
+**inverted to correct** — the magenta and green regions simply swapped, and the
+committed reference was the wrong one — while academy's 8 pixels were one scanline's
+border starting 4T later, which no number distinguishes from noise. A big diff is as
+likely to be a fix as a break; regenerate a reference only once the picture has been
+checked against hardware or a known-good screenshot.
+
 ## `tests/asm-test.html`
 
 Z80 assembler test suite — instructions, directives, expressions, macros, built-in editor
@@ -61,6 +125,127 @@ Import Foreign dialog tests — synthetic TRD/SCL/ZIP/Hobeta fixtures driven thr
 ## `tests/halt-int-test.html`
 
 HALT + interrupt tests — a frame-start INT landing on a not-yet-executed HALT enters the halt state first so the handler returns to PC+1 (snapshot resume on an EI/HALT main loop, e.g. Shock megademo). Also that both steppers generate no audio while `audioSuppressed` is set, even with an enabled audio object — what keeps the application tests silent
+
+## Timing Test (application tests)
+
+**Patrik Rak**'s Timing Test (based on **Jan Bobrowski**'s zxtests, GPL) is a menu of
+nine sub-tests; each draws a 20x8 grid of how long one instruction takes at each
+T-state across the contention boundary. The menu choice is the entry's `keys`, so each
+sub-test is its own row in `tests.json`:
+
+| entry | keys | what it times |
+|:--|:--|:--|
+| `timingtest-48k` / `-128k` | `0,ENTER` | contended NOP -- the plain wait pattern |
+| `timingtest-snow-*` | `1,ENTER` | NOP with `I` = `#7F`, so the refresh address is in the screen |
+| `timingtest-00fe-*` | `2,ENTER` | `IN #00FE` -- high byte clear, ULA port: N:1,C:3 |
+| `timingtest-00ff-*` | `3,ENTER` | `IN #00FF` -- high byte clear, other port: N:4, never waits |
+| `timingtest-7ffe-*` | `4,ENTER` | `IN #7FFE` -- high byte contended, ULA port: C:1,C:3 |
+| `timingtest-7fff-*` | `5,ENTER` | `IN #7FFF` -- high byte contended, other port: C:1 x4 |
+| `timingtest-fffe-*` | `6,ENTER` | `IN #FFFE` -- as 00FE, through the keyboard port |
+| `timingtest-ffff-*` | `7,ENTER` | `IN #FFFF` -- as 00FF |
+
+Each on 48K and 128K, 16 entries. Sub-tests 2-7 are the **four port-contention
+patterns**, which is the part of v26.09.04 that only ctprobe had checked. Menu entry 8
+("128k page RET") is not included: it needs a page chosen through a separate prompt.
+
+**Why it is here even though ctprobe covers the same ground.** ctprobe *reuses this
+program's measuring engine*, so the two are not independent instruments. What is
+independent is the reference: Rak's results were photographed on real 48K, 128K, +2A
+and +3 machines. The documented hardware condition is that on a 48K with early timing
+row `14328` reads `4 4 4 4 4 4 4 4` and row `14336` starts with `10` -- if `10` appears
+at the END of row 14328 instead, the machine runs one tick off relative to the
+interrupt. We satisfy both, and the 128K's first contended value lands at 14361, its
+documented onset.
+
+## ctprobe (application tests)
+
+`ctprobe-48k`, `ctprobe-128k` and `ctprobe-pentagon` run **unreal-ng**'s contention
+probe and compare its own report screen. It is the only instrument here that sees
+**where inside an instruction** a memory wait falls: it times fragments at every
+start tick around the contention boundary against an oracle built from the published
+wait patterns and FUSE's cycle tables.
+
+It ships as `tests/ctprobe.zip`, like every other test medium here, with its
+sources, licence and credits in the same archive (`CREDITS.md`, GPL v3 - engine
+by Jan Bobrowski, adjusted by Patrik Rak). Nothing needs unpacking by hand:
+`run-ctprobe.py --tap` defaults to that zip and reads the `.tap` straight out of
+it, and `--dump-dir` drops the breakdown script beside the dumps it writes.
+
+Each entry is **~80-100s**, so the three together roughly double the application
+suite. Worth it: they are what caught every fault fixed in v26.09.04.
+
+The reference screens carry the probe's own verdict, which makes a regression
+self-describing:
+
+| entry | reference says |
+|:--|:--|
+| `ctprobe-48k` | green border, ALL VALUES AS EXPECTED |
+| `ctprobe-pentagon` | green border, ALL VALUES AS EXPECTED |
+| `ctprobe-scorpion` | green border, *attr bus, Even M1*, ALL VALUES AS EXPECTED |
+| `ctprobe-128k` | red border, `P-05B`/`P-05D BAD`, 28 VALUES WRONG |
+
+**The 128K reference pins a known disagreement on purpose.** P-05 is the rule that a
+port whose high byte points at a contended page at `$C000` waits like contended
+memory; the probe's own README calls it **not yet confirmed on real hardware** and the
+emulators split on it. Do not "fix" it to make the screen green without evidence - and
+if it is ever settled, re-baseline deliberately and say so.
+
+For the **number** rather than a screen, and for a per-check breakdown:
+
+```
+python run-ctprobe.py 48k 128k pentagon
+python run-ctprobe.py 48k --dump-dir out
+python out/ctprobe-compare.py out/48k.bin
+```
+
+## Floating-bus tests (application tests)
+
+`float48k` and `float128k` are **Mark Woodmass**'s floating-bus tests (2008), from
+the machine-level catalogue at <https://github.com/redcode/ZXSpectrum/wiki/Tests>
+(the sibling of the better-known CPU one, and where contention / floating-bus /
+snow tests live). Each prints a table of frame T-state against the byte an unmapped
+port reads, so a wrong sample point is legible on the screen rather than hidden in a
+pixel count: before the fix the 48K showed `255` until tick 14350 instead of 14338,
+and the 128K showed `255` for every tick because it had no floating bus at all.
+
+They are a second opinion, not the primary one. The oracle is ctprobe's P-02
+(`run-ctprobe.py`), which gives a number; these say the same thing in a form you can
+look at, from an author independent of it. Both were used to fit `IO_CYCLE_READ_T`
+and the per-machine `floatStart` in `core/spectrum.js`, and they agree.
+
+## `tests/contention-timing-test.html`
+
+**Where inside an instruction each wait falls.** The pattern, the onset and the M1 fetch
+were already right; what was wrong was the placement of the cycles *between* the memory
+accesses, which no screen test can see and which `tests/fuse-test.html` does not cover
+either (it checks flags and lengths, not which address sits on the bus during an internal
+cycle). Found by [ctprobe](https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe).
+
+The 48K contention model of `core/spectrum.js` is replayed over a bare `Z80`, and every
+instruction is checked against FUSE's cycle list walked independently, over every start
+tick around the first contended one:
+
+| Instruction | The cycle list it must follow |
+|:--|:--|
+| `LD r,(IX+d)`, `LD (IX+d),r`, ALU `(IX+d)` | `pc:4,pc+1:4,pc+2:3,pc+2:1x5,ixd:3` — the five internal ticks are on the **displacement's** address, not on `IX+d` |
+| `INC/DEC (IX+d)` | the same, then `ixd:3,ixd:1,ixd:3` |
+| `LD (IX+d),n` | `pc+2:3,pc+3:3,pc+3:1x2,ixd:3` — the odd one out: two ticks, on the **operand** |
+| `RLC (IX+d)`, `BIT b,(IX+d)` | `pc+3:3,pc+3:1x2,ixd:3,ixd:1[,ixd:3]` — on the **fourth byte**, then one after the read |
+| `CPI`/`CPD` | `hl:3,hl:1x5`; the repeating forms add another `hl:1x5` |
+| `EX (SP),HL/IX/IY` | `sp:3,sp+1:3,sp+1:1,sp+1:3,sp:3,sp:1x2` — and the **high byte is written first** |
+| `DD DD DD NOP`, `DD LD A,n` | every prefix is an opcode fetch of its own, four ticks apart |
+
+The prefix rows are a different fault from the rest. The model reads `tStates` as the
+instruction's **start** and tracks the position inside it separately, so a prefix that paid
+its four ticks into `tStates` immediately was counted twice and every later cycle was looked
+up four (then eight) ticks late. `DD DD DD NOP` is what ctprobe checks, but the case that
+matters is `DD LD A,n`: a redundant prefix on an ordinary instruction, which is common, and
+whose operand read was pushed late by it.
+
+Two things keep it honest. The bare lengths (19, 23, 20, 16, 21, 19 …) are asserted
+separately, so a change to *where* a wait lands cannot quietly change *how long* an
+instruction takes; and the same instructions are run again in uncontended RAM, where every
+one of them must still cost exactly its bare length.
 
 ## `tests/disk-boot-test.html`
 

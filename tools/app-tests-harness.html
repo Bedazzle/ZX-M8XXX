@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Application tests (headless)</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; margin: 0; padding: 8px; }
+        #log { white-space: pre; font-size: 12px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        iframe { width: 1100px; height: 760px; border: 1px solid #45475a; }
+    </style>
+</head>
+<body>
+    <div id="log">starting…</div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // Runs tests/tests.json — the SCREEN tests — without a human clicking
+        // Tools -> Tests. `python run-tests.py` covers tests/*-test.html and says
+        // nothing about the pictures, which is where a timing change actually
+        // shows. Driven by ../run-app-tests.py; see docs/testing.md.
+        //
+        // The app is in an iframe rather than being this page because the real
+        // index.html has to bootstrap its own ROMs and markup; same origin, so
+        // frame.contentWindow.zxDebug is the documented interface (docs/automation.md).
+        //
+        // It calls runTests(), NOT runSingleTest() in a loop of our own.
+        // runFramesWithAbortCheck() returns at once unless `running` is set, and
+        // only runTests() sets it — so driving the tests one by one silently skips
+        // every frame, which loads no tape and boots no disk while snapshots still
+        // work. That looked exactly like 20 broken screen tests.
+
+        const logEl = document.getElementById('log');
+        let first = true;
+        function log(msg, cls) {
+            const d = document.createElement('div');
+            if (cls) d.className = cls;
+            d.textContent = msg;
+            if (first) { logEl.textContent = ''; first = false; }
+            logEl.appendChild(d);
+        }
+
+        const params = new URLSearchParams(location.search);
+        const filters = (params.get('filter') || '').split(',').map(s => s.trim()).filter(Boolean);
+        const listOnly = params.get('list') === '1';
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, ms, what) {
+            const t0 = Date.now();
+            while (Date.now() - t0 < ms) {
+                let v;
+                try { v = fn(); } catch (e) { v = false; }
+                if (v) return v;
+                await sleep(50);
+            }
+            throw new Error('timed out waiting for ' + what);
+        }
+
+        let zx = null;
+        async function report(data, kind, name) {
+            // Through the frame, so the POST is same-origin for serve.py.
+            if (zx && zx.report) { try { await zx.report(data, kind, name); } catch (e) { /* no serve.py */ } }
+        }
+
+        (async () => {
+            const out = { ok: false, error: null, results: [], started: new Date().toISOString() };
+            try {
+                const frame = document.getElementById('app');
+                if (!frame.contentWindow || frame.contentWindow.document.readyState !== 'complete') {
+                    await new Promise(r => frame.addEventListener('load', r, { once: true }));
+                }
+                const w = frame.contentWindow;
+
+                zx = await until(() => w.zxDebug && w.zxDebug.ready && w.zxDebug, 120000, 'zxDebug');
+                log('zxDebug ' + zx.version);
+                // Earliest possible heartbeat: the driver uses it to tell a page
+                // that never started from one that is simply slow.
+                await report({ phase: 'boot', version: zx.version }, 'progress',
+                             'apptests-progress');
+                await zx.ready();
+
+                // The page fetches every ROM it knows about and resets the machine
+                // when the last one lands. A driver that starts before that has its
+                // run reset from under it (the coemu runner hit exactly this), so
+                // wait for the page to have started the machine by itself first.
+                await until(() => zx.spectrum && zx.spectrum.running, 120000, 'the page to start the machine');
+                log('machine started: ' + zx.spectrum.machineType
+                    + ' | flash load ' + !!zx.spectrum.tapeTrapsEnabled
+                    + ' | late timings ' + !!zx.spectrum.lateTimings);
+
+                // The app's own console, kept per test: when a tape or disk does
+                // not load, what it says is the whole diagnosis.
+                const said = [];
+                for (const level of ['log', 'warn', 'error']) {
+                    const orig = w.console[level].bind(w.console);
+                    w.console[level] = (...a) => {
+                        said.push(level[0] + ': ' + a.map(x => {
+                            try { return typeof x === 'string' ? x : JSON.stringify(x); }
+                            catch (e) { return String(x); }
+                        }).join(' ').slice(0, 200));
+                        return orig(...a);
+                    };
+                }
+                w.addEventListener('error', (e) => said.push('E: ' + e.message));
+
+                const tr = zx.testRunner;
+                if (!tr) throw new Error('zxDebug.testRunner is null — the app did not finish init');
+                await tr.loadTests();
+                log('tests.json: ' + tr.tests.length + ' entries');
+
+                let chosen = tr.tests.filter(t => t.enabled !== false);
+                if (filters.length) {
+                    const hit = (t) => filters.some(f => {
+                        const s = f.toLowerCase();
+                        return String(t.id).toLowerCase().includes(s) ||
+                               String(t.name).toLowerCase().includes(s) ||
+                               String(t.machine || '').toLowerCase() === s ||
+                               String(t.category || '').toLowerCase() === s;
+                    });
+                    chosen = chosen.filter(hit);
+                }
+
+                if (listOnly) {
+                    out.ok = true;
+                    out.results = chosen.map(t => ({ id: t.id, name: t.name, machine: t.machine,
+                                                     category: t.category, listed: true }));
+                    log('listing ' + chosen.length + ' tests');
+                    await report(out, 'result', 'apptests');
+                    log('=== COMPLETE ===');
+                    return;
+                }
+
+                log('running ' + chosen.length + ' tests');
+
+                // runTests() keeps no per-test timing, frame count or console, so
+                // wrap the one call it makes per test and collect them on the way.
+                const extra = new Map();
+                const origSingle = tr.runSingleTest.bind(tr);
+                // A watchdog: while a test is still running, keep posting what the
+                // app has said and how long it has been. A hang is otherwise a silent
+                // timeout with nothing to go on.
+                let liveId = null, liveT0 = 0, liveTick = null;
+                tr.runSingleTest = async (t) => {
+                    said.length = 0;
+                    liveId = t.id; liveT0 = performance.now();
+                    if (liveTick === null) {
+                        liveTick = setInterval(() => {
+                            if (!liveId) return;
+                            report({ alive: liveId,
+                                     secs: Math.round((performance.now() - liveT0) / 100) / 10,
+                                     said: said.slice(-16) }, 'progress', 'apptests-progress');
+                        }, 8000);
+                    }
+                    const t0 = performance.now();
+                    let r;
+                    try {
+                        r = await origSingle(t);
+                    } finally {
+                        // What it actually drew, for a failure. A pixel count cannot
+                        // tell a break from a correction — chromatrons' 41.9% turned
+                        // out to be the artifact colours going from inverted to right
+                        // — so the picture has to be available to look at.
+                        let shot = null;
+                        try {
+                            const c = w.document.getElementById('testsActualCanvas');
+                            if (c && c.width) shot = c.toDataURL('image/png');
+                        } catch (e) { /* tainted or absent */ }
+                        extra.set(t.id, { secs: Math.round((performance.now() - t0) / 100) / 10,
+                                          frames: tr.totalFrames || 0, said: said.slice(-14),
+                                          shot });
+                        liveId = null;
+                    }
+                    return r;
+                };
+
+                let seen = 0;
+                const poll = setInterval(() => {
+                    if (tr.results.length > seen) {
+                        seen = tr.results.length;
+                        const last = tr.results[seen - 1];
+                        report({ done: seen, total: chosen.length, last: shape(last) }, 'progress', 'apptests-progress');
+                    }
+                }, 200);
+
+                function shape(entry) {
+                    const t = entry.test, r = entry.result, x = extra.get(t.id) || {};
+                    return {
+                        id: t.id, name: t.name, machine: t.machine || '', category: t.category || '',
+                        passed: !!r.passed, secs: x.secs != null ? x.secs : null, frames: x.frames || 0,
+                        diffPixels: r.diff ? r.diff.diffCount : null,
+                        diffPercent: r.diff ? Number(r.diff.diffPercent) : null,
+                        step: r.step != null ? r.step : null,
+                        error: r.error || null,
+                        said: r.passed ? undefined : (x.said || []),
+                        shot: r.passed ? undefined : (x.shot || null)
+                    };
+                }
+
+                await tr.runTests(chosen);
+                clearInterval(poll);
+
+                out.results = tr.results.map(shape);
+                out.ok = true;
+                const failed = out.results.filter(r => !r.passed).length;
+                for (const r of out.results) {
+                    log(`${r.id} [${r.machine}] ` +
+                        (r.passed ? 'PASS' : (r.error || `${r.diffPixels} px (${r.diffPercent}%)`)),
+                        r.passed ? 'pass' : 'fail');
+                }
+                log(`\n${out.results.length - failed} passed, ${failed} failed`);
+            } catch (e) {
+                out.error = e && e.message ? e.message : String(e);
+                log('HARNESS ERROR: ' + out.error, 'fail');
+            }
+            out.finished = new Date().toISOString();
+            await report(out, 'result', 'apptests');
+            log('=== COMPLETE ===');
+        })();
+    </script>
+</body>
+</html>

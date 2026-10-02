@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ctprobe (headless)</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; margin: 0; padding: 8px; }
+        #log { white-space: pre; font-size: 12px; }
+        iframe { width: 1100px; height: 700px; border: 1px solid #45475a; }
+    </style>
+</head>
+<body>
+    <div id="log">starting…</div>
+    <iframe id="app" src="../index.html"></iframe>
+
+    <script type="module">
+        // Runs unreal-ng's contention probe and reads its own verdict out of memory,
+        // so "how wrong is our contention" is a NUMBER we measure here rather than a
+        // paragraph in someone else's report. Driven by ../run-ctprobe.py.
+        //
+        // The probe writes DONE=1 when it finishes and FAILS = how many measured
+        // values differed from a real machine. Addresses come from ctprobe.sym and
+        // are passed in, so a rebuilt probe does not need this page changed.
+
+        const logEl = document.getElementById('log');
+        let first = true;
+        function log(msg) {
+            const d = document.createElement('div');
+            d.textContent = msg;
+            if (first) { logEl.textContent = ''; first = false; }
+            logEl.appendChild(d);
+        }
+
+        const p = new URLSearchParams(location.search);
+        const machines = (p.get('machines') || '48k').split(',').map(s => s.trim()).filter(Boolean);
+        const tapUrl = p.get('tap') || '';
+        const kind = p.get('kind') || 'tape';           // tape | trd
+        const addrDone = parseInt(p.get('done') || '0x8CB0', 16);
+        const addrFails = parseInt(p.get('fails') || '0x8CB1', 16);
+        const maxFrames = parseInt(p.get('max') || '30000', 10);
+        const pollStep = parseInt(p.get('poll') || '250', 10);
+        const dumpFrom = parseInt(p.get('from') || '0', 16);   // START
+        const dumpTo = parseInt(p.get('to') || '0', 16);       // PROBEEND
+
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, ms, what) {
+            const t0 = Date.now();
+            while (Date.now() - t0 < ms) {
+                let v; try { v = fn(); } catch (e) { v = false; }
+                if (v) return v;
+                await sleep(50);
+            }
+            throw new Error('timed out waiting for ' + what);
+        }
+
+        let zx = null;
+        async function report(data, kindName, name) {
+            if (zx && zx.report) { try { await zx.report(data, kindName, name); } catch (e) {} }
+        }
+
+        (async () => {
+            const out = { ok: false, error: null, results: [], started: new Date().toISOString() };
+            try {
+                const frame = document.getElementById('app');
+                if (!frame.contentWindow || frame.contentWindow.document.readyState !== 'complete') {
+                    await new Promise(r => frame.addEventListener('load', r, { once: true }));
+                }
+                const w = frame.contentWindow;
+                zx = await until(() => w.zxDebug && w.zxDebug.ready && w.zxDebug, 120000, 'zxDebug');
+                log('zxDebug ' + zx.version);
+                // Earliest possible heartbeat: the driver uses it to tell a page
+                // that never started from one that is simply slow.
+                await report({ phase: 'boot', version: zx.version }, 'progress',
+                             'ctprobe-progress');
+                await zx.ready();
+                await until(() => zx.spectrum && zx.spectrum.running, 120000, 'the page to start the machine');
+
+                for (const machine of machines) {
+                    const row = { machine, done: 0, fails: null, frames: 0, error: null, screen: null };
+                    try {
+                        // A fresh start per machine: the probe installs an IM2 table
+                        // and measures the frame, so it must not inherit anything.
+                        await zx.ready({ machine });
+                        await zx.start({ machine });
+                        log(`${machine}: started`);
+
+                        // cache is a RequestCache string, not a boolean; the default
+                        // 'no-store' is already what a rebuilt probe needs.
+                        await zx.loadUrl(tapUrl, { name: tapUrl.split('/').pop() });
+                        await zx.autoLoad(kind === 'trd' ? { type: 'disk', diskRun: 'boot' }
+                                                         : { type: 'tape' });
+                        log(`${machine}: loaded, running`);
+
+                        // Counted in emulated frames, never wall clock. The probe is
+                        // ~3 minutes of Spectrum time; it says when it is finished.
+                        let frames = 0;
+                        while (frames < maxFrames) {
+                            zx.runFrames(pollStep);
+                            frames += pollStep;
+                            row.frames = frames;
+                            if (zx.peek(addrDone) === 1) break;
+                            if (frames % 2500 === 0) {
+                                await report({ machine, frames }, 'progress', 'ctprobe-progress');
+                                await sleep(0);
+                            }
+                        }
+                        row.done = zx.peek(addrDone);
+                        // FAILS can exceed a byte (215 on the 48K), so read a word and
+                        // let the driver sanity-check it.
+                        row.fails = zx.peekWord ? zx.peekWord(addrFails) : zx.peek(addrFails);
+                        row.failsByte = zx.peek(addrFails);
+                        // The whole measurement area, so ctprobe-compare.py can say
+                        // WHICH checks differ and by how much — the count alone does
+                        // not tell you what is left to fix.
+                        if (dumpFrom && dumpTo > dumpFrom && zx.peekBlock) {
+                            const b = zx.peekBlock(dumpFrom, dumpTo - dumpFrom);
+                            let s = '';
+                            for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+                            row.dump = btoa(s);
+                            row.dumpFrom = dumpFrom;
+                        }
+                        try {
+                            const c = w.document.getElementById('screenCanvas')
+                                   || w.document.querySelector('canvas');
+                            if (c && c.width) row.screen = c.toDataURL('image/png');
+                        } catch (e) {}
+                        log(`${machine}: done=${row.done} fails=${row.fails} after ${frames} frames`);
+                    } catch (e) {
+                        row.error = e && e.message ? e.message : String(e);
+                        log(`${machine}: ERROR ${row.error}`);
+                    }
+                    out.results.push(row);
+                    await report({ last: row }, 'progress', 'ctprobe-progress');
+                }
+                out.ok = true;
+            } catch (e) {
+                out.error = e && e.message ? e.message : String(e);
+                log('HARNESS ERROR: ' + out.error);
+            }
+            out.finished = new Date().toISOString();
+            await report(out, 'result', 'ctprobe');
+            log('=== COMPLETE ===');
+        })();
+    </script>
+</body>
+</html>

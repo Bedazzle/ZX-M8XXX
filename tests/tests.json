@@ -261,7 +261,7 @@
             "machine": "48k",
             "earlyTimings": true,
             "palette": "default",
-            "enabled": true,
+            "enabled": false,
             "author": "",
             "source": "https://www.rzxarchive.co.uk/e.php",
             "steps": [
@@ -352,7 +352,7 @@
             "machine": "pentagon1024",
             "earlyTimings": true,
             "palette": "default",
-            "enabled": true,
+            "enabled": false,
             "author": "DDp",
             "source": "",
             "steps": [
@@ -692,6 +692,354 @@
             "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
             "steps": [
                 { "frames": 100, "screen": "tests/halt2int_late.png" }
+            ]
+        },
+        {
+            "id": "float48k",
+            "name": "Float48K - floating bus",
+            "category": "video",
+            "file": "tests/float48k.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Mark Woodmass",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Float48K",
+            "steps": [
+                { "frames": 250, "screen": "tests/float48k_250.png" }
+            ]
+        },
+        {
+            "id": "float128k",
+            "name": "Float128K - floating bus",
+            "category": "video",
+            "file": "tests/float128k.tap",
+            "machine": "128k",
+            "palette": "default",
+            "enabled": true,
+            "author": "Mark Woodmass",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Float128K",
+            "steps": [
+                { "frames": 250, "screen": "tests/float128k_250.png" }
+            ]
+        },
+        {
+            "id": "ctprobe-48k",
+            "name": "ctprobe contention probe 48K",
+            "category": "cpu",
+            "file": "tests/ctprobe.zip",
+            "zipEntry": "ctprobe.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "unreal-ng (alfishe); measuring engine by Jan Bobrowski, adjusted by Patrik Rak - GPL v3, see tests/ctprobe/CREDITS.md",
+            "source": "https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe",
+            "steps": [
+                { "frames": 12500, "screen": "tests/ctprobe-48k.png" }
+            ]
+        },
+        {
+            "id": "ctprobe-128k",
+            "name": "ctprobe contention probe 128K",
+            "category": "cpu",
+            "file": "tests/ctprobe.zip",
+            "zipEntry": "ctprobe.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "unreal-ng (alfishe); measuring engine by Jan Bobrowski, adjusted by Patrik Rak - GPL v3, see tests/ctprobe/CREDITS.md",
+            "source": "https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe",
+            "steps": [
+                { "frames": 14925, "screen": "tests/ctprobe-128k.png" }
+            ]
+        },
+        {
+            "id": "ctprobe-pentagon",
+            "name": "ctprobe contention probe Pentagon",
+            "category": "cpu",
+            "file": "tests/ctprobe.zip",
+            "zipEntry": "ctprobe.tap",
+            "machine": "pentagon",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "unreal-ng (alfishe); measuring engine by Jan Bobrowski, adjusted by Patrik Rak - GPL v3, see tests/ctprobe/CREDITS.md",
+            "source": "https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe",
+            "steps": [
+                { "frames": 14750, "screen": "tests/ctprobe-pentagon.png" }
+            ]
+        },
+        {
+            "id": "ctprobe-scorpion",
+            "name": "ctprobe contention probe Scorpion",
+            "category": "cpu",
+            "file": "tests/ctprobe.zip",
+            "zipEntry": "ctprobe.tap",
+            "machine": "scorpion",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "unreal-ng (alfishe); measuring engine by Jan Bobrowski, adjusted by Patrik Rak - GPL v3, see CREDITS.md inside tests/ctprobe.zip",
+            "source": "https://github.com/alfishe/unreal-ng/tree/master/tools/verification/contention/ctprobe",
+            "steps": [
+                { "frames": 11675, "screen": "tests/ctprobe-scorpion.png" }
+            ]
+        },
+        {
+            "id": "timingtest-48k",
+            "name": "Timing Test (Rak) contended NOP 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "0,ENTER", "screen": "tests/timingtest-48k.png" }
+            ]
+        },        {
+            "id": "timingtest-128k",
+            "name": "Timing Test (Rak) contended NOP 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "0,ENTER", "screen": "tests/timingtest-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-snow-48k",
+            "name": "Timing Test (Rak) snow effect NOP 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "1,ENTER", "screen": "tests/timingtest-snow-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-snow-128k",
+            "name": "Timing Test (Rak) snow effect NOP 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "1,ENTER", "screen": "tests/timingtest-snow-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-00fe-48k",
+            "name": "Timing Test (Rak) IN #00FE 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "2,ENTER", "screen": "tests/timingtest-00fe-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-00fe-128k",
+            "name": "Timing Test (Rak) IN #00FE 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "2,ENTER", "screen": "tests/timingtest-00fe-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-00ff-48k",
+            "name": "Timing Test (Rak) IN #00FF 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "3,ENTER", "screen": "tests/timingtest-00ff-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-00ff-128k",
+            "name": "Timing Test (Rak) IN #00FF 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "3,ENTER", "screen": "tests/timingtest-00ff-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-7ffe-48k",
+            "name": "Timing Test (Rak) IN #7FFE 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "4,ENTER", "screen": "tests/timingtest-7ffe-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-7ffe-128k",
+            "name": "Timing Test (Rak) IN #7FFE 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "4,ENTER", "screen": "tests/timingtest-7ffe-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-7fff-48k",
+            "name": "Timing Test (Rak) IN #7FFF 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "5,ENTER", "screen": "tests/timingtest-7fff-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-7fff-128k",
+            "name": "Timing Test (Rak) IN #7FFF 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "5,ENTER", "screen": "tests/timingtest-7fff-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-fffe-48k",
+            "name": "Timing Test (Rak) IN #FFFE 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "6,ENTER", "screen": "tests/timingtest-fffe-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-fffe-128k",
+            "name": "Timing Test (Rak) IN #FFFE 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "6,ENTER", "screen": "tests/timingtest-fffe-128k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-ffff-48k",
+            "name": "Timing Test (Rak) IN #FFFF 48K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "7,ENTER", "screen": "tests/timingtest-ffff-48k.png" }
+            ]
+        },
+        {
+            "id": "timingtest-ffff-128k",
+            "name": "Timing Test (Rak) IN #FFFF 128K",
+            "category": "cpu",
+            "file": "tests/timingtest.zip",
+            "zipEntry": "timingtest-0.3/timing.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak, based on zxtests by Jan Bobrowski - GPL",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Timing-Test",
+            "steps": [
+                { "frames": 5000, "keys": "7,ENTER", "screen": "tests/timingtest-ffff-128k.png" }
             ]
         }
 

@@ -311,6 +311,8 @@ export class TestRunner {
 
                 const test = tests[i];
                 this.currentTest = test;
+                this._runIndex = i + 1;
+                this._runTotal = tests.length;
                 this.updateProgress(i + 1, tests.length, test.name, 0, 1, 1, test.steps.length);
 
                 // Update row to show running
@@ -355,6 +357,8 @@ export class TestRunner {
             // Always reset state
             this.running = false;
             this.currentTest = null;
+            this._runIndex = 0;   // a preview falls back to the full-list number
+            this._runTotal = 0;
             this.elements.btnRunSelected.disabled = false;
             this.elements.btnPreview.disabled = false;
             this.elements.btnAbort.classList.add('hidden');
@@ -406,7 +410,7 @@ export class TestRunner {
         // Save current machine state
         const savedMachine = this.spectrum.machineType;
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
-        const savedFullBorder = this.spectrum.ula.fullBorderMode;
+        const savedBorderPreset = this.spectrum.ula.borderPreset;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const savedKempston = this.spectrum.kempstonEnabled;
@@ -439,7 +443,7 @@ export class TestRunner {
             // Apply full border mode if specified (default to true for tests)
             const useFullBorder = test.fullBorder !== undefined ? test.fullBorder : true;
             if (this.spectrum.ula.setFullBorder(useFullBorder)) {
-                this.spectrum.updateDisplayDimensions();
+                this.resizeDisplay();
             }
 
             // Eject any leftover disks from previous tests (prevents Beta Disk
@@ -565,8 +569,8 @@ export class TestRunner {
                 await this.switchMachine(savedMachine);
             }
             // Restore full border mode AFTER machine switch (new ULA loses settings)
-            if (this.spectrum.ula.setFullBorder(savedFullBorder)) {
-                this.spectrum.updateDisplayDimensions();
+            if (this.spectrum.ula.setBorderPreset(savedBorderPreset)) {
+                this.resizeDisplay();
             }
             // Restore palette if changed
             if (test.palette && typeof this._callbacks.applyPalette === 'function') {
@@ -588,6 +592,17 @@ export class TestRunner {
             this.spectrum.ula.setInkSkew(savedInkSkew);
             this.spectrum.ula.setPalComposite(savedPalComposite);
             this.spectrum.setPentagonAttrOffset(savedPentagonPrefetch || 0);
+        }
+    }
+
+    // A dimension change has to move BOTH of the canvas's sizes: the internal
+    // one (spectrum.updateDisplayDimensions) and the CSS box it is drawn into
+    // (the host's updateCanvasSize). Doing only the first leaves the new picture
+    // stretched into the old box -- a visibly wrong aspect ratio.
+    resizeDisplay() {
+        this.spectrum.updateDisplayDimensions();
+        if (typeof this._callbacks.updateCanvasSize === 'function') {
+            this._callbacks.updateCanvasSize();
         }
     }
 
@@ -1316,8 +1331,8 @@ export class TestRunner {
             // Update progress
             if (f % 10 === 0) {
                 this.updateProgress(
-                    this.tests.indexOf(test) + 1,
-                    this.tests.length,
+                    this._runIndex || (this.tests.indexOf(test) + 1),
+                    this._runTotal || this.tests.length,
                     test.name,
                     this.totalFrames,
                     targetFrames,
@@ -1331,8 +1346,8 @@ export class TestRunner {
 
         // Final progress update
         this.updateProgress(
-            this.tests.indexOf(test) + 1,
-            this.tests.length,
+            this._runIndex || (this.tests.indexOf(test) + 1),
+            this._runTotal || this.tests.length,
             test.name,
             this.totalFrames,
             targetFrames,
@@ -1575,7 +1590,7 @@ export class TestRunner {
         // Save current state before any changes
         const savedMachine = this.spectrum.machineType;
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
-        const savedFullBorder = this.spectrum.ula.fullBorderMode;
+        const savedBorderPreset = this.spectrum.ula.borderPreset;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const savedKempston = this.spectrum.kempstonEnabled;
@@ -1624,7 +1639,7 @@ export class TestRunner {
             // Apply full border mode if specified (default to true for tests)
             const useFullBorder = test.fullBorder !== undefined ? test.fullBorder : true;
             if (this.spectrum.ula.setFullBorder(useFullBorder)) {
-                this.spectrum.updateDisplayDimensions();
+                this.resizeDisplay();
             }
 
             // Setup preview canvas (after full border mode is set)
@@ -1760,8 +1775,8 @@ export class TestRunner {
                 await this.switchMachine(savedMachine);
             }
             // Restore full border mode AFTER machine switch (new ULA loses settings)
-            if (this.spectrum.ula.setFullBorder(savedFullBorder)) {
-                this.spectrum.updateDisplayDimensions();
+            if (this.spectrum.ula.setBorderPreset(savedBorderPreset)) {
+                this.resizeDisplay();
             }
             // Restore palette if changed
             if (test.palette && typeof this._callbacks.applyPalette === 'function') {
