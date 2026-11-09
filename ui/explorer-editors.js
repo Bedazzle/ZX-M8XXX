@@ -507,7 +507,9 @@ export function initExplorerEditors(ctx) {
         if (panel.diskFiles.length === 0) {
             ctx.editorRenderLabelBar(panel);
             panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty disk. Use "Add File" to add files.</span>';
-            panel.dom.statusSpan.textContent = '0 files';
+            // An empty disk is exactly when its capacity is worth stating, so the
+            // free count is not left until the first file arrives.
+            panel.dom.statusSpan.textContent = `0 files \u2014 ${ctx.TRD_TOTAL_SECTORS} free`;
             ctx.editorUpdateToolbar();
             return;
         }
@@ -1058,6 +1060,10 @@ export function initExplorerEditors(ctx) {
         }
     }
 
+    // 80 tracks x 2 sides x 10 sectors = 1600; the directory takes tracks 0-1
+    // (both sides) = 40 sectors, leaving this many for files.
+    const MGT_DATA_SECTORS = 1560;
+
     function mgtEditorTotalSectors(panel) {
         let total = 0;
         for (const f of panel.diskFiles) total += f.sectors;
@@ -1069,14 +1075,13 @@ export function initExplorerEditors(ctx) {
 
         if (panel.diskFiles.length === 0) {
             panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty MGT disk. Use "Add File" to add files.</span>';
-            panel.dom.statusSpan.textContent = '0 files';
+            panel.dom.statusSpan.textContent = `0 files \u2014 ${MGT_DATA_SECTORS} free`;
             ctx.editorUpdateToolbar();
             return;
         }
 
         const totalSectors = mgtEditorTotalSectors(panel);
-        // MGT: 80 tracks × 2 sides × 10 sectors = 1600 total; directory uses tracks 0-1 = 40 sectors
-        const freeSectors = 1560 - totalSectors;
+        const freeSectors = MGT_DATA_SECTORS - totalSectors;
         const activeFiles = panel.diskFiles.filter(f => !f.deleted).length;
         const deletedFiles = panel.diskFiles.length - activeFiles;
 
@@ -1163,7 +1168,7 @@ export function initExplorerEditors(ctx) {
         const sectors = Math.max(1, Math.ceil(length / 510));
         if (sectors > 195) return 'File too large (max 195 sectors)';
         if (panel.diskFiles.length >= 80) return 'Directory full (max 80 files)';
-        if (mgtEditorTotalSectors(panel) + sectors > 1560) return 'Disk full (not enough free sectors)';
+        if (mgtEditorTotalSectors(panel) + sectors > MGT_DATA_SECTORS) return 'Disk full (not enough free sectors)';
 
         // Store clean file bytes; buildMGT lays them out into the chain format.
         const cleanData = new Uint8Array(data.subarray(0, length));
@@ -1297,7 +1302,8 @@ export function initExplorerEditors(ctx) {
         if (panel.diskFiles.length === 0) {
             ctx.editorRenderLabelBar(panel);
             panel.dom.fileList.innerHTML = '<span class="explorer-empty">Empty MDR cartridge. Use "Add File" to add files.</span>';
-            panel.dom.statusSpan.textContent = '0 files';
+            const blank = MDRLoader.getDiskInfo(panel.rawData);
+            panel.dom.statusSpan.textContent = `0 files \u2014 ${blank.freeSectors} free`;
             ctx.editorUpdateToolbar();
             return;
         }
@@ -1603,7 +1609,9 @@ export function initExplorerEditors(ctx) {
         const opdActive = panel.diskFiles.filter(f => !f.deleted).length;
         const opdDeleted = panel.diskFiles.length - opdActive;
         const opdDelTag = opdDeleted > 0 ? ` (+${opdDeleted} deleted, flushed on save)` : '';
-        panel.dom.statusSpan.textContent = `${sides === 2 ? 'DS' : 'SS'} ${opdActive} files, ${info.usedSectors}/${info.totalSectors} sectors${opdDelTag}`;
+        // Free, like every other disk panel -- it used to print used/total and
+        // leave the subtraction to you.
+        panel.dom.statusSpan.textContent = `${sides === 2 ? 'DS' : 'SS'} ${opdActive} files \u2014 ${info.freeSectors} free${opdDelTag}`;
         ctx.editorUpdateToolbar();
     }
 

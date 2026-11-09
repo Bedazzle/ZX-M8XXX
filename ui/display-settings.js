@@ -480,6 +480,25 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
     });
 
+    // ===== CPU variant =====
+
+    // Second-source Z80s differ in two ways software can see: the undocumented
+    // YF/XF after SCF/CCF, and whether OUT (C),0 drives 0 or 255. Which chip a
+    // machine was fitted with is not a property of the machine, so it is one
+    // setting rather than a per-profile field.
+    const cpuVariantSelect = document.getElementById('cpuVariantSelect');
+    if (cpuVariantSelect) {
+        const savedVariant = storageGet('zxm8_cpuVariant', 'zilog-nmos');
+        cpuVariantSelect.value = getSpectrum().setCpuVariant(savedVariant);
+
+        cpuVariantSelect.addEventListener('change', () => {
+            const applied = getSpectrum().setCpuVariant(cpuVariantSelect.value);
+            cpuVariantSelect.value = applied;
+            storageSet('zxm8_cpuVariant', applied);
+            showMessage('CPU variant: ' + cpuVariantSelect.selectedOptions[0].textContent);
+        });
+    }
+
     // ===== ULA snow checkbox =====
     // Off by default: it is a hardware fault worth *seeing*, not one to inflict on
     // every session. The status line says when the machine can't produce it, so

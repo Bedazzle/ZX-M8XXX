@@ -584,11 +584,11 @@ Visual 512x512 bitmap of the 64KB address space. Two view modes (Regions / Heatm
 **View modes:**
 - **Regions**: Colors each address by region type (Code=blue, SMC=red, DB=yellow, DW=orange, Text=green, Graphics=magenta, Unmapped=grey, Zeroes=black). Stats table shows counts and percentages. Stacked bar shows proportions.
 - **Heatmap**: Colors by automap access data — B=execute, G=read, R=write. Logarithmic intensity scaling. Stats table shows executed/read/written address counts, totals, and maximums. Bar shows exec/read/write proportions.
-- **128K view** (`btnMemmap128K`): 2x4 grid showing all 8 RAM banks. Each bank rendered as 128-byte-wide rows at x2 horizontal scale. Grid lines and bank labels overlaid. Current bank label shown in green. Supports both region and heatmap coloring.
+- **All-banks view** (`btnMemmapBanks`): every RAM bank the machine has, two to a row at x2 horizontal scale (128-byte rows, 256x128 per cell) — 8 on a 128K, 16 on a Scorpion, 64 on a Pentagon 1024. The canvas is `ceil(banks/2) * 128` tall and `.memmap-canvas-scroll` scrolls it; that box widens by the scrollbar's **measured** width, so the right-hand column of banks is never hidden under it. Grid lines and bank labels overlaid, banks 5 and 2 labelled with the fixed windows they sit in, the paged bank in green. A hover maps the point back to (bank, offset) and names the CPU address that bank answers at; a click navigates only when the bank is paged in, and says so when it is not. Regions are keyed by CPU address, so a bank's colours come from the window it is seen through — looked up once per window instead of once per byte, which is what makes 64 banks affordable. Supports both region and heatmap coloring.
 
 **Sidebar elements** (top to bottom):
 - Mode toggle buttons (Regions / Heatmap)
-- Bank toggle (64K / 128K) — hidden for 48K machines
+- Bank toggle (64K / the machine's RAM: 128KB, 256KB, 1 MB) — hidden for 48K machines
 - Legend (region colors or heatmap gradient + scale)
 - Heatmap export controls: Export button, Free button, Skip ROM / Skip screen checkboxes
 - Stats table (populated per view mode)

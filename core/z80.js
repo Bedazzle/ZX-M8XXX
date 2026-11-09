@@ -31,6 +31,21 @@
             // ticks twice and every later cycle is looked up too late (ctprobe M1-07).
             this._prefixTicks = 0;
 
+            // CPU variant. Two independent axes, each separately documented;
+            // they do not collapse into one enum, which is why they are two fields.
+            //
+            // xcfMask -- which of YF/XF take the (F ^ Q) term in SCF/CCF. Patrik Rak
+            // cracked the Zilog behaviour in 2012; David Banks found in 2018 that ST
+            // CMOS parts leave XF to A alone and NEC NMOS parts leave both to A:
+            //   Zilog    0x28  YF = A.5 | (F^Q).5 ; XF = A.3 | (F^Q).3
+            //   ST CMOS  0x20  YF = A.5 | (F^Q).5 ; XF = A.3
+            //   NEC NMOS 0x00  YF = A.5           ; XF = A.3
+            this.xcfMask = 0x28;
+            //
+            // OUT (C),0 puts 255 on the bus on the Zilog CMOS part, 0 on NMOS.
+            // Simon Cooke, Usenet 1996; rediscovered twice since.
+            this.outVc255 = false;
+
             // Debug: trace EI/DI and interrupt handling
             this.debugInterrupts = false;
             
@@ -854,7 +869,7 @@
                 case 0x36: this.writeByte(this.hl, this.fetchByte()); this.tStates += 10; break; // LD (HL),n
                 case 0x37: // SCF
                     this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) |
-                             (((this.lastQ ^ this.f) | this.a) & 0x28) |
+                             ((((this.lastQ ^ this.f) & this.xcfMask) | this.a) & 0x28) |
                              FLAG_C;
                     this.q = this.f;
                     this.tStates += 4;
@@ -894,7 +909,7 @@
                 case 0x3f: // CCF
                     this.f = (this.f & (FLAG_PV | FLAG_Z | FLAG_S)) |
                              ((this.f & FLAG_C) ? FLAG_H : FLAG_C) |
-                             (((this.lastQ ^ this.f) | this.a) & 0x28);
+                             ((((this.lastQ ^ this.f) & this.xcfMask) | this.a) & 0x28);
                     this.q = this.f;
                     this.tStates += 4;
                     break;
@@ -1556,7 +1571,7 @@
                     this.tStates += 18;
                     break;
                 case 0x70: { const tmp = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[tmp]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; } break; // IN (C) / IN F,(C)
-                case 0x71: this.outPort(this.bc, 0); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),0
+                case 0x71: this.outPort(this.bc, this.outVc255 ? 0xff : 0); this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // OUT (C),0
                 case 0x72: this.sbc16(this.sp); this.tStates += 15; break; // SBC HL,SP
                 case 0x73: { const addr = this.fetchWord(); this.writeWord(addr, this.sp); this.memptr = (addr + 1) & 0xffff; this.tStates += 20; } break; // LD (nn),SP
                 case 0x78: this.a = this.inPort(this.bc); this.f = (this.f & FLAG_C) | this.sz53pTable[this.a]; this.q = this.f; this.memptr = (this.bc + 1) & 0xffff; this.tStates += 12; break; // IN A,(C)

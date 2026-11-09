@@ -31,10 +31,11 @@ import time
 from urllib.parse import quote
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-RESULT = os.path.join(ROOT, 'headless', 'apptests.json')
+RUN_TOKEN = 'apptests-%d' % os.getpid()
+RESULT = os.path.join(ROOT, 'headless', RUN_TOKEN + '.json')
 # A SEPARATE file. They shared one, so a progress post sat where the result should be
 # and the driver read it as a finished run with zero tests in it.
-PROGRESS = os.path.join(ROOT, 'headless', 'apptests-progress.json')
+PROGRESS = os.path.join(ROOT, 'headless', RUN_TOKEN + '-progress.json')
 
 BROWSERS = [
     r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
@@ -198,7 +199,7 @@ def main():
         if not wait_for_server(port):
             sys.exit('serve.py did not come up on port %d' % port)
 
-        qs = []
+        qs = ['run=' + quote(RUN_TOKEN)]
         if args.filters:
             qs.append('filter=' + quote(','.join(args.filters)))
         if args.list:
@@ -341,6 +342,11 @@ def main():
 
         return 1 if (failed or data.get('error')) else 0
     finally:
+        for leftover in (RESULT, PROGRESS):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
         for p in (brow, server):
             if p is not None:
                 try:

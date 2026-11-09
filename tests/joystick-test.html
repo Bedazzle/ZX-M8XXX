@@ -325,6 +325,77 @@
             if (frame) frame.remove();
         })();
 
+        section('Restoring the settings does not stop at the custom keys');
+        await (async () => {
+            // `customKeys` was assigned here and declared a hundred lines below,
+            // so the restore threw a ReferenceError in its temporal dead zone and
+            // the catch wrote it off as unreadable settings -- taking every
+            // setting stored after it down with it, silently, for six releases.
+            // So what this drives is the ORDER: the blob holds a setting from
+            // before the custom keys, the custom keys, and five from after.
+            const KEY = 'zxm8_input';
+            const wasSaved = localStorage.getItem(KEY);
+            const wait = (ms) => new Promise(r => setTimeout(r, ms));
+            let frame = null;
+            try {
+                localStorage.setItem(KEY, JSON.stringify({
+                    kempston: true,                       // before the custom keys
+                    joystickType: 'custom',
+                    joystickCustomKeys: { 8: 'KeyW', 4: 'KeyS', 2: 'KeyA',
+                                          1: 'KeyD', 16: 'KeyM' },
+                    kempstonExtended: true,               // and these five after
+                    mouseSwap: true,
+                    mouseWheelSwap: true,
+                    keyboardGhosting: true,
+                    capsShiftKey: 'ctrl-left',
+                    symbolShiftKey: 'alt-right'
+                }));
+
+                frame = document.createElement('iframe');
+                frame.style.cssText = 'width:900px;height:600px;border:1px solid #444';
+                frame.src = '../index.html';
+                document.body.appendChild(frame);
+                let w = null;
+                for (let i = 0; i < 400; i++) {
+                    const c = frame.contentWindow;
+                    if (c && c.spectrum && c.document.getElementById('selCapsShiftKey')) { w = c; break; }
+                    await wait(25);
+                }
+                assert(!!w, 'app opened with the settings already stored');
+                if (!w) return;
+                const el = (id) => w.document.getElementById(id);
+
+                assert(el('selJoystickType').value === 'custom',
+                       'the saved joystick type is restored', el('selJoystickType').value);
+                const keys = w.spectrum.getJoystickCustomKeys();
+                assert(keys[8] === 'KeyW' && keys[4] === 'KeyS' && keys[2] === 'KeyA' &&
+                       keys[1] === 'KeyD' && keys[16] === 'KeyM',
+                       'and the bound keys reach the machine', JSON.stringify(keys));
+
+                assert(el('chkKempstonExtended').checked === true,
+                       'the setting after them is restored too (extended Kempston)');
+                assert(el('chkMouseSwap').checked === true, 'mouse buttons swapped');
+                assert(w.spectrum.kempstonMouseSwapButtons === true,
+                       'and the machine agrees', String(w.spectrum.kempstonMouseSwapButtons));
+                assert(el('chkMouseWheelSwap').checked === true, 'mouse wheel swapped');
+                assert(el('chkKeyboardGhosting').checked === true, 'keyboard ghosting on');
+                assert(w.spectrum.ula.keyboardGhosting === true,
+                       'and the ULA has it', String(w.spectrum.ula.keyboardGhosting));
+                assert(el('selCapsShiftKey').value === 'ctrl-left',
+                       'the Caps Shift key is the saved one', el('selCapsShiftKey').value);
+                assert(el('selSymbolShiftKey').value === 'alt-right',
+                       'and the Symbol Shift key', el('selSymbolShiftKey').value);
+                assert(w.spectrum.ula.capsShiftCodes.join(',') === 'ControlLeft',
+                       'both of which the ULA was told about',
+                       w.spectrum.ula.capsShiftCodes.join(','));
+            } catch (e) {
+                assert(false, 'the restore section threw', e && e.message);
+            }
+            if (frame) frame.remove();
+            if (wasSaved === null) localStorage.removeItem(KEY);
+            else localStorage.setItem(KEY, wasSaved);
+        })();
+
         log('\n=== COMPLETE ===', 'section');
     </script>
 </body>

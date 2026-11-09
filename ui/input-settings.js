@@ -54,6 +54,9 @@ export function initInputSettings({
     const opusStatus = document.getElementById('opusStatus');
     const chkDidaktik = document.getElementById('chkDidaktik');
     const didaktikStatus = document.getElementById('didaktikStatus');
+    const chkDidaktik128 = document.getElementById('chkDidaktik128');
+    const didaktik128Row = document.getElementById('didaktik128Row');
+    const didaktik128Status = document.getElementById('didaktik128Status');
 
     // Which ROM file each interface wants, and where its name is shown. The rows
     // mirror the machine list above: checkbox, Load ROM, filename in cyan.
@@ -92,6 +95,14 @@ export function initInputSettings({
     const modKeysHint = document.getElementById('modKeysHint');
 
     let mouseCaptured = false;
+
+    // Declared here rather than beside the binding buttons it belongs to: the
+    // restore block below assigns it, and a `let` further down the same scope is
+    // in its temporal dead zone until the declaration runs. So the restore threw
+    // a ReferenceError, the catch logged it as a warning, and every setting after
+    // the custom keys -- both mouse swaps, ghosting, the Caps/Symbol Shift keys --
+    // quietly stopped being restored for anyone who had ever saved input settings.
+    let customKeys = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
 
     function saveInputSettings() {
         storageSet('zxm8_input', JSON.stringify({
@@ -168,58 +179,62 @@ export function initInputSettings({
     // Restore input settings from localStorage
     {
         const spectrum = getSpectrum();
-        try {
-            const savedInput = JSON.parse(storageGet('zxm8_input'));
-            if (savedInput) {
-                if (savedInput.kempston !== undefined) {
-                    chkKempston.checked = savedInput.kempston;
-                    spectrum.kempstonEnabled = savedInput.kempston;
-                }
-                if (savedInput.joystickType !== undefined && selJoystickType &&
-                    isJoystickType(savedInput.joystickType)) {
-                    selJoystickType.value = savedInput.joystickType;
-                    if (spectrum.setJoystickType) spectrum.setJoystickType(savedInput.joystickType);
-                }
-                if (savedInput.joystickCustomKeys) {
-                    customKeys = normalizeCustomKeys(savedInput.joystickCustomKeys);
-                    if (spectrum.setJoystickCustomKeys) spectrum.setJoystickCustomKeys(customKeys);
-                }
-                if (savedInput.kempstonExtended !== undefined) {
-                    chkKempstonExtended.checked = savedInput.kempstonExtended;
-                    spectrum.kempstonExtendedEnabled = savedInput.kempstonExtended;
-                }
-                if (savedInput.gamepad !== undefined) {
-                    document.getElementById('chkGamepad').checked = savedInput.gamepad;
-                    spectrum.gamepadEnabled = savedInput.gamepad;
-                }
-                if (savedInput.kempstonMouse !== undefined) {
-                    chkKempstonMouse.checked = savedInput.kempstonMouse;
-                    spectrum.kempstonMouseEnabled = savedInput.kempstonMouse;
-                }
-                if (savedInput.mouseWheel !== undefined) {
-                    chkMouseWheel.checked = savedInput.mouseWheel;
-                    spectrum.kempstonMouseWheelEnabled = savedInput.mouseWheel;
-                }
-                if (savedInput.mouseSwap !== undefined) {
-                    chkMouseSwap.checked = savedInput.mouseSwap;
-                    spectrum.kempstonMouseSwapButtons = savedInput.mouseSwap;
-                }
-                if (savedInput.mouseWheelSwap !== undefined) {
-                    chkMouseWheelSwap.checked = savedInput.mouseWheelSwap;
-                    spectrum.kempstonMouseSwapWheel = savedInput.mouseWheelSwap;
-                }
-                if (savedInput.keyboardGhosting !== undefined && chkKeyboardGhosting) {
-                    chkKeyboardGhosting.checked = savedInput.keyboardGhosting;
-                }
-                if (MODIFIER_KEY_OPTIONS[savedInput.capsShiftKey]) {
-                    selCapsShiftKey.value = savedInput.capsShiftKey;
-                }
-                if (MODIFIER_KEY_OPTIONS[savedInput.symbolShiftKey] &&
-                    !modifierCodesOverlap(selCapsShiftKey.value, savedInput.symbolShiftKey)) {
-                    selSymbolShiftKey.value = savedInput.symbolShiftKey;
-                }
+        // Only the parse is guarded. The restore itself used to sit in this try
+        // too, so a fault in it was reported as unreadable settings and every
+        // setting past the fault was dropped -- which is how the declaration
+        // above stayed broken for six releases. A fault here should be loud.
+        let savedInput = null;
+        try { savedInput = JSON.parse(storageGet('zxm8_input')); }
+        catch (e) { console.warn('Failed to parse input settings:', e); }
+        if (savedInput) {
+            if (savedInput.kempston !== undefined) {
+                chkKempston.checked = savedInput.kempston;
+                spectrum.kempstonEnabled = savedInput.kempston;
             }
-        } catch (e) { console.warn('Failed to load input settings:', e); }
+            if (savedInput.joystickType !== undefined && selJoystickType &&
+                isJoystickType(savedInput.joystickType)) {
+                selJoystickType.value = savedInput.joystickType;
+                if (spectrum.setJoystickType) spectrum.setJoystickType(savedInput.joystickType);
+            }
+            if (savedInput.joystickCustomKeys) {
+                customKeys = normalizeCustomKeys(savedInput.joystickCustomKeys);
+                if (spectrum.setJoystickCustomKeys) spectrum.setJoystickCustomKeys(customKeys);
+            }
+            if (savedInput.kempstonExtended !== undefined) {
+                chkKempstonExtended.checked = savedInput.kempstonExtended;
+                spectrum.kempstonExtendedEnabled = savedInput.kempstonExtended;
+            }
+            if (savedInput.gamepad !== undefined) {
+                document.getElementById('chkGamepad').checked = savedInput.gamepad;
+                spectrum.gamepadEnabled = savedInput.gamepad;
+            }
+            if (savedInput.kempstonMouse !== undefined) {
+                chkKempstonMouse.checked = savedInput.kempstonMouse;
+                spectrum.kempstonMouseEnabled = savedInput.kempstonMouse;
+            }
+            if (savedInput.mouseWheel !== undefined) {
+                chkMouseWheel.checked = savedInput.mouseWheel;
+                spectrum.kempstonMouseWheelEnabled = savedInput.mouseWheel;
+            }
+            if (savedInput.mouseSwap !== undefined) {
+                chkMouseSwap.checked = savedInput.mouseSwap;
+                spectrum.kempstonMouseSwapButtons = savedInput.mouseSwap;
+            }
+            if (savedInput.mouseWheelSwap !== undefined) {
+                chkMouseWheelSwap.checked = savedInput.mouseWheelSwap;
+                spectrum.kempstonMouseSwapWheel = savedInput.mouseWheelSwap;
+            }
+            if (savedInput.keyboardGhosting !== undefined && chkKeyboardGhosting) {
+                chkKeyboardGhosting.checked = savedInput.keyboardGhosting;
+            }
+            if (MODIFIER_KEY_OPTIONS[savedInput.capsShiftKey]) {
+                selCapsShiftKey.value = savedInput.capsShiftKey;
+            }
+            if (MODIFIER_KEY_OPTIONS[savedInput.symbolShiftKey] &&
+                !modifierCodesOverlap(selCapsShiftKey.value, savedInput.symbolShiftKey)) {
+                selSymbolShiftKey.value = savedInput.symbolShiftKey;
+            }
+        }
 
         // Apply default for Swap L/R if no saved state
         spectrum.kempstonMouseSwapButtons = chkMouseSwap.checked;
@@ -247,7 +262,6 @@ export function initInputSettings({
     // interfaces, so the machine presses ZX keys for them; Kempston reads port $1F.
     // Custom bindings: one click-to-bind button per direction, e.g. QAOP + Space
     // for a game that expects those keys. Shown only for the Custom type.
-    let customKeys = normalizeCustomKeys(DEFAULT_CUSTOM_KEYS);
     let bindingBit = null;
 
     const keyLabel = (code) => String(code || '')
@@ -742,16 +756,29 @@ export function initInputSettings({
 
     // Didaktik 80 toggle
     function updateDidaktikStatus() {
-        // Offered on the 48K only, unlike the other interfaces: the Didaktik pages
-        // itself in at $0000, so on any 128K-family machine it takes over at reset
-        // and that machine's own ROM never boots (red screen, no BASIC, no 128
-        // menu) — reproduced on 128K and Pentagon. FUSE lists the peripheral for
-        // the 48K only as well. That is convention plus our reproduction, not a
-        // hardware datasheet; see docs/peripherals.md.
-        const incompatible = getSpectrum().profile.pagingModel !== 'none';
+        // A stock 128K cannot run a Didaktik: the interface's ports collide with
+        // the 128K paging port and the AY (a command byte sent to $81 lands on
+        // A15-A8), and its ROM wants 48K BASIC under it rather than the 128
+        // editor. Some 48-to-128K upgrades were patched for it, which is what
+        // chkDidaktik128 models -- so the gate is the OPTION, not the machine.
+        // See docs/peripherals.md.
+        const sp = getSpectrum();
+        const is48 = sp.profile.pagingModel === 'none';
+        const patchable = sp.profile.pagingModel === '128k' && !sp.profile.betaDiskDefault;
+
+        // The patch row only means anything on a 128K/+2, so it is hidden rather
+        // than shown greyed out everywhere else.
+        didaktik128Row.style.display = patchable ? '' : 'none';
+        chkDidaktik128.checked = !!sp.didaktik128Patch;
+        didaktik128Status.textContent = (patchable && !sp.didaktik128Patch)
+            ? 'off — a stock 128K cannot run a Didaktik' : '';
+
+        const incompatible = !is48 && !(patchable && sp.didaktik128Patch);
         chkDidaktik.disabled = incompatible;
         if (incompatible) {
-            didaktikStatus.textContent = '48K only — it pages in at $0000 and would stop a 128K booting';
+            didaktikStatus.textContent = patchable
+                ? 'needs the 128K hardware patch below'
+                : '48K or a patched 128K only — not this machine';
         } else if (!romData['didaktik.rom']) {
             didaktikStatus.textContent = '(didaktik.rom required)';
         } else {
@@ -759,6 +786,32 @@ export function initInputSettings({
         }
         updateIfaceRomName('didaktik');
     }
+
+    chkDidaktik128.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.didaktik128Patch = chkDidaktik128.checked;
+        storageSet('zxm8_didaktik128', chkDidaktik128.checked);
+        spectrum.updateBetaDiskPagingFlag();
+        // Turning the patch off under a running Didaktik would leave the machine
+        // with an interface its ports no longer reach, so follow it down.
+        if (!chkDidaktik128.checked && chkDidaktik.checked &&
+            spectrum.profile.pagingModel !== 'none') {
+            chkDidaktik.checked = false;
+            spectrum.didaktikEnabled = false;
+            storageSet('zxm8_didaktik', false);
+            spectrum.updateBetaDiskPagingFlag();
+        }
+        updateDidaktikStatus();
+        notifyDiskSystems();
+        // The ROM bank it hardwires is picked at reset, so the machine has to
+        // restart for the change to mean anything either way.
+        if (spectrum.profile.pagingModel !== 'none') {
+            spectrum.reset();
+            showMessage(chkDidaktik128.checked
+                ? '128K hardware patch on — a Didaktik may now be used (machine reset)'
+                : '128K hardware patch off — Didaktik disabled (machine reset)');
+        }
+    });
 
     chkDidaktik.addEventListener('change', () => {
         const spectrum = getSpectrum();
@@ -843,6 +896,9 @@ export function initInputSettings({
     // Restore Didaktik setting from localStorage
     {
         const spectrum = getSpectrum();
+        // Order matters: the patch decides whether the interface may be on at
+        // all, so it is restored first.
+        spectrum.didaktik128Patch = storageGet('zxm8_didaktik128') === 'true';
         const savedDidaktik = storageGet('zxm8_didaktik') === 'true';
         chkDidaktik.checked = savedDidaktik;
         spectrum.didaktikEnabled = savedDidaktik;

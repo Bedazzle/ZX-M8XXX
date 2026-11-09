@@ -68,6 +68,11 @@ import {
             // it covers $0000-$37FF with 2KB of RAM above it — so the overlay
             // fills the whole bottom 16KB.
             this.didaktikActive = false;
+            // The Didaktik 128K hardware patch hardwires ROM 1 (48K BASIC): the
+            // interface's own ROM runs from reset and expects the 48K ROM under
+            // it, so bank 0 -- the 128 editor -- must never be selected. Set by
+            // Spectrum.updateBetaDiskPagingFlag(); false on every other machine.
+            this.didaktikForceRom1 = false;
             this.didaktikRom = null;              // 14KB ROM (Uint8Array)
             this.didaktikRam = new Uint8Array(2048);  // 2KB RAM at 0x3800-0x3FFF
 
@@ -109,7 +114,7 @@ import {
                 }
             }
             this.pagingDisabled = false;
-            this.currentRomBank = 0;
+            this.currentRomBank = this.didaktikForceRom1 ? 1 : 0;
             this.currentRamBank = 0;
             this.screenBank = 5;
             this.trdosActive = false;
@@ -441,6 +446,7 @@ import {
             } else {
                 this.currentRomBank = (val & P7FFD_ROM_BIT) ? 1 : 0;
             }
+            if (this.didaktikForceRom1) this.currentRomBank = 1;
             if (val & P7FFD_LOCK_BIT) this.pagingDisabled = true;
         }
         

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Z80 Variant Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Z80 Variant Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // Two behaviours tell the Z80 variants apart, and they are INDEPENDENT --
+        // which is why the emulator carries two fields rather than one enum.
+        //
+        //   SCF/CCF undocumented YF/XF. Patrik Rak cracked the Zilog rule in 2012:
+        //   both come from `(Q ^ F) | A`. David Banks found in 2018 that ST CMOS
+        //   parts take XF from A alone, and NEC NMOS parts take BOTH from A.
+        //
+        //   OUT (C),0 puts 255 on the bus on the Zilog CMOS part (Simon Cooke,
+        //   Usenet 1996), 0 on NMOS.
+        //
+        // The formulas here are written out longhand, deliberately: if they were
+        // expressed the way core/z80.js expresses them this would only prove the
+        // code equals itself.
+        import { Z80 } from '../core/z80.js';
+        import { CPU_VARIANTS, CPU_VARIANT_DEFAULT } from '../core/spectrum.js';
+
+        const TEST_VERSION = '0.0.1';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        const ram = new Uint8Array(65536);
+        const cpu = new Z80({ read: (a) => ram[a], write: (a, v) => { ram[a] = v; } });
+
+        const YF = 0x20, XF = 0x08;
+
+        // run one instruction at 0x8000 with a chosen A, F and Q
+        function run(opcode, a, f, q) {
+            ram.fill(0);
+            ram[0x8000] = opcode;
+            cpu.reset();
+            cpu.pc = 0x8000; cpu.tStates = 0;
+            cpu.a = a; cpu.f = f;
+            // execute() does lastQ = q at its start, so the PREVIOUS instruction's Q
+            // is staged in q, not lastQ -- setting lastQ here would be overwritten.
+            cpu.q = q;
+            cpu.execute();
+            return cpu.f;
+        }
+
+        // the documented rule, written out rather than reused from the emulator
+        function expectYX(variant, a, f, q) {
+            const qf = (q ^ f);
+            let y, x;
+            if (variant === 'nec-nmos')      { y = a & YF;                 x = a & XF; }
+            else if (variant === 'st-cmos')  { y = (a | qf) & YF;          x = a & XF; }
+            else                             { y = (a | qf) & YF;          x = (a | qf) & XF; }
+            return y | x;
+        }
+
+        (async () => {
+
+        section('The variant table says what the sources say');
+        {
+            assert(CPU_VARIANT_DEFAULT === 'zilog-nmos', 'the default is Zilog NMOS, the usual Spectrum');
+            assert(CPU_VARIANTS['zilog-nmos'].xcfMask === 0x28, 'Zilog NMOS: both flags take the Q term');
+            assert(CPU_VARIANTS['zilog-cmos'].xcfMask === 0x28, 'Zilog CMOS: same SCF/CCF as the NMOS part');
+            assert(CPU_VARIANTS['st-cmos'].xcfMask === 0x20, 'ST CMOS: only YF takes the Q term');
+            assert(CPU_VARIANTS['nec-nmos'].xcfMask === 0x00, 'NEC NMOS: neither does');
+            assert(CPU_VARIANTS['zilog-cmos'].outVc255 === true, 'OUT (C),0 gives 255 on the Zilog CMOS part');
+            assert(CPU_VARIANTS['zilog-nmos'].outVc255 === false, 'and 0 on the NMOS part');
+            assert(CPU_VARIANTS['nec-nmos'].outVc255 === false, 'NEC NMOS keeps 0');
+            // Not a guess dressed as a fact: the 255 report is for the ZILOG CMOS part.
+            assert(CPU_VARIANTS['st-cmos'].outVc255 === false,
+                   'ST CMOS is NOT assumed to share the Zilog CMOS OUT behaviour');
+        }
+
+        section('SCF and CCF, every variant, over the whole A/F/Q space that matters');
+        {
+            for (const variant of Object.keys(CPU_VARIANTS)) {
+                cpu.xcfMask = CPU_VARIANTS[variant].xcfMask;
+                let bad = null, checked = 0;
+                // A and the two flag bits are what the formula reads; step A coarsely
+                // but cover every combination of the YF/XF bits in F and in Q.
+                for (let a = 0; a < 256 && !bad; a += 1) {
+                    for (const fyx of [0, YF, XF, YF | XF]) {
+                        for (const qyx of [0, YF, XF, YF | XF]) {
+                            for (const op of [0x37, 0x3f]) {   // SCF, CCF
+                                const got = run(op, a, fyx, qyx) & (YF | XF);
+                                const exp = expectYX(variant, a, fyx, qyx);
+                                checked++;
+                                if (got !== exp) {
+                                    bad = `${op === 0x37 ? 'SCF' : 'CCF'} A=${a} F=${fyx} Q=${qyx}`
+                                        + ` got ${got} exp ${exp}`;
+                                    break;
+                                }
+                            }
+                            if (bad) break;
+                        }
+                        if (bad) break;
+                    }
+                }
+                assert(bad === null, `${CPU_VARIANTS[variant].label}: YF/XF match the documented rule`,
+                       bad || '');
+                if (!bad) log(`      (${checked} combinations)`);
+            }
+            cpu.xcfMask = CPU_VARIANTS[CPU_VARIANT_DEFAULT].xcfMask;
+        }
+
+        section('The variants really do differ -- the knob is not decorative');
+        {
+            // A case where Zilog and NEC must disagree: A clear, Q^F has the bits set
+            const zilog = (() => { cpu.xcfMask = 0x28; return run(0x37, 0x00, YF | XF, 0) & (YF | XF); })();
+            const nec   = (() => { cpu.xcfMask = 0x00; return run(0x37, 0x00, YF | XF, 0) & (YF | XF); })();
+            const st    = (() => { cpu.xcfMask = 0x20; return run(0x37, 0x00, YF | XF, 0) & (YF | XF); })();
+            assert(zilog === (YF | XF), 'Zilog takes both bits from F^Q when A is clear', String(zilog));
+            assert(nec === 0, 'NEC takes neither', String(nec));
+            assert(st === YF, 'ST CMOS takes YF only', String(st));
+            assert(zilog !== nec && zilog !== st && nec !== st, 'all three are distinguishable');
+            cpu.xcfMask = 0x28;
+        }
+
+        section('OUT (C),0');
+        {
+            let out = null;
+            cpu.portWrite = (p, v) => { out = v; };
+            ram.fill(0); ram[0x8000] = 0xED; ram[0x8001] = 0x71;   // OUT (C),0
+
+            const go = () => { cpu.reset(); cpu.pc = 0x8000; cpu.tStates = 0;
+                               cpu.bc = 0x1234; out = null; cpu.execute(); return out; };
+
+            cpu.outVc255 = false;
+            assert(go() === 0, 'NMOS puts 0 on the bus');
+            cpu.outVc255 = true;
+            assert(go() === 0xff, 'Zilog CMOS puts 255');
+            cpu.outVc255 = false;
+            assert(go() === 0, 'and back to 0');
+            cpu.portWrite = null;
+        }
+
+        section('Nothing else moved: the default behaves exactly as before');
+        {
+            cpu.xcfMask = 0x28; cpu.outVc255 = false;
+            // the Zilog rule, spot-checked against values worked by hand
+            assert((run(0x37, 0xFF, 0x00, 0x00) & (YF | XF)) === (YF | XF),
+                   'SCF with A=$FF sets both from A');
+            assert((run(0x37, 0x00, 0x00, 0x00) & (YF | XF)) === 0,
+                   'SCF with A=0 and no Q difference sets neither');
+            assert((run(0x37, 0x00, 0x00, 0x00) & 0x01) === 0x01, 'SCF still sets carry');
+            assert((run(0x3f, 0x00, 0x01, 0x00) & 0x01) === 0, 'CCF still complements carry');
+            assert((run(0x3f, 0x00, 0x01, 0x00) & 0x10) === 0x10, 'CCF puts the old carry in H');
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

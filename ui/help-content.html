@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v26.09.05</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v26.11.02</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -596,6 +596,7 @@
                     <p style="font-size: 11px; color: var(--text-dim);">Auto-Map and Code-Flow Analysis are in the Analysis tab &mdash; see the Tools section.</p>
                     <h5>Memory Map Dialog</h5>
                     <p>Visual 256x256 map of entire 64KB memory. Click to navigate, colors indicate region types.</p>
+                    <p>On a 128K or larger machine the toggle beside it draws <strong>every RAM bank</strong> instead &mdash; 8 on a 128K, 16 on a Scorpion, 64 on a Pentagon 1024 &mdash; two to a row, 16KB each, with the box scrolling for the rest. Hovering names the bank and the address it is seen at ($4000 for bank 5, $8000 for bank 2, $C000 for the others); clicking navigates if that bank is paged in, and says so if it is not.</p>
                     <h5>Heatmap Export</h5>
                     <p>Export automap data as a TSV text file from the Heatmap view. Columns: Address ($hex), Page (bank), Exec, Read, Write counts. Options to skip ROM and screen addresses.</p>
                     <h5>Disassembly Exports (.ctl / .csv / .sym)</h5>

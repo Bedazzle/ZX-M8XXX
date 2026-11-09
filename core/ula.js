@@ -2115,6 +2115,22 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
         // black machines (+2A/+2B/+3/…) and on any ZX Spectrum clones except maybe
         // those that based on original ULA" — they use the 40077 gate array rather
         // than the Ferranti part.
+        // Can this machine produce snow AT ALL -- the setting and the ULA, with no
+        // reference to I. The display path must gate on THIS and not on isSnowing(),
+        // because a line is rendered at its END, by which time a program that arms I
+        // only around the region it wants snowed has already put it back. snowtest
+        // does exactly that, and the live-I gate threw away the last line of its
+        // block: the refreshes that corrupt line N happen DURING line N, while I is
+        // still armed, and they are already gated one by one by _snowOkTable() via
+        // the I each one carries. Asking the register again at render time is both
+        // redundant and a line late.
+        _snowPossible() {
+            const profile = this.memory && this.memory.profile;
+            return !!(this.snowEnabled && profile && profile.hasSnow);
+        }
+
+        // Is snow happening RIGHT NOW, I included. A status question, not the
+        // display path -- see _snowPossible().
         isSnowing() {
             const profile = this.memory && this.memory.profile;
             const banked = profile && profile.ramPages > 1;
@@ -2139,14 +2155,33 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             return this._snowOk;
         }
 
-        // T-state at which the ULA starts fetching the first cell pair of a screen
-        // line — the same base the renderer uses for its per-column timing, so snow
-        // lands where the picture is actually drawn.
+        // T-state at which the first PIXEL of a screen line is displayed — the same
+        // base the renderer uses for its per-column timing.
         _paperStartTstate(screenLine) {
             const offset = this.VISIBLE_LINE_OFFSET || 0;
             const visY = this.BORDER_TOP + screenLine - offset;
             if (visY < 0 || visY >= this.TOTAL_HEIGHT) return null;
             return this.calculateLineStartTstate(visY) + (this.BORDER_LEFT / 2);
+        }
+
+        // T-state at which the ULA begins FETCHING that line, a little before its
+        // first pixel appears. This, not the pixel, is the grid a
+        // refresh collides with: snow shows up in the cells the spoiled fetch was
+        // feeding, which is why the lead is a whole number of 8-T cycles.
+        _snowFetchStartTstate(screenLine) {
+            const t = this._paperStartTstate(screenLine);
+            if (t === null) return null;
+            // ONE constant for both snowing ULAs: the grid starts 7 ticks before
+            // contention onset, i.e. ULA_READ_AHEAD + 7 before the first pixel --
+            // 8 on the 48K, 10 on the 128K, both matching snowtest to the pixel.
+            // The two halves of that number are separately visible, which is what
+            // makes it a fit rather than a fudge: the multiple of 8 picks the COLUMN
+            // the corruption lands in, the remainder picks WHICH refresh collides
+            // and so the R on the bus, which the snowed byte then states outright.
+            // A wrong multiple put the 128K two columns out; a wrong remainder left
+            // its columns right and every snowed byte two addresses low. It also
+            // gives ULA_READ_AHEAD its first reader in the tree.
+            return t - ((this.ULA_READ_AHEAD || 0) + 7);
         }
 
         // What the ULA actually managed to put on screen. Every render path takes
@@ -2155,7 +2190,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
         // rebuilding per scanline would cost 192 copies of it.
         _displayRam(screen, frameLine) {
             const ram = screen.ram;
-            if (!this.isSnowing()) {
+            if (!this._snowPossible()) {
                 // Otherwise the counters keep the last snowing machine's numbers and
                 // read as though this one were producing snow
                 this.snowBytes = 0;
@@ -2188,7 +2223,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 if (y < 0 || y >= 192 || this._snowLinesDone[y]) return;
                 this._snowLinesDone[y] = 1;
                 const counts = applySnowLine(this._snowRam, ram, this.m1Log,
-                                             this._paperStartTstate(y), y, snowOk);
+                                             this._snowFetchStartTstate(y), y, snowOk);
                 this.snowBytes += counts.snow;
                 this.snowDoubles += counts.double;
             };

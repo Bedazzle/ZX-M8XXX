@@ -31,9 +31,10 @@ import time
 from urllib.parse import quote
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-RESULT = os.path.join(ROOT, 'headless', 'ctprobe.json')
+RUN_TOKEN = 'ctprobe-%d' % os.getpid()
+RESULT = os.path.join(ROOT, 'headless', RUN_TOKEN + '.json')
 # Separate, so a progress post cannot be mistaken for a finished run.
-PROGRESS = os.path.join(ROOT, 'headless', 'ctprobe-progress.json')
+PROGRESS = os.path.join(ROOT, 'headless', RUN_TOKEN + '-progress.json')
 
 
 def read_doc(path, kind):
@@ -175,7 +176,8 @@ def main():
 
         qs = [f'machines={quote(",".join(machines))}', f'tap={quote(tap_url)}',
               f'done={quote(args.done_addr)}', f'fails={quote(args.fails_addr)}',
-              f'max={args.max_frames}', f'poll={args.poll}']
+              f'max={args.max_frames}', f'poll={args.poll}',
+              'run=' + quote(RUN_TOKEN)]
         if args.dump_dir:
             qs.append(f'from={quote(args.start_addr)}')
             qs.append(f'to={quote(args.end_addr)}')
@@ -322,6 +324,11 @@ def main():
 
         return 1 if bad else 0
     finally:
+        for leftover in (RESULT, PROGRESS):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
         for p in (brow, server):
             if p is not None:
                 try:

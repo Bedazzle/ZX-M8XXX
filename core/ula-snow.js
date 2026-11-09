@@ -72,8 +72,16 @@ export const ATTR_BASE = BITMAP_BYTES;
 
 //   m1T4     the refresh's T-state, counted from the start of the opcode fetch:
 //            this is what pins our T-state phase against the ULA's 8-T cycle.
-//   rOnBus   the Z80 increments R after putting the refresh address on the bus, so
-//            the value the ULA sees is the one before the increment.
+//   rOnBus   an adjustment to the R the log carries. `incR()` increments R and
+//            THEN notes it, so -1 recovers the pre-increment value and 0 keeps
+//            the post-increment one. 0 is measured, not argued: the snowed byte
+//            is read from the hijacked address, so its CONTENT states which
+//            address that was, and snowtest draws the hardware-measured byte
+//            beside ours. At -1 every snowed cell showed the character one
+//            address low -- K where hardware has L, S where it has T -- and at
+//            0 the row matches to the pixel. This is the knob the old note here
+//            called unverifiable because "no cell mask can see it": a mask
+//            cannot, a content comparison can.
 //   addrBits how many bits of the ULA's address R replaces. Seven, and this one is
 //            derived rather than fitted: the 48K's lower 16K is 4116 DRAM, 16K x 1,
 //            so its address arrives as a 7-bit row plus a 7-bit column, and during
@@ -88,7 +96,7 @@ export const ATTR_BASE = BITMAP_BYTES;
 //            A 128K's banks are 4164 (64K x 1) with an 8-bit row, which predicts
 //            EIGHT bits replaced there. Untested — no reference capture of a 128K
 //            snow test exists yet, and no cell mask could see it anyway.
-export const SnowCalibration = { m1T4: 3, rOnBus: -1, addrBits: 7, spendOn: 'all',
+export const SnowCalibration = { m1T4: 3, rOnBus: 0, addrBits: 7, spendOn: 'all',
                                  rule: 'weiv' };
 
 // Kept as names for the tests, which assert against the defaults
@@ -161,6 +169,9 @@ export function applySnow(out, ram, m1, paperT) {
  * only holds the refresh cycles that have happened by then — so snow is applied
  * line by line, at the moment that line is drawn, not once for the whole frame.
  */
+// `lineT` is the tick the line's first FETCH cycle begins, which leads its first
+// pixel by a whole number of cycles (core/ula.js: SNOW_FETCH_LEAD, measured per
+// ULA profile). A refresh collides with a fetch, not with a pixel.
 export function applySnowLine(out, ram, m1, lineT, y, snowOk = null) {
     let snow = 0, double = 0;
     if (lineT === null || lineT === undefined || !m1) return { snow, double };

@@ -111,7 +111,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.09.05';
+    const APP_VERSION = '26.11.02';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -573,6 +573,18 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
 
         // Load a machine's ROM file if it isn't loaded yet, and page it in when
         // it belongs to the current machine. Returns true if the ROM is present.
+        //
+        // It fetches the INTERFACE ROMs the machine will want, not just the
+        // machine's own. The page's startup walks the whole roms/ directory
+        // serially with trdos.rom near the end, and setMachineType builds a
+        // `new Memory`, whose init() allocates a fresh ZEROED trdosRom -- only
+        // loadRomsForMachineType puts it back, and only if the fetch has already
+        // landed. So a driver calling ready({machine:'pentagon'}) inside that
+        // window got a Pentagon with no TR-DOS chip, bootTrdos() refused, and the
+        // machine sat in the Pentagon menu: a TR-DOS disk that "does not boot" on
+        // Pentagon while the same disk works on a Scorpion, which carries TR-DOS
+        // in scorpion.rom (trdosInRom) and so never missed it. Nothing healed it
+        // afterwards either -- switching away and back fetches nothing new.
         async ensureRom(machineType = spectrum.machineType) {
             const profile = getMachineProfile(machineType);
             if (!profile) throw new Error(`Unknown machine: ${machineType}`);
@@ -583,6 +595,26 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
                 }
                 romData[profile.romFile] = await res.arrayBuffer();
             }
+            // An interface ROM is optional in a way the machine's is not: without
+            // it the machine simply cannot offer that interface, so a miss here is
+            // not an error.
+            const maybe = async (file) => {
+                if (romData[file]) return;
+                try {
+                    const res = await fetch('roms/' + file);
+                    if (res.ok) romData[file] = await res.arrayBuffer();
+                } catch (e) { /* not served */ }
+            };
+            // Beta Disk follows the TARGET machine, worked out the way
+            // setMachineType does it -- reading spectrum.betaDiskEnabled would
+            // answer for the machine being left behind.
+            const betaDisk = profile.betaDiskDefault ||
+                storageGet('zxm8_betaDisk') === 'true';
+            if (!profile.trdosInRom && betaDisk) await maybe('trdos.rom');
+            if (spectrum.plusDEnabled) await maybe('plusd.rom');
+            if (spectrum.if1Enabled) await maybe('if1.rom');
+            if (spectrum.opusEnabled) await maybe('opus.rom');
+            if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);
             }

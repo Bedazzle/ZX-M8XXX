@@ -37,6 +37,15 @@ import { fmtAddr, fmtPort } from './addr-format.js';
 // instruction's total length. The two 16T forms differ because OUTI reads memory
 // before it writes the port while INI reads the port before it writes memory, so
 // the length alone does not say where the cycle is — only the direction does.
+// Z80 variants, by the two behaviours software can tell apart. See setCpuVariant.
+export const CPU_VARIANT_DEFAULT = 'zilog-nmos';
+export const CPU_VARIANTS = {
+    'zilog-nmos': { label: 'Zilog NMOS',  xcfMask: 0x28, outVc255: false },
+    'zilog-cmos': { label: 'Zilog CMOS',  xcfMask: 0x28, outVc255: true  },
+    'nec-nmos':   { label: 'NEC NMOS',    xcfMask: 0x00, outVc255: false },
+    'st-cmos':    { label: 'ST CMOS',     xcfMask: 0x20, outVc255: false }
+};
+
 const IO_OFFSET_READ  = { 11: 7, 12: 8, 16: 9 };   // IN A,(n) / IN r,(C) / INI
 const IO_OFFSET_WRITE = { 11: 7, 12: 8, 16: 12 };  // OUT (n),A / OUT (C),r / OUTI
 
@@ -279,6 +288,10 @@ import { Disassembler } from './disasm.js';
             // Didaktik 80
             this.didaktik = new DidaktikDisk();
             this.didaktikEnabled = false;
+            // The 48-to-128K hardware patch some upgrade services fitted, which
+            // is what let a D40/D80 drive a 128K at all. Off by default: a STOCK
+            // 128K cannot do this. See _didaktikMachineOk().
+            this.didaktik128Patch = false;
             this._didaktikPagingEnabled = false;
             this.loadedDidaktikDisks = [null, null];
             this.loadedDidaktikDiskFiles = [null, null];
@@ -1503,7 +1516,7 @@ import { Disassembler } from './disasm.js';
             // is paged in here — it happens on its own, because the very first
             // instruction after a reset is at $0000, which is a page-in trigger.
             if (this.didaktikEnabled && this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel === 'none') {
+                this._didaktikMachineOk()) {
                 this.didaktik.reset();
                 this.memory.didaktikActive = false;
             }
@@ -1528,12 +1541,34 @@ import { Disassembler } from './disasm.js';
                 this.memory.hasIF1Rom();
         }
 
+        /**
+         * Which machines may have a Didaktik at all.
+         *
+         * A 48K always may. A 128K may only with `didaktik128Patch`, the
+         * hardware modification some 48-to-128K upgrade services fitted
+         * (VELESOFT: "Some 48to128kB upgrades also contain hardware patch for
+         * enable use D40 or D80"). Without it the interface's ports collide
+         * with the 128K paging port and the AY, and its ROM finds the 128
+         * editor beneath it instead of 48K BASIC -- so a stock 128K cannot.
+         *
+         * Limited to the Sinclair-compatible 128K/+2. The +2A/+3 decode $7FFD
+         * differently and VELESOFT rules them out by name; Pentagon and
+         * Scorpion ship their own disk interface (`betaDiskDefault`), so the
+         * patch is not a thing that was ever fitted to them.
+         */
+        _didaktikMachineOk() {
+            if (this.profile.pagingModel === 'none') return true;
+            return this.didaktik128Patch &&
+                this.profile.pagingModel === '128k' &&
+                !this.profile.betaDiskDefault;
+        }
+
         _isDidaktikActive() {
             // Like the +D: the ports answer whenever the hardware is there, not
             // only while its ROM happens to be paged in
             return this.didaktikEnabled && this.didaktik &&
                 this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel === 'none';
+                this._didaktikMachineOk();
         }
 
         triggerPlusDNmi() {
@@ -4175,16 +4210,26 @@ import { Disassembler } from './disasm.js';
                 this.opusEnabled &&
                 this.memory.hasOpusRom() &&
                 this.profile.pagingModel !== '+2a';
-            // Didaktik 80 is 48K ONLY, and the reason is its own design: it pages
-            // itself in at $0000, so on a machine with a 128K ROM it takes over at
-            // reset and that ROM never boots — the screen just goes red while the
-            // Didaktik ROM, written for a 48K, runs off into RAM. Verified on 128K
-            // and Pentagon. The other interfaces wait to be entered through a hook
-            // and so can share a 128K; this one cannot.
+            // Didaktik 80 is 48K ONLY, matching stock hardware — two independent
+            // blockers, and the port collision is the first. The 128K paging port
+            // decodes as `port & 0x8002 == 0` and OUT (n),A puts the written byte
+            // on A15-A8, so a WD2797 command sent to $81 also pages memory ($00,
+            // $20) or hits the AY ($88/$A8 data, $C4/$D0/$E4/$F4 register select).
+            // Second, it pages itself in at $0000 and its ROM wants 48K BASIC
+            // underneath, but paging out on a 128K gives ROM 0, the 128 editor:
+            // red screen, no boot. Verified on 128K and Pentagon.
+            // Real hardware managed it only with the A5 decoder patch (paging
+            // becomes `port & 0x8022 == 0x0020`) plus ROM forced to page 1; we do
+            // not offer that opt-in. See docs/peripherals.md.
             this._didaktikPagingEnabled =
                 this.didaktikEnabled &&
                 this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel === 'none';
+                this._didaktikMachineOk();
+            // On a patched 128K the ROM is hardwired to page 1. Set here rather
+            // than in memory.js so one call keeps the gate and the ROM hold in
+            // step -- a 128K left on bank 0 boots the editor and MDOS dies.
+            this.memory.didaktikForceRom1 =
+                this._didaktikPagingEnabled && this.profile.pagingModel !== 'none';
         }
 
         // Called before each instruction fetch to handle automatic TR-DOS ROM switching
@@ -5433,6 +5478,31 @@ import { Disassembler } from './disasm.js';
 
         // Set late timing mode
         // Late timing shifts ALL screen-related timings by 1T (ULA thermal drift)
+        // Which Z80 a machine was fitted with. Not a machine property -- any
+        // Spectrum could have either -- so it is a setting, not a profile field.
+        //
+        // Only two behaviours differ in a way software can see, and they are
+        // independent of each other, so a single enum would be a lie. The named
+        // variants below are the documented COMBINATIONS, nothing invented:
+        //
+        //   zilog-nmos  SCF/CCF Zilog    OUT (C),0 -> 0     the usual Spectrum
+        //   zilog-cmos  SCF/CCF Zilog    OUT (C),0 -> 255
+        //   nec-nmos    SCF/CCF NEC      OUT (C),0 -> 0     NEC D780C second source
+        //   st-cmos     SCF/CCF ST CMOS  OUT (C),0 -> 0
+        //
+        // st-cmos keeps OUT (C),0 -> 0 deliberately: the 255 behaviour is reported
+        // for the ZILOG CMOS part, and no source here extends it to ST, so claiming
+        // it would be a guess dressed as a fact.
+        setCpuVariant(variant) {
+            const v = CPU_VARIANTS[variant] ? variant : CPU_VARIANT_DEFAULT;
+            this.cpuVariant = v;
+            this.cpu.xcfMask = CPU_VARIANTS[v].xcfMask;
+            this.cpu.outVc255 = CPU_VARIANTS[v].outVc255;
+            return v;
+        }
+
+        getCpuVariant() { return this.cpuVariant || CPU_VARIANT_DEFAULT; }
+
         setLateTimings(late) {
             this.lateTimings = !!late;
             this._intDebugCount = 0;
@@ -7195,7 +7265,7 @@ import { Disassembler } from './disasm.js';
             this.didaktik.loadDisk(diskData, 'd80', driveIndex);
 
             const available = this.didaktikEnabled && this.memory.hasDidaktikRom() &&
-                this.profile.pagingModel !== '+2a';
+                this._didaktikMachineOk();
 
             return {
                 diskInserted: true,

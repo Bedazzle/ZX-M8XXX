@@ -25,7 +25,8 @@
         // hype.retroscene.org/blog/1089). See core/ula-snow.js.
         import { applySnow, applySnowLine, snowActive, snowRange, corruptAddress,
                  bitmapOffset, attrOffset, M1Log, M1_T4_FROM_FETCH, R_ON_BUS,
-                 PENDING_FETCHES, SnowCalibration, DISPLAY_BYTES } from '../core/ula-snow.js';
+                 PENDING_FETCHES, SnowCalibration, DISPLAY_BYTES,
+                 WEIV_SNOW_AT } from '../core/ula-snow.js';
         import { ULA } from '../core/ula.js';
         import { getMachineProfile } from '../core/machines.js';
 
@@ -285,8 +286,8 @@
                    'the refresh sits at the 4th T-state of the fetch', String(lg.ts[0]));
             assert(lg.rs[0] === ((0x10 + R_ON_BUS) & 0x7F),
                    'and carries R as it was on the bus', String(lg.rs[0]));
-            lg.note(1000, 0x00);
-            assert(lg.rs[1] === 0x7F, 'R wraps in 7 bits', String(lg.rs[1]));
+            lg.note(1000, 0x80);
+            assert(lg.rs[1] === 0x00, 'R is masked to 7 bits', String(lg.rs[1]));
 
             lg.note(2000, 0x01);
             assert(lg.firstAtOrAfter(0) === 0 &&
@@ -391,6 +392,29 @@
             assert(ula128.isSnowing(), 'I=$C0 with page 1 at $C000 snows');
             mem128.currentRamBank = 2;
             assert(!ula128.isSnowing(), 'and not with page 2');
+
+            // A line is rendered at its END. A program that arms I only around the
+            // region it wants snowed has already put it back by then, so asking the
+            // I REGISTER at that moment throws the line away -- which is what cost
+            // snowtest the last line of its block. The refreshes carry their own I
+            // and are gated one by one, so the display path must not ask again.
+            {
+                const m = fakeMemory(true);
+                const u = new ULA(m, '48k');
+                u.cpu = { i: 0x40, r: 0, m1Log: null, tStates: 0 };
+                u.setSnowEffect(true);
+                // one refresh, logged while I was armed, on a snow trigger of line 0
+                const y = 0, g = u._snowFetchStartTstate(y);
+                u.m1Log.reset();
+                u.m1Log.note(g + WEIV_SNOW_AT - M1_T4_FROM_FETCH, 0x45, 0x40);
+                // ...and now the program restores I to something that cannot snow
+                u.cpu.i = 0xBE;
+                assert(!u.isSnowing(), 'with I put back, the machine is not snowing NOW');
+                const out = u._displayRam(m.getScreenBase(), u.FIRST_SCREEN_LINE + y);
+                assert(out !== m.ram, 'but the line is still snowed, not handed back clean');
+                assert(u.snowBytes > 0, '  and the refresh that happened while I was armed counts',
+                       String(u.snowBytes));
+            }
 
             const pent = new ULA(fakeMemory(false), 'pentagon');
             pent.cpu = { i: 0x40, r: 0, m1Log: null, tStates: 0 };

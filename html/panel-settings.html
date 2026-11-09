@@ -395,6 +395,20 @@
                         <button id="btnSettingsLoadRoms" class="control-btn" style="font-size: 11px; padding: 2px 10px;">Load ROMs...</button>
                     </div>
                     <div id="machineCheckboxes"></div>
+
+                    <!-- Which Z80 the machine was fitted with. Not a per-machine
+                         property: any Spectrum could have either, so it is one
+                         setting rather than a profile field. -->
+                    <div style="color: var(--text-secondary); font-size: 11px; margin: 8px 0 4px; font-weight: bold;">CPU</div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" for="cpuVariantSelect" title="Second-source Z80s differ in two ways software can see: the undocumented YF/XF flags after SCF and CCF (Patrik Rak 2012 for Zilog; David Banks 2018 for ST CMOS and NEC), and whether OUT (C),0 puts 0 or 255 on the bus (255 on the Zilog CMOS part). Almost every Spectrum has a Zilog NMOS or an NEC D780C; leave this alone unless a program is testing for the difference.">CPU variant</label>
+                        <select id="cpuVariantSelect" class="control-btn" style="font-size: 11px;">
+                            <option value="zilog-nmos">Zilog NMOS (default)</option>
+                            <option value="zilog-cmos">Zilog CMOS</option>
+                            <option value="nec-nmos">NEC NMOS (D780C)</option>
+                            <option value="st-cmos">ST CMOS</option>
+                        </select>
+                    </div>
                     <!-- Disk interfaces. Same row shape as the machine list above:
                          checkbox, Load ROM, the loaded filename in cyan. A label
                          column keeps the buttons aligned down the column even
@@ -443,13 +457,19 @@
                     </div>
 
                     <div class="iface-row">
-                        <label class="checkbox-label iface-name" title="Enable Didaktik 80 for D40/D80 MDOS disks (48K only; conflicts with +D and Opus).">
+                        <label class="checkbox-label iface-name" title="Enable Didaktik 80 for D40/D80 MDOS disks (48K, or a 128K with the hardware patch below; conflicts with +D and Opus).">
                             <input type="checkbox" id="chkDidaktik"> Didaktik 80 (D40/D80)
                         </label>
                         <button id="btnLoadDidaktikRom" class="control-btn iface-rom-btn" title="Load Didaktik 80 ROM file (didaktik.rom)">Load ROM</button>
                         <input type="file" id="romDidaktikInput" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="didaktikRomName" class="iface-rom-name"></span>
                         <span id="didaktikStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row" id="didaktik128Row">
+                        <label class="checkbox-label" style="margin-left: 15px;" title="The 48-to-128K upgrade patch that made a D40/D80 usable on a 128K: the paging port decoder requires A5, and the ROM is hardwired to page 1 (48K BASIC). A stock 128K cannot run a Didaktik; some upgrade services fitted this.">
+                            <input type="checkbox" id="chkDidaktik128"> 128K hardware patch
+                        </label>
+                        <span id="didaktik128Status" class="iface-status"></span>
                     </div>
 
                     <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Emulation accuracy</div>

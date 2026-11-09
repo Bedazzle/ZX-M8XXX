@@ -481,6 +481,66 @@
                 }
             });
 
+            await part('Edit: a disk panel always states its free space', async () => {
+                // "0 files" said nothing about how much the disk holds, and a copy
+                // then overwrote the summary with "Copied N" -- so a disk that had
+                // just been filled was the one case where the figure was missing,
+                // until something else happened to redraw the panel.
+                const sel = d.getElementById('editorNewFormat');
+                const statusOf = (side) =>
+                    (d.querySelector(`#editorPanel${side} .editor-panel-status`) || {}).textContent || '';
+                // a panel is activated on mousedown, not click
+                const activate = (side) => d.querySelector(`#editorPanel${side} .editor-panel-header`)
+                    .dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+                const makeNew = async (side, fmt) => {
+                    activate(side);
+                    await wait(100);
+                    sel.value = fmt;
+                    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+                    await wait(250);
+                };
+
+                clickTab('Edit');
+                await wait(250);
+                for (const [fmt, total] of [['trd', 2544], ['mgt', 1560]]) {
+                    await makeNew('Left', fmt);
+                    assert(statusOf('Left') === `0 files \u2014 ${total} free`,
+                           `a new empty ${fmt.toUpperCase()} states its free sectors`,
+                           statusOf('Left'));
+                }
+                for (const fmt of ['mdr', 'opd', 'd40']) {
+                    // these three take their capacity from the image they make,
+                    // so the figure is checked for rather than spelled out
+                    await makeNew('Left', fmt);
+                    assert(/^0 files|\d+ free/.test(statusOf('Left')) &&
+                           /\d+ free/.test(statusOf('Left')),
+                           `and so does a new ${fmt.toUpperCase()}`, statusOf('Left'));
+                }
+
+                await loadIntoExplorer(TRDLoader.buildTRD(trdFiles, 'PROBE'), 'free.trd');
+                clickTab('Edit');
+                await wait(250);
+                await makeNew('Right', 'trd');
+                const empty = statusOf('Right');
+                activate('Left');
+                await wait(100);
+                const srcRow = await until(() => d.querySelector('#editorPanelLeft .disk-row'));
+                assert(!!srcRow, 'the source disk lists a file to copy');
+                if (srcRow) srcRow.click();
+                await wait(200);
+                const copyBtn = d.getElementById('btnEditorCopy');
+                assert(!!copyBtn && !copyBtn.disabled, 'Copy is offered for it');
+                copyBtn.click();
+                await wait(300);
+                assert(/free/.test(statusOf('Right')),
+                       'the destination still says how much room is left after a copy',
+                       statusOf('Right'));
+                assert(/Copied 1/.test(statusOf('Right')),
+                       'and still reports what the copy did', statusOf('Right'));
+                assert(empty !== statusOf('Right'), 'with the figure brought up to date',
+                       `${empty} -> ${statusOf('Right')}`);
+            });
+
             assert(errors.length === 0, 'no uncaught errors while driving the Explorer',
                    errors.slice(0, 3).join(' | '));
 

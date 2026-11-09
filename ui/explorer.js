@@ -5073,10 +5073,16 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             syncPanelToExplorer(dst);
         }
 
+        // The render above has just put the panel summary -- file count and free
+        // space -- in the status line. Overwriting it left a disk that had just
+        // been filled with no statement of how much room was left on it until
+        // something else happened to redraw the panel, so the copy result goes
+        // in front of the summary instead of replacing it.
+        const summary = dst.dom.statusSpan.textContent || '';
         const statusMsg = errors.length > 0
             ? `Copied ${added}, ${errors.length} failed`
             : `Copied ${added} file${added !== 1 ? 's' : ''}`;
-        dst.dom.statusSpan.textContent = statusMsg;
+        dst.dom.statusSpan.textContent = summary ? `${statusMsg} \u00b7 ${summary}` : statusMsg;
     }
 
     // ========== Panel file list click handler (delegated) ==========

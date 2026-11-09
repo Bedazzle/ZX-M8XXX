@@ -176,6 +176,14 @@
             {
                 await switchTo('48k');
                 const sp = w.spectrum;
+                // Stop the machine first. The 48K ROM clears RAM for about a second
+                // after a reset and walks straight over the bytes planted below --
+                // it reached $8000 between the two comparisons here and left them
+                // differing again, so "once equal" failed. The panel reads memory;
+                // it does not need a running CPU. (It passed under the old runner
+                // only because Chromium's virtual clock let the ROM finish booting
+                // in a fraction of the real time these waits allow.)
+                sp.stop();
                 for (let i = 0; i < 32; i++) { sp.memory.write(0x8000 + i, i); sp.memory.write(0x9000 + i, i); }
                 sp.memory.write(0x9005, 0xFF);
 
@@ -193,12 +201,13 @@
 
                 sp.memory.write(0x9005, 5);
                 el('btnCompare').click();
-                await wait(400);
+                await until(() => el('compareNoResults').style.display !== 'none', 60, 50);
                 assert(el('compareNoResults').style.display !== 'none',
                        'once equal, it reports identical');
 
                 // 128K: two banks, one of them altered
                 await switchTo('128k');
+                sp.stop();
                 el('compareMemAMode').value = 'bank';
                 el('compareMemAMode').dispatchEvent(new w.Event('change', { bubbles: true }));
                 el('compareMemBMode').value = 'bank';

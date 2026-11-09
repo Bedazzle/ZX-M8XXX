@@ -17,6 +17,9 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
     const memmapStats = document.getElementById('memmapStats');
     const memmapBar = document.getElementById('memmapBar');
     const memmapAddrInfo = document.getElementById('memmapAddrInfo');
+    const memmapCanvasScroll = document.getElementById('memmapCanvasScroll');
+    const memmapCanvasBox = document.querySelector('.memmap-canvas-container');
+    const memmapTitle = document.getElementById('memmapTitle');
 
     const MEMMAP_COLORS = {
         code: '#4080ff',
@@ -37,8 +40,19 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
     const memmapLegendHeatmap = document.getElementById('memmapLegendHeatmap');
     const memmapBankToggle = document.getElementById('memmapBankToggle');
     const btnMemmap64K = document.getElementById('btnMemmap64K');
-    const btnMemmap128K = document.getElementById('btnMemmap128K');
+    const btnMemmapBanks = document.getElementById('btnMemmapBanks');
     const memmapScale = document.querySelector('.memmap-scale');
+
+    // One bank is 16KB: 8 of them on a 128K machine, 16 on a Scorpion and 64 on
+    // a Pentagon 1024. The bank view used to draw the first 8 whatever the
+    // machine had, so there was no way to look at the rest of a 256K or 1MB
+    // machine at all.
+    function ramPages(info) { return Math.max(1, info.ramPages || 8); }
+
+    function ramSizeLabel(info) {
+        const kb = ramPages(info) * 16;
+        return kb >= 1024 ? (kb / 1024) + ' MB' : kb + 'KB';
+    }
 
     function updateMemmapScale() {
         const romLabel = document.getElementById('memmapRomLabel');
@@ -53,7 +67,12 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
             memmapBankToggle.style.display = 'flex';
         }
 
-        memmapScale.style.display = (memmapBankMode === '128k') ? 'none' : 'flex';
+        btnMemmapBanks.textContent = ramSizeLabel(info);
+        memmapScale.style.display = (memmapBankMode === 'banks') ? 'none' : 'flex';
+        if (memmapTitle) {
+            memmapTitle.textContent = 'Memory Map (' +
+                (memmapBankMode === 'banks' ? ramSizeLabel(info) : '64KB') + ')';
+        }
 
         if (info.machineType === '48k') {
             romLabel.textContent = 'ROM';
@@ -73,13 +92,27 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
     }
 
     function renderCurrentMemmapView() {
-        if (memmapBankMode === '128k') {
-            render128KMap();
-        } else if (memmapViewMode === 'heatmap') {
-            renderHeatmap();
+        if (memmapBankMode === 'banks') {
+            renderBankMap();
         } else {
-            renderMemoryMap();
+            setCanvasBox(512, 512);
+            if (memmapViewMode === 'heatmap') renderHeatmap();
+            else renderMemoryMap();
         }
+    }
+
+    // The bank view is as tall as the machine has banks -- 4096 pixels on a
+    // Pentagon 1024 -- so the canvas grows and its box scrolls. The box has to
+    // reserve the scrollbar's width, else it would sit over the right-hand
+    // column of banks; that width is measured rather than assumed, because it
+    // is not the same on every platform.
+    function setCanvasBox(w, h) {
+        if (memmapCanvas.width !== w) memmapCanvas.width = w;
+        if (memmapCanvas.height !== h) memmapCanvas.height = h;
+        // offsetWidth - clientWidth is the box's frame plus its scrollbar, if one
+        // is showing; the column of banks needs the full 512 inside that.
+        const frame = memmapCanvasScroll.offsetWidth - memmapCanvasScroll.clientWidth;
+        memmapCanvasBox.style.width = (memmapCanvas.offsetWidth + frame) + 'px';
     }
 
     function closeMemoryMap() {
@@ -99,17 +132,18 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
     function setMemmapBankMode(mode) {
         memmapBankMode = mode;
         btnMemmap64K.classList.toggle('active', mode === '64k');
-        btnMemmap128K.classList.toggle('active', mode === '128k');
-        memmapScale.style.display = (mode === '128k') ? 'none' : 'flex';
+        btnMemmapBanks.classList.toggle('active', mode === 'banks');
+        memmapScale.style.display = (mode === 'banks') ? 'none' : 'flex';
         memmapLegendRegions.classList.toggle('hidden', memmapViewMode !== 'regions');
         memmapLegendHeatmap.classList.toggle('hidden', memmapViewMode !== 'heatmap');
+        updateMemmapScale();
         renderCurrentMemmapView();
     }
 
     btnMemmapRegions.addEventListener('click', () => setMemmapView('regions'));
     btnMemmapHeatmap.addEventListener('click', () => setMemmapView('heatmap'));
     btnMemmap64K.addEventListener('click', () => setMemmapBankMode('64k'));
-    btnMemmap128K.addEventListener('click', () => setMemmapBankMode('128k'));
+    btnMemmapBanks.addEventListener('click', () => setMemmapBankMode('banks'));
 
     function getMemoryMapData() {
         const data = new Array(65536);
@@ -295,16 +329,48 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
         }
     }
 
-    // 128K view: Show all 8 banks in a 2x4 grid with x2 horizontal scale
-    function render128KMap() {
+    // Bank view: every RAM bank the machine has, two to a row, each drawn as
+    // 128-byte rows at x2 horizontal scale. Banks 5 and 2 are coloured for the
+    // $4000/$8000 windows they always sit in; every other bank is coloured for
+    // the $C000 window it is seen through, since regions are kept per CPU
+    // address and not per bank.
+    const BANK_CELL_W = 256, BANK_CELL_H = 128, BANK_ROW_BYTES = 128;
+
+    function bankGrid(info) {
+        const pages = ramPages(info);
+        return { pages, rows: Math.ceil(pages / 2) };
+    }
+
+    // Where a bank's byte answers when that bank is paged in.
+    function bankCpuAddr(bank, off) {
+        if (bank === 5) return 0x4000 + off;
+        if (bank === 2) return 0x8000 + off;
+        return 0xC000 + off;
+    }
+
+    // Whether the debugger could show that byte now: the disassembly and the
+    // dumps read the paged 64K, so a bank outside a window has no address to go
+    // to. (Normal paging only -- the +2A/+3 special modes and the Scorpion's
+    // extra bits move more than the $C000 window.)
+    function bankIsPaged(info, bank) {
+        return bank === 5 || bank === 2 || bank === info.currentRamBank;
+    }
+
+    function rgbOf(color) {
+        return [parseInt(color.slice(1, 3), 16),
+                parseInt(color.slice(3, 5), 16),
+                parseInt(color.slice(5, 7), 16)];
+    }
+
+    function renderBankMap() {
         const info = getMemoryInfo();
         if (!info || info.machineType === '48k') return;
         const ramBanks = getRAMBanks();
+        const grid = bankGrid(info);
+        const width = 512, height = grid.rows * BANK_CELL_H;
+        setCanvasBox(width, height);
 
-        const imageData = memmapCtx.createImageData(512, 512);
-        const cellWidth = 256;
-        const cellHeight = 128;
-        const bytesPerRow = 128;
+        const imageData = memmapCtx.createImageData(width, height);
 
         let heatData = null, maxExec = 0, maxRead = 0, maxWrite = 0;
         if (memmapViewMode === 'heatmap') {
@@ -328,108 +394,108 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
             return Math.log(count + 1) / Math.log(max + 1);
         };
 
-        for (let bank = 0; bank < 8; bank++) {
-            const col = bank % 2;
-            const row = Math.floor(bank / 2);
-            const baseX = col * cellWidth;
-            const baseY = row * cellHeight;
+        // A region lookup per byte is 64 of them per bank-full on a Pentagon
+        // 1024; the answer only depends on the window, so each window is asked
+        // once and the rest is a table read.
+        const windowRgb = {};
+        if (memmapViewMode !== 'heatmap') {
+            for (const base of [0x4000, 0x8000, 0xC000]) {
+                const table = new Array(0x4000);
+                for (let off = 0; off < 0x4000; off++) {
+                    const region = regionManager.get(base + off);
+                    table[off] = region
+                        ? rgbOf(MEMMAP_COLORS[region.type] || MEMMAP_COLORS.unmapped)
+                        : null;
+                }
+                windowRgb[base] = table;
+            }
+        }
+        const zeroRgb = rgbOf(MEMMAP_COLORS.zero);
+        const unmappedRgb = rgbOf(MEMMAP_COLORS.unmapped);
+
+        for (let bank = 0; bank < grid.pages; bank++) {
+            const baseX = (bank % 2) * BANK_CELL_W;
+            const baseY = Math.floor(bank / 2) * BANK_CELL_H;
             const ramBank = ramBanks[bank];
+            if (!ramBank) continue;
+            const windowBase = bank === 5 ? 0x4000 : bank === 2 ? 0x8000 : 0xC000;
+            const table = windowRgb[windowBase];
 
             for (let addr = 0; addr < 0x4000; addr++) {
                 const val = ramBank[addr];
-                let r, g, b;
-
-                let cpuAddr;
-                if (bank === 5) cpuAddr = 0x4000 + addr;
-                else if (bank === 2) cpuAddr = 0x8000 + addr;
-                else cpuAddr = 0xC000 + addr;
+                let r, g, b2;
 
                 if (memmapViewMode === 'heatmap' && heatData) {
-                    let key;
-                    if (bank === 5 || bank === 2) {
-                        key = cpuAddr.toString();
-                    } else {
-                        key = `${cpuAddr}:${bank}`;
-                    }
-                    const execCount = heatData.executed.get(key) || 0;
-                    const readCount = heatData.read.get(key) || 0;
-                    const writeCount = heatData.written.get(key) || 0;
-                    r = Math.floor(logScale(writeCount, maxWrite) * 255);
-                    g = Math.floor(logScale(readCount, maxRead) * 255);
-                    b = Math.floor(logScale(execCount, maxExec) * 255);
+                    const cpuAddr = windowBase + addr;
+                    const key = (bank === 5 || bank === 2)
+                        ? cpuAddr.toString()
+                        : `${cpuAddr}:${bank}`;
+                    r = Math.floor(logScale(heatData.written.get(key) || 0, maxWrite) * 255);
+                    g = Math.floor(logScale(heatData.read.get(key) || 0, maxRead) * 255);
+                    b2 = Math.floor(logScale(heatData.executed.get(key) || 0, maxExec) * 255);
                 } else {
-                    const region = regionManager.get(cpuAddr);
-                    let color;
-                    if (region) {
-                        color = MEMMAP_COLORS[region.type];
-                    } else if (val === 0) {
-                        color = MEMMAP_COLORS.zero;
-                    } else {
-                        color = MEMMAP_COLORS.unmapped;
-                    }
-                    r = parseInt(color.slice(1, 3), 16);
-                    g = parseInt(color.slice(3, 5), 16);
-                    b = parseInt(color.slice(5, 7), 16);
+                    const rgb = table[addr] || (val === 0 ? zeroRgb : unmappedRgb);
+                    r = rgb[0]; g = rgb[1]; b2 = rgb[2];
                 }
 
-                const localX = addr % bytesPerRow;
-                const localY = Math.floor(addr / bytesPerRow);
-                const px = baseX + localX * 2;
-                const py = baseY + localY;
-
+                const px = baseX + (addr % BANK_ROW_BYTES) * 2;
+                const py = baseY + Math.floor(addr / BANK_ROW_BYTES);
+                let idx = (py * width + px) * 4;
                 for (let dx = 0; dx < 2; dx++) {
-                    if ((px + dx) < 512 && py < 512) {
-                        const idx = (py * 512 + px + dx) * 4;
-                        imageData.data[idx] = r;
-                        imageData.data[idx + 1] = g;
-                        imageData.data[idx + 2] = b;
-                        imageData.data[idx + 3] = 255;
-                    }
+                    imageData.data[idx] = r;
+                    imageData.data[idx + 1] = g;
+                    imageData.data[idx + 2] = b2;
+                    imageData.data[idx + 3] = 255;
+                    idx += 4;
                 }
             }
         }
 
         memmapCtx.putImageData(imageData, 0, 0);
 
-        // Draw grid lines
+        // Grid lines
         memmapCtx.strokeStyle = '#444';
         memmapCtx.lineWidth = 1;
         memmapCtx.beginPath();
-        memmapCtx.moveTo(cellWidth, 0);
-        memmapCtx.lineTo(cellWidth, 512);
+        memmapCtx.moveTo(BANK_CELL_W, 0);
+        memmapCtx.lineTo(BANK_CELL_W, height);
         memmapCtx.stroke();
-        for (let i = 1; i < 4; i++) {
+        for (let row = 1; row < grid.rows; row++) {
             memmapCtx.beginPath();
-            memmapCtx.moveTo(0, i * cellHeight);
-            memmapCtx.lineTo(512, i * cellHeight);
+            memmapCtx.moveTo(0, row * BANK_CELL_H);
+            memmapCtx.lineTo(width, row * BANK_CELL_H);
             memmapCtx.stroke();
         }
 
-        // Draw bank labels
+        // Bank labels: the window for the two that always have one, and green
+        // for whichever bank is paged at $C000 right now.
         memmapCtx.font = '11px monospace';
-        for (let bank = 0; bank < 8; bank++) {
-            const col = bank % 2;
-            const row = Math.floor(bank / 2);
-            const x = col * cellWidth + 4;
-            const y = row * cellHeight + 14;
-            const isCurrentBank = (bank === info.currentRamBank);
-            memmapCtx.fillStyle = isCurrentBank ? '#00ff00' : '#888';
-            memmapCtx.fillText('Bank ' + bank, x, y);
+        for (let bank = 0; bank < grid.pages; bank++) {
+            if (!ramBanks[bank]) continue;
+            const x = (bank % 2) * BANK_CELL_W + 4;
+            const y = Math.floor(bank / 2) * BANK_CELL_H + 14;
+            memmapCtx.fillStyle = (bank === info.currentRamBank) ? '#00ff00' : '#888';
+            let text = 'Bank ' + bank;
+            if (bank === 5) text += ' ($4000)';
+            else if (bank === 2) text += ' ($8000)';
+            memmapCtx.fillText(text, x, y);
         }
 
-        // Update stats
+        // Stats
         let totalZero = 0, totalNonZero = 0;
-        for (let bank = 0; bank < 8; bank++) {
+        for (let bank = 0; bank < grid.pages; bank++) {
             const ramBank = ramBanks[bank];
+            if (!ramBank) continue;
             for (let addr = 0; addr < 0x4000; addr++) {
                 if (ramBank[addr] === 0) totalZero++;
                 else totalNonZero++;
             }
         }
-        const total = 128 * 1024;
+        const total = totalZero + totalNonZero;
         memmapStats.innerHTML = `
             <table>
-                <tr><td>Total RAM</td><td>128 KB</td></tr>
+                <tr><td>Total RAM</td><td>${ramSizeLabel(info)}</td></tr>
+                <tr><td>Banks</td><td>${grid.pages}</td><td>16KB each</td></tr>
                 <tr><td>Non-zero</td><td>${totalNonZero.toLocaleString()}</td><td>${(totalNonZero/total*100).toFixed(1)}%</td></tr>
                 <tr><td>Zeroes</td><td>${totalZero.toLocaleString()}</td><td>${(totalZero/total*100).toFixed(1)}%</td></tr>
                 <tr class="total"><td>Current</td><td colspan="2">Bank ${info.currentRamBank}</td></tr>
@@ -448,7 +514,82 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
         return py * 256 + px;
     }
 
+    // The inverse of the bank layout: which bank was pointed at, and how far
+    // into it. Reading the hover as a flat 64K address (which is all there used
+    // to be) named the wrong byte in every bank but the first.
+    function getBankPosFromCanvasPos(x, y) {
+        const info = getMemoryInfo();
+        if (!info) return null;
+        const grid = bankGrid(info);
+        const rect = memmapCanvas.getBoundingClientRect();
+        const cx = Math.floor((x - rect.left) * (memmapCanvas.width / rect.width));
+        const cy = Math.floor((y - rect.top) * (memmapCanvas.height / rect.height));
+        if (cx < 0 || cy < 0 || cx >= memmapCanvas.width || cy >= memmapCanvas.height) return null;
+        const bank = Math.floor(cy / BANK_CELL_H) * 2 + Math.floor(cx / BANK_CELL_W);
+        if (bank >= grid.pages) return null;
+        const off = (cy % BANK_CELL_H) * BANK_ROW_BYTES +
+                    Math.floor((cx % BANK_CELL_W) / 2);
+        return { bank, off, cpuAddr: bankCpuAddr(bank, off) };
+    }
+
+    // The tooltip is placed against the scrolling box, not the canvas, so it
+    // stays under the pointer once the bank view has been scrolled.
+    function placeTooltip(e) {
+        const box = memmapCanvasScroll.getBoundingClientRect();
+        memmapTooltip.style.left = (e.clientX - box.left + 10) + 'px';
+        memmapTooltip.style.top = (e.clientY - box.top - 20) + 'px';
+    }
+
+    function showBankInfo(e) {
+        const pos = getBankPosFromCanvasPos(e.clientX, e.clientY);
+        if (!pos) {
+            memmapTooltip.style.display = 'none';
+            return;
+        }
+        const info = getMemoryInfo();
+        const ramBanks = getRAMBanks();
+        const val = ramBanks[pos.bank] ? ramBanks[pos.bank][pos.off] : 0;
+        const label = labelManager.get(pos.cpuAddr);
+        const where = `Bank ${pos.bank} ${fmtAddr(pos.cpuAddr)}`;
+        let short, long;
+
+        if (memmapViewMode === 'heatmap' && heatmapData) {
+            const key = (pos.bank === 5 || pos.bank === 2)
+                ? String(pos.cpuAddr) : `${pos.cpuAddr}:${pos.bank}`;
+            const execCount = heatmapData.executed.get(key) || 0;
+            const readCount = heatmapData.read.get(key) || 0;
+            const writeCount = heatmapData.written.get(key) || 0;
+            short = `${where}: E:${execCount} R:${readCount} W:${writeCount}`;
+            long = `${where}\nValue: ${hex8(val)} (${val})` +
+                   `\nExecuted: ${execCount.toLocaleString()} times` +
+                   `\nRead: ${readCount.toLocaleString()} times` +
+                   `\nWritten: ${writeCount.toLocaleString()} times`;
+        } else {
+            const region = regionManager.get(pos.cpuAddr);
+            const type = region ? region.type : (val === 0 ? 'Zero' : 'Unmapped');
+            short = `${where}: ${fmtByte(val)} - ${type}`;
+            long = `${where}\nValue: ${hex8(val)} (${val})\nType: ${type}`;
+            if (region && region.comment) long += `\n${region.comment}`;
+        }
+        if (label) {
+            short += ` [${label.name}]`;
+            long += `\nLabel: ${label.name}`;
+        }
+        long += bankIsPaged(info, pos.bank)
+            ? '\nClick to navigate'
+            : '\nNot paged in - page the bank to navigate';
+
+        memmapTooltip.textContent = short;
+        memmapTooltip.style.display = 'block';
+        placeTooltip(e);
+        memmapAddrInfo.textContent = long;
+    }
+
     memmapCanvas.addEventListener('mousemove', (e) => {
+        if (memmapBankMode === 'banks') {
+            showBankInfo(e);
+            return;
+        }
         const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
         if (addr < 0) {
             memmapTooltip.style.display = 'none';
@@ -491,8 +632,7 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
 
         memmapTooltip.textContent = info;
         memmapTooltip.style.display = 'block';
-        memmapTooltip.style.left = (e.clientX - memmapCanvas.getBoundingClientRect().left + 10) + 'px';
-        memmapTooltip.style.top = (e.clientY - memmapCanvas.getBoundingClientRect().top - 20) + 'px';
+        placeTooltip(e);
         memmapAddrInfo.textContent = infoText;
     });
 
@@ -501,6 +641,22 @@ export function initMemoryMap({ readMemory, getMemoryInfo, getRAMBanks, getAutoM
     });
 
     memmapCanvas.addEventListener('click', (e) => {
+        if (memmapBankMode === 'banks') {
+            const pos = getBankPosFromCanvasPos(e.clientX, e.clientY);
+            const info = getMemoryInfo();
+            if (!pos || !info) return;
+            if (!bankIsPaged(info, pos.bank)) {
+                memmapAddrInfo.textContent = `Bank ${pos.bank} ${fmtAddr(pos.cpuAddr)}` +
+                    '\nThat bank is not paged in, so there is no' +
+                    '\naddress to go to. Page it at $C000 first.';
+                return;
+            }
+            closeMemoryMap();
+            goToAddress(pos.cpuAddr);
+            goToMemoryAddress(pos.cpuAddr);
+            updateDebugger();
+            return;
+        }
         const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
         if (addr >= 0) {
             closeMemoryMap();

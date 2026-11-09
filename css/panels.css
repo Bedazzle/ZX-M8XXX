@@ -337,8 +337,23 @@
     width: 512px;
     flex-shrink: 0;
 }
-#memmapCanvas {
+/* The bank view draws every bank the machine has, so on a 256KB or 1MB machine
+   the canvas is taller than the dialog and this box scrolls it. The frame is on
+   the box and not on the canvas: a bordered canvas is 514px for 512 pixels of
+   map, which both pushed 4 rows of banks into scrolling and put every hover a
+   pixel out, since getBoundingClientRect() measures the border box. */
+.memmap-canvas-scroll {
+    /* content-box, so the 512 is 512 pixels of map: the page sets border-box
+       globally, under which the frame would come out of the map's own height and
+       leave four rows of banks two pixels short of fitting. */
+    box-sizing: content-box;
+    max-height: 512px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    line-height: 0;
     border: 1px solid var(--bg-button);
+}
+#memmapCanvas {
     cursor: crosshair;
     image-rendering: pixelated;
 }

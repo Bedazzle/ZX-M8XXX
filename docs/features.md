@@ -11,14 +11,19 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Feature | Logic | UI | Markup | Test | Docs |
 |---------|-------|----|--------|------|------|
 | Z80 CPU | `core/z80.js` | — | — | `fuse-test` | — |
+| CPU variant (Zilog/NEC/ST) | `core/z80.js` (`xcfMask`, `outVc255`), `core/spectrum.js` (`CPU_VARIANTS`, `setCpuVariant`) | `ui/display-settings.js` | `cpuVariantSelect` | `cpu-variant-test` | `docs/machines.md#cpu-variant` |
 | Memory / paging | `core/memory.js`, `core/machines.js` | `ui/machine-selector.js` | `machineSelect` | `memory-test`, `machine-test` | `docs/machines.md` |
+| Memory contention | `core/spectrum.js` (`setupContention`, `checkContention`), `core/z80.js` (`contend`, `contendInternal`), `core/machines.js` (`contentionPattern`, `hasContention`) | — | — | `contention-timing-test`, `ctprobe-*`, `timingtest-*` | `docs/machines.md` |
+| Port I/O contention | `core/spectrum.js` (`applyIOTimings`, `applyIOTimingsForRead`, `IO_OFFSET_READ/WRITE`) | — | — | `contention-timing-test`, `timingtest-00fe/7ffe/…` | `docs/machines.md` |
+| Floating bus | `core/spectrum.js` (`getFloatingBusValue`, `_ioCycleT`, `IO_CYCLE_READ_T`), `core/machines.js` (`hasFloatingBus`) | — | — | `float48k`, `float128k`, `ctprobe-*` | `docs/machines.md` |
+| Scorpion Even M1 + attribute bus | `core/spectrum.js` (`evenM1` in `setupContention`, `getAttrBusValue`), `core/memory.js` (`isRomAt`), `core/machines.js` (`evenM1`, `attrBusPorts`) | — | — | `ctprobe-scorpion`, `TactMeterV1.0` | `docs/machines.md#cpu-variant` |
 | Video, border | `core/ula.js` | `ui/display-settings.js` | `screen`, `borderSizeSelect` | `system-test` | `docs/rendering.md` |
 | ULAplus | `core/ula.js` (`ulaplus`) | `ui/display-settings.js` | `chkULAplus`, `ulaplusPalette*` | `system-test`, `szx-peripherals-test` | `docs/rendering.md` |
 | Sound (beeper, AY) | `core/ay.js`, `core/audio-processor.js` | `ui/display-settings.js` | `chkSound`, `volumeSlider`, `stereoMode` | `tape-test` | `docs/rendering.md` |
 | Keyboard | `core/ula.js` (keyMap), `core/spectrum.js` | `ui/input-settings.js`, `ui/virtual-keyboard.js` | `selCapsShiftKey`, `virtualKeyboard` | `system-test` | `docs/peripherals.md` |
 | Keyboard ghosting | `core/ula.js` (`_ghostedRows`, `setKeyboardGhosting`) | `ui/input-settings.js` | `chkKeyboardGhosting` | `system-test` | `docs/peripherals.md` |
 | Scripted key presses | `core/ula.js` (`hasKey`, `keyNames`, `resolveKeyName`) | `ui/app-init.js` (`assertZXKey`) | — | `system-test` | `docs/automation.md` |
-| ULA snow | `core/ula-snow.js`, `core/ula.js` (`_displayRam`) | `ui/display-settings.js` | `chkUlaSnow` | `snow-test` | `docs/rendering.md` |
+| ULA snow | `core/ula-snow.js`, `core/ula.js` (`_displayRam`, `_snowFetchStartTstate`) | `ui/display-settings.js` | `chkUlaSnow` | `snow-test`, app tests `snowtest-*` | `docs/rendering.md` |
 | ULA ink edge skew | `core/ula-inkskew.js`, `core/ula.js` (`inkSkew`) | `ui/display-settings.js` | `chkInkSkew` | `inkskew-test` | `docs/rendering.md` |
 | PAL composite (RF) | `core/pal-composite.js`, `core/ula.js` (`setPalComposite`) | `ui/display-settings.js` | `chkPalComposite` | `pal-test`, `chromatrons`, `chromatrons-pentagon` | `docs/rendering.md` |
 | Joysticks | `core/joystick.js`, `core/spectrum.js` | `ui/input-settings.js`, `ui/gamepad.js` | `selJoystickType`, `joyCustomKeys`, `chkKempston` | `joystick-test` | `docs/peripherals.md` |
@@ -34,7 +39,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | +D / MGT | `core/loaders/disk-mgt.js` | `ui/input-settings.js` | `chkPlusD` | `disk-test` | `docs/peripherals.md` |
 | Interface 1 / Microdrive | `core/loaders/microdrive.js` | `ui/input-settings.js` | `chkIF1` | `disk-test` | `docs/peripherals.md` |
 | Opus Discovery (OPD) | `core/loaders/disk-opus.js` (`OPDLoader` + `OpusDisk`), `core/memory.js` (overlay), `core/spectrum.js` (paging, DRQ NMI) | `ui/input-settings.js` (`chkOpus`), `ui/file-loader.js`, `ui/explorer.js` | `chkOpus`, `opusStatus`, `btnLoadOpusRom`, `romOpusInput` | `opus-test`, `loader-test` | `docs/peripherals.md` |
-| Didaktik 40/80 (D40/D80) | `core/loaders/disk-didaktik.js` (`DidaktikLoader` + `DidaktikDisk`), `core/memory.js` (overlay), `core/spectrum.js` (paging, ports, NMI) | `ui/input-settings.js` (`chkDidaktik`), `ui/file-loader.js`, `ui/explorer-editors.js` | `chkDidaktik`, `didaktikStatus`, `btnLoadDidaktikRom`, `romDidaktikInput` | `disk-boot-test`, `disk-test` | `docs/peripherals.md` |
+| Didaktik 40/80 (D40/D80) | `core/loaders/disk-didaktik.js` (`DidaktikLoader` + `DidaktikDisk`), `core/memory.js` (overlay), `core/spectrum.js` (paging, ports, NMI) | `ui/input-settings.js` (`chkDidaktik`), `ui/file-loader.js`, `ui/explorer-editors.js` | `chkDidaktik`, `chkDidaktik128`, `didaktik128Row`, `didaktikStatus`, `btnLoadDidaktikRom`, `romDidaktikInput` | `disk-boot-test`, `disk-test` | `docs/peripherals.md` |
 | +3 FDC / DSK | `core/fdc.js` | `ui/media-catalog.js` | `diskActivity` | `fdc-test` | `docs/peripherals.md` |
 | ZIP archives | `core/loaders/zip.js` | `ui/file-loader.js` | `zipSelectModal` | `loader-test` | `docs/media.md` |
 

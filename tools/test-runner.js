@@ -411,6 +411,8 @@ export class TestRunner {
         const savedMachine = this.spectrum.machineType;
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
         const savedBorderPreset = this.spectrum.ula.borderPreset;
+        const savedCpuVariant = this.spectrum.getCpuVariant
+            ? this.spectrum.getCpuVariant() : null;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const savedKempston = this.spectrum.kempstonEnabled;
@@ -509,6 +511,14 @@ export class TestRunner {
             // test's outcome. A test that wants it sets "keyboardGhosting": true.
             this.spectrum.ula.setKeyboardGhosting(test.keyboardGhosting === true);
 
+            // Which Z80 the machine has, for the same reason as the toggles
+            // around it: SCF/CCF flags and OUT (C),0 differ between variants,
+            // so a Settings dropdown must not decide a result. A test that is
+            // ABOUT a variant names it with "cpuVariant".
+            if (this.spectrum.setCpuVariant) {
+                this.spectrum.setCpuVariant(test.cpuVariant || 'zilog-nmos');
+            }
+
             // ULA snow and the ink/paper edge skew: both change what reaches the
             // screen, so like the two above they are forced off per test and the
             // global Settings toggles cannot decide a result. A test that is *about*
@@ -588,6 +598,9 @@ export class TestRunner {
             this.spectrum.didaktikEnabled = savedInterfaces.didaktik;
             this.spectrum.updateBetaDiskPagingFlag();
             this.spectrum.ula.setKeyboardGhosting(savedGhosting);
+            if (savedCpuVariant && this.spectrum.setCpuVariant) {
+                this.spectrum.setCpuVariant(savedCpuVariant);
+            }
             this.spectrum.ula.setSnowEffect(savedSnow);
             this.spectrum.ula.setInkSkew(savedInkSkew);
             this.spectrum.ula.setPalComposite(savedPalComposite);
@@ -1591,6 +1604,8 @@ export class TestRunner {
         const savedMachine = this.spectrum.machineType;
         const savedPalette = this._callbacks.getPaletteValue ? this._callbacks.getPaletteValue() : 'default';
         const savedBorderPreset = this.spectrum.ula.borderPreset;
+        const savedCpuVariant = this.spectrum.getCpuVariant
+            ? this.spectrum.getCpuVariant() : null;
         const savedLateTimings = this.spectrum.lateTimings;
         const savedKempstonMouse = this.spectrum.kempstonMouseEnabled;
         const savedKempston = this.spectrum.kempstonEnabled;
@@ -1693,6 +1708,14 @@ export class TestRunner {
 
             this.spectrum.ula.setKeyboardGhosting(test.keyboardGhosting === true);
 
+            // Which Z80 the machine has, for the same reason as the toggles
+            // around it: SCF/CCF flags and OUT (C),0 differ between variants,
+            // so a Settings dropdown must not decide a result. A test that is
+            // ABOUT a variant names it with "cpuVariant".
+            if (this.spectrum.setCpuVariant) {
+                this.spectrum.setCpuVariant(test.cpuVariant || 'zilog-nmos');
+            }
+
             // ULA snow and the ink/paper edge skew: both change what reaches the
             // screen, so like the two above they are forced off per test and the
             // global Settings toggles cannot decide a result. A test that is *about*
@@ -1794,6 +1817,9 @@ export class TestRunner {
             this.spectrum.didaktikEnabled = savedInterfaces.didaktik;
             this.spectrum.updateBetaDiskPagingFlag();
             this.spectrum.ula.setKeyboardGhosting(savedGhosting);
+            if (savedCpuVariant && this.spectrum.setCpuVariant) {
+                this.spectrum.setCpuVariant(savedCpuVariant);
+            }
             this.spectrum.ula.setSnowEffect(savedSnow);
             this.spectrum.ula.setInkSkew(savedInkSkew);
             this.spectrum.ula.setPalComposite(savedPalComposite);

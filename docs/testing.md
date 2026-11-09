@@ -3,6 +3,35 @@
 Run everything with `python run-tests.py`. This file is the per-suite detail;
 CLAUDE.md lists the suites and the command.
 
+## How `run-tests.py` drives a suite
+
+A suite is an HTML page that runs its asserts on load and writes them into the DOM;
+headless Edge prints that DOM with `--dump-dom`, **when the load event fires** -- long
+before an async suite has finished. So the runner has to hold that event open.
+
+It used to buy the time with `--virtual-time-budget`. That is the wrong clock: virtual
+time advances while the real page waits, so a suite's own "poll up to 10 seconds for the
+app to come up" could expire in a blink and the dump caught a half-written page. That was
+the intermittent `NO RESULT`; raising the budget to 3,000,000 made `disk-boot-test` fail
+*every* time, which is what identified it.
+
+There is no virtual time now. `run-tests.py` serves the suite pages itself and splices a
+small script into each, which loads an `<img>` whose request the server holds open -- that
+delays the load event in real time -- and releases it once the suite has gone quiet.
+**Quiet is counted in ticks, not wall-clock**: a suite running 700 frames in a synchronous
+loop blocks the thread, so no tick fires and it cannot be mistaken for a finished one. An
+iframe suite gets a far longer idle window, since it waits on work driven by the iframe's
+own timers, which the watcher in the parent page cannot see.
+
+- **A suite that dies half-way says so**: an uncaught error or an unhandled rejection
+  becomes a failure line, instead of the suite reporting however many asserts it had
+  reached -- which reads as a shorter suite rather than a broken one. `NOT QUIET` in the
+  table means the page never went quiet and the dump was taken anyway.
+- **The clock is real, so `await wait(200)` means 200ms.** Three asserts in the UI suites
+  passed only on the virtual clock: two waiting on a throttled redraw, one planting bytes
+  while the 48K ROM was still clearing RAM over them. Wait for the thing being checked
+  with `until(...)`, and stop the machine if the test does not want the ROM running.
+
 ## Running the application tests headlessly
 
 `run-tests.py` runs `tests/*-test.html` and says nothing about the pictures. The
@@ -126,6 +155,55 @@ Import Foreign dialog tests — synthetic TRD/SCL/ZIP/Hobeta fixtures driven thr
 
 HALT + interrupt tests — a frame-start INT landing on a not-yet-executed HALT enters the halt state first so the handler returns to PC+1 (snapshot resume on an EI/HALT main loop, e.g. Shock megademo). Also that both steppers generate no audio while `audioSuppressed` is set, even with an enabled audio object — what keeps the application tests silent
 
+## ULA snow (application tests)
+
+Five programs that make the snow effect visible, each opting in with
+`"ulaSnow": true` (the runner forces snow OFF otherwise, so a Settings toggle
+cannot decide a result):
+
+| entry | author | note |
+|:--|:--|:--|
+| `snowhold-48k` / `-128k` | Mark Woodmass | **static on both machines**, which is why it is the calibration target; the banding is hand-derivable |
+| `snow48-azesmbog` | azesmbog | also static |
+| `snowtest-48k` / `-128k` / `-plus2` | Weiv | **the only one with an oracle**: it draws the hardware-measured EXPECTED row above the LIVE one, so a mismatch is visible in the picture itself |
+| `snowtest-plus2a` | Weiv | the negative case — no snow on the Amstrad machines, so the LIVE row must stay plain |
+
+**`snowtest` is the calibration; the rest are regression guards.** Only `snowtest`
+can say our snow is *right* rather than *unchanged*, because only it carries the
+hardware reference in the same frame. It found the model two character columns out on
+48K and four on 128K, and the constants it settled are in
+[rendering.md](rendering.md#ula-snow). The others pin that a future timing change
+cannot alter the pattern unnoticed -- and note what that is worth: `snowhold` and
+`snow48-azesmbog` passed happily for sixty releases against a wrong model, because a
+reference captured from our own render cannot be wrong by construction.
+
+Two of the collection were tried and **deliberately left out**: Weiv's `ula128` is
+byte-identical to the tape already shipped as the `ula128` entry and sits on its title
+screen with snow on, and `snow128n` draws a flat screen here. Both would pass even if
+snow broke completely, so pinning them would be theatre. The remaining programs live
+in `C:\Backa\zx-snow-tests\` if they are ever wanted.
+
+## Border and screen timing (application tests)
+
+Where a border or screen write lands, measured directly instead of inferred from
+whether a game's title screen matches a PNG we captured ourselves:
+
+| entry | author | what it shows |
+|:--|:--|:--|
+| `bordertime-48k` / `-128k` | Jan Bobrowski | the T-state of the **OUT** machine cycle (`14112 + 224 = 14336`) with a marker where the border actually changed; Q and A step it |
+| `screentime-48k` / `-128k` | Jan Bobrowski | the same for the **screen WRITE** cycle |
+| `multicolor-48k` | Patrik Rak | a dense multicolour pattern -- every cell driven on its own tick |
+| `basicborder-48k` | Michael D. Wynne | border stripes from BASIC |
+
+**`bordertime` is the instrument for the `academy` question** (its white line starts 8
+pixels = 4T in from the left edge). The wiki page for Border Time links **video of it
+running on real hardware**, so the marker position can be compared against a real
+machine without owning one -- which is a better route than hunting for a Spectrum owner
+to photograph a game.
+
+The committed references are our own output, so on their own they are regression
+guards, not proof. The proof is comparing the marker with that hardware video.
+
 ## Timing Test (application tests)
 
 **Patrik Rak**'s Timing Test (based on **Jan Bobrowski**'s zxtests, GPL) is a menu of
@@ -213,6 +291,29 @@ They are a second opinion, not the primary one. The oracle is ctprobe's P-02
 look at, from an author independent of it. Both were used to fit `IO_CYCLE_READ_T`
 and the per-machine `floatStart` in `core/spectrum.js`, and they agree.
 
+## `tests/cpu-variant-test.html`
+
+**Which Z80 the machine was fitted with.** Second-source parts differ in exactly two
+ways software can see, and the two are **independent** -- which is why `core/z80.js`
+carries two fields rather than one variant enum:
+
+- the undocumented YF/XF after `SCF`/`CCF`: Zilog takes both from `(F^Q) | A`, ST CMOS
+  takes XF from A alone, NEC takes both from A;
+- whether `OUT (C),0` drives 0 or 255 (255 on the Zilog CMOS part).
+
+The formulas are written out **longhand** here rather than reused from the emulator --
+expressed the way `core/z80.js` expresses them, the test would only prove the code
+equals itself. It then sweeps all 256 values of A against every YF/XF combination in F
+and in Q, for both instructions, on all four variants, and asserts the three flavours
+are actually distinguishable rather than the knob being decorative.
+
+One assertion is there to record a **decision, not a measurement**: `st-cmos` keeps
+`OUT (C),0` at 0, because the 255 report is for the *Zilog* CMOS part and no source
+extends it to ST. Asserting 255 there would be a guess dressed as a fact; the test
+says so, so it does not read as an oversight.
+
+Table, sources and the Settings control: `docs/machines.md#cpu-variant`.
+
 ## `tests/contention-timing-test.html`
 
 **Where inside an instruction each wait falls.** The pattern, the onset and the M1 fetch
@@ -264,6 +365,12 @@ it back, which is exactly the Microdrive bug.
 - **Opus Discovery**, **Interface 1 / Microdrive** and **Didaktik 80** — the full round trip on
   a blank disk. The Didaktik also checks the file appears in the MDOS catalogue of the image
   itself, not just on screen.
+- **Didaktik 80 on a 128K** — the same round trip again, because "it works on a 128K" means
+  that and nothing weaker. A stock 128K must refuse the interface; with the **128K hardware
+  patch** it must hold ROM page 1 through a reset *and* against a later `$7FFD` write, then
+  complete the round trip. Remove the ROM hold and four asserts fail — checked, so this is a
+  guard rather than a decoration. Also pins where the patch does **not** reach: the +2A
+  (different `$7FFD` decode) and Pentagon (its own disk interface).
 - **+D** — no round trip is possible: its 8K ROM is a bootstrap that needs G+DOS in a `+SYS`
   file, and there is no such disk in the tree. What is pinned down instead is the failure it
   actually had — the machine soft-resetting before the ROM could say anything. Booting a
@@ -271,9 +378,27 @@ it back, which is exactly the Microdrive bug.
 - **+3 floppy** — the same round trip through the built-in µPD765. This one had **no
   end-to-end cover at all**: `tests/tests.json` has no `+3` entry, so the FDC and the whole
   +3DOS path were shipped on trust. It works, but nothing proved it until now.
-- **TR-DOS** — deliberately not re-tested here. It is the one disk system that already had
-  end-to-end cover: `SYSTEM TEST V1.01R`, `Global test v1.0` and `AUMT` in `tests/tests.json`
-  boot real TR-DOS software and compare screens.
+- **TR-DOS / Beta Disk on Pentagon** — the same round trip, which it used to be exempted from
+  on the grounds that `SYSTEM TEST V1.01R`, `Global test v1.0` and `AUMT` in
+  `tests/tests.json` already boot real TR-DOS software. They do, but every one of them
+  **reads** a disk somebody else wrote, so none proves our TR-DOS *writer* — the exact gap
+  that let the Microdrive ship broken. It looks unlike the others for two reasons: the Beta
+  Disk is not a `$0000` overlay with a star syntax, so from 128 BASIC `SAVE "x"` goes to
+  **tape** and the commands have to be typed at TR-DOS's own `A>` prompt (one key per
+  keyword — the cursor is in K mode, so `s` is `SAVE` and spelling it out would type `SAVE`
+  then `AVE`); and the reset between halves must be `bootTrdos()`, since a plain Pentagon
+  reset lands in the ROM's menu. Also pinned: TR-DOS has paged *itself* back out by the time
+  the prompt is up — it is not a permanent overlay — so what has to hold is **ROM bank 1**,
+  because `updateBetaDiskPaging()` only re-pages on bank 1 and a Pentagon left on bank 0 (the
+  128 editor) can never re-enter TR-DOS at all.
+- **The TR-DOS chip is the one ROM that is not part of `memory.rom`**, so `setMachineType`'s
+  `new Memory` drops it while every machine ROM survives. Blanking it and switching 48K →
+  Pentagon must bring it back. That asymmetry is why a TR-DOS disk could fail on Pentagon
+  while the same disk worked on a **Scorpion**, which keeps TR-DOS in bank 3 of
+  `scorpion.rom` (`trdosInRom`) and cannot lose it — asserted here rather than assumed. The
+  cold-cache half of that bug (`ensureRom` fetching `trdos.rom` before `roms/` has been
+  walked) needs an empty ROM cache, which this suite cannot make; it is held by the fetch
+  list in `zxDebug.ensureRom`.
 
 Adding a disk interface means adding a section here, not just a loader test.
 

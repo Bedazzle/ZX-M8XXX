@@ -1041,7 +1041,225 @@
             "steps": [
                 { "frames": 5000, "keys": "7,ENTER", "screen": "tests/timingtest-ffff-128k.png" }
             ]
+        },
+        {
+            "id": "bordertime-48k",
+            "name": "Border Time 48K",
+            "category": "video",
+            "file": "tests/bordertime.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Jan Bobrowski",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Border-Time",
+            "steps": [
+                { "frames": 300, "screen": "tests/bordertime-48k.png" }
+            ]
+        },
+        {
+            "id": "bordertime-128k",
+            "name": "Border Time 128K",
+            "category": "video",
+            "file": "tests/bordertime.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Jan Bobrowski",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Border-Time",
+            "steps": [
+                { "frames": 300, "screen": "tests/bordertime-128k.png" }
+            ]
+        },
+        {
+            "id": "screentime-48k",
+            "name": "Screen Time 48K",
+            "category": "video",
+            "file": "tests/screentime.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Jan Bobrowski",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Screen-Time",
+            "steps": [
+                { "frames": 300, "screen": "tests/screentime-48k.png" }
+            ]
+        },
+        {
+            "id": "screentime-128k",
+            "name": "Screen Time 128K",
+            "category": "video",
+            "file": "tests/screentime.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Jan Bobrowski",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Screen-Time",
+            "steps": [
+                { "frames": 300, "screen": "tests/screentime-128k.png" }
+            ]
+        },
+        {
+            "id": "multicolor-48k",
+            "name": "Multicolor 48K",
+            "category": "video",
+            "file": "tests/multicolor.z80",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Patrik Rak",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Multicolor",
+            "steps": [
+                { "frames": 200, "screen": "tests/multicolor-48k.png" }
+            ]
+        },
+        {
+            "id": "basicborder-48k",
+            "name": "BASIC Border 48K",
+            "category": "video",
+            "file": "tests/basicborder.z80",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Michael D. Wynne",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/BASIC-Border",
+            "steps": [
+                { "frames": 200, "screen": "tests/basicborder-48k.png" }
+            ]
+        },
+        {
+            "id": "snowhold-48k",
+            "name": "Snow Hold 48K",
+            "category": "video",
+            "file": "tests/snowhold.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "ulaSnow": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Mark Woodmass",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+            "steps": [
+                { "frames": 300, "screen": "tests/snowhold-48k.png" }
+            ]
+        },
+        {
+            "id": "snowhold-128k",
+            "name": "Snow Hold 128K",
+            "category": "video",
+            "file": "tests/snowhold.tap",
+            "machine": "128k",
+            "earlyTimings": true,
+            "ulaSnow": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "Mark Woodmass",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+            "steps": [
+                { "frames": 300, "screen": "tests/snowhold-128k.png" }
+            ]
+        },
+        {
+            "id": "snow48-azesmbog",
+            "name": "Snow48 48K",
+            "category": "video",
+            "file": "tests/snow48-azesmbog.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "ulaSnow": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "azesmbog",
+            "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+            "steps": [
+                { "frames": 400, "screen": "tests/snow48-azesmbog.png" }
+            ]
+        },
+        {
+      "id": "snowtest-48k",
+      "name": "Weiv snowtest 48K",
+      "category": "video",
+      "file": "tests/snowtest.tap",
+      "machine": "48k",
+      "earlyTimings": true,
+      "ulaSnow": true,
+      "palette": "default",
+      "enabled": true,
+      "author": "Weiv",
+      "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+      "note": "The program draws Weiv's hardware-measured EXPECTED row above the LIVE one, so the picture carries its own oracle: the two blocks must be identical. Snow at columns 8 and 22, doubles at 5 and 19.",
+      "steps": [
+        {
+          "frames": 900,
+          "screen": "tests/snowtest-48k.png"
         }
+      ]
+    },
+        {
+      "id": "snowtest-128k",
+      "name": "Weiv snowtest 128K",
+      "category": "video",
+      "file": "tests/snowtest.tap",
+      "machine": "128k",
+      "earlyTimings": true,
+      "ulaSnow": true,
+      "palette": "default",
+      "enabled": true,
+      "author": "Weiv",
+      "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+      "note": "The program draws Weiv's hardware-measured EXPECTED row above the LIVE one, so the picture carries its own oracle: the two blocks must be identical. Snow at columns 8 and 22, doubles at 5 and 19.",
+      "steps": [
+        {
+          "frames": 900,
+          "screen": "tests/snowtest-128k.png"
+        }
+      ]
+    },
+    {
+      "id": "snowtest-plus2",
+      "name": "Weiv snowtest +2",
+      "category": "video",
+      "file": "tests/snowtest.tap",
+      "machine": "plus2",
+      "earlyTimings": true,
+      "ulaSnow": true,
+      "palette": "default",
+      "enabled": true,
+      "author": "Weiv",
+      "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+      "note": "The program draws Weiv's hardware-measured EXPECTED row above the LIVE one, so the picture carries its own oracle: the two blocks must be identical. Snow at columns 8 and 22, doubles at 5 and 19.",
+      "steps": [
+        {
+          "frames": 900,
+          "screen": "tests/snowtest-plus2.png"
+        }
+      ]
+    },
+    {
+      "id": "snowtest-plus2a",
+      "name": "Weiv snowtest +2A (must not snow)",
+      "category": "video",
+      "file": "tests/snowtest.tap",
+      "machine": "plus2a",
+      "earlyTimings": true,
+      "ulaSnow": true,
+      "palette": "default",
+      "enabled": true,
+      "author": "Weiv",
+      "source": "https://github.com/redcode/ZXSpectrum/wiki/Tests",
+      "note": "Weiv: no snow on the Amstrad machines. The LIVE row must stay plain, so this one fails if snow is produced where it should not be.",
+      "steps": [
+        {
+          "frames": 900,
+          "screen": "tests/snowtest-plus2a.png"
+        }
+      ]
+    }
 
     ]
 }

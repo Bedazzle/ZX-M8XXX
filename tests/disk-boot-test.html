@@ -284,6 +284,88 @@
             }
 
             // ---------------------------------------------------------------
+            section('Didaktik 80 on a 128K — only with the hardware patch');
+            {
+                // A stock 128K cannot run a Didaktik; some 48-to-128K upgrades
+                // were patched so it could (VELESOFT, and Arki55 used one for
+                // years). What the patch has to achieve here is ROM page 1: the
+                // Didaktik ROM runs from reset and expects 48K BASIC beneath it,
+                // and a 128K left on bank 0 boots the editor instead, so MDOS
+                // never starts. The round trip is the same one as on the 48K --
+                // a SAVE, a hard reset and a LOAD that must run -- because
+                // "it works on a 128K" means exactly that and nothing weaker.
+                const { DidaktikLoader } = await import('../core/loaders.js');
+                const rom = await fetchRom('didaktik.rom');
+                if (!rom) { assert(false, 'didaktik.rom is in roms/'); }
+                else {
+                    allInterfacesOff();
+                    await w.zxDebug.ready({ machine: '128k' });
+                    sp.stop();
+                    sp.memory.loadDidaktikRom(rom);
+                    sp.didaktikEnabled = true;
+
+                    // Off by default, and that default must bite
+                    sp.didaktik128Patch = false;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(!sp._didaktikPagingEnabled,
+                           'without the patch a 128K refuses the interface');
+                    assert(!sp.memory.didaktikForceRom1,
+                           '  and does not hold the ROM at page 1');
+
+                    sp.didaktik128Patch = true;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(sp._didaktikPagingEnabled,
+                           'with the patch it reports itself usable');
+                    assert(sp.memory.didaktikForceRom1, '  and hardwires ROM page 1');
+                    coldBoot();
+                    assert(sp.memory.currentRomBank === 1,
+                           '  which survives a reset, when bank 0 would be the editor',
+                           'bank ' + sp.memory.currentRomBank);
+                    sp.memory.writePaging(0x00);   // an OUT that would select ROM 0
+                    assert(sp.memory.currentRomBank === 1,
+                           '  and a 7FFD write cannot put the editor back',
+                           'bank ' + sp.memory.currentRomBank);
+
+                    sp.loadD80Image(DidaktikLoader.createBlankD80('TESTDISK'), 'blank.d80', 0);
+                    const r = roundTrip('SAVE *"RT"', 'LOAD *"RT"');
+                    assert(r.afterSave.includes('0 OK'),
+                           'SAVE to an MDOS disk reports OK on a patched 128K',
+                           r.afterSave.slice(-60));
+                    assert(r.ok, 'and after a hard reset the program loads back and runs',
+                           r.afterLoad.slice(-60));
+                    let n128 = [];
+                    try {
+                        n128 = (DidaktikLoader.listFiles(sp.didaktik.drives[0].diskData) || [])
+                            .map(f => (f.name || '').trim()).filter(Boolean);
+                    } catch (e) { /* reported below */ }
+                    assert(n128.includes('RT'), 'and the catalogue lists it',
+                           n128.length ? n128.join(', ') : '(catalogue unreadable)');
+
+                    // The patch is for the Sinclair-compatible 128K/+2 only
+                    await w.zxDebug.ready({ machine: '+2a' });
+                    sp.stop();
+                    sp.didaktikEnabled = true; sp.didaktik128Patch = true;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(!sp._didaktikPagingEnabled,
+                           'the patch does not extend to the +2A, which decodes 7FFD differently');
+                    await w.zxDebug.ready({ machine: 'pentagon' });
+                    sp.stop();
+                    sp.didaktikEnabled = true; sp.didaktik128Patch = true;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(!sp._didaktikPagingEnabled,
+                           'nor to a machine with its own disk interface built in');
+
+                    allInterfacesOff();
+                    sp.didaktik128Patch = false;
+                    await w.zxDebug.ready({ machine: '48k' });
+                    sp.stop();
+                    sp.updateBetaDiskPagingFlag();
+                    assert(!sp.memory.didaktikForceRom1,
+                           'and a 48K never holds the ROM at page 1');
+                }
+            }
+
+            // ---------------------------------------------------------------
             section('+D — the ROM runs instead of resetting the machine');
             {
                 // A +D disk cannot be synthesised here: the 8K ROM is only a
@@ -324,29 +406,138 @@
             // Machine switch last: it rebuilds Memory and the ROM banks
             section('TR-DOS / Beta Disk on Pentagon');
             {
+                // TR-DOS used to be exempted from this suite's round trip on the
+                // grounds that tests/tests.json already boots real TR-DOS software.
+                // It does -- but every one of those entries READS a disk somebody
+                // else wrote. None of them proves our TR-DOS WRITER, which is the
+                // failure mode this suite exists for and the one the Microdrive
+                // actually had. So Pentagon does the round trip like everything else.
+                //
+                // Two things make it look different from the +D/Opus/Didaktik ones.
+                // The Beta Disk is not a $0000 overlay with a star syntax: from
+                // 128 BASIC `SAVE "x"` goes to TAPE, and only TR-DOS's own prompt
+                // saves to disk -- so the commands are typed at the A> prompt
+                // instead of run as program lines, and the shared roundTrip()
+                // helper (which cold-boots into BASIC) cannot be used. And the
+                // reset has to be bootTrdos(), not reset(): a plain Pentagon reset
+                // lands in the ROM's own menu, not in TR-DOS.
                 await w.zxDebug.ready({ machine: 'pentagon' });
                 sp.stop();
                 allInterfacesOff();
                 sp.updateBetaDiskPagingFlag();
                 assert(sp.profile.betaDiskDefault, 'Pentagon has the Beta Disk built in');
                 assert(sp.memory.hasTrdosRom(), 'and trdos.rom is loaded');
+                assert(sp.betaDiskEnabled || sp.profile.betaDiskDefault,
+                       'and the interface is active without being asked for');
 
                 const { TRDLoader } = await import('../core/loaders.js');
                 const blank = TRDLoader.buildTRD([], 'RTDISK');
                 sp.loadDiskImage(blank, 'trd', 'blank.trd', 0);
 
-                // No SAVE round trip here. Full TR-DOS boots are already covered
-                // end to end by the application tests in tests/tests.json, which
-                // run real TR-DOS software and compare screens — TR-DOS was never
-                // the gap this suite exists to close. What is worth pinning down
-                // is the thing those tests take for granted: that entering TR-DOS
-                // pages the ROM in and it runs.
-                assert(sp.betaDiskEnabled || sp.profile.betaDiskDefault,
-                       'and the interface is active without being asked for');
-                note('TR-DOS is the one disk system that already had end-to-end cover:');
-                note('SYSTEM TEST V1.01R, Global test v1.0 and AUMT in tests/tests.json all');
-                note('boot real TR-DOS software and compare screens. It is deliberately not');
-                note('re-tested here — this suite exists for the interfaces that had none.');
+                // One key at a time at the TR-DOS prompt. The cursor is in K mode,
+                // so the FIRST letter gives a whole keyword -- 's' is SAVE, 'r' is
+                // RUN -- and the rest of the line is typed as characters. Spelling
+                // out "SAVE" would type the keyword and then AVE.
+                const trdosKeys = (keys, frames = 500) => {
+                    for (const k of keys) {
+                        sp.ula.keyDown(k);
+                        for (let i = 0; i < 6; i++) sp.runFrameHeadless();
+                        sp.ula.keyUp(k);
+                        sp.ula.keyboardState.fill(0xFF);
+                        for (let i = 0; i < 6; i++) sp.runFrameHeadless();
+                    }
+                    for (let i = 0; i < frames; i++) sp.runFrameHeadless();
+                };
+                // bootTrdos() is a full machine reset with the disk preserved and
+                // TR-DOS paged in at $0000, which is how the app enters TR-DOS.
+                let pagedAtEntry = false;
+                const enterTrdos = (frames = 250) => {
+                    const ok = sp.bootTrdos();
+                    pagedAtEntry = !!sp.memory.trdosActive;
+                    for (let i = 0; i < frames; i++) {
+                        sp.ula.keyboardState.fill(0xFF);
+                        sp.runFrameHeadless();
+                    }
+                    return ok;
+                };
+
+                assert(enterTrdos(), 'bootTrdos() reports it entered TR-DOS');
+                const prompt = screenText();
+                assert(/TR-DOS/i.test(prompt), 'and the ROM itself prints its banner',
+                       prompt.slice(0, 70) || '(blank screen — the ROM produced nothing)');
+                assert(pagedAtEntry, '  having paged the TR-DOS ROM in to get there');
+                // By the time the prompt is up, TR-DOS has paged ITSELF back out:
+                // the Beta Disk is not a permanent overlay, it comes back in on an
+                // opcode fetch in $3D00-$3DFF. What has to hold at the prompt is
+                // the background ROM bank -- updateBetaDiskPaging() only re-pages
+                // when bank 1 (48K BASIC) is selected, so a Pentagon sitting on
+                // bank 0, the 128 editor, can never re-enter TR-DOS at all.
+                assert(sp.memory.currentRomBank === 1,
+                       '  and left ROM bank 1 selected, which is what lets it back in',
+                       'bank ' + sp.memory.currentRomBank);
+
+                // A program in memory, then SAVE "rt" at the prompt. Lower case
+                // throughout: after a keyword the Spectrum types lower case, and
+                // what matters is that the save and the load agree.
+                inject(['10 PRINT "RTOKEN"', '20 STOP'].join('\n'));
+                trdosKeys(['s', '"', 'r', 't', '"', 'Enter']);
+                const afterSave = screenText();
+                assert(!/error|no disk|not found/i.test(afterSave),
+                       'SAVE to a blank TR-DOS disk reports no error',
+                       afterSave.slice(-70));
+
+                // The image must show the file, not just the screen — this is the
+                // half that a read-only screen test can never reach.
+                let cat = [];
+                try {
+                    cat = (TRDLoader.listFiles(sp.betaDisk.drives[0].diskData) || [])
+                        .map(f => (f.name || '').trim()).filter(Boolean);
+                } catch (e) { /* reported below */ }
+                assert(cat.some(n => n.toLowerCase() === 'rt'),
+                       'and the TR-DOS catalogue lists it',
+                       cat.length ? cat.join(', ') : '(catalogue unreadable)');
+
+                // Hard reset, re-enter TR-DOS, RUN "rt" — it must load AND run
+                assert(enterTrdos(), 'the machine re-enters TR-DOS after a hard reset');
+                assert(!screenText().includes('RTOKEN'),
+                       '  with the program really gone from RAM');
+                trdosKeys(['r', '"', 'r', 't', '"', 'Enter'], 700);
+                const afterLoad = screenText();
+                assert(afterLoad.includes('RTOKEN'),
+                       'and RUN loads the program back off the disk and runs it',
+                       afterLoad.slice(-70));
+
+                // The TR-DOS chip is the one ROM that is NOT part of memory.rom,
+                // so setMachineType's `new Memory` drops it while every machine ROM
+                // survives. That is why a TR-DOS disk could fail on Pentagon while
+                // the same disk worked on a Scorpion, which carries TR-DOS inside
+                // scorpion.rom (trdosInRom) and so cannot lose it. Switching away
+                // and back has to put the chip back.
+                sp.memory.trdosRom.fill(0);
+                assert(!sp.memory.hasTrdosRom(), 'a blanked TR-DOS chip reads as absent');
+                await w.zxDebug.ready({ machine: '48k' });
+                sp.stop();
+                await w.zxDebug.ready({ machine: 'pentagon' });
+                sp.stop();
+                assert(sp.memory.hasTrdosRom(),
+                       'and switching back to Pentagon gives it a TR-DOS chip again');
+                assert(sp.bootTrdos(), '  so TR-DOS still boots');
+                note('the cold-cache half of that bug — ensureRom() fetching trdos.rom when');
+                note('roms/ has not been walked yet — needs an empty ROM cache, which this');
+                note('suite cannot make; it is held by the fetch list in zxDebug.ensureRom.');
+
+                // The other side of the asymmetry, stated rather than assumed:
+                // a Scorpion's TR-DOS is bank 3 of scorpion.rom, so it travels
+                // with the machine ROM and no separate chip can go missing.
+                await w.zxDebug.ready({ machine: 'scorpion' });
+                sp.stop();
+                assert(sp.profile.trdosInRom && sp.profile.trdosRomBank === 3,
+                       'a Scorpion keeps TR-DOS in its own ROM, not a separate chip');
+                sp.memory.trdosRom.fill(0);
+                assert(sp.memory.hasTrdosRom(),
+                       '  so blanking the chip cannot take TR-DOS away from it');
+                sp.loadDiskImage(TRDLoader.buildTRD([], 'RTDISK'), 'trd', 'blank.trd', 0);
+                assert(sp.bootTrdos(), '  and it boots TR-DOS regardless');
             }
 
             // ---------------------------------------------------------------

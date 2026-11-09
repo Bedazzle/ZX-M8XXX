@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Memory Map Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1400px; height: 900px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Memory Map Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // Analysis -> Map, driven in the real app. The bank view drew the first 8
+        // banks whatever the machine had, so a Scorpion's 16 and a Pentagon
+        // 1024's 64 were simply unreachable -- and the hover read the canvas as a
+        // flat 64K address, which named the wrong byte in every bank but the
+        // first. The geometry is what this pins: how tall the canvas is for a
+        // given machine, that the box scrolls only when it must and never under
+        // its own scrollbar, and that a point on it maps back to the bank and
+        // offset it was drawn from.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls;
+            d.textContent = msg;
+            logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) { /* not ready */ }
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // every machine selectable before the app boots (same origin, same store)
+        localStorage.setItem('zxm8_machines', JSON.stringify(
+            ['48k', '128k', 'pentagon', 'pentagon1024', 'scorpion']));
+        const frame = document.createElement('iframe');
+        frame.src = '../index.html';
+        document.body.appendChild(frame);
+
+        const CELL_W = 256, CELL_H = 128, ROW_BYTES = 128;
+
+        (async () => {
+            section('App and the map dialog come up');
+            const ok = await until(() => frame.contentWindow && frame.contentWindow.spectrum);
+            assert(!!ok, 'emulator boots in the iframe');
+            if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+            const w = frame.contentWindow, d = frame.contentDocument;
+            w.spectrum.stop();
+            await wait(400);
+
+            const el = (id) => d.getElementById(id);
+            const canvas = el('memmapCanvas');
+            const scroll = el('memmapCanvasScroll');
+            const box = d.querySelector('.memmap-canvas-container');
+            const btnBanks = el('btnMemmapBanks');
+            const btn64 = el('btnMemmap64K');
+            assert(!!canvas && !!scroll, 'the canvas sits in a scrolling box');
+            assert(!!btnBanks && !!btn64, 'and the view has a 64K / all-banks toggle');
+            if (!canvas || !scroll || !btnBanks) { log('\n=== ABORTED ===', 'fail'); return; }
+
+            const openMap = async () => { el('btnMemoryMap').click(); await wait(500); };
+            const closeMap = async () => { el('btnMemmapClose').click(); await wait(200); };
+            const showBanks = async () => { btnBanks.click(); await wait(600); };
+            const show64 = async () => { btn64.click(); await wait(400); };
+            const switchTo = async (v) => {
+                const sel = el('machineSelect');
+                if (![...sel.options].some(o => o.value === v)) return false;
+                sel.value = v;
+                sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await until(() => w.spectrum.machineType === v, 200, 25);
+                w.spectrum.stop();
+                await wait(500);
+                return true;
+            };
+            // a point inside the cell a bank is drawn in
+            const at = (bank, off) => {
+                const r = canvas.getBoundingClientRect();
+                return {
+                    clientX: r.left + (bank % 2) * CELL_W + (off % ROW_BYTES) * 2 + 0.5,
+                    clientY: r.top + Math.floor(bank / 2) * CELL_H + Math.floor(off / ROW_BYTES) + 0.5,
+                    bubbles: true
+                };
+            };
+            const hover = (bank, off = 0) => {
+                canvas.dispatchEvent(new w.MouseEvent('mousemove', at(bank, off)));
+                return el('memmapTooltip').textContent || '';
+            };
+            const pixel = (bank, off) => {
+                const x = (bank % 2) * CELL_W + (off % ROW_BYTES) * 2;
+                const y = Math.floor(bank / 2) * CELL_H + Math.floor(off / ROW_BYTES);
+                const px = canvas.getContext('2d').getImageData(x, y, 1, 1).data;
+                return [px[0], px[1], px[2]].join(',');
+            };
+
+            section('48K has no banks to show');
+            {
+                assert(await switchTo('48k'), 'switch to 48K');
+                await openMap();
+                assert(canvas.height === 512, 'the 64K map is 512 pixels tall', String(canvas.height));
+                assert(el('memmapBankToggle').style.display === 'none',
+                       'and no bank view is offered at all',
+                       el('memmapBankToggle').style.display);
+                await closeMap();
+            }
+
+            // 8 banks on a 128K machine, 16 on a Scorpion, 64 on a Pentagon 1024
+            for (const [machine, banks, label] of [['128k', 8, '128KB'],
+                                                   ['scorpion', 16, '256KB'],
+                                                   ['pentagon1024', 64, '1 MB']]) {
+                section(machine + ': all ' + banks + ' banks');
+                if (!(await switchTo(machine))) { assert(false, machine + ' is selectable'); continue; }
+                await openMap();
+
+                assert(btnBanks.textContent === label,
+                       `the toggle offers the RAM the machine has (${label})`, btnBanks.textContent);
+                await showBanks();
+
+                const rows = Math.ceil(banks / 2);
+                assert(canvas.height === rows * CELL_H,
+                       `the canvas is ${rows} rows of banks tall`, String(canvas.height));
+                assert(canvas.width === 512, 'two banks to a row at x2 scale', String(canvas.width));
+                assert((scroll.scrollHeight > scroll.clientHeight) === (banks > 8),
+                       banks > 8 ? 'the box scrolls to reach the rest'
+                                 : 'and 8 banks need no scrolling at all',
+                       `${scroll.scrollHeight} vs ${scroll.clientHeight}`);
+                assert(scroll.clientWidth >= canvas.width,
+                       'the scrollbar is given room instead of covering a column of banks',
+                       `${scroll.clientWidth} < ${canvas.width}`);
+                assert(box.offsetWidth >= canvas.width,
+                       'which the canvas box pays for, not the map');
+                assert(/Memory Map \(/.test(el('memmapTitle').textContent || '') &&
+                       el('memmapTitle').textContent.includes(label),
+                       'the title says how much is on screen', el('memmapTitle').textContent);
+
+                // The point of the whole thing: a byte in the last bank is drawn,
+                // and the hover names the bank it came from rather than reading
+                // the canvas as a flat 64K address.
+                const last = banks - 1;
+                assert(hover(0, 0).startsWith('Bank 0 '), 'hovering bank 0 names it', hover(0, 0));
+                assert(hover(last, 0).startsWith(`Bank ${last} `),
+                       `hovering the last bank names bank ${last}`, hover(last, 0));
+                assert(hover(5, 7).startsWith('Bank 5 '), 'and bank 5 is bank 5', hover(5, 7));
+                assert(hover(last, ROW_BYTES + 3) !== hover(last, 0),
+                       'a different byte of it reads differently',
+                       hover(last, ROW_BYTES + 3));
+
+                // Banks 5 and 2 are always at $4000/$8000; the rest are seen
+                // through $C000, which is the address the tooltip must give.
+                const addrIn = (s) => (s.match(/Bank \d+ ([0-9A-F]{4})/) || [])[1];
+                assert(addrIn(hover(5, 0)) === '4000', 'bank 5 is named at $4000', hover(5, 0));
+                assert(addrIn(hover(2, 0)) === '8000', 'bank 2 at $8000', hover(2, 0));
+                assert(addrIn(hover(last, 0)) === 'C000',
+                       'and a high bank at the $C000 window it pages into', hover(last, 0));
+
+                // A byte written into the last bank reaches the picture
+                // Sampled a row and a byte in from the cell's edges: the grid
+                // lines are drawn on the boundaries, so they tint byte 0 of every
+                // odd bank and the first byte row of every bank below the first.
+                const zeroAt = ROW_BYTES + 1, writtenAt = ROW_BYTES * 2 + 1;
+                const high = w.spectrum.memory.getRamBank(last);
+                assert(!!high, `bank ${last} exists in the machine`);
+                high[zeroAt] = 0;
+                high[writtenAt] = 0xAA;
+                await show64();
+                await showBanks();
+                assert(pixel(last, zeroAt) === '0,0,0',
+                       'a zero byte in the last bank draws as a zero', pixel(last, zeroAt));
+                assert(pixel(last, writtenAt) !== '0,0,0',
+                       'and a byte written into it is actually drawn',
+                       pixel(last, writtenAt));
+
+                await show64();
+                assert(canvas.height === 512, 'switching back gives the 64K map',
+                       String(canvas.height));
+                assert(scroll.scrollHeight <= scroll.clientHeight,
+                       'and nothing is left scrolling');
+                await closeMap();
+            }
+
+            section('A bank you cannot see yet is not navigated to');
+            {
+                assert(await switchTo('pentagon1024'), 'switch to Pentagon 1024');
+                await openMap();
+                await showBanks();
+                const bank = 63;
+                assert(w.spectrum.memory.currentRamBank !== bank,
+                       `bank ${bank} is not the one paged in`,
+                       String(w.spectrum.memory.currentRamBank));
+                canvas.dispatchEvent(new w.MouseEvent('click', at(bank, 0)));
+                await wait(200);
+                assert(!el('memmapDialog').classList.contains('hidden'),
+                       'clicking it does not jump the debugger somewhere wrong');
+                assert(/not paged in/i.test(el('memmapAddrInfo').textContent || ''),
+                       'and says why', (el('memmapAddrInfo').textContent || '').slice(0, 60));
+
+                // bank 5 is always at $4000, so that one is a real destination
+                canvas.dispatchEvent(new w.MouseEvent('click', at(5, 0)));
+                await wait(300);
+                assert(el('memmapDialog').classList.contains('hidden'),
+                       'clicking a bank that is paged in navigates to it');
+            }
+
+            log('\n=== COMPLETE ===', 'section');
+        })();
+    </script>
+</body>
+</html>

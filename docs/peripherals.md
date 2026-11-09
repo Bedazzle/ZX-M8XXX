@@ -284,24 +284,57 @@ so the WD177x command engine is shared. Three things set it apart from the other
 - **It pages in at `$0000`** (and `$0008`), paging out at `$1700`, checked *before* the opcode
   fetch like the +D and IF1. `$0000` means it takes the machine over from the moment of reset
   rather than waiting to be entered through a hook — its ROM, not the Spectrum's, is what boots.
-  **That is why we offer this interface on the 48K only.** On a 128K-family machine it still
-  seizes `$0000` at reset, and a ROM written for a 48K then runs off into RAM: red border,
+- **Offered on the 48K only, and the port collision is the first reason, not the ROM.** The
+  128K paging port decodes loosely as `port & 0x8002 == 0`, and `OUT (n),A` puts the written
+  byte on A15-A8 — so on a 128K the *command byte* decides what else it hits. Every WD2797
+  command collides with something: `$00` Restore and `$20` Step have A15=0 and A1=0, so they
+  page memory; `$88` Read Sector and `$A8` Write Sector decode as the AY data port; `$C4`,
+  `$D0`, `$E4` and `$F4` as AY register select. Only `$83` and `$87` escape, because A1=1.
+  This is what VELESOFT means by a bus collision: *"D40 (Didaktik 40) is designed for use with
+  48kB models. FDD ports is unusable on ZX128/+2/+2A/+3 (collision od data bus)."*
+
+  The ROM is the second, independent reason, and it is the one we reproduced before knowing
+  about the first. The interface seizes `$0000` at reset and its ROM is written for a 48K, but
+  paging out on a 128K gives ROM 0, the 128 editor — so the machine never boots: red border,
   blank screen, no BASIC and no 128 menu. Reproduced on 128K and Pentagon.
 
-  Two independent things point the same way, and it is worth being precise about which is
-  which. FUSE declares the peripheral in `machines_periph_48()` only — `machines_periph_128()`
-  and `machines_periph_plus3()` do not list it, and neither does the DISCiPLE. Note what is
-  *not* restricted there: the +D sits in the shared `base_peripherals_48_128()`, which is
-  exactly why the +D works on a 128K here too. That is emulator convention agreeing with our
-  own reproduction — **not** a datasheet. No hardware source has been checked saying a real
-  D40/D80 cannot drive a Sinclair 128K. The machines it shipped for (Didaktik Gama, Didaktik M)
-  were 48K-class clones, and the Didaktik Kompakt 128K is a different machine with the drive
-  built in rather than an external D80 on a 128K.
+- **Real hardware did run a D40 on a 128K — with a hardware patch.** VELESOFT: *"Some
+  48to128kB upgrades also contain hardware patch for enable use D40 or D80"*, and the patch is
+  that all three 128 ports must decode A5 high, `port & 0x8002 == 0` becoming
+  `port & 0x8022 == 0x0020`. That cuts cleanly: all five Didaktik ports have A5=0 and drop
+  out, while `$7FFD`, `$FFFD` and `$BFFD` have A5=1 and keep working. Arki55 reports years of
+  use on a Didaktik M 128K converted by Kompakt Servis, and implemented both halves for FUSE
+  — the A5 mask and ROM forced to page 1 — as an **optional** setting, "Port & Rom patch for
+  128k+D80" ([thread](https://sourceforge.net/p/fuse-emulator/discussion/314871/thread/68bb262a2d/)).
+  So the machines it shipped for were 48K-class clones, but upgrade services patched them; the
+  Didaktik Kompakt 128K is a different machine again, with the drive built in.
 
-  So `_didaktikPagingEnabled` requires `pagingModel === 'none'` and the Settings checkbox is
-  disabled elsewhere. If a source turns up showing real hardware managing it, this is a bug to
-  chase rather than a restriction to keep. The other interfaces wait to be entered through a
-  hook, which is how they can share a 128K at all.
+  **48K-only is the default** — it is what stock hardware does — and the patch is offered as
+  an opt-in: Settings → Machines → **128K hardware patch**, under the Didaktik row and shown
+  only on a 128K/+2. `didaktik128Patch` is off unless asked for, remembered in
+  `zxm8_didaktik128`. Upstream FUSE keeps the peripheral in `machines_periph_48()` only, while
+  the +D sits in the shared `base_peripherals_48_128()` — which is why the +D works on a 128K
+  here; Arki55's patch was a fork.
+
+  **What the patch has to do here is ROM page 1, and only that.** Measured, not assumed: with
+  the A5 mask simulated and the ROM held at bank 1 a full MDOS round trip succeeds on a 128K,
+  and the A5 suppression never fires once — MDOS drives the FDC with the high address byte
+  set, so no paging decode matches anyway. Take the ROM hold away and the round trip collapses
+  (`disk-boot-test` fails four asserts, verified). Two reasons the mask is not needed: that,
+  and `core/spectrum.js`'s port dispatch, which `return`s on the Didaktik branch **before** the
+  paging and AY decode — so once the interface is active the collision cannot occur here at
+  all. The mask is therefore not implemented; it would change nothing observable. What that
+  leaves loose is the *stock* 128K, where real hardware has the ports present and colliding
+  and we simply refuse them — unreachable, since the checkbox is off.
+
+  `_didaktikMachineOk()` is the single predicate behind all four gates (`_isDidaktikActive`,
+  `_didaktikPagingEnabled`, the reset hook and `loadD80Image`'s availability), so they cannot
+  drift apart. It allows `pagingModel === '128k'` without `betaDiskDefault` — the 128K and +2.
+  Not the +2A/+3, which decode `$7FFD` differently and which VELESOFT rules out by name; not
+  Pentagon or Scorpion, which ship their own disk interface, so the patch was never a thing
+  fitted to them. `memory.didaktikForceRom1` holds ROM 1 at reset **and** against any later
+  `$7FFD` write, because the interface's ROM runs from reset and a 128K left on bank 0 boots
+  the editor instead, and MDOS never starts.
 - **The side is in the command byte.** There is no control register holding it: a WD2797 takes
   side select from bit 1 of a Type II/III command, which is where `executeCommand` reads it.
 
@@ -314,7 +347,8 @@ PPI, which is not wired to anything and reads `$FF`.
 Geometry is MDOS: 9 sectors of 512 bytes, two sides, 40 tracks (368,640 bytes) or 80
 (737,280), taken from the image size on insert.
 
-**Using it:** enable Didaktik 80 in Settings → Machines **on a 48K**, load a `.d40`/`.d80`,
+**Using it:** enable Didaktik 80 in Settings → Machines **on a 48K** (or a 128K/+2 with the
+128K hardware patch ticked), load a `.d40`/`.d80`,
 and use the **star form**:
 
 ```basic

@@ -2,6 +2,29 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.02
+
+- **Input settings after the joystick keys were lost on every boot.** `customKeys` was used before its declaration and the catch read the error as unreadable settings, so both mouse swaps, ghosting and the Caps/Symbol Shift keys had been reverting since v0.15.24.
+- **An Explorer disk panel says how much room is left on the disk.** A new, empty TRD/MGT/MDR said only "0 files", an OPD printed used/total and left the subtraction to you, and a copy into a panel replaced the free count with "Copied N".
+- **The memory map shows every RAM bank, not just the first eight.** On a Scorpion or a Pentagon 1024 there was no way to look past bank 7; the bank view now draws all 16 or 64 of them and scrolls, and a hover names the bank it came from instead of reading the canvas as a flat 64K address.
+
+## v26.11.01
+
+- **TR-DOS disks would not boot on Pentagon under automation.** `zxDebug.ensureRom()` fetched only the machine's own ROM, so a driver switching to Pentagon before `roms/trdos.rom` had landed got a blank TR-DOS chip; Scorpion was immune, keeping TR-DOS in its own ROM. It now fetches the interface ROMs the target machine needs.
+- **`disk-boot-test` does the TR-DOS round trip on Pentagon.** It was the one disk system left to the screen tests, which only ever read disks somebody else wrote.
+- **The headless test runner stops reporting a suite as "NO RESULT" at random.** `--dump-dom` prints at the load event, and the `--virtual-time-budget` that bought time for it ran the clock while the real page waited, so a suite's own "poll 10s for the app" could expire in a blink. It now holds the load event until the page goes quiet; three asserts that only passed on the virtual clock were fixed too.
+
+## v26.10.01
+
+- **Didaktik 80 on a 128K, with the hardware patch.** A stock 128K cannot run one, but some 48-to-128K upgrades were patched so it could. Settings → Machines → 128K hardware patch (off by default, 128K/+2 only) hardwires ROM page 1 and lets the interface answer; a full MDOS round trip passes there.
+
+## v26.09.06
+
+- **Border and screen timing tests added.**
+- **ULA snow tests added.**
+- **CPU variant: Zilog NMOS/CMOS, NEC, ST CMOS.**
+- **ULA snow matched to hardware.** Three fixes: the fetch grid, the address the snowed byte comes from, and the dropped last line of a snowed region. 48K, 128K and +2 now match Weiv's measured reference to the pixel.
+
 ## v26.09.05
 
 - **Timing Test added: nine-way hardware-photographed contention check.**

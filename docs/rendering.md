@@ -130,13 +130,30 @@ refreshes that have happened by then, which is the whole point of the effect. (A
 earlier version built the whole frame at the first display fetch; that used the
 wrong information for every line but the first.)
 
-**Calibration.** Two constants pin our model against the real thing:
-`M1_T4_FROM_FETCH` (the phase of our T-state counter against the ULA's 8-T cycle)
-and `R_ON_BUS` (whether the bus carries `R` before or after the Z80 increments it).
-A one-T-state or one-count error in either shifts the pattern without changing its
-character, so the implementation follows the documented rules but is **not proven
-exact until it is compared against the `Snow*` test programs** on real-hardware
-reference screens. Tests: `tests/snow-test.html`.
+**Calibration — settled against hardware.** `snowtest.tap` draws Weiv's
+hardware-measured row directly above the live one, so the picture carries its own
+oracle, and three constants fell out of it:
+
+| what | value | how the picture shows it |
+|:--|:--|:--|
+| the fetch grid's origin | `ULA_READ_AHEAD + 7` ticks before the first pixel (`core/ula.js`) | its **multiple of 8** picks the column the corruption lands in; wrong by one cycle and the whole pattern sat two character columns early |
+| which refresh collides | the same constant's **remainder** | wrong by two and the columns were right while every snowed byte came from an address two too low |
+| `R_ON_BUS` | `0` — the ULA sees `R` **after** the Z80 increments it | the snowed byte is read from the hijacked address, so its content states that address: `K` where hardware has `L` |
+| the display-path gate | `_snowPossible()` (the setting and the ULA), **not** `isSnowing()` | a line is drawn at its END, by which time a program that armed `I` for one region has put it back — the last line of the block was thrown away whole |
+
+The rule itself was never in doubt — the corruption always had Weiv's shape and
+spacing (3, 11, 3). What was wrong was where it sat. 48K, 128K and +2 now match the
+reference **to the pixel over the whole block**, and +2A stays clean. Because 48K and
+128K/+2 need different leads (8 and 10) and one expression gives both, the three
+machines are three confirmations of one constant rather than three fitted numbers.
+
+**`I` is per refresh, never per line.** `_snowOkTable()` gates each logged refresh by
+the `I` it carried at the time, which is the only correct place to ask. The display
+path asking the register a second time, at render time, is both redundant and a line
+late — and that cost exactly one scanline in 32, invisible while a program keeps `I`
+armed throughout (`snowhold`, `snow48-azesmbog` never saw it).
+
+Tests: `tests/snow-test.html`, and the `snowtest-*` application tests.
 
 ## ULA ink/paper edge skew
 

@@ -58,7 +58,9 @@
                     <div class="memmap-scale-end"><span class="memmap-scale-addr">FFFF</span></div>
                 </div>
                 <div class="memmap-canvas-container">
-                    <canvas id="memmapCanvas" width="512" height="512"></canvas>
+                    <div class="memmap-canvas-scroll" id="memmapCanvasScroll">
+                        <canvas id="memmapCanvas" width="512" height="512"></canvas>
+                    </div>
                     <div class="memmap-tooltip" id="memmapTooltip"></div>
                     <div style="margin-top:6px;display:flex;align-items:center;gap:10px">
                         <button id="btnExportAsm" title="Export disassembly as sjasmplus-compatible ASM file">Export ASM</button>
@@ -77,7 +79,7 @@
                     </div>
                     <div class="memmap-view-toggle" id="memmapBankToggle" style="display:none;margin-bottom:8px">
                         <button class="memmap-view-btn active" id="btnMemmap64K">64KB</button>
-                        <button class="memmap-view-btn" id="btnMemmap128K">128KB</button>
+                        <button class="memmap-view-btn" id="btnMemmapBanks" title="Every RAM bank the machine has, 16KB each -- scroll for the rest on a 256KB or 1MB machine">128KB</button>
                     </div>
                     <div class="memmap-legend" id="memmapLegendRegions">
                         <div class="memmap-legend-item"><div class="memmap-legend-color" style="background:#4080ff"></div>Code</div>
@@ -117,7 +119,7 @@
                     <div class="memmap-stats" id="memmapStats"></div>
                     <div class="memmap-bar" id="memmapBar"></div>
                     <div class="memmap-addr-info" id="memmapAddrInfo">Hover over map to see details<br>Click to navigate</div>
-                    <h3 class="memmap-title">Memory Map (64KB)</h3>
+                    <h3 class="memmap-title" id="memmapTitle">Memory Map (64KB)</h3>
                 </div>
             </div>
         </div>

@@ -359,7 +359,11 @@
                 w.spectrum.cpu.h = 0x00; w.spectrum.cpu.l = 0x09;   // HL = 9
                 w.zxDebug.refresh ? w.zxDebug.refresh() : null;
                 d.getElementById('chkDecAddresses').dispatchEvent(new w.Event('change'));
-                await wait(200);
+                // The register block redraws on its own schedule, so wait for the
+                // value and not for a number of milliseconds: a fixed 200ms passed
+                // only because the old headless runner ran the page on Chromium's
+                // virtual clock, where a throttled redraw comes back instantly.
+                await until(() => val('HL').textContent === '9', 60, 50);
                 assert(val('HL').textContent === '9',
                        'a small value prints as 9, with no padding digits', val('HL').textContent);
                 const wideAfter = val('HL').getBoundingClientRect().width;
@@ -431,12 +435,22 @@
                         .map(e => e.textContent.trim());
                     const hexPcs = pcs();
                     await setBase(true);
+                    // Same here: wait for the redrawn list rather than for 250ms.
+                    // Rows are only ever appended, and the hex snapshot above can
+                    // have been taken before the last one arrived, so the test is
+                    // that nothing was lost -- not that the two counts are equal.
+                    await until(() => {
+                        const p = pcs();
+                        return p.length >= hexPcs.length && p.length > 0 &&
+                               p.every(s => /^[0-9]+$/.test(s));
+                    }, 60, 50);
                     const decPcs = pcs();
                     assert(hexPcs.length > 0, 'the trace has rows to check',
                            JSON.stringify(hexPcs.slice(0, 3)));
                     assert(hexPcs.every(s => /^[0-9A-F]{4}$/.test(s)),
                            'in hex every trace PC is four hex digits', JSON.stringify(hexPcs.slice(0, 3)));
-                    assert(decPcs.length === hexPcs.length && decPcs.every(s => /^[0-9]+$/.test(s)),
+                    assert(decPcs.length >= hexPcs.length && decPcs.length > 0 &&
+                           decPcs.every(s => /^[0-9]+$/.test(s)),
                            'and the list redraws itself in decimal', JSON.stringify(decPcs.slice(0, 3)));
                     await setBase(false);
                 }

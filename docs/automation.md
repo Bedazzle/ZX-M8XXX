@@ -45,6 +45,18 @@ Resolves `{ machineType, romLoaded, running }`, or rejects with a message naming
 ROM file it couldn't get. `zxDebug.ensureRom(machineType)` loads a machine's ROM
 without switching to it.
 
+It fetches the **interface** ROMs that machine will want as well as its own —
+`trdos.rom` for a machine with a Beta Disk, and `plusd`/`if1`/`opus`/`didaktik` for
+an interface that is switched on. A missing interface ROM is not an error, only a
+machine that cannot offer that interface. This matters because the page's own
+startup walks `roms/` **serially with `trdos.rom` near the end**, and
+`setMachineType` builds a fresh `Memory` whose TR-DOS chip starts zeroed: a driver
+that called `ready({ machine: 'pentagon' })` inside that window used to get a
+Pentagon with no TR-DOS at all, so `bootTrdos()` refused and the machine sat in the
+Pentagon ROM's menu. It read as a Pentagon disk bug, and the same disk worked on a
+Scorpion — which carries TR-DOS inside `scorpion.rom` and so could never lose it.
+Switching away and back did not heal it either.
+
 **Starting the machine — `await zxDebug.start()`.** The app opens with the ROM
 modal up and the machine stopped; `ready()` gets a ROM into memory but does not
 start anything.

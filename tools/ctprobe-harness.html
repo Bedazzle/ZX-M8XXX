@@ -38,6 +38,11 @@
         const addrDone = parseInt(p.get('done') || '0x8CB0', 16);
         const addrFails = parseInt(p.get('fails') || '0x8CB1', 16);
         const maxFrames = parseInt(p.get('max') || '30000', 10);
+        // The driver passes a per-run token: two runs at once must not write to
+        // the same result file. A full sweep was silently replaced by a filtered
+        // run that finished first, and reported that run's 7 tests as the sweep.
+        const RUN = p.get('run') || 'ctprobe';
+        const PROG = RUN + '-progress';
         const pollStep = parseInt(p.get('poll') || '250', 10);
         const dumpFrom = parseInt(p.get('from') || '0', 16);   // START
         const dumpTo = parseInt(p.get('to') || '0', 16);       // PROBEEND
@@ -100,7 +105,7 @@
                             row.frames = frames;
                             if (zx.peek(addrDone) === 1) break;
                             if (frames % 2500 === 0) {
-                                await report({ machine, frames }, 'progress', 'ctprobe-progress');
+                                await report({ machine, frames }, 'progress', PROG);
                                 await sleep(0);
                             }
                         }
@@ -130,7 +135,7 @@
                         log(`${machine}: ERROR ${row.error}`);
                     }
                     out.results.push(row);
-                    await report({ last: row }, 'progress', 'ctprobe-progress');
+                    await report({ last: row }, 'progress', PROG);
                 }
                 out.ok = true;
             } catch (e) {
@@ -138,7 +143,7 @@
                 log('HARNESS ERROR: ' + out.error);
             }
             out.finished = new Date().toISOString();
-            await report(out, 'result', 'ctprobe');
+            await report(out, 'result', RUN);
             log('=== COMPLETE ===');
         })();
     </script>

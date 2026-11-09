@@ -50,6 +50,35 @@ getMachineBySzxId(id)                 // Reverse lookup from SZX machine ID
 
 **Pentagon 1024 paging**: Port 0xEFF7 bit 2 = 0 enables 1MB mode (bit 5 of 7FFD selects bank bit 5). Bit 3 = 1 maps RAM page 0 over ROM at 0x0000-0x3FFF. Port 7FFD bits 0-2 + 6,7 + (5 in 1MB mode) select from 64 RAM pages.
 
+## CPU variant
+
+Which Z80 a machine was fitted with is **not** a machine profile field: any
+Spectrum could have either part, so it is one setting (Settings -> Machines,
+`zxm8_cpuVariant`) applied through `spectrum.setCpuVariant()`.
+
+Only two behaviours differ in a way software can see, and they are **independent**,
+which is why `core/z80.js` carries two fields (`xcfMask`, `outVc255`) rather than one
+enum. The named variants are the documented combinations:
+
+| variant | SCF/CCF YF | SCF/CCF XF | `OUT (C),0` |
+|:--|:--|:--|:--|
+| `zilog-nmos` (default) | `A.5 \| (F^Q).5` | `A.3 \| (F^Q).3` | 0 |
+| `zilog-cmos` | `A.5 \| (F^Q).5` | `A.3 \| (F^Q).3` | **255** |
+| `nec-nmos` | `A.5` | `A.3` | 0 |
+| `st-cmos` | `A.5 \| (F^Q).5` | `A.3` | 0 |
+
+Sources: Patrik Rak cracked the Zilog SCF/CCF rule in 2012; **David Banks** found in
+2018 that ST CMOS parts take XF from A alone and NEC NMOS parts take both from A;
+**Simon Cooke** reported the `OUT (C),0` -> 255 behaviour on Usenet in 1996.
+
+**`st-cmos` keeps `OUT (C),0` -> 0 deliberately.** The 255 report is for the *Zilog*
+CMOS part and no source here extends it to ST, so asserting it would be a guess
+dressed as a fact. `tests/cpu-variant-test.html` pins that as a decision.
+
+The application-test runner forces `zilog-nmos` per test and restores afterwards, for
+the same reason it pins snow and Kempston: a Settings dropdown must not decide a
+result. A test that is *about* a variant names it with `"cpuVariant"`.
+
 **Scorpion ZS 256 timing**: the 48K frame, **224 x 312 = 69888 T-states**, not the Pentagon 71680 it used to be given (`ulaProfile: 'scorpion'`). No memory or I/O contention, like the other clones, but two features of its own:
 
 - **Even M1** (`evenM1`): the machine holds an opcode fetch from RAM until an even T-state. The wait belongs to the fetch, so it lands on the *next* instruction's first M1 -- which is what makes every instruction run from RAM span an even number of ticks. ROM fetches are not held, which is why TactMeter reads 069874 from ROM and 069872 from RAM. Implemented in `setupContention`'s no-contention path in `core/spectrum.js`, using `memory.isRomAt()`.
