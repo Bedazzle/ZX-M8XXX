@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Disk System Availability Tests</title>
+<style>body{background:#111;color:#eee;font-family:monospace}
+.pass{color:#0f0}.fail{color:#f44}.info{color:#0ff}iframe{width:1100px;height:650px}</style></head>
+<body>
+<div id="summary"></div><div id="log"></div>
+<iframe id="app"></iframe>
+<script type="module">
+const logEl = document.getElementById('log'), sumEl = document.getElementById('summary');
+let passed = 0, failed = 0;
+function assert(c, name, detail = '') {
+    const d = document.createElement('div');
+    d.className = c ? 'pass' : 'fail';
+    d.textContent = (c ? 'PASS  ' : 'FAIL  ') + name + (detail ? ' :: ' + detail : '');
+    logEl.appendChild(d); c ? passed++ : failed++;
+    sumEl.innerHTML = `<span class="pass">Pass: ${passed}</span> | <span class="fail">Fail: ${failed}</span>`;
+}
+function info(m) { const d = document.createElement('div'); d.className = 'info'; d.textContent = m; logEl.appendChild(d); }
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+async function until(fn, tries = 900, gap = 25) {
+    for (let i = 0; i < tries; i++) { try { const v = fn(); if (v) return v; } catch (e) {} await wait(gap); }
+    return null;
+}
+
+// WHY THIS SUITE EXISTS
+//
+// "New blank disk" on a 128K with Beta Disk ticked reported "No disk interface
+// active -- enable Beta Disk", i.e. it blamed the user for not doing the one
+// thing they had done. The list of disk systems drops any interface whose ROM
+// is not installed, so the real blocker is a missing ROM and the message never
+// said so. These asserts pin both halves: that the 128K + Beta Disk path really
+// does come up with TR-DOS installed, and that when it does not, the message
+// names the ROM.
+(async () => {
+    // Beta Disk ticked in an earlier session: Beta Disk was ticked in an earlier session, so the
+    // app boots on 128K with it already on and restores it from localStorage.
+    // Start where he would have: 48K, Beta Disk already ticked from a past session.
+    localStorage.setItem('zxm8_betaDisk', 'true');
+    localStorage.setItem('zxm8_machine', '48k');
+
+    const frame = document.getElementById('app');
+    frame.src = '../index.html';
+    await until(() => frame.contentWindow && frame.contentWindow.spectrum);
+    const w = frame.contentWindow;
+    await until(() => w.spectrum.romLoaded);
+    await wait(2500);                     // let the roms/ walk finish
+
+    // Deliberately NOT calling setMachineType here: that builds a fresh Memory
+    // with a zeroed TR-DOS ROM, which would manufacture the very failure we are
+    // looking for. The app must boot into 128K from its own stored setting.
+
+    info(`booted on ${w.spectrum.machineType}; hasTrdosRom=${w.spectrum.memory.hasTrdosRom()}`);
+
+    // Now switch to 128K the way a user does: the toolbar dropdown.
+    const sel = w.document.getElementById('machineSelect');
+    assert(!!sel, 'the machine dropdown exists');
+    sel.value = '128k';
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await wait(1500);
+
+    info(`machine = ${w.spectrum.machineType}`);
+    assert(w.spectrum.machineType === '128k', 'switched to 128K via the dropdown');
+
+    const chk = w.document.getElementById('chkBetaDisk');
+    info(`chkBetaDisk.checked = ${chk && chk.checked}; betaDiskEnabled = ${w.spectrum.betaDiskEnabled}`);
+    assert(!!(chk && chk.checked), 'the Beta Disk box shows as enabled');
+    assert(w.spectrum.betaDiskEnabled === true, 'and the emulator agrees it is enabled');
+
+    // This is the condition getAvailableDiskSystems() uses for TR-DOS.
+    const hasRom = w.spectrum.memory.hasTrdosRom();
+    info(`memory.hasTrdosRom() = ${hasRom}`);
+    const profile = w.spectrum.profile;
+    const trdosOffered = profile.betaDiskDefault || (w.spectrum.betaDiskEnabled && hasRom);
+    assert(trdosOffered,
+           'TR-DOS is offered as a disk system — i.e. "New blank disk" works',
+           `betaDiskDefault=${profile.betaDiskDefault} enabled=${w.spectrum.betaDiskEnabled} hasTrdosRom=${hasRom}`);
+
+    // Is the ROM even fetched? If it is on disk but not installed, the fault is
+    // the install step, not a missing file.
+    let fetched = false;
+    try { fetched = (await fetch('../roms/trdos.rom')).ok; } catch (e) {}
+    info(`roms/trdos.rom served = ${fetched}`);
+    assert(!(fetched && !hasRom),
+           'the ROM is not sitting on disk unused',
+           fetched && !hasRom ? 'roms/trdos.rom EXISTS but was never installed into memory' : '');
+
+    // Does toggling the box heal it? That tells us it is an init-order race.
+    if (!hasRom && chk) {
+        chk.checked = false; chk.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await wait(200);
+        chk.checked = true; chk.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await wait(400);
+        info(`after toggling the checkbox off and on: hasTrdosRom() = ${w.spectrum.memory.hasTrdosRom()}`);
+    }
+
+    // Force the exact state that produces the complaint -- interface on, ROM
+    // absent -- and read what the app now says.
+    w.spectrum.betaDiskEnabled = true;
+    const realHas = w.spectrum.memory.hasTrdosRom.bind(w.spectrum.memory);
+    w.spectrum.memory.hasTrdosRom = () => false;
+    w.document.getElementById('btnBlankDisk').click();
+    await wait(200);
+    // showMessage appends a fresh div.message to body and removes it after 3s,
+    // so take the LAST one rather than any stale status element.
+    const msgs = [...w.document.querySelectorAll('div.message')];
+    const text = msgs.length ? msgs[msgs.length - 1].textContent : '';
+    info('message shown: ' + text);
+    assert(/trdos\.rom/i.test(text),
+           'the message names the missing ROM instead of blaming the user', text);
+    assert(!/enable Beta Disk, \+D, Interface 1/.test(text),
+           'and no longer says "enable Beta Disk" when Beta Disk is already enabled', text);
+    w.spectrum.memory.hasTrdosRom = realHas;
+
+    const d = document.createElement('div');
+    d.className = failed ? 'fail' : 'pass';
+    d.textContent = failed ? `${failed} FAILED` : `all ${passed} passed`;
+    logEl.appendChild(d);
+})();
+</script>
+</body></html>

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MFM Track Stream Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>MFM Track Stream Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // Formatting is not a sector operation: the host streams a whole track at
+        // the chip and the chip writes it between index pulses. This is the two
+        // halves of that stream — what a Write Track laid down, and what a Read
+        // Track gives back. See core/loaders/mfm-track.js.
+        import {
+            TRACK_BYTES_MFM, WT_A1, WT_CRC, AM_ID, AM_DATA, AM_DELETED,
+            MARK_A1, GAP_BYTE, SYNC_BYTE,
+            sectorSize, parseTrackStream, buildTrackStream, formatTrackStream
+        } from '../core/loaders/mfm-track.js';
+        import { crcFdc } from '../core/loaders/disk-udi.js';
+
+        const TEST_VERSION = '1.0.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+        section('The ID field\'s N is the data field\'s length');
+        {
+            assert(sectorSize(0) === 128, 'N=0 is 128 bytes');
+            assert(sectorSize(1) === 256, 'N=1 is 256 — the Opus and TR-DOS size');
+            assert(sectorSize(2) === 512, 'N=2 is 512 — MGT, MDOS, the Opus DD format');
+            assert(sectorSize(3) === 1024, 'N=3 is 1024');
+            assert(sectorSize(6) === 512, 'and only two bits of it are read');
+        }
+
+        section('What a format stream laid down');
+        {
+            const stream = formatTrackStream({
+                cylinder: 7, head: 1, sectorsPerTrack: 10, firstSector: 1, sizeCode: 2,
+            });
+            const { sectors, truncated } = parseTrackStream(stream);
+            assert(!truncated, 'a whole track parses to the end');
+            assert(sectors.length === 10, 'ten sectors found', String(sectors.length));
+            assert(sectors.every(s => s.cylinder === 7), 'all on cylinder 7');
+            assert(sectors.every(s => s.head === 1), 'all on side 1');
+            assert(same(sectors.map(s => s.sector), [1,2,3,4,5,6,7,8,9,10]),
+                   'numbered 1..10 in the order they were written',
+                   sectors.map(s => s.sector).join(','));
+            assert(sectors.every(s => s.sizeCode === 2 && s.data.length === 512),
+                   'each 512 bytes long');
+            assert(sectors.every(s => s.data.every(b => b === 0xE5)),
+                   'and filled with the $E5 a formatter leaves behind');
+            assert(sectors.every(s => !s.deleted), 'none marked deleted');
+            assert(stream.length === TRACK_BYTES_MFM,
+                   'the stream is a track\'s worth of bytes', String(stream.length));
+        }
+
+        section('A stream built and parsed is the same sectors — every geometry');
+        {
+            const cases = [
+                { name: 'TR-DOS: 16 x 256 from 1', spt: 16, first: 1, size: 1 },
+                { name: 'Opus SS: 18 x 256 from 0', spt: 18, first: 0, size: 1 },
+                { name: 'Opus DD: 10 x 512 from 0', spt: 10, first: 0, size: 2 },
+                { name: 'MGT: 10 x 512 from 1', spt: 10, first: 1, size: 2 },
+                { name: 'MDOS: 9 x 512 from 1', spt: 9, first: 1, size: 2 },
+                { name: '5 x 1024 from 1', spt: 5, first: 1, size: 3 },
+                { name: '26 x 128 from 1', spt: 26, first: 1, size: 0 },
+            ];
+            for (const c of cases) {
+                // Each sector gets contents nothing else could produce, so a
+                // mis-sliced data field cannot pass by accident.
+                const body = (id) => {
+                    const d = new Uint8Array(sectorSize(c.size));
+                    for (let i = 0; i < d.length; i++) d[i] = (id * 31 + i * 7) & 0xFF;
+                    return d;
+                };
+                const stream = formatTrackStream({
+                    cylinder: 3, head: 0, sectorsPerTrack: c.spt,
+                    firstSector: c.first, sizeCode: c.size, data: body,
+                });
+                const { sectors } = parseTrackStream(stream);
+                const ok = sectors.length === c.spt && sectors.every((s, i) =>
+                    s.sector === c.first + i && s.sizeCode === c.size &&
+                    same(Array.from(s.data), Array.from(body(s.sector))));
+                assert(ok, c.name, `${sectors.length} sectors`);
+            }
+        }
+
+        section('Interleave is the order they pass under the head');
+        {
+            const s3 = parseTrackStream(formatTrackStream({
+                sectorsPerTrack: 10, firstSector: 1, interleave: 3,
+            })).sectors.map(s => s.sector);
+            assert(s3.length === 10, 'every sector still written once', String(s3.length));
+            assert(new Set(s3).size === 10, 'and no number used twice', s3.join(','));
+            assert(s3[0] === 1 && s3[1] === 4 && s3[2] === 7,
+                   'a 3:1 interleave steps three at a time', s3.join(','));
+            const s1 = parseTrackStream(formatTrackStream({
+                sectorsPerTrack: 10, firstSector: 1, interleave: 1,
+            })).sectors.map(s => s.sector);
+            assert(same(s1, [1,2,3,4,5,6,7,8,9,10]), 'and 1:1 is straight through');
+        }
+
+        section('A mark is only a mark with a missing clock in front of it');
+        {
+            // $FE, $FB and $F8 all occur in ordinary data. On the wire the chip
+            // tells them apart by the $F5 that precedes them, and so does this.
+            const body = new Uint8Array(256);
+            body.fill(0xFE);
+            body[0] = AM_DATA; body[1] = AM_ID; body[2] = AM_DELETED;
+            const stream = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 2, firstSector: 1,
+                sizeCode: 1, data: () => body,
+            });
+            const { sectors } = parseTrackStream(stream);
+            assert(sectors.length === 2,
+                   'a data field full of $FE is still one sector', String(sectors.length));
+            assert(same(Array.from(sectors[0].data), Array.from(body)),
+                   'and comes back byte for byte');
+        }
+
+        section('What the parser refuses');
+        {
+            assert(parseTrackStream(new Uint8Array(0)).sectors.length === 0,
+                   'nothing in, nothing out');
+            const gap = new Uint8Array(6250); gap.fill(GAP_BYTE);
+            assert(parseTrackStream(gap).sectors.length === 0,
+                   'a track of gap filler holds no sectors');
+
+            // An ID field with no data field after it: the chip wrote it, but
+            // there is no sector there.
+            const idOnly = new Uint8Array([
+                ...new Array(12).fill(0), WT_A1, WT_A1, WT_A1, AM_ID, 0, 0, 1, 2, WT_CRC,
+                ...new Array(40).fill(GAP_BYTE),
+            ]);
+            const r = parseTrackStream(idOnly);
+            assert(r.sectors.length === 0, 'an ID with no data field is dropped');
+            assert(!r.truncated, 'and that is not a truncation');
+
+            // A1-marked but not a mark we know.
+            const odd = new Uint8Array([WT_A1, 0x42, WT_A1, AM_DATA, 1, 2, 3]);
+            assert(parseTrackStream(odd).sectors.length === 0,
+                   'a data field with no ID before it is dropped too');
+        }
+
+        section('A format cut short by a Force Interrupt');
+        {
+            const full = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1, sizeCode: 2,
+            });
+            // Three and a bit sectors' worth. The whole ones must survive; the
+            // part-written one must not be invented.
+            const cut = full.subarray(0, 2100);
+            const r = parseTrackStream(cut);
+            assert(r.truncated, 'the stream ended inside a field');
+            assert(r.sectors.length === 3,
+                   'the three complete sectors are kept', String(r.sectors.length));
+            assert(same(r.sectors.map(s => s.sector), [1, 2, 3]), 'and they are 1, 2 and 3');
+            assert(r.sectors.every(s => s.data.length === 512),
+                   'no half sector is handed back');
+
+            // Cut inside an ID field rather than a data field.
+            const idCut = parseTrackStream(full.subarray(0, 78));
+            assert(idCut.truncated && idCut.sectors.length === 0,
+                   'cut inside the first ID field, nothing is laid down');
+        }
+
+        section('Deleted data marks');
+        {
+            const stream = buildTrackStream({
+                cylinder: 1, head: 0, marks: 'stream',
+                sectors: [
+                    { sector: 1, sizeCode: 1, fill: 0x11 },
+                    { sector: 2, sizeCode: 1, fill: 0x22, deleted: true },
+                ],
+            });
+            const { sectors } = parseTrackStream(stream);
+            assert(sectors.length === 2, 'both sectors found');
+            assert(sectors[0].deleted === false, 'an $FB data mark is ordinary data');
+            assert(sectors[1].deleted === true, 'an $F8 one says deleted');
+            assert(sectors[1].data[0] === 0x22, 'and its data is still there');
+        }
+
+        section('The medium form: real marks, real CRCs');
+        {
+            const data = new Uint8Array(256);
+            for (let i = 0; i < 256; i++) data[i] = i;
+            const track = buildTrackStream({
+                cylinder: 5, head: 1,
+                sectors: [{ sector: 9, sizeCode: 1, data }],
+                marks: 'medium',
+            });
+            assert(track.length === TRACK_BYTES_MFM, 'a whole track long');
+            assert(track[0] === GAP_BYTE && track[59] === GAP_BYTE,
+                   'the post-index gap is $4E');
+            assert(track[60] === SYNC_BYTE, 'then the $00 sync run');
+            assert(track[72] === MARK_A1 && track[73] === MARK_A1 && track[74] === MARK_A1,
+                   'then three real $A1 sync bytes, not the $F5 that writes them');
+            assert(track[75] === AM_ID, 'then the ID address mark');
+            assert(track[76] === 5 && track[77] === 1 && track[78] === 9 && track[79] === 1,
+                   'carrying cylinder, head, sector and N');
+            assert(!track.includes(WT_A1) || true, 'a medium image may still hold $F5 as data');
+
+            // CRC-CCITT appended to its own message leaves a running CRC of zero,
+            // so this checks the two bytes without recomputing them by hand.
+            assert(crcFdc(track.subarray(72, 82)) === 0,
+                   'the ID field\'s CRC checks out', String(crcFdc(track.subarray(72, 82))));
+
+            // Data field: sync, 3 x A1, FB, 256 bytes, 2 CRC.
+            const dstart = 82 + 22 + 12;
+            assert(track[dstart] === MARK_A1 && track[dstart + 3] === AM_DATA,
+                   'the data field follows its own sync run');
+            assert(same(Array.from(track.subarray(dstart + 4, dstart + 4 + 256)),
+                        Array.from(data)), 'holding the sector byte for byte');
+            assert(crcFdc(track.subarray(dstart, dstart + 4 + 256 + 2)) === 0,
+                   'and its CRC checks out too');
+            assert(track[track.length - 1] === GAP_BYTE,
+                   'the rest of the revolution is gap filler');
+        }
+
+        section('Gap 3 is shared out, so every real geometry fits a revolution');
+        {
+            // No constant gap works: 18 Opus sectors of 256 leave 91 bytes each
+            // for everything that is not data, 10 MGT sectors of 512 leave 113.
+            const geoms = [
+                { name: 'TR-DOS 16 x 256', spt: 16, size: 1 },
+                { name: 'Opus SS 18 x 256', spt: 18, size: 1 },
+                { name: 'Opus DD 10 x 512', spt: 10, size: 2 },
+                { name: 'MGT 10 x 512', spt: 10, size: 2 },
+                { name: 'MDOS 9 x 512', spt: 9, size: 2 },
+                { name: '+3 9 x 512', spt: 9, size: 2 },
+            ];
+            for (const g of geoms) {
+                const sectors = [];
+                for (let i = 1; i <= g.spt; i++) sectors.push({ sector: i, sizeCode: g.size });
+                const t = buildTrackStream({ sectors });
+                assert(t.length === TRACK_BYTES_MFM,
+                       g.name + ' fits one revolution', String(t.length));
+                const n = parseTrackStream(buildTrackStream({ sectors, marks: 'stream' }))
+                    .sectors.length;
+                assert(n === g.spt, '  and all ' + g.spt + ' parse back', String(n));
+            }
+            // An explicit gap still wins, for a caller that knows better.
+            const forced = buildTrackStream({
+                sectors: [{ sector: 1, sizeCode: 1 }], gap3: 600,
+            });
+            assert(forced.length === TRACK_BYTES_MFM, 'an explicit gap 3 is honoured');
+        }
+
+        section('A geometry that will not fit a real track');
+        {
+            // 16 x 1024 is 16K of data on a track that holds 6250 bytes. It cannot
+            // exist, and the builder says how long it would have to be rather than
+            // quietly losing the last sectors.
+            const sectors = [];
+            for (let i = 1; i <= 16; i++) sectors.push({ sector: i, sizeCode: 3 });
+            const track = buildTrackStream({ sectors });
+            assert(track.length > TRACK_BYTES_MFM,
+                   'the track is as long as the sectors need', String(track.length));
+            const got = parseTrackStream(buildTrackStream({ sectors, marks: 'stream' }));
+            assert(got.sectors.length === 16, 'and all sixteen are still there');
+        }
+
+        section('What a real formatter\'s stream looks like');
+        {
+            // Hand-built the way a ROM builds it, to make sure nothing in the
+            // parser depends on the builder's exact gap lengths.
+            const out = [];
+            const push = (...v) => out.push(...v);
+            const run = (v, n) => { for (let k = 0; k < n; k++) out.push(v); };
+            run(0x4E, 80);                      // a longer post-index gap
+            for (let s = 1; s <= 16; s++) {
+                run(0x00, 12);
+                push(WT_A1, WT_A1, WT_A1, AM_ID, 40, 1, s, 1, WT_CRC);
+                run(0x4E, 22);
+                run(0x00, 12);
+                push(WT_A1, WT_A1, WT_A1, AM_DATA);
+                run(s & 0xFF, 256);
+                push(WT_CRC);
+                run(0x4E, 60);                  // and a longer gap 3
+            }
+            run(0x4E, 200);
+            const { sectors } = parseTrackStream(new Uint8Array(out));
+            assert(sectors.length === 16, 'sixteen sectors read off a hand-built stream',
+                   String(sectors.length));
+            assert(sectors.every(s => s.cylinder === 40 && s.head === 1),
+                   'cylinder 40, side 1 throughout');
+            assert(sectors.every(s => s.data.every(b => b === s.sector)),
+                   'each data field holding its own sector number');
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>

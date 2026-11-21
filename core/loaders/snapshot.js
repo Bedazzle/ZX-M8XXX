@@ -6,6 +6,7 @@
  */
 
 import { SCLLoader, TRDLoader } from './disk-beta.js';
+import { UDILoader } from './disk-udi.js';
 import { MGTLoader } from './disk-mgt.js';
 import { OPDLoader } from './disk-opus.js';
 import { DidaktikLoader } from './disk-didaktik.js';
@@ -63,6 +64,7 @@ import { getMachineByZ80HwMode } from '../machines.js';
             if (ext === 'szx') return 'szx';
             if (ext === 'rzx') return 'rzx';
             if (ext === 'trd') return 'trd';
+            if (ext === 'udi') return 'udi';
             if (ext === 'scl') return 'scl';
             if (ext === 'dsk') return 'dsk';
             if (ext === 'mgt' || ext === 'img') return 'mgt';
@@ -71,6 +73,13 @@ import { getMachineByZ80HwMode } from '../machines.js';
             if (ext === 'wav') return 'wav';
 
             const bytes = new Uint8Array(data);
+
+            // UDI first: 'UDI!' is an exact four-byte signature, where every
+            // disk check below it is a guess from size and catalogue shape.
+            // A UDI is also the one image here that is NOT a sector dump, so
+            // being mistaken for a TRD would hand raw track bytes, gaps and
+            // address marks included, to a reader expecting sector payloads.
+            if (UDILoader.detect(bytes)) return 'udi';
 
             // Check for DSK signature (before other checks)
             if (typeof DSKLoader !== 'undefined' && DSKLoader.isDSK(data)) return 'dsk';
