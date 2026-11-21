@@ -148,9 +148,9 @@ export function initAutoLoader({ getSpectrum }) {
         // tape from its menu's default entry — one Enter. The 128K path used to also
         // type LOAD "" afterwards; measured on 128.rom/pentagon.rom, it was the Enter
         // that started the load and the typed keys did nothing.
-        // The Timex machines start in keyword BASIC, as the 48K does.
-        const isMenuMachine = machType !== '48k' && machType !== 'scorpion' &&
-            !spectrum.profile.timex;
+        // The 48K-shaped machines (Timex, TK-90X/TK-95...) start in keyword
+        // BASIC, as the 48K does.
+        const isMenuMachine = machType !== 'scorpion' && spectrum.profile.pagingModel !== 'none';
         const ula = spectrum.ula;
 
         // Reset (tape data survives reset - only rewinds)

@@ -664,7 +664,8 @@ import {
          * Its RAM starts empty, as after power-on.
          */
         setTkmem(sizeKB) {
-            if (this.machineType !== '48k' || !sizeKB) {
+            // a 48K, or the TK-90X/TK-95 the board was made for
+            if (!['48k', 'tk90x', 'tk95'].includes(this.machineType) || !sizeKB) {
                 this.tkmemRam = null;
                 this.tkmem512 = false;
             } else {

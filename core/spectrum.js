@@ -1830,7 +1830,7 @@ import { Disassembler } from './disasm.js';
         _ayOnPorts() {
             return this.ayEnabled || (this.ay48kEnabled &&
                 (this.machineType === '48k' || this.profile.pagingModel === 'hc2000' ||
-                 this.machineType === 'tc2048'));
+                 this.machineType === 'tc2048' || this.machineType === 'tk90x' || this.machineType === 'tk95'));
         }
 
         /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */

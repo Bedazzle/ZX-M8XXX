@@ -330,6 +330,15 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
   - While TR-DOS is paged in, the DACs do not hear the bus (as in Unreal Speccy): mode 1's `$1F`/`$5F` are the Beta Disk's command and sector registers, and disk work would otherwise click through it. Likewise on a Beta 48's live FDC/system ports.
 - `tests/sound-addons-test.html`.
 
+## Microdigital TK-90X / TK-95
+
+Machines `tk90x` and `tk95` (group Microdigital; ROMs `roms/tk90x.rom`, MAME's CRC `3e785f6f`, and `roms/tk95.rom`, `17368e07`; the TK-90X v1/v3 ROMs load the same way).
+
+- 48K clones with the Microdigital ULA: **228 T-states a line**, 312 lines at 50 Hz = 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por línea"), the 48K contention pattern; `profile.tstatesPerLine` in the ULA's 48K branch (the 48K itself is unchanged, 224). No floating bus (MAME: unattached ports read `$FF`), no snow.
+- The ROM keeps the 48K entry points: tape traps and flash load work. Auto load types `LOAD ""` (keyword BASIC, as on every `pagingModel: 'none'` machine).
+- TKMEM-128 II and "AY in 48K" are allowed on them; the Brazilian Beta 48 clones work (checked: Chase HQ 128 for TKMEM on CBI-95; T2 on TK-95 + TKMEM, no snow).
+- Not done: the 60 Hz mode (262 lines), the TK-95's Spectrum+ keyboard layout as such, MAME's unexplained `$DF` write at start-up. `tests/tk-test.html`.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

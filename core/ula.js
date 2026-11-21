@@ -144,7 +144,9 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'scorpion': { top: 80, left: 48, right: 48, bottom: 48 },
                 'hc2000':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
                 'tc2048':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
-                'tc2068':  { top: 64, left: 48, right: 48, bottom: 56 }   // 48K timing
+                'tc2068':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
+                'tk90x':   { top: 64, left: 48, right: 48, bottom: 56 },
+                'tk95':    { top: 64, left: 48, right: 48, bottom: 56 }
             };
 
             // Normal (cropped) border sizes
@@ -160,7 +162,9 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'scorpion': { top: 24, left: 32, right: 32, bottom: 24 },
                 'hc2000':  { top: 24, left: 32, right: 32, bottom: 24 },
                 'tc2048':  { top: 24, left: 32, right: 32, bottom: 24 },
-                'tc2068':  { top: 24, left: 32, right: 32, bottom: 24 }
+                'tc2068':  { top: 24, left: 32, right: 32, bottom: 24 },
+                'tk90x':   { top: 24, left: 32, right: 32, bottom: 24 },
+                'tk95':    { top: 24, left: 32, right: 32, bottom: 24 }
             };
 
             // Set initial border dimensions
@@ -244,22 +248,24 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 // This is a hardware characteristic independent of TOP_LEFT_PIXEL_TSTATE
                 this.ULA_READ_AHEAD = 3;
             } else {
-                // 48K timing
-                this.TSTATES_PER_LINE = 224;
+                // 48K timing (and the 48K-shaped clones: the Microdigital ULA of
+                // the TK-90X/TK-95 runs 228 T-states a line, profile.tstatesPerLine)
+                const tpl = this.profile.tstatesPerLine || 224;
+                this.TSTATES_PER_LINE = tpl;
                 this.LINES_PER_FRAME = 312;
                 this.FIRST_SCREEN_LINE = 64;
                 this.VISIBLE_LINE_OFFSET = 0;
                 this.ULA_CONTENTION_TSTATES = 0;
                 this.PAPER_START_TSTATE = 14;
                 // 48K timing constants
-                this.TOP_LEFT_PIXEL_TSTATE = 14336;
+                this.TOP_LEFT_PIXEL_TSTATE = 64 * tpl;    // 14336 on the 48K
                 this.BORDER_TIMING_OFFSET = 0;
                 this.TIMING_ADJUST = 0;
                 this.VERTICAL_LINE_DRIFT = 0;
                 // Border phase: offset added after 4T quantization (like ZXMAK2 c_ulaBorder4Tstage)
                 this.BORDER_PHASE = 0;
-                // Memory contention pattern starts at 14335
-                this.CONTENTION_START_TSTATE = 14335;
+                // Memory contention pattern starts at 14335 (48K)
+                this.CONTENTION_START_TSTATE = 64 * tpl - 1;
                 this.CONTENTION_PATTERN = [6, 5, 4, 3, 2, 1, 0, 0];
                 this.IO_CONTENTION_ENABLED = true;  // Enable I/O contention for 48K
                 // ULA read-ahead: ULA reads attribute before pixel is displayed

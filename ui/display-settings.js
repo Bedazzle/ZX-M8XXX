@@ -534,8 +534,8 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     function updateTkmemStatus() {
         const sp = getSpectrum();
         selTkmem.value = String(sp.tkmemSize || 0);
-        tkmemStatus.textContent = (sp.tkmemSize && sp.machineType !== '48k')
-            ? '(48K machine only)' : '';
+        tkmemStatus.textContent = (sp.tkmemSize && !['48k', 'tk90x', 'tk95'].includes(sp.machineType))
+            ? '(48K or TK-90X/TK-95 only)' : '';
     }
     const selTkmemDecode = document.getElementById('selTkmemDecode');
     if (selTkmemDecode) {

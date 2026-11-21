@@ -409,7 +409,79 @@ const MACHINE_PROFILES = {
             betaDiskDefault: false,
             hasFDC: false,
             z80HwMode: 15,             // .z80 v3: TC2068
-            szxMachineId: -1,          // no SZX here yet
+            szxMachineId: 101,         // private id (no SZX support for it here yet)
+            is128kCompat: false,
+        },
+        // Microdigital TK-90X (Microdigital, Brazil): a 48K clone. TK 90X Color Computer, 1985; MAME tk90x.rom (CRC 3e785f6f), v1/v3 ROMs load as well. Its ULA (the
+        // Microdigital one) runs 228 T-states a line, 312 lines at 50 Hz -- 71136
+        // a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por linea"), with
+        // the 48K contention pattern; the 48K ROM entry points are kept, so tape
+        // traps work. 60 Hz (262 lines) is not offered yet.
+        'tk90x': {
+            id: 'tk90x',
+            name: 'Microdigital TK-90X',
+            group: 'Microdigital',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'tk90x.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            tstatesPerLine: 228,       // Microdigital ULA
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,
+            szxMachineId: 102,         // private id, not in the SZX spec
+            is128kCompat: false,
+        },
+        // Microdigital TK-95 (Microdigital, Brazil): a 48K clone. TK 95 Color Computer, 1986, Spectrum+ style keyboard; MAME tk95.rom (CRC 17368e07). Its ULA (the
+        // Microdigital one) runs 228 T-states a line, 312 lines at 50 Hz -- 71136
+        // a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por linea"), with
+        // the 48K contention pattern; the 48K ROM entry points are kept, so tape
+        // traps work. 60 Hz (262 lines) is not offered yet.
+        'tk95': {
+            id: 'tk95',
+            name: 'Microdigital TK-95',
+            group: 'Microdigital',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'tk95.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            tstatesPerLine: 228,       // Microdigital ULA
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,
+            szxMachineId: 103,         // private id, not in the SZX spec
             is128kCompat: false,
         },
     };
