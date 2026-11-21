@@ -93,13 +93,20 @@
             sp.setDac('specdrum');
             sp.portWrite(0x00DF, 0x90);
             assert(sp.dacLevels.every(v => v === 0x90), 'Specdrum on $DF');
-            sp.setDac('soundrive');
+            sp.setDac('soundrive1');
             sp.portWrite(0x000F, 0x01); sp.portWrite(0x001F, 0x02);
             sp.portWrite(0x004F, 0x03); sp.portWrite(0x005F, 0x04);
             const a = sp.dacLevels.slice();
             sp.portWrite(0x00F1, 0x05); sp.portWrite(0x00FB, 0x06);
-            assert(a.join() === '1,2,3,4' && sp.dacLevels[0] === 5 && sp.dacLevels[3] === 6,
-                'Soundrive: four channels on $0F/$1F/$4F/$5F and $F1/$F3/$F9/$FB');
+            assert(a.join() === '1,2,3,4' && sp.dacLevels.join() === '1,2,3,4',
+                'Soundrive mode 1: $0F/$1F left, $4F/$5F right; mode 2 ports ignored');
+            sp.setDac('soundrive2');
+            sp.portWrite(0x00F1, 0x05); sp.portWrite(0x00F3, 0x06);
+            sp.portWrite(0x00F9, 0x07); sp.portWrite(0x00FB, 0x08);
+            const b = sp.dacLevels.slice();
+            sp.portWrite(0x000F, 0x09);
+            assert(b.join() === '5,6,7,8' && sp.dacLevels[0] === 5,
+                'Soundrive mode 2: $F1/$F3 left, $F9/$FB right; mode 1 ports ignored');
             const border = sp.ula.borderColor;
             sp.setDac('none');
             sp.portWrite(0x00FB, 0x77);

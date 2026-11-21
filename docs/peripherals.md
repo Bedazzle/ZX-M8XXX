@@ -325,7 +325,7 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 - **DACs**, write-only and not exclusive (the port still reaches the rest of the bus), four 8-bit channels, `$80` = silence, recorded per frame with their T-state like the beeper:
   - *Covox*: one port, mono, settable (`$FB` by default, Pentagon; `$DD` on the Scorpion);
   - *Specdrum* (Cheetah): `$DF`, mono;
-  - *Soundrive 1.05*: `$0F`/`$1F` left, `$4F`/`$5F` right, and `$F1`/`$F3`, `$F9`/`$FB`.
+  - *Soundrive 1.05*, two jumper modes (as in Unreal Speccy): mode 1 `$0F`/`$1F` left, `$4F`/`$5F` right; mode 2 `$F1`/`$F3` left, `$F9`/`$FB` right.
 - `tests/sound-addons-test.html`.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)

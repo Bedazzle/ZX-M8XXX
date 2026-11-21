@@ -156,10 +156,12 @@ import { Disassembler } from './disasm.js';
             this._aySel = 0;
             this.ay2StateSnapshot = null;
             // DAC: 'none' | 'covox' (one port, settable, $FB by default) |
-            // 'specdrum' ($DF) | 'soundrive' (1.05: $0F/$1F left, $4F/$5F right,
-            // and $F1/$F3, $F9/$FB). Four 8-bit channels, $80 = silence; writes
-            // are kept per frame with their T-state, as the beeper's are.
+            // 'specdrum' ($DF) | Soundrive 1.05, set by jumper to one of two port
+            // sets: 'soundrive1' ($0F/$1F left, $4F/$5F right) or 'soundrive2'
+            // ($F1/$F3 left, $F9/$FB right). Four 8-bit channels, $80 = silence;
+            // writes are kept per frame with their T-state, as the beeper's are.
             this.dacType = storageGet('zxm8_dacType') || 'none';
+            if (this.dacType === 'soundrive') this.dacType = 'soundrive1';
             this.covoxPort = parseInt(storageGet('zxm8_covoxPort') || 'FB', 16) & 0xFF;
             this.dacLevels = [0x80, 0x80, 0x80, 0x80];
             this.dacChanges = [];
@@ -1840,7 +1842,8 @@ import { Disassembler } from './disasm.js';
 
         /** DAC type and Covox port (see the constructor) */
         setDac(type, covoxPort = this.covoxPort) {
-            this.dacType = ['covox', 'specdrum', 'soundrive'].includes(type) ? type : 'none';
+            if (type === 'soundrive') type = 'soundrive1';
+            this.dacType = ['covox', 'specdrum', 'soundrive1', 'soundrive2'].includes(type) ? type : 'none';
             this.covoxPort = covoxPort & 0xFF;
             this.dacLevels.fill(0x80);
         }
@@ -1850,8 +1853,11 @@ import { Disassembler } from './disasm.js';
             let ch = -1;
             if (this.dacType === 'covox') { if (low === this.covoxPort) ch = 4; }
             else if (this.dacType === 'specdrum') { if (low === 0xDF) ch = 4; }
-            else if (this.dacType === 'soundrive') {
-                ch = { 0x0F: 0, 0x1F: 1, 0x4F: 2, 0x5F: 3, 0xF1: 0, 0xF3: 1, 0xF9: 2, 0xFB: 3 }[low];
+            else if (this.dacType === 'soundrive1') {
+                ch = { 0x0F: 0, 0x1F: 1, 0x4F: 2, 0x5F: 3 }[low];
+                if (ch === undefined) ch = -1;
+            } else if (this.dacType === 'soundrive2') {
+                ch = { 0xF1: 0, 0xF3: 1, 0xF9: 2, 0xFB: 3 }[low];
                 if (ch === undefined) ch = -1;
             }
             if (ch < 0) return;

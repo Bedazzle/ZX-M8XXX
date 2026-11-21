@@ -369,13 +369,14 @@
                         <label class="checkbox-label" title="TurboSound (NedoPC): a second AY on the same ports. OUT ($FFFD),$FF selects chip 0, $FE chip 1; any other value selects a register of the current chip. Where there is an AY (128K, Pentagon..., or AY in 48K).">
                             <input type="checkbox" id="chkTurboSound"> TurboSound (2 x AY)
                         </label>
-                        <label style="margin-left: 15px;" title="8-bit DAC: Covox (one port, mono), Specdrum (Cheetah, port $DF, mono), Soundrive 1.05 (four channels: $0F/$1F left, $4F/$5F right, also $F1/$F3, $F9/$FB)">
+                        <label style="margin-left: 15px;" title="8-bit DAC: Covox (one port, mono), Specdrum (Cheetah, port $DF, mono), Soundrive 1.05, four channels: mode 1 $0F/$1F left, $4F/$5F right; mode 2 $F1/$F3 left, $F9/$FB right">
                             DAC
                             <select id="selDac" style="margin-left: 4px;">
                                 <option value="none">none</option>
                                 <option value="covox">Covox</option>
                                 <option value="specdrum">Specdrum</option>
-                                <option value="soundrive">Soundrive</option>
+                                <option value="soundrive1">Soundrive 1.05 mode 1</option>
+                                <option value="soundrive2">Soundrive 1.05 mode 2</option>
                             </select>
                         </label>
                         <label id="covoxPortLabel" style="margin-left: 10px;" title="Covox port (low byte, hex): $FB on the Pentagon, $DD on the Scorpion">
