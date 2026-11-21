@@ -117,6 +117,9 @@ import { PlusDDisk } from './disk-mgt.js';
          * Returns Uint8Array, or null on a bad/unreadable chain.
          */
         static extractFile(data, fileInfo) {
+            // A file of another disk shown through the MDOS views (K-DOS in the
+            // Explorer) reads itself
+            if (fileInfo && typeof fileInfo.extract === 'function') return fileInfo.extract();
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const sectors = [];
             let sec = fileInfo.firstSec;

@@ -4,6 +4,7 @@ import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 import { Fdd3000 } from '../core/fdd3000.js';
+import { KdosLoader } from '../core/loaders/disk-kdos.js';
 
 export function initFileLoader({
     getSpectrum,
@@ -796,6 +797,7 @@ export function initFileLoader({
                        ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' ||
                        ext === 'dsk' || ext === 'mdr' || ext === 'mgt' || ext === 'img' ||
                        ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' || ext === 'udi' ||
+                       ext === 'kdi' || ext === 'dck' ||
                        ext === 'rzx' || ext === 'wav') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
@@ -933,12 +935,9 @@ export function initFileLoader({
         // normal load path so per-drive state, indicators, and catalog update uniformly
         let result;
         if (sys.id === 'kdi') {
-            // An unformatted disk is no use to K-DOS, and FORMAT needs Write
-            // Track on a DSK, which the model does not have yet
-            showMessage('Blank Kempston Disc: not yet -- use a formatted .kdi', 'error');
-            return;
-        }
-        if (sys.id === 'fdd3') {
+            // K-DOS: 80 x 2 x 10 x 512, as its FORMAT leaves it (KdosLoader.createBlank)
+            result = spectrum.loadDSKImage(KdosLoader.createBlank('BLANK').toBuffer(), '[blank]', driveIndex & 3);
+        } else if (sys.id === 'fdd3') {
             // TOS / CP/M: 40 tracks, one side, 16 x 256-byte sectors 0-15, $E5
             result = spectrum.loadDSKImage(DSKLoader.createBlankDSK('tos-40').toBuffer(), '[blank]', driveIndex & 3);
         } else if (sys.id === 'dsk') {

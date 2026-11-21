@@ -74,6 +74,7 @@ import { HcDiskLoader } from './loaders/disk-hc.js';
 import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
 import { KempstonDisc, KEMPDISC_A6_ROMS, KEMPDISC_128_ROMS } from './kempdisc.js';
+import { KdosLoader } from './loaders/disk-kdos.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { SAA1099 } from './saa1099.js';
@@ -147,6 +148,8 @@ import { Disassembler } from './disasm.js';
             this.kempdiscRomFile = storageGet('zxm8_kempdiscRom') || 'kdos21.rom';
             this._kempdiscEnabledFlag = false;
             this.memory.kempdisc = this.kempdisc;
+            this.loadedKempdiscDisks = [null, null, null, null];       // { name, data } per drive
+            this.loadedKempdiscDiskFiles = [null, null, null, null];   // the K-DOS directory
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
 
@@ -8225,9 +8228,12 @@ import { Disassembler } from './disasm.js';
                 const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
                 this.kempdisc.fdc.loadDisk(bytes, 'dsk', driveIndex & 3);
                 this.kempdisc.fdc.drives[driveIndex & 3].name = fileName;
+                const files = KdosLoader.listFiles(this.kempdisc.fdc.drives[driveIndex & 3].dsk);
+                this.loadedKempdiscDisks[driveIndex & 3] = { name: fileName, data: bytes };
+                this.loadedKempdiscDiskFiles[driveIndex & 3] = files;
                 return {
                     diskInserted: true, diskType: 'kdi', diskName: fileName,
-                    fileCount: 0, _driveIndex: driveIndex & 3, needsMachineSwitch: false
+                    fileCount: files.length, _driveIndex: driveIndex & 3, needsMachineSwitch: false
                 };
             }
             // Timex FDD 3000: DSK images go to the station's four drives

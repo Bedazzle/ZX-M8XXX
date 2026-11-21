@@ -14,6 +14,7 @@ import {
 } from '../core/constants.js';
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, UDILoader, sclChecksum } from '../core/loaders.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
+import { KdosLoader } from '../core/loaders/disk-kdos.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
 import { trdBasicAutostartLine, extractTrdFileDescriptor, shapeBasicEntry, addMetaFromDescriptor, isMonoloader, splitMonoloader } from './disk-file-copy.js';
@@ -887,6 +888,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerParsed = explorerParseDidaktik(explorerData);
                 break;
             case 'dsk':
+            case 'kdi':
                 explorerParsed = explorerParseDSK(explorerData);
                 break;
             case 'zip':
@@ -926,7 +928,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
         // Auto-populate active editor panel for editable formats
         const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'sna', 'z80', 'szx'];
-        if (editorFormats.includes(ext) && explorerParsed) {
+        // (a K-DOS disk is read-only here: no editor panel)
+        if (editorFormats.includes(ext) && explorerParsed && !explorerParsed.kdos) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
             // Check if ZIP auto-drilled into a single editable file
@@ -1866,6 +1869,12 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerPendingHcRaw = null;
         try {
             const dskImage = DSKLoader.parse(data);
+            // A K-DOS (Kempston Disc) disk: shown through the MDOS views, read-only
+            if (!hcRaw && KdosLoader.isKdos(dskImage)) {
+                const p = KdosLoader.asExplorerDisk(dskImage, data.length);
+                explorerBlocks = p.files;
+                return p;
+            }
             if (hcRaw) dskImage.hcFormat = true;    // came from an HC .img: say so
             const diskSpec = DSKLoader.getDiskSpec(dskImage);
             let files = [];
@@ -1900,7 +1909,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk', 'kdi'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600 ||
@@ -1974,6 +1983,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     case 'd80':
                         return explorerParseDidaktik(explorerData);
                     case 'dsk':
+                    case 'kdi':
                         return explorerParseDSK(explorerData);
                 }
             }

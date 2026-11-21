@@ -24,6 +24,8 @@
         // Kempston Disc Interface (core/kempdisc.js): K-DOS, a WD1770, the stock
         // board and the 128A6 modification.
         import { KempstonDisc } from '../core/kempdisc.js';
+        import { KdosLoader } from '../core/loaders/disk-kdos.js';
+        import { DSKLoader } from '../core/fdc.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -120,12 +122,66 @@
             assert(cmds.includes(0xC4) && sp.kempdisc.fdc.status !== 0x03,
                 'its drive test (Read Address, never read) finishes, as on a real WD',
                 cmds.map(c => c.toString(16)).join(' '));
+            // A blank disk (the "Blank KDI" button): K-DOS catalogues it and saves to it
+            {
+                const blank = KdosLoader.createBlank('MYDISK');
+                assert(KdosLoader.diskName(blank) === 'MYDISK' && KdosLoader.freeBlocks(blank) === 795 &&
+                    KdosLoader.listFiles(blank).length === 0 && blank.readSector(20, 0, 0)[0x100] === 0,
+                    'blank: label, 795K free (5 directory blocks used), no files, the slot bytes clear');
+                for (const [f, opt] of [['kempston_dsdd.dsk', {}], ['kempston_sssd.dsk', { tracks: 40, sides: 1 }]]) {
+                    const r = await fetch('../headless/kdi/blank/' + f);
+                    if (!r.ok) { skip('headless/kdi/blank/' + f + ' not present'); continue; }
+                    const ref = DSKLoader.parse(new Uint8Array(await r.arrayBuffer()));
+                    const mine = KdosLoader.createBlank('SPECCYPL', opt);
+                    let diff = 0;
+                    for (let t = 0; t < ref.numTracks; t++) for (let h = 0; h < ref.numSides; h++) for (let x = 0; x < 10; x++) {
+                        const a = ref.readSector(t, h, x), b = mine.readSector(t, h, x);
+                        for (let i = 0; i < 512; i++) if (!b || a[i] !== b[i]) diff++;
+                    }
+                    assert(diff === 0, `blank ${opt.sides === 1 ? 'SS 40' : 'DS 80'} is byte for byte the reference ${f}`, diff + ' bytes differ');
+                }
+                sp.loadDSKImage(blank.toBuffer(), '[blank]', 0);
+                sp.reset();
+                await zx.runFrames(200);
+                const u = sp.ula;
+                const press = async (keys, h = 4, g = 6) => {
+                    for (const k of keys) u.keyDown(k); await zx.runFrames(h);
+                    for (const k of keys) u.keyUp(k); await zx.runFrames(g);
+                };
+                await press(['1']); await press(['0']); await press(['e']); await press(['Enter']);          // 10 REM
+                await press(['p']); await press(['#']); await press(['4']); await press([':']); await press(['s']); // PRINT #4: SAVE
+                await press(['SYM', 'p']); await press(['t']); await press(['SYM', 'p']); await press(['Enter']);
+                await zx.runFrames(400);
+                const dsk = sp.kempdisc.fdc.drives[0].dsk;
+                const saved = KdosLoader.listFiles(dsk);
+                assert(saved.length === 1 && saved[0].name === 't' && saved[0].typeName === 'BASIC' &&
+                    KdosLoader.freeBlocks(dsk) === 794 && /0 OK/.test(screenText(sp)),
+                    'K-DOS saves a BASIC program to it (PRINT #4: SAVE "t"): one file, 794K free',
+                    saved.map(f => f.name).join() + ' / ' + screenText(sp).trim().slice(0, 40));
+                for (let d = 0; d < 4; d++) sp.kempdisc.fdc.ejectDisk(d);
+            }
             if (await ok('../headless/kdi/K48_Myth.kdi')) {
                 await zx.loadUrl('../headless/kdi/K48_Myth.kdi');
                 zx.pause();
                 sp.reset();
                 await zx.runFrames(1200);
                 assert(sp.kempdisc.fdc.track > 0, 'K48_Myth.kdi boots and loads (head past track 0)', 'track ' + sp.kempdisc.fdc.track);
+                const dsk = sp.kempdisc.fdc.drives[0].dsk;
+                const files = KdosLoader.listFiles(dsk);
+                const scr = files.find(f => f.name === 'myth$');
+                const code = files.find(f => f.name === 'mythc0');
+                const cbytes = code && KdosLoader.readFile(dsk, code);
+                assert(files.length === 10 && files[0].name === 'AUTO' && files[1].typeName === 'BASIC' &&
+                    scr && scr.length === 6912 && scr.param1 === 0x4000 && KdosLoader.diskName(dsk) === 'Empty KDOS',
+                    'K-DOS directory (track 20): 10 files, types, lengths, start addresses',
+                    files.map(f => f.name + ':' + f.length).join(' '));
+                assert(cbytes && cbytes.length === 4236 && cbytes[0] === 0xF3 && cbytes[1] === 0x31,
+                    'a file reads off its blocks (both sides of a track in turn): mythc0 starts DI; LD SP');
+                const used = files.reduce((n, f) => n + f.blocks, 0);
+                assert(KdosLoader.freeBlocks(dsk) === 800 - 5 - used,
+                    'the block map: free = 800 - 5 directory blocks - the blocks of the files', KdosLoader.freeBlocks(dsk) + ' vs ' + (795 - used));
+                assert(sp.loadedKempdiscDiskFiles[0] && sp.loadedKempdiscDiskFiles[0].length === 10,
+                    'the disk catalogue gets the directory');
             } else skip('headless/kdi/K48_Myth.kdi not present');
             section('128A6 on a 128K');
             if (await ok('../roms/kdos21-128a6.rom')) {

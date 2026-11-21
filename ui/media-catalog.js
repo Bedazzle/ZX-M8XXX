@@ -41,8 +41,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     // the disk is still there) — so without this a TR-DOS disk loaded on
     // Pentagon went on showing as drive A after switching to +3, where the
     // machine cannot read it and its own drive A is something else entirely.
-    const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr', opus: 'opd', didaktik: 'd80' };
-    const SYSTEM_LABEL = { dsk: '3DOS', hc: 'HC', trd: 'TRD', mgt: 'MGT', mdr: 'MDR', opd: 'OPD', d80: 'D80' };
+    const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr', opus: 'opd', didaktik: 'd80', kdi: 'kdi' };
+    const SYSTEM_LABEL = { dsk: '3DOS', hc: 'HC', trd: 'TRD', mgt: 'MGT', mdr: 'MDR', opd: 'OPD', d80: 'D80', kdi: 'KDI' };
 
     function activeSystemIds() {
         const systems = getAvailableDiskSystems && getAvailableDiskSystems();
@@ -242,7 +242,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const hasIF1 = driveIndex < 8 && spectrum.loadedIF1Cartridges && spectrum.loadedIF1Cartridges[driveIndex];
         const hasOpus = driveIndex < 2 && spectrum.loadedOpusDisks && spectrum.loadedOpusDisks[driveIndex];
         const hasD80 = driveIndex < 2 && spectrum.loadedDidaktikDisks && spectrum.loadedDidaktikDisks[driveIndex];
-        return !!(hasFDC || hasBeta || hasPlusD || hasIF1 || hasOpus || hasD80);
+        const hasKdi = driveIndex < 4 && spectrum.loadedKempdiscDisks && spectrum.loadedKempdiscDisks[driveIndex];
+        return !!(hasFDC || hasBeta || hasPlusD || hasIF1 || hasOpus || hasD80 || hasKdi);
     }
 
     // MGT file type names for catalog display
@@ -257,7 +258,8 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     function buildDiskCatalogSection(driveIndex, isDSK, media, files, sys) {
         const isMGT = sys === 'mgt';
         const isOPD = sys === 'opd';
-        const isD80 = sys === 'd80';
+        const isKDI = sys === 'kdi';
+        const isD80 = sys === 'd80' || isKDI;
         // With two disk systems on the machine "A:" is ambiguous — the +3's
         // drive A and TR-DOS drive A are different drives. Name the system,
         // matching the drive tab above.
@@ -273,7 +275,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         let headerText = '';
         if (isMGT || isOPD || isD80) {
             headerText = '\u{1F4BE} ' + driveLetter + ': ' +
-                ((media && media.name) || (isD80 ? 'D80' : isOPD ? 'OPD' : 'MGT'));
+                ((media && media.name) || (isKDI ? 'KDI' : isD80 ? 'D80' : isOPD ? 'OPD' : 'MGT'));
             if (hasFiles) headerText += ' \u2014 ' + files.length + ' files';
         } else if (isDSK) {
             if (hasFiles) {
@@ -414,6 +416,10 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const d80Media = showD80 && spectrum.loadedDidaktikDisks ? spectrum.loadedDidaktikDisks[driveIndex] : null;
         const d80Files = showD80 && spectrum.loadedDidaktikDiskFiles ? spectrum.loadedDidaktikDiskFiles[driveIndex] : null;
         const hasD80Content = d80Media || (d80Files && d80Files.length > 0);
+        const showKdi = (!controller || controller === 'kdi') && driveIndex < 4 && controllerActive('kdi', ids);
+        const kdiMedia = showKdi && spectrum.loadedKempdiscDisks ? spectrum.loadedKempdiscDisks[driveIndex] : null;
+        const kdiFiles = showKdi && spectrum.loadedKempdiscDiskFiles ? spectrum.loadedKempdiscDiskFiles[driveIndex] : null;
+        const hasKdiContent = kdiMedia || (kdiFiles && kdiFiles.length > 0);
         const fdcMedia = showFdc ? spectrum.loadedFDCDisks[driveIndex] : null;
         const betaMedia = showBeta ? spectrum.loadedBetaDisks[driveIndex] : null;
         const plusDMedia = showPlusD && spectrum.loadedPlusDDisks ? spectrum.loadedPlusDDisks[driveIndex] : null;
@@ -427,7 +433,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         const hasPlusDContent = plusDMedia || (plusDFiles && plusDFiles.length > 0);
         const hasIF1Content = if1Media || (if1Files && if1Files.length > 0);
 
-        if (!hasFdcContent && !hasBetaContent && !hasPlusDContent && !hasIF1Content && !hasOpusContent && !hasD80Content) {
+        if (!hasFdcContent && !hasBetaContent && !hasPlusDContent && !hasIF1Content && !hasOpusContent && !hasD80Content && !hasKdiContent) {
             let anyDisk = false;
             for (let i = 0; i < 4; i++) {
                 if (hasDiskInDrive(i)) { anyDisk = true; break; }
@@ -451,6 +457,9 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         }
         if (hasD80Content) {
             buildDiskCatalogSection(driveIndex, false, d80Media, d80Files, 'd80');
+        }
+        if (hasKdiContent) {
+            buildDiskCatalogSection(driveIndex, false, kdiMedia, kdiFiles, 'kdi');
         }
         if (hasIF1Content) {
             buildIF1CatalogSection(driveIndex, if1Media, if1Files);
@@ -528,7 +537,11 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 d80Drives.push(i);
             }
         }
-        const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0) + (opusDrives.length > 0 ? 1 : 0) + (d80Drives.length > 0 ? 1 : 0);
+        const kdiDrives = [];
+        if (controllerActive('kdi', ids)) for (let i = 0; i < 4; i++) {
+            if (spectrum.loadedKempdiscDisks && spectrum.loadedKempdiscDisks[i]) kdiDrives.push(i);
+        }
+        const activeControllers = (fdcDrives.length > 0 ? 1 : 0) + (betaDrives.length > 0 ? 1 : 0) + (plusDDrives.length > 0 ? 1 : 0) + (if1Drives.length > 0 ? 1 : 0) + (opusDrives.length > 0 ? 1 : 0) + (d80Drives.length > 0 ? 1 : 0) + (kdiDrives.length > 0 ? 1 : 0);
         // Prefix the tab with its system whenever "A:" could mean two things —
         // either because two controllers hold a disk, or because the machine
         // has two disk systems and only one of them happens to be occupied
@@ -564,6 +577,10 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
                 const letter = String.fromCharCode(65 + drv);
                 tabs.push({ drive: drv, controller: 'didaktik', label: multiController ? SYSTEM_LABEL.d80 + ':' + letter : letter + ':' });
             }
+        }
+        for (const drv of kdiDrives) {
+            const letter = String.fromCharCode(65 + drv);
+            tabs.push({ drive: drv, controller: 'kdi', label: multiController ? SYSTEM_LABEL.kdi + ':' + letter : letter + ':' });
         }
         if (if1Drives.length > 0) {
             for (const drv of if1Drives) {

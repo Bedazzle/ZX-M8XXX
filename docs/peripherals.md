@@ -501,9 +501,18 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
   - K-DOS 2.1 boots on a 48K.
   - Myth (K48), ChaseHQ (48K), R-Type 2019 and K128 ChaseHQ (128A6 on a 128K) load and run.
   - `tests/kempdisc-test.html`.
+- **File system** (`core/loaders/disk-kdos.js`, agrees with the user's `KDOS_format.md`): the directory is on track 20 side 0. Its sector 0 holds:
+  - the label (3-12);
+  - the geometry ($1D tracks, $1F sides-1, $22 total blocks);
+  - the block map ($60-$FF; blocks past the end are set);
+  - one byte per directory slot from $100 (a name hash, 0 = free).
+
+  Sectors 1-9 hold 144 entries of 32 bytes: type, name, length and the two tape-header parameters; at 22 the block count, at 23-24 the first block (files are contiguous, 1KB blocks, both sides of a track in turn).
+- **Settings → Disk:** shows the disk and its directory. Drag and drop takes `.kdi`. **Blank KDI** inserts a formatted DS 80-track disk; DS 80 and SS 40 blanks are byte for byte the user's `kempston_dsdd.dsk` / `kempston_sssd.dsk`. K-DOS CATs it and SAVEs to it.
+- **Explorer:** opens `.kdi` and K-DOS `.dsk` read-only, through the MDOS (D80) views: list, preview, BASIC, disassembly, hex, extract.
 - **Not done:**
-  - A blank disk (FORMAT needs Write Track on a DSK).
-  - The Explorer.
+  - Writing files into a K-DOS disk from the Explorer (the slot hash is not known).
+  - FORMAT from K-DOS (Write Track on a DSK).
   - The Kempston Centronics E printer port and joystick on the board.
   - Watford SP-DOS.
 

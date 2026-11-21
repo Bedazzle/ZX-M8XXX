@@ -1290,7 +1290,7 @@ export function initExplorerBanks(ctx) {
     function explorerRenderDidaktikInfo() {
         const info = ctx.explorerParsed.info;
         let html = `<div class="explorer-info-section">
-            <div class="explorer-info-header">Didaktik 40/80 Disk Image (MDOS)</div>
+            <div class="explorer-info-header">${info.formatName || 'Didaktik 40/80 Disk Image (MDOS)'}</div>
             <table class="explorer-info-table">
                 <tr><th>Size</th><td>${ctx.explorerData.length} bytes</td></tr>
                 <tr><th>Geometry</th><td>${info.tracks}T × ${info.sides}S × ${info.sectorsPerTrack}sec × ${info.bytesPerSector}B</td></tr>
