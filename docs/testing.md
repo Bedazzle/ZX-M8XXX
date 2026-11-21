@@ -362,9 +362,60 @@ reset, `LOAD`, and the loaded program must run and print its token. Nothing is a
 about our loaders' idea of the format; if our writer were wrong the ROM would fail to read
 it back, which is exactly the Microdrive bug.
 
+- **The disk clock only ever moves forward.** Everything timed by rotation is arithmetic on
+  one number, so it is sampled either side of 200 frame boundaries and must never go back,
+  and must advance one frame per frame. Built as `totalFrames * tstatesPerFrame +
+  cpu.tStates` it did neither: `totalFrames` moves at the end of a frame and the subtraction
+  from `cpu.tStates` at the start of the next, so the clock leapt a frame and dropped back —
+  a wobble against a 698880-T revolution, and a stalled Opus transfer against a DRQ due
+  112 T out.
 - **Opus Discovery**, **Interface 1 / Microdrive** and **Didaktik 80** — the full round trip on
   a blank disk. The Didaktik also checks the file appears in the MDOS catalogue of the image
-  itself, not just on screen.
+  itself, not just on screen, and **times the bytes of the `LOAD`**: MDOS transfers by NMI,
+  so it should read at the medium's 111.8 T-states a byte and not at the handler's. It reads
+  at 111.8; scheduled from the host's service instead of from the previous byte's due time it
+  reads at 127.0, and the assert says so. Nothing else here can see that — the transfer
+  completes either way, only slower than the disk physically turns.
+- **Opus Discovery — the ROM formats a blank image into a disk**, and **Didaktik 80 — MDOS
+  formats 160 track-sides.** A round trip proves a writer; these prove the interface can
+  **make** the disk in the first place, which is a different question and the one Write Track
+  answers. Each starts from something that is *not* a disk of the right kind — an all-zero
+  image with no anchor sector for the Opus, a valid D80 with every byte overwritten with
+  `$5A` for MDOS — so neither can pass by accident. What is checked is not the screen but the
+  image: the Opus's anchor sector (`$18 $05`), the label the ROM was given, the geometry the
+  drive was set to, an empty catalogue, and then a `SAVE`/reset/`LOAD` on the new disk with
+  the file appearing in the catalogue. MDOS gets the same treatment, plus the confirmation
+  prompt it puts up before destroying a disk (`P` for Proceed) — worth pinning, because a
+  format that needed no confirmation would mean the ROM had taken a different path through
+  its own parser. The two ROMs between them cover both sector sizes and both register
+  decodes. The **+D** cannot be tested — no G+DOS in the tree.
+  Both also pin **the pacing**: `lastFormat.revolutions` ≈ 1.00, because these two transfer
+  by NMI and their DRQ is scheduled from the previous byte's *due* time rather than from the
+  moment the host serviced it. Scheduled the other way the handler's own cost is added to
+  every byte — measured at ~130 T-states against the 111.8 a byte has, a track taking 1.15
+  revolutions, which no real drive can do. All three also pin **`indexWait`** and the span:
+  a Write Track begins on the index rather than where the command landed, so the wait is 0
+  to 1 and the whole command runs to between one and two revolutions — Opus 0.86 + 1.00,
+  MDOS 0.72 + 1.00, TR-DOS 0.66 + 1.00.
+  TR-DOS *was* the control here, on the grounds that it polls instead of taking NMIs so
+  nothing paced it and its figure had to stay under one revolution. **That was the bug stated
+  as a feature**: nothing pacing it meant its ~57 T-state loop wrote a track in half a
+  revolution, and anchoring the window to the index turned the figure negative. Its pin now
+  reads ≈ 1.00 like the others, and the control it provides is a different one — it is the
+  only format here driven by a polling ROM, so it is what proves the chip's own DRQ gating
+  works on the register that ROM actually reads.
+- **TR-DOS — FORMAT from the `A>` prompt.** The same again, with one trap worth the section
+  on its own: at the prompt the cursor is in K mode, where `f` gives **FOR**, not `FORMAT`.
+  `FORMAT` is an *extended*-mode keyword (CAPS+SYMBOL, then SYMBOL+`0`) and nothing in
+  `ula.keyDown` reaches it, so this drives the key matrix directly. Typing `FOR "trd"`
+  instead is how TR-DOS came to look as though it could not format at all. What is asserted:
+  the keyword really appears, the report carries the new name and a free count equal to the
+  total, byte 231 of the disk-info sector is the TR-DOS id `$10` the ROM wrote, the old
+  disk's files are gone, a SAVE to the new disk lands in its catalogue, and the last track
+  of the format was track 79 side 0 with all 16 sectors landed — an **80-track single-sided**
+  disk, which is what `1264/1264` free means (80 × 16 minus track 0, not 40 × 2). Note that
+  `lastFormat` has to be snapshotted *before* that SAVE: every TR-DOS save issues a Write
+  Track of its own and would overwrite it.
 - **Didaktik 80 on a 128K** — the same round trip again, because "it works on a 128K" means
   that and nothing weaker. A stock 128K must refuse the interface; with the **128K hardware
   patch** it must hold ROM page 1 through a reset *and* against a later `$7FFD` write, then
@@ -436,13 +487,136 @@ interface unusual is visible from a unit test of the loader: its FDC and PIA are
 - **The real ROM catalogues a real disk.** This is the section that matters; everything above
   it can pass against a wrong model. An image is built with three named files, the Opus ROM
   is asked for `CAT 1`, and the test checks it issued Restore/Seek/Read Sector **without a
-  retry storm** and then printed the disk label and all three filenames.
+  retry storm** and then printed the disk label and all three filenames. It also **times the
+  512 bytes it reads**: the mean gap between data-register reads must be the medium's 111.8
+  T-states a byte. Scheduled from the host's service rather than from the previous byte's due
+  time it comes to 135.7, and that assert is the only thing in the tree that notices — the
+  catalogue appears either way. Checked by reverting the schedule, so it is an oracle and not
+  a tautology.
+  - The DRQ stub in the section above it **saves and restores the real handler** rather than
+    re-implementing it. It used to rebuild the closure and poke the `Spectrum` fields it knew
+    the names of; when the schedule changed, that stale copy left the NMI permanently due,
+    fired it before the ROM had set up the transfer, and failed *this* section a long way
+    from the cause — which also produced the wrong conclusion that reads could not be paced
+    absolutely. Two hours went into the product looking for a bug that was in the test.
 
 Note it drives the `Opus Discovery 1 v1.2` ROM for that last part: the v2.x, EXCOM and
 QuickDOS ROMs boot fine but take a different command set (see `docs/peripherals.md`). The
 `+2A/+3` check is deliberately last, because switching machines rebuilds `Memory`.
 
+## `tests/mfm-track-test.html`
+
+The raw MFM track, both directions (`core/loaders/mfm-track.js`). Formatting is not a sector
+operation — a DOS streams the whole track at the chip — so this is the stream a formatter
+writes and the bytes a Read Track gives back, which are deliberately **not** the same bytes.
+
+What it pins:
+
+- A format stream built and parsed back for seven real geometries (TR-DOS 16×256, Opus
+  SS 18×256, Opus DD and MGT 10×512, MDOS 9×512, 5×1024, 26×128), each sector carrying
+  contents nothing else could produce, so a data field sliced one byte wrong cannot pass.
+- The interleave is the order the sectors pass under the head, each number used once.
+- **A mark counts only behind a `$F5`.** A data field filled with `$FE` — including an
+  `$FB`, an `$FE` and an `$F8` at the front of it — is still one sector, read back byte for
+  byte. That is the one property that makes the parser safe on real data.
+- What is refused: an ID field with no data field after it (the chip wrote it, but there is
+  no sector there), a data field with no ID before it, a track of gap filler, nothing at all.
+- A stream cut short mid-field keeps the complete sectors and invents no half one — which is
+  what a Force Interrupt during a format looks like.
+- Deleted data marks (`$F8`) come back flagged, with their data.
+- The medium form: real `$A1` sync bytes rather than the `$F5` that writes them, the ID
+  bytes in order, and the CRCs checked by **appending each to its own message and asserting
+  the running CRC is zero** — so nothing is recomputed by hand here.
+- The property no constant gap can have: **every real geometry fits exactly one revolution.**
+  6250 bytes leave 91 per sector for 18×256 and 113 for 10×512, so gap 3 has to be shared
+  out, and an explicit `gap3` still wins for a caller that knows better. A geometry that
+  cannot fit at all (16×1024) reports the length it would need instead of losing sectors.
+
+## `tests/disk-rotation-test.html`
+
+The disk going round (`core/loaders/disk-rotation.js`), pure arithmetic on a T-state count.
+
+What it pins:
+
+- **A revolution is ten frames**, so the figure follows the machine: 698880 on a 48K, 709080
+  on a 128K, and both the same ten frames. No per-machine disk constant to go stale.
+- The byte time derived from the geometry — 698880 / 6250 = 111.8 — **asserted to round to
+  the 112 in `core/constants.js`**, which is the same number written down from the
+  250 kbit/s data rate. If the two ever disagree, one of them is wrong.
+- Where the head is: the angle through a revolution, wrapping, negative times, and a
+  revolution length of zero answered rather than divided by.
+- The index pulse: 1.5 ms of each revolution, under 1% of it — a pulse and not a phase — and
+  the property that makes a pulse that short safe, that **a status loop polling every 500
+  T-states cannot miss it at any phase**.
+- Which byte and which sector are under the head: forward through the track, never off it,
+  and a revolution passing all sixteen sectors in order exactly once.
+- The Write Track deadline: a command opened at **any** phase meets an index within one
+  revolution — the property the TR-DOS SAVE hang came down to.
+- The byte schedule is **absolute**, so a whole 6250-byte track comes to exactly one
+  revolution, and `byteDueAt` / `bytesSince` are exact inverses at every byte tried (which
+  is why the first rounds up: rounding down leaves them one byte apart for every schedule
+  whose byte time is not a whole number of T-states, i.e. all of them).
+- The clock a controller is given: no time source gives **no clock at all** rather than a
+  fake one, and the revolution length is read live so a machine change is picked up — and
+  `nextIndex` (where a Write Track's revolution will begin) and `byteTime` (how long the
+  chip may take over each byte) follow the machine the same way, a 128K byte asserted to be
+  measurably longer than a 48K one rather than merely recomputed.
+- **Elapsed time is not pulses crossed.** `sinceIndex` reaches 1 a thirtieth of a turn after
+  0.97 of a revolution while `revolutionsSince` is still near zero. The deadline was written
+  with the first and cut a TR-DOS format short at 196 bytes of its 82nd track; both are kept
+  and checked against each other so the distinction cannot quietly go away.
+
 ## `tests/disk-test.html`
+
+Write Track and Read Track through the controllers, on top of the below. A track laid down
+and read back; a format written **where the head is**, so a stream whose IDs claim another
+cylinder writes nothing and counts ten skipped; the wrong sector size or a number off the
+end of the track refused sector by sector; a Force Interrupt committing exactly the three
+complete sectors; a stream longer than a revolution truncated at the index pulse as a real
+drive truncates it; the Opus's 18×256-from-0 and MDOS's 9×512 driven through their own
+register decodes (the Opus has no I/O ports — `writeMemory`, not `write`); and a UDI track
+image still refusing to be formatted, because there is no UDI writer.
+
+Then the regression that implementing Write Track caused, which is the sharper half:
+**a track opened and never fed ends with lost data and an interrupt** after exactly
+`FORMAT_POLL_LIMIT` polls, on the status register, the system register and the +D's control
+register alike, leaving the disk byte for byte what it was and not even marked modified —
+because TR-DOS 5.03 writes Write Track from its entry stub on every SAVE and then waits.
+And the other side of it: **a format being fed is never cut short**, however hard the host
+polls between bytes (the test polls 40 times per byte, a quarter of a million times in all),
+because MDOS polls well past the limit before its first byte and a limit on the *gap*
+aborted its format at track 2.
+
+Then the same ground again **with a rotation clock injected by hand**, which is the state the
+app actually runs in — the poll counter is only the fallback for a controller with no machine
+around it. Time standing still: 20,000 polls at one instant do not end a track, nor does a
+revolution less one T-state, and the first poll a whole revolution later does. A format fed
+across an index boundary lands all sixteen sectors (the `sinceIndex` bug wrote 196 bytes of
+one). A format fed at the Opus's measured 130 T-states a byte — slower than the medium —
+still completes, and reports having taken over a revolution, which is why the deadline is
+measured from the last byte and not from the command. A track abandoned half way *is* closed,
+with lost data, keeping the sectors that arrived. The index bit follows the clock rather than
+one read in sixteen, and 200 reads at the same instant never invent a pulse.
+
+**Where a Write Track begins** is its own section, because the ones above all issue the
+command at `t = 0` — which is *inside* an index pulse, so they never had to wait. A command
+issued four tenths of a turn in must: a revolution after the command is not enough to close
+it, the next index is, and `lastFormat` reports `indexWait` 0.6 with `revolutions` exactly
+1.0 — the wait and the write, separately. A command landing on the pulse waits for nothing.
+Then the **polled byte rate**: after the chip takes its first byte it holds DRQ *down* until
+the next is due, on port `$FF` bit 6 and not merely in the status register, because `$FF` is
+what TR-DOS polls — gating only the status register changed nothing, which is how that was
+found. DRQ comes back up exactly at the index, and a byte time after each byte thereafter.
+
+Read Address is the subtle one. **Reading an ID costs the time to reach it** — the command
+waits for the next ID field to come round — so consecutive commands report consecutive
+sectors even with the clock standing still, while a command half a revolution later picks up
+where the disk has actually turned to, and one issued after time has gone *backwards* still
+never hands back a sector the head has passed. Those are the assertions, and the first of
+them is one `opus-test` had to teach this suite: modelling Read Address as an instantaneous
+"what is under the head now" made two commands in a row give the same sector twice, which no
+real chip does. A controller with no clock still walks 1…10 in turn so a loader can enumerate
+a track.
 
 Disk controller tests — BetaDisk (WD1793), PlusDDisk (WD1772), Microdrive (IF1), MGTLoader, MDRLoader, OPDLoader, DidaktikLoader (D40/D80 MDOS read + write: FAT packing, addFile/deleteFile/renameFile/setStartAddr round-trips); TR-DOS/SCL file copy **monoloader** coverage (`ui/disk-file-copy.js`): full-allocation verbatim copy (BASIC + CODE) with catalogue length/start/programLength preserved, normal BASIC/CODE negatives + boundary cases, `splitMonoloader` loader/payload split (lossless reconstruction); **SPECSCII banner** coverage (`core/specscii.js`): stream parse, `isBannerName`, encoder round-trip through `simulateListPrint` (cell-exact, incl. junk-row reset), `buildTRD`/`buildSCL` banner-entry injection + `decodeBannerNames` re-read; `gridToSpecscii`/`bannerNamesToSpecscii` extract round-trip
 
@@ -456,7 +630,35 @@ Pristine (golden) byte-for-byte comparison: extracts files from a reference disk
 
 ## `tests/explorer-test.html`
 
-Explorer UI tests — drives the **real** Explorer in an iframe over `index.html` (it is built around the app's DOM, so it can't be unit-tested in isolation): loads synthetic SNA/TAP/TRD/SCL fixtures through the file input and checks the info panels, catalogues, hex dump, and that switching files clears the previous one. Sections are independent, so one failure doesn't abort the run
+Explorer UI tests — drives the **real** Explorer in an iframe over `index.html` (it is built around the app's DOM, so it can't be unit-tested in isolation): loads synthetic SNA/TAP/TRD/SCL/UDI fixtures through the file input and checks the info panels, catalogues, hex dump, and that switching files clears the previous one. Sections are independent, so one failure doesn't abort the run
+
+The UDI fixture runs the other way from the rest: a TRD is encoded **into** MFM track bytes — sync zeros, three 0xA1 with their clock bits set, the address mark, the payload and a real CRC-16, with 0x4E gaps — so the assert is a round trip and the catalogue on screen has to be what went in. What the catalogue cannot see is which bytes the views are indexing, since it reads correctly from the flattened image either way; that is pinned by the two sizes shown having to differ, with the 640K one underneath the views. Then the three decisions the real sample images forced: a stale file checksum is reported and the disk still loads, the sectors a TRD has no room for are itemised separately from the ones it keeps with their deleted-data mark lost, and a lowercase `udi!` is refused by name. The format's own two sharp edges — the checksum is not a standard CRC-32, and the clock bitmap is LSB-first — are pinned against five real images in `udi-test`, not here
+
+## `tests/mediasave-test.html`
+
+Getting a disk back out of the emulator after a program has written to it, driven in the real app.
+The write goes through the WD1793 as a program's would — poking `diskData` directly would pass even
+if no write ever reached it. Covers: a disk starts unmarked and is marked once written; the bytes
+offered for saving contain the write; an SCL saves back as SCL and a UDI offers a TRD rather than
+pretending it can write a `.udi`; inserting another disk clears the mark; and the panel lists the
+drive and the file in it.
+
+The sharp one is the **project save**. `getLoadedMedia()` re-serialised FDC disks and IF1 cartridges
+from live state but handed Beta Disk, +D, Opus and Didaktik over as the copies taken at load time, so
+a project saved after a game wrote to a disk restored it as it was *before* the write, silently and
+with nothing on screen to suggest it. The assert reads the saved image back and fails on the stale
+byte; putting the snapshot back fails it.
+
+## `tests/udi-fixture.js`
+
+Not a suite — a fixture module (`run-tests.py` only picks up `*-test.html`). It builds a UDI out of
+described sectors, writing the track bytes out longhand: sync zeros, three 0xA1 carrying clock bits,
+the address mark, the payload, a real CRC-16, 0x4E gaps. It goes that way round deliberately, because
+every other disk fixture here is a sector image and a sector image is exactly what cannot express the
+things UDI support exists for — a 512-byte sector, a sector numbered outside 1–16, a deleted-data
+mark, a wrong CRC, an ID field claiming another cylinder. The format's own two sharp edges (the file
+checksum is not a standard CRC-32; the clock bitmap is LSB-first) are pinned against five real images
+in `udi-test`, so a test built on this module is testing the consumer, not the format.
 
 ## `tests/addr-format-test.html`
 
@@ -606,3 +808,32 @@ must not enumerate members but must not hide a whole capability area either. The
 peek/poke round-trips, `findBytes` with wildcards, disassembly walking by instruction
 length, stepping, breakpoints, and that stepping a *running* machine throws and names the
 fix rather than returning a bare false.
+
+## `tests/udi-test.html`
+
+UDI keeps raw track bytes and one clock bit per byte, so the two things worth
+pinning are the two the spec gets wrong or leaves open, and both are pinned
+against something other than our own code:
+
+- **The file checksum.** Vectors come from a transcription of the reference C
+  that reproduces three real images' stored checksums exactly, so the JS is
+  measured against the reference rather than against itself. Replacing the
+  arithmetic shift with a logical one (i.e. making it a standard CRC-32) fails 6
+  asserts.
+- **The clock bitmap bit order**, from the spec's own worked example. Flipping it
+  to MSB-first fails 23 asserts.
+- **Sector CRC-16**, using the covered bytes and the checksums that
+  `ST_INHER.UDI` itself stores — passing means agreeing with the formatter that
+  wrote the disk.
+- **Decoding real track bytes**: 1600 bytes lifted out of that image with their
+  clock map, asserted down to the sector numbers, sizes, both CRCs per sector,
+  and that sector 1 really is the TR-DOS catalogue (its first entry is `BLOK`).
+  Decoding *something* is not enough.
+
+Then the decisions the sample images forced, each as its own assert: a bad
+checksum is reported and the disk still loads (two of five real images disagree
+with their own); trailing text after the last track is kept, not fatal (the
+format author's own converter appends a comment); a header that under-declares
+its cylinder count loses to the record count, with a warning. Finally what a TRD
+cannot hold — 512-byte sectors, sectors numbered outside 1..16, deleted-data
+marks, a bad sector CRC — is counted in `lost` rather than dropped quietly.

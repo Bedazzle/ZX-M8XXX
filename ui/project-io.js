@@ -153,6 +153,15 @@ export function initProjectIO({
                     cfaISR: document.getElementById('chkCfaISR').checked,
                     cfaEntries: document.getElementById('cfaExtraEntries').value,
                     if1Enabled: spectrum.if1Enabled,
+                    // How many tracks each Opus drive's mechanism has. It belongs
+                    // with the disks a project carries: nothing in an .opd says
+                    // which drive it sits in, so a project restored without this
+                    // would read an 80-track setup's disks through the wrong
+                    // layout and fail with no clue why.
+                    opusDriveTracks: spectrum.opus
+                        ? [spectrum.opus.drives[0].driveTracks || 40,
+                           spectrum.opus.drives[1].driveTracks || 40]
+                        : undefined,
                     secondScreenMode: document.getElementById('secondScreenMode').value,
                     secondScreenAddr: document.getElementById('secondScreenAddr').value,
                     uiScale: getUiScale(),
@@ -538,6 +547,16 @@ export function initProjectIO({
 
             // Restore settings
             if (project.settings) {
+                if (project.settings.opusDriveTracks) {
+                    // Through the selects' own change handler, so the choice is
+                    // persisted and applied by the one piece of code that does it
+                    project.settings.opusDriveTracks.forEach((tracks, i) => {
+                        const sel = document.getElementById('selOpusTracks' + i);
+                        if (!sel) return;
+                        sel.value = tracks >= 80 ? '80' : '40';
+                        sel.dispatchEvent(new Event('change'));
+                    });
+                }
                 if (project.settings.kempston !== undefined) {
                     chkKempston.checked = project.settings.kempston;
                     spectrum.kempstonEnabled = project.settings.kempston;
