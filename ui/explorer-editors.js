@@ -13,6 +13,7 @@ import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
 import { fmtAddr, fmtAddrPair, parseAddr } from '../core/addr-format.js';
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
+import { KdosLoader } from '../core/loaders/disk-kdos.js';
 import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames,
          bannerNamesToSpecscii, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
 import { shapeBasicEntry, isMonoloader, splitMonoloader, setTrdBasicAutostart } from './disk-file-copy.js';
@@ -1485,9 +1486,14 @@ export function initExplorerEditors(ctx) {
 
     function diskEditorNewDidaktik(panel, variant = 'd80') {
         panel.fileType = 'didaktik';
-        panel.rawData = (variant === 'd40') ? DidaktikLoader.createBlankD40('') : DidaktikLoader.createBlankD80('');
+        // 'kdi' / 'kdi-ss': a K-DOS disk, edited through the same (MDOS) editor
+        if (variant === 'kdi' || variant === 'kdi-ss') {
+            panel.rawData = new Uint8Array(KdosLoader.createBlank('', variant === 'kdi-ss' ? { tracks: 40, sides: 1 } : {}).toBuffer());
+        } else {
+            panel.rawData = (variant === 'd40') ? DidaktikLoader.createBlankD40('') : DidaktikLoader.createBlankD80('');
+        }
         panel.parsedFile = ctx.explorerParseDidaktik(panel.rawData);
-        panel.fileName = (variant === 'd40') ? 'new.d40' : 'new.d80';
+        panel.fileName = variant.startsWith('kdi') ? 'new.kdi' : (variant === 'd40') ? 'new.d40' : 'new.d80';
         panel.selection.clear();
         panel.expandedBlock = -1;
         panel.diskFiles = [];        // fresh load → no carried-over soft-delete marks
@@ -1796,7 +1802,7 @@ export function initExplorerEditors(ctx) {
         const dkDeleted = panel.diskFiles.filter(f => f.deleted).length;
         const dkActive = panel.diskFiles.length - dkDeleted;
         const dkDelTag = dkDeleted > 0 ? ` (+${dkDeleted} deleted, flushed on save)` : '';
-        panel.dom.statusSpan.textContent = `${dkActive} files — ${freeSec} free${dkDelTag}`;
+        panel.dom.statusSpan.textContent = `${dkActive} files — ${info.kdos ? (freeSec / 2) + 'K' : freeSec} free${dkDelTag}`;
         ctx.editorUpdateToolbar();
     }
 
@@ -1937,8 +1943,10 @@ export function initExplorerEditors(ctx) {
             for (const f of del) out = DidaktikLoader.deleteFile(out, { firstSec: f.firstSec });
         }
         const isD40 = /\.d40$/i.test(panel.fileName || '');
-        const baseName = (panel.fileName || 'disk').replace(/\.(d40|d80)$/i, '');
-        downloadFile(baseName + (isD40 ? '.d40' : '.d80'), out);
+        const kdos = DidaktikLoader.getDiskInfo(out).kdos;
+        const keepDsk = kdos && /\.dsk$/i.test(panel.fileName || '');
+        const baseName = (panel.fileName || 'disk').replace(/\.(d40|d80|kdi|dsk)$/i, '');
+        downloadFile(baseName + (kdos ? (keepDsk ? '.dsk' : '.kdi') : isD40 ? '.d40' : '.d80'), out);
     }
 
     // ========== DSK (CP/M +3DOS) Editor Functions (parameterized) ==========

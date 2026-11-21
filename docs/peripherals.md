@@ -509,9 +509,15 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 
   Sectors 1-9 hold 144 entries of 32 bytes: type, name, length and the two tape-header parameters; at 22 the block count, at 23-24 the first block (files are contiguous, 1KB blocks, both sides of a track in turn).
 - **Settings → Disk:** shows the disk and its directory. Drag and drop takes `.kdi`. **Blank KDI** inserts a formatted DS 80-track disk; DS 80 and SS 40 blanks are byte for byte the user's `kempston_dsdd.dsk` / `kempston_sssd.dsk`. K-DOS CATs it and SAVEs to it.
-- **Explorer:** opens `.kdi` and K-DOS `.dsk` read-only, through the MDOS (D80) views: list, preview, BASIC, disassembly, hex, extract.
+- **The slot byte at $100** is the name hash of K-DOS 2.1 `$14D6`: C = 0, then for the 10 name bytes C = RLCA(char XOR C); a 0 becomes 1. Checked on 67 names of 5 disks.
+- **Explorer:** opens `.kdi` and K-DOS `.dsk` and edits them through the MDOS (D80) editor. `DidaktikLoader` hands a K-DOS EDSK to `KdosLoader`. You can:
+  - list, preview, view BASIC, disassemble, hex, extract;
+  - add (from a TAP or another panel), delete, rename, set the address, reorder, set the label;
+  - make a new disk with New → KDI (DS 80T / SS 40T);
+  - save as `.kdi`.
+
+  A copy of Myth assembled file by file with `addFile` boots and loads under K-DOS (`tests/kempdisc-test.html`).
 - **Not done:**
-  - Writing files into a K-DOS disk from the Explorer (the slot hash is not known).
   - FORMAT from K-DOS (Write Track on a DSK).
   - The Kempston Centronics E printer port and joystick on the board.
   - Watford SP-DOS.

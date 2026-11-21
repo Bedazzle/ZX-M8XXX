@@ -156,6 +156,131 @@ export class KdosLoader {
         return { type: 'didaktik', files, info, size, kdos: true };
     }
 
+    // ---- writing (the Explorer's editor) ----
+
+    /**
+     * The slot byte at $100: K-DOS 2.1 $14D6 -- C = 0; for the 10 name bytes
+     * C = RLCA(char XOR C); 0 becomes 1. (Checked on 67 names of 5 disks.)
+     */
+    static nameHash(name) {
+        const n = String(name).slice(0, 10).padEnd(10, ' ');
+        let c = 0;
+        for (let i = 0; i < 10; i++) {
+            const a = (n.charCodeAt(i) & 0xFF) ^ c;
+            c = ((a << 1) | (a >> 7)) & 0xFF;
+        }
+        return c || 1;
+    }
+
+    static _slot(dsk, i) {
+        const s = dsk.readSector(KDOS_DIR_TRACK, 0, 1 + (i >> 4));
+        return s ? s.subarray((i & 15) * 32, (i & 15) * 32 + 32) : null;
+    }
+
+    /** The directory slot of a file (by its first block), or -1 */
+    static _slotOf(dsk, firstBlock) {
+        for (let i = 0; i < 144; i++) {
+            const d = KdosLoader._slot(dsk, i);
+            if (d && d[0] === 0 && d[2] <= 3 && (d[23] | (d[24] << 8)) === firstBlock) return i;
+        }
+        return -1;
+    }
+
+    static _setBlocks(dsk, first, count, used) {
+        const m = KdosLoader._dir(dsk);
+        for (let b = first; b < first + count; b++) {
+            if (used) m[0x60 + (b >> 3)] |= 1 << (b & 7);
+            else m[0x60 + (b >> 3)] &= ~(1 << (b & 7));
+        }
+    }
+
+    static _writeName(d, name) {
+        const n = String(name).slice(0, 10).padEnd(10, ' ');
+        for (let i = 0; i < 10; i++) d[3 + i] = n.charCodeAt(i) & 0x7F;
+    }
+
+    /**
+     * Add a file: { name, type 0-3, data, param1, param2 } -- contiguous
+     * blocks from the first run that fits, a slot whose byte at $100 is 0,
+     * the map bits and the slot byte set. Throws on a full disk / directory.
+     */
+    static addFile(dsk, file) {
+        const data = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
+        const g = KdosLoader.geometry(dsk);
+        const m = KdosLoader._dir(dsk);
+        const nblk = Math.max(1, Math.ceil(data.length / 1024));
+        let first = -1;
+        for (let b = 0, run = 0; b < g.blocks; b++) {
+            if ((m[0x60 + (b >> 3)] >> (b & 7)) & 1) { run = 0; continue; }
+            if (++run === nblk) { first = b - nblk + 1; break; }
+        }
+        if (first < 0) throw new Error(`Disk full (no ${nblk}K run free, ${KdosLoader.freeBlocks(dsk)}K free in all)`);
+        let slot = -1;
+        for (let i = 0; i < 144; i++) if (m[0x100 + i] === 0) { slot = i; break; }
+        if (slot < 0) throw new Error('Directory full (144 files)');
+        for (let i = 0; i < nblk * 2; i++) {
+            const s = KdosLoader._sector(dsk, first * 2 + i, g.sides);
+            const part = data.subarray(i * 512, Math.min(data.length, i * 512 + 512));
+            s.fill(0);
+            s.set(part);
+        }
+        const d = KdosLoader._slot(dsk, slot);
+        d.fill(0);
+        d[2] = file.type & 3;
+        KdosLoader._writeName(d, file.name || 'untitled');
+        const len = data.length;
+        const p1 = file.param1 || 0, p2 = file.param2 != null ? file.param2 : (file.type === 0 ? len : 0);
+        d[13] = len & 0xFF; d[14] = len >> 8;
+        d[15] = p1 & 0xFF; d[16] = (p1 >> 8) & 0xFF;
+        d[17] = p2 & 0xFF; d[18] = (p2 >> 8) & 0xFF;
+        d[22] = nblk;
+        d[23] = first & 0xFF; d[24] = first >> 8;
+        KdosLoader._setBlocks(dsk, first, nblk, true);
+        m[0x100 + slot] = KdosLoader.nameHash(file.name || 'untitled');
+        return dsk;
+    }
+
+    /** Delete a file (by its first block): the map bits and the slot freed */
+    static deleteFile(dsk, firstBlock) {
+        const i = KdosLoader._slotOf(dsk, firstBlock);
+        if (i < 0) return dsk;
+        const d = KdosLoader._slot(dsk, i);
+        KdosLoader._setBlocks(dsk, firstBlock, d[22], false);
+        d.fill(0xA5);
+        KdosLoader._dir(dsk)[0x100 + i] = 0;
+        return dsk;
+    }
+
+    static renameFile(dsk, firstBlock, name) {
+        const i = KdosLoader._slotOf(dsk, firstBlock);
+        if (i < 0) return dsk;
+        KdosLoader._writeName(KdosLoader._slot(dsk, i), name);
+        KdosLoader._dir(dsk)[0x100 + i] = KdosLoader.nameHash(name);
+        return dsk;
+    }
+
+    static setParam1(dsk, firstBlock, value) {
+        const i = KdosLoader._slotOf(dsk, firstBlock);
+        if (i >= 0) { const d = KdosLoader._slot(dsk, i); d[15] = value & 0xFF; d[16] = (value >> 8) & 0xFF; }
+        return dsk;
+    }
+
+    /** Swap two files' directory slots (catalogue order), with their slot bytes */
+    static swapFiles(dsk, firstA, firstB) {
+        const a = KdosLoader._slotOf(dsk, firstA), b = KdosLoader._slotOf(dsk, firstB);
+        if (a < 0 || b < 0 || a === b) return dsk;
+        const da = KdosLoader._slot(dsk, a), db = KdosLoader._slot(dsk, b), t = da.slice();
+        da.set(db); db.set(t);
+        const m = KdosLoader._dir(dsk), h = m[0x100 + a];
+        m[0x100 + a] = m[0x100 + b]; m[0x100 + b] = h;
+        return dsk;
+    }
+
+    static setLabel(dsk, label) {
+        KdosLoader._writeName(KdosLoader._dir(dsk), label);
+        return dsk;
+    }
+
     /** A file's bytes */
     static readFile(dsk, file) {
         const sides = KdosLoader.geometry(dsk).sides;

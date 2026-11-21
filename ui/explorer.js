@@ -927,9 +927,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         }
 
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'sna', 'z80', 'szx'];
-        // (a K-DOS disk is read-only here: no editor panel)
-        if (editorFormats.includes(ext) && explorerParsed && !explorerParsed.kdos) {
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'kdi', 'sna', 'z80', 'szx'];
+        if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
             // Check if ZIP auto-drilled into a single editable file
@@ -3613,7 +3612,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     }
 
     function updatePanelHeader(panel) {
-        panel.dom.formatSpan.textContent = panel.fileType ? panel.fileType.toUpperCase() : '';
+        // a K-DOS disk is edited as 'didaktik' (see disk-didaktik.js) but is a KDI
+        const kdi = panel.fileType === 'didaktik' && /\.(kdi|dsk)$/i.test(panel.fileName || '');
+        panel.dom.formatSpan.textContent = kdi ? 'KDI' : panel.fileType ? panel.fileType.toUpperCase() : '';
         panel.dom.nameSpan.textContent = panel.fileName || 'Empty';
     }
 
@@ -4533,8 +4534,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             diskEditorExtractOpdFiles(panel);
             updatePanelHeader(panel);
             opdEditorRenderFileList(panel);
-        } else if (ext === 'd40' || ext === 'd80') {
+        } else if (ext === 'd40' || ext === 'd80' || ext === 'kdi' || (ext === 'dsk' && parsed && parsed.kdos)) {
             // Didaktik MDOS: list/extract/copy plus in-place add/delete/rename/save.
+            // K-DOS (.kdi, or a .dsk with a K-DOS directory) goes the same way:
+            // DidaktikLoader hands those images to KdosLoader.
             panel.fileType = 'didaktik';
             panel.parsedFile = parsed || explorerParseDidaktik(data);
             didaktikEditorExtractFiles(panel);
@@ -4577,7 +4580,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
             const zipFiles = await ZipLoader.extract(rawCopy.buffer);
-            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk', 'kdi'];
             const candidates = zipFiles.filter(f => {
                 const fext = f.name.split('.').pop().toLowerCase();
                 if (fext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
@@ -5400,6 +5403,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'opd-ds': diskEditorNewOpd(panel, 2); break;
             case 'd40': diskEditorNewDidaktik(panel, 'd40'); break;
             case 'd80': diskEditorNewDidaktik(panel, 'd80'); break;
+            case 'kdi': diskEditorNewDidaktik(panel, 'kdi'); break;
+            case 'kdi-ss': diskEditorNewDidaktik(panel, 'kdi-ss'); break;
             case 'zip': zipEditorNewZip(panel); break;
             default:
                 if (fmt.startsWith('dsk-')) {

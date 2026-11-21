@@ -182,6 +182,17 @@
                     'the block map: free = 800 - 5 directory blocks - the blocks of the files', KdosLoader.freeBlocks(dsk) + ' vs ' + (795 - used));
                 assert(sp.loadedKempdiscDiskFiles[0] && sp.loadedKempdiscDiskFiles[0].length === 10,
                     'the disk catalogue gets the directory');
+                const slots = dsk.readSector(20, 0, 0);
+                assert(files.every((f, i) => slots[0x100 + i] === KdosLoader.nameHash(f.name)) && KdosLoader.nameHash('AUTO') === 0x93,
+                    'the slot bytes at $100 are the K-DOS name hash (ROM $14D6: C = RLCA(c XOR C))');
+                // copy every file onto a blank disk with addFile: K-DOS boots the copy
+                const copy = KdosLoader.createBlank('COPY');
+                for (const f of files) KdosLoader.addFile(copy, { name: f.name, type: f.type, data: KdosLoader.readFile(dsk, f), param1: f.param1, param2: f.param2 });
+                assert(KdosLoader.freeBlocks(copy) === KdosLoader.freeBlocks(dsk), 'addFile: the copy takes the same blocks');
+                sp.loadDSKImage(copy.toBuffer(), 'copy.kdi', 0);
+                sp.reset();
+                await zx.runFrames(1200);
+                assert(sp.kempdisc.fdc.track > 0, 'K-DOS boots the disk built with addFile and loads Myth from it', 'track ' + sp.kempdisc.fdc.track);
             } else skip('headless/kdi/K48_Myth.kdi not present');
             section('128A6 on a 128K');
             if (await ok('../roms/kdos21-128a6.rom')) {
