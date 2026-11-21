@@ -65,12 +65,18 @@
         const CAT_ROM = 'Opus Discovery 1 v1.2 (1985)(Opus Supplies).rom';
 
         function screenText(sp) {
-            const rom = sp.memory.rom[0];
+            // The font comes out of whichever ROM the machine has. A 128K has
+            // two, and the one holding the 48K font is bank 1 — reading only
+            // bank 0 there gives a screen of '?'.
             const glyphs = new Map();
-            for (let c = 32; c < 128; c++) {
-                const base = 0x3D00 + (c - 32) * 8;
-                const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
-                if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+            for (const bank of [1, 0]) {
+                const rom = sp.memory.rom[bank];
+                if (!rom) continue;
+                for (let c = 32; c < 128; c++) {
+                    const base = 0x3D00 + (c - 32) * 8;
+                    const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
+                    if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+                }
             }
             const rows = [];
             for (let row = 0; row < 24; row++) {
@@ -129,6 +135,151 @@
                 assert(d.getSectorOffset(0, 0, 1) === 256, 'sector 1 follows at 256');
             }
 
+            section('A disk states its own geometry, and each drive keeps its own');
+            {
+                // Byte 2 = tracks, byte 3 = sectors a track, byte 4 = flags
+                // (bits 7-6 the size code, bit 4 two sides). The Opus writes it
+                // when it formats and reads it back to lay the disk out, so it
+                // beats the file size — and two disks of the same size can
+                // disagree about what that size means.
+                const anchor = (len, tracks, spt, flags) => {
+                    const b = new Uint8Array(len);
+                    b[2] = tracks; b[3] = spt; b[4] = flags;
+                    return b;
+                };
+                const ss = OPDLoader.geometryFromAnchor(anchor(184320, 40, 18, 0x40));
+                assert(!!ss && ss.tracks === 40 && ss.sides === 1 &&
+                       ss.sectorsPerTrack === 18 && ss.bytesPerSector === 256,
+                       'the anchor of a real SS disk reads as 40 x 1 x 18 x 256');
+                const ds = OPDLoader.geometryFromAnchor(anchor(737280, 80, 18, 0x50));
+                assert(!!ds && ds.tracks === 80 && ds.sides === 2,
+                       'and a real DS one as 80 x 2');
+                assert(OPDLoader.geometryFromAnchor(anchor(184320, 80, 18, 0x40)) === null,
+                       'a layout that does not account for every byte is refused');
+                assert(OPDLoader.geometryFromAnchor(new Uint8Array(184320)) === null,
+                       'and so is a blank file, which states nothing');
+                assert(OPDLoader.geometryFromAnchor(anchor(368640, 40, 18, 0x50)) !== null &&
+                       OPDLoader.isOPD(anchor(368640, 40, 18, 0x50)),
+                       'a size never seen before is still an OPD if the anchor adds up');
+                assert(!OPDLoader.isOPD(anchor(819200, 80, 10, 0x90)),
+                       'but 819,200 bytes of 512-byte sectors stays an MGT image');
+
+                // Geometry belongs to the disk, not the controller: an SS disk in
+                // drive 1 and a DS one in drive 2 is an ordinary Opus setup, and
+                // reading either through the other's layout lands on the wrong
+                // sector. This was one set of numbers per controller, from
+                // whichever image was loaded last.
+                const d = new OpusDisk();
+                d.loadDisk(anchor(184320, 40, 18, 0x40), 'opd', 0);
+                d.loadDisk(anchor(737280, 80, 18, 0x50), 'opd', 1);
+                d.drive = 0;
+                assert(d.tracks === 40 && d.sides === 1, 'drive 1 answers for its 40-track disk');
+                assert(d.getSectorOffset(1, 0, 0) === 18 * 256,
+                       'and lays out one side a track');
+                d.drive = 1;
+                assert(d.tracks === 80 && d.sides === 2, 'drive 2 answers for its 80-track disk');
+                assert(d.getSectorOffset(1, 0, 0) === 2 * 18 * 256,
+                       'and interleaves two sides a track');
+                d.ejectDisk(1);
+                assert(d.tracks === 40 && d.sides === 1,
+                       'an empty drive falls back to the default layout');
+            }
+
+            section('The head is where the head is, not where the register says');
+            {
+                // A WD1770's track register is a register, not the head. Seek
+                // moves the head by (data - register) STEPS; Step with the U bit
+                // clear moves it and leaves the register alone; and a sector is
+                // found by reading ID fields and comparing, not by taking the
+                // register as an address. All three were conflated, which is why
+                // nothing could double-step.
+                const SPT = 18, BPS = 256;
+                const mark = (tracks, sides) => {
+                    const img = new Uint8Array(tracks * sides * SPT * BPS);
+                    img[2] = tracks; img[3] = SPT; img[4] = sides === 2 ? 0x50 : 0x40;
+                    // stamp every sector with the track it belongs to, clear of the anchor
+                    for (let t = 0; t < tracks; t++)
+                        for (let sd = 0; sd < sides; sd++)
+                            for (let s = 0; s < SPT; s++)
+                                img[(((t * sides + sd) * SPT) + s) * BPS + 8] = t;
+                    return img;
+                };
+                const d = new OpusDisk();
+                d.loadDisk(mark(40, 1), 'opd', 0);
+                d.setDriveTracks(0, 40);
+                const head = () => d.drives[0].headTrack;
+                const readTrack = (reg, sector = 0) => {
+                    d.track = reg; d.sector = sector;
+                    d.executeCommand(0x80);
+                    return (d.status & d.RNF) ? -1 : d.dataBuffer[8];
+                };
+
+                d.executeCommand(0x00);                    // Restore
+                assert(d.track === 0 && head() === 0, 'Restore takes both to zero');
+                d.data = 5; d.executeCommand(0x10);        // Seek 5
+                assert(d.track === 5 && head() === 5, 'a Seek from zero puts the head on the track');
+                assert(readTrack(5) === 5, 'and the sector read comes off that track');
+
+                // Tell the chip it is somewhere it is not: the seek is a COUNT
+                // of steps, so the head keeps the offset.
+                d.track = 7; d.data = 9; d.executeCommand(0x10);
+                assert(head() === 7, 'a Seek moves by the difference, not to the destination', head());
+                assert(d.track === 9, 'and the register ends up holding the destination');
+                assert(readTrack(9) === -1,
+                       'a read whose register disagrees with the head is Record Not Found');
+
+                d.executeCommand(0x00);
+                d.data = 3; d.executeCommand(0x10);
+                d.executeCommand(0x40);                    // Step In, U clear
+                assert(head() === 4 && d.track === 3,
+                       'Step In without the U bit moves the head and leaves the register');
+                d.executeCommand(0x50);                    // Step In, U set
+                assert(head() === 5 && d.track === 4, 'with the U bit, both move');
+
+                // Double-stepping: the same 40-track disk in an 80-track drive
+                // sits on every other cylinder, which is how EXCOM 2.28 expects
+                // to find it.
+                d.setDriveTracks(0, 80);
+                d.executeCommand(0x00);
+                d.data = 1; d.executeCommand(0x10);
+                assert(d.mediumTrack === -1,
+                       'one step in lands between two tracks of a double-stepped disk');
+                d.executeCommand(0x40);                    // the DOS steps again
+                assert(head() === 2 && d.track === 1 && d.mediumTrack === 1,
+                       'a second step reaches track 1, with the register still saying 1');
+                assert(readTrack(1) === 1, 'and the read gets track 1 of the image');
+                d.executeCommand(0x40); d.executeCommand(0x40);
+                assert(d.mediumTrack === 2 && readTrack(1) === -1 && readTrack(2) === 2,
+                       'two more steps reach track 2, and only a register saying 2 reads it');
+
+                // The V bit is how a DOS finds out which kind of drive it has
+                d.setDriveTracks(0, 40);
+                d.executeCommand(0x00);
+                d.data = 1; d.executeCommand(0x10);
+                d.executeCommand(0x44);                    // Step In with verify
+                assert((d.status & d.SEEK_ERROR) !== 0,
+                       'in a 40-track drive the extra step verifies as a Seek Error');
+                d.setDriveTracks(0, 80);
+                d.executeCommand(0x00);
+                d.data = 1; d.executeCommand(0x10);
+                d.executeCommand(0x44);
+                assert((d.status & d.SEEK_ERROR) === 0,
+                       'in an 80-track one it verifies clean, which is the answer it wants');
+
+                // An 80-track disk is not double-stepped anywhere
+                d.loadDisk(mark(80, 2), 'opd', 1);
+                d.drive = 1;
+                d.setDriveTracks(1, 80);
+                d.executeCommand(0x00);
+                d.data = 40; d.executeCommand(0x10);
+                assert(d.drives[1].headTrack === 40 && d.mediumTrack === 40,
+                       'an 80-track disk maps straight through');
+                d.sector = 0; d.side = 0; d.executeCommand(0x80);
+                assert((d.status & d.RNF) === 0 && d.dataBuffer[8] === 40,
+                       'and track 40 reads as itself');
+                d.drive = 0;
+            }
+
             section('The MGT side of the shared FDC is unchanged');
             {
                 const { PlusDDisk } = await import('../core/loaders.js');
@@ -148,6 +299,16 @@
             sp.memory.opusActive = true;
             const rd = (a) => sp.memory.read(a);
             const wr = (a, v) => sp.memory.write(a, v);
+            // Put the head over a track the way a DOS does, because the track
+            // register is NOT the head position: Restore takes the head to the
+            // stop and the register with it, then Seek steps it out by the
+            // difference. Writing the register alone moves nothing, and a read
+            // then fails with Record Not Found exactly as the chip does.
+            const seekTo = (t) => {
+                wr(0x2800, 0x00);       // Restore
+                wr(0x2803, t);          // the data register holds the track wanted
+                wr(0x2800, 0x10);       // Seek
+            };
 
             wr(0x3001, 0x00); wr(0x3000, 0xFF); wr(0x3001, 0x04);
             assert(sp.opus.dataDirA === 0xFF, 'with control bit 2 clear, port A writes the direction register');
@@ -157,7 +318,31 @@
             assert(sp.opus.drive === 1, 'port A bit 1 selects the drive');
             assert(sp.opus.side === 1, 'port A bit 4 selects the side');
             wr(0x3000, 0x40);
-            assert(rd(0x3000) === 0x00, 'reading port A clears its bit 6', hex(rd(0x3000)));
+            // Bit 6 of port A is the parallel printer's BUSY line, and reads
+            // HIGH when the printer is busy *or absent*. Reading it as clear
+            // told every ROM a printer was waiting for data, and v2.2 and later
+            // hang on that. FUSE clears it only when a printer is configured.
+            assert(rd(0x3000) === 0x40,
+                   'port A bit 6 reads set with no printer attached', hex(rd(0x3000)));
+            sp.opus.printerConnected = true;
+            assert(rd(0x3000) === 0x00, 'and clear once there is one', hex(rd(0x3000)));
+            sp.opus.printerConnected = false;
+
+            // Port B is the printer's data port, and control B — unlike control
+            // A — reads back exactly as written.
+            wr(0x3003, 0x00); wr(0x3002, 0xFF);
+            assert(sp.opus.dataDirB === 0xFF, 'with control B bit 2 clear, port B writes its direction register');
+            wr(0x3003, 0x04);
+            const printed = [];
+            sp.opus.onPrinterByte = (b) => printed.push(b);
+            wr(0x3002, 0x41);
+            assert(sp.opus.dataRegB === 0x41 && printed.length === 1 && printed[0] === 0x41,
+                   'port B takes a byte for the printer');
+            assert(rd(0x3002) === 0x41, 'and reads it back');
+            assert(rd(0x3003) === 0x04, 'control B reads back as written, with no bit 6 forced',
+                   hex(rd(0x3003)));
+            sp.opus.onPrinterByte = null;
+
             wr(0x3000, 0x00);
             assert(rd(0x3800) === 0xFF && rd(0x3FFF) === 0xFF, '$3800 and up is unmapped');
 
@@ -167,7 +352,48 @@
             assert(rd(0x2805) === TRACK, 'the four registers repeat across the window');
             assert(rd(0x2FFE) === SECTOR, 'all the way to $2FFF');
 
+            section('Read Address answers from the geometry, not from the registers');
+            {
+                // An .opd is a raw sector dump with no ID fields, so the ID is
+                // synthesized — but per sector and advancing, which is what lets
+                // a program work out a track's numbering, its interleave and its
+                // sector size. The Opus has 18 sectors of 256 bytes numbered from
+                // ZERO, so the size code is 1; this used to report the sector
+                // register back and claim 512-byte sectors.
+                //
+                // WHICH sector comes first is not ours to choose: the controller
+                // has the disk's rotation clock, so it answers with the ID coming
+                // round, and setting addrIndex no longer forces a start. So the
+                // numbering is checked as a RANGE and the advance as a relation —
+                // which is what the section was ever really about.
+                const SPT = 18;
+                const savedHead = sp.opus.currentDisk.headTrack;
+                sp.opus.currentDisk.headTrack = 3;
+                wr(0x2802, 9);               // a sector register the command ignores
+                wr(0x2800, 0xC0);            // Read Address
+                const id = [];
+                for (let i = 0; i < 6; i++) id.push(rd(0x2803));
+                assert(id[0] === 3, 'the ID names the track the head is over', id[0]);
+                assert(id[2] >= 0 && id[2] < SPT,
+                       'and a sector of that track — numbered from 0, so under 18', id[2]);
+                assert(id[3] === 1, 'size code 1 = 256 bytes', id[3]);
+                assert(rd(0x2802) === 3,
+                       'the datasheet side effect: the ID track lands in the sector register',
+                       rd(0x2802));
+                wr(0x2800, 0xC0);
+                const id2 = [];
+                for (let i = 0; i < 6; i++) id2.push(rd(0x2803));
+                assert(id2[2] === (id[2] + 1) % SPT,
+                       'the next command reports the next sector round',
+                       `${id[2]} then ${id2[2]}`);
+                // Read Address overwrites the sector register by design, so put
+                // the registers back for the sections below.
+                sp.opus.currentDisk.headTrack = savedHead;
+                wr(0x2801, TRACK); wr(0x2802, SECTOR);
+            }
+
             section('A sector read, byte for byte');
+            seekTo(TRACK); wr(0x2802, SECTOR);
             wr(0x2800, 0x80);
             const got = [];
             for (let i = 0; i < 256; i++) got.push(rd(0x2803));
@@ -176,7 +402,7 @@
             assert(bad === -1, '256 bytes match the image', bad >= 0 ? 'first differs at ' + bad : '');
 
             section('A sector write goes back into the image');
-            wr(0x2801, TRACK); wr(0x2802, SECTOR); wr(0x2800, 0xA0);
+            seekTo(TRACK); wr(0x2802, SECTOR); wr(0x2800, 0xA0);
             for (let i = 0; i < 256; i++) wr(0x2803, (255 - i) & 0xFF);
             const back = [...sp.opus.drives[0].diskData.subarray(off, off + 256)];
             const badw = back.findIndex((b, i) => b !== ((255 - i) & 0xFF));
@@ -184,7 +410,7 @@
 
             section('A debugger read must not drive the controller');
             {
-                wr(0x2801, TRACK); wr(0x2802, SECTOR); wr(0x2800, 0x80);
+                seekTo(TRACK); wr(0x2802, SECTOR); wr(0x2800, 0x80);
                 const posBefore = sp.opus.dataPos;
                 const peeked = sp.memory.peek(0x2803);
                 assert(sp.opus.dataPos === posBefore,
@@ -201,19 +427,29 @@
             section('DRQ asks for an NMI, and not before the chip would');
             {
                 let asked = 0, firstFlag = null;
-                sp.opus.onDataRequest = (first) => { asked++; if (firstFlag === null) firstFlag = first; };
                 sp.memory.opusActive = true;
-                wr(0x2801, TRACK); wr(0x2802, SECTOR);
+                // Seek first and only then start counting: a command issued
+                // while the previous read still has bytes left is a request of
+                // its own, and this section is about the read.
+                seekTo(TRACK); wr(0x2802, SECTOR);
+                // KEEP the real handler and put it back afterwards. This used to
+                // re-implement it instead, poking the Spectrum fields it knew
+                // about — and when the DRQ schedule changed, that stale copy left
+                // the NMI permanently due, so it fired on the instruction after
+                // the command write and preempted the ROM before it had set up
+                // the transfer. The ROM then retried for ever and the CAT section
+                // below failed, a long way from the cause. A test that stubs a
+                // collaborator restores the original, it does not rebuild one.
+                const realOnDataRequest = sp.opus.onDataRequest;
+                sp.opus.onDataRequest = (first) => { asked++; if (firstFlag === null) firstFlag = first; };
                 wr(0x2800, 0x80);
                 assert(asked === 1, 'issuing a read command raises one data request');
                 assert(firstFlag === true, 'flagged as the first byte, which waits longer');
                 rd(0x2803);
                 assert(asked === 2, 'and reading a byte asks for the next');
-                // restore the real handler
-                sp.opus.onDataRequest = (first) => {
-                    sp._opusNmiPending = true;
-                    sp._opusDrqCountdown = first ? 2500 : 112;
-                };
+                sp.opus.onDataRequest = realOnDataRequest;
+                assert(typeof sp.opus.onDataRequest === 'function',
+                       'and the real handler is back, not a copy of it');
             }
 
             section('The real ROM catalogues a real disk');
@@ -258,6 +494,23 @@
                         if (a >= 0x2800 && a < 0x3000 && (a & 3) === 0) cmds.push(v);
                         return origW(a, v);
                     };
+                    // And WHAT A BYTE COSTS, which is the point of the absolute
+                    // DRQ schedule. A byte of a 6250-byte track at 300 rpm has
+                    // 111.8 T-states on a 48K. Scheduling the next DRQ from the
+                    // host's service instead of from the previous due time came
+                    // to 135.7 here, because the handler's 16-T prologue and the
+                    // interrupted instruction were added to every byte instead of
+                    // hiding inside it. Nothing else in this suite can see that:
+                    // the transfer completes either way, only slower than the
+                    // medium physically turns.
+                    const svc = [];
+                    const origR = sp.opus.readRegister.bind(sp.opus);
+                    sp.opus.readRegister = (reg) => {
+                        const reading = sp.opus.reading;
+                        const v = origR(reg);
+                        if ((reg & 3) === 3 && reading) svc.push(sp.diskClockNow());
+                        return v;
+                    };
                     for (const key of ['r', 'Enter']) {
                         sp.ula.keyDown(key);
                         for (let i = 0; i < 5; i++) sp.runFrameHeadless();
@@ -266,6 +519,18 @@
                     }
                     for (let i = 0; i < 250; i++) sp.runFrameHeadless();
                     sp.opus.writeMemory = origW;
+                    delete sp.opus.readRegister;
+
+                    const byteT = sp.diskByteTStates();
+                    const gaps = [];
+                    for (let i = 1; i < svc.length; i++) {
+                        const d = svc[i] - svc[i - 1];
+                        // A gap longer than a few bytes is the end of one sector
+                        // and the start of the next — a command, not a byte.
+                        if (d > 0 && d < byteT * 8) gaps.push(d);
+                    }
+                    const meanT = gaps.length
+                        ? gaps.reduce((p, c) => p + c, 0) / gaps.length : 0;
 
                     const scr = screenText(sp);
                     assert(cmds.includes(0x00), 'the ROM issued a Restore');
@@ -274,6 +539,13 @@
                     assert(cmds.length <= 8,
                            'without retrying — a retry storm means the transfer failed',
                            cmds.length + ' commands');
+                    assert(gaps.length > 200,
+                           'the catalogue read enough bytes to time',
+                           gaps.length + ' bytes');
+                    assert(gaps.length > 200 && Math.abs(meanT - byteT) < 2,
+                           'and took them at the disk\'s rate, not the handler\'s',
+                           meanT.toFixed(1) + ' T a byte against the medium\'s ' +
+                           byteT.toFixed(1));
                     assert(scr.includes('TESTDISK'), 'the disk label is on screen');
                     assert(scr.includes('HELLO'), 'HELLO is catalogued');
                     assert(scr.includes('PICTURE'), 'PICTURE is catalogued');
@@ -333,6 +605,38 @@
                     { dataTransfer: dt3, bubbles: true, cancelable: true }));
                 await until(() => sp.loadedPlusDDisks[0], 80, 25);
                 assert(!!sp.loadedPlusDDisks[0], 'and dropping an .mgt still loads it');
+
+                // The 40/80-track selectors, beside the Opus tick. Nothing in an
+                // .opd says which drive it is in, so this is the one piece of
+                // Opus geometry a user has to state — and it decides whether a
+                // 40-track disk is double-stepped.
+                const row = doc.getElementById('opusDrivesRow');
+                const sel0 = doc.getElementById('selOpusTracks0');
+                const sel1 = doc.getElementById('selOpusTracks1');
+                assert(!!row && !!sel0 && !!sel1, 'Settings → Machines has a drive-tracks row');
+                assert(!row.querySelector('.checkbox-label'),
+                       'whose label is text, not a button that does nothing');
+                assert(row.style.display !== 'none', 'shown while the interface is on');
+                assert(sel0.value === '40' && sel1.value === '40',
+                       'both drives default to the 40-track mechanism the Discovery shipped with');
+                assert(sp.opus.drives[0].driveTracks === 40 &&
+                       sp.opus.drives[1].driveTracks === 40, 'and the controller agrees');
+                sel1.value = '80';
+                sel1.dispatchEvent(new w.Event('change'));
+                await wait(60);
+                assert(sp.opus.drives[1].driveTracks === 80 &&
+                       sp.opus.drives[0].driveTracks === 40,
+                       'choosing 80 for drive 2 leaves drive 1 alone');
+                sel1.value = '40';
+                sel1.dispatchEvent(new w.Event('change'));
+                await wait(60);
+                chk.checked = false;
+                chk.dispatchEvent(new w.Event('change'));
+                await wait(60);
+                assert(row.style.display === 'none', 'and the row goes away with the interface');
+                chk.checked = true;
+                chk.dispatchEvent(new w.Event('change'));
+                await wait(60);
             }
 
             section('A program loads off the disk and runs');
@@ -388,6 +692,252 @@
                        'the +D style LOAD *"d" is refused, as on real hardware');
             }
 
+            section('A double-density Opus disk arrives inside a .dsk');
+            {
+                // The DD Opus format is 80 x 2 x 10 x 512, and it is not
+                // circulated as .opd at all: 512-byte sectors are what a PC
+                // floppy controller can image, so those disks were put into
+                // CPC-style .dsk containers. Every .dsk went to the +3 FDC and
+                // came back "DSK files require ZX Spectrum +3", which is wrong
+                // about the DISK and not merely unhelpful about the machine — a
+                // container says nothing about the filesystem inside it.
+                //
+                // Two things have to hold. The container must flatten back to
+                // exactly the sector dump the Opus addresses, undoing the
+                // rotational skew a track's ids are written in; and every
+                // reader has to count in the disk's OWN sector size, because at
+                // 256 bytes a DD directory is not even in the right place.
+                const { DSKLoader } = await import('../core/fdc.js');
+
+                // A DD disk laid out by hand: the anchor stating the geometry,
+                // the directory in sectors 1-7, the data from sector 8.
+                const buildDD = (files, label, tracks = 80, sides = 2, spt = 10, bps = 512) => {
+                    const d = new Uint8Array(tracks * sides * spt * bps).fill(0xE5);
+                    d.fill(0, 0, bps);
+                    d[0] = 0x18; d[1] = 0x05; d[2] = tracks; d[3] = spt;
+                    d[4] = (sides === 2 ? 0x10 : 0) | ({ 256: 0x40, 512: 0x80 })[bps];
+                    const entry = (off, bil, first, last, name) => {
+                        d[off] = bil & 0xFF; d[off + 1] = (bil >> 8) & 0xFF;
+                        d[off + 2] = first & 0xFF; d[off + 3] = (first >> 8) & 0xFF;
+                        d[off + 4] = last & 0xFF; d[off + 5] = (last >> 8) & 0xFF;
+                        for (let i = 0; i < 10; i++) d[off + 6 + i] = i < name.length ? name.charCodeAt(i) : 0x20;
+                    };
+                    entry(bps, bps - 1, 0, 6, label);        // entry 0: the label, over the system area
+                    let e = bps + 16, sec = OPDLoader.DATA_START_SECTOR;
+                    for (const f of files) {
+                        const body = new Uint8Array(7 + f.data.length);
+                        body[0] = f.type;
+                        body[1] = f.data.length & 0xFF; body[2] = (f.data.length >> 8) & 0xFF;
+                        const p1 = f.type === 0 ? (f.autostart | 0) : (f.startAddr | 0);
+                        const p2 = f.type === 0 ? f.data.length : 32768;
+                        body[3] = p1 & 0xFF; body[4] = (p1 >> 8) & 0xFF;
+                        body[5] = p2 & 0xFF; body[6] = (p2 >> 8) & 0xFF;
+                        body.set(f.data, 7);
+                        d.set(body, sec * bps);
+                        const n = Math.ceil(body.length / bps);
+                        // bytesInLast is the bytes used in the last sector minus one
+                        entry(e, (body.length - 1) % bps, sec - 1, sec + n - 2, f.name);
+                        e += 16; sec += n;
+                    }
+                    entry(e, bps - 1, sec - 1, 0xFFFF, label);  // $FFFF ends the directory
+                    return d;
+                };
+
+                // ...and put into a standard CPC container, each track's sectors
+                // written in a skewed order, which is what a real one looks like.
+                const wrapDSK = (flat, tracks, sides, spt, bps, skew = 3) => {
+                    const ts = 0x100 + spt * bps;
+                    const d = new Uint8Array(0x100 + tracks * sides * ts);
+                    const put = (at, s) => { for (let i = 0; i < s.length; i++) d[at + i] = s.charCodeAt(i); };
+                    put(0, 'MV - CPCEMU Disk-File\r\nDisk-Info\r\n');
+                    d[0x30] = tracks; d[0x31] = sides; d[0x32] = ts & 0xFF; d[0x33] = ts >> 8;
+                    const sizeCode = Math.log2(bps / 128);
+                    let o = 0x100;
+                    for (let cyl = 0; cyl < tracks; cyl++) for (let side = 0; side < sides; side++) {
+                        put(o, 'Track-Info\r\n');
+                        d[o + 0x10] = cyl; d[o + 0x11] = side;
+                        d[o + 0x14] = sizeCode; d[o + 0x15] = spt;
+                        d[o + 0x16] = 0x4E; d[o + 0x17] = 0xE5;
+                        for (let s = 0; s < spt; s++) {
+                            const id = (s * skew + cyl) % spt;
+                            const i = o + 0x18 + s * 8;
+                            d[i] = cyl; d[i + 1] = side; d[i + 2] = id; d[i + 3] = sizeCode;
+                            const src = ((cyl * sides + side) * spt + id) * bps;
+                            d.set(flat.subarray(src, src + bps), o + 0x100 + s * bps);
+                        }
+                        o += ts;
+                    }
+                    return d;
+                };
+
+                const ddLookup = buildTokenLookup();
+                const dd = buildDD([
+                    { name: 'GAME', type: 0,
+                      data: buildBasicProgram(parseBasicText('10 PRINT "DDWORKS"'), ddLookup), autostart: 10 },
+                    { name: 'BIGBLOB', type: 3, data: new Uint8Array(1500).fill(0x5A), startAddr: 40000 },
+                ], 'DDDISK');
+                const ddDsk = wrapDSK(dd, 80, 2, 10, 512);
+
+                const flat = DSKLoader.flatten(ddDsk);
+                assert(!!flat && flat.tracks === 80 && flat.sides === 2 &&
+                       flat.sectorsPerTrack === 10 && flat.bytesPerSector === 512 &&
+                       flat.firstSector === 0,
+                       'the container is read as 80 x 2 x 10 x 512, numbered from zero');
+                const slip = flat ? flat.data.findIndex((b, i) => b !== dd[i]) : 0;
+                assert(!!flat && flat.data.length === dd.length && slip === -1,
+                       'and flattens back to the sector dump byte for byte, the skew undone',
+                       slip >= 0 ? 'first differs at ' + slip : '');
+                assert(OPDLoader.fromDSK(ddDsk) !== null, 'so the file is taken for an Opus disk');
+                // createBlankDSK builds the image; toBuffer is the container.
+                const plus3Dsk = DSKLoader.createBlankDSK('p3-ss40').toBuffer();
+                assert(DSKLoader.flatten(plus3Dsk) !== null,
+                       'a +3 disk is a uniform grid too, so it flattens');
+                assert(OPDLoader.fromDSK(plus3Dsk) === null,
+                       'but its boot sector states no Opus geometry, so it is not taken for one');
+
+                const info = OPDLoader.getDiskInfo(dd);
+                assert(info.bytesPerSector === 512 && info.sectorsPerTrack === 10 &&
+                       info.tracks === 80 && info.sides === 2,
+                       'the catalogue takes the geometry off the disk, not off the file size');
+                assert(info.diskLabel === 'DDDISK', 'and the label out of entry 0', info.diskLabel);
+                const ddFiles = OPDLoader.listFiles(dd);
+                assert(ddFiles.length === 2, 'both files are catalogued', ddFiles.length);
+                assert(ddFiles[0] && ddFiles[0].name === 'GAME' && ddFiles[0].type === 0 &&
+                       ddFiles[0].autostart === 10, 'GAME is the BASIC program, autostart 10');
+                assert(ddFiles[1] && ddFiles[1].name === 'BIGBLOB' && ddFiles[1].sectors === 3 &&
+                       ddFiles[1].startAddr === 40000,
+                       'BIGBLOB spans three 512-byte sectors and keeps its address',
+                       ddFiles[1] && ddFiles[1].sectors);
+                const blob = OPDLoader.extractFile(dd, ddFiles[1]);
+                assert(!!blob && blob.length === 1500 && blob.every(b => b === 0x5A),
+                       'and comes back out byte for byte');
+
+                // The sector size is load-bearing, not decoration: the same
+                // bytes read in 256s give a directory entry of the wrong length
+                // pointing at the wrong place.
+                const noAnchor = dd.slice();
+                noAnchor[2] = noAnchor[3] = noAnchor[4] = 0;
+                const wrongBlob = OPDLoader.listFiles(noAnchor).find(f => f.name === 'BIGBLOB');
+                assert(!wrongBlob || wrongBlob.rawLength !== blob.length + OPDLoader.FILE_HEADER_SIZE,
+                       'and a disk that states no geometry falls back to 256s, which this is not',
+                       wrongBlob && wrongBlob.rawLength);
+
+                // The route a user actually takes: a .dsk on a machine with no FDC.
+                sp.loadedOpusDisks[0] = null; sp.loadedOpusDiskFiles[0] = null;
+                assert(!sp.fdc, 'a 48K has no FDC to send it to');
+                const res = sp.loadFileData(ddDsk, 'game_opus_dd.dsk', 0);
+                assert(res && res.diskType === 'opd', 'so the .dsk goes to the Opus', res && res.diskType);
+                assert(!!sp.loadedOpusDisks[0] && sp.loadedOpusDisks[0].data.length === 819200,
+                       'and what is mounted is the flat image, not the container');
+                assert(res.fileCount === 2, 'with its catalogue');
+
+                sp.opus.drive = 0; sp.opus.side = 0;
+                const g = sp.opus.drives[0].geometry;
+                assert(!!g && g.bytesPerSector === 512 && g.sectorsPerTrack === 10,
+                       'the controller took the disk\'s own geometry');
+                assert(sp.opus.getSectorOffset(0, 0, 1) === 512 &&
+                       sp.opus.getSectorOffset(1, 0, 0) === 2 * 10 * 512,
+                       'so it addresses sectors in 512s, two sides to a track');
+
+                // And the chip serves them — through the real memory window, 512
+                // bytes to a sector, which is the only thing the ROM ever does.
+                sp.memory.opusActive = true;
+                seekTo(0); wr(0x2802, 1);          // track 0, sector 1: the directory
+                wr(0x2800, 0x80);
+                const dirGot = [];
+                for (let i = 0; i < 512; i++) dirGot.push(rd(0x2803));
+                const dirBad = dirGot.findIndex((b, i) => b !== dd[512 + i]);
+                assert(dirBad === -1, 'a 512-byte sector read matches the image byte for byte',
+                       dirBad >= 0 ? 'first differs at ' + dirBad : '');
+
+                // A +3 disk is still a +3 disk, and still says so.
+                let refused = '';
+                try { sp.loadFileData(plus3Dsk, 'plus3.dsk', 0); }
+                catch (e) { refused = e.message; }
+                assert(refused.includes('+3'), 'a +3 .dsk here is refused, naming the machine it wants',
+                       refused);
+
+                // ...and the Load Disk dialog has to offer .dsk, or this file is
+                // unreachable by the one route aimed at the Opus.
+                const doc = frame.contentDocument;
+                const ldf = doc.getElementById('loadDiskFile');
+                assert(!!ldf && ldf.accept.includes('.dsk'),
+                       'Load Disk offers .dsk while the Opus is the system', ldf && ldf.accept);
+            }
+
+            // From here on the machine is switched, which rebuilds Memory and the
+            // ROM banks — so everything that runs on the 48K booted at the start
+            // has to be above this line.
+            section('A 128K still reaches 128 BASIC with the Opus fitted');
+            {
+                // The interface pages its ROM in on an ADDRESS, with nothing to
+                // tell it which ROM bank is in — so on a 128K it fires inside the
+                // editor ROM too: bank 0's interrupt path goes through $0048 on
+                // its way back from bank 1. No hardware can see the bank, so the
+                // paging must not be gated on it; what has to hold is that the
+                // menu survives it.
+                //
+                // It did not, and the report blamed the disk: with a 40-track disk
+                // in the drive, picking "128 BASIC" came back to the menu. So both
+                // drive sizes are checked, with a disk in.
+                await w.zxDebug.ready({ machine: '128k' });
+                sp.stop();
+                sp.plusDEnabled = false; sp.if1Enabled = false;
+                sp.betaDiskEnabled = false; sp.didaktikEnabled = false;
+                sp.opusEnabled = true;
+                const r = await fetch('../roms/opus.rom');
+                sp.memory.loadOpusRom(await r.arrayBuffer());
+                sp.updateBetaDiskPagingFlag();
+                assert(sp._opusPagingEnabled, 'the Opus pages its ROM in on a 128K');
+
+                const menuDisk = OPDLoader.buildOPD(
+                    [{ name: 'GAME', type: 3, data: new Uint8Array(512).fill(0x5A), startAddr: 32768 }],
+                    'MENU40', 1);
+                assert(OPDLoader.geometryFromAnchor(menuDisk).tracks === 40,
+                       'and the disk going in is a 40-track one');
+
+                const isMenu = (s) => s.includes('Tape Loader') && s.includes('Calculator');
+                const press = (key) => {
+                    sp.ula.keyDown(key);
+                    for (let i = 0; i < 8; i++) sp.runFrameHeadless();
+                    sp.ula.keyUp(key);
+                    for (let i = 0; i < 8; i++) sp.runFrameHeadless();
+                };
+
+                for (const tracks of [40, 80]) {
+                    sp.loadOPDImage(menuDisk, 'menu40.opd', 0);
+                    sp.opus.setDriveTracks(0, tracks);
+                    let inEditorRom = 0;
+                    const origPaging = sp.updateOpusPaging.bind(sp);
+                    let was = sp.memory.opusActive;
+                    sp.updateOpusPaging = (oldPC) => {
+                        origPaging(oldPC);
+                        if (sp.memory.opusActive && !was && sp.memory.currentRomBank === 0) inEditorRom++;
+                        was = sp.memory.opusActive;
+                    };
+                    sp.reset();
+                    for (let i = 0; i < 140; i++) sp.runFrameHeadless();
+                    assert(isMenu(screenText(sp)), `the 128 menu comes up (drive ${tracks})`);
+
+                    press('ArrowDown');   // Tape Loader -> 128 BASIC
+                    press('Enter');
+                    let entered = false, cameBack = false;
+                    for (let n = 0; n < 20; n++) {
+                        for (let i = 0; i < 20; i++) sp.runFrameHeadless();
+                        const s = screenText(sp);
+                        if (!isMenu(s) && s.includes('128 BASIC')) entered = true;
+                        if (entered && isMenu(s)) cameBack = true;
+                    }
+                    sp.updateOpusPaging = origPaging;
+                    assert(entered, `128 BASIC starts from the menu (drive ${tracks})`,
+                           screenText(sp).split('\n').find(l => l.trim()) || '(blank screen)');
+                    assert(!cameBack, `and does not drop back to it (drive ${tracks})`);
+                    assert(inEditorRom > 0,
+                           'the ROM did page in while bank 0 was the banked ROM — ' +
+                           'which is the case that used to break it');
+                }
+            }
+
             // Left until last on purpose: switching machines rebuilds Memory and
             // the ROM banks, so anything after it would be running on a machine
             // that has just been rebuilt rather than the one booted at the start.
@@ -401,6 +951,92 @@
                 assert(sp.memory.opusDisk === sp.opus,
                        'but the rebuilt Memory still knows the controller');
                 assert(sp.profile.pagingModel === '+2a', 'because of its paging model');
+
+                // A machine WITH an FDC keeps every .dsk, Opus-shaped or not:
+                // the Opus cannot page its ROM here, so there is nothing better
+                // to do with the file, and diverting it would break the +3.
+                const { DSKLoader } = await import('../core/fdc.js');
+                sp.loadedFDCDisks[0] = null; sp.loadedOpusDisks[0] = null;
+                const r3 = sp.loadFileData(DSKLoader.createBlankDSK('p3-ss40').toBuffer(), 'blank.dsk', 0);
+                assert(r3 && r3.isDSK && !!sp.loadedFDCDisks[0],
+                       'a .dsk on a +3 still goes to the FDC');
+                assert(!sp.loadedOpusDisks[0], 'and not to the Opus');
+            }
+
+            // After this the page is reloaded, so it has to be the last thing
+            section('The drive-track choice outlives the session');
+            {
+                // It is the one piece of Opus geometry a user has to state, so
+                // losing it means a disk that read yesterday does not read today
+                // — and silently, because the disk is still "there".
+                await w.zxDebug.ready({ machine: '48k' });
+                sp.stop();
+                const doc = frame.contentDocument;
+                const sel1 = doc.getElementById('selOpusTracks1');
+                sel1.value = '80';
+                sel1.dispatchEvent(new w.Event('change'));
+                await wait(60);
+                assert(w.localStorage.getItem('zxm8_opusTracks1') === '80',
+                       'the choice is written to localStorage');
+
+                // A project carries it too: a project holds the disks, and a disk
+                // read through the wrong drive size fails with no clue why.
+                const origCreate = w.URL.createObjectURL;
+                const origClick = w.HTMLAnchorElement.prototype.click;
+                let saved = null;
+                w.URL.createObjectURL = (blob) => { saved = blob; return 'blob:stub'; };
+                w.HTMLAnchorElement.prototype.click = function () {};
+                try {
+                    const saveSelect = doc.getElementById('saveSelect');
+                    saveSelect.value = 'project';
+                    saveSelect.dispatchEvent(new w.Event('change', { bubbles: true }));
+                    await until(() => saved, 80, 25);
+                } finally {
+                    w.URL.createObjectURL = origCreate;
+                    w.HTMLAnchorElement.prototype.click = origClick;
+                }
+                assert(!!saved, 'Save → Project produced a file');
+                const project = saved ? JSON.parse(await saved.text()) : {};
+                assert(!!project.settings && Array.isArray(project.settings.opusDriveTracks) &&
+                       project.settings.opusDriveTracks[1] === 80 &&
+                       project.settings.opusDriveTracks[0] === 40,
+                       'holding both drive sizes as they are set',
+                       JSON.stringify(project.settings && project.settings.opusDriveTracks));
+
+                // Put drive 2 back to 40 and let the project restore it
+                sel1.value = '40';
+                sel1.dispatchEvent(new w.Event('change'));
+                await wait(60);
+                const fi = doc.getElementById('fileInput');
+                const dt = new w.DataTransfer();
+                dt.items.add(new w.File([await saved.text()], 'p.zxproj',
+                                        { type: 'application/json' }));
+                fi.files = dt.files;
+                fi.dispatchEvent(new w.Event('change'));
+                await until(() => doc.getElementById('selOpusTracks1').value === '80', 160, 25);
+                assert(doc.getElementById('selOpusTracks1').value === '80',
+                       'and loading that project brings the choice back');
+                assert(sp.opus.drives[1].driveTracks === 80, 'right through to the controller');
+
+                // …and it survives a refresh, which is the plain expectation
+                frame.contentWindow.location.reload();
+                const back = await until(() => frame.contentWindow && frame.contentWindow.zxDebug &&
+                                               frame.contentDocument.getElementById('selOpusTracks1'),
+                                         400, 25);
+                assert(!!back, 'the app comes back up after a reload');
+                if (back) {
+                    const w2 = frame.contentWindow;
+                    await w2.zxDebug.ready({ machine: '48k' });
+                    w2.spectrum.stop();
+                    assert(frame.contentDocument.getElementById('selOpusTracks1').value === '80',
+                           'and the reloaded page still has drive 2 at 80 tracks');
+                    assert(w2.spectrum.opus.drives[1].driveTracks === 80,
+                           'with the controller set from it, before any disk is inserted');
+                    // leave the machine as we found it for the next run
+                    const s = frame.contentDocument.getElementById('selOpusTracks1');
+                    s.value = '40';
+                    s.dispatchEvent(new w2.Event('change'));
+                }
             }
 
             log('');

@@ -49,6 +49,18 @@ from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+# A failure line is the suite's own assert text, which can hold anything a test
+# writer typed -- an multiplication sign in a disk geometry, an em dash. The
+# Windows console's code page cannot encode those, so printing one raised
+# UnicodeEncodeError and the runner died while REPORTING a failure: the table
+# never appeared and the exit code was a traceback rather than the count of
+# failing suites. Replace what the console cannot show instead.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors='replace')
+    except Exception:
+        pass
+
 # fuse-test never terminates under headless (it drives a long CPU conformance
 # run); its 6 known failures are stale test data, not emulator bugs. pristine
 # needs a reference disk that may not be present, and skips itself if absent.

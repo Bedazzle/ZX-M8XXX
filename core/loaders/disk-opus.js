@@ -7,6 +7,10 @@
 
 import { writeField } from './common.js';
 import { PlusDDisk } from './disk-mgt.js';
+// A `.dsk` is a container, not a format, and the double-density Opus disks are
+// only ever found in one -- see fromDSK. core/fdc.js imports nothing, so this
+// is a leaf dependency.
+import { DSKLoader } from '../fdc.js';
 
     export class OPDLoader {
         static get SECTORS_PER_TRACK() { return 18; }
@@ -30,12 +34,95 @@ import { PlusDDisk } from './disk-mgt.js';
 
         static isOPD(data) {
             const len = data instanceof Uint8Array ? data.length : data.byteLength;
-            return len === OPDLoader.SS_SIZE || len === OPDLoader.DS_SIZE;
+            if (len === OPDLoader.SS_SIZE || len === OPDLoader.DS_SIZE) return true;
+            // A disk the Opus formatted states its own layout in the anchor
+            // sector, so a size nobody has seen before is still an OPD when
+            // that adds up — provided the sectors are the Opus's 18 × 256,
+            // which keeps an 819,200-byte image an MGT one rather than a coin
+            // toss.
+            const g = OPDLoader.geometryFromAnchor(data);
+            return !!g && g.sectorsPerTrack === OPDLoader.SECTORS_PER_TRACK &&
+                   g.bytesPerSector === OPDLoader.BYTES_PER_SECTOR;
+        }
+
+        /**
+         * The geometry a disk states in its own anchor sector (track 0, sector 0,
+         * the first 256 bytes of the image): byte 2 is the track count, byte 3
+         * the sectors per track, byte 4 a flags byte whose bits 7-6 are the
+         * sector-size code and whose bit 4 says the disk is double sided. The
+         * Opus writes it when it formats and its DOS reads it back to lay the
+         * disk out, so this — not the file size — is what says how a disk is
+         * organised. Two disks of the same size can disagree: 737,280 bytes is
+         * 80 × 2 × 18 × 256 on a real DS/DD disk, and nothing but the anchor
+         * distinguishes it from 160 single-sided tracks.
+         *
+         * Returned only when it accounts for every byte of the image; a disk
+         * built elsewhere, or a blank file, gets null and the caller falls back
+         * to the size-derived layout.
+         */
+        static geometryFromAnchor(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            if (bytes.length < OPDLoader.BYTES_PER_SECTOR) return null;
+            const tracks = bytes[2];
+            const sectorsPerTrack = bytes[3];
+            const flags = bytes[4];
+            if (!tracks || !sectorsPerTrack) return null;
+            const sides = (flags & 0x10) ? 2 : 1;
+            const bytesPerSector = 128 << ((flags >> 6) & 3);
+            if (tracks * sides * sectorsPerTrack * bytesPerSector !== bytes.length) return null;
+            return { tracks, sides, sectorsPerTrack, bytesPerSector };
         }
 
         static isDoubleSided(data) {
             const len = data instanceof Uint8Array ? data.length : data.byteLength;
             return len > OPDLoader.SS_SIZE;
+        }
+
+        /**
+         * How a disk is laid out: its own anchor sector when that accounts for
+         * the image, else the size-derived rule.
+         *
+         * Everything in the catalogue is counted in SECTORS — the directory is
+         * sectors 1-7, and a directory entry's first/last blocks are sector
+         * numbers — so the sector SIZE decides every offset here, and it is not
+         * always 256. The double-density format is 10 × 512 per track, which
+         * puts the directory at 512-3583 instead of 256-2047 and makes a block
+         * twice the bytes. Reading one through the 256-byte layout gives a
+         * catalogue of garbage.
+         */
+        static layoutOf(data) {
+            const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+            const anchor = OPDLoader.geometryFromAnchor(bytes);
+            if (anchor) return anchor;
+            const sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
+            const sectorsPerTrack = OPDLoader.SECTORS_PER_TRACK;
+            const bytesPerSector = OPDLoader.BYTES_PER_SECTOR;
+            const tracks = Math.max(1, Math.floor(bytes.length / (sides * sectorsPerTrack * bytesPerSector)));
+            return { tracks, sides, sectorsPerTrack, bytesPerSector };
+        }
+
+        /**
+         * The flat Opus image inside a CPC-style `.dsk`, or null when that is
+         * not what the container holds.
+         *
+         * Opus double-density disks are circulated as `.dsk` — the format has
+         * 512-byte sectors, which is what a PC floppy controller can read, so
+         * that is how they were imaged. The container says nothing about the
+         * filesystem; the disk's own anchor sector does, and it only accounts
+         * for the whole image when the image really is an Opus disk, so the
+         * flattened sectors are the test.
+         */
+        static fromDSK(data) {
+            const flat = DSKLoader.flatten(data);
+            if (!flat) return null;
+            const geom = OPDLoader.geometryFromAnchor(flat.data);
+            if (!geom) return null;
+            // The container's own idea of the geometry has to be the disk's, or
+            // the sectors were flattened into the wrong grid.
+            if (geom.tracks !== flat.tracks || geom.sides !== flat.sides ||
+                geom.sectorsPerTrack !== flat.sectorsPerTrack ||
+                geom.bytesPerSector !== flat.bytesPerSector) return null;
+            return flat.data;
         }
 
         static getSectorOffset(track, side, sector, sides) {
@@ -78,11 +165,14 @@ import { PlusDDisk } from './disk-mgt.js';
 
         static getDiskInfo(data) {
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-            const sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
-            // Total sectors from the actual image size; track count follows (SS = 40,
-            // DS DD = 80 — the real Opus DS is 80-track, not 40).
-            const totalSectors = Math.floor(bytes.length / OPDLoader.BYTES_PER_SECTOR);
-            const tracks = totalSectors / (sides * OPDLoader.SECTORS_PER_TRACK);
+            // The disk's own anchor sector first; only a disk that does not
+            // state a layout accounting for its size falls back to deriving it
+            // (SS = 40 tracks single-sided, DS DD = 80 double — the real Opus
+            // DS is 80-track, not 40).
+            const geom = OPDLoader.layoutOf(bytes);
+            const { tracks, sides } = geom;
+            const BPS = geom.bytesPerSector;
+            const totalSectors = Math.floor(bytes.length / BPS);
 
             // Read directory to count used sectors and files properly
             const files = OPDLoader.listFiles(bytes);
@@ -94,15 +184,15 @@ import { PlusDDisk } from './disk-mgt.js';
             const usedSectors = OPDLoader.DATA_START_SECTOR + usedDataSectors;
 
             // Disk label from directory entry 0
-            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
-            const entry0 = OPDLoader._readDirEntry(bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * OPDLoader.BYTES_PER_SECTOR), 0);
+            const dirOffset = OPDLoader.DIR_START_SECTOR * BPS;
+            const entry0 = OPDLoader._readDirEntry(bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * BPS), 0);
             const diskLabel = entry0.name.trim();
 
             return {
                 tracks,
                 sides,
-                sectorsPerTrack: OPDLoader.SECTORS_PER_TRACK,
-                bytesPerSector: OPDLoader.BYTES_PER_SECTOR,
+                sectorsPerTrack: geom.sectorsPerTrack,
+                bytesPerSector: BPS,
                 totalSectors,
                 usedSectors,
                 freeSectors: totalSectors - usedSectors,
@@ -119,14 +209,18 @@ import { PlusDDisk } from './disk-mgt.js';
          */
         static listFiles(data) {
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-            if (bytes.length < OPDLoader.DATA_START_SECTOR * OPDLoader.BYTES_PER_SECTOR) return [];
+            // The sector size is the disk's, not a constant: a double-density
+            // disk counts in 512s. See layoutOf.
+            const BPS = OPDLoader.layoutOf(bytes).bytesPerSector;
+            if (bytes.length < OPDLoader.DATA_START_SECTOR * BPS) return [];
 
-            const dirOffset = OPDLoader.DIR_START_SECTOR * OPDLoader.BYTES_PER_SECTOR;
-            const dirData = bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * OPDLoader.BYTES_PER_SECTOR);
+            const dirOffset = OPDLoader.DIR_START_SECTOR * BPS;
+            const dirData = bytes.subarray(dirOffset, dirOffset + OPDLoader.DIR_SECTORS * BPS);
             const files = [];
+            const maxEntries = Math.floor(dirData.length / OPDLoader.DIR_ENTRY_SIZE);
 
-            // Skip entry 0 (disk label), iterate entries 1-111
-            for (let i = 1; i < OPDLoader.MAX_DIR_ENTRIES; i++) {
+            // Skip entry 0 (disk label), iterate the rest
+            for (let i = 1; i < maxEntries; i++) {
                 const entry = OPDLoader._readDirEntry(dirData, i);
 
                 // End of directory: last_block == 0xFFFF
@@ -137,10 +231,10 @@ import { PlusDDisk } from './disk-mgt.js';
 
                 const sectors = entry.lastBlock - entry.firstBlock + 1;
                 // bytesInLast: low 12 bits = bytes used in last sector minus 1 (per Opus manual)
-                const rawLength = (entry.lastBlock - entry.firstBlock) * OPDLoader.BYTES_PER_SECTOR + (entry.bytesInLast & 0x0FFF) + 1;
+                const rawLength = (entry.lastBlock - entry.firstBlock) * BPS + (entry.bytesInLast & 0x0FFF) + 1;
                 // Block numbers in directory are 0-based from sector 1 (sector 0 is descriptor)
                 // image_sector = block + 1, per EXTRACT.C: fseek(infile, (first_block + 1) * BPS, SEEK_SET)
-                const dataOffset = (entry.firstBlock + 1) * OPDLoader.BYTES_PER_SECTOR;
+                const dataOffset = (entry.firstBlock + 1) * BPS;
 
                 // Read the 7-byte file header from the start of the file data
                 const header = OPDLoader._readFileHeader(bytes, dataOffset);
@@ -285,9 +379,17 @@ import { PlusDDisk } from './disk-mgt.js';
          * @param {Uint8Array} [baseImage] - Original disk image to preserve sector 0 descriptor
          */
         static buildOPD(files, diskName, sides = 1, baseImage = null) {
-            const size = sides >= 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE;
-            const totalSectors = size / OPDLoader.BYTES_PER_SECTOR;
-            const BPS = OPDLoader.BYTES_PER_SECTOR;
+            // An existing disk is rebuilt in ITS layout, not in the one the
+            // single-density format has: a double-density disk counts in 512s,
+            // and laying it out in 256s would not be an edit but a reformat
+            // into a shorter image. A disk made from nothing has no layout to
+            // keep, so `sides` chooses one.
+            const geom = baseImage ? OPDLoader.layoutOf(baseImage) : null;
+            const BPS = geom ? geom.bytesPerSector : OPDLoader.BYTES_PER_SECTOR;
+            const size = baseImage ? baseImage.length
+                                   : (sides >= 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE);
+            const totalSectors = Math.floor(size / BPS);
+            const maxEntries = Math.floor(OPDLoader.DIR_SECTORS * BPS / OPDLoader.DIR_ENTRY_SIZE);
             const disk = new Uint8Array(size);
             if (baseImage) {
                 // Editing an existing disk: preserve its real sector 0 (boot).
@@ -301,12 +403,12 @@ import { PlusDDisk } from './disk-mgt.js';
             // Reset directory + data area to formatted-empty (0xE5), then rewrite.
             disk.fill(0xE5, dirOffset);
             // entry 0 = disk label (occupies directory blocks 0..6)
-            OPDLoader._writeOpdDirEntry(disk, dirOffset, diskName, 0x00FF, 0, 6);
+            OPDLoader._writeOpdDirEntry(disk, dirOffset, diskName, BPS - 1, 0, 6);
 
             // Allocate files into entries 1..N starting at the data area
             let nextSector = OPDLoader.DATA_START_SECTOR;
             let written = 0;
-            for (let fi = 0; fi < files.length && fi < OPDLoader.MAX_DIR_ENTRIES - 2; fi++) {
+            for (let fi = 0; fi < files.length && fi < maxEntries - 2; fi++) {
                 const f = files[fi];
                 const fileData = f.data;
                 const headerLen = OPDLoader.FILE_HEADER_SIZE;
@@ -337,7 +439,17 @@ import { PlusDDisk } from './disk-mgt.js';
                 const dataOff = nextSector * BPS;
                 const ftype = f.type !== undefined ? f.type : 3; // default CODE
                 disk[dataOff + 0] = ftype;
-                const len = fileData.length;
+                // The header's length is not always how much data there is. An
+                // Opus game is one catalogue entry: a short BASIC loader, whose
+                // header declares only the loader, with the game glued after it
+                // filling the rest of the allocation. Copying such a file has to
+                // keep both — all the sectors, and the short length that makes
+                // the ROM load it as a loader. A caller that does not say gets
+                // the ordinary answer, and a declared length longer than the
+                // data there is would be a lie, so it is clamped.
+                const len = Math.min(
+                    f.declaredLength != null ? f.declaredLength : fileData.length,
+                    fileData.length);
                 disk[dataOff + 1] = len & 0xFF;
                 disk[dataOff + 2] = (len >> 8) & 0xFF;
                 // BASIC: param1=autostart, param2=program length
@@ -358,7 +470,7 @@ import { PlusDDisk } from './disk-mgt.js';
 
             // End-of-directory terminator after the last file (last_block=0xFFFF;
             // free pointer = last block, matching a real blank Opus disk)
-            OPDLoader._writeOpdDirEntry(disk, dirOffset + (written + 1) * 16, diskName, 0x00FF, totalSectors - 1, 0xFFFF);
+            OPDLoader._writeOpdDirEntry(disk, dirOffset + (written + 1) * 16, diskName, BPS - 1, totalSectors - 1, 0xFFFF);
 
             return disk;
         }
@@ -388,6 +500,9 @@ import { PlusDDisk } from './disk-mgt.js';
             this.sides = 1;
             this.sector = 0;
 
+            // The Discovery's own mechanism, per drive — see stepFactor.
+            for (const drv of this.drives) drv.driveTracks = 40;
+
             // MC6821 PIA. Only port A is wired to anything: bit 1 selects the
             // drive and bit 4 the side. Control register bit 2 decides whether
             // a port A access reaches the data register or the direction
@@ -399,22 +514,87 @@ import { PlusDDisk } from './disk-mgt.js';
             this.dataDirB = 0;
             this.controlB = 0;
 
+            // Port B is the Centronics data port. Bit 6 of port A reads back
+            // the printer's BUSY line, and reads HIGH when no printer is
+            // attached — see pia(). We emulate no printer, so this stays
+            // false; a printer emulation would set it and take the bytes
+            // handed to onPrinterByte.
+            this.printerConnected = false;
+            this.onPrinterByte = null;
+
             // Raised when the FDC has a byte ready (or wants one) — see
             // _checkDataRequest. Spectrum turns this into a Z80 NMI.
             this.onDataRequest = null;
         }
 
-        // Opus images are raw sector dumps whose geometry is implied by their
-        // size, so the head layout has to be taken from the image rather than
-        // assumed — an SS disk is 40 tracks single-sided, a DS one 80 double.
+        /**
+         * Geometry belongs to the DISK, not to the controller. An Opus takes two
+         * drives and the pair need not hold the same kind of disk: a 40-track
+         * single-sided one in drive 1 and an 80-track double-sided one in drive
+         * 2 is an ordinary setup, and reading either through the other's layout
+         * lands on the wrong sector. It used to be one set of numbers per
+         * controller, taken from whichever image was loaded last.
+         *
+         * Each disk states its layout in its anchor sector; a file that does not
+         * (one built elsewhere, or a blank) falls back to the size-derived rule.
+         */
         loadDisk(data, type, driveIndex = 0) {
             const bytes = new Uint8Array(data);
-            if (OPDLoader.isOPD(bytes)) {
-                this.sides = OPDLoader.isDoubleSided(bytes) ? 2 : 1;
-                this.tracks = bytes.length /
-                    (this.sides * OPDLoader.SECTORS_PER_TRACK * OPDLoader.BYTES_PER_SECTOR);
-            }
             super.loadDisk(bytes, type || 'opd', driveIndex);
+            const drv = this.drives[driveIndex & 0x01];
+            drv.geometry = OpusDisk.geometryFor(bytes);
+        }
+
+        static geometryFor(bytes) {
+            return OPDLoader.layoutOf(bytes);
+        }
+
+        // The four geometry fields answer for the disk in the CURRENT drive, and
+        // fall back to what the constructor set when that drive is empty. They
+        // are writable because PlusDDisk's constructor assigns to them; a write
+        // sets the fallback, never the disk's own stated layout.
+        get sectorsPerTrack() { return this._diskGeom().sectorsPerTrack; }
+        set sectorsPerTrack(v) { this._defaultGeom().sectorsPerTrack = v; }
+        get bytesPerSector() { return this._diskGeom().bytesPerSector; }
+        set bytesPerSector(v) { this._defaultGeom().bytesPerSector = v; }
+        get tracks() { return this._diskGeom().tracks; }
+        set tracks(v) { this._defaultGeom().tracks = v; }
+        get sides() { return this._diskGeom().sides; }
+        set sides(v) { this._defaultGeom().sides = v; }
+
+        /**
+         * A 40-track disk in an 80-track drive is written on every other
+         * cylinder, so its DOS double-steps: track 1 of the disk is cylinder 2
+         * of the drive. EXCOM 2.28 assumes the 80-track mechanism and does
+         * exactly that; the stock ROMs assume the 40-track one and do not.
+         * Nothing in a raw `.opd` says which drive it is sitting in, so the
+         * drive's track count is a setting (Settings → Machines, beside the Opus
+         * tick) and defaults to 40 — what every ROM but EXCOM expects.
+         */
+        get stepFactor() {
+            const drv = this.currentDisk;
+            if (!drv || !drv.diskData) return 1;
+            return ((drv.driveTracks || 40) >= 80 && this.tracks <= 40) ? 2 : 1;
+        }
+
+        /** 40 or 80 cylinders, per drive. */
+        setDriveTracks(driveIndex, tracks) {
+            const drv = this.drives[driveIndex & 0x01];
+            drv.driveTracks = tracks >= 80 ? 80 : 40;
+            if ((drv.headTrack | 0) > drv.driveTracks - 1) drv.headTrack = 0;
+        }
+
+        _defaultGeom() {
+            // Called from super()'s field assignments, before any field of ours
+            // has been initialised, so it creates the object on first use.
+            if (!this._geom) this._geom = {};
+            return this._geom;
+        }
+        _diskGeom() {
+            const drv = this.drives && this.drives[this.drive];
+            // An ejected drive has no geometry — hence the diskData check, which
+            // also means eject needs no bookkeeping of its own.
+            return (drv && drv.diskData && drv.geometry) || this._defaultGeom();
         }
 
         createBlankDisk(label = 'BLANK', driveIndex = 0) {
@@ -427,10 +607,21 @@ import { PlusDDisk } from './disk-mgt.js';
          * MC6821 access. `dir` is 1 for a write, 0 for a read; on a read the
          * returned value matters, on a write it does not.
          *
-         * Two read side-effects are easy to miss and both come straight from
-         * FUSE: reading port A clears bit 6 of the data register, and reading
-         * the control register always reads bit 6 SET. Port B is unconnected
-         * and reads back 0.
+         * Three read side-effects, all from FUSE's opus_6821_access:
+         *
+         * - Port A bit 6 is the parallel printer's BUSY line, and reads HIGH
+         *   when the printer is busy **or not connected**. Getting this
+         *   backwards (clearing it unconditionally, which is what FUSE does
+         *   only when a printer IS attached) told every ROM that a printer was
+         *   sitting there ready — and the v2.2, v2.22, EXCOM and QuickDOS ROMs
+         *   then hung in their own output path, so `CAT 1` never reached the
+         *   disk at all. v1.2 does not consult the bit, which is why it was
+         *   the only ROM that could catalogue a disk.
+         * - The port A CONTROL register always reads bit 6 set, to acknowledge
+         *   parallel-port actions.
+         * - Port B is the printer's data port: reads return the data or the
+         *   direction register depending on control B bit 2, and control B
+         *   reads back as written — NOT with bit 6 forced, unlike control A.
          */
         pia(reg, data, dir) {
             switch (reg & 0x03) {
@@ -445,7 +636,8 @@ import { PlusDDisk } from './disk-mgt.js';
                         }
                     } else {
                         if (this.controlA & 0x04) {
-                            this.dataRegA &= ~0x40;
+                            if (this.printerConnected) this.dataRegA &= ~0x40;
+                            else this.dataRegA |= 0x40;
                             return this.dataRegA;
                         }
                         return this.dataDirA;
@@ -457,6 +649,27 @@ import { PlusDDisk } from './disk-mgt.js';
                         this.controlA = data;
                     } else {
                         return this.controlA | 0x40;
+                    }
+                    break;
+
+                case 2: // Port B: the Centronics data port
+                    if (dir) {
+                        if (this.controlB & 0x04) {
+                            this.dataRegB = data;
+                            if (this.onPrinterByte) this.onPrinterByte(data);
+                        } else {
+                            this.dataDirB = data;
+                        }
+                    } else {
+                        return (this.controlB & 0x04) ? this.dataRegB : this.dataDirB;
+                    }
+                    break;
+
+                case 3: // Port B control register
+                    if (dir) {
+                        this.controlB = data;
+                    } else {
+                        return this.controlB;
                     }
                     break;
             }
@@ -475,9 +688,21 @@ import { PlusDDisk } from './disk-mgt.js';
          * next instruction boundary.
          */
         _checkDataRequest(first) {
-            const pending = (this.reading || this.writing) &&
-                this.dataBuffer && this.dataPos < this.dataLen;
-            if (pending && this.onDataRequest) this.onDataRequest(first);
+            if (this.hasDataRequest() && this.onDataRequest) this.onDataRequest(first);
+        }
+
+        /**
+         * Is DRQ asserted right now — does the chip still have a byte to give
+         * or want one? The NMI is raised a couple of thousand T-states after
+         * the request, and in that gap the transfer can finish (the last byte
+         * of the sector was taken, or a Force Interrupt came in). DRQ is a
+         * LEVEL on the real wire, not a pulse, so an NMI must not be delivered
+         * for a request that has since gone away: Spectrum asks again before
+         * firing.
+         */
+        hasDataRequest() {
+            return !!((this.reading || this.writing) &&
+                this.dataBuffer && this.dataPos < this.dataLen);
         }
 
         readRegister(reg) {
@@ -519,9 +744,16 @@ import { PlusDDisk } from './disk-mgt.js';
         peekMemory(address) {
             if (address >= 0x3800) return 0xFF;
             if (address >= 0x3000) {
-                if ((address & 0x03) === 1) return this.controlA | 0x40;
-                if ((address & 0x03) === 0) {
-                    return (this.controlA & 0x04) ? this.dataRegA : this.dataDirA;
+                switch (address & 0x03) {
+                    case 0:
+                        if (!(this.controlA & 0x04)) return this.dataDirA;
+                        // the same printer-busy bit pia() would report, without
+                        // writing it back into the data register
+                        return this.printerConnected ? (this.dataRegA & ~0x40)
+                                                     : (this.dataRegA | 0x40);
+                    case 1: return this.controlA | 0x40;
+                    case 2: return (this.controlB & 0x04) ? this.dataRegB : this.dataDirB;
+                    case 3: return this.controlB;
                 }
                 return 0;
             }

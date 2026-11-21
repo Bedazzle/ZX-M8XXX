@@ -960,7 +960,7 @@ export function initExplorerEditors(ctx) {
         const isSCL = panel.fileType === 'scl';
         const data = isSCL ? diskEditorBuildScl(panel) : diskEditorBuildTrd(panel);
         const ext = isSCL ? '.scl' : '.trd';
-        const baseName = (panel.fileName || 'output').replace(/\.(trd|scl)$/i, '');
+        const baseName = (panel.fileName || 'output').replace(/\.(trd|scl|udi)$/i, '');
         downloadFile(baseName + ext, data);
     }
 
@@ -1501,8 +1501,14 @@ export function initExplorerEditors(ctx) {
         const files = OPDLoader.listFiles(panel.rawData);
         panel.diskFiles = [];
         for (const f of files) {
-            const raw = OPDLoader.extractFile(panel.rawData, f);
-            const fileData = raw && f.length < raw.length ? raw.slice(0, f.length) : raw;
+            // The WHOLE allocation, not the length the header claims. The normal
+            // shape of an Opus game is a short BASIC loader whose header declares
+            // a few thousand bytes, with the game glued after it filling hundreds
+            // of sectors — `extractFile` reads by allocation for exactly that
+            // reason, and slicing to the header here threw the game away. The
+            // declared length is kept (it is what the panel shows, and what gets
+            // written back) so the file still loads as a loader.
+            const fileData = OPDLoader.extractFile(panel.rawData, f);
             panel.diskFiles.push({
                 name: (f.name + '          ').substring(0, 10),
                 ext: f.ext,
@@ -1512,6 +1518,7 @@ export function initExplorerEditors(ctx) {
                 sectors: f.sectors,
                 startAddr: f.startAddr,
                 autostart: f.autostart,
+                progLength: f.progLength ?? null,
                 data: fileData ? new Uint8Array(fileData) : new Uint8Array(0),
                 deleted: false
             });
@@ -1521,7 +1528,12 @@ export function initExplorerEditors(ctx) {
         panel.diskLabel = info.diskLabel || '';
     }
 
-    function diskEditorAddOpdFile(panel, data, name, type, startAddr, autostart, varsOffset) {
+    // `declaredLength` is what the file's own 7-byte header should say, which is
+    // not always how much data there is: a monoloader declares its loader and
+    // carries the game after it. Only a copy from another Opus disk has one;
+    // anything else is a plain file and the two are the same.
+    function diskEditorAddOpdFile(panel, data, name, type, startAddr, autostart, varsOffset,
+                                  declaredLength) {
         const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
         const typeNames = { 0: 'BASIC', 1: 'Number array', 2: 'String array', 3: 'CODE' };
         const extMap = { 0: 'B', 1: 'D', 2: 'D', 3: 'C' };
@@ -1530,8 +1542,10 @@ export function initExplorerEditors(ctx) {
             ext: extMap[type] || 'C',
             type: type,
             typeName: typeNames[type] || 'CODE',
-            length: data.length,
-            sectors: Math.ceil((data.length + OPDLoader.FILE_HEADER_SIZE) / 256),
+            length: (declaredLength != null && declaredLength <= data.length)
+                ? declaredLength : data.length,
+            sectors: Math.ceil((data.length + OPDLoader.FILE_HEADER_SIZE) /
+                               OPDLoader.layoutOf(panel.rawData).bytesPerSector),
             startAddr: startAddr || 0,
             autostart: autostart || 0,
             progLength: (type === 0 && varsOffset != null) ? Math.min(varsOffset, data.length) : null,
@@ -1549,6 +1563,8 @@ export function initExplorerEditors(ctx) {
             name: f.name.replace(/\s+$/, ''),
             type: f.type >= 0 ? f.type : 3,
             length: f.data.length,
+            // What the header says, which a monoloader keeps short on purpose
+            declaredLength: f.length,
             startAddr: f.startAddr || 0,
             autostart: f.autostart || 0,
             progLength: f.progLength ?? null,
@@ -2369,6 +2385,10 @@ export function initExplorerEditors(ctx) {
             parsed = ctx.explorerParseTZX(innerData);
         } else if (innerExt === 'trd') {
             parsed = ctx.explorerParseTRD(innerData);
+        } else if (innerExt === 'udi') {
+            // Flattens to a sector image and reports as a TRD; `flatData` is the image
+            // the panel and the explorer views have to be given instead of the raw UDI.
+            parsed = ctx.explorerParseUDI(innerData);
         } else if (innerExt === 'scl') {
             parsed = { type: 'scl', files: [], size: innerData.length };
             const sig = String.fromCharCode(...innerData.slice(0, 8));
@@ -2411,8 +2431,11 @@ export function initExplorerEditors(ctx) {
         const innerExt = zipEntry.name.split('.').pop().toLowerCase();
         const innerData = new Uint8Array(zipEntry.data);
         const parsed = zipParseInnerFile(innerData, innerExt);
+        // A parse that replaced the bytes it was given (UDI) says so; that image, not
+        // the raw file, is what the panel and the views index.
+        const panelData = (parsed && parsed.flatData) ? parsed.flatData : innerData;
         if (parsed) {
-            await ctx.loadFileIntoPanel(panel, innerData, zipEntry.name, innerExt, parsed);
+            await ctx.loadFileIntoPanel(panel, panelData, zipEntry.name, innerExt, parsed);
             // Sync explorer display so File Info drills into the selected file
             if (panel === ctx.editorPanels.left) {
                 ctx.explorerFileName.textContent += ' > ' + zipEntry.name;
@@ -2424,7 +2447,7 @@ export function initExplorerEditors(ctx) {
                 // loadFileIntoPanel, so panel.parsedFile stays at the outer ZIP parse. Point
                 // the explorer globals directly at the inner parse for the File Info views.
                 ctx.explorerParsed = parsed;
-                ctx.explorerData = innerData;
+                ctx.explorerData = panelData;
                 ctx.explorerRenderFileInfo();
             }
         }
