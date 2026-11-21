@@ -118,6 +118,12 @@ import { Disassembler } from './disasm.js';
             // 'cbi' (Brazilian CBI-95 / IDS / AR-20). See core/beta48.js.
             this.betaVariant = storageGet('zxm8_betaVariant') || '128';
             this.beta48Info = null;       // what prepareBeta48Rom() made of the ROM
+            // TKMEM-128 II on a 48K: 0 (none), 128 or 512 (KB). See Memory.setTkmem.
+            this.tkmemSize = parseInt(storageGet('zxm8_tkmem') || '0', 10) || 0;
+            // Port decode: 'a14' (A15=0, A14=1, A5=1, A1=0; works with a Beta 48)
+            // or 'gal' (A15=0, A5=1, A1=0, exactly as the board's GAL equation)
+            this.tkmemDecode = storageGet('zxm8_tkmemDecode') === 'gal' ? 'gal' : 'a14';
+            this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
 
             // µPD765 FDC (ZX Spectrum +3)
@@ -1994,6 +2000,18 @@ import { Disassembler } from './disasm.js';
 
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
+
+            // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
+            // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports
+            // $00FC / $07FC, in every TR-DOS 4.x, CAS, Vision and CBI ROM) pages
+            // bank 0/7 in under the DOS's own stack and hangs it. 'a14' adds
+            // A14=1 to the decode, which 7FFD has and $xxFC with B < $40 has not.
+            // Write-only, not exclusive (the port carries on to the rest).
+            if (this.memory.tkmemRam &&
+                (this.tkmemDecode === 'gal' ? (port & 0x8022) === 0x0020
+                                            : (port & 0xC022) === 0x4020)) {
+                this.memory.writeTkmem(val);
+            }
 
             // Beta 48 master register: any port xxxxxx00 ($FC is the border as
             // well). Bit 7 = 1 switches its I/O off; on the CBI clones bit 6 = 1
@@ -8529,6 +8547,12 @@ import { Disassembler } from './disasm.js';
                 out.beta48 = { latch: !!this.memory.beta48Latch, master: this._beta48Master,
                     windowOff: !!this.memory.beta48WindowOff };
             }
+            // TKMEM-128 II: its RAM is not in the 48K image, so it travels here
+            const m = this.memory;
+            if (m.tkmemRam) {
+                out.tkmem = { ram: m.tkmemRam.slice(), latch: m.tkmemLatch,
+                    bank: m.tkmemBank, locked: m.tkmemLocked };
+            }
             return out;
         }
 
@@ -8573,6 +8597,14 @@ import { Disassembler } from './disasm.js';
                 this.memory.beta48Latch = !!state.beta48.latch;
                 this._beta48Master = state.beta48.master | 0;
                 this.memory.beta48WindowOff = !!state.beta48.windowOff;
+            }
+            const m = this.memory;
+            if (state.tkmem && m.tkmemRam && state.tkmem.ram &&
+                state.tkmem.ram.length === m.tkmemRam.length) {
+                m.tkmemRam.set(state.tkmem.ram);
+                m.tkmemLatch = state.tkmem.latch | 0;
+                m.tkmemBank = state.tkmem.bank | 0;
+                m.tkmemLocked = !!state.tkmem.locked;
             }
         }
 
@@ -8724,6 +8756,7 @@ import { Disassembler } from './disasm.js';
                 storageGet('zxm8_betaDisk') === 'true';
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
+            this.memory.setTkmem(this.tkmemSize);   // 48K only; a no-op elsewhere
             // The new Memory needs the Opus controller re-linked — its registers
             // are read through the memory map, so a fresh Memory without this
             // reference would return $FF for every FDC and PIA access.

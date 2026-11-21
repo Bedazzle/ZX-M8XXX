@@ -32,6 +32,15 @@ import {
             this.beta48Rom = null;        // 16KB, bits straightened, 8KB ROMs doubled
             this.beta48Latch = false;     // ROM over the whole $0000-$3FFF
             this.beta48WindowOff = false; // CBI clones: master bit 6 = no $3Cxx window
+            // TKMEM-128 II (github.com/lrrosa/tkmem128-ii): external 128K/512K RAM
+            // for a 48K/TK90X. It replaces the host's $8000-$FFFF: $8000 is bank 2,
+            // $C000 the bank in its 7FFD-style latch. $4000-$7FFF (screen) stays
+            // the machine's own RAM, so there is no shadow screen. 48K only.
+            this.tkmemRam = null;         // Uint8Array(128K or 512K) while fitted
+            this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
+            this.tkmemLatch = 0;          // last value latched
+            this.tkmemBank = 0;           // bank at $C000
+            this.tkmemLocked = false;     // bit 5: no more writes until reset
             this.pagingDisabled = false;
             this.currentRomBank = 0;
             this.currentRamBank = 0;
@@ -121,6 +130,10 @@ import {
                 }
             }
             this.pagingDisabled = false;
+            if (this.tkmemRam) this.tkmemRam.fill(0);
+            this.tkmemLatch = 0;
+            this.tkmemBank = 0;
+            this.tkmemLocked = false;
             this.currentRomBank = this.didaktikForceRom1 ? 1 : 0;
             this.currentRamBank = 0;
             this.screenBank = 5;
@@ -316,6 +329,8 @@ import {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
                     val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
+                } else if (this.tkmemRam && addr >= SLOT2_START) {
+                    val = this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)];
                 } else {
                     val = this.ram[0][addr - SLOT1_START];  // 48K: contiguous 48KB array
                 }
@@ -406,6 +421,10 @@ import {
             }
 
             if (this.machineType === '48k') {
+                if (this.tkmemRam && addr >= SLOT2_START) {
+                    this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)] = val;
+                    return;
+                }
                 this.ram[0][addr - SLOT1_START] = val;  // 48K: contiguous 48KB array
                 return;
             }
@@ -414,6 +433,31 @@ import {
             else this.ram[this.currentRamBank][addr & BANK_MASK] = val;
         }
         
+        /**
+         * Fit (size 128 or 512, in KB) or remove (0) a TKMEM-128 II. 48K only.
+         * Its RAM starts empty, as after power-on.
+         */
+        setTkmem(sizeKB) {
+            if (this.machineType !== '48k' || !sizeKB) {
+                this.tkmemRam = null;
+                this.tkmem512 = false;
+            } else {
+                this.tkmemRam = new Uint8Array(sizeKB * 1024);
+                this.tkmem512 = sizeKB >= 512;
+            }
+            this.tkmemLatch = 0;
+            this.tkmemBank = 0;
+            this.tkmemLocked = false;
+        }
+
+        // TKMEM-128 II latch write (port decode A15=0, A5=1, A1=0)
+        writeTkmem(val) {
+            if (!this.tkmemRam || this.tkmemLocked) return;
+            this.tkmemLatch = val;
+            this.tkmemBank = (val & 0x07) | (this.tkmem512 ? ((val >> 3) & 0x18) : 0);
+            this.tkmemLocked = (val & 0x20) !== 0;
+        }
+
         // Debug write - respects allowRomEdit flag
         writeDebug(addr, val) {
             addr &= 0xFFFF;
