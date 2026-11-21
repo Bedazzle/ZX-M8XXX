@@ -110,7 +110,12 @@
             sp.portWrite(0x000F, 0x09);
             assert(b.join() === '5,6,7,8' && sp.dacLevels[0] === 5,
                 'Soundrive mode 2: $F1/$F3 left, $F9/$FB right; mode 1 ports ignored');
-            const border = sp.ula.borderColor;
+            sp.setDac('soundrive1');
+            sp.portWrite(0x001F, 0x02);
+            sp.memory.trdosActive = true;
+            sp.portWrite(0x001F, 0xEE);
+            sp.memory.trdosActive = false;
+            assert(sp.dacLevels[1] === 0x02, 'TR-DOS paged in: its port $1F does not reach the Soundrive');
             sp.setDac('none');
             sp.portWrite(0x00FB, 0x77);
             assert(sp.dacLevels.every(v => v === 0x80), 'DAC off: no levels change');

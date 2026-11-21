@@ -1854,8 +1854,14 @@ import { Disassembler } from './disasm.js';
             this.dacLevels.fill(0x80);
         }
 
-        // A DAC port write: channel 0-3, or all four for the mono DACs
+        // A DAC port write: channel 0-3, or all four for the mono DACs.
+        // While TR-DOS is paged in the ports belong to the Beta Disk (Soundrive
+        // mode 1's $1F/$5F are its command and sector registers): the DAC
+        // does not hear them, as in Unreal Speccy. A Beta 48's ports are live
+        // whenever its I/O is on.
         _dacWrite(low, val) {
+            if (this.memory.trdosActive) return;
+            if (this.memory.beta48On && !(this._beta48Master & 0x80) && (low & 0x07) === 0x07) return;
             let ch = -1;
             if (this.dacType === 'covox') { if (low === this.covoxPort) ch = 4; }
             else if (this.dacType === 'stereocovox') {

@@ -327,6 +327,7 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
   - *Stereo Covox*: two settable ports, left and right (`$0F`/`$4F` by default);
   - *Specdrum* (Cheetah): `$DF`, mono;
   - *Soundrive 1.05*, two jumper modes (as in Unreal Speccy): mode 1 `$0F`/`$1F` left, `$4F`/`$5F` right; mode 2 `$F1`/`$F3` left, `$F9`/`$FB` right.
+  - While TR-DOS is paged in, the DACs do not hear the bus (as in Unreal Speccy): mode 1's `$1F`/`$5F` are the Beta Disk's command and sector registers, and disk work would otherwise click through it. Likewise on a Beta 48's live FDC/system ports.
 - `tests/sound-addons-test.html`.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)
