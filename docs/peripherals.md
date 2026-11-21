@@ -149,9 +149,9 @@ External Interface 1 with Microdrive tape-loop cartridge support. Supports .mdr 
 External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports .opd/.opu disk images.
 
 **OPD Disk Format:**
-- SS: 184,320 bytes (40 tracks x 18 sectors x 256 bytes), DS: 737,280 bytes (80 x 2 x 18 x 256 — the real Opus DS DD is 80-track, not 40). Track count is derived from the image size, not assumed.
-- Sector IDs 0-17 (0-based, unlike MGT/TRD)
-- Sector offset: `((track * sides + side) * 18 + sector) * 256`
+- SS: 184,320 bytes (40 tracks x 18 sectors x 256 bytes), DS: 737,280 bytes (80 x 2 x 18 x 256 — the real Opus DS DD is 80-track, not 40). **Double density is 80 x 2 x 10 x 512 = 819,200**, and the sector SIZE is as much a per-disk property as the track count: everything in the catalogue counts in sectors, so 512 moves the directory, the blocks and every file offset.
+- Sector IDs 0-based (unlike MGT/TRD), 0-17 at 256 bytes and 0-9 at 512
+- Sector offset: `((track * sides + side) * sectorsPerTrack + sector) * bytesPerSector`
 - Raw sector dump, no container header or magic bytes
 - Sector 0 = Opus **boot sector** (Z80 boot code / disk descriptor, geometry-specific). M8XXX's reader ignores it, but real Opus tools/hardware require it (HCDisk rejects a disk without it) — so the writer embeds a known-good boot sector per geometry (`OPD_BOOT_SECTORS`).
 - Directory at sectors 1-7 (16-byte entries), data from sector 8+. Entry 0 = disk label (`bytesInLast=0xFF, first=0, last=6`), entries 1+ = files, then an end terminator (`bytesInLast=0xFF, first=totalSectors-1, lastBlock=0xFFFF`); unused entries are `0xE5`.
@@ -159,7 +159,9 @@ External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports 
 - File data has a 7-byte header: `type(1) + datalen(2 LE) + param1(2 LE) + param2(2 LE)`. BASIC: param1=autostart, param2=progLength. CODE: param1=startAddr, param2=32768.
 
 **OPDLoader class (`core/loaders.js`):**
-- `isOPD(data)` -- detect by size (184320 SS or 737280 DS)
+- `isOPD(data)` -- detect by size (184320 SS or 737280 DS), or by an anchor sector that accounts for the image in the Opus's own 18 x 256. It stays deliberately narrow: an 819,200-byte flat image is the same size as an MGT one, so size-sniffing a double-density disk would be a coin toss. A `.dsk` and an `.opd` name decide by extension before any of this runs.
+- `layoutOf(data)` -- the disk's geometry: its anchor sector when that accounts for the image, else derived from the size. Every reader here counts in what this returns
+- `fromDSK(data)` -- the flat Opus image inside a CPC container, or null
 - `getDiskInfo(data)` -- geometry, sector usage (non-zero = used)
 - `listFiles(data)` -- parse directory entries (name, type, length, startAddr, autostart)
 - `extractFile(data, fileInfo)` -- extract file data (skips 7-byte header)
@@ -171,6 +173,84 @@ External Opus Discovery disk interface with WD1770 FDC and MC6821 PIA. Supports 
 and `OpusDisk` (the controller). Disks boot: the Opus ROM catalogues a real image, and
 `tests/opus-test.html` drives the whole path and then checks the ROM's own `CAT` output.
 
+**A double-density Opus disk arrives inside a `.dsk`.** There are no `.opd` files of the DD
+format: 512-byte sectors are what a PC floppy controller can image, so those disks were put
+into CPC-style containers, and `SeaDragon_opus_dd.dsk` and `T2_opus_dd.dsk` are what
+circulates. Every `.dsk` went to the +3 FDC and came back "DSK files require ZX Spectrum +3",
+which is wrong about the **disk** and not merely unhelpful about the machine — a container
+says nothing about the filesystem inside it. So a `.dsk` on a machine with no FDC is now
+offered to the Opus first: `DSKLoader.flatten` turns the container into the linear sector
+dump the Opus addresses (undoing the rotational skew a track's ids are written in, and
+refusing anything that is not a uniform grid), and `OPDLoader.fromDSK` accepts it only when
+the flattened image's own anchor sector accounts for every byte with that exact geometry.
+A +3 disk fails that test and still says it wants a +3; a machine that **has** an FDC keeps
+every `.dsk`, since the Opus cannot page its ROM on a +2A/+3 anyway. What is mounted — and
+what Save → Media… writes back — is the flat image, under an `.opd` name. Both real disks
+catalogue on all six Opus ROMs and boot into their title screens.
+
+**`CAT 1` and bare `RUN` on ROM v2.2 and later — it was the tape trap.** For a while
+`CAT 1` worked only on **v1.2**; on v2.2, v2.22, EXCOM 2.28 and QuickDOS 2.31 (which is what
+`roms/opus.rom` is) it answered `C Nonsense in BASIC`, and so did a bare `RUN` — the autoload
+of a file called `run`, which is how every disk game on an Opus is started. Nothing was
+wrong in `disk-opus.js`: **`$0556` is only LD-BYTES while the Spectrum's own ROM is at the
+bottom of the map**, and in these Opus ROMs it is the middle of the statement parser. The
+flash-load trap fired there, found no tape, cleared carry and returned — so the Opus's
+parser skipped the filename, `CH_ADD` was left on the `;` of the `LOAD *1;"run"` it had just
+built in the edit line, and its own end-of-statement check reported `Nonsense`. The guard
+now covers the Opus, the Interface 1 and the Didaktik as well as the +D, on both `$0556`
+and `$04C2`; `tests/disk-boot-test.html` saves a program as `run` through ROM v2.2 and then
+presses R + ENTER on a cold machine. How the ROM gets there is worth knowing, because it
+looks like a bug and is not: the Opus spots a bare `RUN` from `PROG+25 == WORKSP` with the
+`RUN` token at `WORKSP-3`, writes `LOAD *SGN PI;"run"` over the edit line (`SGN PI` is how
+QuickDOS says 1 without a numeric literal), and then **deliberately calls the Spectrum ROM's
+`REPORT-C` at `$1C8A`** so that its own `RST 8` hook is handed the line to re-parse. An
+`ERR_NR` of 11 on that path is normal, in every ROM version.
+
+**The head is not the track register.** A WD1770's track register is a register; where the
+head is sitting is the drive's business, and the two are deliberately held apart by any DOS
+that double-steps. So each drive carries its own `headTrack`, and:
+
+- **Seek** moves the head by `data − track register` **steps** and then loads the register
+  with the data. It does not place the head *at* the data — a ROM that has told the chip it
+  is somewhere it is not keeps the offset it chose.
+- **Step / Step In / Step Out** move the head and leave the track register alone unless the
+  **U bit** (bit 4) is set. This is how a DOS double-steps: two steps per track, the register
+  counting tracks and the head counting cylinders.
+- **Read/Write Sector** find a sector by comparing ID fields, not by indexing with the track
+  register: the ID under the head must say the register's track or the command fails with
+  **Record Not Found**, exactly as FUSE's `wd_fdc.c` does it.
+- The **V bit** (bit 2) on a Type I command verifies the same way and reports **Seek Error**.
+  EXCOM 2.28 steps in once more with V set and reads that error as "this is not the 80-track
+  drive I assume".
+- **`TRACK0`** is a line from the drive, so it reports the head, not the register.
+
+Only `stepFactor` is Opus-specific (`PlusDDisk` returns 1, so the +D and Didaktik keep the
+straight mapping they always had): a **40-track disk in an 80-track drive** is written on
+every other cylinder, so image track *t* lives at physical cylinder *2t*, and a head parked
+on an odd cylinder is over no ID field at all. Which drive you have is **configuration** —
+nothing in a raw `.opd` records it — so it is a per-drive **40/80** selector in
+Settings → Machines beside the Opus tick, defaulting to **40**, the mechanism the Discovery
+shipped with. The stock ROMs (v1.2, v2.2, v2.22, QuickDOS) assume 40 and load disks with it;
+at 80 they read every other track and fail.
+
+**Geometry belongs to the disk, not the controller.** Each drive record keeps its own
+`{tracks, sides, sectorsPerTrack, bytesPerSector}`, read from the disk's **anchor sector**
+(track 0, sector 0: byte 2 tracks, byte 3 sectors per track, byte 4 flags, bits 7-6 the
+sector-size code and bit 4 two sides) and trusted only when it accounts for every byte of the
+image — otherwise the size-derived rule stands. All five sample disks validate byte for byte.
+It used to be one set of numbers per controller taken from whichever image was loaded last,
+so an SS disk in drive 1 beside a DS one in drive 2 read through the wrong layout.
+
+**Known divergence — EXCOM 2.28 and a bare `RUN`.** The other four ROMs load and run the
+file. EXCOM asks for logical track 1 by seeking to 1 and then stepping in once more with the
+U bit clear — a double-step — so on a 40-track drive the head is on cylinder 2 while the
+register says 1, and the read is Record Not Found: `Disc I/O error`. **FUSE fails the same
+way** (it has no double-stepping at all: physical cylinder *is* the image track), which is
+what his report says too. Set drive 1 to **80** and EXCOM reads track 1 correctly — further
+than FUSE gets — and then fails on its way back, because it seeks to 0 without the matching
+second step. What EXCOM actually wants is an 80-track disk, and with one (80 × 2 × 18 × 256)
+all five ROMs catalogue it at either drive setting.
+
 **OpusDisk class (`core/loaders/disk-opus.js`):**
 - WD1770 FDC + MC6821 PIA. `OpusDisk extends PlusDDisk` — the +D's WD1772 is the same
   chip family, so the command engine is inherited and only the decode, the geometry and
@@ -180,8 +260,14 @@ and `OpusDisk` (the controller). Disks boot: the Opus ROM catalogues a real imag
   the four WD177x registers are selected by `address & 3` and so repeat every 4 bytes
   across `$2800-$2FFF`.
 - PIA port A: bit 1 = drive, bit 4 = side. Control register bit 2 gates data vs direction
-  register. Two read side effects that are easy to miss: reading port A **clears its bit 6**,
-  and reading the control register always returns **bit 6 set**. Port B is unconnected.
+  register. Three read behaviours that are easy to miss: port A **bit 6 is the parallel
+  printer's BUSY line and reads HIGH when the printer is busy *or absent***, so with no
+  printer emulated it reads set (`printerConnected` picks which, as FUSE's
+  `settings_current.printer` does — reading it as clear told every ROM a printer was there
+  and waiting); the port A **control** register always returns bit 6 set, to acknowledge
+  parallel-port actions; and port B is the printer's **data** port, whose control register —
+  unlike control A — reads back exactly as written. A byte written to port B is handed to
+  `onPrinterByte`.
 - 0-based sector numbering. `PlusDDisk` gained a `firstSector` field (1 for MGT, 0 for Opus)
   which `getSectorOffset` and the multi-sector wrap checks follow, so the shared FDC serves
   both without either format hard-coding the other's numbering.
@@ -200,7 +286,20 @@ timing of its own — a command completes instantly — so the delay is added in
 `OPUS_DRQ_FIRST_TSTATES` for the first byte, which also waits for the head to settle. Without
 that delay the NMI lands on the instruction after the command write and preempts the ROM
 before it has set up the transfer — which shows up as the ROM retrying and then reporting
-`Disk I/O error`.
+`Disk I/O error`. DRQ is a **level** on the real wire, not a pulse, so the queued NMI is
+only delivered if the chip still wants a byte when the countdown expires
+(`OpusDisk.hasDataRequest()`): a transfer that finished in the gap — the last byte of the
+sector taken, or a Force Interrupt — leaves no edge to deliver.
+
+**Read Address** (`PlusDDisk`, so the +D and the Didaktik too) answers from the GEOMETRY,
+one sector further on each command: `[medium track, side, first sector + n, size code, 0, 0]`,
+with the size code taken from `bytesPerSector` (1 for the Opus's 256-byte sectors, 2 for
+MGT's 512) and the ID's track address also loaded into the **sector register**, as the
+datasheet requires. These images are raw sector dumps with no ID fields, so there is nothing
+else to report — but synthesizing per sector is what lets a program walk a track and see its
+numbering and sector size, where handing back the sector register only told it what it had
+just written there. (A `.udi` on the Beta Disk has real ID fields; `disk-beta.js` serves
+those instead.)
 
 **Memory paging (`core/memory.js`):**
 - `opusActive` flag: when true, $0000-$1FFF=ROM, $2000-$27FF=RAM, $2800-$2FFF=FDC, $3000-$37FF=PIA, $3800-$3FFF=unmapped ($FF)
@@ -236,10 +335,24 @@ way. The other three are one-byte instructions (`PUSH BC`, `INC HL`, `RET`), so 
 fetched. (Opus `$1708` is `NOP / DEC HL` against the 48K's `INC HL`: the ROM is written to
 tolerate both entry paths.)
 
+**On a 128K the hook fires inside the editor ROM too**, and nothing can be done about that:
+the decode sees an address and never which bank is paged, and bank 0's interrupt path goes
+through `$0048` on its way back from bank 1. Bank 0 holds `POP HL / RET` there, where the 48K
+ROM holds `PUSH BC`. The v2.2-class ROMs (v2.2, v2.22, EXCOM, QuickDOS — and the default
+`opus.rom`, which is QuickDOS) re-enter the Spectrum ROM at `$0049`, which is that `RET`, and
+the stack balances: the 128 menu and 128 BASIC are unaffected, disk in or not, at either
+drive size (`tests/opus-test.html` pins it). **v1.2 re-enters at `$004A`**, which in bank 0 is
+`LD BC,$7FFD / XOR A / DI / OUT (C),A … JP $0321` — the editor's own paging re-init — so a
+128K with v1.2 never reaches its menu at all. That is what the hardware does; do not gate the
+paging on the ROM bank to "fix" it.
+
 **Settings (`ui/input-settings.js`):**
 - `chkOpus` checkbox: enable/disable Opus Discovery; disabled with a reason on +2A/+3
 - `opus.rom` auto-loaded from `roms/`, or via the Load Opus ROM button / ROM drag-drop
 - Mutual exclusion: enabling Opus disables +D (and vice versa)
+- `selOpusTracks0` / `selOpusTracks1`: how many tracks each drive's **mechanism** has, 40 or
+  80, which is what decides double-stepping (see above). The row hides itself when the
+  interface is off; persisted as `zxm8_opusTracks0` / `zxm8_opusTracks1`
 - Persisted in localStorage key `zxm8_opus`
 - The Disk tab lists **Opus** as a system when `_opusPagingEnabled`, accepting `.opd`/`.opu`
 
@@ -421,6 +534,250 @@ Port of FUSE `if1_fdc.c` (branch `hc2000-v2`), checked against "HC Ports" (A. D.
 - **Snapshots**: the 1KB RAM, the latch and the paged flag ride in the `M8MP` media chunk; the FDC state goes with `fdc` as on the +3.
 - **Using it**: `RUN` boots the file `run` from drive 1; `LOAD *"d";1;"name"` etc. as on IF1 with device `d`. CP/M: `PRINT USR 14446` with a CP/M disk in drive 1.
 - Tests: `tests/hc2000-test.html` (memory map, overlay, TC, raw geometry, and FUSE's `success_hc` disk on the real ROMs).
+
+## Formatting: Write Track and Read Track (all four WD controllers)
+
+**Status: emulated.** `core/loaders/mfm-track.js` (pure) plus Type III handling in
+`PlusDDisk` (so the +D, the Opus and the Didaktik) and in `BetaDisk`.
+`tests/mfm-track-test.html` covers the module; `tests/disk-test.html` the controllers;
+`tests/disk-boot-test.html` drives two real ROMs through a whole disk.
+
+**There is no "format a sector".** A DOS streams the WHOLE track at the chip — gaps, sync
+fields, address marks, every sector's ID and its data field — and the chip writes the lot
+between one index pulse and the next. So an interface without Write Track cannot *make* a
+disk, only edit one somebody else made. Before this every `FORMAT` in the app reported
+success and changed nothing, because the command completed instantly and threw the stream
+away.
+
+**The stream is not the medium.** During Write Track four byte values are instructions
+rather than data: `$F5` writes an `A1` with a missing clock transition *and presets the CRC
+generator*, `$F6` writes a `C2` the same way, and `$F7` writes the two CRC bytes the chip
+has accumulated. Read Track reads the disk, so it gives back real `A1` bytes and real CRCs.
+`buildTrackStream` builds either — `marks: 'stream'` for the first, `marks: 'medium'`
+(the default) for the second — and `parseTrackStream` reads the first.
+
+- **`parseTrackStream(bytes)`** → `{ sectors, truncated }`. Walks the stream the way the
+  chip does: a mark counts only when a `$F5` put a missing clock in front of it, so an
+  `$FE` inside a data field is just a byte. An ID field with no data field after it is
+  dropped — the chip wrote it, but there is no sector there. `truncated` says the stream
+  ended inside a field, which is what a Force Interrupt mid-format looks like.
+- **`buildTrackStream(spec)`** → the bytes on a track holding those sectors. **Gap 3 is
+  computed, not a constant**, because no constant works: a revolution holds 6250 bytes, so
+  18 Opus sectors of 256 leave 91 bytes each for everything that is not data while 10 MGT
+  sectors of 512 leave 113. A real formatter divides out what is left, and so does this.
+- **`formatTrackStream(spec)`** → the stream a formatter would write for one uniform
+  geometry, interleave included. What a test hands straight to a Write Track command.
+
+**Only MFM**, and that is a decision: every interface here runs its controller in double
+density, and FM would need the DDEN pin, which nothing drives. Also a decision: **`$F5`
+inside a data field is taken as data.** Real hardware would write a sync byte into the
+middle of the sector and preset the CRC — which is exactly why Write Track cannot lay down
+arbitrary content, and why every formatter fills data fields with `$E5` or `$00`.
+
+**Where the sectors go.** Write Track compares nothing: it writes where the head is
+standing, so the cylinder byte in each ID is simply more data. `finishWriteTrack` indexes
+by `mediumTrack` (the head position, double-stepping accounted for) and counts a sector as
+**skipped** if its ID disagrees with that, if its size code is not the image's, or if its
+number is off the end of the track. On a real disk the ID and the head position can
+disagree — half of how copy protection works — but a flat sector dump has nowhere to put
+such a track, so it is counted rather than filed under what it claims. `lastFormat`
+(`{track, side, drive, found, written, skipped, revolutions}`) is what a stalled `FORMAT` is
+diagnosed from; `revolutions` is how long the host took to feed the track, and a real chip
+gives it exactly one.
+
+**Read Track** answers from the geometry for a flat image, with real marks and real CRCs.
+Two things such an image cannot say: the interleave (the sectors are reported in ascending
+order, the only order it records) and the real gap lengths, which get the IBM System 34
+defaults. A `.udi` on the Beta Disk has the actual track bytes and is served from those
+instead.
+
+**The index pulse is what ends a Write Track**, one revolution after it began, whatever the
+host does. A host that opens a track and then waits for an INTRQ is relying on exactly that
+— and **TR-DOS 5.03 does it on every SAVE**: it writes `$F8` to the command register from
+the ROM's entry stub at `$3D9C`, then polls `$FF` for an interrupt and feeds nothing at all.
+While Write Track was a no-op that cost nothing; implementing it hung every TR-DOS save
+until a deadline put the interrupt back.
+
+`_formatPoll()` applies that deadline on every look at the status register, the system
+register or the +D's control register. With a rotation clock (see the next section) it is a
+**revolution of silence, measured from the last byte** — then the command completes with
+**lost data** and raises the interrupt, committing whatever did arrive. Measuring from the
+last byte rather than from the command is deliberate: a feed still arriving has not missed
+its index, and the Opus and MDOS both take about 1.15 revolutions to stream a track, so a
+deadline measured from the command would break two formats that work. No ROM mid-format
+pauses for anything near a revolution — the slowest here goes ~130 T-states between bytes
+against the 698880 of a revolution — so a real format cannot be cut short.
+
+Without a clock (a controller built with no machine around it, which is every unit test that
+constructs one directly) the old stand-in applies: `FORMAT_POLL_LIMIT` (4096) register reads
+with `dataPos` still 0. The gate on `dataPos` is what makes *that* safe — MDOS polls the
+status well past 4096 times *before* its first byte, and an earlier version counting the gap
+between bytes aborted its format at track 2. A new command also ends an open format wherever
+it came from, so nothing can latch.
+
+**What the real ROMs do** (`tests/disk-boot-test.html`):
+
+| Interface | `FORMAT` syntax | Result |
+|---|---|---|
+| Opus Discovery | `FORMAT "m";1;"NAME"` (no star, unlike SAVE) | 40 Write Tracks, 720 sectors. An all-zero image becomes a disk our own reader catalogues, and a SAVE/reset/LOAD round trip works on it |
+| Didaktik 80 | `FORMAT "A:NAME"`, then `P` at "All data will be discarded !" | 160 track-sides, 1440 sectors, and MDOS saves to the disk it just made |
+| TR-DOS | `FORMAT "NAME"` at the `A>` prompt | 82 Write Tracks, 1296 sectors. Formats an **80-track single-sided** disk (`1264/1264` free is 80 × 16 minus track 0, not 40 × 2 — that is the drive type it defaults to), writes its own disk-info sector, and a SAVE to the result lands in the catalogue |
+| +D / G+DOS | — | Untestable here: the 8K ROM is a bootstrap and G+DOS lives in a `+SYS` file on the disk, which is not in the tree. `FORMAT` is not hooked, so the main ROM answers `Invalid stream` |
+
+**Typing `FORMAT` is the trap.** At the `A>` prompt the cursor is in K mode, where `f` gives
+**FOR** — `FORMAT` is an *extended*-mode keyword (CAPS+SYMBOL, then SYMBOL+`0`) and nothing in
+`ula.keyDown` reaches it, so `tests/disk-boot-test.html` drives the matrix directly
+(`[0,0]`+`[7,1]`, then `[7,1]`+`[4,0]`). Getting that wrong is how TR-DOS came to look as
+though it could not format at all: `FOR "trd"` leaves a stray Write Track behind and a screen
+full of nothing.
+
+**What TR-DOS's formatter looks like**, for anyone reading the ROM: `$1FFD` does
+`DI / LD A,$F4 / OUT ($1F),A`, then streams from a table at `$1FB9` holding the sector
+interleave (`01 09 02 0A 03 0B …`) — 10 × `$4E`, 12 × `$00`, three `$F5`, `$FE`, cylinder from
+E, **head hard-coded to `$00`**, the sector from the table, `$01` for N, `$F7`, and the data
+field the same way with `$FB` and 256 zero bytes. The side comes from the drive's select line
+(`$1FEB` sets bit 4 of the `$FF` shadow at `$5D16` for side 0, `$1FF6` clears it for side 1),
+never from the ID field — which is why `finishWriteTrack` indexes by the head and not by the
+stream's head byte.
+
+## Rotation: the index pulse and the byte clock
+
+**Status: emulated.** `core/loaders/disk-rotation.js` (pure), given to every WD17xx
+controller by `Spectrum._wireDiskRotation()`. `tests/disk-rotation-test.html` covers the
+module, `tests/disk-test.html` the controllers with a clock injected by hand.
+
+A floppy is not a passive array of sectors: it turns at 300 rpm whether the host is ready or
+not, and almost everything a WD17xx does is timed by that. Three things software can see:
+
+- **The index pulse.** One per revolution, from a hole in the disk. It is bit 1 of the Type I
+  status register, and it is what ends a Write Track.
+- **The byte rate.** MFM at 250 kbit/s is one byte every 32 µs. DRQ comes on that schedule
+  and does not wait.
+- **Which sector is under the head.** Read Address returns the next ID to come round, so two
+  reads a revolution apart give different answers.
+
+**Read Address is not a snapshot, and modelling it as one is wrong** — `opus-test` caught
+this. The command *waits* for the next ID field, so reading one costs the time to reach it
+and two commands in a row report consecutive sectors on real hardware. Our commands complete
+instantly, so the head is kept **monotone** instead, counted in absolute sector slots rather
+than modulo a revolution (`absoluteSlot`): a command takes the next slot after the one it
+last reported, or wherever the disk has since turned to, whichever is further on, and never
+one the head has already passed. Modelled as "which sector is under the head now" it handed
+back the same sector twice, which is less realistic than the round robin it replaced.
+
+**A revolution is exactly ten frames.** 300 rpm is 5 rev/s and a PAL frame is 50 Hz, so one
+revolution is ten frames of whatever the machine's T-states-per-frame happens to be — 698880
+on a 48K, 709080 on a 128K, 716800 on a Pentagon. That is why there is no per-machine disk
+constant anywhere here and no floating-point clock rate: the figure follows the machine, and
+it stays right when the machine changes under a controller. The byte time falls out of the
+same arithmetic — 698880 / 6250 = 111.8, which is where the 112 in `core/constants.js` comes
+from, now derived rather than written down for one machine (`disk-rotation-test` asserts the
+two agree).
+
+**The clock is injected, and its absence is a supported state.** `setRotationClock(nowFn,
+revFn)` takes a monotonic T-state count and a revolution length, both as functions so a
+machine switch is picked up. `Spectrum` builds the count from the monotonic frame counter
+plus the in-frame `cpu.tStates` — the in-frame counter alone restarts fifty times a second,
+which would put the index pulse back where it was ten times a revolution. A controller given
+no clock keeps its untimed behaviour (a faked pulse one read in sixteen, Read Address in
+round robin, Write Track ended by counting register reads), because a controller with no
+machine around it has no business inventing a rotation it cannot see.
+
+**Elapsed time is not pulses crossed**, and conflating them is a real bug that happened here.
+`indexPulsesBetween` counts index pulses *crossed* by an interval, which for a Write Track
+deadline is the wrong question: a last byte landing at 0.97 of a revolution crosses a pulse a
+thirtieth of a turn later. Written that way, TR-DOS formatted 81 tracks and then wrote 196
+bytes of the 82nd. The deadline wants `revolutionsSince` — elapsed time — and both functions
+are kept, and tested against each other, so the distinction cannot quietly go away.
+
+**DRQ pacing: absolute, and that is the whole trick.** The two interfaces that transfer by NMI
+— the Opus and the Didaktik — get their DRQ scheduled from the previous byte's **due** time,
+not from the moment the host got round to servicing it, with the byte time taken from the
+rotation (111.8 T on a 48K, 114.7 on a Pentagon) rather than the rounded 112 in
+`core/constants.js`. Scheduled the other way round, the handler's own cost is added to every
+byte instead of hiding inside it: measured, the Opus spent ~130 T-states a byte and MDOS ~128
+where the medium allows 111.8, and a track took **1.15 revolutions** to write, which no real
+drive could do. Absolute, both come to 111.8 and `lastFormat.revolutions` ≈ 1.003 — the 0.003
+being the head-settle delay before the first byte. `disk-boot-test` pins all three figures,
+with TR-DOS as the control at the time: it polls rather than taking NMIs, so nothing Spectrum
+did to the NMI schedule could move it, and it fitted a track into half a revolution. It no
+longer does — see the polled pacing below, which is the gap that control variable was quietly
+measuring all along.
+
+**Reads are paced the same way, and the symmetry was hard won.** A read looks as though it
+must be different: the chip has a byte waiting and DRQ means "take it before the next lands
+on it", so scheduling the next request before the host has finished with this one is exactly
+the lost-data condition. That argument is wrong here, and it was believed for a while because
+`opus-test` collapsed into a retry storm when reads were first made absolute — which turned
+out to be the test restoring a stubbed `onDataRequest` by re-implementing it, leaving the NMI
+permanently due. **Measured instead of argued**, on 512 bytes of a real `CAT` through the real
+ROM:
+
+| | from the service | from the previous due |
+|---|---|---|
+| Opus write (format) | 130.1 T/byte | 112.2 |
+| MDOS write (format) | 127.9 | 112.2 |
+| Opus read (CAT) | 135.7 | 111.9 |
+| MDOS read (LOAD) | 127.0 | 111.8 |
+
+The Opus NMI read handler is **eleven instructions and 87 T-states** from acknowledge to
+`RETN`, 27 of them before it takes the byte:
+
+```
+$0066  JP (HL)        $174C  LD A,(2803h)   ; the data register
+$1749  EX AF,AF'      $174F  JP Z,1755h
+$174A  LD A,B         $1752  LD (DE),A      ; into the buffer
+$174B  OR C           $1753  INC DE  / DEC BC / EX AF,AF' / RETN
+```
+
+It fits inside a byte time with a quarter to spare, and on real hardware it has to — so
+nothing nests. Both suites pin the rate (`opus-test` on the CAT, `disk-boot-test` on an MDOS
+`LOAD`), and both fail at ~136 and ~127 if the schedule is put back the other way.
+
+What this leaves open is the opposite of what it was: a host now **can** be late, and a real
+chip would raise LOST DATA where we simply deliver the byte anyway. That is in `TODO.md`,
+along with the rotational latency Read/Write Sector still lack.
+
+**A Write Track begins on the index pulse, not where the command landed.** The chip asserts
+DRQ the moment the command is written — the host needs its first byte in the register before
+the hole comes round, and failing to is lost data on real hardware — and then waits, and
+writes from that pulse to the next one. So the **command** spans between one and two
+revolutions while the **write** spans exactly one, and `lastFormat` reports the two
+separately: `indexWait` (0 to 1, wherever the command fell) and `revolutions`. A command
+landing *on* the pulse waits for nothing. Measured on the three ROMs: Opus 0.86 + 1.00,
+MDOS 0.72 + 1.00, TR-DOS 0.66 + 1.00, so a real command takes 1.7–1.9 turns. `revolutions`
+reads 0.9997 rather than the old 1.003 because the first byte's head-settle delay now sits
+in the wait instead of inside the window, which is where it physically belongs.
+
+`Spectrum._drqDueAt` holds the paced interfaces to it through `ctrl.drqNotBefore`: the first
+byte is exempt, and the stream from the second byte on starts at the index.
+
+**And the POLLED Write Track had no byte pacing at all** — which only became visible once the
+window was anchored. TR-DOS does not take NMIs; its feed loop reads port `$FF` for DRQ and
+comes round every ~57 T-states where the medium gives a byte 111.8, so it filled a whole
+6250-byte track in **half a revolution**. Harmless while the deadline ran from the last byte;
+incoherent the moment the window started at the index, because the buffer filled before the
+window opened and `revolutions` came out **negative**. The chip now clears DRQ until the next
+byte is due — on port `$FF` bit 6 as well as in the status register, because `$FF` is the one
+TR-DOS actually polls, and gating only the status register changed nothing at all. TR-DOS
+formats a track in 0.9997 revolutions now instead of 0.5.
+
+**An NMI acknowledge costs 11 T-states, and for a long time it cost us nothing.** `Z80.nmi()`
+returns them the way `interrupt()` does, and every one of the five call sites in `Spectrum`
+dropped the value instead of adding it to the clock. Nothing measured at frame scale could
+see it; a transfer paced to the byte could. Charging it moved the Opus handler from 76 to 87
+T-states and the per-byte rate not at all — which is the absolute schedule earning its keep,
+since the extra cost hides inside the interval rather than being added to every byte.
+
+**The clock has to be monotonic, and `totalFrames` will not give you that.** Built as
+`totalFrames * tstatesPerFrame + cpu.tStates` it is not: `totalFrames` is incremented at the
+**end** of a frame while the frame is subtracted from `cpu.tStates` at the **start** of the
+next one, so between the two the clock leaps a whole frame forward and then drops back.
+Against a 698880-T revolution that is a wobble nothing notices; against a DRQ due 112 T out
+it schedules a byte a whole frame late and stalls every Opus transfer. `Spectrum` keeps
+`_diskClockBase` advanced in lockstep with that subtraction instead, at all four places it
+happens, and `diskClockNow()` is the sum. `disk-boot-test` samples it either side of 200
+frame boundaries.
 
 ## ZX Spectrum +3 / uPD765 FDC
 
