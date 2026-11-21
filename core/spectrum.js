@@ -1527,7 +1527,7 @@ import { Disassembler } from './disasm.js';
             // - Reset WD1772 FDC
             // - Page in +D ROM so boot code at $0000 runs and initializes workspace
             if (this.plusDEnabled && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a') {
+                this.profile.pagingModel !== '+2a' && !this._isHc()) {
                 this.plusD.reset();
                 this.memory.plusDActive = true;
             }
@@ -1544,7 +1544,7 @@ import { Disassembler } from './disasm.js';
             // through one of its hook addresses, the first of which is normally
             // the $0048 KEY-INT on the first maskable interrupt.
             if (this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a') {
+                this.profile.pagingModel !== '+2a' && !this._isHc()) {
                 this.opus.reset();
                 this.memory.opusActive = false;
             }
@@ -1561,8 +1561,17 @@ import { Disassembler } from './disasm.js';
 
         // ========== Port I/O ==========
 
+        /**
+         * HC-2000: no add-on disk interface at all — either nothing or its own
+         * HC IF1. Beta 128/48, +D, DISCiPLE, Opus, Didaktik and the Sinclair
+         * IF1 are all off on it.
+         */
+        _isHc() {
+            return this.profile.pagingModel === 'hc2000';
+        }
+
         _isBetaDiskActive() {
-            return this.betaDiskEnabled && !this.memory.beta48On &&
+            return this.betaDiskEnabled && !this.memory.beta48On && !this._isHc() &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
         }
 
@@ -1633,12 +1642,12 @@ import { Disassembler } from './disasm.js';
             // Per FUSE: +D ports always respond when hardware is available
             // (not gated by memory paging state or disk presence)
             return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this.hcIf1;
+                this.profile.pagingModel !== '+2a' && !this._isHc();
         }
 
         _isIF1Active() {
             return this.if1Enabled && this.microdrive && this.microdrive.hasAnyCartridge() &&
-                this.memory.hasIF1Rom() && !this.hcIf1;
+                this.memory.hasIF1Rom() && !this._isHc();
         }
 
         /**
@@ -1725,7 +1734,7 @@ import { Disassembler } from './disasm.js';
 
         _isDiscipleActive() {
             return this.discipleEnabled && this.memory.hasDiscipleRom() &&
-                this.profile.pagingModel !== '+2a' && !this.hcIf1;
+                this.profile.pagingModel !== '+2a' && !this._isHc();
         }
 
         triggerDiscipleNmi() {
@@ -1775,7 +1784,7 @@ import { Disassembler } from './disasm.js';
         }
 
         triggerPlusDNmi() {
-            if (!this.plusDEnabled || !this.memory.hasPlusDRom()) return;
+            if (!this._isPlusDActive()) return;
             this.memory.plusDActive = true;
             this.cpu.nmi();
         }
@@ -4459,15 +4468,17 @@ import { Disassembler } from './disasm.js';
         // Update cached flag for Beta Disk paging (call when conditions change)
         updateBetaDiskPagingFlag() {
             // Beta 48: an add-on Beta Disk (not the built-in one of a Pentagon or
-            // Scorpion) set to a Beta 48 variant, with its ROM loaded
+            // Scorpion) set to a Beta 48 variant, with its ROM loaded. Never on an
+            // HC-2000 (no Beta of either kind there, see _isHc).
             const beta48 = !this.profile.betaDiskDefault && this.betaDiskEnabled &&
+                !this._isHc() &&
                 this.betaVariant !== '128' && this.memory.hasBeta48Rom();
             if (beta48 !== this.memory.beta48On) {
                 this.memory.beta48On = beta48;
                 this.memory.beta48Latch = false;
                 this.memory.trdosActive = false;
             }
-            this._betaDiskPagingEnabled = !beta48 &&
+            this._betaDiskPagingEnabled = !beta48 && !this._isHc() &&
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
             // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
@@ -4476,12 +4487,11 @@ import { Disassembler } from './disasm.js';
                 this.if1Enabled &&
                 this.memory.hasIF1Rom() &&
                 this.profile.pagingModel !== '+2a' &&
-                !this.hcIf1);
+                !this._isHc());
             // +D ROM auto-paging flag: +D enabled + ROM loaded + compatible machine
             // +D is NOT compatible with +2A/+3 (they have their own extended paging)
-            // An HC-2000 with its HC IF1 pages that in at the same $0008, so
-            // none of the add-on interfaces go with it (without it, they do).
-            const hc = !!this.hcIf1;
+            // HC-2000: nothing, or its HC IF1 — no add-on interfaces (see _isHc)
+            const hc = this._isHc();
             this._plusDPagingEnabled =
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
@@ -7575,7 +7585,7 @@ import { Disassembler } from './disasm.js';
             this.opus.loadDisk(diskData, 'opd', driveIndex);
 
             const opusAvailable = this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !this._isHc();
 
             return {
                 diskInserted: true,

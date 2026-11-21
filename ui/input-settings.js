@@ -439,6 +439,9 @@ export function initInputSettings({
             betaDiskStatus.textContent = '(always on for ' + spectrum.profile.name + ')';
             chkBetaDisk.checked = true;
             chkBetaDisk.disabled = true;
+        } else if (spectrum.profile.pagingModel === 'hc2000') {
+            betaDiskStatus.textContent = 'not available on HC-2000 — only its HC IF1';
+            chkBetaDisk.disabled = true;
         } else {
             chkBetaDisk.disabled = false;
             if (spectrum.betaVariant !== '128') {
@@ -498,10 +501,11 @@ export function initInputSettings({
         // The +D cannot page its ROM in on a +2A/+3 — same as real hardware, and
         // the reason spectrum.js gates _plusDPagingEnabled on pagingModel. Say so
         // rather than letting the box be ticked and silently doing nothing.
-        const incompatible = spectrum.profile.pagingModel === '+2a';
+        const isHc = spectrum.profile.pagingModel === 'hc2000';
+        const incompatible = spectrum.profile.pagingModel === '+2a' || isHc;
         chkPlusD.disabled = incompatible;
         if (incompatible) {
-            plusDStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            plusDStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['plusd.rom']) {
             plusDStatus.textContent = '(plusd.rom required)';
         } else {
@@ -603,10 +607,11 @@ export function initInputSettings({
     const btnNmiDisciple = document.getElementById('btnNmiDisciple');
 
     function updateDiscipleStatus() {
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkDisciple.disabled = incompatible;
         if (incompatible) {
-            discipleStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            discipleStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['disciple.rom']) {
             discipleStatus.textContent = '(disciple.rom required)';
         } else {
@@ -711,13 +716,16 @@ export function initInputSettings({
         const sp = getSpectrum();
         if (!sp || !selBetaVariant) return;
         const builtIn = !!sp.profile.betaDiskDefault;
-        selBetaVariant.value = sp.betaVariant || '128';
-        selBetaVariant.disabled = builtIn;      // Pentagon/Scorpion: their own Beta 128
-        const wants48 = !builtIn && sp.betaVariant !== '128';
+        const hc = sp.profile.pagingModel === 'hc2000';   // HC: no Beta at all
+        selBetaVariant.value = (builtIn || hc) ? '128' : (sp.betaVariant || '128');
+        selBetaVariant.disabled = builtIn || hc;  // Pentagon/Scorpion: their own Beta 128
+        const wants48 = !builtIn && !hc && sp.betaVariant !== '128';
         document.getElementById('btnLoadBeta48Rom').disabled = !wants48;
         updateIfaceRomName('beta48');
         if (builtIn) {
             beta48Status.textContent = '(built-in Beta 128 on this machine)';
+        } else if (hc) {
+            beta48Status.textContent = '';
         } else if (!wants48) {
             beta48Status.textContent = '';
         } else if (!romData['beta48.rom']) {
@@ -804,10 +812,11 @@ export function initInputSettings({
     // Interface 1 (Microdrive) toggle
     function updateIF1Status() {
         // Interface 1 is gated on pagingModel exactly like the +D — see above
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkIF1.disabled = incompatible;
         if (incompatible) {
-            if1Status.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            if1Status.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['if1.rom']) {
             if1Status.textContent = '(if1.rom required)';
         } else {
@@ -882,10 +891,11 @@ export function initInputSettings({
     function updateOpusStatus() {
         // Gated on pagingModel exactly like the +D and IF1 — the Opus overlays
         // $0000-$3FFF, which +2A/+3 paging already owns.
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkOpus.disabled = incompatible;
         if (incompatible) {
-            opusStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            opusStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['opus.rom']) {
             opusStatus.textContent = '(opus.rom required)';
         } else {
@@ -986,7 +996,8 @@ export function initInputSettings({
         if (incompatible) {
             didaktikStatus.textContent = patchable
                 ? 'needs the 128K hardware patch below'
-                : '48K or a patched 128K only — not this machine';
+                : (sp.profile.pagingModel === 'hc2000' ? 'not available on HC-2000 — only its HC IF1'
+                    : '48K or a patched 128K only — not this machine');
         } else if (!romData['didaktik.rom']) {
             didaktikStatus.textContent = '(didaktik.rom required)';
         } else {
