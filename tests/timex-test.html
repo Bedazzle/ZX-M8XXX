@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Timex TC2048 Tests</title>
+    <title>Timex TC2048 / TC2068 Tests</title>
     <style>
         body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
         #summary { margin: 8px 0 16px; font-size: 15px; }
@@ -15,7 +15,7 @@
     </style>
 </head>
 <body>
-    <h2>Timex TC2048 Tests</h2>
+    <h2>Timex TC2048 / TC2068 Tests</h2>
     <div id="summary">running…</div>
     <div id="log"></div>
     <iframe id="app"></iframe>
@@ -24,7 +24,7 @@
         // Timex TC2048 (core/timex.js, after FUSE scld.c / tc2048.c): the SCLD
         // display modes, ports $FF/$F4, no floating bus, the INT mask; with the
         // ROMs and disks present, the FDD 3000 Monitor Emulator in hi-res.
-        import { timexHiresAttr, timexLoresCell, timexHiresWord, pixelRowOffset } from '../core/timex.js';
+        import { timexHiresAttr, timexLoresCell, timexHiresWord, pixelRowOffset, parseDck } from '../core/timex.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -91,6 +91,13 @@
             assert(timexHiresWord(ram, 4, y, col) === 0x1133, 'mode 4: first file byte then its attribute byte');
             assert(timexHiresWord(ram, 7, y, col) === 0x2222, 'mode 7: second file byte twice');
             assert(timexHiresWord(ram, 5, y, col) === 0x2244, 'mode 5: as 4 on the second file (its byte, then its attribute)');
+            const dck = new Uint8Array(9 + 2 * 0x2000);
+            dck.set([0x00, 0, 2, 0, 0, 0, 0, 3, 0]);
+            dck[9] = 0xAB; dck[9 + 0x2000] = 0xCD;
+            const blocks = parseDck(dck);
+            assert(blocks.length === 1 && blocks[0].bank === 0 && blocks[0].chunks[1].data[0] === 0xAB &&
+                !blocks[0].chunks[1].writable && blocks[0].chunks[6].data[0] === 0xCD && blocks[0].chunks[6].writable &&
+                blocks[0].chunks[0] === null, 'DCK: DOCK block, a ROM chunk and a RAM chunk');
         }
 
         async function runMachineTests() {
@@ -184,10 +191,59 @@
             sp.updateBetaDiskPagingFlag();
         }
 
+        async function runTc2068Tests() {
+            section('TC2068');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/tc2068-0.rom')) && !(await ok('../roms/tc2068.rom'))) {
+                skip('roms/tc2068.rom or tc2068-0/1.rom not present'); return;
+            }
+            const frame = document.getElementById('app');
+            const zx = frame.contentWindow.zxDebug;
+            await zx.ready({ machine: 'tc2068' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            if (sp.timexCartridge) sp.ejectDCK();
+            sp.reset();
+            await zx.runFrames(200);
+            assert(/Timex Computer Corp/.test(screenText(sp)), 'TC2068 ROM boots (HOME + EXROM)');
+            assert(!sp.getTapeFlashLoad(), 'no ROM traps: tapes load in real time');
+            // EXROM: HSR bit + DEC bit 7 put the 8KB ROM bank 1 into a chunk
+            const home0 = sp.memory.read(0x0000), ex0 = sp.memory.rom[1][0];
+            sp.portWrite(0x00FF, 0x80); sp.portWrite(0x00F4, 0x01);
+            const viaExrom = sp.memory.read(0x0000), viaExrom5 = sp.memory.read(0xA000);
+            sp.portWrite(0x00F4, 0x20);
+            const chunk5 = sp.memory.read(0xA000);
+            sp.portWrite(0x00F4, 0x00); sp.portWrite(0x00FF, 0x00);
+            assert(viaExrom === ex0 && sp.memory.read(0x0000) === home0 && chunk5 === ex0,
+                'HSR + DEC bit 7 map the EXROM into any 8KB chunk');
+            // AY on $F5/$F6
+            sp.portWrite(0x00F5, 2); sp.portWrite(0x00F6, 0x5A);
+            sp.portWrite(0x00F5, 2);
+            assert(sp.ay.registers[2] === 0x5A && sp.portRead(0x00F6) === 0x5A, 'AY on $F5 (select) / $F6 (data)');
+            sp.portWrite(0x00F5, 14);
+            assert(sp.portRead(0x00F5) === 0xFF, 'AY register 14 (joystick) reads $FF via $F5');
+            // DCK cartridge
+            if (await ok('../headless/timex/dk-spectrum.dck')) {
+                const dck = new Uint8Array(await (await fetch('../headless/timex/dk-spectrum.dck')).arrayBuffer());
+                const r = sp.loadDCK(dck, 'dk-spectrum.dck');
+                zx.pause();
+                await zx.runFrames(300);
+                assert(r.cartridgeInserted && r.chunks === 7, 'DCK into the DOCK (7 chunks)');
+                assert(sp.cpu.pc >= 0x4000 && !/Timex Computer Corp/.test(screenText(sp)),
+                    'the ROM starts the cartridge (Donkey Kong), not BASIC', 'PC ' + sp.cpu.pc.toString(16));
+                sp.ejectDCK();
+                await zx.runFrames(200);
+                assert(/Timex Computer Corp/.test(screenText(sp)), 'eject: back to BASIC');
+            } else {
+                skip('headless/timex/dk-spectrum.dck not present');
+            }
+        }
+
         (async () => {
             try {
                 runUnitTests();
                 await runMachineTests();
+                await runTc2068Tests();
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }

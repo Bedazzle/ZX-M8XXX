@@ -304,7 +304,7 @@ take some other catalogue syntax, which has not been established here.
 - **Monitor Emulator (CP/M terminal) on a 128K: open question.** Its loader tells a Timex from a Spectrum by `OUT 255,0: LET a=IN 255: IF a=0 THEN` (Timex path, 64-column hi-res with odd columns in the second screen at `$6000`). On a Spectrum port `$FF` is the floating bus, so the answer depends on which T-state the `IN` lands on. Here the 48K reads 255 (Spectrum path, CP/M works) and the 128K reads a screen byte of 0 (Timex path, half the text missing); FUSE reads 255 on its 128K. Which one real hardware does is not known: FUSE may be the one that is off, and Monitor may have needed a patch for the 128K. Left as it is.
 - Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
 
-## Timex TC2048 (SCLD)
+## Timex TC2048 / TC2068 (SCLD)
 
 Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD in `core/timex.js` + `ULA._renderTimexPaper`, after FUSE's `machines/tc2048.c`, `peripherals/scld.c` and `display.c`.
 
@@ -313,7 +313,9 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 - **HSR (`$F4`)**, read back: a set bit maps that 8KB chunk to DOCK/EXROM, empty on a TC2048 (reads `$FF`, writes ignored).
 - **Display.** Low-res modes go through the normal frame buffer. Hi-res rows are drawn at 512 into `ula.hiresBuf` (and a 256-pixel reduction into the frame buffer for everything else); `Spectrum.blitFrame` puts the frame on a canvas twice as wide (`canvasScaleX = 2`, CSS keeps the aspect) and the hi-res rows over it. In hi-res the border is the hi-res paper colour (recorded through `setBorderAt`, so beam rendering follows; port `$FE` is remembered for when hi-res ends).
 - With the FDD 3000 (`fdd3stavi.rom`): Monitor Emulator detects the Timex (`IN 255` = 0) and runs CP/M in 64 columns, hi-res mode 6. `fdd3timex.rom` does not start on the TC2048 (likely the TC2068 build).
-- Not done: TC2068/TS2068 (AY, DOCK cartridges, EXROM, the 2068 ROM), snapshots of the SCLD state, flash in hi-res. `tests/timex-test.html`.
+- **TC2068** (machine `tc2068`, PAL, FUSE `machines/tc2068.c`): ROM `tc2068.rom` (24KB) or FUSE's `tc2068-0.rom` + `tc2068-1.rom`: 16KB HOME + 8KB EXROM. With DEC bit 7 set, an HSR bit maps the EXROM into that 8KB chunk (every chunk sees the same 8KB); clear, the DOCK (empty, or a cartridge). AY on `$F5` (select) / `$F6` (data), register 14 the joystick port (reads `$FF`, no joystick yet). Its ROM is not the 48K's, so the tape/TR-DOS traps are off (`noRomTraps`): tapes load in real time, and Auto load types `LOAD ""` and starts the tape.
+- **DCK cartridges** (`parseDck`, `Spectrum.loadDCK` / `ejectDCK`; open a `.dck` on a TC2068): DOCK and EXROM blocks (HOME blocks ignored), ROM and RAM chunks; the machine resets and the ROM starts the cartridge. Checked: Donkey Kong (`dk-spectrum.dck`), Timmy for the 2068 (tape).
+- Not done: TS2068 (NTSC), the Timex joystick, HOME blocks in DCK, snapshots of the SCLD/DOCK state, flash in hi-res. `tests/timex-test.html`.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)
 

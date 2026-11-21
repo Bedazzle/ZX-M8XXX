@@ -393,6 +393,19 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                 // ROM not found, continue
             }
         }
+        // TC2068: no tc2068.rom? Join FUSE's tc2068-0.rom (16KB HOME) and
+        // tc2068-1.rom (8KB EXROM)
+        if (!romData['tc2068.rom']) {
+            try {
+                const [r0, r1] = await Promise.all([0, 1].map(h => fetch('roms/tc2068-' + h + '.rom')));
+                if (r0.ok && r1.ok) {
+                    const full = new Uint8Array(24576).fill(0xFF);
+                    full.set(new Uint8Array(await r0.arrayBuffer()).subarray(0, 16384), 0);
+                    full.set(new Uint8Array(await r1.arrayBuffer()).subarray(0, 8192), 16384);
+                    romData['tc2068.rom'] = full.buffer;
+                }
+            } catch (e) { /* not served */ }
+        }
         // HC-2000: no hc2000.rom? Take FUSE's two halves instead
         if (!romData['hc2000.rom']) {
             for (const half of [0, 1]) {

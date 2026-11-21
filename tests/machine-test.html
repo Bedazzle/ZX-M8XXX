@@ -154,7 +154,7 @@
             assert(types.includes('pentagon1024'), 'pentagon1024 exists');
             assert(types.includes('scorpion'), 'scorpion exists');
             assert(types.includes('hc2000'), 'hc2000 exists');
-            assert(types.length === 10, `10 machine types total (TC2048 added), got ${types.length}`);
+            assert(types.length === 11, `11 machine types total (TC2048, TC2068 added), got ${types.length}`);
         }
 
         section('Profiles - getMachineProfile returns correct profiles');
@@ -332,8 +332,10 @@
         {
             for (const type of getMachineTypes()) {
                 const p = getMachineProfile(type);
-                assert(p.romSize === p.romBanks * 16384,
-                    `${type}: romSize ${p.romSize} = ${p.romBanks} banks × 16384`);
+                // The TC2068's second bank is its 8KB EXROM: 16KB + 8KB
+                const expected = type === 'tc2068' ? 16384 + 8192 : p.romBanks * 16384;
+                assert(p.romSize === expected,
+                    `${type}: romSize ${p.romSize} = ${type === 'tc2068' ? '16KB HOME + 8KB EXROM' : p.romBanks + ' banks × 16384'}`);
             }
         }
 

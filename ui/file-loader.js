@@ -289,6 +289,10 @@ export function initFileLoader({
         getAnalysisAPI().updateXrefStats();
 
         // Check result type by properties
+        if (result.cartridgeInserted) {
+            showMessage(`Timex cartridge: ${result.cartridgeName} (${result.chunks} x 8KB), machine reset`);
+            return;
+        }
         if (result.isDSK && result.diskInserted) {
             // DSK disk inserted into µPD765 FDC (+3)
             const dskDrive = result._driveIndex || 0;

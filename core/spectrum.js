@@ -72,6 +72,7 @@ import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
 import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
+import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -1989,6 +1990,13 @@ import { Disassembler } from './disasm.js';
                 if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
                     // Timex SCLD: DEC (display mode) and HSR read back
                     result = lowByte === 0xFF ? this.memory.timexDec : this.memory.timexHsr;
+                } else if (this.profile.timexAy && (lowByte === 0xF5 || lowByte === 0xF6)) {
+                    // TC2068 AY (FUSE tc2068_ay_*port_read): register 14 is the
+                    // joystick port -- reads $FF via $F5; via $F6 its latch when
+                    // R7 bit 6 makes it an output, else $FF (no joystick fitted)
+                    const reg = this.ay.selectedRegister;
+                    if (reg !== 14) result = this.ay.readRegister();
+                    else result = (lowByte === 0xF6 && (this.ay.registers[7] & 0x40)) ? this.ay.registers[14] : 0xFF;
                 } else if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
                     // HC-2000 config latch $7E (A7=0, A0=0). The HC decodes its
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
@@ -2133,7 +2141,7 @@ import { Disassembler } from './disasm.js';
                 } else if (this.ula.ulaplus.enabled && port === PORT_ULAPLUS_REG) {
                     // ULAplus data port read
                     result = this.ula.ulaplusReadData();
-                } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
+                } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
                         result = this.ay.readRegister();
@@ -2510,7 +2518,18 @@ import { Disassembler } from './disasm.js';
             // AY-3-8910 ports (128K/Pentagon, or 48K with AY enabled)
             // (not on the HC IF1's own ports: OUT ($87),A with A15 set would
             // otherwise also hit an add-on AY's decode)
-            if (this._ayOnPorts() && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
+            // TC2068: its AY sits on $F5 (register select) and $F6 (data)
+            if (this.profile.timexAy && (lowByte === 0xF5 || lowByte === 0xF6)) {
+                if (lowByte === 0xF5) {
+                    this.ay.selectRegister(val);
+                } else {
+                    const reg = this.ay.selectedRegister;
+                    this.ay.writeRegister(val);
+                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: this.ay.registers[reg] });
+                }
+                return;
+            }
+            if (this._ayOnPorts() && !this.profile.timexAy && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
                 if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
                     // Port 0xFFFD: AY register select
                     this.ay.selectRegister(val);
@@ -2668,7 +2687,7 @@ import { Disassembler } from './disasm.js';
             const needsInstrPC = xrefEnabled || tracing;
             const contentionEnabled = this.profile.hasContention && this.contentionEnabled;
             const isPentagon = this.profile.ulaProfile === 'pentagon';
-            const tapeTrapsEnabled = this.tapeTrapsEnabled;
+            const tapeTrapsEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
             // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
@@ -3383,9 +3402,10 @@ import { Disassembler } from './disasm.js';
                 if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
                     (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
-                if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
-                if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
-                if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+                const _traps = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+                if (_traps && this.tapeTrap.checkTrap()) continue;
+                if (_traps && this.tapeSaveTrap.checkTrap()) continue;
+                if (_traps && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (this.profile.hasContention && this.contentionEnabled) {
@@ -7495,6 +7515,9 @@ import { Disassembler } from './disasm.js';
                     `if it was fetched, the URL probably returned an error page (404)`);
             }
 
+            // Timex DCK cartridge
+            if (/\.dck$/i.test(fileName || '')) return this.loadDCK(data, fileName);
+
             // Check if it's a ZIP file
             if (ZipLoader.isZip(data)) {
                 const spectrumFiles = await ZipLoader.findAllSpectrum(data);
@@ -7627,6 +7650,41 @@ import { Disassembler } from './disasm.js';
                 needsMachineSwitch: needsMachineSwitch,
                 targetMachine: 'pentagon'
             };
+        }
+
+        /**
+         * Timex DCK cartridge into the DOCK (and EXROM, if the file has it) of a
+         * TC2068; the machine restarts, so the ROM finds it. FUSE dck_reset.
+         */
+        loadDCK(data, fileName) {
+            if (!this.profile.timexAy) {
+                throw new Error('DCK cartridges need a Timex TC2068 (Machine)');
+            }
+            const blocks = parseDck(new Uint8Array(data));
+            const dock = new Array(8).fill(null), exrom = new Array(8).fill(null);
+            for (const blk of blocks) {
+                const dest = blk.bank === DCK_BANK_DOCK ? dock : blk.bank === DCK_BANK_EXROM ? exrom : null;
+                if (!dest) continue;            // HOME blocks: not supported here
+                blk.chunks.forEach((c, i) => { if (c) dest[i] = c; });
+            }
+            this.timexCartridge = { dock, exrom, name: fileName };
+            this._applyTimexCartridge();
+            this.reset();
+            if (!this.isRunning()) this.start();
+            return { cartridgeInserted: true, cartridgeName: fileName,
+                chunks: dock.filter(Boolean).length + exrom.filter(Boolean).length };
+        }
+
+        ejectDCK() {
+            this.timexCartridge = null;
+            this._applyTimexCartridge();
+            this.reset();
+        }
+
+        _applyTimexCartridge() {
+            const c = this.profile.timexAy ? this.timexCartridge : null;
+            this.memory.timexDock = c ? c.dock : null;
+            this.memory.timexExrom = c && c.exrom.some(Boolean) ? c.exrom : null;
         }
 
         /**
@@ -8813,7 +8871,8 @@ import { Disassembler } from './disasm.js';
          * Get current tape load mode
          */
         getTapeFlashLoad() {
-            return this.tapeFlashLoad;
+            // A machine whose ROM the traps do not know (TC2068) loads in real time
+            return this.tapeFlashLoad && !this.profile.noRomTraps;
         }
 
         /**
@@ -8857,7 +8916,7 @@ import { Disassembler } from './disasm.js';
          * Start real-time tape playback
          */
         playTape() {
-            if (this.tapeFlashLoad) return false;
+            if (this.getTapeFlashLoad()) return false;
             this._lastTapeUpdate = this.cpu.tStates;  // Reset tape timing tracker
             return this.tapePlayer.play();
         }
@@ -9179,6 +9238,7 @@ import { Disassembler } from './disasm.js';
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this._applyTimexCartridge();
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
             this.ula.cpu = this.cpu;  // For debug access to CPU state

@@ -63,3 +63,35 @@ export function timexHiresWord(ram, dec, y, col) {
     }
     return (data << 8) | data2;
 }
+
+// DCK cartridge image (libspectrum dck.c): blocks of a 9-byte header -- bank
+// ($00 DOCK, $FE EXROM, $FF HOME) and one access byte per 8KB chunk (0 none,
+// 1 empty RAM, 2 ROM, 3 RAM) -- followed by 8KB for each ROM/RAM chunk.
+export const DCK_BANK_DOCK = 0x00, DCK_BANK_EXROM = 0xFE, DCK_BANK_HOME = 0xFF;
+
+/** @returns {Array<{bank:number, chunks:Array<null|{data:Uint8Array, writable:boolean}>}>} */
+export function parseDck(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const blocks = [];
+    let pos = 0;
+    while (pos + 9 <= b.length) {
+        const bank = b[pos];
+        if (bank !== DCK_BANK_DOCK && bank !== DCK_BANK_EXROM && bank !== DCK_BANK_HOME) {
+            throw new Error(`DCK: bank $${bank.toString(16)} not supported`);
+        }
+        const access = Array.from(b.subarray(pos + 1, pos + 9));
+        pos += 9;
+        const chunks = access.map((a) => {
+            if (a === 0) return null;
+            if (a === 1) return { data: new Uint8Array(0x2000), writable: true };
+            if (a !== 2 && a !== 3) throw new Error(`DCK: chunk type ${a} not supported`);
+            if (pos + 0x2000 > b.length) throw new Error('DCK: file is cut short');
+            const data = b.slice(pos, pos + 0x2000);
+            pos += 0x2000;
+            return { data, writable: a === 3 };
+        });
+        blocks.push({ bank, chunks });
+    }
+    if (!blocks.length) throw new Error('DCK: no blocks');
+    return blocks;
+}

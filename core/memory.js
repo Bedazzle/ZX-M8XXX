@@ -45,6 +45,10 @@ import {
             // which are empty on a TC2048 -- they read $FF and ignore writes)
             this.timexDec = 0;
             this.timexHsr = 0;
+            // DOCK / EXROM chunk overrides from a DCK cartridge: 8 entries each,
+            // null or { data: Uint8Array(8KB), writable }. Set by Spectrum.
+            this.timexDock = null;
+            this.timexExrom = null;
             this.fdd3000Active = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
@@ -504,7 +508,17 @@ import {
                 // HC-2000: 8KB slots, see _hcRemap()
                 val = this.hcR[addr >> 13][addr & 0x1FFF];
             } else if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) {
-                val = 0xFF;                 // Timex: an empty DOCK/EXROM chunk
+                // Timex: DOCK (empty: $FF) or, DEC bit 7 set, the EXROM -- the
+                // TC2068's 8KB ROM bank 1 in every chunk (none on a TC2048)
+                const chunk = addr >> 13;
+                if (this.timexDec & 0x80) {
+                    const c = this.timexExrom && this.timexExrom[chunk];
+                    val = c ? c.data[addr & 0x1FFF]
+                        : (this.profile.romBanks > 1 ? this.rom[1][addr & 0x1FFF] : 0xFF);
+                } else {
+                    const c = this.timexDock && this.timexDock[chunk];
+                    val = c ? c.data[addr & 0x1FFF] : 0xFF;
+                }
             } else if (this.profile.ramPages === 1) {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
@@ -625,7 +639,13 @@ import {
                 return;
             }
 
-            if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) return;   // Timex DOCK/EXROM
+            if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) {
+                // Timex DOCK/EXROM: only a cartridge's RAM chunks take writes
+                const bank = (this.timexDec & 0x80) ? this.timexExrom : this.timexDock;
+                const c = bank && bank[addr >> 13];
+                if (c && c.writable) c.data[addr & 0x1FFF] = val;
+                return;
+            }
             if (this.profile.ramPages === 1) {
                 if (this.tkmemRam && addr >= SLOT2_START) {
                     this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)] = val;

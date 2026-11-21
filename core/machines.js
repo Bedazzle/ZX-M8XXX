@@ -370,6 +370,48 @@ const MACHINE_PROFILES = {
             szxMachineId: 9,           // ZXSTMID_TC2048
             is128kCompat: false,
         },
+        // Timex Computer 2068 (Timex Portugal, PAL): the TC2048's SCLD plus a
+        // 24KB ROM -- 16KB HOME at $0000 and an 8KB EXROM (the 2068 BASIC
+        // extension), which the HSR maps into any 8KB chunk with DEC bit 7
+        // set; with it clear a chunk goes to the DOCK (cartridge slot, empty).
+        // AY on ports $F5/$F6, register 14 the joystick port. Port of FUSE's
+        // machines/tc2068.c; ROM tc2068.rom (24KB) or tc2068-0.rom + tc2068-1.rom.
+        'tc2068': {
+            id: 'tc2068',
+            name: 'Timex TC2068',
+            group: 'Timex',
+            ramPages: 1,
+            romBanks: 2,               // bank 0 HOME (16KB), bank 1 EXROM (8KB)
+            romFile: 'tc2068.rom',
+            romSize: 24576,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            timex: true,
+            timexAy: true,             // AY on $F5/$F6, not $FFFD/$BFFD
+            // Its ROM is not the 48K's: the tape traps (LD-BYTES/SA-BYTES at the
+            // 48K addresses, TR-DOS) would fire on other code. Tapes load in
+            // real time instead.
+            noRomTraps: true,
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: true,
+            ayClockHz: 1750000,        // 3.5 MHz / 2
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 15,             // .z80 v3: TC2068
+            szxMachineId: -1,          // no SZX here yet
+            is128kCompat: false,
+        },
     };
 
     // Helper: get profile by machine type ID (falls back to 48k)
