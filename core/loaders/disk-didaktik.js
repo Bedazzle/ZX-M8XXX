@@ -395,6 +395,11 @@ import { PlusDDisk } from './disk-mgt.js';
                 for (let p = end - start; p < 512; p++) bytes[o + p] = 0;
             }
             // FAT links + last-sector terminator (0xE00 + length%512, per tap2d80.cpp).
+            // Note the one gap this leaves: a payload that is an exact multiple
+            // of 512 terminates as a bare 0xE00, which says "full sector" only by
+            // convention — extractFile falls back on the declared length there,
+            // so a file that declares less than it holds AND ends on a sector
+            // boundary loses its last sector. Real MDOS has the same ambiguity.
             for (let i = 0; i < numSec - 1; i++) DidaktikLoader.setFATnum(bytes, chain[i], chain[i + 1]);
             DidaktikLoader.setFATnum(bytes, chain[numSec - 1], 0xE00 | (len % 512));
 
@@ -402,21 +407,28 @@ import { PlusDDisk } from './disk-mgt.js';
             const typeChar = (file.type || 'B').charAt(0);
             bytes[dirOff] = typeChar.charCodeAt(0);
             writeField(bytes, dirOff + 1, file.name || 'untitled', 10, 0x00);
-            bytes[dirOff + 11] = len & 0xFF;
-            bytes[dirOff + 12] = (len >> 8) & 0xFF;
+            // The directory's length need not be how much data there is: the
+            // FAT terminator above already fixes the file's exact end, so a
+            // loader can declare only itself and carry the rest after it. A
+            // caller that says nothing gets the ordinary answer, and a declared
+            // length longer than the payload would be a lie, so it is clamped.
+            const declared = Math.min(
+                file.declaredLength != null ? file.declaredLength : len, len);
+            bytes[dirOff + 11] = declared & 0xFF;
+            bytes[dirOff + 12] = (declared >> 8) & 0xFF;
             // bytes 13-14: P → autostart LINE, B/others → load address
             const startField = file.startAddr || 0;
             bytes[dirOff + 13] = startField & 0xFF;
             bytes[dirOff + 14] = (startField >> 8) & 0xFF;
             // bytes 15-16: P → BASIC program length, B/others → 0x8000 (per real disks)
-            const bl = typeChar === 'P' ? (file.basicLength || len) : 0x8000;
+            const bl = typeChar === 'P' ? (file.basicLength || declared) : 0x8000;
             bytes[dirOff + 15] = bl & 0xFF;
             bytes[dirOff + 16] = (bl >> 8) & 0xFF;
             bytes[dirOff + 17] = chain[0] & 0xFF;
             bytes[dirOff + 18] = (chain[0] >> 8) & 0xFF;
             bytes[dirOff + 19] = 0x00;
             bytes[dirOff + 20] = 0x0F;                 // attributes (constant on real disks)
-            bytes[dirOff + 21] = (len >> 16) & 0xFF;   // extended length (3rd byte)
+            bytes[dirOff + 21] = (declared >> 16) & 0xFF;  // extended length (3rd byte)
             for (let i = 22; i < 32; i++) bytes[dirOff + i] = 0xE5;  // tail fill (matches tap2d80.cpp / real disks)
             return bytes;
         }

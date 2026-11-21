@@ -74,6 +74,7 @@ export const Z80Asm = {
 
     // Parse indexed addressing, returns { reg: 'IX'|'IY', offset: expr }
     parseIndexed(op) {
+        if (!this.wrappedInParens(op)) return null;
         const match = op.match(/^\(I([XY])([+-].*?)?\)$/i);
         if (!match) return null;
         return {
@@ -82,9 +83,32 @@ export const Z80Asm = {
         };
     },
 
+    // True only when the operand's FIRST '(' is the one closed by its last
+    // ')' -- i.e. the whole operand is wrapped. `(1+2)*(3+4)` begins and ends
+    // with a paren without being wrapped in one, and reading it as memory
+    // indirection cut off its first and last characters, leaving `1+2)*(3+4`
+    // for the expression parser to reject. Quotes are skipped so a character
+    // literal like `')'` cannot close anything.
+    wrappedInParens(op) {
+        if (!op.startsWith('(') || !op.endsWith(')')) return false;
+        let depth = 0, quote = null;
+        for (let i = 0; i < op.length; i++) {
+            const c = op[i];
+            if (quote) {
+                if (c === '\\') i++;
+                else if (c === quote) quote = null;
+                continue;
+            }
+            if (c === '"' || c === "'") { quote = c; continue; }
+            if (c === '(') depth++;
+            else if (c === ')' && --depth === 0) return i === op.length - 1;
+        }
+        return false;
+    },
+
     // Check for indirect addressing: (BC), (DE), (HL), (nn)
     isIndirect(op) {
-        return op.startsWith('(') && op.endsWith(')');
+        return this.wrappedInParens(op);
     },
 
     // Check if operand is condition code
@@ -250,7 +274,7 @@ export const InstructionEncoder = {
     evalExpr(op, symbols, currentAddress) {
         // Remove parentheses if indirect
         let expr = op;
-        if (expr.startsWith('(') && expr.endsWith(')')) {
+        if (Z80Asm.wrappedInParens(expr)) {
             const inner = expr.slice(1, -1);
             // Check if it's a simple register
             const upper = inner.toUpperCase();

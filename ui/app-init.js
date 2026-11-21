@@ -88,6 +88,7 @@ import { initGotoPalette } from './goto-palette.js';
 import { initImportForeign } from './import-foreign.js';
 import { initBookmarks } from './bookmarks.js';
 import { initInputSettings } from './input-settings.js';
+import { initMediaSave } from './media-save.js';
 import { initAutofire } from './autofire.js';
 import { initFileLoader } from './file-loader.js';
 import { initDisasmFormatter, LABEL_MAX_CHARS } from './disasm-formatter.js';
@@ -111,7 +112,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.11.02';
+    const APP_VERSION = '26.11.04';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -3019,6 +3020,12 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
 
     // Save dropdown handler
+    const mediaSave = initMediaSave({
+        getSpectrum: () => spectrum,
+        showMessage,
+        downloadFile,
+    });
+
     saveSelect.addEventListener('change', (e) => {
         const action = e.target.value;
         e.target.selectedIndex = 0; // Reset dropdown
@@ -3029,62 +3036,13 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             saveProject();
         } else if (action === 'quick') {
             displayAPI.quicksave();
-        } else if (action === 'dsk') {
-            try {
-                if (!spectrum.fdc) {
-                    showMessage('DSK save requires ZX Spectrum +3', 'error');
-                    return;
-                }
-                // Find first drive with a disk
-                let driveIdx = -1;
-                for (let i = 0; i < 2; i++) {
-                    if (spectrum.fdc.drives[i].disk) { driveIdx = i; break; }
-                }
-                if (driveIdx < 0) {
-                    showMessage('No disk in FDC drive', 'error');
-                    return;
-                }
-                const dskImage = spectrum.fdc.drives[driveIdx].disk;
-                const data = dskImage.toBuffer();
-                const name = (spectrum.loadedFDCDisks[driveIdx] && spectrum.loadedFDCDisks[driveIdx].name) || 'disk.dsk';
-                const blob = new Blob([data], { type: 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = name.toLowerCase().endsWith('.dsk') ? name : name + '.dsk';
-                a.click();
-                URL.revokeObjectURL(url);
-                showMessage(`DSK saved (drive ${String.fromCharCode(65 + driveIdx)})`);
-            } catch (err) {
-                showMessage('Failed to save DSK: ' + err.message, 'error');
-            }
-        } else if (action === 'trd') {
-            try {
-                if (!spectrum.betaDisk) {
-                    showMessage('No Beta Disk interface', 'error');
-                    return;
-                }
-                // Use the drive selected in Settings → Disk
-                const driveIdx = getSelectedDriveIndex ? getSelectedDriveIndex() : 0;
-                if (!spectrum.betaDisk.drives[driveIdx].diskData) {
-                    showMessage(`No disk in drive ${String.fromCharCode(65 + driveIdx)} (select drive in Settings → Disk)`, 'error');
-                    return;
-                }
-                // Live image (TRD format, includes all TR-DOS writes)
-                const trdData = spectrum.betaDisk.drives[driveIdx].diskData;
-                const loaded = spectrum.loadedBetaDisks[driveIdx];
-                let name = (loaded && loaded.name) || 'disk.trd';
-                // Keep the original format: disks loaded from .scl save back as SCL
-                const asScl = name.toLowerCase().endsWith('.scl');
-                const data = asScl ? spectrum.betaDisk.trdToScl(trdData) : trdData;
-                if (!asScl && !name.toLowerCase().endsWith('.trd')) {
-                    name = name.replace(/[\[\]]/g, '') + '.trd';
-                }
-                downloadFile(name, data);
-                showMessage(`${asScl ? 'SCL' : 'TRD'} saved (drive ${String.fromCharCode(65 + driveIdx)})`);
-            } catch (err) {
-                showMessage('Failed to save disk: ' + err.message, 'error');
-            }
+        } else if (action === 'media') {
+            // One panel instead of a DSK and a TRD/SCL entry. Those two could
+            // only ever reach the drive picked in Settings -> Disk, and there
+            // was no entry at all for +D, Opus, Didaktik or Microdrive -- so a
+            // program that saved to one of those wrote somewhere the user could
+            // not get it back from.
+            mediaSave.open();
         } else {
             // Save snapshot (sna, z80, szx)
             try {
@@ -3298,6 +3256,10 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         }
         let f = 0;
         // Pump until the typed key sequence has finished...
+        // On the TR-DOS boot-file path (type 'trd', no diskRun) nothing is typed —
+        // bootTrdos() resets and pages the ROM in — so the loader is never active and
+        // this loop runs zero frames. settleFrames is the knob there; maxFrames is only
+        // its ceiling. Deliberate: see "maxFrames is a ceiling" in docs/automation.md.
         while (autoLoaderAPI.isActive() && f < maxFrames) { spectrum.runFrame(); f++; }
         // ...then a settle window so the ROM actually executes LOAD / boots.
         for (let i = 0; i < settleFrames && f < maxFrames; i++, f++) spectrum.runFrame();

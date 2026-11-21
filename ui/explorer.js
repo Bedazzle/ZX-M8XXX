@@ -12,7 +12,7 @@ import {
     SCREEN_SIZE, SCREEN_BITMAP_SIZE, SCREEN_ATTR_SIZE,
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
-import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, sclChecksum } from '../core/loaders.js';
+import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, UDILoader, sclChecksum } from '../core/loaders.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
@@ -808,7 +808,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
 
             // Check if Edit tab is active with an editor-supported format
             const activeSubtab = document.querySelector('.explorer-subtab.active');
-            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'zip', 'sna', 'z80', 'szx'];
+            const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'zip', 'sna', 'z80', 'szx'];
             const keepEditTab = activeSubtab && activeSubtab.dataset.subtab === 'edit' && editorFormats.includes(ext);
 
             // Render File Info (suppress auto-switch when staying on Edit tab)
@@ -863,6 +863,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             case 'scl':
                 explorerParsed = explorerParseSCL(explorerData);
                 break;
+            case 'udi':
+                explorerParsed = explorerParseUDI(explorerData);
+                break;
             case 'mgt':
                 explorerParsed = explorerParseMGT(explorerData);
                 break;
@@ -912,8 +915,17 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerParsed = explorerParseRawGraphics(explorerData, ext);
         }
 
+        // A format whose parse replaces the bytes it was given hands back `flatData`
+        // (UDI: raw track bytes flattened to a sector image). Every view addresses the
+        // file's data by offset into the parsed structure, so the flattened image has
+        // to BECOME the file's data -- the same drill-through the ZIP path does when
+        // it opens a single inner file.
+        if (explorerParsed && explorerParsed.flatData) {
+            explorerData = explorerParsed.flatData;
+        }
+
         // Auto-populate active editor panel for editable formats
-        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'sna', 'z80', 'szx'];
+        const editorFormats = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'dsk', 'opd', 'opu', 'd40', 'd80', 'sna', 'z80', 'szx'];
         if (editorFormats.includes(ext) && explorerParsed) {
             loadFileIntoPanel(targetPanel, explorerData, filename, ext, explorerParsed);
         } else if (ext === 'zip' && explorerParsed) {
@@ -1680,6 +1692,31 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         };
     }
 
+    // UDI holds raw track bytes -- gaps, address marks, sector CRCs -- not sector
+    // payloads, so there is nothing for the TR-DOS catalogue reader to index. Flatten
+    // it the way the emulator does on load and read the result as a TRD, so the
+    // catalogue, the Disk Map, extraction, the editors and the hex view all work
+    // unchanged. The flattened image is handed back as `flatData` for the caller to
+    // adopt as the file's data: every view downstream addresses by TRD offset.
+    //
+    // A readable UDI therefore reports type 'trd', not 'udi' -- what is on screen IS
+    // a sector image. What the flattening could not carry (512-byte sectors, sectors
+    // numbered outside 1-16, deleted-data marks, a bad CRC) is in `udi` for the info
+    // panel to state, rather than being dropped silently.
+    function explorerParseUDI(data) {
+        let udi;
+        try {
+            udi = UDILoader.load(data);
+        } catch (e) {
+            return { type: 'udi', error: e.message, size: data.length };
+        }
+        const parsed = explorerParseTRD(udi.trd);
+        parsed.udi = udi;
+        parsed.udiSize = data.length;
+        parsed.flatData = udi.trd;
+        return parsed;
+    }
+
     // MGT disk image parser
     function explorerParseMGT(data) {
         const files = MGTLoader.listFiles(data);
@@ -1863,7 +1900,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerZipFiles = files;
 
             // Auto-drill into ZIP if it contains exactly one supported file
-            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600 ||
@@ -1921,6 +1958,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                         return explorerParseTRD(explorerData);
                     case 'scl':
                         return explorerParseSCL(explorerData);
+                    case 'udi':
+                        return explorerParseUDI(explorerData);
                     case 'mgt':
                         return explorerParseMGT(explorerData);
                     case 'img':
@@ -2000,6 +2039,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 break;
             case 'scl':
                 html = explorerRenderSCLInfo();
+                break;
+            case 'udi':
+                // Only an unreadable UDI arrives here; a readable one reports as 'trd'
+                // and its UDI facts are a section inside the TRD info panel.
+                html = explorerRenderUDIInfo();
                 break;
             case 'mgt':
                 html = explorerRenderMGTInfo();
@@ -2623,6 +2667,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         explorerRenderTAPInfo,
         explorerRenderTRDInfo,
         explorerRenderTZXInfo,
+        explorerRenderUDIInfo,
         explorerRenderZ80Info,
         trdGetBasicAutostart,
         getRzxDecodeMode, setRzxDecodeMode,
@@ -4396,6 +4441,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         get explorerParseTAP() { return explorerParseTAP; },
         get explorerParseTRD() { return explorerParseTRD; },
         get explorerParseTZX() { return explorerParseTZX; },
+        get explorerParseUDI() { return explorerParseUDI; },
         get explorerRenderFileInfo() { return explorerRenderFileInfo; },
         get getZxCharset() { return getZxCharset; },
         get headerTypeToTrdExt() { return headerTypeToTrdExt; },
@@ -4448,10 +4494,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             editorImportTzxData(panel, data);
             updatePanelHeader(panel);
             editorRenderBlockList(panel);
-        } else if (ext === 'trd' || ext === 'scl') {
-            panel.fileType = ext;
+        } else if (ext === 'trd' || ext === 'scl' || ext === 'udi') {
+            // A UDI reaches here already flattened, so the TRD editor can work on it.
+            // The panel calls itself a TRD rather than a UDI because that is what its
+            // Save button can produce: there is no UDI writer, and one cannot be
+            // written from a sector image anyway -- the track bytes are gone.
+            panel.fileType = ext === 'udi' ? 'trd' : ext;
             panel.blocks = [];
-            panel.parsedFile = parsed || { type: ext, files: [], size: data.length };
+            panel.parsedFile = parsed || { type: panel.fileType, files: [], size: data.length };
             updatePanelHeader(panel);
             diskEditorRenderFileList(panel);
         } else if (ext === 'mgt' || (ext === 'img' && (data.length === 819200 || data.length === 409600))) {
@@ -4517,7 +4567,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             // Transparently unwrap ZIP — extract supported container files
             const rawCopy = new Uint8Array(data);
             const zipFiles = await ZipLoader.extract(rawCopy.buffer);
-            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
+            const supportedExts = ['tap', 'tzx', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
             const candidates = zipFiles.filter(f => {
                 const fext = f.name.split('.').pop().toLowerCase();
                 if (fext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
@@ -4662,7 +4712,11 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     addr: isBASIC ? 0 : (f.startAddr || 0),
                     autostart: f.autostart,
                     varsOffset: isBASIC ? (f.progLength ?? null) : null,
-                    rawData: f.data.slice(0, f.length)
+                    // All of it. An Opus file's header declares the loader, not
+                    // the game glued after it, so slicing to the header handed
+                    // the other panel a file with the game missing.
+                    rawData: f.data,
+                    declaredLength: f.length
                 });
             }
         } else if (panel.fileType === 'didaktik') {
@@ -4677,7 +4731,13 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     addr: isBASIC ? 0 : (f.startAddr || 0),
                     autostart: isBASIC ? ((f.startAddr > 0 && f.startAddr < 32768) ? f.startAddr : null) : null,
                     varsOffset: isBASIC ? (f.basicLength ?? null) : null,
-                    rawData: f.data.slice(0, f.length)
+                    // MDOS records the bytes used in the final sector in the FAT
+                    // itself, so a file's exact end is known WITHOUT the
+                    // directory's length — which means the two can disagree on
+                    // purpose, and slicing to the shorter one dropped whatever
+                    // was past it. Same bug the Opus had.
+                    rawData: f.data,
+                    declaredLength: f.length
                 });
             }
         } else if (panel.fileType === 'dsk') {
@@ -4998,7 +5058,10 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             }
             return diskEditorAddMdrFile(panel, mdrData, file.name, isPrint);
         } else if (panel.fileType === 'opd') {
-            return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart, file.varsOffset);
+            // declaredLength only travels between Opus disks: the other writers
+            // read by declared length, so a short one there would truncate the
+            // payload on the next read.
+            return diskEditorAddOpdFile(panel, file.rawData, file.name, file.type >= 0 ? file.type : 3, file.addr, file.autostart, file.varsOffset, file.declaredLength);
         } else if (panel.fileType === 'didaktik') {
             const isBasic = (file.type === 0);
             try {
@@ -5006,6 +5069,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                     name: (file.name || 'untitled').substring(0, 10),
                     type: isBasic ? 'P' : 'B',
                     data: file.rawData,
+                    declaredLength: file.declaredLength,
                     startAddr: isBasic
                         ? ((file.autostart != null && file.autostart >= 0 && file.autostart < 0x8000) ? file.autostart : 0x8000)
                         : (file.addr || 0),
@@ -5537,12 +5601,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 diskAddDialog.classList.remove('hidden');
             } else if (panel.fileType === 'opd') {
                 // OPD: reuse disk add dialog
-                const sides = OPDLoader.isDoubleSided(panel.rawData) ? 2 : 1;
-                const totalSectors = (sides === 2 ? OPDLoader.DS_SIZE : OPDLoader.SS_SIZE) / OPDLoader.BYTES_PER_SECTOR;
-                const maxSize = (totalSectors - OPDLoader.DATA_START_SECTOR) * OPDLoader.BYTES_PER_SECTOR;
+                // In the disk's own sector size: a double-density Opus disk
+                // counts in 512s, and sizing it in 256s both halves the room it
+                // appears to have and miscounts the sectors a file will take.
+                const bps = OPDLoader.layoutOf(panel.rawData).bytesPerSector;
+                const totalSectors = Math.floor(panel.rawData.length / bps);
+                const maxSize = (totalSectors - OPDLoader.DATA_START_SECTOR) * bps;
                 const fileData = panel.pendingFileData;
                 const tooLarge = fileData.length > maxSize;
-                const sectors = Math.ceil(fileData.length / OPDLoader.BYTES_PER_SECTOR);
+                const sectors = Math.ceil(fileData.length / bps);
                 diskAddName.value = hobName.substring(0, 10);
                 diskAddName.maxLength = 10;
                 diskAddAddr.value = hobetaFile ? fmtAddr(hobetaFile.startAddress) : fmtAddr(0x8000);
