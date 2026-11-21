@@ -18,8 +18,15 @@ export function downloadFile(filename, content) {
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
+    // In the document, and revoked a tick later -- both for Firefox. It ignores
+    // a click on an anchor that is not in the DOM, and revoking the object URL
+    // in the same tick can cancel the download that click just started. Chrome
+    // tolerates both, so this failed on one browser only and silently: no error,
+    // no file.
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
 }
 
 // Safe localStorage wrappers — handle quota errors, private browsing, missing storage

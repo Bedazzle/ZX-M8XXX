@@ -16,6 +16,32 @@
   - Update 2026-06: the ASM ⚙ "CP866 view" setting (display-only highlight-layer transform,
     `zxm8_asmCp866View`) now makes such strings readable without touching the bytes — the
     remaining gap is only *editing* Cyrillic strings naturally, which still needs this item.
+- [ ] **A WD17xx overrun is never reported.** The DRQ schedule is absolute for reads as well
+  as writes now, so the host CAN be late: a byte whose due time has passed is delivered at
+  once, and that is exactly where a real chip would raise LOST DATA and abandon the sector.
+  We deliver it anyway and the transfer always succeeds.
+  - It was unreachable before — on a service-relative schedule the host is late by
+    construction never — so this is a new gap rather than an old one.
+  - The hard part is not the flag, it is deciding how late is late. A real chip loses the
+    byte when the next one lands on it, i.e. one byte time, and nothing in the three ROMs we
+    drive is anywhere near that (the Opus NMI handler is 87 T-states against 111.8), so no
+    real workload would trip it. Worth doing with a test that holds the CPU off deliberately,
+    not by guessing a threshold.
+- [ ] **Read/Write Sector have no rotational latency.** A real command waits for the
+  requested sector's ID field to come under the head — 0 to 1 revolution, half on average —
+  where ours transfers at once. The Write Track index wait landed; this is the half that did
+  not, and deliberately: it is the one rotation gap with a real cost behind it.
+  - A sector read would go from instant to ~100 ms on average, so a 48K load that takes
+    seconds today would take minutes. Real hardware is that slow, but real hardware also
+    beats it with **interleave** — and that only works if the model knows where each sector
+    physically sits. A flat `.trd`/`.opd` is sector N at offset N with no physical order in
+    it, so latency without a layout model would punish exactly the loads interleave exists
+    to make fast, and punish them more than hardware does.
+  - So the layout model comes first: `formatTrackStream` already lays out interleave, and
+    `absoluteSlot`/`sectorUnderHead` already answer where the head is. What is missing is a
+    per-image physical order for disks we did not format ourselves.
+  - Nothing is wrong today because of its absence; this is realism with a price, which is
+    why it is written down rather than built.
 - [ ] **halt2int test**: Investigate and fix timing/interrupt issue to pass HALT2INT test
   - Test file: `tests/halt2int.tap`
   - Author: Mark Woodmass

@@ -545,6 +545,17 @@ typed sequence finishes plus a settle window for the ROM to run the load. 128K /
 Pentagon / +2 / +2A / +3 and TR-DOS/+3 boots are handled by the same machine-aware
 sequences the UI uses.
 
+**`maxFrames` is a ceiling, not a budget — and on the TR-DOS *boot-file* path
+(`type: 'trd'` with no `diskRun`) it is only a ceiling on `settleFrames`.** There is
+nothing typed there: `bootTrdos()` resets the machine and pages the TR-DOS ROM in, so
+the auto-loader is never active and the pump loop runs **zero** frames. Only the settle
+window executes, which makes `settleFrames` the knob that matters and `maxFrames`
+relevant only if you set it *below* `settleFrames`. Raising `maxFrames` on that path
+buys nothing. The `diskRun` path does type a `RUN "name"`, so both apply there, as they
+do for tape and `.dsk`. This is a decision rather than an oversight: making the boot
+path hold the loader active would let the pump loop run to `maxFrames` every time —
+nothing would be left to finish it — which is slower for a number no caller needs.
+
 ## Raw access hooks
 
 `onAccess({onFetch, onRead, onWrite})` registers callbacks fired on **every** CPU

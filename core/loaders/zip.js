@@ -378,6 +378,14 @@
         /**
          * Find all Spectrum files in ZIP
          * Returns array of {name, data, type} objects
+         *
+         * This list is its own source of truth: the Load menu reaches a zipped file
+         * through here, NOT through SnapshotLoader.detectType, so a format the
+         * loaders already read is still invisible inside an archive until it is
+         * added here too -- which is how a zipped .udi came back "no supported
+         * files" while a loose one loaded. tests/loader-test checks every type this
+         * claims, so the next format left out fails there rather than in a bug
+         * report.
          */
         static async findAllSpectrum(zipData) {
             const files = await ZipLoader.extract(zipData);
@@ -387,7 +395,7 @@
                 const name = file.name.toLowerCase();
                 if (name.endsWith('.sna') || name.endsWith('.tap') || name.endsWith('.tzx') ||
                     name.endsWith('.z80') || name.endsWith('.szx') || name.endsWith('.rzx') ||
-                    name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.dsk') ||
+                    name.endsWith('.trd') || name.endsWith('.scl') || name.endsWith('.udi') || name.endsWith('.dsk') ||
                     name.endsWith('.mgt') || name.endsWith('.img') || name.endsWith('.mdr') ||
                     name.endsWith('.opd') || name.endsWith('.opu') ||
                     name.endsWith('.d80') || name.endsWith('.d40') || name.endsWith('.wav')) {
@@ -399,6 +407,7 @@
                     else if (name.endsWith('.rzx')) type = 'rzx';
                     else if (name.endsWith('.trd')) type = 'trd';
                     else if (name.endsWith('.scl')) type = 'scl';
+                    else if (name.endsWith('.udi')) type = 'udi';
                     else if (name.endsWith('.dsk')) type = 'dsk';
                     else if (name.endsWith('.mdr')) type = 'mdr';
                     else if (name.endsWith('.mgt') || name.endsWith('.img')) type = 'mgt';
