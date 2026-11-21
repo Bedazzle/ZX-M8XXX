@@ -76,6 +76,7 @@ import { Fdd3000 } from './fdd3000.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { SAA1099 } from './saa1099.js';
+import { GeneralSound } from './gs.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -181,6 +182,11 @@ import { Disassembler } from './disasm.js';
             this.saa = new SAA1099();
             this.saaOn = storageGet('zxm8_saa') === 'true';
             this.saaChanges = [];
+            // General Sound (core/gs.js): its own Z80 at 12 MHz, ports $BB/$B3.
+            // The ROM (gs104 / gs105a / gs105b) is loaded by the UI.
+            this.gs = new GeneralSound(parseInt(storageGet('zxm8_gsRam') || '512', 10));
+            this.gsOn = storageGet('zxm8_gs') === 'true';
+            this.gsRomFile = storageGet('zxm8_gsRom') || 'gs105b.rom';
             // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded
             // into MIDI messages for onMidiMessage (Web MIDI in the UI)
             this.midiEnabled = false;
@@ -1587,6 +1593,15 @@ import { Disassembler } from './disasm.js';
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
             if (this.saa) { this.saa.reset(); this.saaChanges = []; }
+            // General Sound has a reset line of its own (port $33, power-on):
+            // a Spectrum reset leaves it running, as Unreal does (GSReset=0),
+            // so a program started after a reset finds it past its RAM test
+            // (0.5 s on 128KB, 2.5 s on 512KB, 10 s on 2MB). Only its clock
+            // follows the Spectrum's frame again.
+            if (this.gs) {
+                this.gs.specClock = this._gsSpecClock();
+                this.gs.t = 0; this.gs._ended = false; this.gs.changes = [];
+            }
             this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
             // MIDI out: a note held at reset would never get its Note Off, so
             // All Notes Off on every channel, and the UART starts afresh
@@ -1946,6 +1961,18 @@ import { Disassembler } from './disasm.js';
             this.saaChanges.length = 0;
         }
 
+        /** The Spectrum's clock, for the General Sound's time base */
+        _gsSpecClock() { return is128kCompat(this.machineType) ? 3546900 : 3500000; }
+
+        /** General Sound on or off, its RAM (128 / 512 / 2048 KB) and ROM data */
+        setGs(on, ramKB = this.gs.ramKB, romData = null) {
+            this.gsOn = !!on;
+            if (ramKB !== this.gs.ramKB) this.gs.setRamSize(ramKB);
+            if (romData) this.gs.loadRom(romData);
+            this.gs.reset();
+            this.gs.specClock = this._gsSpecClock();
+        }
+
         /** SAA1099 on or off (it starts silent) */
         setSaa(on) {
             this.saaOn = !!on;
@@ -2187,7 +2214,11 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
+                if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                    // General Sound: $BB status, $B3 data from the GS
+                    this.gs.syncTo(this.cpu.tStates);
+                    result = this.gs.portIn(lowByte);
+                } else if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
                     // Didaktik Gama 8255: control reads $FF (MHB8255), port C its latch
                     result = lowByte === 0x7F ? 0xFF : this._gamaPortC;
                 } else if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
@@ -2488,6 +2519,14 @@ import { Disassembler } from './disasm.js';
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
             // SAA1099: $01FF address, $00FF data (not on a Timex, whose $FF is
             // the SCLD's, nor while TR-DOS is paged in, as in Xpeccy)
+            // General Sound: $BB command, $B3 data to the GS
+            if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                this.gs.syncTo(this.cpu.tStates);
+                this.gs.portOut(lowByte, val);
+            } else if (this.gsOn && this.gs.rom && lowByte === 0x33) {
+                this.gs.syncTo(this.cpu.tStates);
+                this.gs.control(val);           // $33: bit 7 card reset, bit 6 NMI
+            }
             if (this.saaOn && lowByte === 0xFF && !this.profile.timex && !this.memory.trdosActive) {
                 this.saaChanges.push({ tStates: this.cpu.tStates, addr: (port >> 8) & 1, value: val });
             }
@@ -2833,6 +2872,7 @@ import { Disassembler } from './disasm.js';
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
             this._saaFlush();
+            if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3412,6 +3452,9 @@ import { Disassembler } from './disasm.js';
                 }
             }
 
+            // General Sound: run it to the end of the frame
+            if (this.gsOn) this.gs.endFrame(tstatesPerFrame);
+
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
@@ -3427,7 +3470,8 @@ import { Disassembler } from './disasm.js';
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
-                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges });
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
+                      gs: this.gsOn && this.gs.rom ? this.gs : null });
             }
 
             // Advance AY logging frame counter
@@ -3554,6 +3598,7 @@ import { Disassembler } from './disasm.js';
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
             this._saaFlush();
+            if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3849,6 +3894,9 @@ import { Disassembler } from './disasm.js';
                 }
             }
 
+            // General Sound: run it to the end of the frame
+            if (this.gsOn) this.gs.endFrame(tstatesPerFrame);
+
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
@@ -3864,7 +3912,8 @@ import { Disassembler } from './disasm.js';
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
-                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges });
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
+                      gs: this.gsOn && this.gs.rom ? this.gs : null });
             }
 
             // Advance AY logging frame counter
@@ -11104,6 +11153,11 @@ import { Disassembler } from './disasm.js';
             let saaIdx = 0;
             const SAA_VOLUME = 1.0;
             const saaWrite = (c) => { if (c.addr) saa.writeAddress(c.value); else saa.writeData(c.value); };
+            // General Sound: its DAC levels, changed at Spectrum frame T-states
+            const gs = extra && extra.gs;
+            const gsChanges = gs ? gs.changes : [];
+            let gsIdx = 0, gsL = gs ? gs.startLevel[0] : 0, gsR = gs ? gs.startLevel[1] : 0;
+            const GS_VOLUME = 1.0;
             if (ay2 && extra.ay2Snapshot) ay2.importState(extra.ay2Snapshot);
             if (!this.enabled || (!this.workletNode && !this.scriptNode)) {
                 return;                 // (Spectrum._saaFlush gives the chip its writes)
@@ -11195,6 +11249,14 @@ import { Disassembler } from './disasm.js';
                     const [sl, sr] = saa.run(saaClocksPerSample);
                     left += sl * SAA_VOLUME;
                     right += sr * SAA_VOLUME;
+                }
+
+                if (gs) {
+                    while (gsIdx < gsChanges.length && gsChanges[gsIdx].t <= sampleTstates) {
+                        gsL = gsChanges[gsIdx].l; gsR = gsChanges[gsIdx].r; gsIdx++;
+                    }
+                    left += gsL * GS_VOLUME;
+                    right += gsR * GS_VOLUME;
                 }
 
                 // DAC: channels 0/1 left, 2/3 right; $80 is silence

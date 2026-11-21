@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>General Sound Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>General Sound Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // General Sound (core/gs.js): a Z80 at 12 MHz with its own ROM and RAM,
+        // ports $BB/$B3, four DACs.
+        import { GeneralSound } from '../core/gs.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('the board on its own');
+            const gs = new GeneralSound(512);
+            gs.reset();
+            gs.ram[0x6000] = 0x90;                       // $4000-$7FFF is RAM $4000-$7FFF
+            gs.ram[0x6300] = 0x70;
+            gs._out(6, 63); gs._out(9, 63);
+            gs._read(0x6000); gs._read(0x6300);
+            const last = gs.changes[gs.changes.length - 1];
+            assert(gs.ch[0] === 0x90 && gs.ch[3] === 0x70 && last && last.l > 0 && last.r < 0,
+                'a read from $6000 / $6300 feeds DAC 1 / 4 (1+2 left, 3+4 right)', JSON.stringify(last));
+            gs._out(6, 0); gs._out(9, 0);
+            assert(gs.level[0] === 0 && gs.level[1] === 0, 'volume 0 silences the channel');
+            gs._out(0, 0);
+            gs.rom = new Uint8Array(32768).map((_, i) => i & 0xFF);
+            assert(gs._read(0x8005) === 5 && gs._read(0xC005) === 5, 'page 0: the ROM at $8000');
+            gs._out(0, 1); gs._write(0x8000, 0x11); gs._write(0xC000, 0x33); gs._out(0, 2); gs._write(0x8000, 0x22);
+            gs._out(0, 1);
+            assert(gs._read(0x8000) === 0x11 && gs._read(0x4000) === 0x33, 'page 1 is RAM 0-32K; $4000-$7FFF is its upper half (as in Unreal)');
+            gs._out(0, 17);
+            assert(gs._read(0x8000) === 0x11, '512KB: page 17 wraps to page 1 (16 pages of 32KB)');
+            gs.portOut(0xBB, 0x23);
+            assert((gs.status & 1) && gs._in(1) === 0x23, '$BB: command, status bit 0');
+            gs._in(5);
+            assert(!(gs.status & 1), 'GS port 5 clears bit 0');
+            gs.portOut(0xB3, 0x5A);
+            assert((gs.status & 0x80) && gs._in(2) === 0x5A && !(gs.status & 0x80), '$B3 out: data to the GS, bit 7 until taken');
+            gs._out(3, 0xA5);
+            assert((gs.portIn(0xBB) & 0x80) && gs.portIn(0xB3) === 0xA5 && !(gs.portIn(0xBB) & 0x80), 'GS port 3: data to the Spectrum, bit 7 until read');
+            assert(gs.isPort(0xB3) && gs.isPort(0xBB) && !gs.isPort(0xB7) && !gs.isPort(0xFB), 'ports: (port & $F7) = $B3');
+            gs._out(0, 5); gs.cpu.pc = 0x1234; gs.status = 0x7F;
+            gs.control(0x80);
+            assert(gs.cpu.pc === 0 && gs.page === 0 && gs.status === 0x7F, '$33 bit 7: card reset, the mailbox stays');
+            gs.control(0x40);
+            assert(gs._nmiPending, '$33 bit 6: an NMI for the card');
+        }
+
+        async function runTests() {
+            units();
+            section('the real ROM (gs105b), commands from a 128K');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/gs105b.rom'))) { skip('roms/gs105b.rom not present'); return; }
+            const rom = new Uint8Array(await (await fetch('../roms/gs105b.rom')).arrayBuffer());
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { on: sp.gsOn, ram: sp.gs.ramKB, rom: sp.gs.rom };
+            async function cmd(c, nread) {
+                sp.portWrite(0x00BB, c);
+                let n = 0;
+                while ((sp.portRead(0x00BB) & 1) && n++ < 50) await zx.runFrames(1);
+                const out = [];
+                for (let i = 0; i < nread; i++) {
+                    let k = 0;
+                    while (!(sp.portRead(0x00BB) & 0x80) && k++ < 50) await zx.runFrames(1);
+                    out.push(sp.portRead(0x00B3));
+                }
+                return { taken: n < 50, out };
+            }
+            async function ready() {
+                for (let f = 0; f < 1500; f += 25) {
+                    await zx.runFrames(25);
+                    const pc = sp.gs.cpu.pc;
+                    if (pc >= 0x26E && pc <= 0x283) return true;    // the command loop
+                }
+                return false;
+            }
+            for (const [ram, pages, free] of [[128, 3, 0x01C000], [512, 15, 0x07C000], [2048, 62, 0x1F4000]]) {
+                sp.setGs(true, ram, rom);
+                const up = await ready();
+                const a = await cmd(0x23, 1), b = await cmd(0x20, 3);
+                const total = b.out[0] | (b.out[1] << 8) | (b.out[2] << 16);
+                assert(up && a.taken && a.out[0] === pages && total === free,
+                    `${ram}KB: the ROM tests its RAM and answers $23 (pages-1) = ${pages}, $20 = $${free.toString(16)}`,
+                    `ready ${up} pages ${a.out[0]} total ${total.toString(16)}`);
+            }
+            const gsPc = sp.gs.cpu.pc;
+            sp.reset();
+            assert(sp.gs.cpu.pc === gsPc && gsPc !== 0, 'a Spectrum reset leaves the GS running (its own reset line, as Unreal)');
+            sp.portWrite(0x0033, 0x80);
+            assert(sp.gs.cpu.pc === 0 && sp.gs.page === 0, 'OUT $33,$80 resets the card');
+            sp.setGs(false);
+            sp.portWrite(0x00BB, 0x23);
+            assert(sp.gs.cmd === 0, 'off: its ports are not decoded');
+            sp.setGs(was.on, was.ram, null);
+            if (!was.rom) sp.gs.rom = null;
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

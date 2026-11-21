@@ -479,6 +479,29 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Envelope parameters written while an envelope runs wait for the end of its period, as in the data sheet (Xpeccy and SAASound do the same; MAME restarts at once); an envelope that is off or has finished, or one being switched off, takes them at once.
 - Not done: a snapshot does not keep the SAA's registers.
 
+## General Sound
+
+`core/gs.js`, `Spectrum.setGs`. **Settings → Audio → General Sound**, with the ROM (`roms/gs105b.rom`, `gs105a.rom`, `gs104.rom`, 32KB) and the RAM. 128KB and 512KB are the classic boards; 2MB is a modern one.
+
+- A Z80 of its own at 12 MHz with an INT every 320 T-states (37.5 kHz), after Xpeccy's `sound/gs.c` (MIT). The memory map, `$33` and the reset policy follow Unreal-NG (`soundchip_gs.cpp`, GPL-3.0).
+- **GS memory:**
+  - `$0000-$3FFF`: the ROM's first 16KB.
+  - `$4000-$7FFF`: RAM `$4000-$7FFF` (the upper half of page 1), where the sample buffers live.
+  - `$8000-$FFFF`: page *n* of GS port 0. Page 0 is the whole ROM; page *n* is 32KB of RAM, page *n*-1, masked to the RAM fitted.
+- **DACs:** each takes the byte the Z80 reads from `$6000-$7FFF`, A9-A8 picking the channel. Volumes are 6-bit (GS ports 6-9). Channels 1+2 go left, 3+4 right.
+- **GS ports:** 1 command, 2 data in, 3 data out, 4 status, 5 command taken, 10 and 11 the flag tricks.
+- **Spectrum ports:**
+  - `$BB`: command / status (bit 7 data, bit 0 command).
+  - `$B3`: data.
+  - `$33`: control. Bit 7 resets the card; the mailbox stays. Bit 6 sends the card an NMI.
+- **Timing:** the GS runs behind the Spectrum and is brought up to time at every access to its ports and at each frame's end. Its DAC levels go to the audio with their T-states.
+- **Reset:** a Spectrum reset leaves the card running (its own reset line, as in Unreal with `GSReset=0`); switching it on is the power-on. The ROM's RAM test takes 0.5 s on 128KB, 2.5 s on 512KB and 10 s on 2MB, so a program started after a reset finds the card ready.
+- **Checked:**
+  - The ROM answers `$23` (pages) and `$20` (free RAM) right for 128KB, 512KB and 2MB.
+  - SeaDragon (TR-DOS, Pentagon) uploads its module and plays: the card in IM 2, 768 INTs a Pentagon frame, the DACs changing.
+  - `tests/gs-test.html`.
+- **Not done:** snapshots do not keep the card; there is no stereo cross-feed option (Unreal mixes 50% across).
+
 ## Spectrum 128 MIDI out (AY register 14)
 
 `core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.

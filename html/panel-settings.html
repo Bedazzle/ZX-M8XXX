@@ -372,6 +372,22 @@
                         <label class="checkbox-label" style="margin-left: 15px;" title="SAA1099 (ZXM-SoundCard, as in Xpeccy and Unreal Speccy): 6 channels, 8 MHz, stereo. OUT $01FF selects a register, OUT $00FF writes it. Not on the Timex machines ($FF is the SCLD's), silent while TR-DOS is paged in.">
                             <input type="checkbox" id="chkSaa"> SAA1099
                         </label>
+                    </div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="General Sound: a Z80 at 12 MHz with its own ROM and RAM, four 8-bit DACs. Port $BB: command / status, $B3: data. ROMs: roms/gs104.rom, gs105a.rom, gs105b.rom (32KB).">
+                            <input type="checkbox" id="chkGs"> General Sound
+                        </label>
+                        <select id="selGsRom" style="margin-left: 6px;" title="General Sound ROM">
+                            <option value="gs105b.rom">ROM 1.05b</option>
+                            <option value="gs105a.rom">ROM 1.05a</option>
+                            <option value="gs104.rom">ROM 1.04</option>
+                        </select>
+                        <select id="selGsRam" style="margin-left: 6px;" title="General Sound RAM: 128KB and 512KB are the classic boards, 2MB the modern ones">
+                            <option value="128">128KB</option>
+                            <option value="512">512KB</option>
+                            <option value="2048">2MB</option>
+                        </select>
+                        <span id="gsStatus" class="iface-status" style="margin-left: 6px;"></span>
                         <label style="margin-left: 15px;" title="8-bit DAC: Covox (one port, mono), Specdrum (Cheetah, port $DF, mono), Soundrive 1.05, four channels: mode 1 $0F/$1F left, $4F/$5F right; mode 2 $F1/$F3 left, $F9/$FB right">
                             DAC
                             <select id="selDac" style="margin-left: 4px;">
