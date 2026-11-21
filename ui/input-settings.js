@@ -47,6 +47,9 @@ export function initInputSettings({
     const betaDiskStatus = document.getElementById('betaDiskStatus');
     // Beta 48 row (declared up here: updateBetaDiskStatus runs during init)
     const selBetaVariant = document.getElementById('selBetaVariant');
+    const chkFdd3000 = document.getElementById('chkFdd3000');
+    const selFdd3000Rom = document.getElementById('selFdd3000Rom');
+    const fdd3000Status = document.getElementById('fdd3000Status');
     const beta48Status = document.getElementById('beta48Status');
     const btnBetaMagic = document.getElementById('btnBetaMagic');
     const chkPlusD = document.getElementById('chkPlusD');
@@ -434,6 +437,7 @@ export function initInputSettings({
     function updateBetaDiskStatus() {
         updateIfaceRomName('betaDisk');
         updateBeta48Status();
+        updateFdd3000Status();
         const spectrum = getSpectrum();
         if (spectrum.profile.betaDiskDefault) {
             betaDiskStatus.textContent = '(always on for ' + spectrum.profile.name + ')';
@@ -655,7 +659,7 @@ export function initInputSettings({
                     spectrum[flag] = false; storageSet(key, false); off.push(name);
                 }
             }
-            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus();
+            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus(); if (typeof updateFdd3000Status === 'function') updateFdd3000Status();
             updateBetaDiskStatus();
             if (off.length) showMessage('DISCiPLE enabled — ' + off.join(', ') + ' disabled');
         }
@@ -1031,6 +1035,77 @@ export function initInputSettings({
                 : '128K hardware patch off — Didaktik disabled (machine reset)');
         }
     });
+
+    // ---- Timex FDD 3000 (core/fdd3000.js) ----
+
+    async function fetchRomIfMissing(file) {
+        if (romData[file]) return true;
+        try {
+            const res = await fetch('roms/' + file);
+            if (res.ok) { romData[file] = await res.arrayBuffer(); return true; }
+        } catch (e) { /* not served */ }
+        return false;
+    }
+
+    function updateFdd3000Status() {
+        const sp = getSpectrum();
+        if (!sp || !chkFdd3000) return;
+        chkFdd3000.checked = !!sp.fdd3000Enabled;
+        selFdd3000Rom.value = sp.fdd3000RomFile;
+        const machineOk = !sp._isHc() &&
+            (sp.profile.pagingModel === 'none' || sp.profile.pagingModel === '128k');
+        chkFdd3000.disabled = !machineOk;
+        if (!machineOk) {
+            fdd3000Status.textContent = sp._isHc() ? 'not available on HC-2000 — only its HC IF1'
+                : '48K, 128K or +2 only';
+        } else if (!romData[sp.fdd3000RomFile] || !romData['fdd3000-boot.rom']) {
+            fdd3000Status.textContent = `(${!romData[sp.fdd3000RomFile] ? sp.fdd3000RomFile : 'fdd3000-boot.rom'} required)`;
+        } else if (sp.fdd3000Enabled && sp.plusDEnabled) {
+            fdd3000Status.textContent = '+D is off while the FDD 3000 is on (both use port $EF)';
+        } else {
+            fdd3000Status.textContent = '';
+        }
+    }
+
+    async function applyFdd3000() {
+        const sp = getSpectrum();
+        if (sp.fdd3000Enabled) {
+            await fetchRomIfMissing(sp.fdd3000RomFile);
+            await fetchRomIfMissing('fdd3000-boot.rom');
+            try {
+                if (romData[sp.fdd3000RomFile]) sp.fdd3000.loadRom(new Uint8Array(romData[sp.fdd3000RomFile]));
+                if (romData['fdd3000-boot.rom']) sp.fdd3000.loadBootRom(new Uint8Array(romData['fdd3000-boot.rom']));
+            } catch (err) { showMessage(err.message, 'error'); }
+        }
+        sp.updateBetaDiskPagingFlag();
+        updateFdd3000Status();
+        notifyDiskSystems();
+        sp.reset();
+    }
+
+    if (chkFdd3000) {
+        chkFdd3000.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.fdd3000Enabled = chkFdd3000.checked;
+            storageSet('zxm8_fdd3000', chkFdd3000.checked);
+            await applyFdd3000();
+            showMessage(chkFdd3000.checked ? 'Timex FDD 3000 on (machine reset)' : 'Timex FDD 3000 off (machine reset)');
+        });
+        selFdd3000Rom.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.fdd3000RomFile = selFdd3000Rom.value;
+            storageSet('zxm8_fdd3000Rom', selFdd3000Rom.value);
+            await applyFdd3000();
+            showMessage('FDD 3000 interface ROM: ' + selFdd3000Rom.value + ' (machine reset)');
+        });
+        document.getElementById('btnFdd3000Reset').addEventListener('click', () => {
+            const sp = getSpectrum();
+            if (!sp._fdd3000PagingEnabled) { showMessage('Timex FDD 3000 is off', 'error'); return; }
+            sp.fdd3000.reset(false);
+            showMessage('FDD 3000 station reset — it boots from drive A; then reset the Spectrum');
+        });
+        updateFdd3000Status();
+    }
 
     chkDidaktik.addEventListener('change', () => {
         const spectrum = getSpectrum();

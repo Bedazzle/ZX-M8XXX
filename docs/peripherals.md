@@ -290,6 +290,18 @@ take some other catalogue syntax, which has not been established here.
 - Save states/rewind carry its RAM and latch (`_snapshotMedia().tkmem`); `.sna`/`.z80`/`.szx` of a 48K do not.
 - `tests/tkmem-test.html`.
 
+## Timex FDD 3000 (TOS / CP/M DSK)
+
+`core/fdd3000.js`, port of the FUSE patch fdd3000e 0.2.1.1 (Sławomir Szczyrba). **Settings → Machines → Disk interfaces → Timex FDD 3000**; 48K / 128K / +2 (not HC-2000, not +2A/+3); the +D is off while it is on (both use port `$EF`).
+
+- **Two computers.** The station is its own Z80 (64KB RAM, 2KB boot ROM `roms/fdd3000-boot.rom`, WD1770) — a second `Z80` instance stepped once per Spectrum instruction and twice every fifth (as FUSE), HALT included. A Spectrum reset leaves it running; **Reset FDD** restarts it (FUSE's "FDD3000 reset"), and it loads TOS from drive A.
+- **Spectrum side (TI-397).** 4KB ROM (`fdd3stavi.rom` for the Spectrum — FUSE's default — or `fdd3timex.rom`), mirrored over `$0000-$1FFF`, 8KB RAM at `$2000-$3FFF`; paged in at the `$0000`/`$0008` fetch, out after the instruction at `$0604`. Port `$xxEF`: write = Spectrum → station latch, read = station → Spectrum.
+- **Station I/O** (A7-A5): `$20` latches (read: Spectrum byte | DRQ in bit 7), `$C0` WD registers, `$E0` config (active-low drive select, side, density, head; bit 6 = boot ROM out); serial ports not emulated. INTRQ → station INT.
+- **Controller.** `Fdd3000Fdc` = the +D's instant-completion WD177x reading sectors by C/H/R from DSK images (4 drives). INTRQ rises a few station instructions after a command ends (`FDD3000_INTRQ_DELAY`): TOS reads the status (which clears INTRQ), does EI and waits for the interrupt, so an instant INTRQ would be lost and every Seek would time out.
+- **Use.** Insert a DSK (Disk tab, system "FDD 3000"), Reset FDD, reset the Spectrum: with a system disk the second copyright line (`© 91 STAVI 128K TOS A.2`) appears, a disk with autostart starts; `CAT *` lists a disk. On a 128K the 48K ROM is selected, as in FUSE.
+- `tests/fdd3000-test.html` (with the ROMs and `headless/fdd3000/tos.dsk`: the real boot and `CAT *`). Checked: TOS A.2 (CAT *), Battle Command (autostart, 80-track DS disk).
+- Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

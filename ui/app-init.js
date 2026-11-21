@@ -628,6 +628,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             if (spectrum.if1Enabled) await maybe('if1.rom');
             if (spectrum.opusEnabled) await maybe('opus.rom');
             if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
+            if (spectrum.fdd3000Enabled) { await maybe(spectrum.fdd3000RomFile); await maybe('fdd3000-boot.rom'); }
             if (profile.pagingModel === 'hc2000') await maybe('hc-if1.rom');   // built-in HC IF1
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);

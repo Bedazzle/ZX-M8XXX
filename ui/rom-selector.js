@@ -257,6 +257,15 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (romData['didaktik.rom'] && spec.didaktikEnabled) {
             spec.memory.loadDidaktikRom(romData['didaktik.rom']);
         }
+        // Timex FDD 3000: the interface ROM (fdd3stavi.rom for a Spectrum, or
+        // fdd3timex.rom) and the station's boot ROM
+        if (spec.fdd3000 && spec.fdd3000Enabled) {
+            const ifr = romData[spec.fdd3000RomFile], boot = romData['fdd3000-boot.rom'];
+            try {
+                if (ifr) spec.fdd3000.loadRom(new Uint8Array(ifr));
+                if (boot) spec.fdd3000.loadBootRom(new Uint8Array(boot));
+            } catch (e) { console.warn('[FDD 3000] ' + e.message); }
+        }
         // HC-2000: its HC IF1 is built in, so its ROM goes with the machine
         if (romData['hc-if1.rom'] && profile.pagingModel === 'hc2000' && spec.hcIf1) {
             spec.memory.loadHcIf1Rom(romData['hc-if1.rom']);
@@ -365,6 +374,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // Didaktik 80 ROM (for D40/D80 disks)
         if (!seen.has('didaktik.rom')) {
             romPaths.push({ path: 'roms/didaktik.rom', file: 'didaktik.rom' });
+        }
+        // Timex FDD 3000: interface ROMs and the station's boot ROM
+        for (const f of ['fdd3stavi.rom', 'fdd3timex.rom', 'fdd3000-boot.rom']) {
+            if (!seen.has(f)) romPaths.push({ path: 'roms/' + f, file: f });
         }
         // HC IF1 ROM (HC-2000's built-in disk interface, 16KB)
         if (!seen.has('hc-if1.rom')) {

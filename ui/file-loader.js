@@ -103,6 +103,7 @@ export function initFileLoader({
     const DISK_SYSTEM_TYPES = {
         dsk: ['dsk'],
         hc: ['dsk', 'img'],            // HC IF1: DSK, or raw IMG (converted). MGT is +D/DISCiPLE
+        fdd3: ['dsk'],                 // Timex FDD 3000 (TOS / CP/M)
         trd: ['trd', 'scl'],
         mgt: ['mgt', 'img'],
         mdr: ['mdr'],
@@ -131,6 +132,8 @@ export function initFileLoader({
             systems.push({ id: 'hc', name: 'HC IF1', blankLabel: 'Blank HC disk', drives: 2 });
         } else if (spectrum.fdc) {
             systems.push({ id: 'dsk', name: '+3DOS', blankLabel: 'Blank DSK', drives: 2 });
+        } else if (spectrum._fdd3000PagingEnabled) {
+            systems.push({ id: 'fdd3', name: 'FDD 3000', blankLabel: 'Blank DSK', drives: 4 });
         }
         if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom()) ||
             spectrum.memory.beta48On) {
@@ -262,6 +265,7 @@ export function initFileLoader({
                 : result.diskType === 'mgt' ? 'plusd'
                 : result.diskType === 'opd' ? 'opus'
                 : result.diskType === 'd80' ? 'didaktik'
+                : result.diskType === 'fdd3' ? 'fdd3'
                 : 'beta';
             updateMediaIndicator(fileName, 'disk', drv);
             mediaCatalogAPI.buildDiskCatalog(drv, ctrl);
@@ -306,6 +310,10 @@ export function initFileLoader({
                 msg += ' Enable the +D (plusd.rom) or the DISCiPLE (disciple.rom) in Settings to use.';
             }
             showMessage(msg);
+        } else if (result.diskInserted && result.diskType === 'fdd3') {
+            // DSK in the Timex FDD 3000 station (TOS / CP/M, no catalogue here)
+            if (!spectrum.isRunning()) spectrum.start();
+            showMessage(`DSK inserted in FDD 3000 ${String.fromCharCode(65 + (result._driveIndex || 0))}: ${result.diskName}`);
         } else if (result.diskInserted && result.diskType === 'opd') {
             // OPD disk inserted into the Opus Discovery
             const opdDrive = result._driveIndex || 0;
@@ -867,7 +875,10 @@ export function initFileLoader({
         // +3DOS / +D / Microdrive: build a blank image and insert it through the
         // normal load path so per-drive state, indicators, and catalog update uniformly
         let result;
-        if (sys.id === 'dsk') {
+        if (sys.id === 'fdd3') {
+            // TOS / CP/M: 40 tracks, one side, 16 x 256-byte sectors 0-15, $E5
+            result = spectrum.loadDSKImage(DSKLoader.createBlankDSK('tos-40').toBuffer(), '[blank]', driveIndex & 3);
+        } else if (sys.id === 'dsk') {
             const dskImage = DSKLoader.createBlankDSK('p3-ss40');
             result = spectrum.loadDSKImage(dskImage.toBuffer(), '[blank]', driveIndex & 0x01);
         } else if (sys.id === 'hc') {
@@ -927,6 +938,7 @@ export function initFileLoader({
             : result.diskType === 'mgt' ? 'plusd'
             : result.diskType === 'opd' ? 'opus'
             : result.diskType === 'd80' ? 'didaktik'
+            : result.diskType === 'fdd3' ? 'fdd3'
             : 'beta';
         updateMediaIndicator(fileName, 'disk', drv);
 

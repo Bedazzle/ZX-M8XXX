@@ -71,6 +71,7 @@ import { UPD765, DSKImage, DSKLoader } from './fdc.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
 import { prepareBeta48Rom } from './beta48.js';
+import { Fdd3000 } from './fdd3000.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -125,6 +126,14 @@ import { Disassembler } from './disasm.js';
             // Port decode: 'a14' (A15=0, A14=1, A5=1, A1=0; works with a Beta 48)
             // or 'gal' (A15=0, A5=1, A1=0, exactly as the board's GAL equation)
             this.tkmemDecode = storageGet('zxm8_tkmemDecode') === 'gal' ? 'gal' : 'a14';
+            // Timex FDD 3000 disk station (core/fdd3000.js): 48K/128K/+2 only,
+            // not with the +D (both on port $EF)
+            this.fdd3000 = new Fdd3000();
+            this.fdd3000Enabled = storageGet('zxm8_fdd3000') === 'true';
+            // Interface ROM: fdd3stavi.rom (Spectrum, the FUSE default) or fdd3timex.rom
+            this.fdd3000RomFile = storageGet('zxm8_fdd3000Rom') || 'fdd3stavi.rom';
+            this._fdd3000PagingEnabled = false;
+            this.memory.fdd3000 = this.fdd3000;
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
 
@@ -342,6 +351,7 @@ import { Disassembler } from './disasm.js';
             // The Opus registers live in the memory map, so Memory needs the
             // controller itself, not just a ROM image.
             this.memory.opusDisk = this.opus;
+            this.memory.fdd3000 = this.fdd3000;
 
             // Callback for processing TRD data before loading (used for boot injection)
             this.onBeforeTrdLoad = null; // function(data, filename) => processedData
@@ -1486,6 +1496,10 @@ import { Disassembler } from './disasm.js';
             // Beta 48: reset clears the system port, so the ROM latch is set and the
             // DOS runs from $0000; the master register clears too (I/O on).
             this.memory.beta48Latch = this.memory.beta48On;
+            // FDD 3000: interface paged out (it pages in at the $0000 fetch).
+            // The station is a separate box with its own power: a Spectrum reset
+            // leaves it running, as in FUSE (only switching it on resets it).
+            this.memory.fdd3000Active = false;
             this._beta48Master = 0;
             this.memory.beta48WindowOff = false;
 
@@ -1527,7 +1541,7 @@ import { Disassembler } from './disasm.js';
             // - Reset WD1772 FDC
             // - Page in +D ROM so boot code at $0000 runs and initializes workspace
             if (this.plusDEnabled && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc()) {
+                this.profile.pagingModel !== '+2a' && !this._isHc() && !this._fdd3000PagingEnabled) {
                 this.plusD.reset();
                 this.memory.plusDActive = true;
             }
@@ -1568,6 +1582,15 @@ import { Disassembler } from './disasm.js';
          */
         _isHc() {
             return this.profile.pagingModel === 'hc2000';
+        }
+
+        /**
+         * Timex FDD 3000: enabled, both ROMs loaded, a 48K or 128K/+2 (FUSE
+         * offers it on the 48K and 128K families), not the HC-2000.
+         */
+        _fdd3000Ok() {
+            return this.fdd3000Enabled && this.fdd3000.hasRoms() && !this._isHc() &&
+                (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
         }
 
         _isBetaDiskActive() {
@@ -1642,7 +1665,7 @@ import { Disassembler } from './disasm.js';
             // Per FUSE: +D ports always respond when hardware is available
             // (not gated by memory paging state or disk presence)
             return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc();
+                this.profile.pagingModel !== '+2a' && !this._isHc() && !this._fdd3000PagingEnabled;
         }
 
         _isIF1Active() {
@@ -1968,6 +1991,8 @@ import { Disassembler } from './disasm.js';
                            lowByte === DIDAKTIK_PORT_DATA)) {
                     // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
                     result = this.didaktik.read(port);
+                } else if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
+                    result = this.fdd3000.portIn();     // FDD 3000: station -> Spectrum
                 } else if (this.memory.beta48On &&
                            (this._beta48In = this._beta48Read(lowByte)) !== undefined) {
                     result = this._beta48In;        // Beta 48 FDC / system port
@@ -2297,6 +2322,10 @@ import { Disassembler } from './disasm.js';
                 this.didaktik.write(port, val);
                 return;
             }
+            if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
+                this.fdd3000.portOut(val);              // FDD 3000: Spectrum -> station
+                return;
+            }
             if (this.memory.beta48On && this._beta48Write(lowByte, val)) {
                 return;
             }
@@ -2564,6 +2593,9 @@ import { Disassembler } from './disasm.js';
                 if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
+                // Timex FDD 3000 interface ROM ($0000/$0008 in, after $0604 out)
+                if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
+                    (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
                 const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
@@ -2625,6 +2657,7 @@ import { Disassembler } from './disasm.js';
                     const _haltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
                     if (this.profiler.enabled) {
                         const _pcKey = this.getAutoMapKey(this.cpu.pc);
@@ -2702,6 +2735,12 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // FDD 3000: out once the RET at $0604 has run; its station's
+                    // Z80 runs along, one instruction per ours (two every fifth)
+                    if (this._fdd3000PagingEnabled) {
+                        if (this._currentInstrPC === 0x0604) this.memory.fdd3000Active = false;
+                        this.fdd3000.step();
+                    }
                     // IF1 page-out: deferred to after RET at $0700 executes
                     if (this._if1PageOutPending) {
                         this.memory.if1Active = false;
@@ -3231,6 +3270,9 @@ import { Disassembler } from './disasm.js';
                 if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
+                // Timex FDD 3000 interface ROM ($0000/$0008 in, after $0604 out)
+                if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
+                    (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
@@ -3270,6 +3312,7 @@ import { Disassembler } from './disasm.js';
                     const _hlHaltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
                     if (this.profiler.enabled) {
                         const _pcKey = this.getAutoMapKey(this.cpu.pc);
@@ -3310,6 +3353,12 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // FDD 3000: out once the RET at $0604 has run; its station's
+                    // Z80 runs along, one instruction per ours (two every fifth)
+                    if (this._fdd3000PagingEnabled) {
+                        if (this._currentInstrPC === 0x0604) this.memory.fdd3000Active = false;
+                        this.fdd3000.step();
+                    }
                     // IF1 page-out: deferred to after RET at $0700 executes
                     if (this._if1PageOutPending) {
                         this.memory.if1Active = false;
@@ -4492,7 +4541,13 @@ import { Disassembler } from './disasm.js';
             // +D is NOT compatible with +2A/+3 (they have their own extended paging)
             // HC-2000: nothing, or its HC IF1 — no add-on interfaces (see _isHc)
             const hc = this._isHc();
-            this._plusDPagingEnabled =
+            const fdd3 = this._fdd3000Ok();
+            if (fdd3 !== this._fdd3000PagingEnabled) {
+                this._fdd3000PagingEnabled = fdd3;
+                this.memory.fdd3000Active = false;
+                if (fdd3) this.fdd3000.reset(true);
+            }
+            this._plusDPagingEnabled = !fdd3 &&
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
                 this.profile.pagingModel !== '+2a' && !hc;
@@ -7499,6 +7554,16 @@ import { Disassembler } from './disasm.js';
 
         // Load DSK disk image - inserts disk into µPD765 FDC (+3, or the HC IF1)
         loadDSKImage(data, fileName, driveIndex = 0) {
+            // Timex FDD 3000: DSK images go to the station's four drives
+            if (!this.fdc && this._fdd3000PagingEnabled) {
+                const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+                this.fdd3000.fdc.loadDisk(bytes, 'dsk', driveIndex & 3);
+                this.fdd3000.fdc.drives[driveIndex & 3].name = fileName;
+                return {
+                    diskInserted: true, diskType: 'fdd3', diskName: fileName,
+                    fileCount: 0, _driveIndex: driveIndex & 3, needsMachineSwitch: false
+                };
+            }
             if (!this.fdc && this.profile.pagingModel === 'hc2000') {
                 throw new Error('HC-2000: the HC IF1 disk interface is switched off ' +
                     '(Settings → Disk interfaces → HC IF1)');
@@ -9004,6 +9069,7 @@ import { Disassembler } from './disasm.js';
             // are read through the memory map, so a fresh Memory without this
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
+            this.memory.fdd3000 = this.fdd3000;
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
             this.ula.cpu = this.cpu;  // For debug access to CPU state

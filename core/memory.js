@@ -37,6 +37,10 @@ import {
             // $C000 the bank in its 7FFD-style latch. $4000-$7FFF (screen) stays
             // the machine's own RAM, so there is no shadow screen. 48K only.
             this.tkmemRam = null;         // Uint8Array(128K or 512K) while fitted
+            // Timex FDD 3000 interface (core/fdd3000.js): 4KB ROM mirrored over
+            // $0000-$1FFF and 8KB RAM at $2000-$3FFF while paged in
+            this.fdd3000 = null;          // the Fdd3000 (set by Spectrum)
+            this.fdd3000Active = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
             this.tkmemBank = 0;           // bank at $C000
@@ -154,6 +158,7 @@ import {
                 }
             }
             this.pagingDisabled = false;
+            this.fdd3000Active = false;
             if (this.tkmemRam) this.tkmemRam.fill(0);
             this.tkmemLatch = 0;
             this.tkmemBank = 0;
@@ -473,6 +478,13 @@ import {
                 return val;
             }
 
+            // Timex FDD 3000: interface ROM/RAM
+            if (this.fdd3000Active && addr < SLOT1_START) {
+                val = this.fdd3000.readMemory(addr);
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
             // Beta 48: the $3Cxx window (any access) or the latch
             if (this.beta48On && addr < SLOT1_START &&
                 (this.beta48Latch || ((addr & 0xFF00) === 0x3C00 && !this.beta48WindowOff))) {
@@ -567,6 +579,12 @@ import {
             // DISCiPLE RAM write: whichever half the RAM occupies
             if (this.discipleActive && addr < SLOT1_START) {
                 if ((addr >= 0x2000) === this.discipleRomLow) this.discipleRam[addr & 0x1FFF] = val;
+                return;
+            }
+
+            // FDD 3000: its RAM at $2000-$3FFF; the ROM ignores writes
+            if (this.fdd3000Active && addr < SLOT1_START) {
+                this.fdd3000.writeMemory(addr, val);
                 return;
             }
 
