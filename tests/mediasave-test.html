@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Media Save Tests</title>
+<style>
+body{background:#1a1a2e;color:#eee;font-family:monospace;padding:16px}
+.pass{color:#0f0}.fail{color:#f44}.section{color:#ff0;font-weight:bold;margin-top:12px}
+#log{white-space:pre-wrap;background:#0a0a15;padding:10px;height:520px;overflow:auto}
+iframe{width:1100px;height:620px;border:1px solid #444}
+</style></head>
+<body>
+<h1>Media Save Tests</h1>
+<div id="summary"></div>
+<div id="log"></div>
+<iframe id="app" src="../index.html"></iframe>
+<script type="module">
+// WHY THIS SUITE EXISTS
+//
+// A game that saves progress writes into a buffer inside the controller, not
+// into the file it was loaded from. Two things depended on that and only one
+// of them got it right: "Save TRD/SCL" read the live buffer, while the project
+// save stored the copy taken at load time -- so saving a project after a game
+// wrote to a disk restored the disk as it was BEFORE the write, silently.
+//
+// Everything here drives the real app. The write goes through the WD1793 the
+// way a program's would, because a test that pokes diskData directly would
+// pass even if no write ever reached it.
+import { TRDLoader } from '../core/loaders.js';
+
+const logEl = document.getElementById('log'), sumEl = document.getElementById('summary');
+let passed = 0, failed = 0;
+function log(m, cls = '') { const d = document.createElement('div'); d.className = cls; d.textContent = m; logEl.appendChild(d); }
+function section(n) { log('\n ' + n + ' ', 'section'); }
+function assert(c, name, detail = '') {
+    if (c) { passed++; log('  ' + name, 'pass'); }
+    else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+    sumEl.innerHTML = `<span class="pass">Pass: ${passed}</span> | <span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+}
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+async function until(fn, tries = 900, gap = 25) {
+    for (let i = 0; i < tries; i++) { try { const v = fn(); if (v) return v; } catch (e) {} await wait(gap); }
+    return null;
+}
+
+const TRD_OFF = (5 * 2 + 0) * 16 * 256;   // track 5, side 0, sector 1
+
+function writeSectorViaPorts(bd, track, side, sector, fill) {
+    bd.track = track; bd.currentDisk.headTrack = track;
+    bd.side = side; bd.sector = sector;
+    bd.write(0x1F, 0xA0);                 // Write Sector, single
+    for (let i = 0; i < 256; i++) bd.write(0x7F, fill);
+}
+
+(async () => {
+    const frame = document.getElementById('app');
+    const ok = await until(() => frame.contentWindow && frame.contentWindow.spectrum);
+    assert(!!ok, 'emulator boots in the iframe');
+    if (!ok) { log('\n=== ABORTED ===', 'fail'); return; }
+    const w = frame.contentWindow;
+    await until(() => w.spectrum.romLoaded);
+    await wait(300);
+
+    const trd = TRDLoader.buildTRD(
+        [{ name: 'ORIG', ext: 'C', data: new Uint8Array(256).fill(0x11),
+           start: 32768, startAddress: 32768, length: 256, sectors: 1 }], 'SAVE');
+
+    section('A disk starts unmodified and says so');
+    w.spectrum.loadDiskImage(trd, 'trd', 'progress.trd', 0);
+    let media = w.spectrum.getSaveableMedia();
+    const beta0 = () => w.spectrum.getSaveableMedia().find(m => m.id === 'beta0');
+    assert(media.length >= 1, 'the inserted disk is listed', JSON.stringify(media.map(m => m.id)));
+    assert(!!beta0(), 'listed under its drive as beta0');
+    assert(beta0().label === 'Beta A', 'labelled by drive, not by index', beta0().label);
+    assert(beta0().filename === 'progress.trd', 'and carries a filename to save as', beta0().filename);
+    assert(beta0().modified === false, 'nothing written yet, so not marked');
+
+    section('A write marks it, and reaches what is offered for saving');
+    writeSectorViaPorts(w.spectrum.betaDisk, 5, 0, 1, 0x7E);
+    assert(beta0().modified === true, 'the drive is marked once the program writes');
+    const bytes = beta0().getData();
+    assert(bytes[TRD_OFF] === 0x7E,
+           'and the bytes offered for saving contain the write',
+           '0x' + bytes[TRD_OFF].toString(16));
+
+    section('The project save stores the altered disk, not the loaded file');
+    // This is the bug: getLoadedMedia() refreshed FDC disks and IF1 cartridges
+    // from live state but handed the other four over as load-time snapshots.
+    const saved = w.spectrum.getLoadedMedia();
+    const projData = saved.betaDisks[0] && saved.betaDisks[0].data;
+    assert(!!projData, 'a project save carries the Beta Disk image');
+    assert(projData && projData[TRD_OFF] === 0x7E,
+           'and it is the ALTERED disk — progress survives a project round trip',
+           projData ? '0x' + projData[TRD_OFF].toString(16) : 'absent');
+    assert(saved.betaDisks[0].name === 'progress.trd', 'with its name kept');
+
+    section('Loading another disk clears the mark');
+    w.spectrum.loadDiskImage(trd, 'trd', 'fresh.trd', 0);
+    assert(beta0().modified === false,
+           'a freshly inserted disk is not reported as written to');
+    assert(beta0().filename === 'fresh.trd', 'and the new name is used');
+
+    section('An SCL keeps its format, a UDI cannot pretend to be one');
+    w.spectrum.loadDiskImage(trd, 'trd', 'tools.scl', 0);
+    assert(beta0().ext === 'scl', 'a disk loaded from .scl saves back as SCL', beta0().ext);
+    assert(beta0().filename === 'tools.scl', 'under its own name', beta0().filename);
+    // A UDI is served from its tracks and has no writer: what can be saved is
+    // the flattened image, and it must not claim to be a .udi.
+    w.spectrum.loadDiskImage(trd, 'trd', 'game.udi', 0);
+    w.spectrum.betaDisk.attachTrackImage(
+        { sides: 2, cylinders: 1, tracks: [{ raw: new Uint8Array(16), sectors: [] }] }, 0);
+    assert(beta0().ext === 'trd', 'a UDI offers a TRD, not a UDI', beta0().ext);
+    assert(/udi/i.test(beta0().note || ''), 'and says why', beta0().note);
+    assert(beta0().filename === 'game.trd', 'with the extension corrected', beta0().filename);
+
+    section('The panel itself');
+    const modal = w.document.getElementById('mediaSaveModal');
+    assert(!!modal, 'the Media panel exists');
+    const sel = w.document.getElementById('saveSelect');
+    assert(!!sel && [...sel.options].some(o => o.value === 'media'),
+           'the Save menu offers it');
+    assert(!!sel && ![...sel.options].some(o => o.value === 'dsk' || o.value === 'trd'),
+           'and no longer carries the two per-format entries it replaces');
+    if (modal && sel) {
+        sel.value = 'media';
+        sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await wait(250);
+        assert(!modal.classList.contains('hidden'), 'choosing it opens the panel');
+        const rows = modal.querySelectorAll('.media-row');
+        assert(rows.length >= 1, 'which lists the inserted disk', String(rows.length));
+        const txt = modal.textContent;
+        assert(/Beta A/.test(txt), 'naming the drive it is in');
+        assert(/game\.trd/.test(txt), 'and the name it will be saved as', txt.slice(0, 120));
+        w.document.getElementById('btnMediaSaveClose').click();
+        await wait(100);
+        assert(modal.classList.contains('hidden'), 'and Close shuts it');
+    }
+
+    section('A disk created blank, and the download Save actually starts');
+    // From the report: "I created blank TRD - why I can not save it?!". The
+    // panel called it "[blank]" -- which is a status, not a file -- and said
+    // "Nothing has been written to since loading", which reads as a refusal.
+    // Drive A is still holding the track image from the section above, which is
+    // the second half of this: making a blank disk must drop it, or the drive
+    // keeps answering from the UDI's tracks.
+    w.spectrum.betaDisk.createBlankDisk('BLANK', 0);
+    w.spectrum.loadedBetaDisks[0] = { data: w.spectrum.betaDisk.drives[0].diskData, name: '[blank]' };
+    const blank = beta0();
+    assert(!!blank, 'a disk created blank is listed');
+    assert(blank && blank.filename === 'blank.trd',
+           'under a filename, not "[blank]"', blank && blank.filename);
+    assert(blank && blank.getData() && blank.getData().length === 655360,
+           'with the whole image behind it');
+    assert(blank && !blank.note, 'and no UDI left on the drive it was made in', blank && blank.note);
+    assert(w.spectrum.betaDisk.drives[0].trackImage === null,
+           'the track-level view is dropped, so reads come from the blank disk');
+    assert(blank && blank.modified === false, 'a disk just made is not marked as written to');
+
+    if (modal && sel) {
+        const downloads = [];
+        const origClick = w.HTMLAnchorElement.prototype.click;
+        w.HTMLAnchorElement.prototype.click = function () {
+            downloads.push({ name: this.download, connected: this.isConnected });
+        };
+        try {
+            sel.value = 'media';
+            sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+            await wait(200);
+            assert(/blank\.trd/.test(modal.textContent), 'and the panel shows that name');
+            assert(!/Nothing has been written to since loading\.\s*$/.test(
+                       w.document.getElementById('mediaSaveHint').textContent),
+                   'the hint does not end on a bare "nothing has been written"',
+                   w.document.getElementById('mediaSaveHint').textContent);
+            const row = modal.querySelector('.media-row');
+            row.querySelector('button').click();
+            await wait(100);
+        } finally {
+            w.HTMLAnchorElement.prototype.click = origClick;
+        }
+        assert(downloads.length === 1, 'pressing Save starts one download', String(downloads.length));
+        assert(downloads[0] && downloads[0].name === 'blank.trd',
+               'of that file', downloads[0] && downloads[0].name);
+        // Firefox ignores a click on an anchor that is not in the document, so
+        // the save silently did nothing there while working in Chrome.
+        assert(downloads[0] && downloads[0].connected === true,
+               'from an anchor that is in the document, which Firefox requires');
+        w.document.getElementById('btnMediaSaveClose').click();
+        await wait(100);
+    }
+
+    section('"Save all" only where it means something other than "Save"');
+    const btnAll = w.document.getElementById('btnMediaSaveAll');
+    const hintEl = w.document.getElementById('mediaSaveHint');
+    const open = async () => {
+        sel.value = 'media';
+        sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+        await wait(200);
+    };
+    await open();
+    assert(modal.querySelectorAll('.media-row').length === 1, 'one disk inserted');
+    assert(btnAll.classList.contains('hidden'),
+           'with one disk there is no "Save all" to confuse with "Save"');
+    assert(hintEl.classList.contains('hidden') || !hintEl.textContent,
+           'and no standing line of prose above it', hintEl.textContent);
+    w.spectrum.loadDiskImage(trd, 'trd', 'second.trd', 1);
+    await open();
+    assert(modal.querySelectorAll('.media-row').length === 2, 'a second disk makes two rows');
+    assert(!btnAll.classList.contains('hidden'), 'and "Save all" appears');
+    w.document.getElementById('btnMediaSaveClose').click();
+    await wait(100);
+
+    section('With nothing inserted it says so rather than showing an empty box');
+    const fresh = w.spectrum;
+    for (let i = 0; i < 4; i++) { fresh.loadedBetaDisks[i] = null; fresh.betaDisk.drives[i].diskData = null; }
+    assert(fresh.getSaveableMedia().length === 0, 'an empty machine lists nothing');
+
+    log('');
+    log(failed ? `${failed} FAILED` : `all ${passed} passed`, failed ? 'fail' : 'pass');
+})();
+</script>
+</body>
+</html>

@@ -121,6 +121,43 @@
     line-height: 1.4;
     white-space: pre;
 }
+/* One row per inserted disk: where it is, what it is called, and whether the
+   program has written to it. The dot is the only thing here that changes while
+   the emulator runs, so it carries the colour. */
+.media-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin: 12px 0;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+}
+.media-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+.media-row:last-child { border-bottom: none; }
+.media-slot { color: var(--text-secondary); width: 96px; flex: none; }
+.media-name { flex: 1; overflow-wrap: anywhere; }
+.media-note { color: var(--cyan); font-size: 0.85em; }
+.media-dot { color: var(--accent); width: 10px; flex: none; }
+.media-row button { padding: 3px 10px; flex: none; }
+.media-empty { color: var(--text-secondary); padding: 10px; }
+#mediaSaveHint { color: var(--text-secondary); font-size: 12px; margin: 0; }
+/* The dialog's own buttons, fenced off from the per-row ones above. With one
+   disk inserted, "Save" and "Save all" sat on the same stretch of background
+   and read as two names for the same thing. */
+.media-footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
 .zip-file-list {
     max-height: 300px;
     overflow-y: auto;

@@ -171,6 +171,48 @@
             }
 
             // ---------------------------------------------------------------
+            section('The disk clock only ever moves forward');
+            {
+                // Everything timed by rotation — the index pulse, the Write Track
+                // deadline, the DRQ byte schedule — is arithmetic on this one
+                // number, so it has to be monotonic across frame boundaries.
+                //
+                // THE BUG THIS EXISTS FOR. Built as `totalFrames * tstatesPerFrame
+                // + cpu.tStates` it was not: totalFrames is incremented at the END
+                // of a frame while the frame is subtracted from cpu.tStates at the
+                // START of the next one, so between the two the clock leapt a whole
+                // frame forward and then dropped back. Against a 698880-T
+                // revolution that was a wobble nothing noticed; against a DRQ due
+                // 112 T out it scheduled a byte a whole frame late and stalled
+                // every Opus transfer.
+                const tpf = sp.getTstatesPerFrame();
+                let back = 0, worstBack = 0, prev = sp.diskClockNow();
+                const starts = [];
+                for (let f = 0; f < 200; f++) {
+                    // Sample either side of the boundary, which is where it broke.
+                    starts.push(sp.diskClockNow());
+                    sp.runFrameHeadless();
+                    const after = sp.diskClockNow();
+                    if (after < prev) { back++; worstBack = Math.max(worstBack, prev - after); }
+                    prev = after;
+                }
+                assert(back === 0,
+                       'sampled either side of 200 frame boundaries, it never goes back',
+                       back ? back + ' times, worst by ' + worstBack : '');
+                // And it advances at the rate of the machine, not some multiple:
+                // a frame per frame. The broken version doubled it for one sample.
+                const steps = [];
+                for (let i = 1; i < starts.length; i++) steps.push(starts[i] - starts[i - 1]);
+                const offBy = steps.filter(s => Math.abs(s - tpf) > 64).length;
+                assert(offBy === 0,
+                       'and advances one frame per frame, to within a long instruction',
+                       offBy ? offBy + ' of ' + steps.length + ' steps wrong' : '');
+                assert(Math.abs(sp.diskByteTStates() - tpf * 10 / 6250) < 1e-9,
+                       'the byte time is a revolution shared over the track',
+                       sp.diskByteTStates().toFixed(4));
+            }
+
+            // ---------------------------------------------------------------
             section('An image reaches the right drive in the first place');
             {
                 // Getting the disk to the correct controller is part of "does the
@@ -231,6 +273,218 @@
             }
 
             // ---------------------------------------------------------------
+            section('Opus Discovery — a bare RUN loads the program called "run"');
+            {
+                // On an Opus, `RUN` with no program in memory means "load and run
+                // the file called run" — the ROM builds `LOAD *1;"run"` in the
+                // edit line and re-parses it. ROM v2.2 and later do that parse
+                // with code at $0556, which the emulator was trapping as the
+                // Spectrum ROM's LD-BYTES: the trap returned with carry clear,
+                // the filename was never read, and the Opus reported
+                // "C Nonsense in BASIC" for a command it had written itself.
+                // Every disk game on an Opus starts this way, so it is the first
+                // thing a user does and it has to be a boot test, not a unit one.
+                const rom = await fetchRom('Opus Discovery 1 v2.2 (1985)(Opus Supplies).rom');
+                if (!rom) { assert(false, 'the Opus v2.2 ROM is in roms/'); }
+                else {
+                    allInterfacesOff();
+                    sp.memory.loadOpusRom(rom);
+                    sp.opusEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    sp.loadOPDImage(OPDLoader.createBlankOPD(1), 'blank.opd', 0);
+
+                    coldBoot();
+                    inject(['10 PRINT "RTOKEN"', '20 STOP',
+                            '100 SAVE *"m";1;"run" LINE 10'].join('\n'));
+                    pressRun(100);
+                    const afterSave = screenText();
+                    assert(afterSave.includes('0 OK'), 'the program saves itself as "run"',
+                           afterSave.slice(-60));
+
+                    coldBoot();
+                    pressRun('', 700);          // just R and ENTER, nothing in memory
+                    const after = screenText();
+                    assert(after.includes('RTOKEN'),
+                           'and after a hard reset a bare RUN loads it and runs it',
+                           after.slice(-70));
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // FORMAT is the one operation that makes a disk rather than editing
+            // one. It goes through Write Track, which no controller here used to
+            // implement — so every FORMAT in the app reported success and changed
+            // nothing. These two sections start from an image that is NOT a disk
+            // of the right kind and let the ROM make one, which is the only test
+            // that cannot pass by accident.
+            section('Opus Discovery — the ROM formats a blank image into a disk');
+            {
+                const rom = await fetchRom('Opus Discovery 1 v1.2 (1985)(Opus Supplies).rom');
+                if (!rom) { assert(false, 'the Opus v1.2 ROM is in roms/'); }
+                else {
+                    allInterfacesOff();
+                    sp.memory.loadOpusRom(rom);
+                    sp.opusEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    // All zeros: no anchor sector, no directory — not an Opus disk
+                    // at all until the ROM has formatted it.
+                    sp.loadOPDImage(new Uint8Array(184320), 'raw.opd', 0);
+                    let before = 'x';
+                    try {
+                        before = OPDLoader.getDiskInfo(sp.opus.drives[0].diskData).diskLabel;
+                    } catch (e) { before = ''; }
+                    assert(!before, 'the image starts out with no label of any kind',
+                           JSON.stringify(before));
+
+                    coldBoot();
+                    inject('10 FORMAT "m";1;"OPDISK"');
+                    pressRun('', 3000);
+                    const img = sp.opus.drives[0].diskData;
+                    assert(screenText().includes('0 OK'), 'FORMAT reports OK',
+                           screenText().slice(-70));
+                    // THE PACING. The Opus transfers by NMI, and the DRQ schedule
+                    // is absolute — the nth byte is due a byte-time after the
+                    // (n-1)th was DUE, not after the host got round to it. Set up
+                    // the other way the handler's own cost is added to every byte:
+                    // it measured ~130 T-states against the 111.8 a byte of a
+                    // 6250-byte track has, and a track took 1.16 revolutions to
+                    // write, which no real drive could do. One revolution plus the
+                    // head-settle delay before the first byte is the right answer.
+                    const ofmt = sp.opus.lastFormat || {};
+                    assert(ofmt.revolutions > 0.98 && ofmt.revolutions < 1.05,
+                           'a track takes one revolution to write, as the medium does',
+                           String(ofmt.revolutions));
+                    // And the write does not begin where the command was issued:
+                    // the chip waits for the index. So the command as a whole
+                    // spans between one and two revolutions, which is the figure
+                    // a real drive gives.
+                    assert(ofmt.indexWait >= 0 && ofmt.indexWait <= 1,
+                           'after waiting part of a turn for the index to come round',
+                           String(ofmt.indexWait));
+                    assert(ofmt.indexWait + ofmt.revolutions >= 1 &&
+                           ofmt.indexWait + ofmt.revolutions <= 2,
+                           'so the command spans between one and two revolutions',
+                           String(ofmt.indexWait + ofmt.revolutions));
+                    // The anchor sector the ROM wrote is what our own reader uses
+                    // to work out the geometry, so this is the ROM and the loader
+                    // agreeing about the format rather than either alone.
+                    assert(img[0] === 0x18 && img[1] === 0x05,
+                           'and the ROM has written an Opus anchor sector',
+                           img[0].toString(16) + ' ' + img[1].toString(16));
+                    let info = null;
+                    try { info = OPDLoader.getDiskInfo(img); } catch (e) {}
+                    assert(info && info.diskLabel === 'OPDISK',
+                           'our reader finds the label the ROM was given',
+                           info ? JSON.stringify(info.diskLabel) : '(unreadable)');
+                    assert(info && info.tracks === 40 && info.sides === 1 &&
+                           info.sectorsPerTrack === 18 && info.bytesPerSector === 256,
+                           'in the geometry the drive was set to',
+                           info ? `${info.tracks}x${info.sides}x${info.sectorsPerTrack}x${info.bytesPerSector}` : '');
+                    assert(info && info.fileCount === 0, 'with an empty catalogue');
+
+                    // And the disk works: SAVE to it, wipe the machine, LOAD back.
+                    coldBoot();
+                    inject(['10 PRINT "FMTOKEN"', '20 STOP',
+                            '100 SAVE *"m";1;"RT" LINE 10'].join('\n'));
+                    pressRun(100, 800);
+                    assert(screenText().includes('0 OK'),
+                           'a SAVE to the disk the ROM just made reports OK',
+                           screenText().slice(-70));
+                    coldBoot();
+                    inject('10 LOAD *"m";1;"RT"');
+                    pressRun('', 1200);
+                    assert(screenText().includes('FMTOKEN'),
+                           'and after a hard reset the program loads back and runs',
+                           screenText().slice(-70));
+                    let names = [];
+                    try {
+                        names = (OPDLoader.listFiles(sp.opus.drives[0].diskData) || [])
+                            .map(f => (f.name || '').trim()).filter(Boolean);
+                    } catch (e) {}
+                    assert(names.includes('RT'), 'and the catalogue of the new disk lists it',
+                           names.join(', ') || '(empty)');
+                }
+            }
+
+            // ---------------------------------------------------------------
+            section('Didaktik 80 — MDOS formats 160 track-sides');
+            {
+                const { DidaktikLoader } = await import('../core/loaders.js');
+                const rom = await fetchRom('didaktik.rom');
+                if (!rom) { assert(false, 'didaktik.rom is in roms/'); }
+                else {
+                    allInterfacesOff();
+                    sp.memory.loadDidaktikRom(rom);
+                    sp.didaktikEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    // A valid MDOS disk with every byte poisoned, so "formatted"
+                    // cannot be confused with "was already blank".
+                    const old = DidaktikLoader.createBlankD80('OLDLABEL');
+                    for (let i = 0; i < old.length; i++) old[i] = 0x5A;
+                    sp.loadD80Image(old, 'old.d80', 0);
+
+                    coldBoot();
+                    inject('10 FORMAT "A:MDDISK"');
+                    pressRun('', 400);
+                    // MDOS asks before it destroys a disk, which is worth pinning:
+                    // a format that needed no confirmation would mean the ROM had
+                    // taken a different path through its own command parser.
+                    assert(/discard|proceed/i.test(screenText()),
+                           'MDOS asks before discarding the disk',
+                           screenText().slice(-70));
+                    sp.ula.keyDown('p');
+                    for (let i = 0; i < 6; i++) sp.runFrameHeadless();
+                    sp.ula.keyUp('p');
+                    sp.ula.keyboardState.fill(0xFF);
+                    for (let i = 0; i < 6000; i++) sp.runFrameHeadless();
+
+                    const img = sp.didaktik.drives[0].diskData;
+                    // Same pacing as the Opus: the Didaktik is the other interface
+                    // that transfers by NMI, and MDOS measured ~128 T a byte
+                    // before the DRQ schedule was made absolute.
+                    const dfmt = sp.didaktik.lastFormat || {};
+                    assert(dfmt.revolutions > 0.98 && dfmt.revolutions < 1.05,
+                           'MDOS writes a track in one revolution too',
+                           String(dfmt.revolutions));
+                    assert(dfmt.indexWait >= 0 && dfmt.indexWait <= 1 &&
+                           dfmt.indexWait + dfmt.revolutions >= 1 &&
+                           dfmt.indexWait + dfmt.revolutions <= 2,
+                           'after its own wait for the index, so one to two in all',
+                           dfmt.indexWait + ' + ' + dfmt.revolutions);
+                    let info = null;
+                    try { info = DidaktikLoader.getDiskInfo(img); } catch (e) {}
+                    assert(info && info.diskLabel === 'MDDISK',
+                           'the formatted disk carries the new label',
+                           info ? JSON.stringify(info.diskLabel) : '(unreadable)');
+                    assert(info && info.tracks === 80 && info.sides === 2 &&
+                           info.sectorsPerTrack === 9 && info.bytesPerSector === 512,
+                           'in MDOS geometry',
+                           info ? `${info.tracks}x${info.sides}x${info.sectorsPerTrack}x${info.bytesPerSector}` : '');
+                    assert(info && info.fileCount === 0,
+                           'and the old disk\'s contents are gone',
+                           info ? String(info.fileCount) : '');
+
+                    coldBoot();
+                    inject(['10 PRINT "FMTOKEN"', '20 STOP', '100 SAVE *"RT" LINE 10'].join('\n'));
+                    pressRun(100, 800);
+                    coldBoot();
+                    inject('10 LOAD *"RT"');
+                    pressRun('', 1200);
+                    let names = [];
+                    try {
+                        names = (DidaktikLoader.listFiles(sp.didaktik.drives[0].diskData) || [])
+                            .map(f => (f.name || '').trim()).filter(Boolean);
+                    } catch (e) {}
+                    assert(names.includes('RT'),
+                           'a SAVE to the disk MDOS made lands in its catalogue',
+                           names.join(', ') || '(empty)');
+                    assert(screenText().includes('FMTOKEN'),
+                           'and the program loads back after a hard reset',
+                           screenText().slice(-70));
+                }
+            }
+
+            // ---------------------------------------------------------------
             section('Interface 1 / Microdrive — the same round trip');
             {
                 const rom = await fetchRom('if1.rom');
@@ -265,8 +519,40 @@
                     assert(sp._didaktikPagingEnabled, 'the interface reports itself usable');
                     sp.loadD80Image(DidaktikLoader.createBlankD80('TESTDISK'), 'blank.d80', 0);
 
+                    // Time the bytes of the LOAD as well as checking it works.
+                    // The Didaktik transfers by NMI like the Opus, so it gets the
+                    // same absolute DRQ schedule and should read at the medium's
+                    // rate — 111.8 T-states a byte on a 48K. Measured from the
+                    // host's service instead it came to ~136, the handler's cost
+                    // added to every byte rather than hidden inside it.
+                    const svc = [];
+                    const origR = sp.didaktik.readRegister.bind(sp.didaktik);
+                    sp.didaktik.readRegister = (reg) => {
+                        const reading = sp.didaktik.reading;
+                        const v = origR(reg);
+                        if ((reg & 3) === 3 && reading) svc.push(sp.diskClockNow());
+                        return v;
+                    };
+
                     // MDOS takes the star form — a bare SAVE "NAME" goes to tape
                     const r = roundTrip('SAVE *"RT"', 'LOAD *"RT"');
+
+                    delete sp.didaktik.readRegister;
+                    const byteT = sp.diskByteTStates();
+                    const gaps = [];
+                    for (let i = 1; i < svc.length; i++) {
+                        const d = svc[i] - svc[i - 1];
+                        if (d > 0 && d < byteT * 8) gaps.push(d);
+                    }
+                    const meanT = gaps.length
+                        ? gaps.reduce((p, c) => p + c, 0) / gaps.length : 0;
+                    assert(gaps.length > 200, 'the LOAD read enough bytes to time',
+                           gaps.length + ' bytes');
+                    assert(gaps.length > 200 && Math.abs(meanT - byteT) < 2,
+                           'and MDOS read them at the disk\'s rate, not the handler\'s',
+                           meanT.toFixed(1) + ' T a byte against the medium\'s ' +
+                           byteT.toFixed(1));
+
                     assert(r.afterSave.includes('0 OK'), 'SAVE to a blank MDOS disk reports OK',
                            r.afterSave.slice(-60));
                     assert(r.ok, 'and after a hard reset the program loads back and runs',
@@ -506,6 +792,120 @@
                 assert(afterLoad.includes('RTOKEN'),
                        'and RUN loads the program back off the disk and runs it',
                        afterLoad.slice(-70));
+
+                // ---------------------------------------------------------------
+                // TR-DOS formats a disk too — but only if you can type the word.
+                // At the `A>` prompt the cursor is in K mode, where `f` is FOR,
+                // not FORMAT: FORMAT is an EXTENDED-mode keyword (CAPS+SYMBOL,
+                // then SYMBOL+0) and nothing in `ula.keyDown` reaches it, so the
+                // matrix is driven directly here. Getting that wrong is how
+                // TR-DOS came to look as though it could not format at all.
+                section('TR-DOS — FORMAT makes a disk, from the prompt');
+                {
+                    const CAPS = [0, 0], SYM = [7, 1], ZERO = [4, 0];
+                    const press = (cells, f = 8) => {
+                        for (const [r, b] of cells) sp.ula.keyboardState[r] &= ~(1 << b);
+                        for (let i = 0; i < f; i++) sp.runFrameHeadless();
+                        for (const [r, b] of cells) sp.ula.keyboardState[r] |= (1 << b);
+                        for (let i = 0; i < f; i++) sp.runFrameHeadless();
+                    };
+
+                    // A valid TRD with every byte overwritten, so a formatted
+                    // track cannot be confused with one that was already blank.
+                    const old = TRDLoader.buildTRD([], 'OLDDISK');
+                    for (let i = 0; i < old.length; i++) old[i] = 0x5A;
+                    sp.loadDiskImage(old, 'trd', 'old.trd', 0);
+                    assert(enterTrdos(), 'TR-DOS comes up on the poisoned disk');
+
+                    press([CAPS, SYM]);        // extended mode
+                    press([SYM, ZERO]);        // SYMBOL SHIFT + 0 = FORMAT
+                    assert(/FORMAT/.test(screenText()),
+                           'SYMBOL+0 in extended mode types the FORMAT keyword',
+                           screenText().slice(-50));
+                    trdosKeys(['"', 't', 'r', 'd', '"', 'Enter'], 200);
+                    for (let i = 0; i < 3000; i++) sp.runFrameHeadless();
+
+                    // Snapshot this BEFORE the SAVE below: every TR-DOS save
+                    // issues a Write Track of its own, so `lastFormat` would then
+                    // describe that one instead of the format.
+                    const lastTrack = { ...(sp.betaDisk.lastFormat || {}) };
+                    const scr = screenText();
+                    // TR-DOS prints the new disk's name and its free/total count.
+                    assert(/trd/.test(scr), 'the format reports the disk\'s new name',
+                           scr.slice(-80));
+                    assert(/(\d+)\/\1/.test(scr),
+                           'and a free count equal to the total — an empty disk',
+                           scr.slice(-80));
+                    assert(!/error/i.test(scr), 'with no error', scr.slice(-80));
+
+                    const img = sp.betaDisk.drives[0].diskData;
+                    // Byte 231 of the disk-info sector (track 0, sector 9) is the
+                    // TR-DOS id. The ROM wrote it, so this is the ROM and our
+                    // reader agreeing on where the catalogue lives.
+                    assert(img[0x800 + 231] === 0x10,
+                           'the ROM wrote a TR-DOS disk-info sector',
+                           '$' + img[0x800 + 231].toString(16));
+                    assert(img[0x800] === 0x00,
+                           'with an empty directory in front of it');
+                    let cat = [];
+                    try { cat = (TRDLoader.listFiles(img) || []).filter(f => f.name); }
+                    catch (e) { /* reported below */ }
+                    assert(cat.length === 0,
+                           'and the old disk\'s files are gone',
+                           cat.map(f => f.name).join(', '));
+
+                    // The disk the ROM made has to be usable, which is the only
+                    // claim that matters.
+                    inject(['10 PRINT "RTOKEN"', '20 STOP'].join('\n'));
+                    trdosKeys(['s', '"', 'r', 't', '"', 'Enter'], 600);
+                    assert(!/error/i.test(screenText()),
+                           'a SAVE to the disk TR-DOS just made reports no error',
+                           screenText().slice(-70));
+                    let after = [];
+                    try {
+                        after = (TRDLoader.listFiles(sp.betaDisk.drives[0].diskData) || [])
+                            .map(f => (f.name || '').trim()).filter(Boolean);
+                    } catch (e) { /* reported below */ }
+                    assert(after.some(n => n.toLowerCase() === 'rt'),
+                           'and it appears in the catalogue of the new disk',
+                           after.join(', ') || '(empty)');
+
+                    // What TR-DOS actually made: 80 tracks on ONE side, because
+                    // that is the drive type it defaults to — "1264 free of 1264"
+                    // is 80 × 16 minus track 0, not 40 × 2. The last track of the
+                    // format says how each of them was laid down.
+                    assert(lastTrack.found === 16,
+                           'each track was streamed as 16 sectors',
+                           JSON.stringify(lastTrack));
+                    assert(lastTrack.written === 16 && lastTrack.skipped === 0,
+                           'and all 16 of them landed',
+                           JSON.stringify(lastTrack));
+                    assert(lastTrack.track === 79 && lastTrack.side === 0,
+                           'the last one being track 79, side 0 — an 80-track single-sided disk',
+                           JSON.stringify(lastTrack));
+                    // TR-DOS feeds the data register in a POLLING loop rather than
+                    // by NMI, and its loop is faster than the medium — about 57
+                    // T-states a byte against the 114.7 a byte has on a Pentagon.
+                    // Nothing paced it, so it used to fill a whole track in half a
+                    // revolution; the chip now holds DRQ down on port $FF until the
+                    // next byte is due and the loop waits, as it does on hardware.
+                    // That matters beyond tidiness: with the write window anchored
+                    // at the index, a buffer that fills before the window opens
+                    // gives a NEGATIVE figure here, which is how the gap was found.
+                    assert(lastTrack.revolutions > 0.98 && lastTrack.revolutions < 1.05,
+                           'and TR-DOS takes a revolution too, now the chip paces its poll loop',
+                           String(lastTrack.revolutions));
+                    // And the wait before any of it: a Write Track begins on the
+                    // index, not where the command landed, so the command spans
+                    // between one and two revolutions.
+                    const span = lastTrack.indexWait + lastTrack.revolutions;
+                    assert(lastTrack.indexWait >= 0 && lastTrack.indexWait <= 1,
+                           'the chip waited part of a turn for the index first',
+                           String(lastTrack.indexWait));
+                    assert(span >= 1 && span <= 2,
+                           'so the whole command spans between one and two revolutions',
+                           String(span));
+                }
 
                 // The TR-DOS chip is the one ROM that is NOT part of memory.rom,
                 // so setMachineType's `new Memory` drops it while every machine ROM
