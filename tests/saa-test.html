@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>SAA1099 Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>SAA1099 Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // SAA1099 (core/saa1099.js): the chip model, and ports $01FF/$00FF.
+        import { SAA1099 } from '../core/saa1099.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        // Edges of the left output over `clocks`, run in steps of `step`
+        function edges(saa, clocks, step = 64, side = 0) {
+            let n = 0, prev = null;
+            for (let t = 0; t < clocks; t += step) {
+                const v = saa.run(step)[side] > 0.001 ? 1 : 0;
+                if (prev !== null && v !== prev) n++;
+                prev = v;
+            }
+            return n;
+        }
+        function chip(regs) {
+            const s = new SAA1099();
+            for (const [r, v] of regs) { s.writeAddress(r); s.writeData(v); }
+            return s;
+        }
+
+        function units() {
+            section('chip model');
+            let s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x04], [0x14, 0x01], [0x1C, 0x01]]);
+            // half period (511 - 0) << (8 - 4) = 8176 clocks: 489.2 Hz, 978 edges a second
+            const e = edges(s, 8000000);
+            assert(Math.abs(e - 978) <= 2, 'tone: f=0, octave 4 is 489 Hz', e + ' edges/s');
+            s = chip([[0x00, 0x0F], [0x08, 0xFF], [0x10, 0x07], [0x14, 0x01], [0x1C, 0x01]]);
+            const e2 = edges(s, 800000, 16);
+            assert(Math.abs(e2 - 1562) <= 4, 'tone: f=255, octave 7 is 7812 Hz', e2 + ' edges in 0.1 s');
+            s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x04], [0x14, 0x01], [0x1C, 0x00]]);
+            assert(edges(s, 100000) === 0, 'reg $1C bit 0 off: silent');
+            s = chip([[0x00, 0xF0], [0x08, 0x00], [0x10, 0x04], [0x14, 0x01], [0x1C, 0x01]]);
+            assert(edges(s, 100000, 64, 0) === 0 && edges(s, 100000, 64, 1) > 0, 'amplitude: low nibble left, high nibble right');
+            const full = chip([[0x00, 0xFF], [0x01, 0xFF], [0x02, 0xFF], [0x03, 0xFF], [0x04, 0xFF], [0x05, 0xFF],
+                [0x08, 0xFF], [0x09, 0xFF], [0x0A, 0xFF], [0x0B, 0xFF], [0x0C, 0xFF], [0x0D, 0xFF],
+                [0x14, 0x3F], [0x1C, 0x03]]);                // sync: generators held, all low
+            full.writeAddress(0x1C); full.writeData(0x01);
+            let peak = 0;
+            for (let i = 0; i < 20000; i++) peak = Math.max(peak, full.run(8)[0]);
+            assert(peak > 0.99 && peak <= 1.0001, 'six channels at 15 together reach 1.0', peak.toFixed(3));
+            // noise: 31.25 kHz clock, many edges, none of the tone
+            s = chip([[0x00, 0x0F], [0x15, 0x01], [0x16, 0x00], [0x1C, 0x01]]);
+            const en = edges(s, 800000, 16);
+            assert(en > 800 && en < 2500, 'noise on channel 0 at 31.25 kHz', en + ' edges in 0.1 s');
+            // envelope on channel 2: single decay, clocked by tone 1
+            s = chip([[0x02, 0xFF], [0x08, 0x00], [0x09, 0xFF], [0x10, 0x30], [0x14, 0x04], [0x18, 0x84], [0x1C, 0x01]]);
+            s.writeAddress(0x0A); s.writeData(0xFF); s.writeAddress(0x11); s.writeData(0x07);
+            assert(s.env[0].l === 15, 'envelope single decay starts at 15', s.env[0].l);
+            s.run(40000);
+            const mid = s.env[0].l;
+            s.run(200000);
+            assert(mid < 15 && mid > 0 && s.env[0].l === 0 && edges(s, 20000) === 0, 'it decays to 0 and stays silent', 'mid ' + mid);
+            s = chip([[0x02, 0x0F], [0x14, 0x04], [0x1C, 0x01], [0x18, 0xA4 | 0x01]]);     // external clock, inverted right
+            const l0 = s.env[0].l;
+            s.writeAddress(0x00); s.writeAddress(0x00);
+            assert(l0 === 15 && s.env[0].l === 13 && s.env[0].r === 2, 'external envelope clock: one step per address write; right inverted',
+                l0 + ' -> ' + s.env[0].l + '/' + s.env[0].r);
+            s = chip([[0x00, 0x0F], [0x01, 0x0F], [0x08, 0x00], [0x09, 0x00], [0x10, 0x44], [0x14, 0x03], [0x18, 0x80], [0x1C, 0x01]]);
+            assert(s.env[0].l === 0 && s.amp[0] === 15, 'envelope acts on channel 2 only: channels 0/1 still sound');
+            assert(edges(s, 100000) > 0, '(and they are heard)');
+        }
+
+        async function runTests() {
+            units();
+            section('ports $01FF / $00FF');
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = sp.saaOn;
+            sp.setSaa(true);
+            sp.portWrite(0x01FF, 0x08); sp.portWrite(0x00FF, 0x5A);
+            sp.portWrite(0x01FF, 0x1C); sp.portWrite(0x00FF, 0x01);
+            sp.portWrite(0x01FE, 0x10); sp.portWrite(0x00FE, 0x77);      // not $FF: not the SAA
+            await zx.runFrames(2);
+            assert(sp.saa.freq[0] === 0x5A && sp.saa.enabled && sp.saa.reg === 0x1C, 'writes reach the chip at the frame\'s end', JSON.stringify(sp.saa.freq));
+            sp.memory.trdosActive = true;
+            sp.portWrite(0x01FF, 0x09); sp.portWrite(0x00FF, 0x33);
+            sp.memory.trdosActive = false;
+            await zx.runFrames(1);
+            assert(sp.saa.freq[1] === 0 && sp.saa.reg === 0x1C, 'TR-DOS paged in: not the SAA');
+            sp.setSaa(false);
+            sp.portWrite(0x01FF, 0x08); sp.portWrite(0x00FF, 0x11);
+            await zx.runFrames(1);
+            assert(sp.saa.freq[0] === 0, 'off: no writes');
+            sp.setSaa(true); sp.portWrite(0x01FF, 0x08); sp.portWrite(0x00FF, 0x22); sp.reset();
+            await zx.runFrames(1);
+            assert(sp.saa.freq[0] === 0 && !sp.saa.enabled, 'reset: the chip is silent');
+            sp.setSaa(was);
+            await zx.ready({ machine: 'tc2048' });
+            const sp2 = frame.contentWindow.spectrum;
+            zx.pause();
+            sp2.setSaa(true);
+            sp2.portWrite(0x01FF, 0x08); sp2.portWrite(0x00FF, 0x44);
+            await zx.runFrames(1);
+            assert(sp2.saa.freq[0] === 0, 'Timex: $FF is the SCLD\'s, not the SAA\'s');
+            sp2.portWrite(0x00FF, 0x00);
+            sp2.setSaa(was);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

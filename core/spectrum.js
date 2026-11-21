@@ -74,6 +74,7 @@ import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
+import { SAA1099 } from './saa1099.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -172,6 +173,13 @@ import { Disassembler } from './disasm.js';
             this.dacLevels = [0x80, 0x80, 0x80, 0x80];
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            // SAA1099 (ZXM-SoundCard, as in Xpeccy / Unreal Speccy): $01FF
+            // selects a register, $00FF writes it. The writes are kept per frame
+            // with their T-state and played into the chip by the audio, which
+            // owns its state (core/saa1099.js).
+            this.saa = new SAA1099();
+            this.saaOn = storageGet('zxm8_saa') === 'true';
+            this.saaChanges = [];
             // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded
             // into MIDI messages for onMidiMessage (Web MIDI in the UI)
             this.midiEnabled = false;
@@ -1565,6 +1573,7 @@ import { Disassembler } from './disasm.js';
             this.rzxStop();
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            if (this.saa) { this.saa.reset(); this.saaChanges = []; }
             this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
             // MIDI out: a note held at reset would never get its Note Off, so
             // All Notes Off on every channel, and the UART starts afresh
@@ -1915,6 +1924,20 @@ import { Disassembler } from './disasm.js';
             this.turboSound = !!on;
             this._aySel = 0;
             this.ay2.reset();
+        }
+
+        // SAA1099 writes the audio did not take (no sound, high speed, or
+        // made between frames): straight into the chip, so it keeps its registers
+        _saaFlush() {
+            for (const c of this.saaChanges) { if (c.addr) this.saa.writeAddress(c.value); else this.saa.writeData(c.value); }
+            this.saaChanges.length = 0;
+        }
+
+        /** SAA1099 on or off (it starts silent) */
+        setSaa(on) {
+            this.saaOn = !!on;
+            this.saa.reset();
+            this.saaChanges = [];
         }
 
         /** DAC type and Covox port (see the constructor) */
@@ -2445,6 +2468,11 @@ import { Disassembler } from './disasm.js';
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
+            // SAA1099: $01FF address, $00FF data (not on a Timex, whose $FF is
+            // the SCLD's, nor while TR-DOS is paged in, as in Xpeccy)
+            if (this.saaOn && lowByte === 0xFF && !this.profile.timex && !this.memory.trdosActive) {
+                this.saaChanges.push({ tStates: this.cpu.tStates, addr: (port >> 8) & 1, value: val });
+            }
 
             // Didaktik Gama: its 8255 (ports xxx11111, A6-A5 pick A/B/C/control);
             // PC0 selects the 32KB bank at $8000. Not while TR-DOS owns the ports.
@@ -2785,6 +2813,7 @@ import { Disassembler } from './disasm.js';
             this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            this._saaFlush();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3375,7 +3404,8 @@ import { Disassembler } from './disasm.js';
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
-                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges });
             }
 
             // Advance AY logging frame counter
@@ -3500,6 +3530,7 @@ import { Disassembler } from './disasm.js';
             this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            this._saaFlush();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3809,7 +3840,8 @@ import { Disassembler } from './disasm.js';
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
-                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges });
             }
 
             // Advance AY logging frame counter
@@ -10755,8 +10787,16 @@ import { Disassembler } from './disasm.js';
             const dac = extra && extra.dacStart ? extra.dacStart.slice() : [0x80, 0x80, 0x80, 0x80];
             let dacIdx = 0;
             const DAC_VOLUME = 0.5;
+            // SAA1099: its writes are played into the chip here, at their T-state
+            const saa = extra && extra.saa;
+            const saaChanges = (extra && extra.saaChanges) || [];
+            let saaIdx = 0;
+            const SAA_VOLUME = 1.0;
+            const saaWrite = (c) => { if (c.addr) saa.writeAddress(c.value); else saa.writeData(c.value); };
             if (ay2 && extra.ay2Snapshot) ay2.importState(extra.ay2Snapshot);
-            if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
+            if (!this.enabled || (!this.workletNode && !this.scriptNode)) {
+                return;                 // (Spectrum._saaFlush gives the chip its writes)
+            }
 
             // Restore the AY to its start-of-frame state so the timestamped register
             // writes can be replayed at the right T-state during the sample loop. The
@@ -10775,6 +10815,7 @@ import { Disassembler } from './disasm.js';
 
             // AY steps per sample
             const ayStepsPerSample = this.ay ? cyclesPerSample * this.ayPerCpu : 0;
+            const saaClocksPerSample = 8000000 / this.sampleRate;
 
             // Audio levels
             const BEEPER_VOLUME = 0.5;
@@ -10838,6 +10879,13 @@ import { Disassembler } from './disasm.js';
                     }
                 }
 
+                if (saa) {
+                    while (saaIdx < saaChanges.length && saaChanges[saaIdx].tStates <= sampleTstates) saaWrite(saaChanges[saaIdx++]);
+                    const [sl, sr] = saa.run(saaClocksPerSample);
+                    left += sl * SAA_VOLUME;
+                    right += sr * SAA_VOLUME;
+                }
+
                 // DAC: channels 0/1 left, 2/3 right; $80 is silence
                 if (dacOn) {
                     while (dacIdx < dacChanges.length && dacChanges[dacIdx].tStates <= sampleTstates) {
@@ -10890,6 +10938,8 @@ import { Disassembler } from './disasm.js';
                     ayIdx++;
                 }
             }
+
+            if (saa) { while (saaIdx < saaChanges.length) saaWrite(saaChanges[saaIdx++]); saaChanges.length = 0; }
 
             // Flush remaining samples at end of frame
             this.flushSamples();

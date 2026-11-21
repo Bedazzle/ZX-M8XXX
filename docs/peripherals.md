@@ -348,6 +348,23 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
 - Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
 
+## SAA1099
+
+`core/saa1099.js`, `Spectrum.setSaa`. **Settings → Audio → SAA1099**.
+
+- The ZXM-SoundCard mapping, as in Xpeccy and Unreal Speccy:
+  - `OUT $01FF` (A8 = 1, low byte `$FF`) selects a register; `OUT $00FF` (A8 = 0) writes it.
+  - It does not hear anything while TR-DOS is paged in.
+  - It is not on the Timex machines, whose `$FF` is the SCLD's.
+- The chip runs at 8 MHz and has 6 tone channels in stereo (amplitude low nibble left, high nibble right). The generators follow MAME's `saa1099.cpp` (BSD-3-Clause):
+  - **Tone:** half period `(511 - f) << (8 - octave)` clocks.
+  - **Noise:** two 18-bit LFSRs (x^18 + x^11 + x), clocked at 31.25 / 15.6 / 7.8 kHz or by tone 0 / 3. Tone and noise together give the tone at half amplitude while the noise is high.
+  - **Envelopes:** two, stepped on every half period of tone 1 / 4, or by any address write when external (bit 5). The modes are zero, max, decay, attack and triangle, single or repeating, with an inverted right side and 3-bit resolution. After the data sheet and SAASound, they act on channels 2 and 5 only; MAME applies them to all three channels of a group.
+  - **Register `$1C`:** bit 0 enables all channels; bit 1 holds and resets the generators.
+- The writes are kept per frame with their T-state and played into the chip by the audio, like the AY's. Writes the audio does not take (sound off, high speed) go straight to the chip, so it keeps its registers.
+- Checked: tone frequencies, stereo amplitudes, all six channels at full level, the noise rate, single decay, the external envelope clock, the port decoding (TR-DOS, Timex, reset). `tests/saa-test.html`.
+- Not done: envelope parameters held until the end of the current period (the data sheet's buffering); a snapshot does not keep the SAA's registers.
+
 ## Spectrum 128 MIDI out (AY register 14)
 
 `core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.

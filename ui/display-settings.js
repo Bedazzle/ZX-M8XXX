@@ -116,6 +116,13 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             storageSet('zxm8_turboSound', chkTurboSound.checked);
             showMessage(chkTurboSound.checked ? 'TurboSound on (2 x AY)' : 'TurboSound off');
         });
+        const chkSaa = document.getElementById('chkSaa');
+        chkSaa.checked = !!getSpectrum().saaOn;
+        chkSaa.addEventListener('change', () => {
+            getSpectrum().setSaa(chkSaa.checked);
+            storageSet('zxm8_saa', chkSaa.checked);
+            showMessage(chkSaa.checked ? 'SAA1099 on ($01FF register, $00FF data)' : 'SAA1099 off');
+        });
         const applyDac = () => {
             const sp = getSpectrum();
             const hexOr = (txt, d) => { const v = parseInt(txt.value, 16); return Number.isFinite(v) ? v : d; };
