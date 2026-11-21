@@ -217,6 +217,13 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (!profile.trdosInRom && romData['trdos.rom'] && (profile.betaDiskDefault || spec.betaDiskEnabled)) {
             spec.memory.loadTrdosRom(romData['trdos.rom']);
         }
+        // Beta 48 ROM (TR-DOS 4.x / Vision / CBI-95...) for an add-on Beta set to a
+        // Beta 48 variant; identified and straightened by core/beta48.js
+        if (romData['beta48.rom'] && !profile.betaDiskDefault && spec.betaDiskEnabled &&
+            spec.betaVariant !== '128' && spec.loadBeta48Rom) {
+            try { spec.loadBeta48Rom(romData['beta48.rom']); }
+            catch (e) { console.warn('[Beta 48] ' + e.message); }
+        }
         // Update TR-DOS ROM flag for trap handler (must be called for all machines,
         // including Scorpion where TR-DOS is in main ROM bank)
         if (spec.trdosTrap) spec.trdosTrap.updateTrdosRomFlag();
@@ -316,6 +323,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // TR-DOS ROM (shared across all machines)
         if (!seen.has('trdos.rom')) {
             romPaths.push({ path: 'roms/trdos.rom', file: 'trdos.rom' });
+        }
+        // Beta 48 ROM (TR-DOS 4.x / Vision / CBI-95 / IDS / AR-20)
+        if (!seen.has('beta48.rom')) {
+            romPaths.push({ path: 'roms/beta48.rom', file: 'beta48.rom' });
         }
         // +D ROM (for MGT disks)
         if (!seen.has('plusd.rom')) {

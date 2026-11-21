@@ -611,6 +611,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             const betaDisk = profile.betaDiskDefault ||
                 storageGet('zxm8_betaDisk') === 'true';
             if (!profile.trdosInRom && betaDisk) await maybe('trdos.rom');
+            if (betaDisk && !profile.betaDiskDefault && spectrum.betaVariant !== '128') await maybe('beta48.rom');
             if (spectrum.plusDEnabled) await maybe('plusd.rom');
             if (spectrum.if1Enabled) await maybe('if1.rom');
             if (spectrum.opusEnabled) await maybe('opus.rom');

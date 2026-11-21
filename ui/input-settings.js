@@ -45,6 +45,10 @@ export function initInputSettings({
     const btnMouse = document.getElementById('btnMouse');
     const chkBetaDisk = document.getElementById('chkBetaDisk');
     const betaDiskStatus = document.getElementById('betaDiskStatus');
+    // Beta 48 row (declared up here: updateBetaDiskStatus runs during init)
+    const selBetaVariant = document.getElementById('selBetaVariant');
+    const beta48Status = document.getElementById('beta48Status');
+    const btnBetaMagic = document.getElementById('btnBetaMagic');
     const chkPlusD = document.getElementById('chkPlusD');
     const plusDStatus = document.getElementById('plusDStatus');
     const btnNmiPlusD = document.getElementById('btnNmiPlusD');
@@ -62,6 +66,7 @@ export function initInputSettings({
     // mirror the machine list above: checkbox, Load ROM, filename in cyan.
     const IFACE_ROMS = {
         betaDisk: { rom: 'trdos.rom',    span: 'betaDiskRomName' },
+        beta48:   { rom: 'beta48.rom',   span: 'beta48RomName' },
         plusD:    { rom: 'plusd.rom',    span: 'plusDRomName' },
         if1:      { rom: 'if1.rom',      span: 'if1RomName' },
         opus:     { rom: 'opus.rom',     span: 'opusRomName' },
@@ -413,6 +418,7 @@ export function initInputSettings({
     // Beta Disk (TR-DOS) interface toggle
     function updateBetaDiskStatus() {
         updateIfaceRomName('betaDisk');
+        updateBeta48Status();
         const spectrum = getSpectrum();
         if (spectrum.profile.betaDiskDefault) {
             betaDiskStatus.textContent = '(always on for ' + spectrum.profile.name + ')';
@@ -420,7 +426,9 @@ export function initInputSettings({
             chkBetaDisk.disabled = true;
         } else {
             chkBetaDisk.disabled = false;
-            if (!romData['trdos.rom']) {
+            if (spectrum.betaVariant !== '128') {
+                betaDiskStatus.textContent = '';    // a Beta 48 needs beta48.rom (row below)
+            } else if (!romData['trdos.rom']) {
                 betaDiskStatus.textContent = '(trdos.rom required)';
             } else if (chkBetaDisk.checked) {
                 betaDiskStatus.textContent = '';
@@ -438,6 +446,11 @@ export function initInputSettings({
         if (chkBetaDisk.checked && romData['trdos.rom'] && !spectrum.memory.hasTrdosRom()) {
             spectrum.memory.loadTrdosRom(romData['trdos.rom']);
             spectrum.trdosTrap.updateTrdosRomFlag();
+        }
+        // ...or the Beta 48 ROM, when the Beta is a Beta 48
+        if (chkBetaDisk.checked && spectrum.betaVariant !== '128' && romData['beta48.rom'] &&
+            !spectrum.memory.hasBeta48Rom()) {
+            try { spectrum.loadBeta48Rom(romData['beta48.rom']); } catch (err) { showMessage(err.message, 'error'); }
         }
         spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
@@ -569,6 +582,78 @@ export function initInputSettings({
     // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
     // ROM could only be reached through the Load ROMs... dialog, which is not
     // where anyone looks when the status line says "(trdos.rom required)".
+    // ---- Beta 48 (core/beta48.js): type, its own ROM, the magic button ----
+
+    function updateBeta48Status() {
+        const sp = getSpectrum();
+        if (!sp || !selBetaVariant) return;
+        const builtIn = !!sp.profile.betaDiskDefault;
+        selBetaVariant.value = sp.betaVariant || '128';
+        selBetaVariant.disabled = builtIn;      // Pentagon/Scorpion: their own Beta 128
+        const wants48 = !builtIn && sp.betaVariant !== '128';
+        document.getElementById('btnLoadBeta48Rom').disabled = !wants48;
+        updateIfaceRomName('beta48');
+        if (builtIn) {
+            beta48Status.textContent = '(built-in Beta 128 on this machine)';
+        } else if (!wants48) {
+            beta48Status.textContent = '';
+        } else if (!romData['beta48.rom']) {
+            beta48Status.textContent = '(beta48.rom required)';
+        } else if (sp.beta48Info) {
+            const i = sp.beta48Info;
+            const kind = sp._beta48Variant() === 'cbi' ? 'CBI-95 / IDS / AR-20' : 'Beta Disk plus';
+            beta48Status.textContent = `${i.name}${i.swapped ? ', D0/D7 straightened' : ''} — ${kind}` +
+                (sp.memory.beta48On ? '' : ' (enable Beta Disk)');
+        } else {
+            beta48Status.textContent = '';
+        }
+        btnBetaMagic.disabled = !(sp.memory.beta48On || sp._betaDiskPagingEnabled);
+    }
+
+    selBetaVariant.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.betaVariant = selBetaVariant.value;
+        storageSet('zxm8_betaVariant', selBetaVariant.value);
+        if (selBetaVariant.value !== '128' && romData['beta48.rom'] && !spectrum.memory.hasBeta48Rom()) {
+            try { spectrum.loadBeta48Rom(romData['beta48.rom']); } catch (err) { showMessage(err.message, 'error'); }
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateBetaDiskStatus();
+        notifyDiskSystems();
+        // A Beta 48 runs its DOS from reset; the interface changes under the machine
+        spectrum.reset();
+        showMessage('Beta Disk type: ' + selBetaVariant.options[selBetaVariant.selectedIndex].text + ' (machine reset)');
+    });
+
+    document.getElementById('btnLoadBeta48Rom').addEventListener('click', () => {
+        document.getElementById('romBeta48Input').click();
+    });
+
+    document.getElementById('romBeta48Input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            const spectrum = getSpectrum();
+            let info;
+            try { info = spectrum.loadBeta48Rom(data); }
+            catch (err) { showMessage(err.message, 'error'); return; }
+            romData['beta48.rom'] = data;
+            setIfaceRomName('beta48', file.name);
+            updateBetaDiskStatus();
+            notifyDiskSystems();
+            if (spectrum.memory.beta48On) spectrum.reset();
+            showMessage(`Beta 48 ROM: ${info.name}${info.swapped ? ' (D0/D7 straightened)' : ''}`);
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
+    btnBetaMagic.addEventListener('click', () => {
+        if (getSpectrum().triggerBetaMagic()) showMessage('Beta Disk magic button (NMI)');
+    });
+
     document.getElementById('btnLoadTrdosRom').addEventListener('click', () => {
         document.getElementById('romTrdosRomInput').click();
     });

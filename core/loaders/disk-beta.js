@@ -45,6 +45,8 @@ import { writeField, xorChecksum, sclChecksum } from './common.js';
         checkTrap() {
             if (!this.enabled) return false;
             if (!this.diskData) return false;
+            // A Beta 48 runs its own TR-DOS 4.x: the 5.x entry points mean nothing
+            if (this.memory.beta48On) return false;
 
             // If TR-DOS ROM is loaded, don't trap - let real TR-DOS handle everything
             // The trap is only useful as a fallback when TR-DOS ROM isn't available

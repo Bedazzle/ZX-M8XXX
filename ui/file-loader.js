@@ -127,7 +127,8 @@ export function initFileLoader({
         if (spectrum.fdc) {
             systems.push({ id: 'dsk', name: '+3DOS', blankLabel: 'Blank DSK', drives: 2 });
         }
-        if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom())) {
+        if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom()) ||
+            spectrum.memory.beta48On) {
             systems.push({ id: 'trd', name: 'TR-DOS', blankLabel: 'Blank TRD', drives: 4 });
         }
         // Ask the emulator whether the interface can actually work rather than
@@ -322,7 +323,7 @@ export function initFileLoader({
             const trdLetter = String.fromCharCode(65 + trdDrive);
             // Auto-load only when loading into drive A (drive 0) and Beta Disk available
             const canBootTrdos = spectrum.profile.betaDiskDefault ||
-                (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom());
+                (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom()) || spectrum.memory.beta48On;
             if (autoLoaderAPI.isAutoLoadEnabled() && canBootTrdos && trdDrive === 0) {
                 const typeStr = result.diskType.toUpperCase();
                 const bootMode = getBootAPI ? getBootAPI().getBootMode() : 'none';

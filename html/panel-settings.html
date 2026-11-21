@@ -422,7 +422,23 @@
                         <button id="btnLoadTrdosRom" class="control-btn iface-rom-btn" title="Load TR-DOS ROM file (trdos.rom)">Load ROM</button>
                         <input type="file" id="romTrdosRomInput" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="betaDiskRomName" class="iface-rom-name"></span>
+                        <button id="btnBetaMagic" class="control-btn iface-rom-btn" title="Beta Disk magic button: NMI with the DOS ROM paged in (save the machine to disk)" disabled>Magic</button>
                         <span id="betaDiskStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row" id="betaVariantRow">
+                        <label class="iface-name" style="margin-left: 15px;" title="Which Beta Disk an add-on Beta is. Beta 48 = the 48K-era Beta Disk plus (TR-DOS 4.x) and its clones, e.g. the Brazilian CBI-95 / IDS / AR-20 and the Vision boards. Pentagon and Scorpion keep their built-in Beta 128.">
+                            Type
+                            <select id="selBetaVariant" style="margin-left: 4px;">
+                                <option value="128">Beta 128 (TR-DOS 5.x)</option>
+                                <option value="auto">Beta 48 — from the ROM</option>
+                                <option value="plus">Beta 48 — Beta Disk plus / Vision</option>
+                                <option value="cbi">Beta 48 — CBI-95 / IDS / AR-20</option>
+                            </select>
+                        </label>
+                        <button id="btnLoadBeta48Rom" class="control-btn iface-rom-btn" title="Load the Beta 48 ROM (beta48.rom: TR-DOS 4.x, Vision, CBI-95, IDS, AR-20...; 8KB or 16KB, D0/D7-swapped dumps are straightened)">Load ROM</button>
+                        <input type="file" id="romBeta48Input" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="beta48RomName" class="iface-rom-name"></span>
+                        <span id="beta48Status" class="iface-status"></span>
                     </div>
 
                     <div class="iface-row">

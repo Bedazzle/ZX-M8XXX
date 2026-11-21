@@ -25,6 +25,13 @@ import {
             this.ram = null;
             this.trdosRom = null;      // Separate TR-DOS ROM (16KB) for Beta Disk
             this.trdosActive = false;  // True when TR-DOS ROM is paged in
+            // Beta 48 (core/beta48.js): its ROM answers any access to $3C00-$3CFF,
+            // and all of $0000-$3FFF while the latch (port $FF bit 7 = 0) is set.
+            // No paging state of its own: it is decided access by access.
+            this.beta48On = false;        // Beta 48 fitted (Spectrum.updateBetaDiskPagingFlag)
+            this.beta48Rom = null;        // 16KB, bits straightened, 8KB ROMs doubled
+            this.beta48Latch = false;     // ROM over the whole $0000-$3FFF
+            this.beta48WindowOff = false; // CBI clones: master bit 6 = no $3Cxx window
             this.pagingDisabled = false;
             this.currentRomBank = 0;
             this.currentRamBank = 0;
@@ -144,6 +151,22 @@ import {
         }
 
         // Load TR-DOS ROM (separate 16KB ROM for Beta Disk interface)
+        // Beta 48 ROM: already prepared by core/beta48.js (16KB, bits straight)
+        loadBeta48Rom(rom16k) {
+            this.beta48Rom = new Uint8Array(16384);
+            this.beta48Rom.set(rom16k.subarray(0, 16384));
+        }
+
+        hasBeta48Rom() {
+            return this.beta48Rom !== null;
+        }
+
+        /** Is the Beta 48 ROM the one at `addr` right now? (debugger, isRomAt) */
+        isBeta48RomAt(addr) {
+            return this.beta48On && addr < SLOT1_START &&
+                (this.beta48Latch || ((addr & 0xFF00) === 0x3C00 && !this.beta48WindowOff));
+        }
+
         loadTrdosRom(data) {
             if (this.trdosRom) {
                 const src = new Uint8Array(data);
@@ -277,6 +300,14 @@ import {
             // +D ROM/RAM overlay: 0x0000-0x1FFF = ROM, 0x2000-0x3FFF = RAM
             if (this.plusDActive && addr < SLOT1_START) {
                 val = (addr < 0x2000) ? this.plusDRom[addr] : this.plusDRam[addr - 0x2000];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
+            // Beta 48: the $3Cxx window (any access) or the latch
+            if (this.beta48On && addr < SLOT1_START &&
+                (this.beta48Latch || ((addr & 0xFF00) === 0x3C00 && !this.beta48WindowOff))) {
+                val = this.beta48Rom[addr];
                 if (this.onRead) this.onRead(addr, val);
                 return val;
             }

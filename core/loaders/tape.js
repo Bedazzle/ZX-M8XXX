@@ -1321,8 +1321,8 @@ import { xorChecksum } from './common.js';
                         return false;  // Don't trap - wrong ROM bank
                     }
                 }
-                // Also don't trap if TR-DOS ROM is active
-                if (this.memory.trdosActive) {
+                // Also don't trap if TR-DOS ROM is active (or a Beta 48's, by latch)
+                if (this.memory.trdosActive || (this.memory.beta48On && this.memory.beta48Latch)) {
                     return false;
                 }
                 // …or the +D, for the same reason. With its ROM paged in, $0556
@@ -1425,6 +1425,7 @@ import { xorChecksum } from './common.js';
             }
             // Don't trap under TR-DOS, or with the +D ROM paged in (see LD-BYTES)
             if (this.memory.trdosActive) return false;
+            if (this.memory.beta48On && this.memory.beta48Latch) return false;
             if (this.memory.plusDActive) return false;
 
             // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
