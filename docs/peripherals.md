@@ -317,6 +317,17 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 - **DCK cartridges** (`parseDck`, `Spectrum.loadDCK` / `ejectDCK`; open a `.dck` on a TC2068): DOCK and EXROM blocks (HOME blocks ignored), ROM and RAM chunks; the machine resets and the ROM starts the cartridge. Checked: Donkey Kong (`dk-spectrum.dck`), Timmy for the 2068 (tape).
 - Not done: TS2068 (NTSC), HOME blocks in DCK, snapshots of the SCLD/DOCK state, flash in hi-res. `tests/timex-test.html`.
 
+## TurboSound and DACs (Covox / Specdrum / Soundrive)
+
+`Spectrum.setTurboSound`, `Spectrum.setDac`, mixed in `AudioManager.processFrame`. **Settings → Audio**.
+
+- **TurboSound** (NedoPC): a second AY (`spectrum.ay2`) on the same ports, wherever there is an AY on `$FFFD`/`$BFFD` (128K, Pentagon..., AY in 48K). `OUT ($FFFD),$FF` selects chip 0, `$FE` chip 1; any other value is a register number for the selected chip, and reads follow the selected chip. With it off, `$FE`/`$FF` are ordinary register writes. AY writes carry the chip in `ayChanges` and are replayed on that chip; the two are mixed at 0.7 each. Checked with AY_YM_TS_test v0.2 (both chips' register tests and the channel tones).
+- **DACs**, write-only and not exclusive (the port still reaches the rest of the bus), four 8-bit channels, `$80` = silence, recorded per frame with their T-state like the beeper:
+  - *Covox*: one port, mono, settable (`$FB` by default, Pentagon; `$DD` on the Scorpion);
+  - *Specdrum* (Cheetah): `$DF`, mono;
+  - *Soundrive 1.05*: `$0F`/`$1F` left, `$4F`/`$5F` right, and `$F1`/`$F3`, `$F9`/`$FB`.
+- `tests/sound-addons-test.html`.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

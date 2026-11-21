@@ -366,6 +366,23 @@
                         <button id="btnMute" class="control-btn" style="margin-left: 15px;" title="Mute/unmute sound">🔊</button>
                     </div>
                     <div class="settings-row">
+                        <label class="checkbox-label" title="TurboSound (NedoPC): a second AY on the same ports. OUT ($FFFD),$FF selects chip 0, $FE chip 1; any other value selects a register of the current chip. Where there is an AY (128K, Pentagon..., or AY in 48K).">
+                            <input type="checkbox" id="chkTurboSound"> TurboSound (2 x AY)
+                        </label>
+                        <label style="margin-left: 15px;" title="8-bit DAC: Covox (one port, mono), Specdrum (Cheetah, port $DF, mono), Soundrive 1.05 (four channels: $0F/$1F left, $4F/$5F right, also $F1/$F3, $F9/$FB)">
+                            DAC
+                            <select id="selDac" style="margin-left: 4px;">
+                                <option value="none">none</option>
+                                <option value="covox">Covox</option>
+                                <option value="specdrum">Specdrum</option>
+                                <option value="soundrive">Soundrive</option>
+                            </select>
+                        </label>
+                        <label id="covoxPortLabel" style="margin-left: 10px;" title="Covox port (low byte, hex): $FB on the Pentagon, $DD on the Scorpion">
+                            port $<input type="text" id="txtCovoxPort" maxlength="2" style="width: 2.5em;" value="FB">
+                        </label>
+                    </div>
+                    <div class="settings-row">
                         <label for="volumeSlider" style="min-width: 60px;">Volume:</label>
                         <input type="range" id="volumeSlider" min="0" max="100" value="50" style="width: 120px;">
                         <span id="volumeValue" style="min-width: 35px; text-align: right;">50%</span>

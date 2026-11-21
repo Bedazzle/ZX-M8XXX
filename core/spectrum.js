@@ -148,6 +148,22 @@ import { Disassembler } from './disasm.js';
 
             // AY-3-8910 sound chip
             this.ay = new AY(this.profile.ayClockHz);
+            // TurboSound (NedoPC): a second AY on the same ports; OUT ($FFFD),$FF
+            // selects chip 0 and $FE chip 1, any other value is a register number
+            // for the selected chip. Off by default.
+            this.ay2 = new AY(this.profile.ayClockHz);
+            this.turboSound = storageGet('zxm8_turboSound') === 'true';
+            this._aySel = 0;
+            this.ay2StateSnapshot = null;
+            // DAC: 'none' | 'covox' (one port, settable, $FB by default) |
+            // 'specdrum' ($DF) | 'soundrive' (1.05: $0F/$1F left, $4F/$5F right,
+            // and $F1/$F3, $F9/$FB). Four 8-bit channels, $80 = silence; writes
+            // are kept per frame with their T-state, as the beeper's are.
+            this.dacType = storageGet('zxm8_dacType') || 'none';
+            this.covoxPort = parseInt(storageGet('zxm8_covoxPort') || 'FB', 16) & 0xFF;
+            this.dacLevels = [0x80, 0x80, 0x80, 0x80];
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
             this.ayEnabled = this.profile.ayDefault;  // AY enabled by default for 128K/Pentagon
             this.ay48kEnabled = false;  // Optional AY for 48K (like Melodik interface)
             this.aySelectedRegister = 0;
@@ -1533,6 +1549,8 @@ import { Disassembler } from './disasm.js';
             this._turboBlockPending = false;
             this.rzxStop();
             if (this.ay) this.ay.reset();
+            if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            if (this.dacLevels) this.dacLevels.fill(0x80);
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
             if (this.hcIf1) this.hcIf1.reset(false);
@@ -1806,6 +1824,40 @@ import { Disassembler } from './disasm.js';
             return this.ayEnabled || (this.ay48kEnabled &&
                 (this.machineType === '48k' || this.profile.pagingModel === 'hc2000' ||
                  this.machineType === 'tc2048'));
+        }
+
+        /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */
+        _curAy() {
+            return (this.turboSound && this._aySel) ? this.ay2 : this.ay;
+        }
+
+        /** Turn TurboSound on or off (the second AY starts silent) */
+        setTurboSound(on) {
+            this.turboSound = !!on;
+            this._aySel = 0;
+            this.ay2.reset();
+        }
+
+        /** DAC type and Covox port (see the constructor) */
+        setDac(type, covoxPort = this.covoxPort) {
+            this.dacType = ['covox', 'specdrum', 'soundrive'].includes(type) ? type : 'none';
+            this.covoxPort = covoxPort & 0xFF;
+            this.dacLevels.fill(0x80);
+        }
+
+        // A DAC port write: channel 0-3, or all four for the mono DACs
+        _dacWrite(low, val) {
+            let ch = -1;
+            if (this.dacType === 'covox') { if (low === this.covoxPort) ch = 4; }
+            else if (this.dacType === 'specdrum') { if (low === 0xDF) ch = 4; }
+            else if (this.dacType === 'soundrive') {
+                ch = { 0x0F: 0, 0x1F: 1, 0x4F: 2, 0x5F: 3, 0xF1: 0, 0xF3: 1, 0xF9: 2, 0xFB: 3 }[low];
+                if (ch === undefined) ch = -1;
+            }
+            if (ch < 0) return;
+            if (ch === 4) this.dacLevels.fill(val);
+            else this.dacLevels[ch] = val;
+            this.dacChanges.push({ tStates: this.cpu.tStates, ch, value: val });
         }
 
         /** Numpad/gamepad set to a Timex joystick (not the Kempston port) */
@@ -2164,7 +2216,7 @@ import { Disassembler } from './disasm.js';
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
-                        result = this.ay.readRegister();
+                        result = this._curAy().readRegister();
                     }
                 } else {
                     // Floating bus: the byte the ULA has on the bus right now.
@@ -2291,6 +2343,9 @@ import { Disassembler } from './disasm.js';
 
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
+
+            // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
+            if (this.dacType !== 'none') this._dacWrite(lowByte, val);
 
             // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
             // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports
@@ -2551,16 +2606,19 @@ import { Disassembler } from './disasm.js';
             }
             if (this._ayOnPorts() && !this.profile.timexAy && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
                 if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
-                    // Port 0xFFFD: AY register select
-                    this.ay.selectRegister(val);
+                    // Port 0xFFFD: AY register select (TurboSound: $FF/$FE pick the chip)
+                    if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
+                    else this._curAy().selectRegister(val);
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_DATA) {
                     // Port 0xBFFD: AY register write. Applied immediately (so register
                     // readback / AY-detection see the value), and also recorded with its
                     // frame-relative T-state so processFrame can replay intra-frame
                     // volume changes (digitized speech) at the right moment.
-                    const reg = this.ay.selectedRegister;
-                    this.ay.writeRegister(val);
-                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: this.ay.registers[reg] });
+                    const ay = this._curAy();
+                    const reg = ay.selectedRegister;
+                    ay.writeRegister(val);
+                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: ay.registers[reg],
+                        chip: ay === this.ay2 ? 1 : 0 });
                 }
             }
 
@@ -2617,6 +2675,9 @@ import { Disassembler } from './disasm.js';
             // Snapshot AY state (replay baseline) and clear this frame's writes
             this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
             this.ayChanges = [];
+            this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3205,7 +3266,9 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
+                    { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
             }
 
             // Advance AY logging frame counter
@@ -3327,6 +3390,9 @@ import { Disassembler } from './disasm.js';
             // Snapshot AY state (replay baseline) and clear this frame's writes
             this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
             this.ayChanges = [];
+            this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3634,7 +3700,9 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
+                    { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
             }
 
             // Advance AY logging frame counter
@@ -10572,7 +10640,15 @@ import { Disassembler } from './disasm.js';
          * @param {number} beeperLevel - Final beeper level at end of frame
          * @param {Array} tapeAudioChanges - Array of {tStates, level} tape signal changes
          */
-        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = [], ayChanges = [], aySnapshot = null) {
+        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = [], ayChanges = [], aySnapshot = null, extra = null) {
+            // TurboSound's second AY and the DAC channels (see Spectrum constructor)
+            const ay2 = extra && extra.ay2;
+            const dacChanges = (extra && extra.dacChanges) || [];
+            const dacOn = !!(extra && extra.dacOn);
+            const dac = extra && extra.dacStart ? extra.dacStart.slice() : [0x80, 0x80, 0x80, 0x80];
+            let dacIdx = 0;
+            const DAC_VOLUME = 0.5;
+            if (ay2 && extra.ay2Snapshot) ay2.importState(extra.ay2Snapshot);
             if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
 
             // Restore the AY to its start-of-frame state so the timestamped register
@@ -10639,11 +10715,30 @@ import { Disassembler } from './disasm.js';
                     // Apply any AY register writes that occurred up to this sample's
                     // T-state, then step. This reproduces intra-frame volume changes.
                     while (ayIdx < ayChanges.length && ayChanges[ayIdx].tStates <= sampleTstates) {
-                        this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                        const c = ayChanges[ayIdx];
+                        if (c.chip === 1) { if (ay2) ay2.setRegisterForReplay(c.reg, c.value); }
+                        else this.ay.setRegisterForReplay(c.reg, c.value);
                         ayIdx++;
                     }
                     this.ay.stepMultiple(Math.round(ayStepsPerSample));
                     [left, right] = this.ay.getAveragedSample();
+                    if (ay2) {
+                        // two chips: each at 0.7, so a pair at full tilt stays in range
+                        ay2.stepMultiple(Math.round(ayStepsPerSample));
+                        const [l2, r2] = ay2.getAveragedSample();
+                        left = (left + l2) * 0.7;
+                        right = (right + r2) * 0.7;
+                    }
+                }
+
+                // DAC: channels 0/1 left, 2/3 right; $80 is silence
+                if (dacOn) {
+                    while (dacIdx < dacChanges.length && dacChanges[dacIdx].tStates <= sampleTstates) {
+                        const d = dacChanges[dacIdx++];
+                        if (d.ch === 4) dac.fill(d.value); else dac[d.ch] = d.value;
+                    }
+                    left += ((dac[0] - 128) + (dac[1] - 128)) / 256 * DAC_VOLUME;
+                    right += ((dac[2] - 128) + (dac[3] - 128)) / 256 * DAC_VOLUME;
                 }
 
                 // Add beeper to both channels (mono beeper) - only when active
@@ -10679,7 +10774,9 @@ import { Disassembler } from './disasm.js';
             // ends the frame at the final register state (matches immediate-write state).
             if (this.ay) {
                 while (ayIdx < ayChanges.length) {
-                    this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                    const c = ayChanges[ayIdx];
+                    if (c.chip === 1) { if (ay2) ay2.setRegisterForReplay(c.reg, c.value); }
+                    else this.ay.setRegisterForReplay(c.reg, c.value);
                     ayIdx++;
                 }
             }

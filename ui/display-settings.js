@@ -89,6 +89,40 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         await toggleSound(chkSound.checked);
     });
 
+    // ---- TurboSound and DAC (Spectrum.setTurboSound / setDac) ----
+    const chkTurboSound = document.getElementById('chkTurboSound');
+    const selDac = document.getElementById('selDac');
+    const txtCovoxPort = document.getElementById('txtCovoxPort');
+    const covoxPortLabel = document.getElementById('covoxPortLabel');
+    function showDacSettings() {
+        const sp = getSpectrum();
+        chkTurboSound.checked = !!sp.turboSound;
+        selDac.value = sp.dacType;
+        txtCovoxPort.value = sp.covoxPort.toString(16).toUpperCase().padStart(2, '0');
+        covoxPortLabel.style.display = sp.dacType === 'covox' ? '' : 'none';
+    }
+    if (chkTurboSound) {
+        showDacSettings();
+        chkTurboSound.addEventListener('change', () => {
+            getSpectrum().setTurboSound(chkTurboSound.checked);
+            storageSet('zxm8_turboSound', chkTurboSound.checked);
+            showMessage(chkTurboSound.checked ? 'TurboSound on (2 x AY)' : 'TurboSound off');
+        });
+        const applyDac = () => {
+            const sp = getSpectrum();
+            const port = parseInt(txtCovoxPort.value, 16);
+            sp.setDac(selDac.value, Number.isFinite(port) ? port : 0xFB);
+            storageSet('zxm8_dacType', sp.dacType);
+            storageSet('zxm8_covoxPort', sp.covoxPort.toString(16).toUpperCase());
+            showDacSettings();
+            showMessage(sp.dacType === 'none' ? 'DAC off'
+                : 'DAC: ' + selDac.options[selDac.selectedIndex].text +
+                  (sp.dacType === 'covox' ? ' on port $' + txtCovoxPort.value : ''));
+        };
+        selDac.addEventListener('change', applyDac);
+        txtCovoxPort.addEventListener('change', applyDac);
+    }
+
     chkAY48k.addEventListener('change', () => {
         const spectrum = getSpectrum();
         spectrum.ay48kEnabled = chkAY48k.checked;
