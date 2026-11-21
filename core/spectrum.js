@@ -5,7 +5,7 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 import { looksLikeMarkup } from './utils.js';
-import { normalizeCustomKeys, DEFAULT_CUSTOM_KEYS } from './joystick.js';
+import { normalizeCustomKeys, DEFAULT_CUSTOM_KEYS, kempstonToTimex } from './joystick.js';
 import { DebugInstrumentation } from './debug-instrument.js';
 import { InputHandling } from './input.js';
 import {
@@ -1808,6 +1808,17 @@ import { Disassembler } from './disasm.js';
                  this.machineType === 'tc2048'));
         }
 
+        /** Numpad/gamepad set to a Timex joystick (not the Kempston port) */
+        _joystickIsTimex() {
+            return this.joystickType === 'timex1' || this.joystickType === 'timex2';
+        }
+
+        /** Timex joystick port byte (active high) for joystick 0 or 1 */
+        _timexJoystick(which) {
+            if (this.joystickType !== (which ? 'timex2' : 'timex1')) return 0;
+            return kempstonToTimex(this.kempstonState | this.gamepadState);
+        }
+
         /** Is the HC IF1 usable: HC-2000 with hc-if1.rom loaded. */
         _isHcIf1Present() {
             return this.hcIf1 !== null && this.memory.hasHcIf1Rom();
@@ -1996,7 +2007,16 @@ import { Disassembler } from './disasm.js';
                     // R7 bit 6 makes it an output, else $FF (no joystick fitted)
                     const reg = this.ay.selectedRegister;
                     if (reg !== 14) result = this.ay.readRegister();
-                    else result = (lowByte === 0xF6 && (this.ay.registers[7] & 0x40)) ? this.ay.registers[14] : 0xFF;
+                    else if (lowByte === 0xF5) result = 0xFF;
+                    else {
+                        // FUSE tc2068_ay_dataport_read: the port latch if R7 bit 6
+                        // makes it an output, else $FF; A8 selects joystick 1 and
+                        // A9 joystick 2 onto it, a pressed direction pulling its
+                        // bit low
+                        result = (this.ay.registers[7] & 0x40) ? this.ay.registers[14] : 0xFF;
+                        if (port & 0x0100) result &= ~this._timexJoystick(0);
+                        if (port & 0x0200) result &= ~this._timexJoystick(1);
+                    }
                 } else if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
                     // HC-2000 config latch $7E (A7=0, A0=0). The HC decodes its
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
@@ -2106,7 +2126,7 @@ import { Disassembler } from './disasm.js';
                 } else if (betaDiskActive && lowByte === PORT_WD_SYS) {
                     // Beta Disk system register
                     result = this.betaDisk.read(port);
-                } else if (this.kempstonEnabled &&
+                } else if (this.kempstonEnabled && !this._joystickIsTimex() &&
                            (lowByte & DECODE_KEMPSTON_MASK) === DECODE_KEMPSTON) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
                     // Bits 0-4: standard (Right, Left, Down, Up, Fire/B)

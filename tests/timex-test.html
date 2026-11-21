@@ -222,6 +222,22 @@
             assert(sp.ay.registers[2] === 0x5A && sp.portRead(0x00F6) === 0x5A, 'AY on $F5 (select) / $F6 (data)');
             sp.portWrite(0x00F5, 14);
             assert(sp.portRead(0x00F5) === 0xFF, 'AY register 14 (joystick) reads $FF via $F5');
+            // Timex joysticks: numpad/gamepad as Timex 1/2, read via R14 with A8/A9
+            const prevType = sp.joystickType;
+            sp.setJoystickType('timex1');
+            sp.kempstonState = 0x08 | 0x10;                   // up + fire
+            const j1 = sp.portRead(0x01F6), j2 = sp.portRead(0x02F6), none = sp.portRead(0x00F6);
+            const kemp = sp.portRead(0x001F);
+            sp.setJoystickType('timex2');
+            sp.kempstonState = 0x02;                          // left
+            const k1 = sp.portRead(0x01F6), k2 = sp.portRead(0x02F6);
+            sp.kempstonState = 0;
+            sp.setJoystickType(prevType);
+            assert(j1 === (0xFF & ~0x81) && j2 === 0xFF && none === 0xFF,
+                'Timex joystick 1: up+fire pull bits 0 and 7 low on A8', [j1, j2, none].map(v => v.toString(16)).join(' '));
+            assert(k1 === 0xFF && k2 === (0xFF & ~0x04), 'Timex joystick 2: left on A9',
+                [k1, k2].map(v => v.toString(16)).join(' '));
+            assert(kemp === 0xFF, 'a Timex joystick does not show on the Kempston port', kemp.toString(16));
             // DCK cartridge
             if (await ok('../headless/timex/dk-spectrum.dck')) {
                 const dck = new Uint8Array(await (await fetch('../headless/timex/dk-spectrum.dck')).arrayBuffer());
