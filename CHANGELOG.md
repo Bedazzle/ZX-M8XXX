@@ -2,8 +2,34 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.04
+
+- **Save → Media… saves any inserted disk or cartridge**, with a dot on the ones a program has written to. Replaces the DSK and TRD/SCL entries.
+- **Double-stepping: Opus drives are 40- or 80-track.**
+- **Opus geometry per disk, from its anchor sector.**
+- **Opus double-density disks load, out of their `.dsk` containers.** The DD format (80 × 2 × 10 × 512) is circulated as CPC-style `.dsk` and nothing else, and every `.dsk` went to the +3 FDC. One on a machine with no FDC is now offered to the Opus, which takes it when the disk's own anchor sector says it is one. The catalogue, the Explorer and the controller all count in the disk's sector size, 512 as readily as 256.
+- **`FORMAT` makes a disk: Write Track and Read Track.** There is no "format a sector" — a DOS streams a whole track at the controller and the chip writes it between index pulses — so with Write Track unimplemented every `FORMAT` in the app reported success and changed nothing. All four WD controllers now lay the track down, and three real ROMs make a disk from an image that was not one: the Opus 40 tracks, MDOS all 160 track-sides of a Didaktik 80, TR-DOS 80 tracks on one side. Each result is immediately saveable to. Read Track answers from the geometry for images that hold no gaps or marks of their own.
+- **The Opus and Didaktik transfer at the disk's speed, not the handler's.** Both wire DRQ to the NMI line, and the delay before each byte restarted when the ROM got round to servicing the previous one — so the handler's own cost was added to every byte instead of hiding inside it. Measured, that cost the Opus ~130 T-states a byte where a byte of a track has 111.8, and a track took 1.15 revolutions to write, which no real drive can do. The schedule is absolute now, for reads as much as writes, and the byte time comes from the rotation rather than one rounded constant: both interfaces transfer at 111.8 T-states a byte and write a track in exactly one revolution, where a read used to cost 136. Measured against the real ROMs, not assumed — the Opus NMI handler is eleven instructions and 87 T-states, which is what makes it able to keep up.
+- **A format starts on the index pulse, and polled bytes are paced.**
+- **The disk goes round: a real index pulse.** It turns at 300 rpm whether the host is ready or not, which is what ends a Write Track, what the Type I status bit reports, and what decides which sector Read Address finds under the head. A revolution is exactly ten frames, so the figure follows the machine instead of being a constant. Formatting is now ended by elapsed time rather than by counting register reads, the index bit is the pulse rather than one read in sixteen, and a program can measure rotational position.
+- **Fixed: an NMI cost the CPU nothing.** A Z80 takes 11 T-states to acknowledge one, and `Z80.nmi()` returns them exactly as `interrupt()` does — but all five callers dropped the number instead of adding it to the clock, so every +D, Opus and Didaktik NMI was free. Nothing at the scale of a frame could see it; a transfer paced to the byte could.
+- **Fixed: a TR-DOS SAVE waited for an interrupt that never came.** Every save writes Write Track from the ROM's entry stub and then feeds it nothing, relying on the index pulse to end the command. A track opened and never written to is ended with lost data a revolution later, which is what puts the interrupt back.
+- **Fixed: Opus `RUN` and `CAT 1` on ROM v2.2+.**
+- **Fixed: Explorer copied Opus and Didaktik files incompletely.**
+- **Fixed: Opus Read Address answered from the registers.**
+- **Fixed: Opus printer BUSY line inverted.**
+- **Fixed: stale DRQ NMIs were delivered.**
+- **Fixed: saving a project lost disk writes.**
+
+## v26.11.03
+
+- **`.udi` disk images load**, copy-protected ones included. Read-only; the Explorer opens them too.
+- **"No disk interface active" now names the missing ROM.**
+- **`run-tests.py` no longer dies** on a non-ASCII failure message.
+
 ## v26.11.02
 
+- **The assembler read any operand starting and ending with a paren as a memory access.** `ld a,(1+2)*(3+4)` lost its outer characters and was refused, and `ld hl,(1+2)*(3+4)` quietly assembled as `LD HL,(nn)`. What settles it is whether the first `(` is the one the last `)` closes.
 - **Input settings after the joystick keys were lost on every boot.** `customKeys` was used before its declaration and the catch read the error as unreadable settings, so both mouse swaps, ghosting and the Caps/Symbol Shift keys had been reverting since v0.15.24.
 - **An Explorer disk panel says how much room is left on the disk.** A new, empty TRD/MGT/MDR said only "0 files", an OPD printed used/total and left the subtraction to you, and a copy into a panel replaced the free count with "Copied N".
 - **The memory map shows every RAM bank, not just the first eight.** On a Scorpion or a Pentagon 1024 there was no way to look past bank 7; the bank view now draws all 16 or 64 of them and scrolls, and a hover names the bank it came from instead of reading the canvas as a flat 64K address.

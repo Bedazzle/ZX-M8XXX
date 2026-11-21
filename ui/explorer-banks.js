@@ -927,10 +927,97 @@ export function initExplorerBanks(ctx) {
         return trdBasicAutostartLine(fileData, file.length);
     }
 
+
+    // A UDI that read successfully is reported as a TRD, because the flattened sector
+    // image is what every view below indexes. This section is what the catalogue
+    // cannot express: how many cylinders the file really has, whether its checksum
+    // agrees with its contents, and what the flattening had to give up.
+    function explorerRenderUDISection() {
+        const udi = ctx.explorerParsed.udi;
+        if (!udi) return '';
+        const p = udi.parsed;
+        const n = (v) => v.toLocaleString();
+        const hex32 = (v) => '0x' + v.toString(16).toUpperCase().padStart(8, '0');
+        const rows = [];
+
+        rows.push(['File', `${n(ctx.explorerParsed.udiSize)} bytes \u2014 UDI v${p.version === 0 ? '1.0' : p.version}`]);
+
+        let geom = `${p.cylinders} cylinder${p.cylinders !== 1 ? 's' : ''} \u00d7 ${p.sides} side${p.sides > 1 ? 's' : ''}`;
+        if (p.cylinders > p.declaredCylinders) {
+            // Declaring fewer cylinders than it carries is how a protected disk hides
+            // its extra tracks, so the record count wins and the disagreement is shown.
+            geom += ` <span style="color:var(--cyan)">(header declares ${p.declaredCylinders})</span>`;
+        }
+        rows.push(['Geometry', geom]);
+
+        const compressed = p.tracks.filter(t => t.compressed).length;
+        const weak = p.tracks.filter(t => t.weak).length;
+        let trackInfo = `${p.tracks.length} record${p.tracks.length !== 1 ? 's' : ''}`;
+        if (compressed) trackInfo += `, ${compressed} zlib-compressed`;
+        if (weak) trackInfo += `, ${weak} with a weak-sector map`;
+        rows.push(['Tracks', trackInfo]);
+
+        rows.push(['Sectors', `${n(udi.sectorsPlaced)} placed`]);
+
+        // Two of five sample images disagree with their own stored checksum, so a
+        // mismatch is reported and the disk still loads -- it is not a reason to
+        // refuse a real file.
+        rows.push(['Checksum', udi.crcOk
+            ? `${hex32(p.crcStored)} \u2014 matches`
+            : `stored ${hex32(p.crcStored)}, computed ${hex32(p.crcComputed)} <span style="color:#e74c3c">(mismatch \u2014 loaded anyway)</span>`]);
+
+        // Two different losses, and conflating them would misread the image: a sector
+        // a TRD has no room for is absent from it, while a deleted-data mark or a bad
+        // CRC is a sector that IS there with the fact about it gone.
+        const L = udi.lost;
+        const dropped = [];
+        if (L.wrongSize) dropped.push(`${L.wrongSize} not 256 bytes`);
+        if (L.outOfRange) dropped.push(`${L.outOfRange} numbered outside 1\u201316`);
+        if (L.noData) dropped.push(`${L.noData} with no data field`);
+        if (dropped.length) rows.push(['Dropped', `<span style="color:#e74c3c">${dropped.join(', ')}</span>`]);
+
+        const flagged = [];
+        if (L.badCrc) flagged.push(`${L.badCrc} with a bad data CRC`);
+        if (L.deleted) flagged.push(`${L.deleted} deleted-data (0xF8)`);
+        if (L.weak) flagged.push(`${L.weak} weak`);
+        if (flagged.length) rows.push(['Kept, mark lost', `<span style="color:var(--cyan)">${flagged.join(', ')}</span>`]);
+
+        if (udi.trailerText) {
+            rows.push(['Trailer', `<span style="color:var(--text-secondary)">${escapeHtml(udi.trailerText)}</span>`]);
+        }
+        if (p.unused11) {
+            rows.push(['Byte 11', `${fmtByte(p.unused11)} <span style="color:var(--text-secondary)">(the spec says 0)</span>`]);
+        }
+        for (const w of p.warnings) {
+            rows.push(['Note', `<span style="color:var(--cyan)">${escapeHtml(w)}</span>`]);
+        }
+
+        return `<div class="explorer-info-section">
+            <div class="explorer-info-header">UDI Disk Image</div>
+            <table class="explorer-info-table">
+                ${rows.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('\n                ')}
+            </table>
+            <div style="color:var(--text-secondary);padding:4px 0">Raw track bytes, flattened to a sector image \u2014 that image is what the views below, the Disk Map and the hex dump show.</div>
+        </div>`;
+    }
+
+    // Reached only when the UDI could not be read at all; a readable one reports
+    // as a TRD and goes through explorerRenderTRDInfo.
+    function explorerRenderUDIInfo() {
+        return `<div class="explorer-info-section">
+            <div class="explorer-info-header">UDI Disk Image</div>
+            <div style="color:#e74c3c">Error: ${escapeHtml(ctx.explorerParsed.error || 'unreadable')}</div>
+            <table class="explorer-info-table">
+                <tr><th>Size</th><td>${ctx.explorerParsed.size.toLocaleString()} bytes</td></tr>
+            </table>
+        </div>`;
+    }
+
     function explorerRenderTRDInfo() {
         const trdTypeNames = ctx.TRD_TYPE_NAMES;
-        let html = `<div class="explorer-info-section">
-            <div class="explorer-info-header">TRD Disk Image</div>
+        const fromUdi = !!ctx.explorerParsed.udi;
+        let html = explorerRenderUDISection() + `<div class="explorer-info-section">
+            <div class="explorer-info-header">${fromUdi ? 'Flattened Sector Image' : 'TRD Disk Image'}</div>
             <table class="explorer-info-table">
                 <tr><th>Size</th><td>${ctx.explorerData.length} bytes</td></tr>
                 <tr><th>Label</th><td>${ctx.explorerParsed.diskTitle || '(none)'}</td></tr>
@@ -1677,6 +1764,7 @@ export function initExplorerBanks(ctx) {
         explorerRenderTAPInfo,
         explorerRenderTRDInfo,
         explorerRenderTZXInfo,
+        explorerRenderUDIInfo,
         explorerRenderZ80Info,
         trdGetBasicAutostart,
         // rzxDecodeMode is owned here but changed by the panel's dropdown handler

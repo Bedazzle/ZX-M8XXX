@@ -63,9 +63,10 @@ import {
     TapeLoader, TapePlayer, TZXLoader, WAVLoader, SnapshotLoader,
     TapeTrapHandler, TapeSaveTrapHandler, MicRecorder, buildTZX,
     TRDOSTrapHandler, BetaDisk,
-    ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader,
+    ZipLoader, RZXLoader, TRDLoader, SCLLoader, SZXLoader, UDILoader,
     MGTLoader, PlusDDisk, MDRLoader, Microdrive,
-    OPDLoader, OpusDisk, DidaktikLoader, DidaktikDisk
+    OPDLoader, OpusDisk, DidaktikLoader, DidaktikDisk,
+    revolutionTStates, byteTStates
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
 import { HcIf1 } from './hc-if1.js';
@@ -183,6 +184,10 @@ import { Disassembler } from './disasm.js';
             this.lastFrameTime = 0;
             this.frameCount = 0;
             this.totalFrames = 0;       // Monotonic frame counter (never reset, for port I/O log)
+            // The disk clock's whole-frames part, advanced wherever a frame is
+            // subtracted from cpu.tStates so that diskClockNow() only ever moves
+            // forward. NOT totalFrames * tstatesPerFrame — see diskClockNow().
+            this._diskClockBase = 0;
             this.actualFps = 0;
             
             this.updateDisplayDimensions();
@@ -333,26 +338,34 @@ import { Disassembler } from './disasm.js';
             // of the aux register. Same instant-FDC problem as the Opus, so the
             // same delay applies.
             this._didaktikNmiPending = false;
-            this._didaktikDrqCountdown = 0;
+            this._didaktikDrqDue = 0;
             this.didaktik.onDataRequest = (first) => {
                 this._didaktikNmiPending = true;
-                this._didaktikDrqCountdown = first ? OPUS_DRQ_FIRST_TSTATES : OPUS_DRQ_BYTE_TSTATES;
+                this._didaktikDrqDue =
+                    this._drqDueAt(this._didaktikDrqDue, first, this.didaktik);
             };
             this.didaktik.onIntRequest = () => {
                 this._didaktikNmiPending = true;
-                this._didaktikDrqCountdown = OPUS_DRQ_BYTE_TSTATES;
+                // Command completion, not a byte of a stream: a one-off delay.
+                this._didaktikDrqDue = this.diskClockNow() + this.diskByteTStates();
             };
 
             this._opusNmiPending = false;
-            this._opusDrqCountdown = 0;
+            this._opusDrqDue = 0;
             this.opus.onDataRequest = (first) => {
                 this._opusNmiPending = true;
-                this._opusDrqCountdown = first ? OPUS_DRQ_FIRST_TSTATES : OPUS_DRQ_BYTE_TSTATES;
+                this._opusDrqDue =
+                    this._drqDueAt(this._opusDrqDue, first, this.opus);
             };
             // The Opus registers live in the memory map, so Memory needs the
             // controller itself, not just a ROM image.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+
+            // Every WD17xx here gets the disk's own clock, now that all four
+            // exist. Without it a controller has no rotation and falls back to
+            // faking an index pulse — see setRotationClock().
+            this._wireDiskRotation();
 
             // Callback for processing TRD data before loading (used for boot injection)
             this.onBeforeTrdLoad = null; // function(data, filename) => processedData
@@ -1913,7 +1926,12 @@ import { Disassembler } from './disasm.js';
         triggerPlusDNmi() {
             if (!this._isPlusDActive()) return;
             this.memory.plusDActive = true;
-            this.cpu.nmi();
+            // An NMI acknowledge is 11 T-states and the CPU does not charge them
+            // itself — `nmi()` returns them the way `interrupt()` does, and every
+            // one of these five call sites used to drop the number on the floor,
+            // so an NMI cost the machine nothing at all. Invisible at the scale
+            // of a frame; not invisible against a DRQ due 112 T out.
+            this.cpu.tStates += this.cpu.nmi();
         }
 
         portRead(port, instructionTiming = 12) {
@@ -2587,6 +2605,7 @@ import { Disassembler } from './disasm.js';
             if (this.cpu.tStates >= tstatesPerFrame) {
                 this.breakpointTStates += tstatesPerFrame;
                 this.cpu.tStates -= tstatesPerFrame;
+                this._diskClockBase += tstatesPerFrame;
                 // Also adjust tape timing tracker to stay in sync
                 if (this._lastTapeUpdate >= tstatesPerFrame) {
                     this._lastTapeUpdate -= tstatesPerFrame;
@@ -2894,18 +2913,19 @@ import { Disassembler } from './disasm.js';
                     }
                     // Opus DRQ is wired to NMI, delayed to the chip's byte rate
                     if (this._opusNmiPending) {
-                        this._opusDrqCountdown -= (this.cpu.tStates - _tsBefore);
-                        if (this._opusDrqCountdown <= 0) {
+                        if (this.diskClockNow() >= this._opusDrqDue) {
                             this._opusNmiPending = false;
-                            this.cpu.nmi();
+                            // DRQ is a level, not a pulse: if the transfer
+                            // finished while the NMI was queued there is no
+                            // edge left to deliver.
+                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
-                        this._didaktikDrqCountdown -= (this.cpu.tStates - _tsBefore);
-                        if (this._didaktikDrqCountdown <= 0) {
+                        if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.nmi();
+                            this.cpu.tStates += this.cpu.nmi();
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -3303,6 +3323,7 @@ import { Disassembler } from './disasm.js';
             // Preserve T-state overshoot from previous frame (Swan-style)
             if (this.cpu.tStates >= tstatesPerFrame) {
                 this.cpu.tStates -= tstatesPerFrame;
+                this._diskClockBase += tstatesPerFrame;
                 // Also adjust tape timing tracker to stay in sync
                 if (this._lastTapeUpdate >= tstatesPerFrame) {
                     this._lastTapeUpdate -= tstatesPerFrame;
@@ -3515,18 +3536,18 @@ import { Disassembler } from './disasm.js';
                     }
                     // Opus DRQ is wired to NMI, delayed to the chip's byte rate
                     if (this._opusNmiPending) {
-                        this._opusDrqCountdown -= (this.cpu.tStates - _hlTsBefore);
-                        if (this._opusDrqCountdown <= 0) {
+                        if (this.diskClockNow() >= this._opusDrqDue) {
                             this._opusNmiPending = false;
-                            this.cpu.nmi();
+                            // see runFrame: a request that has gone away
+                            // delivers no NMI
+                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
-                        this._didaktikDrqCountdown -= (this.cpu.tStates - _hlTsBefore);
-                        if (this._didaktikDrqCountdown <= 0) {
+                        if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.nmi();
+                            this.cpu.tStates += this.cpu.nmi();
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -4662,6 +4683,105 @@ import { Disassembler } from './disasm.js';
         
         toggle() { this.running ? this.stop() : this.start(); }
 
+        /**
+         * The machine's T-state count, spanning frames. `cpu.tStates` has a
+         * frame subtracted from it fifty times a second, so on its own it would
+         * put the index pulse back where it was ten times a revolution and make
+         * every disk deadline nonsense.
+         *
+         * **`_diskClockBase`, not `totalFrames`** — and that distinction cost an
+         * afternoon. `totalFrames` is incremented at the END of a frame while the
+         * subtraction from `cpu.tStates` happens at the START of the next one, so
+         * a clock built from the pair leaps a whole frame forward between the two
+         * and drops back afterwards. At revolution scale (69888 against 698880)
+         * that is a wobble nothing noticed; for a DRQ due 112 T-states out it
+         * meant a byte scheduled a whole frame late, which stalled every Opus
+         * transfer and `opus-test` caught as a retry storm. The base is advanced
+         * in lockstep with the subtraction instead, at all four places it
+         * happens, so this only ever moves forward.
+         */
+        diskClockNow() {
+            return this._diskClockBase + this.cpu.tStates;
+        }
+
+        /**
+         * When the next DRQ→NMI is due, for the two interfaces that transfer by
+         * NMI. **An absolute schedule, not a delay.**
+         *
+         * The chip asserts DRQ on the medium's own clock: one byte per byte-time,
+         * taken from the rotation (`byteTStates`) rather than from the rounded
+         * 112 in `core/constants.js`, so it is right on a Pentagon's 716800-T
+         * revolution as well as a 48K's 698880.
+         *
+         * **Absolute, from the previous DUE time, not from now.** Restarting the
+         * interval when the host gets round to servicing the previous byte adds
+         * the handler's own cost to every byte instead of letting it hide inside
+         * the interval. The measurement is unambiguous — T-states a byte, against
+         * the 111.8 the medium allows:
+         *
+         *     from the service   from the previous due
+         *     Opus write  130.1            112.2    a track 1.15 rev -> 1.003
+         *     MDOS write  127.9            112.2
+         *     Opus read   135.7            111.9    512 bytes of a CAT
+         *
+         * **Reads and writes alike, and the symmetry was hard won.** A read looks
+         * as though it must be serviced before the next DRQ — the chip has a byte
+         * in the register and the next one will land on it — so this took a
+         * `writing` argument and left reads measured from the service. That was
+         * wrong, and wrong for an embarrassing reason: the retry storm that seemed
+         * to prove reads could not be absolute was `opus-test` restoring a stubbed
+         * `onDataRequest` by re-implementing it, which left the NMI permanently
+         * due. Measured afterwards, the Opus read handler is **11 instructions and
+         * 76 T-states** from NMI to RETN, 16 of them before it takes the byte — it
+         * fits inside a byte time with a third to spare, and on real hardware it
+         * has to. Nothing nests.
+         *
+         * A host that falls behind does not get the schedule pushed back: the byte
+         * is simply overdue and the NMI is delivered at once, which is the point
+         * at which a real chip would report lost data. We do not report it, and
+         * now that the host CAN be late by construction that omission is real
+         * rather than unreachable — see `TODO.md`.
+         *
+         * The first byte of a transfer is different either way — the ROM has
+         * housekeeping to do before it can take an interrupt, and the head has to
+         * settle and the sector come round — so it gets the longer one-off delay.
+         */
+        _drqDueAt(prevDue, first, ctrl) {
+            const now = this.diskClockNow();
+            // The FIRST byte is deliberately not held back by the floor. A chip
+            // waiting for the index still asserts DRQ the moment the command is
+            // written, so the host can have that byte in the register before the
+            // pulse arrives — on real hardware, failing to is lost data. It is
+            // the stream from the second byte on that starts at the index.
+            if (first) return now + OPUS_DRQ_FIRST_TSTATES;
+            const floor = (ctrl && ctrl.drqNotBefore) || 0;
+            return Math.max(now, floor, prevDue + this.diskByteTStates());
+        }
+
+        /** How long one byte takes to pass the head, on this machine's clock. */
+        diskByteTStates() {
+            return byteTStates(revolutionTStates(this.timing.tstatesPerFrame));
+        }
+
+        /**
+         * Hand every WD17xx controller the disk's own clock.
+         *
+         * Two things it needs, and neither belongs in a controller: a monotonic
+         * T-state count, and how long a revolution is. Both are read live, as
+         * functions, so a machine change is picked up: a revolution is ten frames
+         * whatever the machine, which is 698880 T on a 48K and 709080 on a 128K.
+         * See core/loaders/disk-rotation.js.
+         */
+        _wireDiskRotation() {
+            const now = () => this.diskClockNow();
+            const rev = () => revolutionTStates(this.timing.tstatesPerFrame);
+            for (const ctrl of [this.betaDisk, this.plusD, this.opus, this.didaktik]) {
+                if (ctrl && typeof ctrl.setRotationClock === 'function') {
+                    ctrl.setRotationClock(now, rev);
+                }
+            }
+        }
+
         // Beta Disk automatic ROM paging
         // Update cached flag for Beta Disk paging (call when conditions change)
         updateBetaDiskPagingFlag() {
@@ -4676,6 +4796,12 @@ import { Disassembler } from './disasm.js';
                 this.memory.beta48Latch = false;
                 this.memory.trdosActive = false;
             }
+            // DECISION, not an omission: there is no `pagingModel !== '+2a'`
+            // here, the way there is on all four below. A Beta Disk wired to a
+            // +2A/+3 is a Frankenstein, but it is a buildable one, so TR-DOS
+            // stays on offer wherever trdos.rom is loaded and the interface is
+            // on -- including on a +3, which then shows both +3DOS and TR-DOS.
+            // The other four overlay $0000-$3FFF, which +2A/+3 paging owns.
             this._betaDiskPagingEnabled = !beta48 && !this._isHc() &&
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
@@ -5959,6 +6085,7 @@ import { Disassembler } from './disasm.js';
                     // Adjust T-states for next frame
                     if (this.cpu.tStates >= tstatesPerFrame) {
                         this.cpu.tStates -= tstatesPerFrame;
+                        this._diskClockBase += tstatesPerFrame;
                         this.frameStartOffset = this.cpu.tStates;
                         this.accumulatedContention = 0;  // Reset for new frame
                         this.ula.startFrame();
@@ -5973,6 +6100,7 @@ import { Disassembler } from './disasm.js';
                     // Adjust T-states for next frame
                     if (this.cpu.tStates >= tstatesPerFrame) {
                         this.cpu.tStates -= tstatesPerFrame;
+                        this._diskClockBase += tstatesPerFrame;
                         this.frameStartOffset = this.cpu.tStates;
                         this.accumulatedContention = 0;  // Reset for new frame
                         this.ula.startFrame();
@@ -7543,7 +7671,13 @@ import { Disassembler } from './disasm.js';
                 const spectrumFiles = await ZipLoader.findAllSpectrum(data);
 
                 if (spectrumFiles.length === 0) {
-                    throw new Error('No SNA, SZX, TAP, Z80, TRD, SCL, or DSK files found in ZIP');
+                    // The old wording named seven formats and had gone stale twice over
+                    // -- MGT, MDR, OPD, D40/D80, TZX, RZX and WAV all load and none were
+                    // listed -- so it read as "this format is not supported" when the
+                    // real answer was usually "that is not what is in the archive". Name
+                    // the contents instead: that is the thing you cannot see from here.
+                    const names = (await ZipLoader.extract(data)).map(f => f.name).join(', ');
+                    throw new Error(`No Spectrum file found in ZIP. Contents: ${names || '(empty archive)'}`);
                 }
 
                 if (spectrumFiles.length > 1) {
@@ -7596,8 +7730,8 @@ import { Disassembler } from './disasm.js';
                 return this.loadD80Image(data, fileName, driveIndex);
             }
 
-            // Check for TRD/SCL disk images (contain multiple files)
-            if (type === 'trd' || type === 'scl') {
+            // Check for TRD/SCL/UDI disk images (contain multiple files)
+            if (type === 'trd' || type === 'scl' || type === 'udi') {
                 return this.loadDiskImage(data, type, fileName, driveIndex);
             }
 
@@ -7608,11 +7742,50 @@ import { Disassembler } from './disasm.js';
         loadDiskImage(data, type, fileName, driveIndex = 0) {
             const originalType = type;  // Preserve original format name for display
             let processedData = data;
+            this.lastUdiInfo = null;    // never report the previous disk's losses
+            this.udiTrackImage = null;  // nor hand its raw tracks to this one
 
             // For SCL files, convert to TRD first so boot injection can work
             if (type === 'scl') {
                 processedData = this.betaDisk.sclToTrd(processedData);
                 type = 'trd';
+            }
+
+            // UDI keeps raw track bytes -- gaps, address marks and sector CRCs
+            // -- not sector payloads, so flatten it the same way: everything
+            // downstream (boot injection, the catalogue, the TR-DOS trap, the
+            // project save) speaks TRD.
+            //
+            // That flattening is lossy, and the loss is real rather than
+            // theoretical: of five sample images one mixes 512-byte sectors
+            // with 590 deleted-data marks, one carries a 17-sector track whose
+            // data CRC is deliberately wrong, and two disagree with their own
+            // stored checksum. So say what could not be carried instead of
+            // dropping it quietly, and never refuse the disk over a checksum
+            // that real files get wrong.
+            if (type === 'udi') {
+                const udi = UDILoader.load(processedData);
+                processedData = udi.trd;
+                type = 'trd';
+                this.lastUdiInfo = udi;
+                for (const w of udi.warnings) console.warn(`UDI ${fileName}: ${w}`);
+                if (!udi.crcOk) {
+                    console.warn(`UDI ${fileName}: stored checksum 0x`
+                        + `${udi.parsed.crcStored.toString(16).toUpperCase()} is not the computed 0x`
+                        + `${udi.parsed.crcComputed.toString(16).toUpperCase()}; loading anyway`);
+                }
+                const lost = udi.lost;
+                if (lost.wrongSize || lost.outOfRange || lost.badCrc || lost.deleted || lost.weak) {
+                    console.warn(`UDI ${fileName}: ${udi.sectorsPlaced} sectors placed; a TRD cannot hold `
+                        + `${lost.wrongSize} non-256-byte, ${lost.outOfRange} out-of-range, `
+                        + `${lost.badCrc} bad-CRC, ${lost.deleted} deleted-data, ${lost.weak} weak`);
+                }
+                if (udi.trailerText) console.info(`UDI ${fileName}: ${udi.trailerText}`);
+
+                // What the flattening dropped is a fact about the CATALOGUE view
+                // only. The controller is handed the raw tracks below, so a sector a
+                // TRD cannot express is still there to be read.
+                this.udiTrackImage = udi.trackImage;
             }
 
             // Apply boot injection callback if configured (drive 0 only)
@@ -7622,7 +7795,13 @@ import { Disassembler } from './disasm.js';
 
             const files = TRDLoader.listFiles(processedData);
 
-            if (files.length === 0) {
+            if (files.length === 0 && !this.udiTrackImage) {
+                // A UDI is exempt. The catalogue above is read from the FLATTENED
+                // image, and a protected disk mangles that on purpose: POP.udi's
+                // info sector is all zeroes and 231 of its sectors carry no data
+                // field at all, so judging it by the flattened view refuses a disk
+                // whose tracks the controller can read perfectly well.
+                //
                 // A catalogue can legitimately list no real files and still be a
                 // valid TR-DOS disk — e.g. one holding only SPECSCII banner
                 // entries (fake zero-length names of print control codes, like
@@ -7644,6 +7823,13 @@ import { Disassembler } from './disasm.js';
 
             // Load disk into Beta Disk interface (already TRD format)
             this.betaDisk.loadDisk(processedData, 'trd', driveIndex);
+
+            // ...and, for a UDI, the raw tracks the controller actually reads from.
+            // Must follow loadDisk, which clears any track image the drive had.
+            if (this.udiTrackImage) {
+                this.betaDisk.attachTrackImage(this.udiTrackImage, driveIndex);
+                this.udiTrackImage = null;
+            }
 
             // Set up TR-DOS trap handler with disk data (drive 0 only — boot drive)
             if (driveIndex === 0) {
@@ -7755,7 +7941,16 @@ import { Disassembler } from './disasm.js';
                 throw new Error('HC-2000: the HC IF1 disk interface is switched off ' +
                     '(Settings → Disk interfaces → HC IF1)');
             }
+            // A `.dsk` names a container, not a machine. The double-density
+            // Opus format (80 x 2 x 10 x 512) is only ever circulated in one,
+            // because 512-byte sectors are what a PC drive can image, so a
+            // machine with no FDC still has somewhere to put this file -- and
+            // refusing it as "+3 only" was wrong about the disk, not just
+            // unhelpful. The disk itself decides: its anchor sector accounts
+            // for the whole image only when it really is an Opus disk.
             if (!this.fdc) {
+                const opd = OPDLoader.fromDSK(data);
+                if (opd) return this.loadOPDImage(opd, fileName, driveIndex);
                 throw new Error('DSK files require ZX Spectrum +3 (no FDC on this machine)');
             }
 
@@ -7981,7 +8176,8 @@ import { Disassembler } from './disasm.js';
             const savedDrives = this.betaDisk ? this.betaDisk.drives.map(d => ({
                 diskData: d.diskData,
                 diskType: d.diskType,
-                headTrack: d.headTrack
+                headTrack: d.headTrack,
+                trackImage: d.trackImage
             })) : null;
 
             // Full machine reset — clears CPU, memory, ULA, tape state
@@ -7994,7 +8190,9 @@ import { Disassembler } from './disasm.js';
                     if (savedDrives[i].diskData) {
                         this.betaDisk.drives[i].diskData = savedDrives[i].diskData;
                         this.betaDisk.drives[i].diskType = savedDrives[i].diskType;
+                        this.betaDisk.drives[i].trackImage = savedDrives[i].trackImage;
                         this.betaDisk.drives[i].headTrack = 0; // Reset head position
+                        this.betaDisk.drives[i].addrIndex = 0;
                     }
                 }
             }
@@ -8157,6 +8355,7 @@ import { Disassembler } from './disasm.js';
                     return this.loadDSKImage(data, fileName, driveIndex);
                 case 'trd':
                 case 'scl':
+                case 'udi':
                     return this.loadDiskImage(data, type, fileName, driveIndex);
                 case 'mgt':
                     return this.loadMGTImage(data, fileName, driveIndex);
@@ -8562,6 +8761,116 @@ import { Disassembler } from './disasm.js';
 
         // ========== Media Management ==========
 
+        /**
+         * A drive's live image rather than the copy taken when the file was
+         * loaded. The controller writes into its own buffer, so the `loaded*`
+         * entry goes stale the moment a program saves anything -- which is
+         * exactly when storing it matters. FDC disks and IF1 cartridges were
+         * already refreshed; these four were not, so a project saved after a
+         * game wrote to a disk restored it as it was BEFORE the write.
+         */
+        _liveDiskImages(entries, controller) {
+            if (!controller || !controller.drives) return entries;
+            return entries.map((entry, i) => {
+                if (!entry) return null;
+                const drv = controller.drives[i];
+                return (drv && drv.diskData) ? { data: drv.diskData, name: entry.name } : entry;
+            });
+        }
+
+        /**
+         * Everything currently inserted, as something that offers to save it
+         * needs to see it: where it is, what it would be written as, whether the
+         * program has written to it since it was loaded, and how to get the
+         * bytes.
+         *
+         * The bytes come from a function rather than up front because some of
+         * these are megabytes and most will never be asked for.
+         */
+        getSaveableMedia() {
+            const out = [];
+            const base = (name, fallback) => (name || fallback || 'disk')
+                .replace(/[\[\]]/g, '').replace(/\.[a-z0-9#$]+$/i, '');
+            const extOf = (name, allowed, fallback) => {
+                const m = /\.([a-z0-9#$]+)$/i.exec(name || '');
+                const e = m ? m[1].toLowerCase() : '';
+                return allowed.includes(e) ? e : fallback;
+            };
+            const add = (o) => out.push(o);
+
+            // --- Beta Disk: four drives, A-D -----------------------------
+            for (let i = 0; i < 4; i++) {
+                const entry = this.loadedBetaDisks[i];
+                const drv = this.betaDisk && this.betaDisk.drives[i];
+                if (!entry || !drv || !drv.diskData) continue;
+                // A UDI is served from its tracks and cannot be written back --
+                // there is no UDI writer -- so what can be saved is the flattened
+                // sector image, and it must not claim to be a .udi.
+                const fromUdi = !!drv.trackImage;
+                const scl = !fromUdi && extOf(entry.name, ['scl'], '') === 'scl';
+                const ext = scl ? 'scl' : 'trd';
+                add({
+                    id: `beta${i}`, group: 'Beta Disk',
+                    label: `Beta ${String.fromCharCode(65 + i)}`,
+                    name: entry.name, filename: base(entry.name, 'disk') + '.' + ext, ext,
+                    modified: !!drv.modified,
+                    note: fromUdi ? 'UDI is read-only — saves as TRD' : '',
+                    getData: () => scl ? this.betaDisk.trdToScl(drv.diskData) : drv.diskData,
+                });
+            }
+
+            // --- +3 FDC: two drives --------------------------------------
+            for (let i = 0; i < 2; i++) {
+                const entry = this.loadedFDCDisks[i];
+                const disk = this.fdc && this.fdc.drives[i] && this.fdc.drives[i].disk;
+                if (!entry || !disk) continue;
+                add({
+                    id: `fdc${i}`, group: '+3',
+                    label: `+3 ${String.fromCharCode(65 + i)}`,
+                    name: entry.name, filename: base(entry.name, 'disk') + '.dsk', ext: 'dsk',
+                    modified: !!disk.modified, note: '',
+                    getData: () => disk.toBuffer(),
+                });
+            }
+
+            // --- +D, Opus and Didaktik: two drives each -------------------
+            for (const [ctl, entries, group, label, allowed, fallback] of [
+                [this.plusD, this.loadedPlusDDisks, '+D', '+D', ['mgt', 'img'], 'mgt'],
+                [this.opus, this.loadedOpusDisks, 'Opus', 'Opus', ['opd', 'opu'], 'opd'],
+                [this.didaktik, this.loadedDidaktikDisks, 'Didaktik', 'Didaktik', ['d40', 'd80'], 'd80'],
+            ]) {
+                for (let i = 0; i < 2; i++) {
+                    const entry = entries && entries[i];
+                    const drv = ctl && ctl.drives && ctl.drives[i];
+                    if (!entry || !drv || !drv.diskData) continue;
+                    const ext = extOf(entry.name, allowed, fallback);
+                    add({
+                        id: `${group.toLowerCase()}${i}`, group,
+                        label: `${label} ${i + 1}`,
+                        name: entry.name, filename: base(entry.name, 'disk') + '.' + ext, ext,
+                        modified: !!drv.modified, note: '',
+                        getData: () => drv.diskData,
+                    });
+                }
+            }
+
+            // --- Microdrive: eight cartridges ----------------------------
+            for (let i = 0; i < 8; i++) {
+                const entry = this.loadedIF1Cartridges[i];
+                const drv = this.microdrive && this.microdrive.drives && this.microdrive.drives[i];
+                if (!entry || !drv || !drv.cartridge) continue;
+                add({
+                    id: `mdr${i}`, group: 'Microdrive',
+                    label: `Microdrive ${i + 1}`,
+                    name: entry.name, filename: base(entry.name, 'cart') + '.mdr', ext: 'mdr',
+                    modified: !!drv.modified, note: '',
+                    getData: () => this.microdrive.getCartridgeData(i),
+                });
+            }
+
+            return out;
+        }
+
         getLoadedMedia() {
             // Return structured state for project save
             // For FDC disks, serialize current in-memory state (may have been modified by game writes)
@@ -8592,11 +8901,11 @@ import { Disassembler } from './disasm.js';
                 tapeSlotStates: this.tapeSlotStates,
                 tapeRecordings: this.tapeRecordings,
                 micRecordings: this.micRecordings,
-                betaDisks: this.loadedBetaDisks,
+                betaDisks: this._liveDiskImages(this.loadedBetaDisks, this.betaDisk),
                 fdcDisks: fdcDisks,
-                plusDDisks: this.loadedPlusDDisks,
-                opusDisks: this.loadedOpusDisks,
-                didaktikDisks: this.loadedDidaktikDisks,
+                plusDDisks: this._liveDiskImages(this.loadedPlusDDisks, this.plusD),
+                opusDisks: this._liveDiskImages(this.loadedOpusDisks, this.opus),
+                didaktikDisks: this._liveDiskImages(this.loadedDidaktikDisks, this.didaktik),
                 if1Cartridges: if1Cartridges,
                 tapeBlock: this.getTapeBlock()
             };

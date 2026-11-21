@@ -1355,6 +1355,36 @@ VAL:            EQU 42
 
         // Wrong source must be reported, not silently assembled
         async function runOperandValidationTests() {
+            section('Parenthesised Expressions vs Indirection');
+
+            // An operand that merely starts and ends with a paren was read as a
+            // memory access, so its first and last characters were cut off and
+            // the rest handed to the expression parser -- `ld a,(1+2)*(3+4)`
+            // became `1+2)*(3+4` and the line was rejected. What decides it is
+            // whether the FIRST '(' is the one the last ')' closes.
+            assertBytes(bytes('ld a,(1+2)*(3+4)'), [0x3E, 0x15],
+                        'LD A,(1+2)*(3+4) is immediate, not a memory read');
+            assertBytes(bytes('ld hl,(1+2)*(3+4)'), [0x21, 0x15, 0x00],
+                        'LD HL,(1+2)*(3+4) too (it assembled as LD HL,(nn))');
+            assertBytes(bytes('ld a,(45 & 7) | ((45 & 24) << 3) | (45 & 32)'),
+                        [0x3E, 0x65], 'a bank number built from three fields');
+            assertBytes(bytes('ld b,(2)+(3)'), [0x06, 0x05], 'LD B,(2)+(3) is 5, not two reads');
+
+            // ...while everything that IS wrapped stays indirection
+            assertBytes(bytes('ld a,(1)'), [0x3A, 0x01, 0x00], 'LD A,(1) still reads address 1');
+            assertBytes(bytes('ld a,($8000)'), [0x3A, 0x00, 0x80], 'LD A,($8000) still reads memory');
+            assertBytes(bytes('ld hl,($8000)'), [0x2A, 0x00, 0x80], 'LD HL,($8000) too');
+            assertBytes(bytes('ld bc,($7ffd)'), [0xED, 0x4B, 0xFD, 0x7F], 'LD BC,(nn) too');
+            assertBytes(bytes('ld a,((1+2)*(3+4))'), [0x3A, 0x15, 0x00],
+                        'and one extra pair of parens makes it a memory read again');
+            assertBytes(bytes('ld a,(hl)'), [0x7E], 'LD A,(HL)');
+            assertBytes(bytes('ld a,(ix+1)'), [0xDD, 0x7E, 0x01], 'LD A,(IX+1)');
+            assertBytes(bytes('in a,($fe)'), [0xDB, 0xFE], 'IN A,($FE)');
+            assertBytes(bytes('out ($fe),a'), [0xD3, 0xFE], 'OUT ($FE),A');
+
+            // A ')' inside a character literal closes nothing
+            assertBytes(bytes("ld a,')'"), [0x3E, 0x29], "LD A,')' is the character");
+
             section('Operand Validation');
 
             // Helpers: does this source fail / warn?
