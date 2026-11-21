@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Kempston Disc Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Kempston Disc Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Kempston Disc Interface (core/kempdisc.js): K-DOS, a WD1770, the stock
+        // board and the 128A6 modification.
+        import { KempstonDisc } from '../core/kempdisc.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('ports');
+            const kd = new KempstonDisc();
+            kd.rom = new Uint8Array(8192).map((_, i) => i & 0xFF);
+            assert([0xE5, 0xE7, 0xED, 0xEF].map(p => kd.fdcReg(p)).join() === '0,1,2,3' && !kd.isFdcPort(0xA7),
+                'stock: WD on $E5/$E7/$ED/$EF (A1 | A3 << 1)');
+            kd.setA6(true);
+            assert([0xA7, 0xE7, 0xAF, 0xEF].map(p => kd.fdcReg(p)).join() === '0,1,2,3' && !kd.isFdcPort(0xE5),
+                '128A6: WD on $A7/$E7/$AF/$EF (A6 | A3 << 1), as the schematic');
+            kd.setA6(false);
+            kd.reset();
+            assert(kd.active && kd.readMemory(0x2005) === 5, 'ROM in at reset, 8KB mirrored');
+            kd.portOut(0x00D7, 0); const off = kd.active;
+            kd.portOut(0x7FFD, 0x10);
+            assert(!off && kd.active, 'stock: OUT $D7 pages out, any $xxFD in (the 128K conflict)');
+            kd.setA6(true); kd.portOut(0x00D7, 0); kd.portOut(0x7FFD, 0x10); const a6Off = !kd.active;
+            kd.portOut(0x00BF, 0);
+            assert(a6Off && kd.active, '128A6: $7FFD leaves it alone, OUT $BF pages in');
+            kd.setA6(false);
+            kd.fdc.drives[2].dsk = { getTrack: () => null };
+            kd.portOut(0x00DF, 0x09);
+            assert(kd.fdc.drive === 2 && kd.fdc.side === 1 && kd.fdc.selected, '$DF: bit 3 = drive 2, bit 0 = side 1');
+            kd.portOut(0x00DF, 0x00);
+            assert(!kd.fdc.selected, '$DF: no drive bit, nothing selected');
+            kd.fdc.drives[2].dsk = null;
+        }
+
+        async function runTests() {
+            units();
+            section('K-DOS on a 48K');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/kdos21.rom'))) { skip('roms/kdos21.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '48k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { on: sp.kempdiscEnabled, rom: sp.kempdiscRomFile, others: [sp.opusEnabled, sp.plusDEnabled, sp.discipleEnabled, sp.if1Enabled, sp.didaktikEnabled, sp.fdd3000Enabled, sp.betaDiskEnabled] };
+            sp.opusEnabled = sp.plusDEnabled = sp.discipleEnabled = sp.if1Enabled = sp.didaktikEnabled = sp.fdd3000Enabled = sp.betaDiskEnabled = false;
+            sp.kempdiscRomFile = 'kdos21.rom';
+            sp.kempdisc.loadRom(new Uint8Array(await (await fetch('../roms/kdos21.rom')).arrayBuffer()));
+            for (let d = 0; d < 4; d++) sp.kempdisc.fdc.ejectDisk(d);
+            sp.kempdiscEnabled = true;
+            sp.updateBetaDiskPagingFlag();
+            assert(sp._kempdiscEnabledFlag && !sp.kempdisc.a6, 'on a 48K with K-DOS 2.1 (stock board)');
+            const cmds = [];
+            const pw = sp.cpu.portWrite;
+            sp.cpu.portWrite = (p, v, t) => { if ((p & 0xFF) === 0xE5) cmds.push(v); return pw(p, v, t); };
+            sp.reset();
+            await zx.runFrames(150);
+            sp.cpu.portWrite = pw;
+            assert(/KEMPSTON/.test(screenText(sp)) && !sp.memory.kempdiscActive,
+                'K-DOS boots, prints its copyright and pages itself out', screenText(sp).trim().slice(0, 80));
+            assert(cmds.includes(0xC4) && sp.kempdisc.fdc.status !== 0x03,
+                'its drive test (Read Address, never read) finishes, as on a real WD',
+                cmds.map(c => c.toString(16)).join(' '));
+            if (await ok('../headless/kdi/K48_Myth.kdi')) {
+                await zx.loadUrl('../headless/kdi/K48_Myth.kdi');
+                zx.pause();
+                sp.reset();
+                await zx.runFrames(1200);
+                assert(sp.kempdisc.fdc.track > 0, 'K48_Myth.kdi boots and loads (head past track 0)', 'track ' + sp.kempdisc.fdc.track);
+            } else skip('headless/kdi/K48_Myth.kdi not present');
+            section('128A6 on a 128K');
+            if (await ok('../roms/kdos21-128a6.rom')) {
+                await zx.ready({ machine: '128k' });
+                const sp2 = frame.contentWindow.spectrum;
+                zx.pause();
+                sp2.kempdiscRomFile = 'kdos21-128a6.rom';
+                sp2.kempdisc.loadRom(new Uint8Array(await (await fetch('../roms/kdos21-128a6.rom')).arrayBuffer()));
+                sp2.kempdiscEnabled = true;
+                sp2.updateBetaDiskPagingFlag();
+                for (let d = 0; d < 4; d++) sp2.kempdisc.fdc.ejectDisk(d);     // no disk: K-DOS boots to BASIC
+                sp2.reset();
+                await zx.runFrames(150);
+                assert(sp2._kempdiscEnabledFlag && sp2.kempdisc.a6 && /KEMPSTON/.test(screenText(sp2)) && !sp2.memory.kempdiscActive,
+                    'the 128A6 board works on a 128K (48 BASIC, K-DOS paged out)', screenText(sp2).trim().slice(0, 80));
+                if (await ok('../headless/kdi/R-Type2019.kdi')) {
+                    await zx.loadUrl('../headless/kdi/R-Type2019.kdi');
+                    zx.pause();
+                    sp2.reset();
+                    await zx.runFrames(1500);
+                    assert(sp2.kempdisc.fdc.track > 0, 'R-Type 2019 (a 128K disk) boots and loads', 'track ' + sp2.kempdisc.fdc.track);
+                } else skip('headless/kdi/R-Type2019.kdi not present');
+                sp2.kempdiscRomFile = 'kdos21.rom';
+                sp2.updateBetaDiskPagingFlag();
+                assert(!sp2._kempdiscEnabledFlag, 'the stock board is not offered on a 128K');
+                sp2.kempdiscEnabled = was.on; sp2.kempdiscRomFile = was.rom;
+                sp2.updateBetaDiskPagingFlag();
+            } else skip('roms/kdos21-128a6.rom not present');
+            sp.kempdiscEnabled = was.on; sp.kempdiscRomFile = was.rom;
+            [sp.opusEnabled, sp.plusDEnabled, sp.discipleEnabled, sp.if1Enabled, sp.didaktikEnabled, sp.fdd3000Enabled, sp.betaDiskEnabled] = was.others;
+            sp.updateBetaDiskPagingFlag();
+        }
+
+        function screenText(sp) {
+            // the ROM font, matched row by row in each 8x8 cell
+            const m = sp.memory, rom = m.rom[m.profile.basicRomBank || 0] || m.rom[0];
+            let out = '';
+            for (let row = 0; row < 24; row++) {
+                for (let col = 0; col < 32; col++) {
+                    let ch = ' ';
+                    for (let c = 32; c < 128; c++) {
+                        let match = true;
+                        for (let y = 0; y < 8 && match; y++) {
+                            const a = 0x4000 | ((row & 0x18) << 8) | (y << 8) | ((row & 7) << 5) | col;
+                            if (m.read(a) !== rom[0x3D00 + (c - 32) * 8 + y]) match = false;
+                        }
+                        if (match) { ch = String.fromCharCode(c); break; }
+                    }
+                    out += ch;
+                }
+                out += '\n';
+            }
+            return out;
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

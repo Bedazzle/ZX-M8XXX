@@ -73,6 +73,7 @@ import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
 import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
+import { KempstonDisc, KEMPDISC_A6_ROMS, KEMPDISC_128_ROMS } from './kempdisc.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { SAA1099 } from './saa1099.js';
@@ -139,6 +140,13 @@ import { Disassembler } from './disasm.js';
             this.fdd3000RomFile = storageGet('zxm8_fdd3000Rom') || 'fdd3stavi.rom';
             this._fdd3000PagingEnabled = false;
             this.memory.fdd3000 = this.fdd3000;
+            // Kempston Disc Interface (core/kempdisc.js): K-DOS, a WD1770 on
+            // $E5/$E7/$ED/$EF, drive select $DF, ROM in $FD / out $D7; 48K only
+            this.kempdisc = new KempstonDisc();
+            this.kempdiscEnabled = storageGet('zxm8_kempdisc') === 'true';
+            this.kempdiscRomFile = storageGet('zxm8_kempdiscRom') || 'kdos21.rom';
+            this._kempdiscEnabledFlag = false;
+            this.memory.kempdisc = this.kempdisc;
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
 
@@ -406,6 +414,7 @@ import { Disassembler } from './disasm.js';
             // controller itself, not just a ROM image.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this.memory.kempdisc = this.kempdisc;
 
             // Every WD17xx here gets the disk's own clock, now that all four
             // exist. Without it a controller has no rotation and falls back to
@@ -1620,6 +1629,11 @@ import { Disassembler } from './disasm.js';
             // The station is a separate box with its own power: a Spectrum reset
             // leaves it running, as in FUSE (only switching it on resets it).
             this.memory.fdd3000Active = false;
+            // Kempston Disc: its ROM is paged in at reset; K-DOS starts first
+            if (this._kempdiscEnabledFlag) {
+                this.kempdisc.reset();
+                this.memory.kempdiscActive = true;
+            }
             this._beta48Master = 0;
             this.memory.beta48WindowOff = false;
 
@@ -1708,6 +1722,14 @@ import { Disassembler } from './disasm.js';
          * Timex FDD 3000: enabled, both ROMs loaded, a 48K or 128K/+2 (FUSE
          * offers it on the 48K and 128K families), not the HC-2000.
          */
+        /** Kempston Disc: on, its ROM loaded; 48K, or 128K / +2 with a 128K ROM (128A6, A6J, A1J) */
+        _kempdiscOk() {
+            this.kempdisc.setA6(KEMPDISC_A6_ROMS.includes(this.kempdiscRomFile));
+            return this.kempdiscEnabled && this.kempdisc.hasRom() && !this._isHc() && !this.profile.timex &&
+                (this.profile.pagingModel === 'none' ||
+                 (KEMPDISC_128_ROMS.includes(this.kempdiscRomFile) && this.profile.pagingModel === '128k'));
+        }
+
         _fdd3000Ok() {
             return this.fdd3000Enabled && this.fdd3000.hasRoms() && !this._isHc() &&
                 (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
@@ -2337,6 +2359,8 @@ import { Disassembler } from './disasm.js';
                            lowByte === DIDAKTIK_PORT_DATA)) {
                     // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
                     result = this.didaktik.read(port);
+                } else if (this._kempdiscEnabledFlag && this.kempdisc.isFdcPort(lowByte)) {
+                    result = this.kempdisc.portIn(lowByte);     // Kempston Disc WD1770
                 } else if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
                     result = this.fdd3000.portIn();     // FDD 3000: station -> Spectrum
                 } else if (this.memory.beta48On &&
@@ -2703,6 +2727,11 @@ import { Disassembler } from './disasm.js';
             if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
                 this.fdd3000.portOut(val);              // FDD 3000: Spectrum -> station
                 return;
+            }
+            // Kempston Disc: WD1770, drive select $DF, ROM in $FD / out $D7
+            if (this._kempdiscEnabledFlag && this.kempdisc.portOut(port & 0xFFFF, val)) {
+                this.memory.kempdiscActive = this.kempdisc.active;
+                if (this.kempdisc.isFdcPort(lowByte)) return;
             }
             if (this.memory.beta48On && this._beta48Write(lowByte, val)) {
                 return;
@@ -5074,6 +5103,12 @@ import { Disassembler } from './disasm.js';
             // +D is NOT compatible with +2A/+3 (they have their own extended paging)
             // HC-2000: nothing, or its HC IF1 — no add-on interfaces (see _isHc)
             const hc = this._isHc();
+            const kd = this._kempdiscOk();
+            if (kd !== this._kempdiscEnabledFlag) {
+                this._kempdiscEnabledFlag = kd;
+                this.kempdisc.reset();
+                this.memory.kempdiscActive = false;
+            }
             const fdd3 = this._fdd3000Ok();
             if (fdd3 !== this._fdd3000PagingEnabled) {
                 this._fdd3000PagingEnabled = fdd3;
@@ -8185,6 +8220,16 @@ import { Disassembler } from './disasm.js';
 
         // Load DSK disk image - inserts disk into µPD765 FDC (+3, or the HC IF1)
         loadDSKImage(data, fileName, driveIndex = 0) {
+            // Kempston Disc: DSK / .kdi (EDSK) into its four drives
+            if (!this.fdc && this._kempdiscEnabledFlag) {
+                const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+                this.kempdisc.fdc.loadDisk(bytes, 'dsk', driveIndex & 3);
+                this.kempdisc.fdc.drives[driveIndex & 3].name = fileName;
+                return {
+                    diskInserted: true, diskType: 'kdi', diskName: fileName,
+                    fileCount: 0, _driveIndex: driveIndex & 3, needsMachineSwitch: false
+                };
+            }
             // Timex FDD 3000: DSK images go to the station's four drives
             if (!this.fdc && this._fdd3000PagingEnabled) {
                 const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
@@ -9825,6 +9870,7 @@ import { Disassembler } from './disasm.js';
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this.memory.kempdisc = this.kempdisc;
             this._applyTimexCartridge();
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);

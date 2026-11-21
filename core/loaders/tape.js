@@ -1339,7 +1339,8 @@ import { xorChecksum } from './common.js';
                     }
                 }
                 // Also don't trap if TR-DOS ROM is active (or a Beta 48's, by latch)
-                if (this.memory.trdosActive || (this.memory.beta48On && this.memory.beta48Latch) || this.memory.fdd3000Active) {
+                if (this.memory.trdosActive || (this.memory.beta48On && this.memory.beta48Latch) || this.memory.fdd3000Active ||
+                    this.memory.kempdiscActive) {
                     return false;
                 }
                 // …or any other interface whose ROM is paged in over the bottom
@@ -1453,7 +1454,7 @@ import { xorChecksum } from './common.js';
             // over the bottom of the address space (see LD-BYTES)
             if (this.memory.trdosActive) return false;
             if (this.memory.beta48On && this.memory.beta48Latch) return false;
-            if (this.memory.fdd3000Active) return false;
+            if (this.memory.fdd3000Active || this.memory.kempdiscActive) return false;
             if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
                 this.memory.if1Active || this.memory.didaktikActive) return false;
 

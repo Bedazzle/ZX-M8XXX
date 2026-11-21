@@ -578,6 +578,20 @@
                         <button id="btnFdd3000Reset" class="control-btn iface-rom-btn" title="FDD3000 reset (as in FUSE): restart the station, which loads its system from drive A (done at once). The Spectrum is not reset: with TOS, reset it to get the second copyright line; with Monitor running, this is how CP/M is started.">Reset FDD</button>
                         <span id="fdd3000Status" class="iface-status"></span>
                     </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Kempston Disc Interface (Abbeydale Designers, 1985): K-DOS in an 8KB ROM, a WD1770 on $E5/$E7/$ED/$EF, drive select $DF; the ROM pages in at reset and with OUT $FD, out with OUT $D7. Disks: .kdi / .dsk (EDSK, 80 x 2 x 10 x 512), up to 4 drives. Commands: PRINT #4: CAT, LOAD &quot;name&quot;, COPY, FORMAT. The stock board is for a 48K ($FD is the 128K's paging port); the 128A6 modification (ROM 2.1 128A6, Mario Prato) moves the ports to $A7/$E7/$AF/$EF and ROM-in to $BF and works on 48K / 128K / +2 (the K128_* disks). After MAME's kempdisc.cpp.">
+                            <input type="checkbox" id="chkKempdisc"> Kempston Disc
+                        </label>
+                        <select id="selKempdiscRom" title="K-DOS ROM">
+                            <option value="kdos21.rom">K-DOS 2.1</option>
+                            <option value="kdos20.rom">K-DOS 2.0</option>
+                            <option value="kdos21it.rom">K-DOS 2.1 Italian</option>
+                            <option value="kdos21-a1j.rom">K-DOS 2.1 A1J (stock board, 128K as 48K)</option>
+                            <option value="kdos21-128a6.rom">K-DOS 2.1 128A6 (A6 board, 128K)</option>
+                            <option value="kdos21-a6j.rom">K-DOS 2.1 A6J (A6 board, 128K)</option>
+                        </select>
+                        <span id="kempdiscStatus" class="iface-status"></span>
+                    </div>
                     <div class="iface-row" id="didaktik128Row">
                         <label class="checkbox-label" style="margin-left: 15px;" title="The 48-to-128K upgrade patch that made a D40/D80 usable on a 128K: the paging port decoder requires A5, and the ROM is hardwired to page 1 (48K BASIC). A stock 128K cannot run a Didaktik; some upgrade services fitted this.">
                             <input type="checkbox" id="chkDidaktik128"> 128K hardware patch

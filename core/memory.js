@@ -54,6 +54,7 @@ import {
             this.gamaBank1 = this.profile.gama80k ? new Uint8Array(32768) : null;
             this.gamaBank = 0;
             this.fdd3000Active = false;
+            this.kempdiscActive = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
             this.tkmemBank = 0;           // bank at $C000
@@ -172,6 +173,7 @@ import {
             }
             this.pagingDisabled = false;
             this.fdd3000Active = false;
+            this.kempdiscActive = false;
             this.timexDec = 0;
             this.timexHsr = 0;
             this.gamaBank = 0;
@@ -498,6 +500,13 @@ import {
             // Timex FDD 3000: interface ROM/RAM
             if (this.fdd3000Active && addr < SLOT1_START) {
                 val = this.fdd3000.readMemory(addr);
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
+            // Kempston Disc: K-DOS ROM (8KB, mirrored) over $0000-$3FFF
+            if (this.kempdiscActive && addr < SLOT1_START) {
+                val = this.kempdisc.readMemory(addr);
                 if (this.onRead) this.onRead(addr, val);
                 return val;
             }

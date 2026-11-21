@@ -266,6 +266,12 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                 if (boot) spec.fdd3000.loadBootRom(new Uint8Array(boot));
             } catch (e) { console.warn('[FDD 3000] ' + e.message); }
         }
+        // Kempston Disc: K-DOS
+        if (spec.kempdisc && spec.kempdiscEnabled) {
+            const kd = romData[spec.kempdiscRomFile];
+            try { if (kd) spec.kempdisc.loadRom(new Uint8Array(kd)); }
+            catch (e) { console.warn('[Kempston Disc] ' + e.message); }
+        }
         // HC-2000: its HC IF1 is built in, so its ROM goes with the machine
         if (romData['hc-if1.rom'] && profile.pagingModel === 'hc2000' && spec.hcIf1) {
             spec.memory.loadHcIf1Rom(romData['hc-if1.rom']);
@@ -376,7 +382,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
             romPaths.push({ path: 'roms/didaktik.rom', file: 'didaktik.rom' });
         }
         // Timex FDD 3000: interface ROMs and the station's boot ROM
-        for (const f of ['fdd3stavi.rom', 'fdd3timex.rom', 'fdd3000-boot.rom']) {
+        for (const f of ['fdd3stavi.rom', 'fdd3timex.rom', 'fdd3000-boot.rom', 'kdos21.rom', 'kdos20.rom', 'kdos21it.rom', 'kdos21-128a6.rom', 'kdos21-a6j.rom', 'kdos21-a1j.rom']) {
             if (!seen.has(f)) romPaths.push({ path: 'roms/' + f, file: f });
         }
         // HC IF1 ROM (HC-2000's built-in disk interface, 16KB)

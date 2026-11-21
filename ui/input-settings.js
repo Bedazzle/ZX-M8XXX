@@ -50,6 +50,9 @@ export function initInputSettings({
     const chkFdd3000 = document.getElementById('chkFdd3000');
     const selFdd3000Rom = document.getElementById('selFdd3000Rom');
     const fdd3000Status = document.getElementById('fdd3000Status');
+    const chkKempdisc = document.getElementById('chkKempdisc');
+    const selKempdiscRom = document.getElementById('selKempdiscRom');
+    const kempdiscStatus = document.getElementById('kempdiscStatus');
     const beta48Status = document.getElementById('beta48Status');
     const btnBetaMagic = document.getElementById('btnBetaMagic');
     const chkPlusD = document.getElementById('chkPlusD');
@@ -659,7 +662,7 @@ export function initInputSettings({
                     spectrum[flag] = false; storageSet(key, false); off.push(name);
                 }
             }
-            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus(); if (typeof updateFdd3000Status === 'function') updateFdd3000Status();
+            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus(); if (typeof updateFdd3000Status === 'function') updateFdd3000Status(); if (typeof updateKempdiscStatus === 'function') updateKempdiscStatus();
             updateBetaDiskStatus();
             if (off.length) showMessage('DISCiPLE enabled — ' + off.join(', ') + ' disabled');
         }
@@ -1148,6 +1151,58 @@ export function initInputSettings({
             showMessage(r.msg, r.ok ? undefined : 'error');
         });
         updateFdd3000Status();
+    }
+
+    // ---- Kempston Disc Interface (core/kempdisc.js) ----
+    function updateKempdiscStatus() {
+        const sp = getSpectrum();
+        if (!sp || !chkKempdisc) return;
+        chkKempdisc.checked = !!sp.kempdiscEnabled;
+        selKempdiscRom.value = sp.kempdiscRomFile;
+        const a6 = ['kdos21-128a6.rom', 'kdos21-a6j.rom', 'kdos21-a1j.rom'].includes(sp.kempdiscRomFile);
+        const machineOk = !sp._isHc() && !sp.profile.timex &&
+            (sp.profile.pagingModel === 'none' || (a6 && sp.profile.pagingModel === '128k'));
+        chkKempdisc.disabled = !machineOk && !sp.kempdiscEnabled;
+        if (!machineOk) {
+            kempdiscStatus.textContent = sp._isHc() ? 'not available on HC-2000 — only its HC IF1'
+                : a6 ? '48K, 128K or +2 only' : '48K only — on a 128K: ROM 2.1 128A6 / A6J / A1J';
+        } else if (!romData[sp.kempdiscRomFile]) {
+            kempdiscStatus.textContent = `(${sp.kempdiscRomFile} required)`;
+        } else {
+            kempdiscStatus.textContent = '';
+        }
+    }
+
+    async function applyKempdisc() {
+        const sp = getSpectrum();
+        if (sp.kempdiscEnabled) {
+            await fetchRomIfMissing(sp.kempdiscRomFile);
+            try {
+                if (romData[sp.kempdiscRomFile]) sp.kempdisc.loadRom(new Uint8Array(romData[sp.kempdiscRomFile]));
+            } catch (err) { showMessage(err.message, 'error'); }
+        }
+        sp.updateBetaDiskPagingFlag();
+        updateKempdiscStatus();
+        notifyDiskSystems();
+        sp.reset();
+    }
+
+    if (chkKempdisc) {
+        chkKempdisc.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.kempdiscEnabled = chkKempdisc.checked;
+            storageSet('zxm8_kempdisc', chkKempdisc.checked);
+            await applyKempdisc();
+            showMessage(chkKempdisc.checked ? 'Kempston Disc on (machine reset)' : 'Kempston Disc off (machine reset)');
+        });
+        selKempdiscRom.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.kempdiscRomFile = selKempdiscRom.value;
+            storageSet('zxm8_kempdiscRom', selKempdiscRom.value);
+            await applyKempdisc();
+            showMessage('Kempston Disc ROM: ' + selKempdiscRom.options[selKempdiscRom.selectedIndex].text + ' (machine reset)');
+        });
+        updateKempdiscStatus();
     }
 
     chkDidaktik.addEventListener('change', () => {

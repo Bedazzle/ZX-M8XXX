@@ -67,6 +67,7 @@ import { getMachineByZ80HwMode } from '../machines.js';
             if (ext === 'udi') return 'udi';
             if (ext === 'scl') return 'scl';
             if (ext === 'dsk') return 'dsk';
+            if (ext === 'kdi') return 'dsk';        // x128's Kempston Disc images are EDSK
             if (ext === 'mgt' || ext === 'img') return 'mgt';
             if (ext === 'mdr') return 'mdr';
             if (ext === 'opd' || ext === 'opu') return 'opd';

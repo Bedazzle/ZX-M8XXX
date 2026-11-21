@@ -479,6 +479,34 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Envelope parameters written while an envelope runs wait for the end of its period, as in the data sheet (Xpeccy and SAASound do the same; MAME restarts at once); an envelope that is off or has finished, or one being switched off, takes them at once.
 - Not done: a snapshot does not keep the SAA's registers.
 
+## Kempston Disc Interface (K-DOS)
+
+`core/kempdisc.js`, after MAME's `bus/spectrum/kempdisc.cpp` (BSD-3, MetalliC). **Settings → Disk interfaces → Kempston Disc**, with the ROM.
+
+- **The stock board** (Abbeydale Designers 1985):
+  - WD1770 on `$E5` (status/command), `$E7` (track), `$ED` (sector), `$EF` (data): register = A1 | A3 << 1.
+  - `$DF` out: bits 1-4 pick drive 0-3, bit 0 the side.
+  - The 8KB ROM is mirrored over `$0000-$3FFF`. It is paged in at reset and by `OUT $FD`, out by `OUT $D7`.
+  - K-DOS boots first, hooks stream #4 and pages itself out. A disk with a boot program in drive A starts it. Commands are `PRINT #4: CAT`, `LOAD "name"`, `COPY`, `FORMAT`.
+  - It is for a 48K: `$FD` is also the 128K's `$7FFD`. ROMs `kdos21.rom`, `kdos20.rom`, `kdos21it.rom` (MAME's CRCs).
+- **The 128A6 modification** (Mario Prato; schematic `KDI_128-A6_SCHEME`, ROM "KDI DOS 2.1 128A6", CRC `69405CFB`, from speccy4ever.speccy.org):
+  - The register select moves from A1 to A6, and A1 is always 1. The WD sits on `$A7`/`$E7`/`$AF`/`$EF`, and the ROM pages in with `OUT $BF`.
+  - Nothing of the board answers the 128K's paging port, so it works on 48K / 128K / +2.
+  - Its ROM starts with `OUT ($7FFD),$10` (48 BASIC). The `K128_*` disks and R-Type 2019 are for this board.
+- **The 2.1J ROMs** (Jane McKay) carry the DISCiPLE ROM's sector-write loop, which has twice the DRQ margin, for 128K contended banks. A1J is for the stock board and locks the 128K to 48K; A6J is for the 128A6 board.
+- **ROM files:** `kdos21-128a6.rom`, `kdos21-a6j.rom` and `kdos21-a1j.rom` go on a 128K too.
+- **Disks:** `.kdi` / `.dsk`, which are EDSK (x128's: 80 × 2 × 10 × 512, sectors 0-9), up to 4 drives. The controller is the FDD 3000's WD model (C/H/R from the DSK).
+- **One thing added for K-DOS:** it tests a drive with Read Address and waits for BUSY to drop without taking the ID bytes. A real WD ends the command when the ID field has gone by, with Lost Data, and so does this model: after 32 status reads with no byte taken.
+- **Checked:**
+  - K-DOS 2.1 boots on a 48K.
+  - Myth (K48), ChaseHQ (48K), R-Type 2019 and K128 ChaseHQ (128A6 on a 128K) load and run.
+  - `tests/kempdisc-test.html`.
+- **Not done:**
+  - A blank disk (FORMAT needs Write Track on a DSK).
+  - The Explorer.
+  - The Kempston Centronics E printer port and joystick on the board.
+  - Watford SP-DOS.
+
 ## General Sound
 
 `core/gs.js`, `Spectrum.setGs`. **Settings → Audio → General Sound**, with the ROM (`roms/gs105b.rom`, `gs105a.rom`, `gs104.rom`, 32KB) and the RAM. 128KB and 512KB are the classic boards; 2MB is a modern one.
