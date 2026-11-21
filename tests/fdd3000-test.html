@@ -171,6 +171,30 @@
             const t = screenText(sp);
             assert(/Max 140K/.test(t) && /MOVIE/.test(t), 'CAT * lists the disk',
                 t.split('\n').filter(l => l.trim()).slice(-3).join(' | '));
+            // SAVE *"X" CODE 16384,2048 then LOAD *"X" CODE: the write path
+            const pat = (i) => (i * 37 + 11) & 0xFF;
+            const digits = async (str) => { for (const c of str) await chord([c]); };
+            await chord(['s']); await chord(['SYM', 'b']); await chord(['SYM', 'p']);
+            await chord(['CAPS', 'x']); await chord(['SYM', 'p']);
+            await chord(['CAPS', 'SYM']); await chord(['i']);                 // CODE
+            await digits('16384'); await chord(['SYM', 'n']); await digits('2048');
+            for (let i = 0; i < 2048; i++) sp.memory.write(0x4000 + i, pat(i));
+            let writes = 0;
+            sp.fdd3000.fdc.onDiskActivity = (t) => { if (t === 'write') writes++; };
+            await chord(['Enter']);
+            await zx.runFrames(400);
+            assert(writes > 0 && sp.fdd3000.fdc.drives[0].dirty, 'SAVE * writes sectors', writes + ' sector writes');
+            for (let i = 0; i < 2048; i++) sp.memory.write(0x4000 + i, 0);
+            await chord(['j']); await chord(['SYM', 'b']); await chord(['SYM', 'p']);
+            await chord(['CAPS', 'x']); await chord(['SYM', 'p']);
+            await chord(['CAPS', 'SYM']); await chord(['i']);
+            for (let i = 0; i < 2048; i++) sp.memory.write(0x4000 + i, 0);
+            await chord(['Enter']);
+            await zx.runFrames(400);
+            let same = 0;
+            for (let i = 0; i < 2048; i++) if (sp.memory.read(0x4000 + i) === pat(i)) same++;
+            assert(same === 2048, 'LOAD * reads back what SAVE * wrote', same + '/2048 bytes');
+            sp.fdd3000.fdc.onDiskActivity = null;
             sp.fdd3000Enabled = prev.en; sp.betaDiskEnabled = prev.beta; sp.plusDEnabled = prev.plusD;
             sp.updateBetaDiskPagingFlag();
         }
