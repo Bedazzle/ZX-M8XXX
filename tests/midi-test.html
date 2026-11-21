@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>128 MIDI Out Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>128 MIDI Out Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded by a
+        // UART model into MIDI messages.
+        import { UartDecoder, MidiAssembler } from '../core/midi.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('UART and MIDI assembler');
+            const bytes = [];
+            const T = 113.5;
+            const u = new UartDecoder(T, (b) => bytes.push(b));
+            // send a byte: start, 8 data LSB first, stop; edges only on change
+            let t = 1000, level = 1;
+            const set = (l) => { if (l !== level) { u.edge(t, l); level = l; } };
+            const send = (b) => {
+                set(0); t += T;
+                for (let i = 0; i < 8; i++) { set((b >> i) & 1); t += T; }
+                set(1); t += T;
+            };
+            for (const b of [0x90, 0x3C, 0x78, 0xFF, 0x00]) { send(b); t += 37; }
+            u.flush(t + 2000);
+            assert(bytes.join(',') === [0x90, 0x3C, 0x78, 0xFF, 0x00].join(','), 'UART: bytes back, including $FF and $00', bytes.map(b => b.toString(16)).join(' '));
+            const u2 = new UartDecoder(T, () => {});
+            u2.level = 0;                                  // line low before anything
+            u2.edge(5000, 1);
+            assert(u2.start < 0, 'a low line rising is not a start bit');
+            const msgs = [];
+            const a = new MidiAssembler((m) => msgs.push(m.join(' ')));
+            [0x90, 60, 120, 62, 100, 0xF8, 0xC0, 5, 0xF0, 1, 2, 0xF7, 0x80, 60, 64].forEach(b => a.push(b));
+            assert(msgs.join(' | ') === '144 60 120 | 144 62 100 | 248 | 192 5 | 240 1 2 247 | 128 60 64',
+                'assembler: running status, real-time, program change, SysEx', msgs.join(' | '));
+        }
+
+        async function runTests() {
+            units();
+            section('128K ROM: PLAY "Y1c"');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/128.rom'))) { skip('roms/128.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const ts = sp.turboSound;
+            sp.setTurboSound(false);
+            sp.reset();
+            await zx.runFrames(120);
+            const msgs = [];
+            sp.onMidiMessage = (m) => msgs.push(m.map(b => b.toString(16)).join(' '));
+            sp.setMidiOut(true);
+            const chord = async (keys, n = 4) => {
+                for (const k of keys) zx.keyDown(k);
+                await zx.runFrames(n);
+                for (const k of keys) zx.keyUp(k);
+                await zx.runFrames(n + 2);
+            };
+            await chord(['ArrowDown']); await chord(['Enter']);          // 128 BASIC
+            await zx.runFrames(50);
+            await zx.typeText('play "', { hold: 4, gap: 6 });
+            await chord(['CAPS', 'y']);
+            await zx.typeText('1c"\n', { hold: 4, gap: 6 });
+            await zx.runFrames(200);
+            assert(msgs.join(' | ') === '90 3c 78 | 80 3c 40' && sp._midiUart.errors === 0,
+                'Note On / Note Off for middle C on channel 1', msgs.join(' | '));
+            sp.setMidiOut(false);
+            sp.onMidiMessage = null;
+            sp.setTurboSound(ts);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

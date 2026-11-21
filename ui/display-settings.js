@@ -136,6 +136,48 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         txtStereoCovoxR.addEventListener('change', applyDac);
     }
 
+    // ---- 128 MIDI out -> Web MIDI (Spectrum.setMidiOut / onMidiMessage) ----
+    const selMidiOut = document.getElementById('selMidiOut');
+    const midiStatus = document.getElementById('midiStatus');
+    let midiAccess = null, midiOutput = null;
+    async function listMidiOutputs() {
+        if (!navigator.requestMIDIAccess) { midiStatus.textContent = '(no Web MIDI in this browser)'; return; }
+        try {
+            if (!midiAccess) midiAccess = await navigator.requestMIDIAccess();
+        } catch (e) { midiStatus.textContent = '(MIDI access refused)'; return; }
+        const keep = selMidiOut.value;
+        for (const o of [...selMidiOut.options]) if (o.value && o.value !== 'monitor') o.remove();
+        for (const out of midiAccess.outputs.values()) {
+            const opt = document.createElement('option');
+            opt.value = out.id; opt.textContent = out.name;
+            selMidiOut.appendChild(opt);
+        }
+        selMidiOut.value = [...selMidiOut.options].some(o => o.value === keep) ? keep : '';
+    }
+    function showMidi() {
+        const sp = getSpectrum();
+        if (!sp.midiEnabled) { midiStatus.textContent = ''; return; }
+        const last = sp.midiLog.slice(-6).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        midiStatus.textContent = `${sp.midiBytes} bytes` + (last ? `: ${last}` : '');
+    }
+    if (selMidiOut) {
+        selMidiOut.addEventListener('focus', listMidiOutputs);
+        selMidiOut.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            const v = selMidiOut.value;
+            midiOutput = (v && v !== 'monitor' && midiAccess) ? midiAccess.outputs.get(v) || null : null;
+            sp.onMidiMessage = (msg) => {
+                if (midiOutput) { try { midiOutput.send(msg); } catch (e) { /* a malformed message */ } }
+            };
+            sp.setMidiOut(!!v);
+            showMidi();
+            showMessage(!v ? 'MIDI out off'
+                : v === 'monitor' ? 'MIDI out: monitor only'
+                : 'MIDI out: ' + selMidiOut.options[selMidiOut.selectedIndex].text);
+        });
+        setInterval(showMidi, 500);
+    }
+
     chkAY48k.addEventListener('change', () => {
         const spectrum = getSpectrum();
         spectrum.ay48kEnabled = chkAY48k.checked;

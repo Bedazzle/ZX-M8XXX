@@ -37,7 +37,15 @@
             const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
         }
         function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
         function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
                 `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
                 (skipped ? ` | Skipped: ${skipped}` : '');
@@ -173,6 +181,7 @@
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }
+            finished = true;
             render();
         })();
     </script>

@@ -383,6 +383,14 @@
                         <label id="covoxPortLabel" style="margin-left: 10px;" title="Covox port (low byte, hex): $FB on the Pentagon, $DD on the Scorpion">
                             port $<input type="text" id="txtCovoxPort" maxlength="2" style="width: 2.5em;" value="FB">
                         </label>
+                        <label style="margin-left: 15px;" title="Spectrum 128 MIDI out: the ROM (PLAY &quot;Y1...&quot;) and programs send MIDI on AY register 14 bit 2 at 31250 baud; the bytes go to the Web MIDI output chosen here (a synth, Microsoft GS Wavetable, loopMIDI...)">
+                            MIDI out
+                            <select id="selMidiOut" style="margin-left: 4px; max-width: 14em;">
+                                <option value="">off</option>
+                                <option value="monitor">monitor only</option>
+                            </select>
+                        </label>
+                        <span id="midiStatus" class="iface-status" style="margin-left: 6px;"></span>
                         <label id="stereoCovoxLabel" style="margin-left: 10px;" title="Stereo Covox ports (low byte, hex): left and right">
                             L $<input type="text" id="txtStereoCovoxL" maxlength="2" style="width: 2.5em;" value="0F">
                             R $<input type="text" id="txtStereoCovoxR" maxlength="2" style="width: 2.5em;" value="4F">

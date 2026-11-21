@@ -348,6 +348,16 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
 - Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
 
+## Spectrum 128 MIDI out (AY register 14)
+
+`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...; the browser asks for MIDI access the first time the list is opened).
+
+- The 128K's MIDI OUT is RS232 TXD: bit 2 of AY register 14 (port A), while R7 bit 6 makes port A an output (otherwise the line idles high). The ROM's `PLAY` with a `Y` channel, and programs, bit-bang bytes at 31250 baud.
+- Every change of the line is recorded with its absolute T-state; `UartDecoder` samples each bit in its middle (bit time = CPU clock / 31250: 3.5469 MHz on the 128K family, 3.5 MHz elsewhere), a frame listener finishes bytes whose last bits change nothing. It starts from the line as it is (a low line is not a start bit until it has been high).
+- `MidiAssembler` makes whole messages for `send()`: running status, real-time bytes, SysEx.
+- Checked: `PLAY "Y1c"` on a 128K sends `90 3C 78` / `80 3C 40` (Note On / Note Off, middle C, channel 1). Output to a real Web MIDI device is not covered by the tests. `tests/midi-test.html`.
+- The new test pages keep their summary changing while they run (`running… n`), so `all-tests.html` does not take a long pause for the result.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

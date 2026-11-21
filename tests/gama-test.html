@@ -32,7 +32,15 @@
             const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
         }
         function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
         function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
                 `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
                 (skipped ? ` | Skipped: ${skipped}` : '');
@@ -102,7 +110,7 @@
             // The usual detection routine (BSR on port 127): NZ = 80KB
             //   ld a,1: ld bc,(50000): ld (50000),a: out (127),a: xor a
             //   ld (50000),a: out (127),a: ld a,(50000): ld (50000),bc: or a
-            await zx.runFrames(300);
+            sp.portWrite(0x007F, 0x92);                       // as the ROM leaves it (C an output)
             const code = [0x3E, 0x01, 0xED, 0x4B, 0x50, 0xC3, 0x32, 0x50, 0xC3, 0xD3, 0x7F, 0xAF,
                 0x32, 0x50, 0xC3, 0xD3, 0x7F, 0x3A, 0x50, 0xC3, 0xED, 0x43, 0x50, 0xC3, 0xB7];
             code.forEach((b, i) => m.write(0x6000 + i, b));
@@ -122,6 +130,7 @@
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }
+            finished = true;
             render();
         })();
     </script>

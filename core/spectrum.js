@@ -73,6 +73,7 @@ import { HcDiskLoader } from './loaders/disk-hc.js';
 import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
+import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -171,6 +172,13 @@ import { Disassembler } from './disasm.js';
             this.dacLevels = [0x80, 0x80, 0x80, 0x80];
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded
+            // into MIDI messages for onMidiMessage (Web MIDI in the UI)
+            this.midiEnabled = false;
+            this.onMidiMessage = null;
+            this.midiBytes = 0;
+            this.midiLog = [];            // the last bytes, for a monitor
+            this._midiLevel = 1;
             this.ayEnabled = this.profile.ayDefault;  // AY enabled by default for 128K/Pentagon
             this.ay48kEnabled = false;  // Optional AY for 48K (like Melodik interface)
             this.aySelectedRegister = 0;
@@ -1854,6 +1862,43 @@ import { Disassembler } from './disasm.js';
             this.memory.gamaBank = (cLowOut && (this._gamaPortC & 1)) ? 1 : 0;
         }
 
+        /**
+         * 128 MIDI out on or off. The bit time follows the machine's clock:
+         * 3.5469 MHz on the 128K family, 3.5 MHz elsewhere.
+         */
+        setMidiOut(on) {
+            this.midiEnabled = !!on;
+            if (this._midiFlushOff) { this._midiFlushOff(); this._midiFlushOff = null; }
+            if (!this.midiEnabled) return;
+            const clock = is128kCompat(this.machineType) ? 3546900 : 3500000;
+            this._midiAsm = new MidiAssembler((msg) => {
+                if (this.onMidiMessage) this.onMidiMessage(msg);
+            });
+            this._midiUart = new UartDecoder(clock / MIDI_BAUD, (b) => {
+                this.midiBytes++;
+                this.midiLog.push(b);
+                if (this.midiLog.length > 64) this.midiLog.shift();
+                this._midiAsm.push(b);
+            });
+            // start from the line as it is now, not from idle: a low line is
+            // not a start bit until it has been high
+            const r = this.ay.registers;
+            this._midiLevel = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            this._midiUart.level = this._midiLevel;
+            // a byte whose last bits change nothing is finished by the clock
+            this._midiFlushOff = this.addFrameListener(() => this._midiUart.flush(this._absTStates()));
+        }
+
+        // The MIDI OUT line: R14 bit 2 while R7 makes port A an output, else idle
+        _midiLine() {
+            const r = this.ay.registers;
+            const level = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            if (level !== this._midiLevel) {
+                this._midiLevel = level;
+                this._midiUart.edge(this._absTStates(), level);
+            }
+        }
+
         /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */
         _curAy() {
             return (this.turboSound && this._aySel) ? this.ay2 : this.ay;
@@ -2673,6 +2718,8 @@ import { Disassembler } from './disasm.js';
                     ay.writeRegister(val);
                     this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: ay.registers[reg],
                         chip: ay === this.ay2 ? 1 : 0 });
+                    // 128 MIDI out: R14 bit 2 (or R7 turning port A round)
+                    if (this.midiEnabled && ay === this.ay && (reg === 14 || reg === 7)) this._midiLine();
                 }
             }
 
