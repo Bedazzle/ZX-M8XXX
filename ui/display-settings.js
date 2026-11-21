@@ -147,6 +147,15 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             selGsRom.addEventListener('change', () => applyGs(true));
             selGsRam.addEventListener('change', () => applyGs(true));
         }
+        const chkTsfm = document.getElementById('chkTsfm');
+        chkTsfm.checked = !!getSpectrum().tsfm;
+        chkTsfm.addEventListener('change', () => {
+            const sp = getSpectrum();
+            sp.setTsfm(chkTsfm.checked);
+            storageSet('zxm8_tsfm', chkTsfm.checked);
+            if (chkTsfm.checked) { chkTurboSound.checked = true; storageSet('zxm8_turboSound', true); }
+            showMessage(chkTsfm.checked ? 'TurboSound FM on (2 x YM2203)' : 'TurboSound FM off');
+        });
         const chkSaa = document.getElementById('chkSaa');
         chkSaa.checked = !!getSpectrum().saaOn;
         chkSaa.addEventListener('change', () => {

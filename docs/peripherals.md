@@ -461,6 +461,31 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
 - Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
 
+## TurboSound FM
+
+`core/ym2203.js`, `Spectrum.setTsfm`. **Settings → Audio → TurboSound FM**; it switches TurboSound on with it.
+
+- **What it is:** NedoPC TS-FM, as Unreal-NG plays it. The two AYs become two YM2203s. Each chip's SSG half is the emulator's AY; its FM half is a port of ymfm's OPN core (BSD-3-Clause, Aaron Giles), the core Unreal-NG uses. That FM half has:
+  - 3 channels of 4 operators, 8 algorithms, feedback;
+  - the OPN envelope with SSG-EG, detune / multiple;
+  - channel 3's multi-frequency mode and CSM.
+
+  There is no LFO; the YM2203 has none.
+- **Ports:**
+  - `OUT $FFFD,%11111xyz` is a control word. z picks the chip ($FF / $FE, as TurboSound); y = 0 makes `IN $FFFD` read the status; x = 0 turns FM on.
+  - Another value is an address. Below $10 it selects an SSG register. From $10 up it is an FM register, and the SSG keeps its own register.
+  - `OUT $BFFD` writes data to the selected register.
+- **Status:** `IN $FFFD` in status mode returns busy (bit 7, 32 × 6 master clocks after a write), timer B (bit 1) and timer A (bit 0). The timers count in T-states (the board's 3.5 MHz master clock): A every (1024 − TA) × 72, B every 16 × (256 − TB) × 72.
+- **Sound:** one FM sample every 72 master clocks (48.6 kHz). The FM writes are played into the chips at their T-state, as the AY's are. FM is mixed at the board's measured level: a carrier at TL 0 sounds as loud as one AY channel at 15 (Unreal-NG's calibration).
+- **Checked:**
+  - A carrier at fnum / block for 440 Hz gives 440 Hz and peaks at 8191; the release runs to silence.
+  - The timers and busy work; so do the control word and the FM / SSG address split.
+  - Tech Support (Moe-bius, the snapshot from Unreal-NG's test data) plays.
+  - `tests/tsfm-test.html`.
+- **Not done:**
+  - The prescaler registers $2D-$2F (the TS-FM board leaves them at /6).
+  - A snapshot does not keep the FM halves.
+
 ## SAA1099
 
 `core/saa1099.js`, `Spectrum.setSaa`. **Settings → Audio → SAA1099**.

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TurboSound FM Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>TurboSound FM Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // TurboSound FM (core/ym2203.js, a port of ymfm's OPN): the FM halves of
+        // two YM2203s, the board's control word, status and timers.
+        import { YM2203FM, YM2203Timers } from '../core/ym2203.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        const RATE = 3500000 / 72;
+        function voice(f, alg = 7, fnum = Math.round(440 * (1 << 20) / RATE / 8)) {
+            f.write(0xB0, alg);
+            for (const o of [0, 4, 8, 12]) {
+                f.write(0x30 + o, 0x01); f.write(0x40 + o, 0x7F); f.write(0x50 + o, 0x1F);
+                f.write(0x60 + o, 0); f.write(0x70 + o, 0); f.write(0x80 + o, 0x0F);
+            }
+            f.write(0x40, 0x00);
+            f.write(0xA4, (4 << 3) | (fnum >> 8)); f.write(0xA0, fnum & 0xFF);
+            f.write(0x28, 0x10);
+        }
+        function measure(f, n = Math.round(RATE)) {
+            let zc = 0, prev = 0, peak = 0;
+            for (let i = 0; i < n; i++) { const v = f.clock(); if (i && (prev < 0) !== (v < 0)) zc++; prev = v; peak = Math.max(peak, Math.abs(v)); }
+            return { hz: zc / 2 * RATE / n, peak };
+        }
+
+        function units() {
+            section('the FM core');
+            let f = new YM2203FM(); voice(f);
+            const a = measure(f);
+            assert(Math.abs(a.hz - 440) < 2 && a.peak > 8000 && a.peak <= 8191, 'one carrier: fnum / block give 440 Hz, TL 0 peaks at ~8191', a.hz.toFixed(1) + ' Hz, ' + a.peak);
+            f.write(0x28, 0x00);
+            for (let i = 0; i < 20000; i++) f.clock();
+            assert(measure(f, 2000).peak === 0, 'key off: the release runs out to silence');
+            f = new YM2203FM(); voice(f); f.write(0x40, 0x20);
+            const quieter = measure(f).peak;
+            assert(quieter > 0 && quieter < 1000, 'total level 32 (24 dB) is quieter', quieter);
+            f = new YM2203FM(); voice(f, 0);
+            f.write(0x4C, 0x00); f.write(0x40, 0x10); f.write(0x28, 0x90);           // op1 -> ... -> op4 carrier
+            const m = measure(f);
+            assert(m.peak > 7000, 'algorithm 0: the operator chain sounds through op 4', m.peak);
+            f = new YM2203FM();
+            f.write(0xA4, 0x22); const before = f.regs[0xA4];
+            f.write(0xA0, 0x55);
+            assert(before === 0 && f.regs[0xA4] === 0x22 && f.regs[0xA0] === 0x55, 'block/fnum: the high byte is latched until the low one is written');
+            section('timers and busy');
+            const t = new YM2203Timers();
+            t.write(0x24, 0xFF); t.write(0x25, 0x03); t.write(0x27, 0x05);          // timer A, period 1 x 72
+            const busy = t.readStatus();
+            t.advance(71); const s1 = t.readStatus() & 3; t.advance(1); const s2 = t.readStatus() & 3;
+            t.advance(300); const s3 = t.readStatus();
+            assert(busy & 0x80, 'busy after a write');
+            assert(s1 === 0 && s2 === 1 && s3 === 1, 'timer A flags after (1024 - TA) x 72 clocks', `${s1} ${s2} ${s3}`);
+            t.write(0x27, 0x15);
+            assert((t.readStatus() & 1) === 0, 'reset A clears its flag');
+        }
+
+        async function runTests() {
+            units();
+            section('the board on a 128K');
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { tsfm: sp.tsfm, ts: sp.turboSound };
+            sp.setTsfm(true);
+            sp.portWrite(0xFFFD, 0xF8);                       // bit 0 = 0: the second chip; status mode; FM on
+            assert(sp._aySel === 1 && sp._fmStatusRead && sp._fmOn, 'OUT $FFFD,$F8: the second chip, status mode, FM on');
+            sp.portWrite(0xFFFD, 0xFF);
+            assert(sp._aySel === 0 && !sp._fmStatusRead && !sp._fmOn, 'OUT $FFFD,$FF: the first chip, register reads, FM off (as TurboSound)');
+            sp.portWrite(0xFFFD, 0xF9);
+            sp.portWrite(0xFFFD, 0x07); const r7 = sp.ay.selectedRegister;
+            sp.portWrite(0xFFFD, 0x28);
+            assert(sp.ay.selectedRegister === r7 && sp._fmAddr[0] === 0x28, 'an address >= $10 latches an FM register; the SSG keeps its register');
+            sp.portWrite(0xBFFD, 0x00);
+            assert((sp.portRead(0xFFFD) & 0x80) === 0x80, 'IN $FFFD in status mode: busy right after a write');
+            assert(sp.fmChanges.length > 0 && sp.fmChanges[sp.fmChanges.length - 1].reg === 0x28, 'the FM write is queued for the audio at its T-state');
+            sp.reset();
+            assert(sp._fmAddr[0] === 0 && sp.fmChanges.length === 0, 'reset clears the board');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (await ok('../headless/tsfm/tech_support.sna')) {
+                await zx.loadUrl('../headless/tsfm/tech_support.sna');
+                zx.pause();
+                await zx.runFrames(150);
+                const f0 = sp.fm[0];
+                let peak = 0;
+                for (let i = 0; i < 2000; i++) peak = Math.max(peak, Math.abs(f0.clock()));
+                const keyed = f0.ops.filter(o => o.keyState).length;
+                assert(keyed > 0 && peak > 1000, 'Tech Support (Moe-bius): the player keys the FM operators and they sound', `keyed ${keyed}, peak ${peak}`);
+            } else skip('headless/tsfm/tech_support.sna not present');
+            sp.setTsfm(was.tsfm); sp.setTurboSound(was.ts);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

@@ -79,6 +79,7 @@ import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { SAA1099 } from './saa1099.js';
 import { GeneralSound } from './gs.js';
+import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -169,6 +170,18 @@ import { Disassembler } from './disasm.js';
             this.ay2 = new AY(this.profile.ayClockHz);
             this.turboSound = storageGet('zxm8_turboSound') === 'true';
             this._aySel = 0;
+            // TurboSound FM (NedoPC TS-FM, as Unreal-NG): the two AYs become two
+            // YM2203s -- the AY is their SSG half, core/ym2203.js their FM half.
+            // OUT $FFFD,%11111xyz: z chip ($FF/$FE as TurboSound), y=0 status
+            // reads on IN $FFFD, x=0 FM on. An address >= $10 is an FM register.
+            this.tsfm = storageGet('zxm8_tsfm') === 'true';
+            this.fm = [new YM2203FM(), new YM2203FM()];
+            this.fmTimers = [new YM2203Timers(), new YM2203Timers()];
+            this._fmAddr = [0, 0];
+            this._fmStatusRead = false;
+            this._fmOn = true;
+            this._fmT = 0;
+            this.fmChanges = [];
             this.ay2StateSnapshot = null;
             // DAC: 'none' | 'covox' (one port, settable, $FB by default) |
             // 'specdrum' ($DF) | Soundrive 1.05, set by jumper to one of two port
@@ -1604,6 +1617,7 @@ import { Disassembler } from './disasm.js';
             this.rzxStop();
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            if (this.fm) this._fmReset();
             if (this.saa) { this.saa.reset(); this.saaChanges = []; }
             // General Sound has a reset line of its own (port $33, power-on):
             // a Spectrum reset leaves it running, as Unreal does (GSReset=0),
@@ -1977,6 +1991,41 @@ import { Disassembler } from './disasm.js';
             this.turboSound = !!on;
             this._aySel = 0;
             this.ay2.reset();
+        }
+
+        /** TurboSound FM on or off (it brings TurboSound with it) */
+        setTsfm(on) {
+            this.tsfm = !!on;
+            if (this.tsfm && !this.turboSound) this.setTurboSound(true);
+            this._fmReset();
+        }
+
+        _fmReset() {
+            for (const f of this.fm) f.reset();
+            for (const t of this.fmTimers) t.reset();
+            this.fmTimers[0].onCsm = () => this.fmChanges.push({ tStates: this.cpu.tStates, chip: 0, reg: -1, value: 0 });
+            this.fmTimers[1].onCsm = () => this.fmChanges.push({ tStates: this.cpu.tStates, chip: 1, reg: -1, value: 0 });
+            this._fmAddr = [0, 0];
+            this._fmStatusRead = false;
+            this._fmOn = true;
+            this._fmT = this._absTStates();
+            this.fmChanges = [];
+        }
+
+        // Bring both chips' timers / busy up to now (T-states = TS-FM master clocks)
+        _fmSync() {
+            const now = this._absTStates();
+            const d = now - this._fmT;
+            this._fmT = now;
+            if (d > 0) { this.fmTimers[0].advance(d); this.fmTimers[1].advance(d); }
+        }
+
+        // FM writes the audio did not take: straight into the chips
+        _fmFlush() {
+            for (const c of this.fmChanges) {
+                if (c.reg < 0) this.fm[c.chip].csmKeyOn(); else this.fm[c.chip].write(c.reg, c.value);
+            }
+            this.fmChanges.length = 0;
         }
 
         // SAA1099 writes the audio did not take (no sound, high speed, or
@@ -2414,7 +2463,15 @@ import { Disassembler } from './disasm.js';
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
-                        result = this._curAy().readRegister();
+                        if (this.tsfm && this._fmStatusRead) {
+                            // TS-FM status mode: busy | timer B | timer A
+                            this._fmSync();
+                            result = this.fmTimers[this._aySel].readStatus();
+                        } else if (this.tsfm && this._fmAddr[this._aySel] >= 0x10) {
+                            result = 0xFF;      // an FM address latched: nothing to read
+                        } else {
+                            result = this._curAy().readRegister();
+                        }
                     }
                 } else {
                     // Floating bus: the byte the ULA has on the bus right now.
@@ -2829,13 +2886,32 @@ import { Disassembler } from './disasm.js';
             if (this._ayOnPorts() && !this.profile.timexAy && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
                 if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
                     // Port 0xFFFD: AY register select (TurboSound: $FF/$FE pick the chip)
-                    if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
+                    if (this.tsfm && (val & 0xF8) === 0xF8) {
+                        // TS-FM control word: chip, status mode, FM on
+                        this._aySel = (val & 1) ? 0 : 1;
+                        this._fmStatusRead = !(val & 2);
+                        this._fmOn = !(val & 4);
+                    } else if (this.tsfm) {
+                        // an address: < $10 the SSG's register, >= $10 an FM one
+                        // (the SSG keeps its previous register then)
+                        this._fmAddr[this._aySel] = val;
+                        if (val < 0x10) this._curAy().selectRegister(val);
+                    } else if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
                     else this._curAy().selectRegister(val);
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_DATA) {
                     // Port 0xBFFD: AY register write. Applied immediately (so register
                     // readback / AY-detection see the value), and also recorded with its
                     // frame-relative T-state so processFrame can replay intra-frame
                     // volume changes (digitized speech) at the right moment.
+                    if (this.tsfm) {
+                        this._fmSync();
+                        const chip = this._aySel, a = this._fmAddr[chip];
+                        this.fmTimers[chip].write(a, val);       // busy, and the timer registers
+                        if (a >= 0x10) {
+                            this.fmChanges.push({ tStates: this.cpu.tStates, chip, reg: a, value: val });
+                            return;
+                        }
+                    }
                     const ay = this._curAy();
                     const reg = ay.selectedRegister;
                     ay.writeRegister(val);
@@ -2904,6 +2980,7 @@ import { Disassembler } from './disasm.js';
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
             this._saaFlush();
+            this._fmFlush();
             if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
@@ -3503,7 +3580,8 @@ import { Disassembler } from './disasm.js';
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
-                      gs: this.gsOn && this.gs.rom ? this.gs : null });
+                      gs: this.gsOn && this.gs.rom ? this.gs : null,
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
             }
 
             // Advance AY logging frame counter
@@ -3630,6 +3708,7 @@ import { Disassembler } from './disasm.js';
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
             this._saaFlush();
+            this._fmFlush();
             if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
@@ -3945,7 +4024,8 @@ import { Disassembler } from './disasm.js';
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
-                      gs: this.gsOn && this.gs.rom ? this.gs : null });
+                      gs: this.gsOn && this.gs.rom ? this.gs : null,
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
             }
 
             // Advance AY logging frame counter
@@ -11233,6 +11313,13 @@ import { Disassembler } from './disasm.js';
             // AY steps per sample
             const ayStepsPerSample = this.ay ? cyclesPerSample * this.ayPerCpu : 0;
             const saaClocksPerSample = 8000000 / this.sampleRate;
+            // TurboSound FM: two YM2203 FM halves, one FM sample per 72 master
+            // clocks (3.5 MHz); their writes played in at their T-state
+            const fm = extra && extra.fm, fmOn = !!(extra && extra.fmOn);
+            const fmChanges = (extra && extra.fmChanges) || [];
+            let fmIdx = 0, fmAcc = this._fmAcc || 0, fmLast = this._fmLast || 0;
+            const fmPerSample = 3500000 / 72 / this.sampleRate;
+            const FM_GAIN = 0.7 * 0.333 / 16382;     // a TL 0 carrier = one AY channel at 15
 
             // Audio levels
             const BEEPER_VOLUME = 0.5;
@@ -11303,6 +11390,18 @@ import { Disassembler } from './disasm.js';
                     right += sr * SAA_VOLUME;
                 }
 
+                if (fm) {
+                    while (fmIdx < fmChanges.length && fmChanges[fmIdx].tStates <= sampleTstates) {
+                        const c = fmChanges[fmIdx++];
+                        if (c.reg < 0) fm[c.chip].csmKeyOn(); else fm[c.chip].write(c.reg, c.value);
+                    }
+                    fmAcc += fmPerSample;
+                    let sum = 0, n = 0;
+                    while (fmAcc >= 1) { sum += fm[0].clock() + fm[1].clock(); n++; fmAcc -= 1; }
+                    if (n) fmLast = sum / n;
+                    if (fmOn) { left += fmLast * FM_GAIN; right += fmLast * FM_GAIN; }
+                }
+
                 if (gs) {
                     while (gsIdx < gsChanges.length && gsChanges[gsIdx].t <= sampleTstates) {
                         gsL = gsChanges[gsIdx].l; gsR = gsChanges[gsIdx].r; gsIdx++;
@@ -11365,6 +11464,14 @@ import { Disassembler } from './disasm.js';
             }
 
             if (saa) { while (saaIdx < saaChanges.length) saaWrite(saaChanges[saaIdx++]); saaChanges.length = 0; }
+            if (fm) {
+                while (fmIdx < fmChanges.length) {
+                    const c = fmChanges[fmIdx++];
+                    if (c.reg < 0) fm[c.chip].csmKeyOn(); else fm[c.chip].write(c.reg, c.value);
+                }
+                fmChanges.length = 0;
+                this._fmAcc = fmAcc; this._fmLast = fmLast;
+            }
 
             // Flush remaining samples at end of frame
             this.flushSamples();

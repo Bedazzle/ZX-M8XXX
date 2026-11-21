@@ -148,7 +148,7 @@
 
     <div class="controls">
         <select id="suiteSelect">
-            <option value="all">Run ALL (25 suites)</option>
+            <option value="all">Run ALL (26 suites)</option>
         </select>
         <button id="btnGo">Go</button>
     </div>
@@ -184,8 +184,9 @@
             { id: 'gama',       name: 'Didaktik Gama Tests',     src: 'gama-test.html' },
             { id: 'midi',       name: '128 MIDI Out Tests',      src: 'midi-test.html' },
             { id: 'saa',        name: 'SAA1099 Tests',           src: 'saa-test.html' },
-            { id: 'gs',         name: 'General Sound Tests',     src: 'gs-test.html' },
-            { id: 'kempdisc',   name: 'Kempston Disc Tests',     src: 'kempdisc-test.html' },
+            { id: 'gs',         name: 'General Sound Tests',     src: 'gs-test.html', timeout: 90000 },
+            { id: 'kempdisc',   name: 'Kempston Disc Tests',     src: 'kempdisc-test.html', timeout: 90000 },
+            { id: 'tsfm',       name: 'TurboSound FM Tests',     src: 'tsfm-test.html' },
             { id: 'mapper',     name: 'Mapper Tests',           src: 'mapper-test.html' },
             { id: 'sigpack',    name: 'Signature Pack Tests',   src: 'sigpack-test.html' },
             { id: 'calculator', name: 'Calculator Tests',       src: 'calculator-test.html' },
@@ -337,7 +338,7 @@
 
                     if (result === 'timeout') {
                         setBadge(suite.id, 'timeout', 'Timeout');
-                        setDetails(suite.id, 'Timed out after ' + (SUITE_TIMEOUT / 1000) + 's');
+                        setDetails(suite.id, 'Timed out after ' + ((suite.timeout || SUITE_TIMEOUT) / 1000) + 's');
                     } else {
                         const parsed = parseSummary(result);
                         if (parsed) {
@@ -360,7 +361,7 @@
                     resolve();
                 }
 
-                const timeoutTimer = setTimeout(() => finish('timeout'), SUITE_TIMEOUT);
+                const timeoutTimer = setTimeout(() => finish('timeout'), suite.timeout || SUITE_TIMEOUT);
 
                 iframe.onload = () => {
                     // Hide nav links, buttons, title inside iframe

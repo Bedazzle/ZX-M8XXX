@@ -369,6 +369,9 @@
                         <label class="checkbox-label" title="TurboSound (NedoPC): a second AY on the same ports. OUT ($FFFD),$FF selects chip 0, $FE chip 1; any other value selects a register of the current chip. Where there is an AY (128K, Pentagon..., or AY in 48K).">
                             <input type="checkbox" id="chkTurboSound"> TurboSound (2 x AY)
                         </label>
+                        <label class="checkbox-label" style="margin-left: 15px;" title="TurboSound FM (NedoPC TS-FM): two YM2203 -- each an AY (SSG) plus 3 FM channels of 4 operators. OUT $FFFD,%11111xyz: z picks the chip ($FF/$FE as TurboSound), y=0 IN $FFFD reads the status, x=0 FM on; an address >= $10 is an FM register. FM core: a port of ymfm (Aaron Giles), as in Unreal-NG.">
+                            <input type="checkbox" id="chkTsfm"> TurboSound FM
+                        </label>
                         <label class="checkbox-label" style="margin-left: 15px;" title="SAA1099 (ZXM-SoundCard, as in Xpeccy and Unreal Speccy): 6 channels, 8 MHz, stereo. OUT $01FF selects a register, OUT $00FF writes it. Not on the Timex machines ($FF is the SCLD's), silent while TR-DOS is paged in.">
                             <input type="checkbox" id="chkSaa"> SAA1099
                         </label>
