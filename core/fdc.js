@@ -64,6 +64,10 @@
                 if (sector.id === sectorId) {
                     const len = Math.min(data.length, sector.data.length);
                     sector.data.set(data.subarray(0, len));
+                    // toBuffer() re-emits the container with our own framing, so a
+                    // byte compare against the loaded file reports every disk as
+                    // changed. The flag is the only honest answer.
+                    this.modified = true;
                     return true;
                 }
             }
@@ -375,6 +379,66 @@
             }
 
             return track;
+        }
+
+        /**
+         * A DSK's sectors laid out as a flat sector dump, or null when they do
+         * not form one.
+         *
+         * A `.dsk` is a container, not a format: it says what is on each track
+         * and leaves the filesystem alone. So disks belonging to machines that
+         * never had a µPD765 circulate in it — the double-density Opus
+         * Discovery format (80 × 2 × 10 × 512) is only ever found this way —
+         * and those are read by their own interface, which wants the linear
+         * image its loader and controller address by (track, side, sector).
+         *
+         * Flattening is only meaningful when the disk really is a uniform grid,
+         * so every condition is checked rather than assumed: one sector size
+         * for the whole disk, the same count on every track, every track
+         * present, and ids forming a contiguous run (the Opus numbers from 0,
+         * MGT from 1) in whatever order they were written — a track's ids are
+         * skewed for rotational latency, which is exactly what the linear image
+         * is not supposed to record.
+         *
+         * @param {ArrayBuffer|Uint8Array} data
+         * @returns {{data: Uint8Array, tracks: number, sides: number,
+         *            sectorsPerTrack: number, bytesPerSector: number,
+         *            firstSector: number}|null}
+         */
+        static flatten(data) {
+            let image;
+            try { image = DSKLoader.parse(data); } catch (e) { return null; }
+            const tracks = image.numTracks, sides = image.numSides;
+            const first = image.tracks[0];
+            if (!first || !first.sectors.length) return null;
+
+            const spt = first.sectors.length;
+            const bps = first.sectors[0].data.length;
+            if (!bps) return null;
+
+            let firstId = Infinity;
+            for (const t of image.tracks) if (t) for (const s of t.sectors) {
+                if (s.id < firstId) firstId = s.id;
+            }
+
+            const out = new Uint8Array(tracks * sides * spt * bps);
+            for (let cyl = 0; cyl < tracks; cyl++) {
+                for (let side = 0; side < sides; side++) {
+                    const track = image.tracks[cyl * sides + side];
+                    if (!track || track.sectors.length !== spt) return null;
+                    const seen = new Set();
+                    for (const s of track.sectors) {
+                        const slot = s.id - firstId;
+                        if (s.data.length !== bps) return null;
+                        if (slot < 0 || slot >= spt || seen.has(slot)) return null;
+                        seen.add(slot);
+                        out.set(s.data, ((cyl * sides + side) * spt + slot) * bps);
+                    }
+                }
+            }
+
+            return { data: out, tracks, sides, sectorsPerTrack: spt,
+                     bytesPerSector: bps, firstSector: firstId };
         }
 
         /**

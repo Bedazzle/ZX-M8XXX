@@ -12,7 +12,10 @@
 // checksums were ever public.
 export { xorChecksum, sclChecksum } from './loaders/common.js';
 export * from './loaders/tape.js';
+export * from './loaders/mfm-track.js';
+export * from './loaders/disk-rotation.js';
 export * from './loaders/disk-beta.js';
+export * from './loaders/disk-udi.js';
 export * from './loaders/disk-mgt.js';
 export * from './loaders/microdrive.js';
 export * from './loaders/disk-opus.js';

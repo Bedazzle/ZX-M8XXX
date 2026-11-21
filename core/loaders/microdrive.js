@@ -502,6 +502,7 @@ import { TRDLoader } from './disk-beta.js';
 
             if (drv.transfered > 11 && drv.transfered < drv.maxBytes + 12) {
                 drv.cartridge[drv.headPos] = val;
+                drv.modified = true;
                 this._incrementHead(drv);
                 if (this.onDiskActivity) {
                     this.onDiskActivity('write', this.activeDrive, drv.headPos);
@@ -603,6 +604,7 @@ import { TRDLoader } from './disk-beta.js';
             drv.cartridge.set(bytes.subarray(0, Math.min(bytes.length, tapeLen)));
             drv.writeProtect = bytes.length >= MDRLoader.IMAGE_SIZE ? bytes[MDRLoader.IMAGE_SIZE - 1] !== 0 : false;
             drv.headPos = 0;
+            drv.modified = false;
 
             // An inserted cartridge is already formatted: mark every header and
             // every record as synced, or the status port would never assert

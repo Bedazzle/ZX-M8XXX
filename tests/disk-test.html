@@ -99,6 +99,14 @@
 <script type="module">
     import { TRDLoader, SCLLoader, TapeLoader, BetaDisk, PlusDDisk, Microdrive, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
     import { extractTrdFileDescriptor, addMetaFromDescriptor, shapeBasicEntry, isMonoloader, trdBasicAutostartLine, setTrdBasicAutostart, splitMonoloader } from '../ui/disk-file-copy.js';
+    import { UDILoader, crcFdc } from '../core/loaders/disk-udi.js';
+    import { TRACK_BYTES_MFM, parseTrackStream, buildTrackStream, formatTrackStream }
+        from '../core/loaders/mfm-track.js';
+    import { revolutionTStates, indexPulseTStates }
+        from '../core/loaders/disk-rotation.js';
+    import { OpusDisk } from '../core/loaders/disk-opus.js';
+    import { DidaktikDisk } from '../core/loaders/disk-didaktik.js';
+    import { buildUDI, normalTrack } from './udi-fixture.js';
     import { parseSpecscii, encodeBannerEntries, decodeBannerNames, gridToSpecscii, bannerNamesToSpecscii, isBannerName, lastContentRow, simulateListPrint, BANNER_MAX_ROWS } from '../core/specscii.js';
 
     const logEl = document.getElementById('log');
@@ -518,6 +526,170 @@
         assert(bd.reading === false, 'reset: reading = false');
         assert(bd.intrq === false, 'reset: intrq = false');
 
+        // ═══════════════════════════════════════════════════════
+        // BetaDisk - serving sectors from UDI tracks
+        // ═══════════════════════════════════════════════════════
+        //
+        // WHY: a TRD answers exactly one question -- "the 256 bytes of sector N"
+        // -- and a protected disk's loader asks others. Those answers exist only
+        // in the raw track bytes, and every one of them is a real thing in the
+        // five sample images: a 17-sector track, 590 sectors of 512 bytes, 590
+        // deleted-data marks, a deliberately wrong CRC. Flattened, the disk could
+        // not fail any of those checks, so it "passed" them all and then hung.
+        section('BetaDisk - UDI track-level reads');
+
+        {
+            // Track 0 side 0: ordinary. Track 1 side 0: every awkward case at once.
+            const odd = [
+                { cylinder: 1, head: 0, sector: 1, sizeCode: 1, data: new Uint8Array(256).fill(0xA1) },
+                { cylinder: 1, head: 0, sector: 2, sizeCode: 1, data: new Uint8Array(256).fill(0xD1), deleted: true },
+                { cylinder: 1, head: 0, sector: 3, sizeCode: 1, data: new Uint8Array(256).fill(0xC3), badDataCrc: true },
+                { cylinder: 1, head: 0, sector: 4, sizeCode: 2, data: new Uint8Array(512).fill(0x52) },
+                { cylinder: 1, head: 0, sector: 17, sizeCode: 1, data: new Uint8Array(256).fill(0x17) },
+                // An ID claiming a cylinder the head is not on: the oldest trick there is.
+                { cylinder: 200, head: 0, sector: 5, sizeCode: 1, data: new Uint8Array(256).fill(0x99) },
+            ];
+            const udiBytes = buildUDI([
+                normalTrack(0, 0), normalTrack(0, 1),
+                odd, normalTrack(1, 1),
+            ], { sides: 2 });
+
+            const loaded = UDILoader.load(udiBytes);
+            const bdU = new BetaDisk();
+            bdU.loadDisk(loaded.trd, 'trd', 0);
+            bdU.attachTrackImage(loaded.trackImage, 0);
+            assert(bdU.drives[0].trackImage !== null, 'drive holds the track image');
+            assert(bdU.drives[0].trackImage.tracks.length === 4, 'all four track records attached');
+
+            // Read a byte stream out of the data register.
+            const pull = (n) => { const o = []; for (let i = 0; i < n; i++) o.push(bdU.read(0x7F)); return o; };
+            const readSec = (track, side, sector) => {
+                bdU.track = track; bdU.currentDisk.headTrack = track;
+                bdU.side = side; bdU.sector = sector;
+                bdU.write(0x1F, 0x80);          // Read Sector, single
+            };
+
+            // --- an ordinary sector still reads ---------------------------
+            readSec(0, 0, 3);
+            assert(bdU.reading === true, 'UDI: an ordinary sector reads');
+            assert(bdU.dataLen === 256, 'UDI: 256 bytes long', String(bdU.dataLen));
+            assert(pull(4).every(v => v === 3), 'UDI: and gives that sector\'s bytes');
+            assert((bdU.status & 0x10) === 0, 'UDI: no record-not-found');
+
+            // --- a sector that is not on the track ------------------------
+            // The whole point: a flat image would hand back whatever bytes sat at
+            // the computed offset, and the loader would believe them.
+            readSec(0, 0, 99);
+            assert((bdU.status & 0x10) !== 0, 'UDI: a missing sector gives RECORD NOT FOUND',
+                   '0x' + bdU.status.toString(16));
+            assert(bdU.reading === false, 'UDI: and no data to read');
+            assert(bdU.intrq === true, 'UDI: with the interrupt raised');
+
+            // --- deleted data mark ----------------------------------------
+            readSec(1, 0, 2);
+            assert((bdU.status & 0x20) !== 0, 'UDI: a deleted-data sector sets the record-type bit',
+                   '0x' + bdU.status.toString(16));
+            assert(pull(2).every(v => v === 0xD1), 'UDI: and still gives its bytes');
+
+            // --- a sector whose data CRC is wrong -------------------------
+            readSec(1, 0, 3);
+            assert((bdU.status & 0x08) !== 0, 'UDI: a bad data CRC is reported',
+                   '0x' + bdU.status.toString(16));
+            // A protection that WANTS the error needs the bytes as well.
+            assert(pull(2).every(v => v === 0xC3), 'UDI: the sector still transfers');
+
+            // --- and one that is not 256 bytes ----------------------------
+            readSec(1, 0, 4);
+            assert(bdU.dataLen === 512, 'UDI: a 512-byte sector transfers 512 bytes', String(bdU.dataLen));
+            assert(pull(300).every(v => v === 0x52), 'UDI: all of them its own');
+
+            // --- a sector a TRD cannot even number ------------------------
+            readSec(1, 0, 17);
+            assert(bdU.reading === true, 'UDI: sector 17 is readable', '0x' + bdU.status.toString(16));
+            assert(pull(2).every(v => v === 0x17), 'UDI: with its own bytes');
+            // Prove the flattening really did drop it, so the assert above is
+            // about the track path and not about a TRD that happened to hold it.
+            assert(loaded.lost.outOfRange >= 1, 'UDI: and the flattened image had dropped it',
+                   JSON.stringify(loaded.lost));
+
+            // --- an ID field claiming another cylinder --------------------
+            readSec(1, 0, 5);
+            assert((bdU.status & 0x10) !== 0,
+                   'UDI: an ID claiming a different cylinder is NOT FOUND (the protection works)',
+                   '0x' + bdU.status.toString(16));
+        }
+
+        section('BetaDisk - UDI READ ADDRESS and READ TRACK');
+
+        {
+            const odd = [
+                { cylinder: 7, head: 0, sector: 9, sizeCode: 2, data: new Uint8Array(512).fill(1) },
+                { cylinder: 7, head: 0, sector: 4, sizeCode: 1, data: new Uint8Array(256).fill(2) },
+            ];
+            const loaded = UDILoader.load(buildUDI([odd, normalTrack(0, 1)], { sides: 2 }));
+            const bdU = new BetaDisk();
+            bdU.loadDisk(loaded.trd, 'trd', 0);
+            bdU.attachTrackImage(loaded.trackImage, 0);
+            bdU.track = 0; bdU.currentDisk.headTrack = 0; bdU.side = 0;
+
+            const pull = (n) => { const o = []; for (let i = 0; i < n; i++) o.push(bdU.read(0x7F)); return o; };
+
+            // READ ADDRESS used to be fabricated from the registers -- it said
+            // "size 1, CRC 0000" whatever was on the disk, so a loader mapping a
+            // track learned only what it had just written to the registers.
+            bdU.write(0x1F, 0xC0);
+            const id1 = pull(6);
+            assert(id1[0] === 7, 'READ ADDRESS: the cylinder the ID really carries', String(id1[0]));
+            assert(id1[2] === 9, 'READ ADDRESS: and the sector number', String(id1[2]));
+            assert(id1[3] === 2, 'READ ADDRESS: and the real size code (512 bytes)', String(id1[3]));
+            assert((id1[4] << 8 | id1[5]) !== 0, 'READ ADDRESS: with the ID field\'s own CRC',
+                   id1.join(','));
+            // The datasheet: the ID's track address lands in the sector register.
+            assert(bdU.sector === 7, 'READ ADDRESS: track address copied to the sector register',
+                   String(bdU.sector));
+
+            bdU.write(0x1F, 0xC0);
+            const id2 = pull(6);
+            assert(id2[2] === 4, 'READ ADDRESS: the next call gives the NEXT ID', String(id2[2]));
+            bdU.write(0x1F, 0xC0);
+            assert(pull(6)[2] === 9, 'READ ADDRESS: and then wraps round the track');
+
+            // READ TRACK was a stub that returned "done" with nothing.
+            bdU.write(0x1F, 0xE0);
+            assert(bdU.reading === true, 'READ TRACK: returns the raw track');
+            assert(bdU.dataLen === loaded.trackImage.tracks[0].raw.length,
+                   'READ TRACK: as many bytes as the track holds', String(bdU.dataLen));
+            assert(pull(4).every(v => v === 0x4E), 'READ TRACK: starting in the gap bytes');
+
+            // No UDI writer exists, and a 256-byte write cannot reconstruct the
+            // gaps, marks and CRCs that make the track what it is.
+            bdU.track = 0; bdU.sector = 9;
+            bdU.write(0x1F, 0xA0);
+            assert((bdU.status & 0x40) !== 0, 'a track image is write protected',
+                   '0x' + bdU.status.toString(16));
+            assert(bdU.writing === false, 'and the write does not start');
+        }
+
+        section('BetaDisk - a plain image is unaffected');
+
+        {
+            // The track path must not leak into ordinary disks.
+            const bdT = new BetaDisk();
+            bdT.createBlankDisk('PLAIN');
+            assert(bdT.drives[0].trackImage === null, 'a blank disk has no track image');
+            bdT.track = 0; bdT.side = 0; bdT.sector = 1;
+            bdT.write(0x1F, 0x80);
+            assert(bdT.reading === true && bdT.dataLen === 256, 'and reads 256 bytes the old way');
+            // Loading a plain image over a UDI must forget the tracks.
+            const loaded = UDILoader.load(buildUDI([normalTrack(0, 0), normalTrack(0, 1)], { sides: 2 }));
+            bdT.loadDisk(loaded.trd, 'trd', 0);
+            bdT.attachTrackImage(loaded.trackImage, 0);
+            assert(bdT.drives[0].trackImage !== null, 'track image attached');
+            bdT.loadDisk(new Uint8Array(655360), 'trd', 0);
+            assert(bdT.drives[0].trackImage === null,
+                   'loading a plain TRD clears it — else the old tracks answer for the new disk');
+        }
+
         updateSummary();
     }
 
@@ -882,16 +1054,33 @@
         pd.write(0xE3, 0x10); // Seek
         assert(pd.track === 20, 'seek: track = 20');
 
-        // Step in/out
-        pd.write(0xE3, 0x40); // Step in
-        assert(pd.track === 21, 'step in: track = 21');
-        pd.write(0xE3, 0x60); // Step out
-        assert(pd.track === 20, 'step out: track = 20');
+        // Step in/out. Bit 4 is the U(pdate) bit: WITHOUT it a step moves the
+        // head and leaves the track register exactly where it was, which is how
+        // a DOS double-steps a 40-track disk in an 80-track drive. This used to
+        // update the register either way, so the register was the head position
+        // and no DOS could hold the two apart.
+        pd.write(0xE3, 0x40); // Step in, no update
+        assert(pd.track === 20, 'step in without the U bit: the register stays at 20');
+        assert(pd.currentDisk.headTrack === 21, 'but the head has moved to 21');
+        pd.write(0xE3, 0x60); // Step out, no update
+        assert(pd.track === 20 && pd.currentDisk.headTrack === 20,
+               'and stepping out again brings the head back');
+        pd.write(0xE3, 0x50); // Step in WITH update
+        assert(pd.track === 21 && pd.currentDisk.headTrack === 21,
+               'step in with the U bit moves both');
+        pd.write(0xE3, 0x70); // Step out with update
+        assert(pd.track === 20 && pd.currentDisk.headTrack === 20,
+               'and so does stepping out');
+        // A bare Step repeats the last direction
+        pd.write(0xE3, 0x30);
+        assert(pd.track === 19 && pd.currentDisk.headTrack === 19,
+               'a bare Step goes the way the last one did');
 
         section('PlusDDisk - Read Address');
 
         pd.track = 15;
         pd.currentDisk.headTrack = 30;
+        pd.currentDisk.addrIndex = 0;
         pd.sector = 7;
         pd.side = 0;
         pd.write(0xE3, 0xC0); // Read Address via command register 0xE3
@@ -899,8 +1088,16 @@
         for (let i = 0; i < 6; i++) ra.push(pd.read(0xFB));
         assert(ra[0] === 30, 'read address: headTrack = 30');
         assert(ra[1] === 0, 'read address: side = 0');
-        assert(ra[2] === 7, 'read address: sector = 7');
+        // The ID is the next sector to come under the head, synthesized from the
+        // geometry and advancing one per command — NOT the sector register, which
+        // only ever told the caller what it had just written there.
+        assert(ra[2] === 1, 'read address: the track\'s first sector, MGT numbering from 1');
         assert(ra[3] === 2, 'read address: size code = 2 (512 bytes)');
+        assert(pd.sector === 30, 'read address: the ID track is loaded into the sector register');
+        pd.write(0xE3, 0xC0);
+        const ra2 = [];
+        for (let i = 0; i < 6; i++) ra2.push(pd.read(0xFB));
+        assert(ra2[2] === 2, 'read address: the next command reports the next sector');
 
         section('PlusDDisk - Control register INTRQ/DRQ');
 
@@ -918,6 +1115,809 @@
         assert(pd.track === 0, 'reset: track = 0');
         assert(pd.reading === false, 'reset: reading = false');
         assert(pd.intrq === false, 'reset: intrq = false');
+
+        // ───────────────────────────────────────────────────────
+        // Write Track / Read Track — the format command.
+        //
+        // There is no "format a sector": a DOS streams a whole track at the chip
+        // and the chip writes it between index pulses. Without this an interface
+        // can edit a disk somebody else made but cannot make one, which is why
+        // every FORMAT in the app used to report success and change nothing.
+        // ───────────────────────────────────────────────────────
+
+        section('PlusDDisk - Write Track lays down a track');
+
+        {
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('FMT');
+            const img = fd.currentDisk.diskData;
+            // Poison the track so "formatted" cannot be confused with "was
+            // already zero".
+            for (let i = 0; i < 10 * 512; i++) img[i] = 0x5A;
+
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+            fd.write(0xE3, 0xF0);                 // Write Track
+            assert(fd.writing === true, 'format: writing = true');
+            assert(fd.formatting === true, 'format: formatting = true');
+            assert((fd.status & fd.DRQ) !== 0, 'format: DRQ set — the chip wants bytes');
+
+            const stream = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0xE5,
+            });
+            for (let i = 0; i < stream.length; i++) fd.write(0xFB, stream[i]);
+
+            assert(fd.writing === false, 'format complete: writing = false');
+            assert(fd.formatting === false, 'format complete: formatting = false');
+            assert(fd.intrq === true, 'format complete: intrq set');
+            assert((fd.read(0xE3) & 0x7F) === 0, 'format complete: status clean');
+            assert(fd.lastFormat.found === 10, 'ten sectors found in the stream',
+                   JSON.stringify(fd.lastFormat));
+            assert(fd.lastFormat.written === 10, 'and all ten written');
+            assert(fd.lastFormat.skipped === 0, 'none skipped');
+            assert(fd.currentDisk.modified === true, 'the disk is marked modified');
+
+            let allE5 = true;
+            for (let i = 0; i < 10 * 512; i++) if (img[i] !== 0xE5) { allE5 = false; break; }
+            assert(allE5, 'the whole track now holds the formatter\'s $E5 filler');
+            assert(img[10 * 512] === 0, 'and the next track-side is untouched');
+        }
+
+        section('PlusDDisk - a format writes where the HEAD is');
+
+        {
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('FMT');
+            const img = fd.currentDisk.diskData;
+            fd.drive = 0; fd.side = 1;
+            fd.track = 12;
+            fd.currentDisk.headTrack = 12;
+            fd.write(0xE3, 0xF0);
+            const stream = formatTrackStream({
+                cylinder: 12, head: 1, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, data: (id) => {
+                    const d = new Uint8Array(512); d.fill(id); return d;
+                },
+            });
+            for (const b of stream) fd.write(0xFB, b);
+            assert(fd.lastFormat.written === 10, 'cylinder 12 side 1 formatted');
+            const off = fd.getSectorOffset(12, 1, 7);
+            assert(img[off] === 7 && img[off + 511] === 7,
+                   'sector 7\'s data field landed at its own offset');
+            assert(img[fd.getSectorOffset(12, 0, 7)] === 0, 'side 0 was not touched');
+
+            // Write Track compares nothing — it writes where the head stands. A
+            // stream whose IDs claim another cylinder has nowhere to go in a flat
+            // sector dump, so it is counted rather than filed under what it claims.
+            fd.write(0xE3, 0xF0);
+            const liar = formatTrackStream({
+                cylinder: 40, head: 1, sectorsPerTrack: 10, firstSector: 1, sizeCode: 2,
+            });
+            for (const b of liar) fd.write(0xFB, b);
+            assert(fd.lastFormat.found === 10, 'the lying stream still parses');
+            assert(fd.lastFormat.written === 0, 'but nothing is written');
+            assert(fd.lastFormat.skipped === 10, 'all ten counted as skipped');
+            assert(img[off] === 7, 'and the track that was there survives');
+        }
+
+        section('PlusDDisk - a format in the wrong geometry is refused, sector by sector');
+
+        {
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('FMT');
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+
+            // 256-byte sectors onto an image laid out in 512s.
+            fd.write(0xE3, 0xF0);
+            for (const b of formatTrackStream({
+                sectorsPerTrack: 16, firstSector: 1, sizeCode: 1,
+            })) fd.write(0xFB, b);
+            assert(fd.lastFormat.written === 0, 'the wrong sector size writes nothing');
+            assert(fd.lastFormat.skipped === 16, 'every sector skipped',
+                   JSON.stringify(fd.lastFormat));
+
+            // The right size, numbered past the end of the track: 5..14 on a disk
+            // whose sectors are 1..10.
+            fd.write(0xE3, 0xF0);
+            for (const b of formatTrackStream({
+                sectorsPerTrack: 10, firstSector: 5, sizeCode: 2, fill: 0x99,
+            })) fd.write(0xFB, b);
+            assert(fd.lastFormat.found === 10, 'ten sectors in the stream',
+                   JSON.stringify(fd.lastFormat));
+            assert(fd.lastFormat.written === 6, 'sectors 5..10 fit');
+            assert(fd.lastFormat.skipped === 4, 'and 11..14 do not');
+
+            // More bytes than a revolution holds: the chip stops at the index
+            // pulse, so the last sectors are simply never written — which is what
+            // a real drive does to a formatter that overruns.
+            fd.write(0xE3, 0xF0);
+            const long = formatTrackStream({
+                sectorsPerTrack: 12, firstSector: 1, sizeCode: 2,
+            });
+            assert(long.length > TRACK_BYTES_MFM,
+                   '12 x 512 cannot fit a track', String(long.length));
+            for (const b of long) fd.write(0xFB, b);
+            assert(fd.lastFormat.found === 10,
+                   'only the sectors inside one revolution were written',
+                   JSON.stringify(fd.lastFormat));
+            assert(fd.lastFormat.written === 10, 'and all of those landed');
+        }
+
+        section('PlusDDisk - a Force Interrupt commits the part-written track');
+
+        {
+            // The index pulse is what ends a Write Track on real hardware; a ROM
+            // counting bytes stops short and forces an interrupt.
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('FMT');
+            const img = fd.currentDisk.diskData;
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+            fd.write(0xE3, 0xF0);
+            const stream = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0x77,
+            });
+            for (let i = 0; i < 2100; i++) fd.write(0xFB, stream[i]);
+            assert(fd.formatting === true, 'still formatting, mid-stream');
+            fd.write(0xE3, 0xD0);                 // Force Interrupt
+            assert(fd.formatting === false, 'the forced interrupt ended it');
+            assert(fd.lastFormat.written === 3,
+                   'the three complete sectors were committed',
+                   JSON.stringify(fd.lastFormat));
+            assert(img[fd.getSectorOffset(0, 0, 3)] === 0x77, 'sector 3 is there');
+            assert(img[fd.getSectorOffset(0, 0, 4)] === 0x00,
+                   'and the sector it was in the middle of is not');
+        }
+
+        section('PlusDDisk - Read Track, built from the geometry');
+
+        {
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('RT');
+            const img = fd.currentDisk.diskData;
+            fd.drive = 0; fd.side = 0; fd.track = 2;
+            fd.currentDisk.headTrack = 2;
+            for (let s = 1; s <= 10; s++) {
+                const off = fd.getSectorOffset(2, 0, s);
+                for (let i = 0; i < 512; i++) img[off + i] = (s * 16 + i) & 0xFF;
+            }
+
+            fd.write(0xE3, 0xE0);                 // Read Track
+            assert(fd.reading === true, 'read track: reading = true');
+            assert((fd.status & fd.DRQ) !== 0, 'read track: DRQ set');
+            const bytes = [];
+            while (fd.reading && bytes.length < 8000) bytes.push(fd.read(0xFB));
+            assert(bytes.length === TRACK_BYTES_MFM,
+                   'a revolution\'s worth of bytes came back', String(bytes.length));
+            assert(fd.intrq === true, 'read track: intrq at the end');
+
+            // A flat image has no marks or CRCs in it, so the track is built: real
+            // $A1 sync bytes and real CRCs, which is what the medium would carry.
+            const track = new Uint8Array(bytes);
+            const back = parseTrackStream(buildTrackStream({
+                cylinder: 2, head: 0, marks: 'stream',
+                sectors: Array.from({ length: 10 }, (_, i) => ({
+                    cylinder: 2, head: 0, sector: i + 1, sizeCode: 2,
+                    data: img.subarray(fd.getSectorOffset(2, 0, i + 1),
+                                       fd.getSectorOffset(2, 0, i + 1) + 512),
+                })),
+            })).sectors;
+            assert(back.length === 10, 'the same ten sectors round-trip');
+            assert(track.indexOf(0xA1) >= 0, 'the stream carries real $A1 marks');
+            assert(crcFdc(track.subarray(72, 82)) === 0,
+                   'and the first ID field\'s CRC checks out');
+            assert(track[76] === 2 && track[78] === 1,
+                   'the first ID says cylinder 2, sector 1');
+        }
+
+        section('PlusDDisk - format then read the track back');
+
+        {
+            // The round trip that matters: what Write Track laid down is what
+            // Read Track reports, through the controller both ways.
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('RT');
+            fd.drive = 0; fd.side = 0; fd.track = 5;
+            fd.currentDisk.headTrack = 5;
+            fd.write(0xE3, 0xF0);
+            for (const b of formatTrackStream({
+                cylinder: 5, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0xE5,
+            })) fd.write(0xFB, b);
+            assert(fd.lastFormat.written === 10, 'cylinder 5 formatted');
+
+            fd.write(0xE3, 0xE0);
+            const bytes = [];
+            while (fd.reading && bytes.length < 8000) bytes.push(fd.read(0xFB));
+            const { sectors } = parseTrackStream(new Uint8Array(bytes));
+            // The medium form carries $A1, not $F5, so parseTrackStream sees no
+            // marks at all — which is the point of the two forms being different.
+            assert(sectors.length === 0,
+                   'a medium image is not a write stream, and does not parse as one');
+            // Read it the way a program would: find the marks, then the data.
+            const trk = new Uint8Array(bytes);
+            let ids = 0;
+            for (let i = 3; i < trk.length; i++) {
+                if (trk[i] === 0xFE && trk[i - 1] === 0xA1 &&
+                    trk[i - 2] === 0xA1 && trk[i - 3] === 0xA1) ids++;
+            }
+            assert(ids === 10, 'ten ID fields are on the track', String(ids));
+        }
+
+        section('OpusDisk / Didaktik - the same engine, their own geometry');
+
+        {
+            // Both extend PlusDDisk, so one implementation covers three
+            // interfaces — but each has its own sector size, count and base.
+            const od = new OpusDisk();
+            od.loadDisk(OPDLoader.createBlankOPD('OP'), 'opd', 0);
+            od.drive = 0; od.side = 0; od.track = 1;
+            od.currentDisk.headTrack = 1;
+            assert(od.firstSector === 0, 'the Opus numbers its sectors from 0');
+            assert(od.sectorsPerTrack === 18 && od.bytesPerSector === 256,
+                   'and formats 18 x 256');
+            // The Opus has no I/O ports: its registers are in the memory map.
+            od.writeMemory(0x2800, 0xF0);
+            for (const b of formatTrackStream({
+                cylinder: 1, head: 0, sectorsPerTrack: 18, firstSector: 0,
+                sizeCode: 1, fill: 0xAA,
+            })) od.writeMemory(0x2803, b);
+            assert(od.lastFormat.written === 18, '18 sectors formatted',
+                   JSON.stringify(od.lastFormat));
+            assert(od.currentDisk.diskData[od.getSectorOffset(1, 0, 0)] === 0xAA,
+                   'sector 0 exists on an Opus disk and was written');
+
+            const dd = new DidaktikDisk();
+            dd.createBlankDisk('MD', 0);
+            dd.drive = 0; dd.track = 3;
+            dd.currentDisk.headTrack = 3;
+            assert(dd.sectorsPerTrack === 9 && dd.bytesPerSector === 512,
+                   'MDOS formats 9 x 512');
+            // The WD2797 takes the side from bit 1 of the command, not a register.
+            dd.write(0x81, 0xF0);
+            assert(dd.side === 0, 'side 0 from the command byte');
+            for (const b of formatTrackStream({
+                cylinder: 3, head: 0, sectorsPerTrack: 9, firstSector: 1,
+                sizeCode: 2, fill: 0xBB,
+            })) dd.write(0x87, b);
+            assert(dd.lastFormat.written === 9, 'nine sectors formatted',
+                   JSON.stringify(dd.lastFormat));
+            assert(dd.currentDisk.diskData[dd.getSectorOffset(3, 0, 1)] === 0xBB,
+                   'and MDOS sector 1 holds the filler');
+        }
+
+        section('BetaDisk - Write Track and Read Track');
+
+        {
+            const fb = new BetaDisk();
+            fb.createBlankDisk('TRD');
+            const img = fb.currentDisk.diskData;
+            for (let i = 0; i < 16 * 256; i++) img[i] = 0x33;
+
+            fb.drive = 0; fb.side = 0; fb.track = 0;
+            fb.currentDisk.headTrack = 0;
+            fb.write(0x1F, 0xF0);                 // Write Track
+            assert(fb.formatting === true, 'TR-DOS format: formatting = true');
+            for (const b of formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 16, firstSector: 1,
+                sizeCode: 1, fill: 0xE5,
+            })) fb.write(0x7F, b);
+            assert(fb.lastFormat.written === 16, 'sixteen 256-byte sectors written',
+                   JSON.stringify(fb.lastFormat));
+            assert((fb.read(0x1F) & 0x7F) === 0,
+                   'status clean (TR-DOS checks it with AND 7Fh)');
+            let allE5 = true;
+            for (let i = 0; i < 16 * 256; i++) if (img[i] !== 0xE5) { allE5 = false; break; }
+            assert(allE5, 'the whole track-side is formatted');
+
+            // Read Track off a flat .trd: built from the geometry, since a sector
+            // dump holds no gaps, marks or CRCs.
+            fb.write(0x1F, 0xE0);
+            const bytes = [];
+            while (fb.reading && bytes.length < 8000) bytes.push(fb.read(0x7F));
+            assert(bytes.length === TRACK_BYTES_MFM,
+                   'a revolution\'s worth of bytes', String(bytes.length));
+            const trk = new Uint8Array(bytes);
+            assert(trk[76] === 0 && trk[78] === 1 && trk[79] === 1,
+                   'cylinder 0, sector 1, N=1 — TR-DOS sectors are 256 bytes');
+            assert(crcFdc(trk.subarray(72, 82)) === 0, 'the ID CRC checks out');
+        }
+
+        section('BetaDisk - a track opened and never fed is lost, not left open');
+
+        {
+            // THE REGRESSION THIS EXISTS FOR. Every TR-DOS SAVE writes $F8 — Write
+            // Track — to the command register from the ROM's entry stub at $3D9C,
+            // then polls $FF for an interrupt and feeds nothing at all. On real
+            // hardware the index pulse ends the command 200ms later and the
+            // interrupt arrives. Nothing here models rotation, so implementing
+            // Write Track turned a free no-op into a permanent wait and hung every
+            // save on every TR-DOS machine. The deadline is what puts the
+            // interrupt back.
+            const fb = new BetaDisk();
+            fb.createBlankDisk('TRD');
+            const img = fb.currentDisk.diskData;
+            const before = img.slice(0, 4096);
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF8);
+            assert(fb.formatting === true, 'the Write Track opens a track');
+            assert(fb.intrq === false, 'and does not finish on its own');
+
+            let polls = 0;
+            while (fb.formatting && polls < 20000) { fb.read(0xFF); polls++; }
+            assert(!fb.formatting, 'polling $FF eventually ends it', 'polls=' + polls);
+            assert(polls === BetaDisk.FORMAT_POLL_LIMIT,
+                   'after exactly the poll limit', String(polls));
+            assert(fb.intrq === true, 'and raises the interrupt the ROM is waiting for');
+            assert((fb.status & fb.LOST_DATA) !== 0,
+                   'reporting lost data — a track was opened and nothing written');
+            assert((fb.status & fb.BUSY) === 0, 'with BUSY clear');
+            assert(fb.writing === false, 'and the controller free for the next command');
+            assert(fb.lastFormat.found === 0 && fb.lastFormat.written === 0,
+                   'nothing was laid down', JSON.stringify(fb.lastFormat));
+            assert(img.slice(0, 4096).every((v, i) => v === before[i]),
+                   'and the disk is byte for byte what it was');
+            assert(fb.currentDisk.modified !== true, 'not even marked as modified');
+
+            // The status register is the other way a ROM looks at the chip.
+            const fb2 = new BetaDisk();
+            fb2.createBlankDisk('TRD');
+            fb2.write(0x1F, 0xF0);
+            let p2 = 0;
+            while (fb2.formatting && p2 < 20000) { fb2.read(0x1F); p2++; }
+            assert(p2 === BetaDisk.FORMAT_POLL_LIMIT,
+                   'polling the status register ends it just the same', String(p2));
+        }
+
+        section('BetaDisk - but a format being fed is never cut short');
+
+        {
+            // The deadline must not be a limit on the GAP between bytes: MDOS
+            // polls the status a long way past 4096 times before its first byte,
+            // and a between-bytes limit aborted its format at track 2. One byte
+            // delivered takes the deadline off for good.
+            const fb = new BetaDisk();
+            fb.createBlankDisk('TRD');
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            const stream = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 16, firstSector: 1,
+                sizeCode: 1, fill: 0xE5,
+            });
+            for (let i = 0; i < stream.length; i++) {
+                fb.write(0x7F, stream[i]);
+                // Poll far more than the limit between every single byte.
+                if (fb.formatting) {
+                    for (let k = 0; k < 20; k++) { fb.read(0x1F); fb.read(0xFF); }
+                }
+            }
+            assert(fb.lastFormat && fb.lastFormat.written === 16,
+                   'the whole track is formatted despite 250,000 polls',
+                   JSON.stringify(fb.lastFormat));
+            assert((fb.status & fb.LOST_DATA) === 0, 'and nothing is reported lost');
+
+            // One byte then silence: the next command ends it, not the deadline.
+            const fb2 = new BetaDisk();
+            fb2.createBlankDisk('TRD');
+            fb2.write(0x1F, 0xF0);
+            fb2.write(0x7F, 0x4E);
+            for (let k = 0; k < 10000; k++) fb2.read(0x1F);
+            assert(fb2.formatting === true,
+                   'a track with one byte in it stays open however long the host polls');
+            fb2.write(0x1F, 0xD0);
+            assert(fb2.formatting === false, 'and the next command closes it');
+        }
+
+        section('PlusDDisk - the same deadline, the same exemption');
+
+        {
+            const fd = new PlusDDisk();
+            fd.createBlankDisk('FMT');
+            const before = fd.currentDisk.diskData.slice(0, 5120);
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+            fd.write(0xE3, 0xF0);
+            let polls = 0;
+            while (fd.formatting && polls < 20000) { fd.read(0xE3); polls++; }
+            assert(polls === PlusDDisk.FORMAT_POLL_LIMIT,
+                   'an unfed track ends after the poll limit', String(polls));
+            assert(fd.intrq === true && (fd.status & fd.LOST_DATA) !== 0,
+                   'with an interrupt and lost data');
+            assert(fd.currentDisk.diskData.slice(0, 5120).every((v, i) => v === before[i]),
+                   'and the disk untouched');
+
+            // The +D's control register at $EF is the third place a ROM looks.
+            const fd2 = new PlusDDisk();
+            fd2.createBlankDisk('FMT');
+            fd2.write(0xE3, 0xF0);
+            let p2 = 0;
+            while (fd2.formatting && p2 < 20000) { fd2.read(0xEF); p2++; }
+            assert(p2 === PlusDDisk.FORMAT_POLL_LIMIT,
+                   'reading the control register counts too', String(p2));
+
+            // Fed, and polled far past the limit between bytes.
+            const fd3 = new PlusDDisk();
+            fd3.createBlankDisk('FMT');
+            fd3.drive = 0; fd3.side = 0; fd3.track = 0;
+            fd3.currentDisk.headTrack = 0;
+            fd3.write(0xE3, 0xF0);
+            for (const b of formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0xE5,
+            })) {
+                fd3.write(0xFB, b);
+                if (fd3.formatting) for (let k = 0; k < 20; k++) fd3.read(0xE3);
+            }
+            assert(fd3.lastFormat && fd3.lastFormat.written === 10,
+                   'a fed format completes whatever the polling',
+                   JSON.stringify(fd3.lastFormat));
+        }
+
+        section('With a rotation clock the deadline is time, not poll counting');
+
+        {
+            // The poll counter above is the fallback for a controller with no
+            // machine around it. Given the disk's own clock — which Spectrum does
+            // for all four interfaces — the deadline becomes the real one: a
+            // revolution. These drive the clock by hand, so "a revolution later"
+            // means exactly that and not "after enough frames".
+            const REV = revolutionTStates(69888);
+            let t = 0;
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            const before = fb.currentDisk.diskData.slice(0, 4096);
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF8);
+            assert(fb.formatting === true, 'the Write Track opens a track');
+
+            // Time standing still: no amount of polling may end it. This is the
+            // half the poll counter gets wrong — it would have given up at 4096.
+            for (let k = 0; k < 10000; k++) { fb.read(0xFF); fb.read(0x1F); }
+            assert(fb.formatting === true,
+                   '20,000 polls at the same instant do not end it — time has not passed');
+            t = REV - 1;
+            fb.read(0xFF);
+            assert(fb.formatting === true, 'nor does a revolution less one T-state');
+            t = REV;
+            fb.read(0xFF);
+            assert(fb.formatting === false, 'and a whole revolution does, on the first poll');
+            assert(fb.intrq === true, 'raising the interrupt the ROM is waiting for');
+            assert((fb.status & fb.LOST_DATA) !== 0, 'with lost data reported');
+            assert(fb.lastFormat.found === 0 && fb.lastFormat.written === 0,
+                   'nothing laid down', JSON.stringify(fb.lastFormat));
+            assert(Math.abs(fb.lastFormat.revolutions - 1) < 1e-9,
+                   'and lastFormat says it took one revolution',
+                   String(fb.lastFormat.revolutions));
+            assert(fb.currentDisk.diskData.slice(0, 4096).every((v, i) => v === before[i]),
+                   'the disk byte for byte what it was');
+        }
+
+        section('A Write Track begins on the index, not where the command landed');
+
+        {
+            // The command above was issued at t=0, which is INSIDE an index pulse
+            // — so there was nothing to wait for and the write began at once.
+            // That is the easy case. A command landing anywhere else has to wait:
+            // the chip asserts DRQ immediately so the host can have its first byte
+            // ready, holds it there, and starts writing when the hole comes round.
+            // So the command spans one to two revolutions where the WRITE spans
+            // exactly one, and `lastFormat` reports the two separately.
+            const REV = revolutionTStates(69888);
+            let t = Math.floor(REV * 0.4);
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            assert(fb.formatting === true, 'the track opens four tenths of a turn in');
+
+            // Not fed at all, which is precisely what a TR-DOS SAVE does: it opens
+            // the track and waits for the interrupt the index gives it. The window
+            // opens at the index and closes one revolution later, so the wait is
+            // 0.6 + 1.0 turns rather than the 1.0 it used to be.
+            t = 2 * REV - 1;
+            fb.read(0xFF);
+            assert(fb.formatting === true,
+                   'a revolution after the COMMAND is not enough — the window opens later');
+            t = 2 * REV;
+            fb.read(0xFF);
+            assert(fb.formatting === false, 'and it closes at the next index, two turns in');
+            assert(Math.abs(fb.lastFormat.indexWait - 0.6) < 1e-9,
+                   'indexWait is the six tenths it spent waiting',
+                   String(fb.lastFormat.indexWait));
+            assert(Math.abs(fb.lastFormat.revolutions - 1) < 1e-9,
+                   'and revolutions is the write itself: exactly one, wherever it began',
+                   String(fb.lastFormat.revolutions));
+        }
+
+        {
+            // A command landing ON the pulse waits for nothing.
+            const REV = revolutionTStates(69888);
+            let t = 0;
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.write(0x1F, 0xF0);
+            t = REV;
+            fb.read(0xFF);
+            assert(fb.lastFormat && fb.lastFormat.indexWait === 0,
+                   'a command issued on the index pulse itself waits no time at all',
+                   fb.lastFormat ? String(fb.lastFormat.indexWait) : '(no format)');
+        }
+
+        {
+            // Cut short DURING the wait: the window never opened, so the write
+            // took no time — and must report that as zero, not as the negative
+            // the subtraction gives. A negative here used to mean something very
+            // different (a feed that beat the medium and filled the track before
+            // the window opened) and that is now impossible by construction,
+            // since the byte stream is held to the index too.
+            const REV = revolutionTStates(69888);
+            let t = Math.floor(REV * 0.3);
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            t = Math.floor(REV * 0.5);          // still waiting for the index
+            fb.write(0x1F, 0xD0);               // Force Interrupt
+            assert(fb.formatting === false, 'a Force Interrupt during the wait closes it');
+            assert(fb.lastFormat.revolutions === 0,
+                   'and the write is reported as taking no time, not a negative time',
+                   String(fb.lastFormat.revolutions));
+            assert(Math.abs(fb.lastFormat.indexWait - 0.7) < 1e-9,
+                   'while indexWait still says how long it had been waiting',
+                   String(fb.lastFormat.indexWait));
+        }
+
+        {
+            // THE POLLED BYTE RATE. The Opus and Didaktik have their DRQ paced by
+            // Spectrum; a polled interface had nothing pacing it at all, and
+            // TR-DOS's feed loop comes round every ~57 T-states where the medium
+            // gives a byte 111.8. It filled a whole track in half a revolution —
+            // which went unnoticed until the window was anchored to the index and
+            // `revolutions` came out NEGATIVE, the buffer having filled before the
+            // window opened. The chip holds DRQ down between bytes now, on the
+            // port TR-DOS actually polls ($FF bit 6), not just in the status
+            // register.
+            const REV = revolutionTStates(69888);
+            const BYTE = REV / TRACK_BYTES_MFM;
+            let t = Math.floor(REV * 0.4);
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            assert((fb.read(0xFF) & 0x40) !== 0,
+                   'the chip asks for its first byte at once, index or no index');
+            fb.write(0x7F, 0x4E);
+            assert((fb.read(0xFF) & 0x40) === 0,
+                   'and then holds DRQ down — the index it writes from has not arrived');
+            t = REV - 1;
+            assert((fb.read(0xFF) & 0x40) === 0, 'still down one T-state before it');
+            t = REV;
+            assert((fb.read(0xFF) & 0x40) !== 0,
+                   'and asks for the second byte AT the index, where writing starts');
+            fb.write(0x7F, 0x4E);
+            assert((fb.read(0xFF) & 0x40) === 0, 'then down again for a byte time');
+            t = REV + Math.ceil(BYTE);
+            assert((fb.read(0xFF) & 0x40) !== 0,
+                   'and up a byte time later: one byte per byte, not one per poll');
+        }
+
+        {
+            // THE TRAP THIS SECTION EXISTS FOR. The deadline was first written
+            // with "has an index pulse been crossed since the last byte", which
+            // is not the same question as "has a revolution passed": a byte
+            // landing at 0.97 of a revolution crosses a pulse a thirtieth of a
+            // turn later. TR-DOS formatted 81 tracks and then wrote 196 bytes of
+            // the 82nd. So a format is fed across an index boundary here.
+            const REV = revolutionTStates(69888);
+            let t = Math.floor(REV * 0.97);
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            const stream = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 16, firstSector: 1,
+                sizeCode: 1, fill: 0xE5,
+            });
+            // A realistic feed: TR-DOS goes about 57 T-states between bytes, so
+            // the whole track crosses the index boundary a third of the way in.
+            for (let i = 0; i < stream.length; i++) {
+                t += 57;
+                fb.write(0x7F, stream[i]);
+                if (fb.formatting) { fb.read(0x1F); fb.read(0xFF); }
+            }
+            assert(fb.lastFormat && fb.lastFormat.found === 16,
+                   'all sixteen sectors are streamed across an index boundary',
+                   JSON.stringify(fb.lastFormat));
+            assert(fb.lastFormat.written === 16, 'and all sixteen land');
+            assert((fb.status & fb.LOST_DATA) === 0, 'with nothing reported lost');
+            assert(fb.lastFormat.revolutions < 1,
+                   'the whole track inside one revolution, as a real chip gives it',
+                   String(fb.lastFormat.revolutions));
+        }
+
+        {
+            // A host slower than the medium is not cut off mid-track either: the
+            // Opus and MDOS both take about 1.15 revolutions to feed one, so a
+            // deadline measured from the COMMAND rather than the last byte would
+            // break two formats that work.
+            const REV = revolutionTStates(69888);
+            let t = 0;
+            const fd = new PlusDDisk();
+            fd.setRotationClock(() => t, REV);
+            fd.createBlankDisk('FMT');
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+            fd.write(0xE3, 0xF0);
+            for (const b of formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0xE5,
+            })) {
+                t += 130;          // the Opus's measured byte cost
+                fd.write(0xFB, b);
+                if (fd.formatting) fd.read(0xE3);
+            }
+            assert(fd.lastFormat && fd.lastFormat.written === 10,
+                   'a format fed slower than the medium still completes',
+                   JSON.stringify(fd.lastFormat));
+            assert(fd.lastFormat.revolutions > 1,
+                   '  having taken longer than a revolution to do it',
+                   String(fd.lastFormat.revolutions));
+
+            // But a track abandoned half way IS closed, and what arrived is kept.
+            let t2 = 0;
+            const fd2 = new PlusDDisk();
+            fd2.setRotationClock(() => t2, REV);
+            fd2.createBlankDisk('FMT');
+            fd2.drive = 0; fd2.side = 0; fd2.track = 0;
+            fd2.currentDisk.headTrack = 0;
+            fd2.write(0xE3, 0xF0);
+            const half = formatTrackStream({
+                cylinder: 0, head: 0, sectorsPerTrack: 10, firstSector: 1,
+                sizeCode: 2, fill: 0xE5,
+            });
+            for (let i = 0; i < 3000; i++) { t2 += 130; fd2.write(0xFB, half[i]); }
+            assert(fd2.formatting === true, 'a half-fed track is still open');
+            t2 += REV;
+            fd2.read(0xE3);
+            assert(fd2.formatting === false, 'a revolution of silence closes it');
+            assert((fd2.status & fd2.LOST_DATA) !== 0, 'reporting lost data');
+            assert(fd2.lastFormat.written > 0 && fd2.lastFormat.written < 10,
+                   'and the sectors that did arrive are kept',
+                   JSON.stringify(fd2.lastFormat));
+        }
+
+        section('The index pulse is the disk going round, not one read in sixteen');
+
+        {
+            const REV = revolutionTStates(69888);
+            const W = indexPulseTStates(REV);
+            let t = 0;
+            const fb = new BetaDisk();
+            fb.setRotationClock(() => t, REV);
+            fb.createBlankDisk('TRD');
+            fb.write(0x1F, 0x00);          // Restore: a Type I command
+            assert(fb.lastCmdType === 1, 'a Type I command is in the status register');
+
+            t = 0;
+            assert((fb.read(0x1F) & fb.INDEX) !== 0, 'at the index the bit is set');
+            t = W - 1;
+            assert((fb.read(0x1F) & fb.INDEX) !== 0, 'and to the end of the pulse');
+            t = W + 1;
+            assert((fb.read(0x1F) & fb.INDEX) === 0, 'then clear');
+            t = Math.floor(REV / 2);
+            assert((fb.read(0x1F) & fb.INDEX) === 0, 'half way round, clear');
+            // The fake used to set it on every sixteenth read whatever the time.
+            let fakes = 0;
+            for (let k = 0; k < 200; k++) if (fb.read(0x1F) & fb.INDEX) fakes++;
+            assert(fakes === 0,
+                   'and 200 reads at the same instant never invent one',
+                   String(fakes));
+            t = REV * 5;
+            assert((fb.read(0x1F) & fb.INDEX) !== 0, 'five revolutions on, there it is again');
+
+            // Without a clock, the old fake is still there — a bare controller has
+            // no rotation to report and a presence check still has to terminate.
+            const plain = new BetaDisk();
+            plain.createBlankDisk('TRD');
+            plain.write(0x1F, 0x00);
+            assert(plain.rotation === null, 'a controller given no clock has none');
+            let seen = 0;
+            for (let k = 0; k < 32; k++) if (plain.read(0x1F) & plain.INDEX) seen++;
+            assert(seen === 2, 'and fakes one pulse every sixteenth read', String(seen));
+        }
+
+        section('Read Address answers with what is under the head');
+
+        {
+            const REV = revolutionTStates(69888);
+            let t = 0;
+            const fd = new PlusDDisk();
+            fd.setRotationClock(() => t, REV);
+            fd.createBlankDisk('FMT');
+            fd.drive = 0; fd.side = 0; fd.track = 0;
+            fd.currentDisk.headTrack = 0;
+            const readAddr = () => {
+                fd.write(0xE3, 0xC0);
+                const out = [];
+                for (let i = 0; i < 6; i++) out.push(fd.read(0xFB));
+                return out;
+            };
+            t = 0;
+            assert(readAddr()[2] === 1, 'at the index, the first sector of the track');
+            // Reading an ID costs the time to reach it: the command waits for the
+            // next one to come round. So consecutive commands report consecutive
+            // sectors even with the clock standing still — which is what real
+            // hardware does, and what `opus-test` caught when this handed back the
+            // same sector twice.
+            assert(readAddr()[2] === 2,
+                   'a second command moves on, because reading an ID costs the time to reach it');
+            assert(readAddr()[2] === 3, 'and a third moves on again');
+            assert(readAddr()[2] === 4, 'and a fourth');
+            // But the disk turning is what decides where it picks up: the head is
+            // monotone, so whichever is further on wins.
+            t = Math.floor(REV / 2);
+            assert(readAddr()[2] === 1 + Math.floor(fd.sectorsPerTrack / 2),
+                   'a command half a revolution later finds the middle sector');
+            t = REV - 1;
+            assert(readAddr()[2] === fd.sectorsPerTrack,
+                   'at the end of the revolution, the last one');
+            t = REV;
+            assert(readAddr()[2] === 1, 'and over the index, back to the first');
+            // Time going backwards must not hand back a sector already passed.
+            t = Math.floor(REV / 4);
+            assert(readAddr()[2] === 2,
+                   'the head never goes back for a sector it has passed',
+                   String(fd.currentDisk.addrSlot));
+            // A whole revolution visits every sector exactly once.
+            const seen = new Set();
+            for (let k = 0; k < fd.sectorsPerTrack * 4; k++) {
+                t = Math.floor(k * REV / (fd.sectorsPerTrack * 4));
+                seen.add(readAddr()[2]);
+            }
+            assert(seen.size === fd.sectorsPerTrack,
+                   'and a revolution passes all ten of them', String(seen.size));
+
+            // Without a clock: round robin, so a loader can still walk a track.
+            const plain = new PlusDDisk();
+            plain.createBlankDisk('FMT');
+            plain.drive = 0; plain.side = 0; plain.track = 0;
+            plain.currentDisk.headTrack = 0;
+            const nums = [];
+            for (let k = 0; k < plain.sectorsPerTrack; k++) {
+                plain.write(0xE3, 0xC0);
+                const got = [];
+                for (let i = 0; i < 6; i++) got.push(plain.read(0xFB));
+                nums.push(got[2]);
+            }
+            assert(nums.join(',') === '1,2,3,4,5,6,7,8,9,10',
+                   'an unclocked controller hands them back in turn', nums.join(','));
+        }
+
+        section('BetaDisk - a UDI track image refuses to be formatted');
+
+        {
+            // There is no UDI writer: the gaps, marks and CRCs that make a
+            // protected track what it is are not reconstructible from what a
+            // format command hands over. Say write protected, which TR-DOS
+            // understands, rather than accepting a format that goes nowhere.
+            const fb = new BetaDisk();
+            fb.createBlankDisk('TRD');
+            fb.attachTrackImage(UDILoader.parse(buildUDI([normalTrack(0, 0)])), 0);
+            fb.track = 0; fb.side = 0;
+            fb.write(0x1F, 0xF0);
+            assert((fb.status & fb.WRITE_PROTECT) !== 0, 'format: WRITE_PROTECT set');
+            assert(fb.formatting === false, 'and no stream is accepted');
+            assert(fb.intrq === true, 'the command still completes');
+        }
 
         section('PlusDDisk - Multi-drive');
 

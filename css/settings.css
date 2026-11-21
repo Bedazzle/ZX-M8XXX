@@ -319,3 +319,21 @@
 .iface-row .iface-name.wide {
     flex: 0 0 230px;
 }
+
+/* A sub-row belonging to the interface above it (the Opus drive sizes): plain
+   text, indented to sit under the checkbox label, and NOT .iface-name -- that
+   one has no font-size of its own because it is always inside a
+   .checkbox-label, so on its own it inherits the panel's heading size. */
+.iface-row .iface-sublabel {
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+    /* 8 (row) + 10 (label padding) + 13 (box) + 5 (gap) = where the text of the
+       checkbox above starts, so the two line up. */
+    margin-left: 28px;
+}
+
+.iface-row select {
+    font-size: 11px;
+    padding: 1px 4px;
+}

@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Disk Rotation Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+    </style>
+</head>
+<body>
+    <h2>Disk Rotation Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+
+    <script type="module">
+        // The disk turns whether the host is ready or not, and that is what times
+        // the index pulse, the byte rate and which sector is under the head. See
+        // core/loaders/disk-rotation.js.
+        import {
+            FRAMES_PER_REVOLUTION, REVOLUTION_MS, INDEX_PULSE_MS,
+            revolutionTStates, indexPulseTStates, byteTStates,
+            angle, indexActive, headByte, sectorUnderHead,
+            nextIndexAt, indexPulsesBetween, byteDueAt, bytesSince,
+            absoluteSlot, createRotationClock
+        } from '../core/loaders/disk-rotation.js';
+        import { TRACK_BYTES_MFM } from '../core/loaders/mfm-track.js';
+        import { OPUS_DRQ_BYTE_TSTATES } from '../core/constants.js';
+
+        const TEST_VERSION = '1.0.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div');
+            d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+
+        // The two machines this actually runs on.
+        const TPF_48 = 69888, TPF_128 = 70908;
+        const REV48 = revolutionTStates(TPF_48);
+        const REV128 = revolutionTStates(TPF_128);
+
+        section('A revolution is ten frames, not a constant someone wrote down');
+        {
+            assert(FRAMES_PER_REVOLUTION === 10, '300 rpm against 50 Hz frames is ten frames');
+            assert(REVOLUTION_MS === 200, 'which is 200 ms');
+            assert(REV48 === 698880, 'a 48K revolution is 698880 T', String(REV48));
+            assert(REV128 === 709080, 'a 128K revolution is 709080 T', String(REV128));
+            // The point of deriving it: the figure follows the machine instead of
+            // being right for one of them.
+            assert(REV128 > REV48, 'and the faster clock gives the longer count');
+            assert(Math.abs(REV48 / TPF_48 - REV128 / TPF_128) < 1e-9,
+                   'while both are the same ten frames');
+        }
+
+        section('The byte rate follows from the geometry');
+        {
+            const bt = byteTStates(REV48);
+            assert(Math.abs(bt - 111.82) < 0.01, 'a byte is 111.8 T on a 48K', bt.toFixed(3));
+            // This is the cross-check worth having: core/constants.js carries 112
+            // as the Opus DRQ interval, written down from the 250 kbit/s figure.
+            // Deriving it from a revolution and a track has to agree, or one of
+            // the two is wrong.
+            assert(Math.round(bt) === OPUS_DRQ_BYTE_TSTATES,
+                   'and rounds to the 112 in core/constants.js',
+                   `${Math.round(bt)} vs ${OPUS_DRQ_BYTE_TSTATES}`);
+            assert(Math.abs(byteTStates(REV48, 6250) * 6250 - REV48) < 1e-6,
+                   'a whole track of bytes is exactly one revolution');
+            // 250 kbit/s MFM is 31250 bytes a second, five revolutions a second.
+            assert(Math.abs(TRACK_BYTES_MFM * 5 - 31250) < 1e-9,
+                   '6250 bytes five times a second is the 250 kbit/s data rate');
+            const bt1024 = byteTStates(REV48, 12500);
+            assert(bt1024 < bt, 'a denser track means a shorter byte time');
+        }
+
+        section('Where the head is');
+        {
+            assert(angle(0, REV48) === 0, 'the index pulse is at angle 0 by definition');
+            assert(Math.abs(angle(REV48 / 2, REV48) - 0.5) < 1e-9, 'half a revolution is 0.5');
+            assert(angle(REV48, REV48) === 0, 'and a whole one wraps back to 0');
+            assert(Math.abs(angle(REV48 * 3.25, REV48) - 0.25) < 1e-9,
+                   'three and a quarter revolutions is a quarter');
+            assert(angle(-REV48 / 4, REV48) > 0.74 && angle(-REV48 / 4, REV48) < 0.76,
+                   'a negative time is still on the disk somewhere',
+                   String(angle(-REV48 / 4, REV48)));
+            assert(angle(1234, 0) === 0, 'and no revolution at all is not a NaN');
+        }
+
+        section('The index pulse, long enough to see and short enough to be one');
+        {
+            const w = indexPulseTStates(REV48);
+            assert(w === Math.round(REV48 * INDEX_PULSE_MS / REVOLUTION_MS),
+                   'the pulse is 1.5 ms of the revolution', String(w));
+            assert(w > 5000 && w < 5500, 'about 5240 T on a 48K', String(w));
+            assert(w / REV48 < 0.01, 'under 1% of a revolution — a pulse, not a phase',
+                   (100 * w / REV48).toFixed(2) + '%');
+            assert(indexActive(0, REV48), 'asserted at the index');
+            assert(indexActive(w - 1, REV48), 'and to the end of the pulse');
+            assert(!indexActive(w + 1, REV48), 'then gone');
+            assert(!indexActive(REV48 / 2, REV48), 'half way round there is none');
+            assert(indexActive(REV48 * 7, REV48), 'and it comes back every revolution');
+            assert(indexActive(-REV48 * 3, REV48), 'going backwards too');
+            assert(!indexActive(100, 0), 'no revolution, no pulse');
+
+            // A ROM waiting for the index polls the status register in a tight
+            // loop. The pulse has to be wide enough that such a loop cannot step
+            // over it — this is the property that makes a short pulse safe.
+            let seen = 0;
+            for (let t = 0; t < REV48; t += 200) if (indexActive(t, REV48)) seen++;
+            assert(seen >= 20, 'a loop polling every 200 T sees it ~26 times a revolution',
+                   String(seen));
+            let missed = 0;
+            for (let phase = 0; phase < 1000; phase += 7) {
+                let hit = false;
+                for (let t = phase; t < phase + REV48; t += 500) {
+                    if (indexActive(t, REV48)) { hit = true; break; }
+                }
+                if (!hit) missed++;
+            }
+            assert(missed === 0, 'and at any phase, polling every 500 T, never misses one',
+                   String(missed));
+        }
+
+        section('Which byte and which sector are under the head');
+        {
+            assert(headByte(0, REV48) === 0, 'byte 0 at the index');
+            assert(headByte(REV48 - 1, REV48) === TRACK_BYTES_MFM - 1,
+                   'the last byte at the end of the revolution',
+                   String(headByte(REV48 - 1, REV48)));
+            assert(headByte(REV48 / 2, REV48) === TRACK_BYTES_MFM / 2,
+                   'and the middle byte half way round');
+            let mono = true, prev = -1;
+            for (let t = 0; t < REV48; t += REV48 / 500) {
+                const b = headByte(t, REV48);
+                if (b < prev || b < 0 || b >= TRACK_BYTES_MFM) mono = false;
+                prev = b;
+            }
+            assert(mono, 'the head moves forward through the track and never off it');
+
+            // Read Address answers with the sector coming round next, so a
+            // revolution visits every one of them, in order, exactly once.
+            const n = 16;
+            const slots = [];
+            for (let t = 0; t < REV48; t += REV48 / (n * 8)) {
+                const s = sectorUnderHead(t, REV48, n);
+                if (slots[slots.length - 1] !== s) slots.push(s);
+            }
+            assert(slots.length === n, 'a revolution passes sixteen sectors', String(slots.length));
+            assert(slots.every((s, i) => s === i), 'in numerical order', slots.join(','));
+            assert(sectorUnderHead(0, REV48, 9) === 0, 'MDOS geometry starts at sector slot 0');
+            assert(sectorUnderHead(REV48 - 1, REV48, 9) === 8, 'and ends at the ninth');
+            assert(sectorUnderHead(100, REV48, 0) === 0, 'no sectors, no answer to give');
+
+            // Modulo a revolution cannot say whether two answers are the same
+            // sector or the same sector a revolution later, and Read Address needs
+            // that difference: the head only goes forward, and a command waiting
+            // for the next ID must not be handed one the disk has already passed.
+            assert(absoluteSlot(0, REV48, 10) === 0, 'slot 0 at the index');
+            assert(absoluteSlot(REV48 - 1, REV48, 10) === 9, 'slot 9 at the end of the turn');
+            assert(absoluteSlot(REV48, REV48, 10) === 10,
+                   'and slot 10 a revolution later, not slot 0 again',
+                   String(absoluteSlot(REV48, REV48, 10)));
+            assert(absoluteSlot(REV48 * 3.5, REV48, 10) === 35, 'counting on through turns');
+            assert(absoluteSlot(REV48 * 7, REV48, 10) % 10 === sectorUnderHead(REV48 * 7, REV48, 10),
+                   'and it agrees with the modular answer once reduced');
+            let backwards = 0, prevSlot = -1;
+            for (let k = 0; k <= 400; k++) {
+                const s = absoluteSlot(k * REV48 / 37, REV48, 10);
+                if (s < prevSlot) backwards++;
+                prevSlot = s;
+            }
+            assert(backwards === 0, 'it never goes backwards', String(backwards));
+            assert(absoluteSlot(100, 0, 10) === 0 && absoluteSlot(100, REV48, 0) === 0,
+                   'and degenerate geometry answers rather than dividing by zero');
+        }
+
+        section('When the next index comes — the Write Track deadline');
+        {
+            assert(nextIndexAt(0, REV48) === REV48, 'from the index itself, one revolution');
+            assert(nextIndexAt(1, REV48) === REV48, 'and from just after it, the same one');
+            assert(nextIndexAt(REV48, REV48) === REV48 * 2, 'from a pulse, the following one');
+            assert(nextIndexAt(REV48 * 1.5, REV48) === REV48 * 2, 'mid-revolution, the next');
+            let late = 0;
+            for (let t = 0; t < REV48 * 3; t += 1234) if (nextIndexAt(t, REV48) <= t) late++;
+            assert(late === 0, 'it is always strictly in the future', String(late));
+
+            assert(indexPulsesBetween(0, REV48 / 2, REV48) === 0, 'none within a revolution');
+            assert(indexPulsesBetween(0, REV48, REV48) === 1, 'one at the revolution');
+            assert(indexPulsesBetween(0, REV48 * 3 + 5, REV48) === 3, 'three over three');
+            assert(indexPulsesBetween(REV48 * 2, REV48 * 2, REV48) === 0, 'and none in no time');
+            assert(indexPulsesBetween(5, 4, REV48) === 0, 'time going backwards gives none');
+
+            // THE property the TR-DOS SAVE hang came down to: a command opened at
+            // any moment is over within one revolution, whatever the host does.
+            let unending = 0;
+            for (let start = 0; start < REV48; start += REV48 / 97) {
+                if (indexPulsesBetween(start, start + REV48, REV48) < 1) unending++;
+            }
+            assert(unending === 0,
+                   'a Write Track opened at ANY phase meets an index within one revolution',
+                   String(unending));
+        }
+
+        section('The byte schedule is absolute, which is what makes a track fit');
+        {
+            const start = 123456;
+            assert(byteDueAt(start, 0, REV48) === start, 'byte 0 is due at once');
+            assert(byteDueAt(start, 1, REV48) === start + 112, 'byte 1 a byte-time later',
+                   String(byteDueAt(start, 1, REV48) - start));
+            // A whole track is due within the revolution it started in -- which is
+            // the arithmetic that says a format takes exactly one revolution. An
+            // emulator that restarts the byte timer on each service instead drifts
+            // past the index and writes a track that could not physically fit.
+            const whole = byteDueAt(start, TRACK_BYTES_MFM, REV48) - start;
+            assert(Math.abs(whole - REV48) <= 1, 'and the whole 6250 come to one revolution',
+                   `${whole} vs ${REV48}`);
+            assert(byteDueAt(start, 100, REV48) - byteDueAt(start, 99, REV48) >= 111,
+                   'consecutive bytes are a byte-time apart');
+            // Independent of when anything was serviced: that is the whole point.
+            assert(byteDueAt(start, 500, REV48) === byteDueAt(start, 500, REV48),
+                   'the due time of a byte depends only on the start and the index');
+
+            assert(bytesSince(start, start, REV48) === 0, 'no bytes have gone past yet');
+            assert(bytesSince(start, start + REV48, REV48) === TRACK_BYTES_MFM,
+                   'a revolution later the whole track has',
+                   String(bytesSince(start, start + REV48, REV48)));
+            assert(bytesSince(start, start - 50, REV48) === 0, 'and none before it began');
+            let roundTrips = 0;
+            for (const n of [1, 2, 17, 500, 3125, 6249]) {
+                if (bytesSince(start, byteDueAt(start, n, REV48), REV48) === n) roundTrips++;
+            }
+            assert(roundTrips === 6, 'the two directions agree at every byte tried',
+                   String(roundTrips));
+        }
+
+        section('The clock a controller is given');
+        {
+            assert(createRotationClock(null, REV48) === null,
+                   'no time source means no clock at all — not a fake one');
+            assert(createRotationClock(undefined, undefined) === null,
+                   'and neither does nothing');
+
+            // Read LIVE: the machine can change under a controller, and a clock
+            // that captured its revolution length at construction would then be
+            // timing the wrong machine.
+            let t = 0, tpf = TPF_48;
+            const clk = createRotationClock(() => t, () => revolutionTStates(tpf));
+            assert(clk.revolution() === REV48, 'it starts on the 48K revolution');
+            tpf = TPF_128;
+            assert(clk.revolution() === REV128, 'and follows a machine change',
+                   String(clk.revolution()));
+            tpf = TPF_48;
+
+            t = 0;
+            assert(clk.indexActive(), 'at time 0 the index is under the hole');
+            t = REV48 / 2;
+            assert(!clk.indexActive(), 'half way round it is not');
+            assert(Math.abs(clk.angle() - 0.5) < 1e-9, 'and the angle says so');
+            assert(clk.headByte() === TRACK_BYTES_MFM / 2, 'with the middle byte under the head');
+            assert(clk.sectorUnderHead(16) === 8, 'and the ninth of sixteen sectors');
+            assert(clk.absoluteSlot(16) === 8, 'the eighth slot since time 0');
+            t = REV48 * 2 + Math.floor(REV48 / 2);
+            assert(clk.sectorUnderHead(16) === 8, 'the same sector two turns later');
+            assert(clk.absoluteSlot(16) === 40, '  but a different slot, which is the point',
+                   String(clk.absoluteSlot(16)));
+            t = REV48 * 2 + 5;
+            assert(clk.sinceIndex(0) === 2, 'two index pulses since time 0',
+                   String(clk.sinceIndex(0)));
+            assert(clk.bytesSince(REV48 * 2) === bytesSince(REV48 * 2, t, REV48),
+                   'and the byte count agrees with the bare function');
+
+            // The two a Write Track needs: where its revolution starts, and how
+            // long it may take over each byte. Both follow the machine like the
+            // rest, which is the only reason they belong on the clock rather than
+            // being worked out once by whoever asks.
+            t = Math.floor(REV48 * 0.4);
+            assert(clk.nextIndex() === REV48, 'the next index is where a format will begin',
+                   String(clk.nextIndex()));
+            assert(clk.nextIndex() === nextIndexAt(t, REV48),
+                   'and agrees with the bare function');
+            assert(Math.abs(clk.byteTime() - byteTStates(REV48)) < 1e-12,
+                   'the byte time is the geometry, not a constant');
+            tpf = TPF_128;
+            assert(Math.abs(clk.byteTime() - byteTStates(REV128)) < 1e-12,
+                   'and it follows the machine too — a 128K byte is longer',
+                   String(clk.byteTime()));
+            assert(clk.byteTime() > byteTStates(REV48),
+                   '  measurably longer, not merely recomputed');
+            tpf = TPF_48;
+
+            // A plain number for the revolution works too, for a fixed machine.
+            const fixed = createRotationClock(() => 0, REV48);
+            assert(fixed.revolution() === REV48, 'a number serves as well as a function');
+
+            // ELAPSED TIME IS NOT PULSES CROSSED, and a deadline wants the first.
+            // The Write Track deadline was written with sinceIndex() and cut a
+            // TR-DOS format short: the last byte of a track landed at 0.97 of a
+            // revolution, a boundary came round a thirtieth of a turn later, and
+            // 196 bytes of the track had been written. Both are here so the
+            // difference cannot quietly go away.
+            t = Math.floor(REV48 * 0.97);
+            const from = t;
+            t = Math.floor(REV48 * 1.0001);
+            assert(clk.sinceIndex(from) === 1,
+                   'a pulse is crossed a thirtieth of a revolution after 0.97',
+                   String(clk.sinceIndex(from)));
+            assert(clk.revolutionsSince(from) < 0.05,
+                   '  while barely any time has passed',
+                   clk.revolutionsSince(from).toFixed(4));
+            t = from + REV48;
+            assert(Math.abs(clk.revolutionsSince(from) - 1) < 1e-9,
+                   'a revolution later it is exactly one',
+                   clk.revolutionsSince(from).toFixed(6));
+            t = from + REV48 * 2;
+            assert(Math.abs(clk.revolutionsSince(from) - 2) < 1e-9, 'and two after two');
+            t = from;
+            assert(clk.revolutionsSince(from) === 0, 'no time, no revolutions');
+        }
+
+        log('\n=== COMPLETE ===', 'section');
+    </script>
+</body>
+</html>
