@@ -128,7 +128,7 @@
         }
 
         async function runMachineTests() {
-            section('Real ROMs: TOS A.2 on a 128K');
+            section('Real ROMs: TOS A.2 on a 128K, CP/M on a 48K');
             const ok = async (u) => fetch(u).then(r => r.ok, () => false);
             if (!(await ok('../roms/fdd3stavi.rom')) || !(await ok('../roms/fdd3000-boot.rom')) ||
                 !(await ok('../headless/fdd3000/tos.dsk'))) {
@@ -195,6 +195,48 @@
             for (let i = 0; i < 2048; i++) if (sp.memory.read(0x4000 + i) === pat(i)) same++;
             assert(same === 2048, 'LOAD * reads back what SAVE * wrote', same + '/2048 bytes');
             sp.fdd3000.fdc.onDiskActivity = null;
+
+            // CP/M: boot Monitor Emulator (TOS), swap in the CP/M disk and reset
+            // the station only. Monitor draws in TC2048 64-column hi-res (odd
+            // columns in the second screen at $6000), so only half of it shows
+            // on a Spectrum; the checks go by disk and memory, not by text.
+            // On the 48K: Monitor tells a Timex from a Spectrum by OUT 255,0: IN 255
+            // (0 = Timex), and on our 128K that IN lands on a screen fetch of 0.
+            if (await ok('../headless/fdd3000/monitor.dsk') && await ok('../headless/fdd3000/cpm.dsk')) {
+                await zx.ready({ machine: '48k' });
+                zx.pause();
+                sp.betaDiskEnabled = false; sp.plusDEnabled = false; sp.fdd3000Enabled = true;
+                sp.updateBetaDiskPagingFlag();
+                let in255 = null;
+                const pr = sp.cpu.portRead;
+                sp.cpu.portRead = (p, t) => {
+                    const v = pr(p, t);
+                    if ((p & 0xFF) === 0xFF && sp._currentInstrPC === 0x34A8 && in255 === null) in255 = v;
+                    return v;
+                };
+                await zx.loadFile(await rd('../headless/fdd3000/monitor.dsk'), 'monitor.dsk');
+                zx.pause();
+                sp.fdd3000.reset(false); await zx.runFrames(300);
+                sp.reset(); await zx.runFrames(900);
+                sp.cpu.portRead = pr;
+                assert(in255 === 0xFF, 'Monitor sees a Spectrum (IN 255 after OUT 255,0 = 255)', 'IN 255 = ' + in255);
+                const monPc = sp.cpu.pc;
+                assert(monPc >= 0x8000, 'Monitor Emulator runs (TOS loads it)', 'PC ' + monPc.toString(16));
+                await zx.loadFile(await rd('../headless/fdd3000/cpm.dsk'), 'cpm.dsk');
+                zx.pause();
+                sp.fdd3000.reset(false);             // station only
+                await zx.runFrames(1500);
+                assert(sp.fdd3000.cpu.pc >= 0xE000, 'CP/M runs in the station (BIOS high in its RAM)',
+                    'station PC ' + sp.fdd3000.cpu.pc.toString(16));
+                let reads = 0;
+                sp.fdd3000.fdc.onDiskActivity = (t) => { if (t === 'read') reads++; };
+                await zx.typeText('dir\n', { hold: 4, gap: 6 });
+                await zx.runFrames(600);
+                sp.fdd3000.fdc.onDiskActivity = null;
+                assert(reads > 0, 'DIR reads the directory', reads + ' sector reads');
+            } else {
+                skip('CP/M: headless/fdd3000/monitor.dsk and cpm.dsk not present');
+            }
             sp.fdd3000Enabled = prev.en; sp.betaDiskEnabled = prev.beta; sp.plusDEnabled = prev.plusD;
             sp.updateBetaDiskPagingFlag();
         }
