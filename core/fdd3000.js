@@ -38,6 +38,10 @@ export const FDD3000_RAM_SIZE = 8192;       // Spectrum-side interface RAM
 export const FDD3000_BOOT_SIZE = 2048;      // station boot ROM
 export const FDD3000_PAGE_IN = [0x0000, 0x0008];
 export const FDD3000_PAGE_OUT = 0x0604;
+// boot(): a station that has read port $20 this many times in a row, with no
+// other I/O, is waiting for the Spectrum; and the most it may take to get there
+export const FDD3000_IDLE_POLLS = 3000;
+export const FDD3000_BOOT_MAX_STEPS = 8000000;
 // Station instructions between a command ending and INTRQ rising (see Fdd3000Fdc)
 export const FDD3000_INTRQ_DELAY = 64;
 
@@ -208,6 +212,7 @@ export class Fdd3000 {
         this.fdd2ti = 0;        // station -> Spectrum
         this.bootPaged = true;
         this._counter = 0;
+        this._idlePolls = 0;
 
         const self = this;
         this.cpu = new Z80({
@@ -270,6 +275,48 @@ export class Fdd3000 {
         this.fdc.selected = false;
     }
 
+    /**
+     * "FDD3000 reset" without the wait: restart the station and run it on its
+     * own until it sits polling port $20 for the Spectrum (TOS or CP/M loaded,
+     * or nothing to boot). The boot ROM's delay loops alone take some 3 million
+     * instructions — seconds of real time otherwise. Returns the steps taken.
+     */
+    boot(maxSteps = FDD3000_BOOT_MAX_STEPS) {
+        this.reset(false);
+        this._idlePolls = 0;
+        let n = 0;
+        while (n < maxSteps && this._idlePolls < FDD3000_IDLE_POLLS) {
+            this._stepOnce();
+            n++;
+        }
+        return n;
+    }
+
+    /** Is the station waiting for the Spectrum (no disk or other I/O lately)? */
+    isIdle() { return this._idlePolls >= FDD3000_IDLE_POLLS; }
+
+    /**
+     * What a DSK holds, by its boot sector (track 0, sector 0): 'tos' (TOS
+     * system: 01 C3 00 60...), 'cpm' (CP/M boot: ED 56 = IM 1), or 'none'.
+     */
+    static diskKind(dsk) {
+        const s = dsk && dsk.readSector(0, 0, 0);
+        if (!s) return 'none';
+        if (s[0] === 0x01 && s[1] === 0xC3) return 'tos';
+        if (s[0] === 0xED && s[1] === 0x56) return 'cpm';
+        return 'none';
+    }
+
+    /** A TOS disk carrying Monitor Emulator (the Spectrum's CP/M terminal) */
+    static isMonitorDisk(dsk) {
+        if (Fdd3000.diskKind(dsk) !== 'tos') return false;
+        for (let s = 0; s < 16; s++) {
+            const d = dsk.readSector(4, 0, s);
+            if (d && String.fromCharCode(...d).includes('MONITOR')) return true;
+        }
+        return false;
+    }
+
     /** Run the station for one Spectrum instruction (FUSE: 1, every 5th: 2). */
     step() {
         this._stepOnce();
@@ -298,17 +345,18 @@ export class Fdd3000 {
 
     _stationIn(port) {
         switch ((port & 0xFF) >> 5) {
-            case 1: return this.ti2fdd | (this.fdc.drq ? 0x80 : 0);
-            case 6: return this.fdc.readRegister(port & 3);
+            case 1: this._idlePolls++; return this.ti2fdd | (this.fdc.drq ? 0x80 : 0);
+            case 6: this._idlePolls = 0; return this.fdc.readRegister(port & 3);
             default: return 0xFF;      // serial ports, write-only config
         }
     }
 
     _stationOut(port, val) {
         switch ((port & 0xFF) >> 5) {
+            // not activity: the waiting loops toggle this ($00/$40) themselves
             case 1: this.fdd2ti = val; break;
-            case 6: this.fdc.writeRegister(port & 3, val); break;
-            case 7: this._writeConfig(val); break;
+            case 6: this._idlePolls = 0; this.fdc.writeRegister(port & 3, val); break;
+            case 7: this._idlePolls = 0; this._writeConfig(val); break;
             default: break;            // serial ports: not emulated
         }
     }

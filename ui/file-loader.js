@@ -3,6 +3,7 @@ import { hex16 } from '../core/utils.js';
 import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
+import { Fdd3000 } from '../core/fdd3000.js';
 
 export function initFileLoader({
     getSpectrum,
@@ -311,9 +312,21 @@ export function initFileLoader({
             }
             showMessage(msg);
         } else if (result.diskInserted && result.diskType === 'fdd3') {
-            // DSK in the Timex FDD 3000 station (TOS / CP/M, no catalogue here)
-            if (!spectrum.isRunning()) spectrum.start();
-            showMessage(`DSK inserted in FDD 3000 ${String.fromCharCode(65 + (result._driveIndex || 0))}: ${result.diskName}`);
+            // DSK in the Timex FDD 3000 station (TOS / CP/M, no catalogue here).
+            // Auto load boots it: into A, or a Monitor disk added for a CP/M in A
+            const drv = result._driveIndex || 0;
+            const letter = String.fromCharCode(65 + drv);
+            const a = spectrum.fdd3000.fdc.drives[0].dsk;
+            const monitorForCpm = drv > 0 && a && Fdd3000.diskKind(a) === 'cpm' &&
+                Fdd3000.isMonitorDisk(spectrum.fdd3000.fdc.drives[drv].dsk);
+            if (autoLoaderAPI.isAutoLoadEnabled() && (drv === 0 || monitorForCpm)) {
+                const r = spectrum.fdd3000AutoBoot();
+                if (!spectrum.isRunning()) spectrum.start();
+                showMessage(`DSK inserted in FDD 3000 ${letter}: ${result.diskName}. ${r.msg}`, r.ok ? undefined : 'error');
+            } else {
+                if (!spectrum.isRunning()) spectrum.start();
+                showMessage(`DSK inserted in FDD 3000 ${letter}: ${result.diskName}`);
+            }
         } else if (result.diskInserted && result.diskType === 'opd') {
             // OPD disk inserted into the Opus Discovery
             const opdDrive = result._driveIndex || 0;

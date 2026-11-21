@@ -1101,8 +1101,12 @@ export function initInputSettings({
         document.getElementById('btnFdd3000Reset').addEventListener('click', () => {
             const sp = getSpectrum();
             if (!sp._fdd3000PagingEnabled) { showMessage('Timex FDD 3000 is off', 'error'); return; }
-            sp.fdd3000.reset(false);
-            showMessage('FDD 3000 station reset — it boots from drive A; then reset the Spectrum');
+            sp.fdd3000.boot();
+            showMessage('FDD 3000 station reset: system loaded from drive A');
+        });
+        document.getElementById('btnFdd3000Boot').addEventListener('click', () => {
+            const r = getSpectrum().fdd3000AutoBoot();
+            showMessage(r.msg, r.ok ? undefined : 'error');
         });
         updateFdd3000Status();
     }

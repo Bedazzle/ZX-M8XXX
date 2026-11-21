@@ -214,18 +214,18 @@
                     if ((p & 0xFF) === 0xFF && sp._currentInstrPC === 0x34A8 && in255 === null) in255 = v;
                     return v;
                 };
-                await zx.loadFile(await rd('../headless/fdd3000/monitor.dsk'), 'monitor.dsk');
-                zx.pause();
-                sp.fdd3000.reset(false); await zx.runFrames(300);
-                sp.reset(); await zx.runFrames(900);
+                // CP/M in A, Monitor in B: Boot does the dance by itself
+                sp.loadDSKImage(await rd('../headless/fdd3000/cpm.dsk'), 'cpm.dsk', 0);
+                sp.loadDSKImage(await rd('../headless/fdd3000/monitor.dsk'), 'monitor.dsk', 1);
+                const r = sp.fdd3000AutoBoot();
+                assert(r.ok, 'Boot with CP/M in A and Monitor in B', r.msg);
+                let f = 0;
+                for (; f < 1600 && sp._fdd3000AutoBootOff; f++) await zx.runFrames(1);
                 sp.cpu.portRead = pr;
                 assert(in255 === 0xFF, 'Monitor sees a Spectrum (IN 255 after OUT 255,0 = 255)', 'IN 255 = ' + in255);
-                const monPc = sp.cpu.pc;
-                assert(monPc >= 0x8000, 'Monitor Emulator runs (TOS loads it)', 'PC ' + monPc.toString(16));
-                await zx.loadFile(await rd('../headless/fdd3000/cpm.dsk'), 'cpm.dsk');
-                zx.pause();
-                sp.fdd3000.reset(false);             // station only
-                await zx.runFrames(1500);
+                assert(!sp._fdd3000AutoBootOff && sp.fdd3000.fdc.drives[0].name === 'cpm.dsk' &&
+                    sp.fdd3000.fdc.drives[1].name === 'monitor.dsk', 'Monitor came up, CP/M is back in A', f + ' frames');
+                await zx.runFrames(300);
                 assert(sp.fdd3000.cpu.pc >= 0xE000, 'CP/M runs in the station (BIOS high in its RAM)',
                     'station PC ' + sp.fdd3000.cpu.pc.toString(16));
                 let reads = 0;

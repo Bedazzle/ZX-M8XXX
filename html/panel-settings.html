@@ -510,7 +510,8 @@
                             <option value="fdd3stavi.rom">fdd3stavi.rom</option>
                             <option value="fdd3timex.rom">fdd3timex.rom</option>
                         </select>
-                        <button id="btnFdd3000Reset" class="control-btn iface-rom-btn" title="FDD3000 reset (as in FUSE): restart the station's Z80 from its boot ROM, which loads TOS from the disk in drive A. Then reset the Spectrum: with a system disk the second copyright line appears. CAT * lists a disk.">Reset FDD</button>
+                        <button id="btnFdd3000Boot" class="control-btn iface-rom-btn" title="Boot from drive A: FDD reset, then Spectrum reset. A CP/M disk in A is started through the Monitor Emulator terminal, which must be in drive B, C or D (Monitor boots first, then CP/M goes back into A and the station is reset). Auto load does this when a disk goes into A.">Boot</button>
+                        <button id="btnFdd3000Reset" class="control-btn iface-rom-btn" title="FDD3000 reset (as in FUSE): restart the station, which loads its system from drive A (done at once). The Spectrum is not reset: with TOS, reset it to get the second copyright line; with Monitor running, this is how CP/M is started.">Reset FDD</button>
                         <span id="fdd3000Status" class="iface-status"></span>
                     </div>
                     <div class="iface-row" id="didaktik128Row">

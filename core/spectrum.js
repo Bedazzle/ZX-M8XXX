@@ -1593,6 +1593,54 @@ import { Disassembler } from './disasm.js';
                 (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
         }
 
+        /**
+         * FDD 3000 boot, the way it is done by hand: "FDD3000 reset" (the
+         * station loads its system from drive A — run at once, see
+         * Fdd3000.boot), then reset the Spectrum. A CP/M disk in A needs the
+         * Spectrum to run the Monitor Emulator terminal first: if a Monitor disk
+         * is in B-D it goes into A for the first boot, and once Monitor is up and
+         * waiting, CP/M goes back into A and only the station is reset.
+         * Returns { ok, msg }.
+         */
+        fdd3000AutoBoot() {
+            if (!this._fdd3000PagingEnabled) return { ok: false, msg: 'Timex FDD 3000 is off' };
+            const fdc = this.fdd3000.fdc;
+            const a = fdc.drives[0];
+            if (!a.dsk) return { ok: false, msg: 'FDD 3000: no disk in drive A' };
+            if (this._fdd3000AutoBootOff) { this._fdd3000AutoBootOff(); this._fdd3000AutoBootOff = null; }
+            const kind = Fdd3000.diskKind(a.dsk);
+            if (kind !== 'cpm') {
+                this.fdd3000.boot();
+                this.reset();
+                return { ok: true, msg: kind === 'tos' ? 'FDD 3000: TOS boot' : 'FDD 3000: no system on the disk in A' };
+            }
+            const mi = [1, 2, 3].find(i => fdc.drives[i].dsk && Fdd3000.isMonitorDisk(fdc.drives[i].dsk));
+            if (mi === undefined) {
+                return { ok: false, msg: 'CP/M needs the Monitor Emulator terminal: put its disk in drive B' };
+            }
+            const swap = () => { const t = fdc.drives[0]; fdc.drives[0] = fdc.drives[mi]; fdc.drives[mi] = t; };
+            swap();                                 // Monitor into A
+            this.fdd3000.boot();
+            this.reset();
+            let frames = 0, inMonitor = 0;
+            const done = () => { if (this._fdd3000AutoBootOff) { this._fdd3000AutoBootOff(); this._fdd3000AutoBootOff = null; } };
+            this._fdd3000AutoBootOff = this.addFrameListener(() => {
+                frames++;
+                // Monitor is up when the Spectrum runs it ($8000 on) and the
+                // station waits; give up after ~30 s of emulated time
+                // (the interface's start-up code also runs up there, from a
+                // copy at $7FFD-$8022, while the machine boots)
+                inMonitor = this.cpu.pc >= 0x8040 ? inMonitor + 1 : 0;
+                const ready = frames > 50 && inMonitor > 10 && this.fdd3000.isIdle();
+                if (ready || frames > 1500) {
+                    done();
+                    swap();                         // CP/M back into A
+                    this.fdd3000.boot();            // station only
+                }
+            });
+            return { ok: true, msg: `FDD 3000: CP/M — Monitor Emulator from drive ${String.fromCharCode(65 + mi)} first` };
+        }
+
         _isBetaDiskActive() {
             return this.betaDiskEnabled && !this.memory.beta48On && !this._isHc() &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
