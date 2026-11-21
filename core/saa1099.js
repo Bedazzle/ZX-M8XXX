@@ -47,7 +47,7 @@ export class SAA1099 {
     }
 
     _env() {
-        return { on: false, mode: 0, invRight: false, bits3: false, ext: false, step: 0, done: false, l: 16, r: 16 };
+        return { on: false, mode: 0, invRight: false, bits3: false, ext: false, step: 0, done: false, pending: -1, l: 16, r: 16 };
     }
 
     _half(ch) { return (511 - this.freq[ch]) << (8 - this.octave[ch]); }
@@ -78,15 +78,12 @@ export class SAA1099 {
             this.noiseParam[0] = v & 3;
             this.noiseParam[1] = (v >> 4) & 3;
         } else if (r === 0x18 || r === 0x19) {
+            // Data sheet: a running envelope takes new parameters only at the
+            // end of its current period; one that is off or has finished (a
+            // single form) takes them at once. Switching off is at once too.
             const e = this.env[r - 0x18];
-            e.invRight = !!(v & 0x01);
-            e.mode = (v >> 1) & 7;
-            e.bits3 = !!(v & 0x10);
-            e.ext = !!(v & 0x20);
-            e.on = !!(v & 0x80);
-            e.step = 0;
-            e.done = false;
-            this._envLevel(e);
+            if (!e.on || e.done || !(v & 0x80)) this._envLoad(e, v);
+            else e.pending = v;
         } else if (r === 0x1C) {
             this.enabled = !!(v & 1);
             this.sync = !!(v & 2);
@@ -94,6 +91,18 @@ export class SAA1099 {
                 for (let ch = 0; ch < 6; ch++) { this.level[ch] = 0; this.counter[ch] = this._half(ch); }
             }
         }
+    }
+
+    _envLoad(e, v) {
+        e.invRight = !!(v & 0x01);
+        e.mode = (v >> 1) & 7;
+        e.bits3 = !!(v & 0x10);
+        e.ext = !!(v & 0x20);
+        e.on = !!(v & 0x80);
+        e.step = 0;
+        e.done = false;
+        e.pending = -1;
+        this._envLevel(e);
     }
 
     _envLevel(e) {
@@ -113,6 +122,8 @@ export class SAA1099 {
         if (!e.done) {
             e.step++;
             if (e.step >= len) {
+                // the end of a period: buffered parameters come in here
+                if (e.pending >= 0) { this._envLoad(e, e.pending); return; }
                 if (ENV_REPEATS[e.mode]) e.step = 0;
                 else { e.step = len - 1; e.done = true; }
             }

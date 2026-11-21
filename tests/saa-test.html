@@ -114,6 +114,16 @@
             s.writeAddress(0x00); s.writeAddress(0x00);
             assert(l0 === 15 && s.env[0].l === 13 && s.env[0].r === 2, 'external envelope clock: one step per address write; right inverted',
                 l0 + ' -> ' + s.env[0].l + '/' + s.env[0].r);
+            // buffered: a running envelope takes new parameters at the end of its period
+            s = chip([[0x02, 0x0F], [0x14, 0x04], [0x1C, 0x01], [0x18, 0xA6]]);    // ext, repetitive decay
+            s.writeAddress(0x00); s.writeAddress(0x00);
+            s.writeAddress(0x18); s.writeData(0xA4);                                  // single decay
+            const kept = s.env[0].mode, lv = s.env[0].l;
+            for (let i = 0; i < 16; i++) s.writeAddress(0x00);
+            assert(kept === 3 && lv === 12 && s.env[0].mode === 2, 'new envelope parameters wait for the end of the period',
+                `mode ${kept} level ${lv} -> mode ${s.env[0].mode}`);
+            s.writeAddress(0x18); s.writeData(0x00);
+            assert(!s.env[0].on && s.env[0].l === 16, 'switching the envelope off is at once');
             s = chip([[0x00, 0x0F], [0x01, 0x0F], [0x08, 0x00], [0x09, 0x00], [0x10, 0x44], [0x14, 0x03], [0x18, 0x80], [0x1C, 0x01]]);
             assert(s.env[0].l === 0 && s.amp[0] === 15, 'envelope acts on channel 2 only: channels 0/1 still sound');
             assert(edges(s, 100000) > 0, '(and they are heard)');

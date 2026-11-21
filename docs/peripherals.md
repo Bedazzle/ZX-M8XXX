@@ -362,8 +362,9 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
   - **Envelopes:** two, stepped on every half period of tone 1 / 4, or by any address write when external (bit 5). The modes are zero, max, decay, attack and triangle, single or repeating, with an inverted right side and 3-bit resolution. After the data sheet and SAASound, they act on channels 2 and 5 only; MAME applies them to all three channels of a group.
   - **Register `$1C`:** bit 0 enables all channels; bit 1 holds and resets the generators.
 - The writes are kept per frame with their T-state and played into the chip by the audio, like the AY's. Writes the audio does not take (sound off, high speed) go straight to the chip, so it keeps its registers.
-- Checked: tone frequencies, stereo amplitudes, all six channels at full level, the noise rate, single decay, the external envelope clock, the port decoding (TR-DOS, Timex, reset). `tests/saa-test.html`.
-- Not done: envelope parameters held until the end of the current period (the data sheet's buffering); a snapshot does not keep the SAA's registers.
+- Checked: tone frequencies, stereo amplitudes, all six channels at full level, the noise rate, single decay, the external envelope clock, the buffered envelope parameters, the port decoding (TR-DOS, Timex, reset). `tests/saa-test.html`.
+- Envelope parameters written while an envelope runs wait for the end of its period, as in the data sheet (Xpeccy and SAASound do the same; MAME restarts at once); an envelope that is off or has finished, or one being switched off, takes them at once.
+- Not done: a snapshot does not keep the SAA's registers.
 
 ## Spectrum 128 MIDI out (AY register 14)
 
