@@ -1798,11 +1798,13 @@ import { Disassembler } from './disasm.js';
         /**
          * Does the AY answer on its ports? Built in (128K and up), or the
          * "AY in 48K" add-on (Melodik-style) on a 48K-class machine — the 48K
-         * itself and the HC-2000, which has no AY of its own.
+         * itself, the HC-2000 and the TC2048, which have no AY of their own
+         * ("Timex 2048 + AY" is what demos like Timmy ask for).
          */
         _ayOnPorts() {
             return this.ayEnabled || (this.ay48kEnabled &&
-                (this.machineType === '48k' || this.profile.pagingModel === 'hc2000'));
+                (this.machineType === '48k' || this.profile.pagingModel === 'hc2000' ||
+                 this.machineType === 'tc2048'));
         }
 
         /** Is the HC IF1 usable: HC-2000 with hc-if1.rom loaded. */
