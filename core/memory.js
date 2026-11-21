@@ -49,6 +49,10 @@ import {
             // null or { data: Uint8Array(8KB), writable }. Set by Spectrum.
             this.timexDock = null;
             this.timexExrom = null;
+            // Didaktik Gama: the second 32KB bank at $8000-$FFFF (bank 0 is the
+            // ordinary 48K block), selected by gamaBank (its 8255's PC0)
+            this.gamaBank1 = this.profile.gama80k ? new Uint8Array(32768) : null;
+            this.gamaBank = 0;
             this.fdd3000Active = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
@@ -170,6 +174,8 @@ import {
             this.fdd3000Active = false;
             this.timexDec = 0;
             this.timexHsr = 0;
+            this.gamaBank = 0;
+            if (this.gamaBank1) this.gamaBank1.fill(0);
             if (this.tkmemRam) this.tkmemRam.fill(0);
             this.tkmemLatch = 0;
             this.tkmemBank = 0;
@@ -523,6 +529,8 @@ import {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
                     val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
+                } else if (this.gamaBank && addr >= SLOT2_START) {
+                    val = this.gamaBank1[addr - SLOT2_START];       // Didaktik Gama bank 1
                 } else if (this.tkmemRam && addr >= SLOT2_START) {
                     val = this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)];
                 } else {
@@ -647,6 +655,10 @@ import {
                 return;
             }
             if (this.profile.ramPages === 1) {
+                if (this.gamaBank && addr >= SLOT2_START) {
+                    this.gamaBank1[addr - SLOT2_START] = val;          // Didaktik Gama bank 1
+                    return;
+                }
                 if (this.tkmemRam && addr >= SLOT2_START) {
                     this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)] = val;
                     return;

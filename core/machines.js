@@ -484,6 +484,43 @@ const MACHINE_PROFILES = {
             szxMachineId: 103,         // private id, not in the SZX spec
             is128kCompat: false,
         },
+        // Didaktik Gama (Didaktik Skalica, 1987-89): a 48K clone with 80KB RAM --
+        // 16KB at $4000 (contended) and two 32KB banks at $8000-$FFFF, picked by
+        // PC0 of its MHB8255 (ports $1F A, $3F B, $5F C, $7F control; PC0 is an
+        // input after reset and pulled low: bank 0). After ZEsarUX's
+        // machines/didaktikgama.c; MAME has the ROMs but no 80K. ROM dgama89.rom
+        // (MAME CRC 45c29401); the '87 (43104909) and '88 (4ec7e078) load too.
+        'dgama': {
+            id: 'dgama',
+            name: 'Didaktik Gama',
+            group: 'Didaktik',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'dgama89.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            gama80k: true,             // second 32KB bank at $8000, 8255 PC0
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: a clone, unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,
+            szxMachineId: 104,         // private id, not in the SZX spec
+            is128kCompat: false,
+        },
     };
 
     // Helper: get profile by machine type ID (falls back to 48k)

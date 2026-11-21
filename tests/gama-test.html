@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Didaktik Gama Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Didaktik Gama Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Didaktik Gama: 80KB -- two 32KB banks at $8000 picked by PC0 of its
+        // 8255 (ports $1F/$3F/$5F/$7F), after ZEsarUX's didaktikgama.c.
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function render() {
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        async function runTests() {
+            section('Didaktik Gama');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/dgama89.rom'))) { skip('roms/dgama89.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: 'dgama' });
+            const sp = frame.contentWindow.spectrum;
+            const m = sp.memory;
+            zx.pause();
+            sp.reset();
+            const outs = [];
+            const pw = sp.cpu.portWrite;
+            sp.cpu.portWrite = (p, v, t) => { if ((p & 0x9F) === 0x1F) outs.push((p & 0xFF).toString(16) + '=' + v.toString(16)); return pw(p, v, t); };
+            await zx.runFrames(300);
+            sp.cpu.portWrite = pw;
+            assert(sp.cpu.pc < 0x4000 && m.read(0) === 0xF3, 'Gama ROM boots');
+            assert(outs.includes('7f=92') && m.gamaBank === 0, "the ROM sets the 8255 up ($7F=$92: C an output), bank 0", outs.join(' '));
+            assert(sp.portRead(0x00FD) === 0xFF, 'no floating bus');
+            const saved = m.read(0x9000);
+            m.write(0x9000, 0x11);
+            sp.portWrite(0x005F, 1);
+            const inB1 = m.read(0x9000);
+            m.write(0x9000, 0x22);
+            const fixed = m.read(0x4000);
+            sp.portWrite(0x005F, 0);
+            assert(m.read(0x9000) === 0x11 && inB1 !== 0x11, 'PC0 = 1 brings the second 32KB bank to $8000');
+            sp.portWrite(0x005F, 1);
+            assert(m.read(0x9000) === 0x22 && m.read(0x4000) === fixed, 'bank 1 keeps its data; $4000-$7FFF is not paged');
+            sp.portWrite(0x007F, 0x00);                       // BSR: PC0 = 0
+            assert(m.gamaBank === 0, 'bit set/reset on the control port switches too');
+            sp.portWrite(0x007F, 0x01);                       // BSR: PC0 = 1
+            assert(m.gamaBank === 1 && sp.portRead(0x005F) === 0x01, 'port C reads back its latch');
+            sp.portWrite(0x007F, 0x9B);                       // mode: all inputs, PC0 pulled low
+            assert(m.gamaBank === 0, 'mode with C as input: bank 0 (PC0 pulled low)');
+            sp.portWrite(0x007F, 0x92); sp.portWrite(0x005F, 1);
+            m.trdosActive = true;
+            sp.portWrite(0x005F, 0);
+            m.trdosActive = false;
+            assert(m.gamaBank === 1, 'while TR-DOS is paged the ports are the Beta Disk\'s');
+            sp.portWrite(0x005F, 0);
+            m.write(0x9000, saved);
+            sp.reset();
+            assert(m.gamaBank === 0, 'reset: bank 0');
+            // The usual detection routine (BSR on port 127): NZ = 80KB
+            //   ld a,1: ld bc,(50000): ld (50000),a: out (127),a: xor a
+            //   ld (50000),a: out (127),a: ld a,(50000): ld (50000),bc: or a
+            await zx.runFrames(300);
+            const code = [0x3E, 0x01, 0xED, 0x4B, 0x50, 0xC3, 0x32, 0x50, 0xC3, 0xD3, 0x7F, 0xAF,
+                0x32, 0x50, 0xC3, 0xD3, 0x7F, 0x3A, 0x50, 0xC3, 0xED, 0x43, 0x50, 0xC3, 0xB7];
+            code.forEach((b, i) => m.write(0x6000 + i, b));
+            m.write(50000, 0x5A);
+            const c = sp.cpu, pc0 = c.pc;
+            c.pc = 0x6000;
+            for (let n = 0; n < 100 && c.pc !== 0x6000 + code.length; n++) c.execute();
+            const a = c.a, z = !!(c.f & 0x40);
+            c.pc = pc0;
+            assert(a !== 0 && !z && m.read(50000) === 0x5A && m.gamaBank === 0,
+                'the bank B detection routine finds 80KB (NZ), and puts 50000 back', 'A=' + a);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            render();
+        })();
+    </script>
+</body>
+</html>

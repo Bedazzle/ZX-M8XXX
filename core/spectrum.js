@@ -1557,6 +1557,7 @@ import { Disassembler } from './disasm.js';
             this.rzxStop();
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
             if (this.dacLevels) this.dacLevels.fill(0x80);
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
@@ -1833,6 +1834,26 @@ import { Disassembler } from './disasm.js';
                  this.machineType === 'tc2048' || this.machineType === 'tk90x' || this.machineType === 'tk95'));
         }
 
+        /**
+         * Didaktik Gama 8255 write: reg 0 A, 1 B, 2 C, 3 control (mode set with
+         * D7=1 -- it clears the outputs; bit set/reset of port C with D7=0).
+         * Bank = PC0 while the lower half of C is an output, else 0 (pulled low).
+         */
+        _gama8255Write(reg, val) {
+            if (reg === 3) {
+                if (val & 0x80) { this._gamaMode = val; this._gamaPortC = 0; }
+                else {
+                    const bit = (val >> 1) & 7;
+                    if (val & 1) this._gamaPortC |= (1 << bit);
+                    else this._gamaPortC &= ~(1 << bit);
+                }
+            } else if (reg === 2) {
+                this._gamaPortC = val;
+            }
+            const cLowOut = ((this._gamaMode ?? 0x9B) & 0x01) === 0;
+            this.memory.gamaBank = (cLowOut && (this._gamaPortC & 1)) ? 1 : 0;
+        }
+
         /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */
         _curAy() {
             return (this.turboSound && this._aySel) ? this.ay2 : this.ay;
@@ -2074,7 +2095,10 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
+                if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
+                    // Didaktik Gama 8255: control reads $FF (MHB8255), port C its latch
+                    result = lowByte === 0x7F ? 0xFF : this._gamaPortC;
+                } else if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
                     // Timex SCLD: DEC (display mode) and HSR read back
                     result = lowByte === 0xFF ? this.memory.timexDec : this.memory.timexHsr;
                 } else if (this.profile.timexAy && (lowByte === 0xF5 || lowByte === 0xF6)) {
@@ -2370,6 +2394,12 @@ import { Disassembler } from './disasm.js';
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
+
+            // Didaktik Gama: its 8255 (ports xxx11111, A6-A5 pick A/B/C/control);
+            // PC0 selects the 32KB bank at $8000. Not while TR-DOS owns the ports.
+            if (this.profile.gama80k && (lowByte & 0x9F) === 0x1F && !this.memory.trdosActive) {
+                this._gama8255Write((lowByte >> 5) & 3, val);
+            }
 
             // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
             // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports

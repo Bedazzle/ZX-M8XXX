@@ -339,6 +339,15 @@ Machines `tk90x` and `tk95` (group Microdigital; ROMs `roms/tk90x.rom`, MAME's C
 - TKMEM-128 II and "AY in 48K" are allowed on them; the Brazilian Beta 48 clones work (checked: Chase HQ 128 for TKMEM on CBI-95; T2 on TK-95 + TKMEM, no snow).
 - Not done: the 60 Hz mode (262 lines), the TK-95's Spectrum+ keyboard layout as such, MAME's unexplained `$DF` write at start-up. `tests/tk-test.html`.
 
+## Didaktik Gama (80KB)
+
+Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; the '87 `43104909` and '88 `4ec7e078` load the same way). After ZEsarUX's `machines/didaktikgama.c` (MAME has the ROMs and a TODO for the 80K).
+
+- A 48K clone (48K timing and contention, no floating bus) with 80KB: 16KB at `$4000` and two 32KB banks at `$8000-$FFFF` (`memory.gamaBank`, bank 1 in `gamaBank1`).
+- The bank is **PC0** of its MHB8255, on ports `$1F` (A), `$3F` (B), `$5F` (C), `$7F` (control; decoded `xxx11111`, A6-A5 pick the register). A mode set (`$7F`, D7=1) clears the outputs; D7=0 sets/resets one port C bit (so `OUT 127,1` / `OUT 127,0` switch banks). PC0 counts only while the lower half of C is an output, else it is pulled low: bank 0. Power-on: mode `$9B` (all inputs); the ROM sets `$92` at start. Control reads `$FF`, port C its latch. While TR-DOS is paged in the ports are the Beta Disk's.
+- Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
+- Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

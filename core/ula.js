@@ -146,7 +146,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'tc2048':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
                 'tc2068':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
                 'tk90x':   { top: 64, left: 48, right: 48, bottom: 56 },
-                'tk95':    { top: 64, left: 48, right: 48, bottom: 56 }
+                'tk95':    { top: 64, left: 48, right: 48, bottom: 56 },
+                'dgama':   { top: 64, left: 48, right: 48, bottom: 56 }
             };
 
             // Normal (cropped) border sizes
@@ -164,7 +165,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'tc2048':  { top: 24, left: 32, right: 32, bottom: 24 },
                 'tc2068':  { top: 24, left: 32, right: 32, bottom: 24 },
                 'tk90x':   { top: 24, left: 32, right: 32, bottom: 24 },
-                'tk95':    { top: 24, left: 32, right: 32, bottom: 24 }
+                'tk95':    { top: 24, left: 32, right: 32, bottom: 24 },
+                'dgama':   { top: 24, left: 32, right: 32, bottom: 24 }
             };
 
             // Set initial border dimensions
