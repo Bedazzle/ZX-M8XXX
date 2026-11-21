@@ -13,6 +13,16 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
 
     const ROM_TYPE_TO_FILE = { '48k': '48.rom', '128k': '128.rom', 'plus2': 'plus2.rom', 'plus2a': 'plus2a.rom', 'plus3': 'plus3.rom', 'pentagon': 'pentagon.rom', 'scorpion': 'scorpion.rom', 'trdos': 'trdos.rom', 'plusd': 'plusd.rom', 'if1': 'if1.rom', 'opus': 'opus.rom', 'didaktik': 'didaktik.rom' };
 
+    // HC-2000 ROM halves, FUSE style: hc2000-0.rom = BASIC, hc2000-1.rom = CP/M.
+    // The machine wants them as one 32KB hc2000.rom; a half that arrives alone
+    // goes into its place and the other half stays $FF (or what was there).
+    function setHc2000RomHalf(data, half) {
+        const full = new Uint8Array(32768).fill(0xFF);
+        if (romData['hc2000.rom']) full.set(new Uint8Array(romData['hc2000.rom']).subarray(0, 32768));
+        full.set(new Uint8Array(data).subarray(0, 16384), half * 16384);
+        romData['hc2000.rom'] = full.buffer;
+    }
+
     function getRomByType(type) {
         return romData[ROM_TYPE_TO_FILE[type]] || null;
     }
@@ -236,6 +246,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (romData['didaktik.rom'] && spec.didaktikEnabled) {
             spec.memory.loadDidaktikRom(romData['didaktik.rom']);
         }
+        // HC-2000: its HC IF1 is built in, so its ROM goes with the machine
+        if (romData['hc-if1.rom'] && profile.pagingModel === 'hc2000' && spec.hcIf1) {
+            spec.memory.loadHcIf1Rom(romData['hc-if1.rom']);
+        }
         // Recalculate paging flags AFTER all ROMs are loaded — hasPlusDRom()/hasIF1Rom()
         // must return true for _plusDPagingEnabled/_if1PagingEnabled to be set
         spec.updateBetaDiskPagingFlag();
@@ -333,6 +347,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (!seen.has('didaktik.rom')) {
             romPaths.push({ path: 'roms/didaktik.rom', file: 'didaktik.rom' });
         }
+        // HC IF1 ROM (HC-2000's built-in disk interface, 16KB)
+        if (!seen.has('hc-if1.rom')) {
+            romPaths.push({ path: 'roms/hc-if1.rom', file: 'hc-if1.rom' });
+        }
         for (const rom of romPaths) {
             try {
                 const response = await fetch(rom.path);
@@ -341,6 +359,17 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                 }
             } catch (e) {
                 // ROM not found, continue
+            }
+        }
+        // HC-2000: no hc2000.rom? Take FUSE's two halves instead
+        if (!romData['hc2000.rom']) {
+            for (const half of [0, 1]) {
+                try {
+                    const response = await fetch('roms/hc2000-' + half + '.rom');
+                    if (response.ok) setHc2000RomHalf(await response.arrayBuffer(), half);
+                } catch (e) {
+                    // not there either
+                }
             }
         }
 
@@ -439,7 +468,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (name.includes('plusd') || name === 'plusd.rom') {
             await loadRomFile(data, 'plusd');
             showMessage('+D ROM loaded');
-        } else if (name.includes('if1') || name === 'if1.rom' || name.includes('interface1')) {
+        } else if ((name.includes('if1') && !name.includes('hc')) || name === 'if1.rom' || name.includes('interface1')) {
             await loadRomFile(data, 'if1');
             showMessage('Interface 1 ROM loaded');
         } else if (name.includes('opus') || name === 'opus.rom' || name.includes('discovery')) {
@@ -470,6 +499,19 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         } else if (name.includes('pentagon')) {
             await loadRomFile(data, 'pentagon');
             showMessage('Pentagon ROM loaded');
+        } else if (name.includes('hc-if1') || name.includes('hcif1')) {
+            romData['hc-if1.rom'] = data;
+            updateRomStatus();
+            showMessage('HC IF1 ROM loaded');
+        } else if (name.includes('hc2000') || name.includes('hc2k')) {
+            if (data.byteLength === 32768) {
+                romData['hc2000.rom'] = data;
+            } else {
+                // hc2000-1.rom / ...cpm... is the CP/M half, anything else BASIC
+                setHc2000RomHalf(data, (name.includes('-1') || name.includes('cpm')) ? 1 : 0);
+            }
+            updateRomStatus();
+            showMessage('HC-2000 ROM loaded');
         } else if (name.includes('128') || (data.byteLength >= 32768 && !name.includes('48') && !name.includes('trdos'))) {
             await loadRomFile(data, '128k');
             showMessage('128K ROM loaded');
@@ -491,6 +533,17 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         const profile = getMachineProfile(machineId);
         if (!profile) return false;
         const size = data.byteLength;
+        // HC-2000: FUSE ships it as two 16KB files; take either half by name
+        if (machineId === 'hc2000' && size === 16384) {
+            const lower = (filename || '').toLowerCase();
+            const half = (lower.includes('-1') || lower.includes('cpm')) ? 1 : 0;
+            setHc2000RomHalf(data, half);
+            romFileNames[profile.romFile] = filename;
+            if (getSpectrum().machineType === machineId) applyRomsToEmulator();
+            updateRomStatus();
+            showMessage('HC-2000 ' + (half ? 'CP/M' : 'BASIC') + ' ROM loaded: ' + filename);
+            return true;
+        }
         if (size !== profile.romSize) {
             showMessage('ROM size mismatch — expected ' + (profile.romSize / 1024) + 'KB for ' + profile.name + ', got ' + (size / 1024) + 'KB', 'error');
             return false;

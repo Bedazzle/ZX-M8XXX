@@ -42,7 +42,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
     // Pentagon went on showing as drive A after switching to +3, where the
     // machine cannot read it and its own drive A is something else entirely.
     const CONTROLLER_SYSTEM = { fdc: 'dsk', beta: 'trd', plusd: 'mgt', if1: 'mdr', opus: 'opd', didaktik: 'd80' };
-    const SYSTEM_LABEL = { dsk: '3DOS', trd: 'TRD', mgt: 'MGT', mdr: 'MDR', opd: 'OPD', d80: 'D80' };
+    const SYSTEM_LABEL = { dsk: '3DOS', hc: 'HC', trd: 'TRD', mgt: 'MGT', mdr: 'MDR', opd: 'OPD', d80: 'D80' };
 
     function activeSystemIds() {
         const systems = getAvailableDiskSystems && getAvailableDiskSystems();
@@ -51,7 +51,10 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
 
     function controllerActive(name, ids) {
         if (ids === undefined) ids = activeSystemIds();
-        return ids === null || ids.includes(CONTROLLER_SYSTEM[name]);
+        // The HC-2000's HC IF1 is the same µPD765 controller ('fdc') under
+        // another system name
+        return ids === null || ids.includes(CONTROLLER_SYSTEM[name]) ||
+            (name === 'fdc' && ids.includes('hc'));
     }
 
     function updateCatalogTabs() {
@@ -259,7 +262,7 @@ export function initMediaCatalog({ getSpectrum, showMessage, updateDriveSelector
         // drive A and TR-DOS drive A are different drives. Name the system,
         // matching the drive tab above.
         const ids = activeSystemIds();
-        const sysId = isDSK ? 'dsk' : (sys || 'trd');
+        const sysId = isDSK ? ((ids && ids.includes('hc')) ? 'hc' : 'dsk') : (sys || 'trd');
         const driveLetter = ((ids && ids.length > 1) ? SYSTEM_LABEL[sysId] + ':' : '') +
             String.fromCharCode(65 + driveIndex);
         const hasFiles = files && files.length > 0;

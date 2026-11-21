@@ -1111,8 +1111,12 @@ export function initExplorerViews(xp) {
 
         const dskContainer = xp.explorerParsed.isExtended ? 'Extended' : 'Standard';
         const spec = xp.explorerParsed.diskSpec;
-        const diskSystem = spec && spec.isTOS ? 'Timex FDD3000' : 'CPC';
-        const formatType = `${dskContainer} ${diskSystem} DSK`;
+        const diskSystem = spec && spec.isHC ? (spec.sectorSize === 256 ? 'HC BASIC' : 'HC CP/M')
+            : spec && spec.isTOS ? 'Timex FDD3000' : 'CPC';
+        const hcRaw = xp.explorerParsed.hcRaw;
+        const formatType = hcRaw
+            ? `Raw ${diskSystem} IMG (${hcRaw.layout === 'side-major' ? 'side 0 then side 1' : 'sides alternating'}; ${hcRaw.reason})`
+            : `${dskContainer} ${diskSystem} DSK`;
         const geometry = `${xp.explorerParsed.numTracks} tracks, ${xp.explorerParsed.numSides} side${xp.explorerParsed.numSides > 1 ? 's' : ''}`;
 
         let sectorInfo = '';

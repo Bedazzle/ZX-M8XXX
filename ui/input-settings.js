@@ -65,7 +65,8 @@ export function initInputSettings({
         plusD:    { rom: 'plusd.rom',    span: 'plusDRomName' },
         if1:      { rom: 'if1.rom',      span: 'if1RomName' },
         opus:     { rom: 'opus.rom',     span: 'opusRomName' },
-        didaktik: { rom: 'didaktik.rom', span: 'didaktikRomName' }
+        didaktik: { rom: 'didaktik.rom', span: 'didaktikRomName' },
+        hcIf1:    { rom: 'hc-if1.rom',   span: 'hcIf1RomName' }
     };
     // A ROM loaded by hand keeps the name of the file the user picked; one that
     // came from roms/ shows its canonical name, exactly as the machine rows do.
@@ -378,6 +379,19 @@ export function initInputSettings({
 
     // Kempston Mouse
     function updateMouseStatus() {
+        // HC-2000: the HC IF1 floppy ports $85/$87 sit inside a Kempston mouse's
+        // partial decode (A0=1, A5=0), and on real hardware the two fight over
+        // the bus -- in FUSE-HC disk loading stops with the mouse on. So the
+        // mouse is not offered there; the setting itself is kept for later.
+        const hc = !!(getSpectrum() && getSpectrum().hcIf1);
+        chkKempstonMouse.disabled = hc;
+        if (hc) {
+            mouseStatus.textContent = '(off on HC-2000: conflicts with HC IF1 ports $85/$87)';
+            mouseStatus.style.color = 'var(--text-dim)';
+            btnMouse.style.display = 'none';
+            if (mouseCaptured) document.exitPointerLock();
+            return;
+        }
         // Update settings panel status text
         if (!chkKempstonMouse.checked) {
             mouseStatus.textContent = '';
@@ -858,6 +872,72 @@ export function initInputSettings({
         }
     });
 
+    // HC IF1: built into the HC-2000, so the row only reports it and takes its
+    // ROM. The checkbox is ticked while the HC-2000 is the machine.
+    function updateHcIf1Status() {
+        const chk = document.getElementById('chkHcIf1');
+        const st = document.getElementById('hcIf1Status');
+        if (!chk || !st) return;
+        const sp = getSpectrum();
+        const isHc = !!(sp && sp.profile.pagingModel === 'hc2000');
+        const haveRom = !!romData['hc-if1.rom'];
+        chk.checked = !!(sp && sp.hcIf1Enabled);
+        if (!haveRom) st.textContent = '(hc-if1.rom required)';
+        else if (!isHc) st.textContent = 'HC-2000 only';
+        else if (!sp.hcIf1Enabled) st.textContent = 'off — HC-2000 without disk interface';
+        else st.textContent = '';
+        updateIfaceRomName('hcIf1');
+    }
+
+    document.getElementById('chkHcIf1').addEventListener('change', (e) => {
+        const spectrum = getSpectrum();
+        const on = e.target.checked;
+        storageSet('zxm8_hcIf1', on);
+        spectrum.setHcIf1Enabled(on);
+        if (on && spectrum.hcIf1 && romData['hc-if1.rom']) {
+            spectrum.memory.loadHcIf1Rom(romData['hc-if1.rom']);
+            spectrum.updateBetaDiskPagingFlag();
+        }
+        updateHcIf1Status();
+        updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus();
+        updateMouseStatus();
+        notifyDiskSystems();
+        // The interface is on the bus or not from power-on: restart an HC-2000
+        if (spectrum.profile.pagingModel === 'hc2000') {
+            spectrum.reset();
+            showMessage(on ? 'HC IF1 on (machine reset)' : 'HC IF1 off — HC-2000 without disk interface (machine reset)');
+        }
+    });
+
+    document.getElementById('btnLoadHcIf1Rom').addEventListener('click', () => {
+        document.getElementById('romHcIf1Input').click();
+    });
+
+    document.getElementById('romHcIf1Input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            if (data.length !== 16384) {
+                showMessage('HC IF1 ROM must be 16KB, got ' + data.length + ' bytes', 'error');
+                return;
+            }
+            romData['hc-if1.rom'] = data.buffer;
+            setIfaceRomName('hcIf1', file.name);
+            const spectrum = getSpectrum();
+            if (spectrum.hcIf1) {
+                spectrum.memory.loadHcIf1Rom(data);
+                spectrum.updateBetaDiskPagingFlag();
+            }
+            updateHcIf1Status();
+            notifyDiskSystems();
+            showMessage('HC IF1 ROM loaded');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
     document.getElementById('btnLoadDidaktikRom').addEventListener('click', () => {
         document.getElementById('romDidaktikInput').click();
     });
@@ -996,6 +1076,7 @@ export function initInputSettings({
         getUpdateIF1Status: () => updateIF1Status,
         updateOpusStatus,
         updateDidaktikStatus,
+        updateHcIf1Status,
         updateAllIfaceRomNames,
         updateMouseStatus,
         gamepadAPI,
