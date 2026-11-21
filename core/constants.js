@@ -152,10 +152,16 @@ export const OPUS_FDC_START = 0x2800;  // WD1770 registers (address & 3)
 export const OPUS_PIA_START = 0x3000;  // MC6821 PIA registers (address & 3)
 export const OPUS_UNMAPPED  = 0x3800;  // reads as $FF
 
-// Opus DRQ → NMI delays, in T-states. The WD1770 has no timing model here, so
-// these stand in for it: MFM at 250 kbit/s is a byte every 32us = 112 T-states
-// at 3.5 MHz, and the first byte of a transfer also waits for the head to settle
-// and the sector to come round under it.
+// Opus DRQ → NMI delays, in T-states. MFM at 250 kbit/s is a byte every 32us =
+// 112 T-states at 3.5 MHz, and the first byte of a transfer also waits for the
+// head to settle and the sector to come round under it.
+//
+// The byte figure is **no longer what paces a transfer**: `Spectrum` takes that
+// from the rotation (`byteTStates`, i.e. a revolution shared over 6250 bytes),
+// which is 111.82 on a 48K and 114.69 on a Pentagon rather than one rounded
+// number for every machine. What this constant is now for is the cross-check —
+// `disk-rotation-test` asserts the derived figure rounds to it, so if either the
+// data rate or the rotation model moves, the other has to answer for it.
 export const OPUS_DRQ_BYTE_TSTATES  = 112;
 export const OPUS_DRQ_FIRST_TSTATES = 2500;
 
