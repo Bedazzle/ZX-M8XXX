@@ -1325,12 +1325,19 @@ import { xorChecksum } from './common.js';
                 if (this.memory.trdosActive) {
                     return false;
                 }
-                // …or the +D, for the same reason. With its ROM paged in, $0556
-                // is PUSH AF inside the +D's save-state routine, not LD-BYTES.
-                // Trapping it returned through a stack holding a pushed AF, so
-                // the +D jumped to a register pair, ran off into RAM and reset
-                // the machine — which looked like +D disk emulation was broken.
-                if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive) {
+                // …or any other interface whose ROM is paged in over the bottom
+                // of the address space, for the same reason. With the +D's ROM
+                // in, $0556 is PUSH AF inside its save-state routine, not
+                // LD-BYTES. Trapping it returned through a stack holding a
+                // pushed AF, so the +D jumped to a register pair, ran off into
+                // RAM and reset the machine — which looked like +D disk
+                // emulation was broken. The Opus went the same way: $0556 is in
+                // the middle of the parameter parser of its ROM v2.2 and later,
+                // so `RUN` and `CAT 1` returned from the trap with carry clear
+                // instead of reading the filename, and the Opus answered
+                // "C Nonsense in BASIC" to a command it had built itself.
+                if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
+                    this.memory.if1Active || this.memory.didaktikActive) {
                     return false;
                 }
                 // No tape data or no blocks - return error immediately (no EAR emulation)
@@ -1423,9 +1430,11 @@ import { xorChecksum } from './common.js';
             if (this.memory.profile.ramPages > 1) {
                 if (this.memory.currentRomBank !== this.memory.profile.basicRomBank) return false;
             }
-            // Don't trap under TR-DOS, or with the +D ROM paged in (see LD-BYTES)
+            // Don't trap under TR-DOS, or with another interface's ROM paged in
+            // over the bottom of the address space (see LD-BYTES)
             if (this.memory.trdosActive) return false;
-            if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive) return false;
+            if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
+                this.memory.if1Active || this.memory.didaktikActive) return false;
 
             // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
             // to distinguish LOAD (carry set) from VERIFY (carry clear), SA_BYTES is

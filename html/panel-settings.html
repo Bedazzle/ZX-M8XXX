@@ -326,7 +326,7 @@
                         <label class="checkbox-label" title="Automatically boot disk images on load (same setting as Auto Load on the Tape tab)" style="margin-left: 15px;">
                             <input type="checkbox" id="chkAutoLoadDisk" checked> Auto Load
                         </label>
-                        <input type="file" id="loadDiskFile" accept=".trd,.scl,.dsk,.mgt,.img,.mdr,.opd,.zip" style="display: none;">
+                        <input type="file" id="loadDiskFile" accept=".trd,.scl,.udi,.dsk,.mgt,.img,.mdr,.opd,.zip" style="display: none;">
                     </div>
                     <div class="settings-row" id="trdosBootRow">
                         <select id="bootTrdMode" style="flex: 0 0 auto; width: auto;" title="How to handle boot file when loading TRD images">
@@ -465,6 +465,18 @@
                         <input type="file" id="romOpusInput" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="opusRomName" class="iface-rom-name"></span>
                         <span id="opusStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row" id="opusDrivesRow">
+                        <span class="iface-sublabel" title="How many tracks each Opus drive's mechanism has. Nothing in an .opd image records which drive it is sitting in, and it changes how the disk is read: a 40-track disk in an 80-track drive is written on every other cylinder, so its DOS double-steps. The stock ROMs assume the 40-track drive the Discovery shipped with; EXCOM 2.28 assumes an 80-track one.">Drive tracks</span>
+                        <select id="selOpusTracks0" title="Drive 1 mechanism: 40 tracks unless a DOS expects the 80-track drive">
+                            <option value="40">Drive 1: 40</option>
+                            <option value="80">Drive 1: 80</option>
+                        </select>
+                        <select id="selOpusTracks1" title="Drive 2 mechanism: 40 tracks unless a DOS expects the 80-track drive">
+                            <option value="40">Drive 2: 40</option>
+                            <option value="80">Drive 2: 80</option>
+                        </select>
+                        <span id="opusDrivesStatus" class="iface-status"></span>
                     </div>
 
                     <div class="iface-row">

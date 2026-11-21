@@ -94,7 +94,8 @@
     <div id="log"></div>
 
 <script type="module">
-    import { TapeLoader, TapePlayer, TZXLoader, WAVLoader, TapeTrapHandler } from '../core/loaders.js';
+    import { TapeLoader, TapePlayer, TZXLoader, WAVLoader, TapeTrapHandler,
+             TapeSaveTrapHandler } from '../core/loaders.js';
     import { AY } from '../core/ay.js';
 
     const logEl = document.getElementById('log');
@@ -1849,6 +1850,60 @@
             assert(trap.checkTrap() === false, 'Disabled trap returns false at 0x0556');
             cpu.pc = 0x0569;
             assert(trap.checkTrap() === false, 'Disabled trap returns false at 0x0569');
+        }
+
+        section('TapeTrapHandler - an interface ROM paged in is not LD-BYTES');
+        {
+            // $0556 is only LD-BYTES while the Spectrum's own ROM is at the
+            // bottom of the map. Every interface here pages its ROM over
+            // $0000-$1FFF or further, and each has real code at these
+            // addresses: the +D's save-state routine (which the trap's RET left
+            // jumping to a register pair, resetting the machine), and the Opus's
+            // statement parser in ROM v2.2 and later — where returning from the
+            // trap with carry clear skipped the filename, so `RUN` and `CAT 1`
+            // answered "C Nonsense in BASIC" to a command the Opus had just
+            // built itself.
+            for (const flag of ['plusDActive', 'opusActive', 'if1Active', 'didaktikActive']) {
+                const cpu = makeMockCpu();
+                const mem = makeMockMemory(1);
+                const trap = new TapeTrapHandler(cpu, mem);
+                const tl = new TapeLoader();
+                tl.load(buildTAP([makeTAPBlock(0x00, new Uint8Array(17).fill(0x20))]));
+                trap.setTape(tl);
+                mem[flag] = true;
+                for (const pc of [0x0556, 0x0569, 0x056C]) {
+                    cpu.pc = pc; cpu.a = 0x00; cpu.f = 0x01; cpu.sp = 0xFFF0;
+                    assert(trap.checkTrap() === false,
+                           'with ' + flag + ' the trap does not fire at $' + pc.toString(16).toUpperCase());
+                }
+                assert(cpu.pc === 0x056C && (cpu.f & 0x01) !== 0,
+                       'and it leaves PC and carry alone, so the ROM runs its own code (' + flag + ')');
+                // …and with the interface paged out again it is LD-BYTES as before
+                mem[flag] = false;
+                cpu.pc = 0x0556; cpu.a = 0x00; cpu.f = 0x01; cpu.sp = 0xFFF0;
+                mem._ram[0xFFF0] = 0x34; mem._ram[0xFFF1] = 0x12;
+                cpu.ix = 0x8000; cpu.de = 17;
+                assert(trap.checkTrap() === true, 'paged out again, the trap fires (' + flag + ')');
+            }
+        }
+
+        section('TapeSaveTrapHandler - the same guard on SA-BYTES');
+        {
+            for (const flag of ['plusDActive', 'opusActive', 'if1Active', 'didaktikActive']) {
+                const cpu = makeMockCpu();
+                const mem = makeMockMemory(1);
+                const trap = new TapeSaveTrapHandler(cpu, mem);
+                let saved = 0;
+                trap.onBlockSaved = () => { saved++; };
+                mem[flag] = true;
+                cpu.pc = 0x04C2; cpu.a = 0x00; cpu.de = 17; cpu.ix = 0x8000;
+                assert(trap.checkTrap() === false, 'with ' + flag + ' the trap does not fire at $04C2');
+                assert(saved === 0, 'and nothing is captured as a tape block (' + flag + ')');
+                mem[flag] = false;
+                cpu.pc = 0x04C2; cpu.sp = 0xFFF0;
+                assert(trap.checkTrap() === true, 'paged out again, SA-BYTES is trapped (' + flag + ')');
+                assert(saved === 1, 'and the block is captured (' + flag + ')');
+            }
         }
 
         section('TapeTrapHandler - 128K ROM bank check at 0x0569');

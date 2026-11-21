@@ -324,7 +324,41 @@
 
     // ==================== FORMAT DETECTION TESTS ====================
 
-    function runFormatDetection() {
+
+    // Stored (uncompressed) ZIP, so the archive scan can be driven for real.
+    function zipCrc32(buf) {
+        const t = [];
+        for (let n = 0; n < 256; n++) {
+            let c = n;
+            for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+            t[n] = c;
+        }
+        let crc = -1;
+        for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ t[(crc ^ buf[i]) & 0xFF];
+        return (crc ^ -1) >>> 0;
+    }
+    function buildZip(files) {
+        const u16 = (v) => [v & 0xFF, (v >> 8) & 0xFF];
+        const u32 = (v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+        const parts = [], central = [];
+        let offset = 0;
+        for (const [name, data] of files) {
+            const n = [...name].map(c => c.charCodeAt(0)), crc = zipCrc32(data);
+            const local = [0x50, 0x4B, 3, 4, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(n.length), ...u16(0), ...n];
+            central.push([0x50, 0x4B, 1, 2, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(n.length), ...u16(0), ...u16(0),
+                ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...n]);
+            parts.push(...local, ...data);
+            offset += local.length + data.length;
+        }
+        const cd = central.flat();
+        const eocd = [0x50, 0x4B, 5, 6, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
+            ...u32(cd.length), ...u32(offset), ...u16(0)];
+        return new Uint8Array([...parts, ...cd, ...eocd]);
+    }
+
+    async function runFormatDetection() {
         section('Format Detection - TRD');
 
         {
@@ -478,6 +512,74 @@
         }
         {
             assert(ZipLoader.isZip(new Uint8Array(10)) === false, 'empty data rejected');
+        }
+
+        // ZipLoader.findAllSpectrum keeps its OWN extension list, and the Load menu
+        // goes through it rather than through SnapshotLoader.detectType -- so a
+        // format the loaders read perfectly is still invisible inside an archive
+        // until it is added there too. A zipped .udi came back "no supported files"
+        // for exactly that reason, after the loose file had been loading for a week.
+        // So this asserts every type the list claims, not just the one that broke:
+        // the next format left out fails here.
+        {
+            const EXPECT = {
+                'game.sna': 'sna', 'game.tap': 'tap', 'game.tzx': 'tzx', 'game.z80': 'z80',
+                'game.szx': 'szx', 'game.rzx': 'rzx', 'game.trd': 'trd', 'game.scl': 'scl',
+                'game.udi': 'udi', 'game.dsk': 'dsk', 'game.mgt': 'mgt', 'game.img': 'mgt',
+                'game.mdr': 'mdr', 'game.opd': 'opd', 'game.opu': 'opd', 'game.d40': 'd80',
+                'game.d80': 'd80', 'game.wav': 'wav',
+            };
+            const entries = Object.keys(EXPECT).map(n => [n, new Uint8Array([1, 2, 3, 4])]);
+            entries.push(['readme.txt', new Uint8Array([65])]);
+            const found = await ZipLoader.findAllSpectrum(buildZip(entries));
+            const byName = {};
+            for (const f of found) byName[f.name] = f.type;
+
+            for (const [n, t] of Object.entries(EXPECT)) {
+                assert(byName[n] === t, `ZIP scan finds ${n} as ${t}`, String(byName[n]));
+            }
+            // Offering a readme as something to load is worse than not finding it:
+            // the selection dialog then lists a file that cannot possibly boot.
+            assert(!('readme.txt' in byName), 'ZIP scan ignores a non-Spectrum file');
+            assert(found.length === Object.keys(EXPECT).length, 'and offers nothing else',
+                   found.map(f => f.name).join(','));
+            // Uppercase names are what real archives ship.
+            const upper = await ZipLoader.findAllSpectrum(buildZip([['GAME.UDI', new Uint8Array(4)]]));
+            assert(upper.length === 1 && upper[0].type === 'udi', 'ZIP scan is case-insensitive',
+                   JSON.stringify(upper.map(f => f.type)));
+        }
+
+        section('Format Detection - UDI');
+
+        // Three different things decide a UDI is a UDI, and each one has bitten:
+        // the extension (the Load menu), the 'UDI!' signature (a file named
+        // anything), and the archive scan above. This covers the first two.
+        {
+            const snap = new SnapshotLoader();
+            const detect = (d, n) => snap.detectType(d, n);
+            const udi = new Uint8Array(32);
+            udi.set([0x55, 0x44, 0x49, 0x21], 0);        // 'UDI!'
+            udi[4] = 28;                                  // size field: all but the CRC32
+            udi[9] = 79; udi[10] = 1;                     // 80 cylinders, 2 sides
+            assert(detect(udi, 'game.udi') === 'udi', 'UDI by extension');
+            assert(detect(udi, 'GAME.UDI') === 'udi', 'UDI extension is case-insensitive');
+            // The signature must win over the size-and-shape guesses the disk
+            // checks below it make, because a UDI is the one image here that is
+            // NOT a sector dump -- read as a TRD it would hand raw track bytes,
+            // gaps and address marks included, to a reader expecting payloads.
+            assert(detect(udi, 'game.bin') === 'udi', 'UDI by signature, whatever it is called',
+                   String(detect(udi, 'game.bin')));
+            assert(detect(udi, '') === 'udi', 'and with no name at all');
+
+            const notUdi = new Uint8Array(32);
+            notUdi.set([0x75, 0x64, 0x69, 0x21], 0);      // lowercase 'udi!'
+            assert(detect(notUdi, 'x.bin') !== 'udi',
+                   'lowercase udi! is not claimed as a UDI',
+                   String(detect(notUdi, 'x.bin')));
+            const tooShort = new Uint8Array(8);
+            tooShort.set([0x55, 0x44, 0x49, 0x21], 0);
+            assert(detect(tooShort, 'x.bin') !== 'udi',
+                   'a four-byte signature alone is not a UDI');
         }
 
         section('Format Detection - RZX');
@@ -1825,7 +1927,7 @@
         log(`Format Loader Test Suite v${TEST_VERSION}`, 'info');
         log(`Started: ${new Date().toLocaleTimeString()}`, 'info');
 
-        runFormatDetection();
+        await runFormatDetection();
         await runRZXParseTests();
         runTAPTests();
         runTRDTests();
@@ -1845,7 +1947,7 @@
 
     // Expose to buttons
     window.runAll = runAll;
-    window.runFormatDetection = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runFormatDetection(); };
+    window.runFormatDetection = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); return runFormatDetection(); };
     window.runRZXParseTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); return runRZXParseTests(); };
     window.runTAPTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runTAPTests(); };
     window.runTRDTests = () => { logEl.innerHTML = ''; totalPassed = 0; totalFailed = 0; updateSummary(); runTRDTests(); };

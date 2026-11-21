@@ -792,6 +792,12 @@ export function initInputSettings({
         } else {
             opusStatus.textContent = '';
         }
+        // The drive-track row only means anything with the interface on, and a
+        // sub-row under an unticked box is noise.
+        const drivesRow = document.getElementById('opusDrivesRow');
+        if (drivesRow) {
+            drivesRow.style.display = (!incompatible && chkOpus.checked) ? '' : 'none';
+        }
         updateIfaceRomName('opus');
     }
 
@@ -850,6 +856,35 @@ export function initInputSettings({
         e.target.value = '';  // Allow re-loading same file
     });
 
+    // How many tracks each Opus drive's mechanism has. Nothing in an .opd says
+    // which drive it is sitting in, and it changes how the disk is read: a
+    // 40-track disk in an 80-track drive occupies every other cylinder, so its
+    // DOS double-steps. The stock ROMs assume the 40-track drive the Discovery
+    // shipped with — which is the default — and EXCOM 2.28 assumes 80.
+    const selOpusTracks = [
+        document.getElementById('selOpusTracks0'),
+        document.getElementById('selOpusTracks1')
+    ];
+    function applyOpusDriveTracks() {
+        const sp = getSpectrum();
+        if (!sp.opus || !sp.opus.setDriveTracks) return;
+        for (let i = 0; i < 2; i++) sp.opus.setDriveTracks(i, +selOpusTracks[i].value);
+        // Say what 80 means, when it is chosen, rather than leaving a number to
+        // explain itself — and stay quiet on the default.
+        const status = document.getElementById('opusDrivesStatus');
+        if (status) {
+            const eighty = selOpusTracks.some(s => s.value === '80');
+            status.textContent = eighty ? 'a 40-track disk is double-stepped' : '';
+        }
+    }
+    selOpusTracks.forEach((sel, i) => {
+        sel.addEventListener('change', () => {
+            storageSet('zxm8_opusTracks' + i, sel.value);
+            applyOpusDriveTracks();
+            showMessage('Opus drive ' + (i + 1) + ': ' + sel.value + '-track mechanism');
+        });
+    });
+
     // Restore Opus setting from localStorage
     {
         const spectrum = getSpectrum();
@@ -859,6 +894,10 @@ export function initInputSettings({
         if (savedOpus && romData['opus.rom'] && !spectrum.memory.hasOpusRom()) {
             spectrum.memory.loadOpusRom(romData['opus.rom']);
         }
+        for (let i = 0; i < 2; i++) {
+            selOpusTracks[i].value = storageGet('zxm8_opusTracks' + i) === '80' ? '80' : '40';
+        }
+        applyOpusDriveTracks();
         spectrum.updateBetaDiskPagingFlag();
         updateOpusStatus();
     }

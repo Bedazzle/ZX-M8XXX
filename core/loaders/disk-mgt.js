@@ -6,6 +6,8 @@
  */
 
 import { TRDLoader } from './disk-beta.js';
+import { TRACK_BYTES_MFM, parseTrackStream, buildTrackStream } from './mfm-track.js';
+import { createRotationClock } from './disk-rotation.js';
 
     export class MGTLoader {
         /**
@@ -469,11 +471,21 @@ import { TRDLoader } from './disk-beta.js';
      *                 0xFB (data), 0xEF (control), 0xE7 (paging)
      */
     export class PlusDDisk {
+        // How many times the host may look at the controller after opening a
+        // Write Track, without having written a single byte to it, before the
+        // track is counted as lost. See _formatPoll().
+        static get FORMAT_POLL_LIMIT() { return 4096; }
+
         constructor() {
             // Per-drive state: each drive has its own disk image and head position
+            // `headTrack` is where the head PHYSICALLY is; the track register is
+            // only what the controller has been told. They are not the same
+            // thing and a DOS may hold them apart on purpose — see _step().
+            // `driveTracks` is how many cylinders the MECHANISM has, which no
+            // disk image records; 160 keeps the +D's historical step limit.
             this.drives = [
-                { diskData: null, diskType: null, headTrack: 0 },
-                { diskData: null, diskType: null, headTrack: 0 }
+                { diskData: null, diskType: null, headTrack: 0, addrIndex: 0, driveTracks: 160 },
+                { diskData: null, diskType: null, headTrack: 0, addrIndex: 0, driveTracks: 160 }
             ];
 
             // WD1772 registers
@@ -510,8 +522,25 @@ import { TRDLoader } from './disk-beta.js';
             this.dataLen = 0;
             this.reading = false;
             this.writing = false;
+            // A Write Track in progress. It is not just `writing`: the stream is
+            // a whole track rather than one sector, so the end of the buffer
+            // means "format finished", not "step to the next sector".
+            this.formatting = false;
+            // The earliest a DRQ for this transfer may be delivered, or 0 for
+            // "no floor". A Write Track waits for the index pulse before it
+            // writes anything, so the byte stream must not start before then
+            // either; `Spectrum._drqDueAt` reads this. A controller with no
+            // machine around it has no DRQ pacing and simply ignores it.
+            this.drqNotBefore = 0;
+            // What the last Write Track laid down — see finishWriteTrack().
+            this.lastFormat = null;
 
-            // Index pulse simulation
+            // Which way the last step went, for the bare Step command
+            this.stepDir = 1;
+
+            // Index pulse. The real one when a rotation clock has been given
+            // (see setRotationClock); otherwise faked, one read in sixteen.
+            this.rotation = null;
             this.indexCounter = 0;
 
             // Track last command type for status bit interpretation
@@ -537,12 +566,33 @@ import { TRDLoader } from './disk-beta.js';
             this._sysReadsSinceData = 0;
         }
 
+        /**
+         * Give the controller the disk's own clock: a monotonic T-state count
+         * and the length of one revolution, both read live so that a machine
+         * change is picked up. Nothing in a controller can know what machine it
+         * is in, so this is injected — `Spectrum` does it once per interface,
+         * and the Opus and the Didaktik inherit it from here.
+         *
+         * Without it the controller keeps its untimed behaviour: a faked index
+         * pulse, Read Address in round robin, and a Write Track ended by
+         * counting register reads. That is the state every unit test which
+         * constructs a bare controller runs in, and it stays supported on
+         * purpose — a controller with no machine around it has no business
+         * inventing a rotation it cannot see.
+         */
+        setRotationClock(nowFn, revFn) {
+            this.rotation = createRotationClock(nowFn, revFn);
+        }
+
         // Load disk image into specified drive
         loadDisk(data, type, driveIndex = 0) {
             const drv = this.drives[driveIndex & 0x01];
             drv.diskData = new Uint8Array(data);
             drv.diskType = type || 'mgt';
             drv.headTrack = 0;
+            drv.addrIndex = 0;
+            drv.addrSlot = -1;
+            drv.modified = false;
             if ((driveIndex & 0x01) === this.drive) {
                 this.status = 0;
                 this.track = 0;
@@ -565,6 +615,8 @@ import { TRDLoader } from './disk-beta.js';
             drv.diskData = mgt;
             drv.diskType = 'mgt';
             drv.headTrack = 0;
+            drv.addrIndex = 0;
+            drv.addrSlot = -1;
             if ((driveIndex & 0x01) === this.drive) {
                 this.status = 0;
                 this.track = 0;
@@ -599,6 +651,50 @@ import { TRDLoader } from './disk-beta.js';
             return this.drives.some(d => d.diskData !== null);
         }
 
+        /**
+         * One step of the mechanism is not always one track of the medium. A
+         * 40-track disk written in an 80-track drive occupies every OTHER
+         * cylinder, so a DOS that knows it has such a drive double-steps: its
+         * track 1 is physical cylinder 2. Nothing in a raw sector dump says
+         * which drive the disk is sitting in, so the drive's track count is
+         * configuration, not something to detect.
+         *
+         * 1 everywhere except an Opus with an 80-track drive and a 40-track
+         * disk; the +D and Didaktik keep the straight mapping they have always
+         * had.
+         */
+        get stepFactor() { return 1; }
+
+        /**
+         * Which of the DISK's tracks is under the head — what the ID fields
+         * written there say, and what a sector read must index by. A head parked
+         * between two tracks of a double-stepped disk is over no ID field at
+         * all, hence -1.
+         */
+        get mediumTrack() {
+            const f = this.stepFactor;
+            const physical = this.currentDisk.headTrack | 0;
+            return (physical % f) === 0 ? (physical / f) : -1;
+        }
+
+        // The highest cylinder this drive's head can reach.
+        get headLimit() {
+            return Math.max(0, (this.currentDisk.driveTracks || 160) - 1);
+        }
+
+        // One step of the head. The U bit (bit 4) decides whether the TRACK
+        // REGISTER follows: a Step without it moves the head and leaves the
+        // register alone, which is exactly how a DOS double-steps — two steps
+        // per track, the register counting tracks and the head counting
+        // cylinders. Treating the register as the head position meant no DOS
+        // could do that, and EXCOM 2.28 then stepped its way off the end of the
+        // disk looking for track 158.
+        _step(dir, cmd) {
+            const drv = this.currentDisk;
+            drv.headTrack = Math.max(0, Math.min(this.headLimit, (drv.headTrack | 0) + dir));
+            if (cmd & 0x10) this.track = Math.max(0, Math.min(255, this.track + dir));
+        }
+
         // Calculate sector offset in disk image from physical cylinder, side, sector.
         // Used by WD1772 emulation (port read/write commands) where track = cylinder
         // and side comes from the control register.
@@ -613,6 +709,19 @@ import { TRDLoader } from './disk-beta.js';
             return this.firstSector + this.sectorsPerTrack;
         }
 
+        // The size code a WD177x puts in an ID field for this geometry. 256-byte
+        // sectors (Opus) are 1 and 512-byte ones (MGT) are 2, so a controller
+        // that reported a fixed 2 told an Opus program its sectors were twice
+        // the size they are.
+        get sizeCode() {
+            switch (this.bytesPerSector) {
+                case 128: return 0;
+                case 256: return 1;
+                case 1024: return 3;
+                default: return 2;
+            }
+        }
+
         // WD177x register read by register number: 0 = status, 1 = track,
         // 2 = sector, 3 = data. The +D decodes these from I/O ports and the Opus
         // Discovery from memory addresses, so the register behaviour lives here
@@ -624,17 +733,32 @@ import { TRDLoader } from './disk-beta.js';
                         return this.NOT_READY;
                     }
                     {
+                        this._formatPoll();
                         let st = this.status;
+                        // Not ready for the next byte yet: the medium gives one
+                        // 111.8 T-states and a polling host is faster than that.
+                        if (this.formatting && this.rotation &&
+                            this.rotation.now() < this._fmtByteDue) {
+                            st &= ~this.DRQ;
+                        }
                         if (this.reading && this.dataPos < this.dataLen) {
                             st |= this.DRQ;
                         }
-                        if (this.lastCmdType === 1 && this.track === 0) {
+                        if (this.lastCmdType === 1 &&
+                            (this.currentDisk.headTrack | 0) === 0) {
                             st |= this.TRACK0;
                         }
+                        // The real pulse with a rotation clock — 1.5 ms of each
+                        // 200 ms revolution — and the old one-in-sixteen fake
+                        // without one.
                         if (this.lastCmdType === 1) {
-                            this.indexCounter = (this.indexCounter + 1) % 16;
-                            if (this.indexCounter === 0) {
-                                st |= this.INDEX;
+                            if (this.rotation) {
+                                if (this.rotation.indexActive()) st |= this.INDEX;
+                            } else {
+                                this.indexCounter = (this.indexCounter + 1) % 16;
+                                if (this.indexCounter === 0) {
+                                    st |= this.INDEX;
+                                }
                             }
                         }
                         return st;
@@ -685,6 +809,7 @@ import { TRDLoader } from './disk-beta.js';
 
                 case 0xEF: // Control register read: INTRQ/DRQ status
                     {
+                        this._formatPoll();
                         let ctrl = 0;
                         if (this.intrq) ctrl |= 0x80;
                         if (this.reading || this.writing) ctrl |= 0x40;
@@ -738,7 +863,17 @@ import { TRDLoader } from './disk-beta.js';
                     this.data = value;
                     if (this.writing && this.dataBuffer && this.dataPos < this.dataLen) {
                         this.dataBuffer[this.dataPos++] = value;
+                        this._fmtPolls = 0;
+                        if (this.formatting && this.rotation) {
+                            this._fmtLastByte = this.rotation.now();
+                            this._fmtByteDue = ++this._fmtBytesIn === 1
+                                ? this._fmtStart
+                                : this._fmtByteDue + this.rotation.byteTime();
+                        }
                         if (this.dataPos >= this.dataLen) {
+                            // A format fills a whole track, not a sector, and
+                            // there is no next sector to step to afterwards.
+                            if (this.formatting) { this.finishWriteTrack(); break; }
                             this.flushWriteBuffer();
                             // DRQ has to drop with BUSY at the end of a write, the
                             // way the read paths already do it. Leaving it asserted
@@ -791,12 +926,22 @@ import { TRDLoader } from './disk-beta.js';
             this.sector = this.firstSector;
             this.reading = false;
             this.writing = false;
+            this.formatting = false;
+            this.drqNotBefore = 0;
             this.dataBuffer = null;
             this.intrq = false;
             this._sysReadsSinceData = 0;
         }
 
         executeCommand(cmd) {
+            // A Write Track ends at the index pulse, 200 ms after it started —
+            // the chip does not wait around for a host that stopped feeding it.
+            // Nothing here models rotation, so the next command IS that
+            // deadline: whatever was streamed is committed and the format is
+            // over. Without this a ROM that issues Write Track and then changes
+            // its mind leaves the controller waiting for 6250 bytes that never
+            // come, with `writing` set, and every later transfer goes wrong.
+            if (this.formatting) this.finishWriteTrack();
             this.command = cmd;
             this.status = 0;
             this.intrq = false;
@@ -814,24 +959,43 @@ import { TRDLoader } from './disk-beta.js';
                 this.status |= this.BUSY;
 
                 if ((cmd & 0xF0) === 0x00) {
-                    // Restore
+                    // Restore: step out to the stop. Both the head and the
+                    // register end at zero, which is the one case where the
+                    // controller knows where the head really is.
                     this.track = 0;
                     this.currentDisk.headTrack = 0;
-                    this.status |= this.TRACK0;
                 } else if ((cmd & 0xF0) === 0x10) {
-                    // Seek
-                    this.track = this.data;
-                    this.currentDisk.headTrack = this.data;
-                    if (this.track === 0) this.status |= this.TRACK0;
+                    // Seek: the data register holds the wanted track. A seek is
+                    // a COUNT OF STEPS — the head moves by the difference
+                    // between the register and the data, not to the data — so a
+                    // DOS holding the two apart keeps the offset it chose.
+                    const delta = (this.data & 0xFF) - (this.track & 0xFF);
+                    const drv = this.currentDisk;
+                    drv.headTrack = Math.max(0, Math.min(this.headLimit,
+                                                         (drv.headTrack | 0) + delta));
+                    this.track = this.data & 0xFF;
                 } else if ((cmd & 0xE0) === 0x40) {
-                    // Step in — logical tracks 0-159 (80 cylinders × 2 sides)
-                    if (this.track < 159) this.track++;
-                    this.currentDisk.headTrack = this.track;
+                    this.stepDir = 1;
+                    this._step(1, cmd);          // step in
                 } else if ((cmd & 0xE0) === 0x60) {
-                    // Step out
-                    if (this.track > 0) this.track--;
-                    this.currentDisk.headTrack = this.track;
-                    if (this.track === 0) this.status |= this.TRACK0;
+                    this.stepDir = -1;
+                    this._step(-1, cmd);         // step out
+                } else if ((cmd & 0xE0) === 0x20) {
+                    this._step(this.stepDir, cmd);  // step, whichever way last time
+                }
+
+                // TRACK0 is a line from the drive: it says where the HEAD is,
+                // not what the register holds.
+                if ((this.currentDisk.headTrack | 0) === 0) this.status |= this.TRACK0;
+
+                // The V bit: verify that the head really is over the track the
+                // register names, by reading an ID field and comparing. It is
+                // how a DOS finds out what it is dealing with — EXCOM 2.28 steps
+                // in once more with V set and takes a Seek Error to mean the
+                // drive is not the 80-track one it assumes.
+                if (cmd & 0x04) {
+                    const mt = this.mediumTrack;
+                    if (mt < 0 || (this.track & 0xFF) !== mt) this.status |= this.SEEK_ERROR;
                 }
 
                 this.status &= ~this.BUSY;
@@ -858,12 +1022,18 @@ import { TRDLoader } from './disk-beta.js';
             // WD1772: "rest of Status Register is updated according to Type I commands"
             if ((cmd & 0xF0) === 0xD0) {
                 this.lastCmdType = 1;  // Status uses Type I format after Force Interrupt
+                // A formatter that stops short does so with a Force Interrupt —
+                // the index pulse is what ends a Write Track on real hardware and
+                // a ROM counting bytes will not reach 6250 of them. The track it
+                // did write is still a formatted track, so commit before the
+                // command state is torn down.
+                if (this.formatting) this.finishWriteTrack();
                 this.reading = false;
                 this.writing = false;
                 this.multiSector = false;
                 this.status &= ~this.BUSY;
                 this.status |= this.HEAD_LOADED;
-                if (this.track === 0) this.status |= this.TRACK0;
+                if ((this.currentDisk.headTrack | 0) === 0) this.status |= this.TRACK0;
                 if (cmd & 0x08) this.intrq = true;
                 return;
             }
@@ -872,33 +1042,95 @@ import { TRDLoader } from './disk-beta.js';
             if ((cmd & 0xC0) === 0xC0) {
                 this.lastCmdType = 2;
                 if ((cmd & 0xF0) === 0xC0) {
-                    // Read address
+                    // READ ADDRESS: the ID field of the next sector to come
+                    // under the head. These images are raw sector dumps with no
+                    // ID fields in them, so the ID is synthesized — but from the
+                    // GEOMETRY and advancing one sector per command, which is
+                    // what lets a program walk a track (its sector numbering,
+                    // its interleave, the size code). Handing back the sector
+                    // register instead, as this did, told the program only what
+                    // it had just written there, and always claimed 512-byte
+                    // sectors.
+                    const drv = this.currentDisk;
+                    const n = this.sectorsPerTrack;
+                    // Which ID to report. **Reading one costs the time to reach
+                    // it**: the command waits for the next ID field to come round,
+                    // so on real hardware two Read Addresses in a row report
+                    // consecutive sectors rather than the same one twice. Commands
+                    // here complete instantly, so the head is kept MONOTONE
+                    // instead, in absolute slots rather than modulo a revolution:
+                    // a command takes the next slot after the one it last
+                    // reported, or wherever the disk has since turned to,
+                    // whichever is further on. Never one the disk has passed.
+                    // With no clock it is plain round robin, so a loader can still
+                    // walk a track.
+                    let idx;
+                    if (this.rotation) {
+                        const abs = Math.max(this.rotation.absoluteSlot(n),
+                                             (drv.addrSlot ?? -1) + 1);
+                        drv.addrSlot = abs;
+                        idx = ((abs % n) + n) % n;
+                    } else {
+                        idx = (((drv.addrIndex || 0) % n) + n) % n;
+                    }
+                    drv.addrIndex = (idx + 1) % n;
+                    // The ID says which of the DISK's tracks the head is over,
+                    // not what the track register was last loaded with — a ROM
+                    // writes that register freely ($FF before a Restore, for
+                    // one). Parked between two tracks of a double-stepped disk
+                    // there is no ID field to read, and the chip says so.
+                    const idTrack = this.mediumTrack;
+                    if (idTrack < 0) {
+                        this.status = this.RNF;
+                        this.intrq = true;
+                        return;
+                    }
                     this.dataBuffer = new Uint8Array([
-                        this.currentDisk.headTrack, this.side, this.sector, 2, 0, 0
-                    ]);  // size=2 for 512-byte sectors
+                        idTrack, this.side, this.firstSector + idx, this.sizeCode, 0, 0
+                    ]);
+                    // The datasheet is explicit: the ID's track address is also
+                    // loaded into the SECTOR register. A double-stepping ROM
+                    // reads the logical track number back out of it.
+                    this.sector = idTrack;
                     this.dataPos = 0;
                     this.dataLen = 6;
                     this.reading = true;
                     this.status |= this.BUSY | this.DRQ;
                 } else if ((cmd & 0xF0) === 0xE0) {
-                    // Read Track — not implemented
-                    this.status = 0;
-                    this.intrq = true;
+                    this.readTrack();
                 } else if ((cmd & 0xF0) === 0xF0) {
-                    // Write Track — not implemented
-                    this.status = 0;
-                    this.intrq = true;
+                    this.writeTrack();
                 }
                 return;
             }
         }
 
+        /**
+         * The ID field under the head, or -1 if it is not the one asked for.
+         * A WD177x does not take the track register as an address: it reads the
+         * ID fields going past and compares. A head left on the wrong cylinder
+         * — or between two of them — finds nothing and the command fails with
+         * Record Not Found, instead of quietly returning another track's data.
+         */
+        _idTrackForTransfer() {
+            const mt = this.mediumTrack;
+            if (mt < 0 || (this.track & 0xFF) !== mt) return -1;
+            return mt;
+        }
+
         readSector() {
             const drv = this.currentDisk;
-            const offset = this.getSectorOffset(this.track, this.side, this.sector);
+            const mt = this._idTrackForTransfer();
+            if (mt < 0) {
+                this.status |= this.RNF;
+                this.status &= ~this.BUSY;
+                this.intrq = true;
+                return;
+            }
+            const offset = this.getSectorOffset(mt, this.side, this.sector);
 
             if (this.onDiskActivity) {
-                this.onDiskActivity('read', this.track, this.sector, this.side, this.drive);
+                this.onDiskActivity('read', mt, this.sector, this.side, this.drive);
             }
 
             if (offset + this.bytesPerSector > drv.diskData.length) {
@@ -917,10 +1149,17 @@ import { TRDLoader } from './disk-beta.js';
 
         writeSector() {
             const drv = this.currentDisk;
-            const offset = this.getSectorOffset(this.track, this.side, this.sector);
+            const mt = this._idTrackForTransfer();
+            if (mt < 0) {
+                this.status |= this.RNF;
+                this.status &= ~this.BUSY;
+                this.intrq = true;
+                return;
+            }
+            const offset = this.getSectorOffset(mt, this.side, this.sector);
 
             if (this.onDiskActivity) {
-                this.onDiskActivity('write', this.track, this.sector, this.side, this.drive);
+                this.onDiskActivity('write', mt, this.sector, this.side, this.drive);
             }
 
             if (offset + this.bytesPerSector > drv.diskData.length) {
@@ -941,6 +1180,229 @@ import { TRDLoader } from './disk-beta.js';
         flushWriteBuffer() {
             if (this.writeOffset !== undefined && this.dataBuffer) {
                 this.currentDisk.diskData.set(this.dataBuffer, this.writeOffset);
+                // Opus and Didaktik inherit this, so all three are covered here.
+                this.currentDisk.modified = true;
+            }
+        }
+
+        /**
+         * READ TRACK: every byte between one index pulse and the next — gaps,
+         * sync fields, address marks, IDs, data, CRCs.
+         *
+         * A raw sector dump has none of that in it, so the track is built from
+         * the geometry and the sectors' contents: real `A1` marks and real CRCs,
+         * because this reads the medium rather than instructing the chip. Two
+         * things it cannot know and does not pretend to — the interleave (an
+         * image like this records the sectors in ascending order, so that is the
+         * order they are reported in) and the real gap lengths, which get the
+         * IBM System 34 defaults.
+         */
+        readTrack() {
+            const drv = this.currentDisk;
+            if (!drv.diskData) {
+                this.status = this.NOT_READY;
+                this.intrq = true;
+                return;
+            }
+            const mt = this.mediumTrack;
+            if (mt < 0) {
+                // Parked between two tracks of a double-stepped disk: there is
+                // nothing under the head to read.
+                this.status = this.RNF;
+                this.intrq = true;
+                return;
+            }
+
+            const sectors = [];
+            for (let i = 0; i < this.sectorsPerTrack; i++) {
+                const id = this.firstSector + i;
+                const off = this.getSectorOffset(mt, this.side, id);
+                if (off < 0 || off + this.bytesPerSector > drv.diskData.length) break;
+                sectors.push({
+                    cylinder: mt, head: this.side, sector: id,
+                    sizeCode: this.sizeCode,
+                    data: drv.diskData.subarray(off, off + this.bytesPerSector),
+                });
+            }
+            if (!sectors.length) {
+                this.status = this.RNF;
+                this.intrq = true;
+                return;
+            }
+
+            if (this.onDiskActivity) {
+                this.onDiskActivity('read', mt, -1, this.side, this.drive);
+            }
+
+            this.dataBuffer = buildTrackStream({
+                cylinder: mt, head: this.side, sectors, marks: 'medium',
+            });
+            this.dataPos = 0;
+            this.dataLen = this.dataBuffer.length;
+            this.reading = true;
+            this.status |= this.BUSY | this.DRQ;
+        }
+
+        /**
+         * WRITE TRACK: the format command, and the only way a disk is made.
+         *
+         * There is no "format a sector": the host streams a whole track at the
+         * chip and the chip writes it between index pulses. So this takes the
+         * stream — up to a track's worth of bytes — and `finishWriteTrack` works
+         * out what was laid down. Without it an interface can edit a disk
+         * somebody else made but cannot make one.
+         */
+        writeTrack() {
+            const drv = this.currentDisk;
+            if (!drv.diskData) {
+                this.status = this.NOT_READY;
+                this.intrq = true;
+                return;
+            }
+            this.dataBuffer = new Uint8Array(TRACK_BYTES_MFM);
+            this.dataPos = 0;
+            this.dataLen = this.dataBuffer.length;
+            this.writing = true;
+            this.formatting = true;
+            this._fmtPolls = 0;
+            // A Write Track does not begin where the command was issued. The chip
+            // asserts DRQ at once so the host can have its first byte ready, then
+            // WAITS FOR THE INDEX PULSE and writes from there to the next one -- so
+            // the command spans between one and two revolutions, and the write
+            // itself spans exactly one. `_fmtStart` is that index, not now:
+            // `lastFormat.revolutions` is the write, and `indexWait` the wait
+            // before it. `drqNotBefore` holds the byte stream back to the same
+            // instant for the interfaces whose DRQ Spectrum paces.
+            this._fmtCommand = this.rotation ? this.rotation.now() : 0;
+            // If the pulse is under the sensor right now there is nothing to wait
+            // for -- the chip begins on the index, and it is on it.
+            this._fmtStart = this.rotation
+                ? (this.rotation.indexActive()
+                    ? this.rotation.now() : this.rotation.nextIndex())
+                : 0;
+            this._fmtLastByte = this._fmtStart;
+            this.drqNotBefore = this._fmtStart;
+            // The polled interfaces have no Spectrum pacing their DRQ, so the
+            // chip does it here: DRQ is cleared until the next byte is due.
+            // Byte 1 is due at once -- it goes into the register while the chip
+            // waits -- and byte 2 is due AT the index, where writing starts.
+            this._fmtBytesIn = 0;
+            this._fmtByteDue = 0;
+            this.writeOffset = undefined;   // nothing for flushWriteBuffer to do
+            this.status |= this.BUSY | this.DRQ;
+        }
+
+        /**
+         * A Write Track ends at the index pulse — one revolution after it began,
+         * whatever the host is doing. A host that opens a track and then waits
+         * for an INTRQ without feeding anything is relying on exactly that; with
+         * no pulse to end it the controller stays stuck in `writing`.
+         *
+         * With a rotation clock the deadline is the real one: a revolution of
+         * silence, measured from the **last byte** rather than from the command.
+         * A feed still arriving has not missed its index — the medium under the
+         * head is being written, and the track ends when the buffer fills. No ROM
+         * mid-format pauses for anything near a revolution (the slowest here goes
+         * ~130 T between bytes, against 698880 for a revolution), so a real
+         * format cannot be cut short, while one abandoned half way is closed and
+         * what arrived is committed.
+         *
+         * Without a clock, the old stand-in: register reads counted, and only in
+         * the case that cannot come good — a track opened and **not fed at all**.
+         * The gate on `dataPos` is what makes that safe. MDOS polls the status a
+         * long time before its first byte, and an earlier version that counted
+         * between bytes aborted its format at track 2.
+         *
+         * Lost data is the honest status either way: the index came round before
+         * the host had finished. The read paths end a stalled transfer the same
+         * way.
+         */
+        _formatPoll() {
+            if (!this.formatting) return;
+            if (this.rotation) {
+                if (this.rotation.revolutionsSince(this._fmtLastByte) < 1) return;
+            } else {
+                if (this.dataPos > 0) return;
+                if (++this._fmtPolls < PlusDDisk.FORMAT_POLL_LIMIT) return;
+            }
+            this.finishWriteTrack();
+            this.status |= this.LOST_DATA;
+        }
+
+        /**
+         * The stream is over — either the track filled or a Force Interrupt cut
+         * it short. Whatever sectors it laid down go into the image.
+         *
+         * Which track they go to is where the HEAD is, not what the ID fields in
+         * the stream say. Write Track compares nothing: it writes where the head
+         * is standing, and the cylinder byte in each ID is simply more data. On a
+         * real disk the two can disagree — that is half of how copy protection
+         * works — but a flat sector dump has nowhere to put a track whose IDs
+         * claim to be somewhere else, so one that does is counted as skipped
+         * rather than quietly filed under the number it claims.
+         */
+        finishWriteTrack() {
+            const drv = this.currentDisk;
+            const stream = this.dataBuffer
+                ? this.dataBuffer.subarray(0, this.dataPos) : new Uint8Array(0);
+            const { sectors } = parseTrackStream(stream);
+
+            this.writing = false;
+            this.formatting = false;
+            this.drqNotBefore = 0;
+            this.status &= ~(this.BUSY | this.DRQ);
+            this.intrq = true;
+
+            const mt = this.mediumTrack;
+            let written = 0, skipped = 0;
+
+            if (mt < 0 || !drv.diskData) {
+                skipped = sectors.length;
+            } else {
+                for (const s of sectors) {
+                    const idx = s.sector - this.firstSector;
+                    if (s.sizeCode !== this.sizeCode ||
+                        idx < 0 || idx >= this.sectorsPerTrack ||
+                        s.cylinder !== mt) { skipped++; continue; }
+                    const off = this.getSectorOffset(mt, this.side, s.sector);
+                    if (off < 0 || off + this.bytesPerSector > drv.diskData.length) {
+                        skipped++;
+                        continue;
+                    }
+                    drv.diskData.set(s.data.subarray(0, this.bytesPerSector), off);
+                    written++;
+                }
+                if (written) drv.modified = true;
+            }
+
+            // What a format did is worth being able to ask about: a DOS that
+            // reports "disk error" after formatting has usually written a
+            // geometry the image cannot hold, and the counts say so at once.
+            this.lastFormat = {
+                track: mt, side: this.side, drive: this.drive,
+                found: sectors.length, written, skipped,
+                // How long the host took, in revolutions. A real chip gives it
+                // exactly one, so anything over 1.0 is a host whose feed loop is
+                // slower than the medium — worth being able to ask about.
+                // Zero rather than a negative figure if the command was cut
+                // short before the index: the write window never opened, so the
+                // write took no time at all. This cannot hide the bug a negative
+                // once reported -- a feed that beat the medium and filled the
+                // track before the window opened -- because the byte stream is
+                // now held to the index and cannot start before it.
+                revolutions: this.rotation
+                    ? Math.max(0, (this.rotation.now() - this._fmtStart) /
+                                  this.rotation.revolution())
+                    : null,
+                // And how much of a revolution the chip spent waiting for the
+                // index before any of it: 0 to 1, wherever the command landed.
+                indexWait: this.rotation
+                    ? (this._fmtStart - this._fmtCommand) / this.rotation.revolution()
+                    : null,
+            };
+
+            if (written && this.onDiskActivity) {
+                this.onDiskActivity('write', mt, -1, this.side, this.drive);
             }
         }
 
