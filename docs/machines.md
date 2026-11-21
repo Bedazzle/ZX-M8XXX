@@ -13,7 +13,7 @@ const profile = getMachineProfile('128k');
 //   ramPages, romBanks       - Memory: 1/8/64 RAM pages, 1/2/4 ROM banks
 //   romFile, romSize          - ROM filename and total size in bytes
 //   basicRomBank             - ROM bank containing BASIC (0 for 48K, 1 for 128K/Pentagon, 3 for +2A/+3)
-//   pagingModel              - 'none' | '128k' | '+2a' | 'pentagon1024' | 'scorpion'
+//   pagingModel              - 'none' | '128k' | '+2a' | 'pentagon1024' | 'scorpion' | 'hc2000'
 //   ulaProfile               - ULA timing: '48k' | '128k' | 'pentagon'
 //   hasContention             - Memory contention enabled (false for Pentagon/Scorpion)
 //   evenM1                    - Scorpion Even M1: an opcode fetch from RAM is held
@@ -42,11 +42,13 @@ getMachineBySzxId(id)                 // Reverse lookup from SZX machine ID
 ```
 
 
-**Defined machines**: `48k`, `128k`, `+2`, `+2a`, `+3`, `pentagon`, `pentagon1024`, `scorpion`
+**Defined machines**: `48k`, `128k`, `+2`, `+2a`, `+3`, `pentagon`, `pentagon1024`, `scorpion`, `hc2000`
 
 **Adding a new machine**: Add profile to `MACHINE_PROFILES` in `machines.js`. The profile drives memory init, ULA timing, port decoding, contention, and snapshot format mapping. Add ULA border/timing entries if `ulaProfile` is new. If the machine needs a new ROM file, add it to the `roms/` directory.
 
 **Visible machines**: Users choose which machines appear in the dropdown via Settings → Machines. Default: `['48k', '128k', 'pentagon']`. Stored in localStorage key `zx-visible-machines`.
+
+**HC-2000 paging** (port of FUSE `hc2000.c`, branch `hc2000-v2` of vamposdecampos/fuse-emulator-svn): 64KB RAM held in 128K bank numbers — 0 (under the ROM, CP/M), 5 ($4000), 2 ($8000), 7 ($C000) — so CVS is the 128K shadow screen and nothing else needs a special case. `Memory._hcRemap()` builds eight 8KB read/write views. Port $7E (A7=0, A0=0): D0 B/OL (ROM 0 BASIC / 1 CP/M), D1 CPMPL (RAM at $0000, upper 8KB of the ROM at $E000), D2 lock until reset, D3 CVS (screen at $C000). Ports $C5/$C7 drop/raise CPM: the $E000 RAM also appears at $C000. The ULA port is A7=1, A0=0 on the HC, so $7E touches neither border nor keyboard. No contention; 48K timing. ROM: `hc2000.rom` (32KB) or FUSE's `hc2000-0.rom` + `hc2000-1.rom`, glued on load. SZX machine ID 17 (FUSE's); SPCR byte 1 carries $7E, byte 3 the last of $C5/$C7. The HC IF1 floppy interface is fitted by default and can be switched off — see docs/peripherals.md.
 
 **Pentagon 1024 paging**: Port 0xEFF7 bit 2 = 0 enables 1MB mode (bit 5 of 7FFD selects bank bit 5). Bit 3 = 1 maps RAM page 0 over ROM at 0x0000-0x3FFF. Port 7FFD bits 0-2 + 6,7 + (5 in 1MB mode) select from 64 RAM pages.
 

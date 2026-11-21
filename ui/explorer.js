@@ -13,6 +13,7 @@ import {
     SCREEN_WIDTH, SCREEN_HEIGHT
 } from '../core/constants.js';
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader, sclChecksum } from '../core/loaders.js';
+import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 import { BASIC_TOKENS, decodeBasicProgram } from '../core/basic-tokens.js';
 import { findPackedScreenInBlock, rcsToScr, looksRcsEncoded } from '../core/depackers.js';
 import { trdBasicAutostartLine, extractTrdFileDescriptor, shapeBasicEntry, addMetaFromDescriptor, isMonoloader, splitMonoloader } from './disk-file-copy.js';
@@ -785,9 +786,14 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             explorerFileName.textContent = file.name;
             explorerFileSize.textContent = `(${explorerData.length.toLocaleString()} bytes)`;
 
-            // Detect file type (.img is a DISCiPLE/+D alias for .mgt, but only for valid MGT sizes)
-            const ext = file.name.split('.').pop().toLowerCase();
+            // Detect file type (.img is a DISCiPLE/+D alias for .mgt, but only for valid MGT sizes;
+            // an HC raw image is converted to a DSK with real geometry and handled as one)
+            let ext = file.name.split('.').pop().toLowerCase();
             const isMgtSize = explorerData.length === 819200 || explorerData.length === 409600;
+            if (ext === 'img' && !isMgtSize) {
+                const hc = hcRawToDsk(explorerData, file.name);
+                if (hc) { explorerData = hc.dsk; explorerPendingHcRaw = hc.hcRaw; ext = 'dsk'; }
+            }
             explorerFileType = (ext === 'img' && isMgtSize) ? 'mgt' : ext;
 
             // Parse file
@@ -1800,10 +1806,30 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         };
     }
 
+    // An HC raw image (.img): converted to a DSKImage with real geometry
+    // (core/loaders/disk-hc.js) so it is listed, extracted and edited exactly
+    // as the same disk in DSK form. Remembers the side order so the editor can
+    // save it back as the same kind of .img. Null when it is not an HC disk.
+    let explorerPendingHcRaw = null;
+    function hcRawToDsk(data, name) {
+        if (!HcDiskLoader.isRaw(data)) return null;
+        const conv = HcDiskLoader.fromRaw(data, name);
+        const geom = conv.geometry;
+        // 720K/360K could be a PC disk: only take it with an HC CP/M directory
+        if (geom.sectors === 9 && !DSKLoader.isHcDisk(conv.image)) return null;
+        return {
+            dsk: conv.image.toBuffer(),
+            hcRaw: { layout: conv.layout, reason: conv.reason, name }
+        };
+    }
+
     // DSK file parser
     function explorerParseDSK(data) {
+        const hcRaw = explorerPendingHcRaw;
+        explorerPendingHcRaw = null;
         try {
             const dskImage = DSKLoader.parse(data);
+            if (hcRaw) dskImage.hcFormat = true;    // came from an HC .img: say so
             const diskSpec = DSKLoader.getDiskSpec(dskImage);
             let files = [];
             try {
@@ -1822,7 +1848,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 isExtended: dskImage.isExtended,
                 numTracks: dskImage.numTracks,
                 numSides: dskImage.numSides,
-                size: data.length
+                size: data.length,
+                hcRaw: hcRaw        // set when the file was an HC raw .img
             };
         } catch (err) {
             return { type: 'dsk', error: err.message, size: data.length };
@@ -1839,7 +1866,8 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             const supportedExts = ['tap', 'tzx', 'sna', 'z80', 'szx', 'rzx', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk'];
             const supportedFiles = files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
-                if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600);
+                if (ext === 'img') return f.data && (f.data.length === 819200 || f.data.length === 409600 ||
+                    HcDiskLoader.isRaw(f.data));
                 return supportedExts.includes(ext);
             });
 
@@ -1865,6 +1893,15 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
                 explorerFileSize.textContent = `(${explorerData.length.toLocaleString()} bytes)`;
                 const isMgtSize = explorerData.length === 819200 || explorerData.length === 409600;
                 explorerFileType = (ext === 'img' && isMgtSize) ? 'mgt' : ext;
+                if (ext === 'img' && !isMgtSize) {
+                    const hc = hcRawToDsk(explorerData, zipFile.name);
+                    if (hc) {
+                        explorerData = hc.dsk;
+                        explorerPendingHcRaw = hc.hcRaw;
+                        explorerFileType = 'dsk';
+                        return explorerParseDSK(explorerData);
+                    }
+                }
 
                 // Parse based on type
                 switch (ext) {
@@ -3448,7 +3485,9 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
         const hasSel = panel.selection.size > 0;
 
         const snapModified = isSnapshot && panel.snapshotDirty && panel.snapshotDirty.size > 0;
-        btnEditorSave.textContent = t ? `Save ${t.toUpperCase()}${snapModified ? ' *' : ''}` : 'Save';
+        // An HC raw .img is edited as a DSK but saved back as .img
+        const saveAs = (isDsk && panel.parsedFile && panel.parsedFile.hcRaw) ? 'img' : t;
+        btnEditorSave.textContent = t ? `Save ${saveAs.toUpperCase()}${snapModified ? ' *' : ''}` : 'Save';
         btnEditorSave.disabled = !t || (isSnapshot && !snapModified);
 
         const isDidaktik = t === 'didaktik';

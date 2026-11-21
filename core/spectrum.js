@@ -68,6 +68,8 @@ import {
     OPDLoader, OpusDisk, DidaktikLoader, DidaktikDisk
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
+import { HcIf1 } from './hc-if1.js';
+import { HcDiskLoader } from './loaders/disk-hc.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -115,6 +117,11 @@ import { Disassembler } from './disasm.js';
 
             // µPD765 FDC (ZX Spectrum +3)
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
+            this.hcIf1 = null;
+            // The HC IF1 came with most HC-2000s, but the machine exists without
+            // it too (and an HC-91 ROM runs on it): on by default, switchable
+            this.hcIf1Enabled = storageGet('zxm8_hcIf1') !== 'false';
+            this._setupHcIf1();
 
             // AY-3-8910 sound chip
             this.ay = new AY(this.profile.ayClockHz);
@@ -1461,6 +1468,8 @@ import { Disassembler } from './disasm.js';
             this.rzxStop();
             if (this.ay) this.ay.reset();
             if (this.fdc) this.fdc.reset();
+            // HC IF1: select latch and motors drop; its static RAM keeps its contents
+            if (this.hcIf1) this.hcIf1.reset(false);
 
             // Reset frame timing
             this.frameStartOffset = 0;
@@ -1543,12 +1552,64 @@ import { Disassembler } from './disasm.js';
             // Per FUSE: +D ports always respond when hardware is available
             // (not gated by memory paging state or disk presence)
             return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !this.hcIf1;
         }
 
         _isIF1Active() {
             return this.if1Enabled && this.microdrive && this.microdrive.hasAnyCartridge() &&
-                this.memory.hasIF1Rom();
+                this.memory.hasIF1Rom() && !this.hcIf1;
+        }
+
+        /**
+         * HC-2000: its Interface 1 with the floppy controller is built in (FUSE
+         * marks it PERIPH_PRESENT_ALWAYS). Its µPD765 *is* this.fdc on this
+         * machine, so DSK loading, the drive letters, project save and the disk
+         * activity light all work through the +3 paths; only the ports differ.
+         */
+        _setupHcIf1() {
+            if (this.profile.pagingModel === 'hc2000' && this.hcIf1Enabled) {
+                if (!this.hcIf1) this.hcIf1 = new HcIf1();
+                this.fdc = this.hcIf1.fdc;
+                this.memory.hcIf1Ram = this.hcIf1.ram;
+            } else {
+                // An HC-2000 without it is a plain Spectrum-compatible: no FDC,
+                // and the add-on interfaces become available again
+                if (this.profile.pagingModel === 'hc2000') this.fdc = null;
+                this.hcIf1 = null;
+                this.memory.hcIf1Rom = null;
+                this.memory.hcIf1Ram = null;
+            }
+        }
+
+        /**
+         * Switch the HC-2000's HC IF1 in or out (Settings). The caller loads
+         * its ROM (romData lives in the UI) and resets the machine.
+         */
+        setHcIf1Enabled(on) {
+            this.hcIf1Enabled = !!on;
+            this.memory.if1Active = false;
+            this._setupHcIf1();
+            this.updateBetaDiskPagingFlag();
+        }
+
+        /**
+         * Does the AY answer on its ports? Built in (128K and up), or the
+         * "AY in 48K" add-on (Melodik-style) on a 48K-class machine — the 48K
+         * itself and the HC-2000, which has no AY of its own.
+         */
+        _ayOnPorts() {
+            return this.ayEnabled || (this.ay48kEnabled &&
+                (this.machineType === '48k' || this.profile.pagingModel === 'hc2000'));
+        }
+
+        /** Is the HC IF1 usable: HC-2000 with hc-if1.rom loaded. */
+        _isHcIf1Present() {
+            return this.hcIf1 !== null && this.memory.hasHcIf1Rom();
+        }
+
+        // A T-state count that keeps growing across frames (the 555 monostable)
+        _absTStates() {
+            return (this.totalFrames || 0) * this.timing.tstatesPerFrame + this.cpu.tStates;
         }
 
         /**
@@ -1583,7 +1644,7 @@ import { Disassembler } from './disasm.js';
 
         _isDiscipleActive() {
             return this.discipleEnabled && this.memory.hasDiscipleRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !this.hcIf1;
         }
 
         triggerDiscipleNmi() {
@@ -1720,7 +1781,12 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if ((lowByte & 0x01) === 0) {
+                if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
+                    // HC-2000 config latch $7E (A7=0, A0=0). The HC decodes its
+                    // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
+                    // keyboard does not answer here; FUSE reads the latch back.
+                    result = this.memory.hcConfig;
+                } else if ((lowByte & 0x01) === 0) {
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
                     // Bit 5: HIGH (pulled up)
@@ -1772,10 +1838,14 @@ import { Disassembler } from './disasm.js';
 
                     const ear = this.tapeEarBit ? 0x40 : 0x00;
                     result = keyboard | 0xa0 | ear; // Bits 5,7 always high
-                } else if (this.fdc && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_MSR) {
+                } else if (this.hcIf1 && HcIf1.isFdcPort(lowByte)) {
+                    // HC IF1 floppy controller ($85/$87) and select latch ($05/$07).
+                    // Ahead of Kempston, which would otherwise answer $05/$07.
+                    result = this.hcIf1.read(lowByte, this._absTStates());
+                } else if (this.fdc && this.profile.hasFDC && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_MSR) {
                     // µPD765 FDC Main Status Register (0x2FFD) — ZX Spectrum +3
                     result = this.fdc.readMSR();
-                } else if (this.fdc && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_DATA) {
+                } else if (this.fdc && this.profile.hasFDC && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_DATA) {
                     // µPD765 FDC Data Register (0x3FFD) — ZX Spectrum +3
                     result = this.fdc.readData();
                 } else if (if1Active && (lowByte & 0x01) === 1 && ((lowByte & IF1_PORT_MASK) === IF1_PORT_DATA ||
@@ -1830,7 +1900,7 @@ import { Disassembler } from './disasm.js';
                     if (this.kempstonExtendedEnabled) {
                         result |= ((this.kempstonExtendedState | this.gamepadExtState) & 0xe0);
                     }
-                } else if (lowByte === 0xdf && this.kempstonMouseEnabled) {
+                } else if (lowByte === 0xdf && this.kempstonMouseEnabled && !this.hcIf1) {
                     // Kempston Mouse ports (FADF=buttons, FBDF=X, FFDF=Y)
                     const mouseReg = highByte & 0x05;
                     if (mouseReg === 0x00) {
@@ -1852,7 +1922,7 @@ import { Disassembler } from './disasm.js';
                     result = this.ula.ulaplusReadData();
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
-                    if (this.ayEnabled || (this.machineType === '48k' && this.ay48kEnabled)) {
+                    if (this._ayOnPorts()) {
                         result = this.ay.readRegister();
                     }
                 } else {
@@ -1996,7 +2066,10 @@ import { Disassembler } from './disasm.js';
                 console.log(`IO_TIMING port=${port.toString(16)} tBefore=${tStatesBefore} ioDelay=${ioDelay} contentionOnly=${contentionOnly}`);
             }
 
-            if ((lowByte & 0x01) === 0) {
+            // HC-2000: the ULA port is A7=1, A0=0 — $7E (A7=0) is the config
+            // latch alone and leaves border and beeper alone
+            if ((lowByte & 0x01) === 0 &&
+                !(this.profile.pagingModel === 'hc2000' && (lowByte & 0x80) === 0)) {
                 // Border change timing
                 // Calculate frame-relative T-state when border color changes
                 // cpu.tStates accumulates from frameStartOffset, need to subtract to get frame-relative
@@ -2130,7 +2203,18 @@ import { Disassembler } from './disasm.js';
             const is7FFD = (this.profile.pagingModel === '+2a' || this.profile.pagingModel === 'scorpion')
                 ? (port & DECODE_PLUS2A_MASK) === DECODE_7FFD_PLUS2A
                 : (port & DECODE_128K_MASK) === 0;
-            if (this.profile.pagingModel !== 'none' && is7FFD) {
+            // HC-2000: config latch at $7E (A7=0, A0=0) and the CPM signal on $C5/$C7
+            if (this.profile.pagingModel === 'hc2000') {
+                if ((port & 0x81) === 0) {
+                    if (this.memory.writeHcConfig(val)) {
+                        this.ula.setScreenBankAt(this.memory.screenBank,
+                            this.cpu.tStates + (instructionTiming - 2));
+                    }
+                } else if (lowByte === 0xC5 || lowByte === 0xC7) {
+                    this.memory.writeHcMemPort(lowByte);
+                }
+            }
+            if (this.profile.pagingModel !== 'none' && this.profile.pagingModel !== 'hc2000' && is7FFD) {
                 const oldScreenBank = this.memory.screenBank;
                 this.memory.writePaging(val);
                 // Track screen bank changes for scroll17-style effects
@@ -2151,8 +2235,13 @@ import { Disassembler } from './disasm.js';
                 if (this.fdc) this.fdc.setMotor(!!(val & 0x08));
             }
 
+            // HC IF1 floppy controller and select latch
+            if (this.hcIf1 && HcIf1.isFdcPort(lowByte)) {
+                this.hcIf1.write(lowByte, val, this._absTStates(), 3500000);
+            }
+
             // µPD765 FDC data register write (port 0x3FFD)
-            if (this.fdc && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_DATA) {
+            if (this.fdc && this.profile.hasFDC && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_DATA) {
                 this.fdc.writeData(val);
             }
 
@@ -2169,7 +2258,9 @@ import { Disassembler } from './disasm.js';
             }
 
             // AY-3-8910 ports (128K/Pentagon, or 48K with AY enabled)
-            if (this.ayEnabled || (this.machineType === '48k' && this.ay48kEnabled)) {
+            // (not on the HC IF1's own ports: OUT ($87),A with A15 set would
+            // otherwise also hit an add-on AY's decode)
+            if (this._ayOnPorts() && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
                 if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
                     // Port 0xFFFD: AY register select
                     this.ay.selectRegister(val);
@@ -4265,23 +4356,27 @@ import { Disassembler } from './disasm.js';
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
             // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
             // IF1 is NOT compatible with +2A/+3 (they have their own extended paging)
-            this._if1PagingEnabled =
+            this._if1PagingEnabled = this._isHcIf1Present() || (
                 this.if1Enabled &&
                 this.memory.hasIF1Rom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' &&
+                !this.hcIf1);
             // +D ROM auto-paging flag: +D enabled + ROM loaded + compatible machine
             // +D is NOT compatible with +2A/+3 (they have their own extended paging)
+            // An HC-2000 with its HC IF1 pages that in at the same $0008, so
+            // none of the add-on interfaces go with it (without it, they do).
+            const hc = !!this.hcIf1;
             this._plusDPagingEnabled =
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !hc;
             this._disciplePagingEnabled = this._isDiscipleActive();
             // Opus Discovery paging flag: same machine restriction as the +D and
             // IF1 — it overlays $0000-$3FFF, which +2A/+3 paging already owns.
             this._opusPagingEnabled =
                 this.opusEnabled &&
                 this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !hc;
             // Didaktik 80 is 48K ONLY, matching stock hardware — two independent
             // blockers, and the port collision is the first. The 128K paging port
             // decodes as `port & 0x8002 == 0` and OUT (n),A puts the written byte
@@ -4343,8 +4438,10 @@ import { Disassembler } from './disasm.js';
             if (!this.memory.if1Active) {
                 // Page IN conditions
                 if (pc === IF1_PAGE_IN_RST8 || pc === IF1_PAGE_IN_CLOSE) {
-                    // Only page in when BASIC ROM is selected
-                    if (this.profile.pagingModel === 'none' ||
+                    // Only page in when BASIC ROM is selected. The HC IF1 pages in
+                    // whatever ROM is there, as in FUSE (its overlay is simply not
+                    // visible under CP/M decoding, see Memory._hcIf1Visible).
+                    if (this.profile.pagingModel === 'none' || this.profile.pagingModel === 'hc2000' ||
                         this.memory.currentRomBank === this.profile.basicRomBank) {
                         this.memory.if1Active = true;
                     }
@@ -7137,6 +7234,10 @@ import { Disassembler } from './disasm.js';
                 return this.loadRZX(data);
             }
 
+            // HC-2000: every disk goes to the HC IF1 (DSK, or a raw IMG/MGT)
+            const hcDisk = this._hcDiskRoute(data, fileName, type, driveIndex);
+            if (hcDisk) return hcDisk;
+
             // Check for DSK disk images (ZX Spectrum +3)
             if (type === 'dsk') {
                 return this.loadDSKImage(data, fileName, driveIndex);
@@ -7238,13 +7339,51 @@ import { Disassembler } from './disasm.js';
             };
         }
 
-        // Load DSK disk image - inserts disk into µPD765 FDC (+3)
+        /**
+         * HC-2000 disk routing: a DSK, or a raw .img, or any other file whose
+         * size is a raw HC geometry and which is not a tape or snapshot. (.mgt
+         * is the +D/DISCiPLE format and is not offered on the HC; a TRD of the
+         * same size is the user's call, as on the real machine.) Returns null
+         * when the file is not for the HC IF1.
+         */
+        _hcDiskRoute(data, fileName, type, driveIndex) {
+            if (!this.hcIf1) return null;
+            if (type === 'dsk') return this.loadDSKImage(data, fileName, driveIndex);
+            const ext = ((fileName || '').split('.').pop() || '').toLowerCase();
+            const notMedia = !['sna', 'z80', 'szx', 'tap', 'tzx', 'wav', 'rzx', 'pok'].includes(type);
+            if (HcDiskLoader.isRaw(data) && (ext === 'img' || notMedia)) {
+                return this.loadHcRawImage(data, fileName, driveIndex);
+            }
+            return null;
+        }
+
+        /**
+         * Raw HC image (.img): converted to a DSKImage with real geometry
+         * (core/loaders/disk-hc.js), so it behaves exactly as the same disk in
+         * DSK form. It is kept as EDSK from here on.
+         */
+        loadHcRawImage(data, fileName, driveIndex = 0) {
+            const conv = HcDiskLoader.fromRaw(data, fileName);
+            this.hcLastRawLayout = { layout: conv.layout, reason: conv.reason, fileName };
+            const res = this.loadDSKImage(conv.image.toBuffer(), fileName, driveIndex);
+            res.hcRawLayout = conv.layout;
+            res.hcRawLayoutReason = conv.reason;
+            return res;
+        }
+
+        // Load DSK disk image - inserts disk into µPD765 FDC (+3, or the HC IF1)
         loadDSKImage(data, fileName, driveIndex = 0) {
+            if (!this.fdc && this.profile.pagingModel === 'hc2000') {
+                throw new Error('HC-2000: the HC IF1 disk interface is switched off ' +
+                    '(Settings → Disk interfaces → HC IF1)');
+            }
             if (!this.fdc) {
                 throw new Error('DSK files require ZX Spectrum +3 (no FDC on this machine)');
             }
 
             const dskImage = DSKLoader.parse(data);
+            // On the HC-2000 the disk is read with the HC file systems
+            if (this.hcIf1) dskImage.hcFormat = true;
             let files = [];
             try { files = DSKLoader.listFiles(dskImage); } catch (e) { /* non-CP/M disk */ }
 
@@ -7268,8 +7407,8 @@ import { Disassembler } from './disasm.js';
                 _dskImage: dskImage,
                 _diskFiles: files,
                 _driveIndex: driveIndex,
-                needsMachineSwitch: this.machineType !== '+3',
-                targetMachine: '+3'
+                needsMachineSwitch: this.machineType !== '+3' && !this.hcIf1,
+                targetMachine: this.hcIf1 ? 'hc2000' : '+3'
             };
         }
 
@@ -7612,6 +7751,8 @@ import { Disassembler } from './disasm.js';
         // Load from pre-extracted data (used after ZIP selection)
         loadFileData(data, fileName, driveIndex = 0) {
             const type = this.snapshotLoader.detectType(data, fileName);
+            const hcDisk = this._hcDiskRoute(data, fileName, type, driveIndex);
+            if (hcDisk) return hcDisk;
             switch (type) {
                 case 'sna': return this.loadSnapshot(data);
                 case 'z80': return this.loadZ80Snapshot(data);
@@ -8492,6 +8633,12 @@ import { Disassembler } from './disasm.js';
                 out.fdc.resultBuffer = Array.from(this.fdc.resultBuffer || []);
                 out.fdc.dataBuffer = Array.from(this.fdc.dataBuffer || []);
             }
+            // HC IF1: its 1KB RAM, the select latch and whether it is paged in.
+            // The FDC itself is this.fdc above.
+            if (this.hcIf1) {
+                out.hcIf1 = this.hcIf1.getState();
+                out.hcIf1.paged = !!this.memory.if1Active;
+            }
             return out;
         }
 
@@ -8531,6 +8678,10 @@ import { Disassembler } from './disasm.js';
                 if (state.fdc.commandBuffer) this.fdc.commandBuffer = state.fdc.commandBuffer.slice();
                 if (state.fdc.resultBuffer) this.fdc.resultBuffer = state.fdc.resultBuffer.slice();
                 if (state.fdc.dataBuffer) this.fdc.dataBuffer = state.fdc.dataBuffer.slice();
+            }
+            if (state.hcIf1 && this.hcIf1) {
+                this.hcIf1.setState(state.hcIf1);
+                this.memory.if1Active = !!state.hcIf1.paged;
             }
         }
 
@@ -8750,6 +8901,7 @@ import { Disassembler } from './disasm.js';
 
             // Recreate FDC for new machine type
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
+            this._setupHcIf1();
 
             // Restore ROM data
             if (oldRom) {

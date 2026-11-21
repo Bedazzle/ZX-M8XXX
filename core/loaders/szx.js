@@ -48,7 +48,8 @@ import { getMachineBySzxId } from '../machines.js';
                 machineType: this.getMachineType(bytes[6]),
                 flags: bytes[7],
                 chunks: [],
-                is128: bytes[6] >= 2 && bytes[6] <= 8
+                // 17 = HC-2000 (FUSE's SZX_MACHINE_HC2000): banked like a 128K here
+                is128: (bytes[6] >= 2 && bytes[6] <= 8) || bytes[6] === 17
             };
 
             let offset = 8;
@@ -249,14 +250,23 @@ import { getMachineBySzxId } from '../machines.js';
                 // (otherwise writePaging returns early if previous program locked paging)
                 memory.pagingDisabled = false;
                 // Set paging state — apply secondary port before 0x7FFD so ROM bank combines correctly
-                if (memory.profile.pagingModel === '+2a') {
+                if (memory.profile.pagingModel === 'hc2000') {
+                    // HC-2000: SPCR byte 1 holds the $7E latch, byte 3 the
+                    // last of $C5/$C7 (see create()). The lock bit is part of
+                    // the latch, so it comes back with it.
+                    memory.setPagingState({
+                        hcConfig: port7FFD,
+                        hcLocked: (port7FFD & 0x04) !== 0,
+                        hcMemPort: port1FFD === 0xC7 ? 0xC7 : 0xC5
+                    });
+                } else if (memory.profile.pagingModel === '+2a') {
                     memory.write1FFD(port1FFD);
                 } else if (memory.profile.pagingModel === 'scorpion') {
                     memory.writeScorpion1FFD(port1FFD);
                 } else if (memory.profile.pagingModel === 'pentagon1024') {
                     memory.writePortEFF7(port1FFD);
                 }
-                memory.writePaging(port7FFD);
+                if (memory.profile.pagingModel !== 'hc2000') memory.writePaging(port7FFD);
             } else {
                 // 48K: pages 0, 2, 5 map to $C000, $8000, $4000
                 const page5 = this.extractRAMPage(data, info, 5);
@@ -329,7 +339,11 @@ import { getMachineBySzxId } from '../machines.js';
             // SPCR chunk - Spectrum state (8 bytes)
             const spcrData = new Uint8Array(8);
             spcrData[0] = border & 0x07;
-            if (is128k) {
+            if (memory.profile.pagingModel === 'hc2000') {
+                // No $7FFD: byte 1 carries the $7E latch instead (private use,
+                // other emulators read an HC-2000 SZX by machine ID anyway)
+                spcrData[1] = memory.hcConfig & 0xFF;
+            } else if (is128k) {
                 const ps = memory.getPagingState();
                 // Byte 1: port 0x7FFD value — reconstruct from paging state
                 let port7FFD = (ps.ramBank & P7FFD_RAM_MASK) | (ps.screenBank === 7 ? P7FFD_SCREEN_BIT : 0x00) |
@@ -351,6 +365,8 @@ import { getMachineBySzxId } from '../machines.js';
                 spcrData[3] = memory.scorpionPort1FFD || 0;
             } else if (memory.profile.pagingModel === 'pentagon1024') {
                 spcrData[3] = memory.portEFF7 || 0;
+            } else if (memory.profile.pagingModel === 'hc2000') {
+                spcrData[3] = memory.hcMemPort & 0xFF;
             }
             // Bytes 4-7: reserved
             chunks.push(this.makeChunk('SPCR', spcrData));

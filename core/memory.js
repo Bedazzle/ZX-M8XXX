@@ -85,6 +85,21 @@ import {
             this.didaktikRom = null;              // 14KB ROM (Uint8Array)
             this.didaktikRam = new Uint8Array(2048);  // 2KB RAM at 0x3800-0x3FFF
 
+            // HC-2000 state (Romanian clone, see _hcRemap). RAM uses the 128K bank
+            // numbers so the rest of the emulator needs no special case:
+            // 0 = RAM under the ROM (CP/M), 5 = $4000, 2 = $8000, 7 = $C000.
+            // The video page switch (CVS) is then exactly the 128K shadow screen.
+            this.hcConfig = 0;           // Port $7E: D0 B/OL, D1 CPMPL, D2 lock, D3 CVS
+            this.hcLocked = false;       // Set by D2: further $7E writes are ignored
+            this.hcMemPort = 0xC5;       // Last of $C5/$C7 written: $C7 = CPM signal on
+            this.hcR = null;             // 8 read views of 8KB, one per $2000 slot
+            this.hcW = null;             // 8 write views (null = ROM, writes ignored)
+            // HC IF1 (core/hc-if1.js): 16KB ROM paged in with if1Active, and 1KB of
+            // RAM at $2800-$2FFF/$3800-$3FFF (mirrored). The RAM belongs to the
+            // HcIf1 object so it survives a new Memory; Spectrum links it here.
+            this.hcIf1Rom = null;
+            this.hcIf1Ram = null;
+
             // Watchpoint callbacks
             this.onRead = null;  // function(addr, val) - called on read
             this.onWrite = null; // function(addr, val) - called on write
@@ -148,6 +163,77 @@ import {
             this.opusRam.fill(0);
             this.didaktikActive = false;
             this.didaktikRam.fill(0);
+            if (this.profile.pagingModel === 'hc2000') {
+                // Reset clears the config latch, its lock and the CPM signal
+                this.hcConfig = 0;
+                this.hcLocked = false;
+                this.hcMemPort = 0xC5;
+                this._hcRemap();
+            }
+        }
+
+        /**
+         * HC-2000 memory map (per Alex Badea's FUSE hc2000.c, branch hc2000-v2).
+         *
+         * Port $7E (decoded as A7=0, A0=0):
+         *   D0 B/OL  - ROM select: 0 = BASIC, 1 = CP/M (A14 of the 32KB ROM chip)
+         *   D1 CPMPL - CP/M decoding: RAM at $0000-$3FFF, and the upper 8KB of
+         *              the selected ROM at $E000-$FFFF instead
+         *   D2       - lock: further writes to $7E are ignored until reset
+         *   D3 CVS   - video from $C000 instead of $4000
+         * Ports $C5/$C7: writing $C7 raises CPM, $C5 (or reset) drops it. With CPM
+         * the CPU sees the $E000 RAM at $C000-$DFFF as well (A13 pulled high).
+         */
+        _hcRemap() {
+            const cfg = this.hcConfig;
+            const romSel = cfg & 0x01;
+            const cpmDecode = (cfg & 0x02) !== 0;
+            const cpm = this.hcMemPort === 0xC7;
+            const half = (arr, h) => arr.subarray(h * 0x2000, (h + 1) * 0x2000);
+            const rom = this.rom[romSel] || this.rom[0];
+            const r = new Array(8), w = new Array(8);
+            if (cpmDecode) {
+                r[0] = w[0] = half(this.ram[0], 0);
+                r[1] = w[1] = half(this.ram[0], 1);
+            } else {
+                r[0] = half(rom, 0); w[0] = null;
+                r[1] = half(rom, 1); w[1] = null;
+            }
+            r[2] = w[2] = half(this.ram[5], 0);
+            r[3] = w[3] = half(this.ram[5], 1);
+            r[4] = w[4] = half(this.ram[2], 0);
+            r[5] = w[5] = half(this.ram[2], 1);
+            r[6] = w[6] = half(this.ram[7], cpm ? 1 : 0);
+            r[7] = w[7] = half(this.ram[7], 1);
+            if (cpmDecode) {
+                r[7] = half(rom, 1); w[7] = null;
+            }
+            this.hcR = r;
+            this.hcW = w;
+            this.currentRomBank = romSel;
+            this.currentRamBank = 7;
+            this.screenBank = (cfg & 0x08) ? 7 : 5;
+        }
+
+        /** HC-2000 port $7E write. Returns true if the screen bank changed. */
+        writeHcConfig(val) {
+            if (this.hcLocked) return false;
+            const oldScreen = this.screenBank;
+            this.hcConfig = val & 0xFF;
+            this.hcLocked = (val & 0x04) !== 0;
+            this._hcRemap();
+            return this.screenBank !== oldScreen;
+        }
+
+        /** HC-2000 port $C5/$C7 write: the low byte of the port is the state. */
+        writeHcMemPort(lowByte) {
+            this.hcMemPort = lowByte;
+            this._hcRemap();
+        }
+
+        /** True when the HC-2000 is in CP/M decoding (no /ROMCS overlays at $0000). */
+        isHcCpmDecode() {
+            return this.hcR !== null && (this.hcConfig & 0x02) !== 0;
         }
 
         loadRom(data, bank = 0) {
@@ -222,6 +308,28 @@ import {
         }
 
         // Load Interface 1 ROM (8KB)
+        // Load the HC IF1 ROM (16KB). Only the HC-2000 has one.
+        loadHcIf1Rom(data) {
+            this.hcIf1Rom = new Uint8Array(16384);
+            const src = new Uint8Array(data);
+            this.hcIf1Rom.set(src.subarray(0, Math.min(src.length, 16384)));
+        }
+
+        hasHcIf1Rom() {
+            if (!this.hcIf1Rom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.hcIf1Rom[i] !== 0) return true;
+            }
+            return false;
+        }
+
+        // Is the HC IF1 overlay visible? Paged in, and not under CP/M decoding:
+        // FUSE's hc2000_memory_map() skips /ROMCS while CPMPL is set.
+        _hcIf1Visible(addr) {
+            return addr < SLOT1_START && this.if1Active && this.hcIf1Rom !== null &&
+                (this.hcConfig & 0x02) === 0;
+        }
+
         loadIF1Rom(data) {
             this.if1Rom = new Uint8Array(8192);
             const src = new Uint8Array(data);
@@ -273,8 +381,15 @@ import {
             // Note: addr is pre-masked by caller (z80.js readByte)
             let val;
 
+            // HC IF1 overlay: 16KB ROM with 1KB RAM at $2800/$3800 (mirrored)
+            if (this.hcIf1Rom !== null && this._hcIf1Visible(addr)) {
+                val = (addr & 0x2800) === 0x2800 ? this.hcIf1Ram[addr & 0x3FF] : this.hcIf1Rom[addr];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
             // Interface 1 ROM overlay: 0x0000-0x1FFF only (8KB shadow ROM)
-            if (this.if1Active && addr < 0x2000) {
+            if (this.if1Active && addr < 0x2000 && this.if1Rom) {
                 val = this.if1Rom[addr];
                 if (this.onRead) this.onRead(addr, val);
                 return val;
@@ -322,7 +437,10 @@ import {
                 return val;
             }
 
-            if (this.machineType === '48k') {
+            if (this.hcR !== null) {
+                // HC-2000: 8KB slots, see _hcRemap()
+                val = this.hcR[addr >> 13][addr & 0x1FFF];
+            } else if (this.machineType === '48k') {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
                     val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
@@ -375,6 +493,12 @@ import {
             // Note: addr and val are pre-masked by caller (z80.js writeByte)
             if (this.onWrite) this.onWrite(addr, val);
 
+            // HC IF1: its RAM takes the write, its ROM swallows it
+            if (this.hcIf1Rom !== null && this._hcIf1Visible(addr)) {
+                if ((addr & 0x2800) === 0x2800) this.hcIf1Ram[addr & 0x3FF] = val;
+                return;
+            }
+
             // Opus write: RAM at 0x2000-0x27FF, registers above it. The ROM at
             // 0x0000-0x1FFF ignores writes, as does 0x3800 and up.
             if (this.opusActive && addr < SLOT1_START) {
@@ -406,6 +530,13 @@ import {
                 return;
             }
 
+            if (this.hcW !== null) {
+                // HC-2000: a null slot is ROM and ignores the write
+                const w = this.hcW[addr >> 13];
+                if (w) w[addr & 0x1FFF] = val;
+                return;
+            }
+
             if (this.specialPagingMode) {
                 // +2A special paging: all 4 slots are writable RAM
                 const slot = addr >> 14;
@@ -434,6 +565,17 @@ import {
         writeDebug(addr, val) {
             addr &= 0xFFFF;
             val &= 0xFF;
+            if (this.hcR !== null) {
+                // HC-2000: ROM can sit at $0000 or $E000, so ask the slot map
+                const slot = addr >> 13;
+                if (this.hcW[slot]) {
+                    this.write(addr, val);
+                } else {
+                    if (!this.allowRomEdit) return false;
+                    this.hcR[slot][addr & 0x1FFF] = val;   // the view writes through to the ROM
+                }
+                return true;
+            }
             if (addr < SLOT1_START) {
                 if (!this.allowRomEdit) return false;
                 if (this.profile.ramPages === 1) {
@@ -449,6 +591,7 @@ import {
         
         writePaging(val) {
             if (this.profile.pagingModel === 'none' || this.pagingDisabled) return;
+            if (this.profile.pagingModel === 'hc2000') return;   // no $7FFD on the HC-2000
 
             if (this.profile.pagingModel === 'scorpion') {
                 // Scorpion ZS 256: RAM page from 1FFD bit 4 (high bit) + 7FFD bits 0-2 (low bits)
@@ -519,6 +662,11 @@ import {
                 state.scorpionPort7FFD = this.scorpionPort7FFD;
                 state.scorpionRamInRomMode = this.scorpionRamInRomMode;
             }
+            if (this.profile.pagingModel === 'hc2000') {
+                state.hcConfig = this.hcConfig;
+                state.hcLocked = this.hcLocked;
+                state.hcMemPort = this.hcMemPort;
+            }
             return state;
         }
 
@@ -541,6 +689,12 @@ import {
                 this.scorpionPort1FFD = state.scorpionPort1FFD || 0;
                 this.scorpionPort7FFD = state.scorpionPort7FFD || 0;
                 this.scorpionRamInRomMode = state.scorpionRamInRomMode || false;
+            }
+            if (this.profile.pagingModel === 'hc2000') {
+                this.hcConfig = state.hcConfig || 0;
+                this.hcLocked = state.hcLocked || false;
+                this.hcMemPort = state.hcMemPort || 0xC5;
+                this._hcRemap();
             }
         }
 
@@ -605,17 +759,27 @@ import {
 
         // Individual paging setters for debugger
         setRamBank(bank) {
-            if (this.profile.pagingModel === 'none') return;
+            if (this.profile.pagingModel === 'none' || this.profile.pagingModel === 'hc2000') return;
             this.currentRamBank = bank % this.profile.ramPages;
         }
 
         setRomBank(bank) {
             if (this.profile.pagingModel === 'none') return;
+            if (this.profile.pagingModel === 'hc2000') {
+                this.hcConfig = (this.hcConfig & ~0x01) | (bank & 0x01);
+                this._hcRemap();
+                return;
+            }
             this.currentRomBank = bank % this.profile.romBanks;
         }
 
         setScreenBank(bank) {
             if (this.profile.pagingModel === 'none') return;
+            if (this.profile.pagingModel === 'hc2000') {
+                this.hcConfig = (this.hcConfig & ~0x08) | (bank === 7 ? 0x08 : 0);
+                this._hcRemap();
+                return;
+            }
             this.screenBank = (bank === 5 || bank === 7) ? bank : 5;
         }
 
@@ -669,6 +833,7 @@ import {
         // and even there a Scorpion or Pentagon 1024 may have RAM mapped over it.
         // The Scorpion needs this: Even M1 applies to fetches from RAM, not ROM.
         isRomAt(addr) {
+            if (this.hcW !== null) return this.hcW[(addr & 0xFFFF) >> 13] === null;
             if ((addr & 0xFFFF) >= SLOT1_START) return false;
             if (this.trdosActive) return true;              // TR-DOS, in ROM either way
             return !(this.ramInRomMode || this.scorpionRamInRomMode);
@@ -740,6 +905,13 @@ import {
             if (this.profile.pagingModel === 'scorpion') {
                 state.scorpionPort1FFD = this.scorpionPort1FFD;
                 state.scorpionRamInRomMode = this.scorpionRamInRomMode;
+            }
+
+            // HC-2000 state
+            if (this.profile.pagingModel === 'hc2000') {
+                state.hcConfig = this.hcConfig;
+                state.hcLocked = this.hcLocked;
+                state.hcMemPort = this.hcMemPort;
             }
 
             // Copy ROM banks

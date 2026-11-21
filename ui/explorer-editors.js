@@ -12,6 +12,7 @@ import { hex8, hex16, escapeHtml, downloadFile } from '../core/utils.js';
 // it is a line number, decimal in every base -- so it keeps parseInt(.., 10).
 import { fmtAddr, fmtAddrPair, parseAddr } from '../core/addr-format.js';
 import { TRDLoader, SCLLoader, MGTLoader, MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
+import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 import { parseSpecscii, renderGrid, encodeBannerEntries, decodeBannerNames,
          bannerNamesToSpecscii, isBannerName, lastContentRow, BANNER_MAX_ROWS } from '../core/specscii.js';
 import { shapeBasicEntry, isMonoloader, splitMonoloader, setTrdBasicAutostart } from './disk-file-copy.js';
@@ -2257,8 +2258,17 @@ export function initExplorerEditors(ctx) {
         downloadFile(baseName + '_extract.zip', zipData);
     }
 
+    // Blank HC (ICE Felix) disks: raw sizes from hcfsv1.txt, all $E5
+    const HC_BLANK_SIZES = { 'hc-bas80': 655360, 'hc-bas40': 327680, 'hc-cpm80': 737280, 'hc-cpm40': 368640 };
+
     function dskEditorNewDsk(panel, format = 'p3-ss40') {
-        const dskImage = ctx.DSKLoader.createBlankDSK(format);
+        let dskImage;
+        if (HC_BLANK_SIZES[format]) {
+            dskImage = HcDiskLoader.fromRaw(new Uint8Array(HC_BLANK_SIZES[format]).fill(0xE5), 'new.img').image;
+            dskImage.hcFormat = true;
+        } else {
+            dskImage = ctx.DSKLoader.createBlankDSK(format);
+        }
         const spec = ctx.DSKLoader.getDiskSpec(dskImage);
         panel.parsedFile = {
             type: 'dsk',
@@ -2304,6 +2314,13 @@ export function initExplorerEditors(ctx) {
         if (del.length) {
             img = ctx.DSKLoader.parse(img.toBuffer());   // clone so the editor view keeps the entries
             ctx.DSKLoader.deleteFiles(img, del);
+        }
+        // An HC raw .img goes back out as the same kind of .img (same side order)
+        const hcRaw = panel.parsedFile.hcRaw;
+        if (hcRaw) {
+            const baseName = (panel.fileName || 'output').replace(/\.(img|dsk)$/i, '');
+            downloadFile(baseName + '.img', HcDiskLoader.toRaw(img, hcRaw.layout));
+            return;
         }
         const buf = img.toBuffer();
         const baseName = (panel.fileName || 'output').replace(/\.dsk$/i, '');
