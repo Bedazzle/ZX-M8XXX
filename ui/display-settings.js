@@ -196,6 +196,8 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
                 midiSynth.resume();
             }
             sp.onMidiMessage = (msg) => {
+                // Sound off: no new notes (the rest, note offs included, still goes)
+                if (!chkSound.checked && (msg[0] & 0xF0) === 0x90 && msg[2] > 0) return;
                 if (midiChoice === 'synth') midiSynth.send(msg);
                 else if (midiOutput) { try { midiOutput.send(msg); } catch (e) { /* a malformed message */ } }
             };
@@ -206,6 +208,24 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
                 : 'MIDI out: ' + selMidiOut.options[selMidiOut.selectedIndex].text);
         });
         setInterval(showMidi, 500);
+        // Notes held while the emulation stands still (pause, a breakpoint, the
+        // tab in the background) or the sound is switched off would sound on
+        // and on: their Note Off never comes. So all notes off then, once.
+        let lastFrame = -1, lastMove = 0, quiet = false;
+        setInterval(() => {
+            const sp = getSpectrum();
+            if (!sp || !sp.midiEnabled || !midiChoice || midiChoice === 'monitor') return;
+            const now = performance.now();
+            if (sp.frameCount !== lastFrame) { lastFrame = sp.frameCount; lastMove = now; }
+            const still = !chkSound.checked || document.hidden || now - lastMove > 150;
+            if (still && !quiet) {
+                if (midiSynth) midiSynth.allOff();
+                if (midiOutput) {
+                    for (let ch = 0; ch < 16; ch++) { try { midiOutput.send([0xB0 | ch, 123, 0]); } catch (e) {} }
+                }
+            }
+            quiet = still;
+        }, 50);
     }
 
     chkAY48k.addEventListener('change', () => {
