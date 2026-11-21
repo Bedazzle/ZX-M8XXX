@@ -25,7 +25,7 @@
         // isolation - this drives the real thing in an iframe and reads the panels
         // back. Everything else about it was previously covered only by throwaway
         // probes, which is why splitting the file was risky.
-        import { TRDLoader, SCLLoader } from '../core/loaders.js';
+        import { TRDLoader, SCLLoader, crcFdc, crcUdi } from '../core/loaders.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -106,6 +106,94 @@
               start: 40000, startAddress: 40000, length: 512, sectors: 2 },
         ];
 
+
+        // ---- UDI fixtures --------------------------------------------------
+        // A UDI holds raw track bytes, so the fixture has to go the other way from
+        // every other one here: a TRD is encoded INTO MFM track bytes -- 12 sync
+        // zeros, three 0xA1 with their clock bits set, the address mark, the payload
+        // and a real CRC-16, separated by 0x4E gaps, the layout a formatter writes.
+        // The assert is then a round trip through the Explorer: whatever the
+        // catalogue shows has to be what went in. The format's own two sharp edges
+        // (the file checksum is not a standard CRC-32, and the clock bitmap is
+        // LSB-first) are pinned against five real images in udi-test; these sections
+        // are about the Explorer path, not about the format.
+        function mfmTrack(sectors) {
+            const bytes = [], clocked = [];
+            const put = (v, clock = false) => { bytes.push(v); clocked.push(clock); };
+            const run = (n, v) => { for (let i = 0; i < n; i++) put(v); };
+            // Only the three 0xA1 carry a clock bit, which is what the sample images
+            // do; the 0xFE/0xFB after them reads as a mark without one.
+            const sync = () => { run(12, 0x00); for (let i = 0; i < 3; i++) put(0xA1, true); };
+
+            run(80, 0x4E);                                  // gap 4a
+            for (const s of sectors) {
+                sync();
+                put(0xFE);
+                put(s.cyl); put(s.head); put(s.sec); put(s.sizeCode);
+                const idCrc = crcFdc(new Uint8Array([0xA1, 0xA1, 0xA1, 0xFE, s.cyl, s.head, s.sec, s.sizeCode]));
+                put(idCrc >> 8); put(idCrc & 0xFF);
+                run(22, 0x4E);                              // gap 2
+                sync();
+                const mark = s.deleted ? 0xF8 : 0xFB;
+                put(mark);
+                for (const v of s.data) put(v);
+                const covered = new Uint8Array(4 + s.data.length);
+                covered.set([0xA1, 0xA1, 0xA1, mark], 0);
+                covered.set(s.data, 4);
+                const dataCrc = crcFdc(covered);
+                put(dataCrc >> 8); put(dataCrc & 0xFF);
+                run(54, 0x4E);                              // gap 3
+            }
+
+            const data = new Uint8Array(bytes);
+            const clock = new Uint8Array((data.length >> 3) + ((data.length & 7) ? 1 : 0));
+            for (let i = 0; i < clocked.length; i++) if (clocked[i]) clock[i >> 3] |= 1 << (i & 7);
+            return { data, clock };
+        }
+
+        // Wrap a 16x256 TRD as a UDI. `extras` appends sectors a TRD cannot express
+        // to the LAST track (free space, so the catalogue is untouched) and
+        // `breakCrc` leaves a stale file checksum -- both are things two of the five
+        // real sample images actually do.
+        function makeUDI(trd, { extras = [], breakCrc = false } = {}) {
+            const sides = 2, spt = 16, ssize = 256;
+            const logical = trd.length / (spt * ssize);
+            const cylinders = logical / sides;
+
+            const records = [];
+            for (let idx = 0; idx < logical; idx++) {
+                const cyl = Math.floor(idx / sides), head = idx % sides;
+                const secs = [];
+                for (let s = 1; s <= spt; s++) {
+                    const off = (idx * spt + s - 1) * ssize;
+                    secs.push({ cyl, head, sec: s, sizeCode: 1, data: trd.subarray(off, off + ssize) });
+                }
+                if (idx === logical - 1) for (const e of extras) secs.push({ cyl, head, ...e });
+                records.push(mfmTrack(secs));
+            }
+
+            let total = 16;                                  // header, no extension
+            for (const r of records) total += 3 + r.data.length + r.clock.length;
+            const b = new Uint8Array(total + 4);
+            b.set([0x55, 0x44, 0x49, 0x21], 0);              // 'UDI!'
+            b[4] = total & 0xFF; b[5] = (total >> 8) & 0xFF;
+            b[6] = (total >> 16) & 0xFF; b[7] = (total >>> 24) & 0xFF;
+            b[8] = 0;                                        // v1.0
+            b[9] = cylinders - 1; b[10] = sides - 1;
+            let p = 16;
+            for (const r of records) {
+                b[p] = 0x00;                                 // MFM, no MF/weak maps
+                b[p + 1] = r.data.length & 0xFF; b[p + 2] = r.data.length >> 8;
+                b.set(r.data, p + 3);
+                b.set(r.clock, p + 3 + r.data.length);
+                p += 3 + r.data.length + r.clock.length;
+            }
+            const crc = (crcUdi(b, total) ^ (breakCrc ? 0xFF : 0)) >>> 0;
+            b[total] = crc & 0xFF; b[total + 1] = (crc >> 8) & 0xFF;
+            b[total + 2] = (crc >> 16) & 0xFF; b[total + 3] = (crc >>> 24) & 0xFF;
+            return b;
+        }
+
         async function loadIntoExplorer(bytes, filename) {
             const input = d.getElementById('explorerFileInput');
             const dt = new w.DataTransfer();
@@ -176,6 +264,114 @@
                 const info = await loadIntoExplorer(scl, 'probe.scl');
                 assert(/SCL|Disk|TR-?DOS/i.test(info), 'SCL info panel renders', info.slice(0, 60));
                 assert(/HELLO/.test(info), 'SCL files are listed');
+            });
+
+            // The Explorer has its own extension-driven dispatch, separate from
+            // SnapshotLoader.detectType, so teaching the emulator about UDI left the
+            // Explorer showing nothing but a hex dump. A readable UDI reports itself
+            // as a TRD -- the flattened sector image IS what the views index -- with
+            // the facts a sector image cannot carry in a section of their own.
+            await part('Disk: UDI catalogue', async () => {
+                const trd = TRDLoader.buildTRD(trdFiles, 'PROBE');
+                const info = await loadIntoExplorer(makeUDI(trd), 'probe.udi');
+                assert(/UDI Disk Image/.test(info), 'the UDI info section renders', info.slice(0, 120));
+                assert(/HELLO/.test(info), 'the catalogue is read through the flattening');
+                assert(/SECOND/.test(info), 'and so is the second file');
+                assert(/PROBE/.test(info), 'the disk label survives the round trip');
+                assert(/80 cylinders \u00d7 2 sides/.test(info), 'the geometry is reported',
+                       info.slice(0, 300));
+                assert(/160 records/.test(info), 'and the track record count');
+                assert(/2,?560 placed/.test(info), 'every sector was placed', info.slice(0, 400));
+                assert(/matches/.test(info), 'the file checksum verifies', info.slice(0, 400));
+                // The flattened image is not a file that was ever on disk, and saying
+                // "TRD Disk Image" over it would claim it was.
+                assert(/Flattened Sector Image/.test(info), 'the sector section says it is flattened');
+                assert(!/Dropped|Kept, mark lost/.test(info), 'and nothing is reported lost');
+
+                // The catalogue alone cannot see this: it is read from the flattened
+                // bytes either way. But if the raw UDI stayed as the file's data, the
+                // hex dump, the Disk Map and file extraction would all be addressing
+                // track bytes with sector-image offsets. So the two sizes on screen
+                // have to differ -- the file as it is on disk, and the image the views
+                // index -- and the second has to be the 640K one.
+                assert(/655360 bytes/.test(info), 'the flattened image is what the views index',
+                       info.slice(0, 400));
+                assert(/File\s*[\d,]{9,} bytes/.test(info), 'while the UDI section reports the real file size',
+                       info.slice(0, 200));
+            });
+
+            // Two of five real images disagree with their own stored checksum, so
+            // refusing on a mismatch (which Fuse does) refuses real disks.
+            await part('Disk: a UDI with a stale checksum still loads', async () => {
+                const trd = TRDLoader.buildTRD(trdFiles, 'PROBE');
+                const info = await loadIntoExplorer(makeUDI(trd, { breakCrc: true }), 'stale.udi');
+                assert(/mismatch/.test(info), 'the mismatch is reported', info.slice(0, 400));
+                assert(/loaded anyway/.test(info), 'and so is the decision not to refuse it');
+                assert(/HELLO/.test(info), 'the catalogue is read regardless');
+            });
+
+            // Flattening to a TRD is lossy, and the loss is what protection is made
+            // of -- so it is itemised, and the two kinds are kept apart: a sector a
+            // TRD has no room for is absent from the image, while a deleted-data mark
+            // is a sector that IS there with the fact about it gone.
+            await part('Disk: a UDI says what the flattening could not carry', async () => {
+                const trd = TRDLoader.buildTRD(trdFiles, 'PROBE');
+                const extras = [
+                    { sec: 17, sizeCode: 1, data: new Uint8Array(256).fill(0xAA) },
+                    { sec: 3, sizeCode: 2, data: new Uint8Array(512).fill(0xBB) },
+                    { sec: 1, sizeCode: 1, data: new Uint8Array(256).fill(0xCC), deleted: true },
+                ];
+                const info = await loadIntoExplorer(makeUDI(trd, { extras }), 'odd.udi');
+                assert(/Dropped/.test(info), 'a Dropped row appears', info.slice(0, 500));
+                assert(/1 not 256 bytes/.test(info), 'the 512-byte sector is counted', info.slice(0, 500));
+                assert(/1 numbered outside/.test(info), 'and the one numbered 17');
+                assert(/Kept, mark lost/.test(info), 'the kept-but-flattened row appears');
+                assert(/1 deleted-data/.test(info), 'and the deleted-data mark is counted');
+                assert(/HELLO/.test(info), 'the catalogue is still read');
+            });
+
+            await part('Disk: UDI drives the Disk Map and the editor', async () => {
+                const trd = TRDLoader.buildTRD(trdFiles, 'PROBE');
+                await loadIntoExplorer(makeUDI(trd), 'probe.udi');
+                const tab = [...d.querySelectorAll('.explorer-subtab')]
+                    .find(b => /disk map/i.test(b.textContent || ''));
+                if (tab) {
+                    tab.click();
+                    await wait(300);
+                    const grid = d.getElementById('diskmapGridContainer');
+                    const canvas = d.getElementById('diskmapCanvas');
+                    assert((grid && grid.children.length > 0) || (canvas && canvas.width > 0),
+                           'the Disk Map draws a UDI', `grid=${grid ? grid.children.length : 'n/a'}`);
+                    const status = (d.getElementById('diskmapStatus') || {}).textContent || '';
+                    assert(/80 cyl/.test(status), 'with the geometry in its status line', status);
+                }
+                const first = d.querySelector('.explorer-subtab');
+                if (first) { first.click(); await wait(150); }
+
+                // There is no UDI writer, and one cannot be made from a sector image
+                // anyway, so the panel is a TRD editor over the flattened bytes.
+                clickTab('Edit');
+                const listed = await until(() => {
+                    const t = (d.getElementById('editorPanels') || {}).textContent || '';
+                    return /HELLO/.test(t) ? t : null;
+                });
+                assert(!!listed, 'the editor panel lists a UDI catalogue',
+                       ((d.getElementById('editorPanels') || {}).textContent || '').slice(0, 80));
+                assert(/free/.test(listed || ''), 'and states its free space like any disk');
+                const infoTab = d.querySelector('.explorer-subtab[data-subtab="info"]');
+                if (infoTab) { infoTab.click(); await wait(150); }
+            });
+
+            // A lowercase 'udi!' was reserved for a whole-file compressed variant
+            // that no spec revision ever defined, so it is refused by name rather
+            // than read as if the header were uncompressed.
+            await part('Disk: an unreadable UDI says so', async () => {
+                const bad = makeUDI(TRDLoader.buildTRD(trdFiles, 'PROBE'));
+                bad.set([0x75, 0x64, 0x69, 0x21], 0);        // 'udi!'
+                const info = await loadIntoExplorer(bad, 'lower.udi');
+                assert(/UDI Disk Image/.test(info), 'the UDI panel still renders', info.slice(0, 120));
+                assert(/Error/.test(info), 'with an error rather than an empty catalogue', info.slice(0, 200));
+                assert(/compressed/.test(info), 'naming what it refused', info.slice(0, 200));
             });
 
             // A BASIC file's autostart line is not in the catalogue: TR-DOS writes
@@ -539,6 +735,172 @@
                        'and still reports what the copy did', statusOf('Right'));
                 assert(empty !== statusOf('Right'), 'with the figure brought up to date',
                        `${empty} -> ${statusOf('Right')}`);
+            });
+
+            await part('Edit: copying an OPD file copies all of it', async () => {
+                // The normal shape of an Opus game is a short BASIC loader whose
+                // header declares a few thousand bytes with the game glued after
+                // it, filling hundreds of sectors. The Explorer took the header
+                // at its word twice over — once when it read the disk into its
+                // model and again when it handed a file to the other panel — so
+                // a 532-sector file arrived as 19 sectors and the game was gone.
+                const { OPDLoader } = await import('../core/loaders.js');
+                const payload = new Uint8Array(3000);
+                for (let i = 0; i < payload.length; i++) payload[i] = (i * 31 + 7) & 0xFF;
+                let img = OPDLoader.buildOPD(
+                    [{ name: 'MONO', type: 0, data: payload, autostart: 10 }], 'SRC', 1);
+                // Make it a monoloader: say 100 bytes in the header, keep the sectors
+                const built = OPDLoader.listFiles(img)[0];
+                img[built.dataOffset + 1] = 100;
+                img[built.dataOffset + 2] = 0;
+                const src = OPDLoader.listFiles(img)[0];
+                assert(src.length === 100 && src.sectors === 12,
+                       'the fixture declares 100 bytes and occupies 12 sectors',
+                       src.length + ' bytes / ' + src.sectors + ' sectors');
+
+                const statusOf = (side) =>
+                    (d.querySelector(`#editorPanel${side} .editor-panel-status`) || {}).textContent || '';
+                const activate = (side) => d.querySelector(`#editorPanel${side} .editor-panel-header`)
+                    .dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+
+                await loadIntoExplorer(img, 'mono.opd');
+                clickTab('Edit');
+                await wait(250);
+                activate('Right');
+                await wait(100);
+                const sel = d.getElementById('editorNewFormat');
+                sel.value = 'opd';
+                sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(250);
+                activate('Left');
+                await wait(100);
+                const row = await until(() => d.querySelector('#editorPanelLeft .disk-row'));
+                assert(!!row, 'the Opus disk lists its file');
+                const srcText = row ? row.textContent : '';
+                if (row) row.click();
+                await wait(200);
+                d.getElementById('btnEditorCopy').click();
+                await wait(300);
+
+                // The copy should be indistinguishable from the original, which
+                // is also what the user sees: name, type, bytes and SECTORS. The
+                // 12 used to arrive as 1 — the sectors the header's 100 bytes fit
+                // in — and the rest of the file was gone.
+                const dstRow = d.querySelector('#editorPanelRight .disk-row');
+                assert(!!dstRow && dstRow.textContent === srcText,
+                       'the copy lists exactly as the original did, sectors and all',
+                       'was "' + srcText + '", now "' + (dstRow && dstRow.textContent) + '"');
+
+                // The bytes, not just the row: save the destination and read it back
+                const origCreate = w.URL.createObjectURL;
+                const origClick = w.HTMLAnchorElement.prototype.click;
+                let blob = null;
+                w.URL.createObjectURL = (b) => { blob = b; return 'blob:stub'; };
+                w.HTMLAnchorElement.prototype.click = function () {};
+                try {
+                    activate('Right');
+                    await wait(100);
+                    d.getElementById('btnEditorSave').click();
+                    await until(() => blob, 80, 25);
+                } finally {
+                    w.URL.createObjectURL = origCreate;
+                    w.HTMLAnchorElement.prototype.click = origClick;
+                }
+                assert(!!blob, 'the copy saves back out');
+                if (blob) {
+                    const out = new Uint8Array(await blob.arrayBuffer());
+                    const copied = OPDLoader.listFiles(out)[0];
+                    assert(!!copied && copied.sectors === src.sectors,
+                           'the written disk gives the file the same sectors it had',
+                           copied && copied.sectors);
+                    assert(!!copied && copied.length === src.length,
+                           'and leaves its declared length alone, so it still loads as a loader',
+                           copied && copied.length);
+                    const bytes = copied ? OPDLoader.extractFile(out, copied) : null;
+                    const same = bytes && bytes.length >= payload.length &&
+                                 payload.every((b, i) => bytes[i] === b);
+                    assert(same, 'with every byte of the payload still there',
+                           bytes ? bytes.length + ' bytes back' : 'nothing read back');
+                }
+            });
+
+            await part('Edit: copying a Didaktik file copies all of it too', async () => {
+                // MDOS records the bytes used in a file's final sector in the FAT
+                // itself, so the exact end of the allocation is known without the
+                // directory's length — the same split the Opus has, and the same
+                // bug: the copy sliced to the directory and dropped the rest.
+                const { DidaktikLoader } = await import('../core/loaders.js');
+                const payload = new Uint8Array(2000);
+                for (let i = 0; i < payload.length; i++) payload[i] = (i * 17 + 3) & 0xFF;
+                let img = DidaktikLoader.createBlankD40('SRC');
+                img = DidaktikLoader.addFile(img, {
+                    name: 'MONO', type: 'P', data: payload, startAddr: 10, basicLength: 100,
+                    declaredLength: 100
+                });
+                const src = DidaktikLoader.listFiles(img)[0];
+                assert(!!src && src.length === 100,
+                       'the fixture declares 100 bytes', src && src.length);
+                const srcData = DidaktikLoader.extractFile(img, src);
+                assert(!!srcData && srcData.length === payload.length,
+                       'while the FAT says all 2000 are there', srcData && srcData.length);
+
+                const activate = (side) => d.querySelector(`#editorPanel${side} .editor-panel-header`)
+                    .dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+                // Load into the LEFT panel deliberately: a file lands in whichever
+                // panel is active, and the part above leaves Right active — so
+                // this quietly copied that part's Opus file instead.
+                clickTab('Edit');
+                await wait(150);
+                activate('Left');
+                await wait(100);
+                await loadIntoExplorer(img, 'mono.d40');
+                clickTab('Edit');
+                await wait(250);
+                const leftHdr = d.querySelector('#editorPanelLeft .editor-panel-header');
+                assert(/d40|d80/i.test(leftHdr ? leftHdr.textContent : ''),
+                       'the MDOS disk is the one in the left panel',
+                       leftHdr && leftHdr.textContent.trim());
+                activate('Right');
+                await wait(100);
+                const sel = d.getElementById('editorNewFormat');
+                sel.value = 'd40';
+                sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+                await wait(250);
+                activate('Left');
+                await wait(100);
+                const row = await until(() => d.querySelector('#editorPanelLeft .disk-row'));
+                assert(!!row, 'the MDOS disk lists its file');
+                if (row) row.click();
+                await wait(200);
+                d.getElementById('btnEditorCopy').click();
+                await wait(300);
+
+                const origCreate = w.URL.createObjectURL;
+                const origClick = w.HTMLAnchorElement.prototype.click;
+                let blob = null;
+                w.URL.createObjectURL = (b) => { blob = b; return 'blob:stub'; };
+                w.HTMLAnchorElement.prototype.click = function () {};
+                try {
+                    activate('Right');
+                    await wait(100);
+                    d.getElementById('btnEditorSave').click();
+                    await until(() => blob, 80, 25);
+                } finally {
+                    w.URL.createObjectURL = origCreate;
+                    w.HTMLAnchorElement.prototype.click = origClick;
+                }
+                assert(!!blob, 'the copy saves back out');
+                if (blob) {
+                    const out = new Uint8Array(await blob.arrayBuffer());
+                    const copied = DidaktikLoader.listFiles(out)[0];
+                    assert(!!copied && copied.length === src.length,
+                           'the copy keeps the declared length it was given',
+                           copied && copied.length);
+                    const bytes = copied ? DidaktikLoader.extractFile(out, copied) : null;
+                    const same = bytes && bytes.length >= payload.length &&
+                                 payload.every((b, i) => bytes[i] === b);
+                    assert(same, 'and every byte past it', bytes ? bytes.length + ' bytes back' : 'nothing');
+                }
             });
 
             assert(errors.length === 0, 'no uncaught errors while driving the Explorer',

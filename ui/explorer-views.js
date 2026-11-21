@@ -268,10 +268,13 @@ export function initExplorerViews(xp) {
     }
 
     function buildOPDSectorMap(data, files, info) {
-        const sectorsPerTrack = 18;
-        const sectorSize = 256;
+        // From the disk, not from the single-density format: an 80-track
+        // double-sided disk is not 40 cylinders, and a double-density one
+        // counts 10 sectors of 512 to a track rather than 18 of 256.
+        const sectorsPerTrack = info ? info.sectorsPerTrack : 18;
+        const sectorSize = info ? info.bytesPerSector : 256;
         const numSides = info ? info.sides : (data.length >= 368640 ? 2 : 1);
-        const numCylinders = 40;
+        const numCylinders = info ? info.tracks : 40;
         const totalSectors = numCylinders * numSides * sectorsPerTrack;
         const tracks = [];
         const fileNames = [];
@@ -1311,7 +1314,7 @@ export function initExplorerViews(xp) {
             <div class="explorer-info-header">File List <span style="font-size:10px;color:var(--text-secondary)">(click to open)</span></div>
             <div class="explorer-block-list">`;
 
-        const supportedZipExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk', 'rzx'];
+        const supportedZipExts = ['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'dsk', 'rzx'];
         for (let i = 0; i < xp.explorerParsed.files.length; i++) {
             const file = xp.explorerParsed.files[i];
             const ext = file.name.split('.').pop().toLowerCase();
@@ -1377,7 +1380,7 @@ export function initExplorerViews(xp) {
             const zipFile = xp.explorerZipFiles[idx];
             const ext = zipFile.name.split('.').pop().toLowerCase();
 
-            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk', 'rzx'].includes(ext)) return;
+            if (!['tap', 'tzx', 'sna', 'z80', 'trd', 'scl', 'udi', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd40', 'd80', 'dsk', 'rzx'].includes(ext)) return;
 
             xp.explorerZipParentName = xp.explorerFileName.textContent;
             xp.explorerData = new Uint8Array(zipFile.data);

@@ -315,7 +315,7 @@ InstructionEncoder.encodeIN = function(ops, addr, syms) {
         const s = ops[1].toUpperCase();
         
         // IN A, (n)
-        if (d === 'A' && s.startsWith('(') && s.endsWith(')')) {
+        if (d === 'A' && Z80Asm.wrappedInParens(s)) {
             const inner = s.slice(1, -1).toUpperCase();
             if (inner !== 'C') {
                 const val = this.evalExpr(ops[1], syms, addr);  // Use original case
@@ -349,7 +349,7 @@ InstructionEncoder.encodeOUT = function(ops, addr, syms) {
         const s = ops[1].toUpperCase();
         
         // OUT (n), A
-        if (d.startsWith('(') && d.endsWith(')') && s === 'A') {
+        if (Z80Asm.wrappedInParens(d) && s === 'A') {
             const inner = d.slice(1, -1).toUpperCase();
             if (inner !== 'C') {
                 const val = this.evalExpr(ops[0], syms, addr);  // Use original case

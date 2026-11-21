@@ -57,7 +57,7 @@ export function initFileLoader({
         if (type === 'tape' || ext === 'tap' || ext === 'tzx' || ext === 'wav') {
             document.getElementById('tapeLed').title = fileName;
             document.getElementById('tapeInfo').style.display = 'inline-block';
-        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img' || ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40') {
+        } else if (type === 'disk' || ext === 'trd' || ext === 'scl' || ext === 'dsk' || ext === 'mgt' || ext === 'mdr' || ext === 'img' || ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' || ext === 'udi') {
             // Build tooltip listing all loaded drives
             const driveNames = [];
             const betaDisks = spectrum.loadedBetaDisks;
@@ -101,13 +101,16 @@ export function initFileLoader({
     // container, and its contents are filtered by the same list.
     const DISK_SYSTEM_TYPES = {
         dsk: ['dsk'],
-        trd: ['trd', 'scl'],
+        trd: ['trd', 'scl', 'udi'],
         mgt: ['mgt', 'img'],
         mdr: ['mdr'],
-        opd: ['opd', 'opu'],
+        // 'dsk' is here because the double-density Opus format is circulated in
+        // a CPC-style container and nothing else -- see OPDLoader.fromDSK. A
+        // +3DOS .dsk picked here is still refused, and says why.
+        opd: ['opd', 'opu', 'dsk'],
         d80: ['d80', 'd40']
     };
-    const ALL_DISK_TYPES = ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'];
+    const ALL_DISK_TYPES = ['trd', 'scl', 'udi', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'];
 
     function diskTypesFor(sys) {
         return (sys && DISK_SYSTEM_TYPES[sys.id]) || ALL_DISK_TYPES;
@@ -155,6 +158,39 @@ export function initFileLoader({
     // until that system goes away.
     let selectedDiskSystemId = null;
 
+    // Why there is no disk system, in terms of what is actually wrong.
+    //
+    // The old wording told the user to enable an interface, which is useless
+    // advice in the common case: the interface IS enabled and what is missing
+    // is its ROM. An interface with no ROM cannot be offered (see
+    // getAvailableDiskSystems), so it drops out of the list and the message
+    // then blamed the one thing the user had already done. Say which
+    // interface is on and what it is waiting for.
+    function noDiskSystemMessage() {
+        const spectrum = getSpectrum();
+        const waiting = [];
+        if (spectrum.betaDiskEnabled && !spectrum.profile.betaDiskDefault
+            && !spectrum.memory.hasTrdosRom()) {
+            waiting.push('Beta Disk needs trdos.rom');
+        }
+        // For these four the paging flag already folds in "enabled", "ROM
+        // loaded" and "this machine can page it at all" -- the last is why a
+        // +2A/+3 cannot offer +D or IF1 however many ROMs are present.
+        for (const [on, ok, name, rom] of [
+            [spectrum.plusDEnabled, spectrum._plusDPagingEnabled, '+D', 'plusd.rom'],
+            [spectrum.if1Enabled, spectrum._if1PagingEnabled, 'Interface 1', 'if1.rom'],
+            [spectrum.opusEnabled, spectrum._opusPagingEnabled, 'Opus Discovery', 'opus.rom'],
+            [spectrum.didaktikEnabled, spectrum._didaktikPagingEnabled, 'Didaktik', 'didaktik.rom'],
+        ]) {
+            if (on && !ok) waiting.push(`${name} needs ${rom}, or cannot page it on this machine`);
+        }
+        if (waiting.length) {
+            return `No disk interface active \u2014 ${waiting.join('; ')}.`
+                 + ' Load the ROM in Settings \u2192 Machines.';
+        }
+        return 'No disk interface active — enable Beta Disk, +D, Interface 1 or Opus Discovery in Settings → Machines';
+    }
+
     function getActiveDiskSystem() {
         const systems = getAvailableDiskSystems();
         if (systems.length === 0) return null;
@@ -200,7 +236,7 @@ export function initFileLoader({
             blankBtn.textContent = '\u{1F4BE} ' + (sys ? sys.blankLabel : 'Blank Disk');
             blankBtn.title = sys
                 ? `Insert blank formatted ${sys.name} ${sys.id === 'mdr' ? 'cartridge' : 'disk'} into the selected drive`
-                : 'No disk interface active — enable Beta Disk, +D, Interface 1 or Opus Discovery in Settings → Machines';
+                : noDiskSystemMessage();
         }
 
         // Row is useful whenever an interface is active (Blank/Load Disk targeting),
@@ -482,7 +518,7 @@ export function initFileLoader({
             const betaDiskAvailable = spectrum.profile.betaDiskDefault || spectrum.betaDiskEnabled;
             btnBootTrdos.style.display = (betaDiskAvailable && hasTrdosRom) ? 'inline-block' : 'none';
         } else if (filterTypes) {
-            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'].includes(t));
+            const isDiskFilter = filterTypes.some(t => ['trd', 'scl', 'udi', 'dsk', 'mgt', 'img', 'mdr', 'opd', 'opu', 'd80', 'd40'].includes(t));
             modalTitle.textContent = isDiskFilter ? 'Select Disk to Insert' : 'Select Tape to Insert';
             modalDesc.textContent = isDiskFilter ? 'The archive contains multiple disk images:' : 'The archive contains multiple tape files:';
             btnBootTrdos.style.display = 'none';
@@ -546,7 +582,7 @@ export function initFileLoader({
                         if (loadResult.needsRomReload || !spectrum.romLoaded) {
                             loadRomsForMachineType(spectrum, loadResult.machineType);
                         }
-                    } else if (file.type === 'trd' || file.type === 'scl') {
+                    } else if (file.type === 'trd' || file.type === 'scl' || file.type === 'udi') {
                         // Disk image inside ZIP - handle disk insertion
                         loadResult = spectrum.loadFromZipSelection(result, index);
                         if (loadResult.diskInserted) {
@@ -721,7 +757,7 @@ export function initFileLoader({
             } else if (ext === 'sna' || ext === 'tap' || ext === 'tzx' || ext === 'z80' ||
                        ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' ||
                        ext === 'dsk' || ext === 'mdr' || ext === 'mgt' || ext === 'img' ||
-                       ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' ||
+                       ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' || ext === 'udi' ||
                        ext === 'rzx' || ext === 'wav') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
@@ -834,7 +870,7 @@ export function initFileLoader({
         const spectrum = getSpectrum();
         const sys = getActiveDiskSystem();
         if (!sys) {
-            showMessage('No disk interface active — enable Beta Disk, +D, Interface 1 or Opus Discovery in Settings → Machines', 'error');
+            showMessage(noDiskSystemMessage(), 'error');
             return;
         }
         const driveIndex = getSelectedDriveIndex();
