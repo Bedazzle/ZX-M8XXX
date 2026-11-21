@@ -437,6 +437,17 @@
                     </div>
 
                     <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Enable the MGT DISCiPLE for MGT disks (requires disciple.rom: GDOS 3, or a Uni-DOS ROM). Conflicts with the +D, Interface 1, Opus, Didaktik and Beta Disk.">
+                            <input type="checkbox" id="chkDisciple"> DISCiPLE (MGT)
+                        </label>
+                        <button id="btnLoadDiscipleRom" class="control-btn iface-rom-btn" title="Load DISCiPLE ROM file (disciple.rom)">Load ROM</button>
+                        <input type="file" id="romDiscipleInput" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="discipleRomName" class="iface-rom-name"></span>
+                        <button id="btnNmiDisciple" class="control-btn iface-rom-btn" title="Trigger DISCiPLE NMI (snapshot button)" disabled>NMI</button>
+                        <span id="discipleStatus" class="iface-status"></span>
+                    </div>
+
+                    <div class="iface-row">
                         <label class="checkbox-label iface-name" title="Enable Interface 1 for Microdrive cartridges (requires if1.rom). Conflicts with +D.">
                             <input type="checkbox" id="chkIF1"> Interface 1 (Microdrive)
                         </label>

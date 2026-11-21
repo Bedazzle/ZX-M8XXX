@@ -63,6 +63,7 @@ export function initInputSettings({
     const IFACE_ROMS = {
         betaDisk: { rom: 'trdos.rom',    span: 'betaDiskRomName' },
         plusD:    { rom: 'plusd.rom',    span: 'plusDRomName' },
+        disciple: { rom: 'disciple.rom', span: 'discipleRomName' },
         if1:      { rom: 'if1.rom',      span: 'if1RomName' },
         opus:     { rom: 'opus.rom',     span: 'opusRomName' },
         didaktik: { rom: 'didaktik.rom', span: 'didaktikRomName' }
@@ -564,6 +565,114 @@ export function initInputSettings({
         }
         spectrum.updateBetaDiskPagingFlag();
         updatePlusDStatus();
+    }
+
+    // DISCiPLE (MGT) toggle. Same WD1772 as the +D at other ports, with its
+    // ROM and RAM in either half of $0000-$3FFF (port $7B). It shares $1F with
+    // the Beta Disk and pages in where the +D, IF1, Opus and Didaktik do, so
+    // enabling it switches those off, and enabling any of them switches it off.
+    const chkDisciple = document.getElementById('chkDisciple');
+    const discipleStatus = document.getElementById('discipleStatus');
+    const btnNmiDisciple = document.getElementById('btnNmiDisciple');
+
+    function updateDiscipleStatus() {
+        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        chkDisciple.disabled = incompatible;
+        if (incompatible) {
+            discipleStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+        } else if (!romData['disciple.rom']) {
+            discipleStatus.textContent = '(disciple.rom required)';
+        } else {
+            discipleStatus.textContent = '';
+        }
+        btnNmiDisciple.disabled = incompatible || !chkDisciple.checked || !romData['disciple.rom'];
+        updateIfaceRomName('disciple');
+    }
+
+    function discipleOff(why) {
+        if (!chkDisciple.checked) return;
+        chkDisciple.checked = false;
+        getSpectrum().discipleEnabled = false;
+        storageSet('zxm8_disciple', false);
+        getSpectrum().updateBetaDiskPagingFlag();
+        updateDiscipleStatus();
+        showMessage(why + ' enabled — DISCiPLE disabled');
+    }
+    [[chkPlusD, '+D'], [chkIF1, 'Interface 1'], [chkOpus, 'Opus Discovery'],
+     [chkDidaktik, 'Didaktik 80'], [chkBetaDisk, 'Beta Disk']].forEach(([chk, name]) => {
+        if (chk) chk.addEventListener('change', () => { if (chk.checked) discipleOff(name); });
+    });
+
+    chkDisciple.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.discipleEnabled = chkDisciple.checked;
+        storageSet('zxm8_disciple', chkDisciple.checked);
+        if (chkDisciple.checked && romData['disciple.rom']) {
+            spectrum.memory.loadDiscipleRom(romData['disciple.rom']);
+        }
+        if (chkDisciple.checked) {
+            const off = [];
+            for (const [chk, flag, key, name] of [
+                [chkPlusD, 'plusDEnabled', 'zxm8_plusD', '+D'],
+                [chkIF1, 'if1Enabled', 'zxm8_if1', 'Interface 1'],
+                [chkOpus, 'opusEnabled', 'zxm8_opus', 'Opus'],
+                [chkDidaktik, 'didaktikEnabled', 'zxm8_didaktik', 'Didaktik'],
+                [chkBetaDisk, 'betaDiskEnabled', 'zxm8_betaDisk', 'Beta Disk']]) {
+                if ((chk && chk.checked) || spectrum[flag]) {
+                    if (chk) chk.checked = false;
+                    spectrum[flag] = false; storageSet(key, false); off.push(name);
+                }
+            }
+            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus();
+            updateBetaDiskStatus();
+            if (off.length) showMessage('DISCiPLE enabled — ' + off.join(', ') + ' disabled');
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateDiscipleStatus();
+        notifyDiskSystems();
+        showMessage(chkDisciple.checked ?
+            'DISCiPLE enabled (MGT disks) — type RUN with a system disk in drive 1' :
+            'DISCiPLE disabled');
+    });
+
+    document.getElementById('btnLoadDiscipleRom').addEventListener('click', () => {
+        document.getElementById('romDiscipleInput').click();
+    });
+
+    document.getElementById('romDiscipleInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            romData['disciple.rom'] = data;
+            setIfaceRomName('disciple', file.name);
+            const spectrum = getSpectrum();
+            spectrum.memory.loadDiscipleRom(data);
+            spectrum.updateBetaDiskPagingFlag();
+            updateDiscipleStatus();
+            notifyDiskSystems();
+            showMessage('DISCiPLE ROM loaded (' + data.length + ' bytes)');
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
+    btnNmiDisciple.addEventListener('click', () => {
+        getSpectrum().triggerDiscipleNmi();
+    });
+
+    // Restore the DISCiPLE setting from localStorage
+    {
+        const spectrum = getSpectrum();
+        const saved = storageGet('zxm8_disciple') === 'true';
+        chkDisciple.checked = saved;
+        spectrum.discipleEnabled = saved;
+        if (saved && romData['disciple.rom'] && !spectrum.memory.hasDiscipleRom()) {
+            spectrum.memory.loadDiscipleRom(romData['disciple.rom']);
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateDiscipleStatus();
     }
 
     // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
