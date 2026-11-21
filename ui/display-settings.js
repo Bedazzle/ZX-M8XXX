@@ -2,6 +2,7 @@
 import { storageGet, storageSet } from '../core/utils.js';
 import { setAddrBase, setValueBase, setOpcodeBase } from '../core/addr-format.js';
 import { createSaveSlots } from '../core/save-slots.js';
+import { MidiSynth } from './midi-synth.js';
 
 export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadResult, updateCanvasSize }) {
 
@@ -139,20 +140,31 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     // ---- 128 MIDI out -> Web MIDI (Spectrum.setMidiOut / onMidiMessage) ----
     const selMidiOut = document.getElementById('selMidiOut');
     const midiStatus = document.getElementById('midiStatus');
-    let midiAccess = null, midiOutput = null;
-    async function listMidiOutputs() {
-        if (!navigator.requestMIDIAccess) { midiStatus.textContent = '(no Web MIDI in this browser)'; return; }
-        try {
-            if (!midiAccess) midiAccess = await navigator.requestMIDIAccess();
-        } catch (e) { midiStatus.textContent = '(MIDI access refused)'; return; }
-        const keep = selMidiOut.value;
-        for (const o of [...selMidiOut.options]) if (o.value && o.value !== 'monitor') o.remove();
+    let midiAccess = null, midiOutput = null, midiSynth = null;
+    let midiChoice = '';                  // the working choice ('search' is only an action)
+    // Fill the list with the Web MIDI outputs. Asks for access (a browser
+    // prompt) only when `ask`; otherwise only if access was granted before.
+    async function listMidiOutputs(ask) {
+        if (!navigator.requestMIDIAccess) { midiStatus.textContent = '(no Web MIDI in this browser)'; return false; }
+        if (!midiAccess) {
+            if (!ask) {
+                try {
+                    const p = await navigator.permissions.query({ name: 'midi' });
+                    if (p.state !== 'granted') return false;
+                } catch (e) { return false; }
+            }
+            try { midiAccess = await navigator.requestMIDIAccess(); }
+            catch (e) { midiStatus.textContent = '(MIDI access refused)'; return false; }
+            midiAccess.onstatechange = () => listMidiOutputs(false);
+        }
+        for (const o of [...selMidiOut.options]) if (o.dataset.dev) o.remove();
         for (const out of midiAccess.outputs.values()) {
             const opt = document.createElement('option');
-            opt.value = out.id; opt.textContent = out.name;
+            opt.value = out.id; opt.textContent = out.name; opt.dataset.dev = '1';
             selMidiOut.appendChild(opt);
         }
-        selMidiOut.value = [...selMidiOut.options].some(o => o.value === keep) ? keep : '';
+        selMidiOut.value = [...selMidiOut.options].some(o => o.value === midiChoice) ? midiChoice : '';
+        return true;
     }
     function showMidi() {
         const sp = getSpectrum();
@@ -161,13 +173,31 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         midiStatus.textContent = `${sp.midiBytes} bytes` + (last ? `: ${last}` : '');
     }
     if (selMidiOut) {
-        selMidiOut.addEventListener('focus', listMidiOutputs);
+        listMidiOutputs(false);
         selMidiOut.addEventListener('change', async () => {
             const sp = getSpectrum();
+            if (selMidiOut.value === 'search') {
+                selMidiOut.value = midiChoice;
+                const n0 = selMidiOut.querySelectorAll('option[data-dev]').length;
+                if (await listMidiOutputs(true)) {
+                    const n = selMidiOut.querySelectorAll('option[data-dev]').length;
+                    showMessage(n ? `MIDI: ${n} output(s) found` : 'MIDI: no outputs (Windows has none built in now; try loopMIDI + a synth, or the built-in synth)');
+                    if (n > n0) selMidiOut.focus();
+                }
+                return;
+            }
             const v = selMidiOut.value;
-            midiOutput = (v && v !== 'monitor' && midiAccess) ? midiAccess.outputs.get(v) || null : null;
+            if (midiSynth && v !== 'synth') midiSynth.allOff();
+            if (midiOutput && v !== midiChoice) { try { midiOutput.send([0xB0, 123, 0]); } catch (e) {} }
+            midiChoice = v;
+            midiOutput = (v && v !== 'monitor' && v !== 'synth' && midiAccess) ? midiAccess.outputs.get(v) || null : null;
+            if (v === 'synth') {
+                if (!midiSynth) midiSynth = new MidiSynth();
+                midiSynth.resume();
+            }
             sp.onMidiMessage = (msg) => {
-                if (midiOutput) { try { midiOutput.send(msg); } catch (e) { /* a malformed message */ } }
+                if (midiChoice === 'synth') midiSynth.send(msg);
+                else if (midiOutput) { try { midiOutput.send(msg); } catch (e) { /* a malformed message */ } }
             };
             sp.setMidiOut(!!v);
             showMidi();

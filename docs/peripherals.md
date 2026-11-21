@@ -350,7 +350,7 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 
 ## Spectrum 128 MIDI out (AY register 14)
 
-`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...; the browser asks for MIDI access the first time the list is opened).
+`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.
 
 - The 128K's MIDI OUT is RS232 TXD: bit 2 of AY register 14 (port A), while R7 bit 6 makes port A an output (otherwise the line idles high). The ROM's `PLAY` with a `Y` channel, and programs, bit-bang bytes at 31250 baud.
 - Every change of the line is recorded with its absolute T-state; `UartDecoder` samples each bit in its middle (bit time = CPU clock / 31250: 3.5469 MHz on the 128K family, 3.5 MHz elsewhere), a frame listener finishes bytes whose last bits change nothing. It starts from the line as it is (a low line is not a start bit until it has been high).
