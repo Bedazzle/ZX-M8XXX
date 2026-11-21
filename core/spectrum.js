@@ -1566,6 +1566,12 @@ import { Disassembler } from './disasm.js';
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
             this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
+            // MIDI out: a note held at reset would never get its Note Off, so
+            // All Notes Off on every channel, and the UART starts afresh
+            if (this.midiEnabled) {
+                if (this.onMidiMessage) for (let ch = 0; ch < 16; ch++) this.onMidiMessage([0xB0 | ch, 123, 0]);
+                this.setMidiOut(true);
+            }
             if (this.dacLevels) this.dacLevels.fill(0x80);
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
