@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TKMEM-128 II Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>TKMEM-128 II Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // TKMEM-128 II (github.com/lrrosa/tkmem128-ii): 128K/512K external RAM
+        // for a 48K. $8000 = bank 2, $C000 = latched bank, $4000 stays the 48K's
+        // own RAM (no shadow screen), the 48K ROM stays. Port decode per
+        // Spectrum.tkmemDecode: 'gal' A15=0 A5=1 A1=0, 'a14' also A14=1.
+        import { Memory } from '../core/memory.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function render() {
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}`;
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+        function runMemoryTests() {
+            section('Memory: banks, lock, 512K');
+            const m = new Memory('48k');
+            m.setTkmem(128);
+            assert(m.tkmemRam && m.tkmemRam.length === 131072, '128K fitted');
+            for (let b = 0; b < 8; b++) { m.writeTkmem(b); m.write(0xC000, 0xA0 + b); }
+            let ok = true;
+            for (let b = 0; b < 8; b++) { m.writeTkmem(b); if (m.read(0xC000) !== 0xA0 + b) ok = false; }
+            assert(ok, 'eight separate banks at $C000');
+            m.writeTkmem(2);
+            m.write(0x8000, 0x5A);
+            assert(m.read(0xC000) === 0x5A, '$8000 is bank 2');
+            m.write(0x4000, 0x33);
+            m.writeTkmem(0x0F);
+            assert(m.read(0x4000) === 0x33 && m.tkmemBank === 7, 'bit 3 ignored: $4000 is the 48K screen RAM, no shadow screen');
+            m.writeTkmem(0x23);
+            m.writeTkmem(0x05);
+            assert(m.tkmemBank === 3 && m.tkmemLocked, 'bit 5 locks paging until reset');
+            m.reset();
+            assert(!m.tkmemLocked && m.tkmemBank === 0, 'reset unlocks, bank 0');
+            m.writeTkmem(0xC1);
+            assert(m.tkmemBank === 1, '128K: bits 6-7 ignored');
+            m.setTkmem(512);
+            m.writeTkmem(0xC1);
+            assert(m.tkmemBank === 0x19, '512K: bits 6-7 are bank bits 3-4');
+            m.write(0xC000, 0x77);
+            m.writeTkmem(0x01);
+            assert(m.read(0xC000) !== 0x77, '512K: bank 25 is not bank 1');
+            const m128 = new Memory('128k');
+            m128.setTkmem(128);
+            assert(!m128.tkmemRam, 'not fitted on a 128K');
+            m.setTkmem(0);
+            m.write(0xC000, 0x12);
+            assert(!m.tkmemRam && m.read(0xC000) === 0x12, 'removed: plain 48K RAM');
+        }
+
+        async function runPortTests() {
+            section('Port decode on a 48K');
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            let zx = null;
+            for (let i = 0; i < 400 && !zx; i++) { await wait(50); try { zx = frame.contentWindow.zxDebug; } catch (e) {} }
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '48k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const prev = { size: sp.tkmemSize, dec: sp.tkmemDecode };
+            sp.tkmemSize = 128;
+            sp.memory.setTkmem(128);
+            const bankAfter = (port, val) => { sp.memory.tkmemBank = 0; sp.portWrite(port, val); return sp.memory.tkmemBank; };
+            sp.tkmemDecode = 'a14';
+            assert(bankAfter(0x7FFD, 3) === 3, 'a14: 7FFD pages');
+            assert(bankAfter(0x07FC, 7) === 0 && bankAfter(0x00FC, 5) === 0,
+                'a14: the Beta 48 DOS ports $07FC/$00FC do not');
+            assert(bankAfter(0xFFFD, 3) === 0 && bankAfter(0x7FFF, 3) === 0, 'a14: A15=1 or A1=1 do not');
+            sp.tkmemDecode = 'gal';
+            assert(bankAfter(0x7FFD, 4) === 4 && bankAfter(0x07FC, 7) === 7,
+                'gal: 7FFD and $07FC both page (A15=0, A5=1, A1=0 only)');
+            assert(bankAfter(0x7FDD, 3) === 0, 'gal: A5=0 does not');
+            sp.tkmemSize = prev.size; sp.tkmemDecode = prev.dec;
+            sp.memory.setTkmem(prev.size);
+        }
+
+        (async () => {
+            try {
+                runMemoryTests();
+                await runPortTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            render();
+        })();
+    </script>
+</body>
+</html>

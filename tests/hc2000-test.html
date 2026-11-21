@@ -273,6 +273,12 @@
             await zx.start({ machine: 'hc2000' });
             const sp = frame.contentWindow.spectrum;
             zx.pause();
+            // A Beta 48 (Settings: Beta Disk type) would boot its DOS first: off here
+            if (sp.memory.beta48On) {
+                sp.betaVariant = '128';
+                sp.updateBetaDiskPagingFlag();
+                sp.reset();
+            }
             assert(sp.machineType === 'hc2000' && !!sp.hcIf1 && sp.memory.hasHcIf1Rom(), 'HC-2000 with HC IF1 ROM');
             assert(sp.fdc === sp.hcIf1.fdc, 'the HC IF1 controller is the machine\'s FDC');
             await zx.runFrames(150);

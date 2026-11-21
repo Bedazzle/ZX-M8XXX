@@ -70,6 +70,7 @@ import {
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
+import { prepareBeta48Rom } from './beta48.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -114,6 +115,18 @@ import { Disassembler } from './disasm.js';
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
             this.betaDiskEnabled = this.profile.betaDiskDefault;  // Beta Disk enabled by default for Pentagon machines
             this._betaDiskPagingEnabled = false;  // Cached flag for fast updateBetaDiskPaging check
+            // Which Beta Disk an add-on Beta is: '128' (TR-DOS 5.x, the default), or
+            // a Beta 48 — 'auto' (from its ROM), 'plus' (Beta Disk plus / Vision),
+            // 'cbi' (Brazilian CBI-95 / IDS / AR-20). See core/beta48.js.
+            this.betaVariant = storageGet('zxm8_betaVariant') || '128';
+            this.beta48Info = null;       // what prepareBeta48Rom() made of the ROM
+            // TKMEM-128 II on a 48K: 0 (none), 128 or 512 (KB). See Memory.setTkmem.
+            this.tkmemSize = parseInt(storageGet('zxm8_tkmem') || '0', 10) || 0;
+            // Port decode: 'a14' (A15=0, A14=1, A5=1, A1=0; works with a Beta 48)
+            // or 'gal' (A15=0, A5=1, A1=0, exactly as the board's GAL equation)
+            this.tkmemDecode = storageGet('zxm8_tkmemDecode') === 'gal' ? 'gal' : 'a14';
+            this.memory.setTkmem(this.tkmemSize);
+            this._beta48Master = 0;       // last write to a port xxxxxx00
 
             // µPD765 FDC (ZX Spectrum +3)
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
@@ -1470,6 +1483,11 @@ import { Disassembler } from './disasm.js';
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
             if (this.hcIf1) this.hcIf1.reset(false);
+            // Beta 48: reset clears the system port, so the ROM latch is set and the
+            // DOS runs from $0000; the master register clears too (I/O on).
+            this.memory.beta48Latch = this.memory.beta48On;
+            this._beta48Master = 0;
+            this.memory.beta48WindowOff = false;
 
             // Reset frame timing
             this.frameStartOffset = 0;
@@ -1544,8 +1562,71 @@ import { Disassembler } from './disasm.js';
         // ========== Port I/O ==========
 
         _isBetaDiskActive() {
-            return this.betaDiskEnabled &&
+            return this.betaDiskEnabled && !this.memory.beta48On &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
+        }
+
+        /** The Beta 48 flavour in use: 'plus' or 'cbi' (auto follows the ROM). */
+        _beta48Variant() {
+            if (this.betaVariant === 'cbi') return 'cbi';
+            if (this.betaVariant === 'auto' && this.beta48Info) {
+                return this.beta48Info.variant === 'cbi' ? 'cbi' : 'plus';
+            }
+            return 'plus';
+        }
+
+        /**
+         * Load a Beta 48 ROM image (TR-DOS 4.x, Vision, CBI-95...): identified,
+         * D0/D7 straightened and an 8KB ROM doubled by core/beta48.js.
+         */
+        loadBeta48Rom(data) {
+            const info = prepareBeta48Rom(data);
+            this.beta48Info = info;
+            this.memory.loadBeta48Rom(info.rom);
+            this.updateBetaDiskPagingFlag();
+            return info;
+        }
+
+        // Beta 48 port read; undefined when not its port (or its I/O is off)
+        _beta48Read(lowByte) {
+            if ((this._beta48Master & 0x80) || (lowByte & 0x07) !== 0x07) return undefined;
+            if ((lowByte & 0x87) === 0x07) {
+                return this.betaDisk.read([0x1F, 0x3F, 0x5F, 0x7F][(lowByte >> 5) & 3]);
+            }
+            // System port: bit 7 INTRQ, bit 6 DRQ; the rest is open bus on the
+            // Beta plus, a jumper (bit 4 = 1) and printer BUSY (bit 5) on the CBI
+            const st = this.betaDisk.read(0xFF) & 0xC0;
+            return this._beta48Variant() === 'cbi' ? (st | 0x1F) : (st | 0x3F);
+        }
+
+        // Beta 48 port write; true when the interface took it (it then blocks
+        // the I/O cycle for the rest of the bus)
+        _beta48Write(lowByte, val) {
+            if ((this._beta48Master & 0x80) || (lowByte & 0x07) !== 0x07) return false;
+            if ((lowByte & 0x87) === 0x07) {
+                this.betaDisk.write([0x1F, 0x3F, 0x5F, 0x7F][(lowByte >> 5) & 3], val);
+            } else {
+                this.betaDisk.write(0xFF, val);
+                this.memory.beta48Latch = (val & 0x80) === 0;   // ROM latch: 0 = paged
+            }
+            return true;
+        }
+
+        /**
+         * The Beta Disk "magic button": NMI with the DOS ROM paged in, so the
+         * DOS can save the machine to disk. Beta 48: the latch is set as well
+         * (MAME betaplus); Beta 128: the TR-DOS ROM is paged (MAME beta128).
+         */
+        triggerBetaMagic() {
+            if (this.memory.beta48On) {
+                this.memory.beta48Latch = true;
+            } else if (this._betaDiskPagingEnabled) {
+                this.memory.trdosActive = true;
+            } else {
+                return false;
+            }
+            this.cpu.nmi();
+            return true;
         }
 
         _isPlusDActive() {
@@ -1878,6 +1959,9 @@ import { Disassembler } from './disasm.js';
                            lowByte === DIDAKTIK_PORT_DATA)) {
                     // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
                     result = this.didaktik.read(port);
+                } else if (this.memory.beta48On &&
+                           (this._beta48In = this._beta48Read(lowByte)) !== undefined) {
+                    result = this._beta48In;        // Beta 48 FDC / system port
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -2051,6 +2135,26 @@ import { Disassembler } from './disasm.js';
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
+            // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
+            // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports
+            // $00FC / $07FC, in every TR-DOS 4.x, CAS, Vision and CBI ROM) pages
+            // bank 0/7 in under the DOS's own stack and hangs it. 'a14' adds
+            // A14=1 to the decode, which 7FFD has and $xxFC with B < $40 has not.
+            // Write-only, not exclusive (the port carries on to the rest).
+            if (this.memory.tkmemRam &&
+                (this.tkmemDecode === 'gal' ? (port & 0x8022) === 0x0020
+                                            : (port & 0xC022) === 0x4020)) {
+                this.memory.writeTkmem(val);
+            }
+
+            // Beta 48 master register: any port xxxxxx00 ($FC is the border as
+            // well). Bit 7 = 1 switches its I/O off; on the CBI clones bit 6 = 1
+            // switches the $3Cxx ROM window off.
+            if (this.memory.beta48On && (lowByte & 0x03) === 0) {
+                this._beta48Master = val;
+                this.memory.beta48WindowOff = this._beta48Variant() === 'cbi' && (val & 0x40) !== 0;
+            }
+
             // The wait is decided by the port's HIGH byte, not by whether the ULA
             // answers: a port in $40xx-$7Fxx is contended whatever its low byte, and
             // an odd one waits four times over. This used to sit inside the
@@ -2182,6 +2286,9 @@ import { Disassembler } from './disasm.js';
                 (lowByte & DIDAKTIK_PORT_AUX_MASK) === DIDAKTIK_PORT_AUX)) {
                 // Didaktik 80 WD2797 registers plus the aux register at $89
                 this.didaktik.write(port, val);
+                return;
+            }
+            if (this.memory.beta48On && this._beta48Write(lowByte, val)) {
                 return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
@@ -4351,7 +4458,16 @@ import { Disassembler } from './disasm.js';
         // Beta Disk automatic ROM paging
         // Update cached flag for Beta Disk paging (call when conditions change)
         updateBetaDiskPagingFlag() {
-            this._betaDiskPagingEnabled =
+            // Beta 48: an add-on Beta Disk (not the built-in one of a Pentagon or
+            // Scorpion) set to a Beta 48 variant, with its ROM loaded
+            const beta48 = !this.profile.betaDiskDefault && this.betaDiskEnabled &&
+                this.betaVariant !== '128' && this.memory.hasBeta48Rom();
+            if (beta48 !== this.memory.beta48On) {
+                this.memory.beta48On = beta48;
+                this.memory.beta48Latch = false;
+                this.memory.trdosActive = false;
+            }
+            this._betaDiskPagingEnabled = !beta48 &&
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
             // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
@@ -7320,7 +7436,7 @@ import { Disassembler } from './disasm.js';
             // Request switch to Pentagon if Beta Disk not available on current machine
             // No switch needed if: Pentagon mode OR (Beta Disk enabled AND TR-DOS ROM loaded)
             const betaDiskAvailable = this.profile.betaDiskDefault ||
-                (this.betaDiskEnabled && this.memory.hasTrdosRom());
+                (this.betaDiskEnabled && this.memory.hasTrdosRom()) || this.memory.beta48On;
             const needsMachineSwitch = !betaDiskAvailable;
 
             // Return disk inserted result - no file selection needed
@@ -7571,6 +7687,21 @@ import { Disassembler } from './disasm.js';
         // sets up system variables, channels, and workspace — much more reliable
         // than manually constructing system variables.
         bootTrdos() {
+            // Beta 48: the DOS runs from reset (latch set), so a reset is the boot
+            if (this.memory.beta48On) {
+                const keep = this.betaDisk ? this.betaDisk.drives.map(d => ({
+                    diskData: d.diskData, diskType: d.diskType })) : null;
+                this.stop();
+                this.reset();
+                if (keep) keep.forEach((d, i) => {
+                    if (d.diskData) {
+                        this.betaDisk.drives[i].diskData = d.diskData;
+                        this.betaDisk.drives[i].diskType = d.diskType;
+                        this.betaDisk.drives[i].headTrack = 0;
+                    }
+                });
+                return true;
+            }
             // Check if TR-DOS ROM is loaded
             if (!this.memory.hasTrdosRom()) {
                 console.warn('[TR-DOS] Cannot boot TR-DOS: TR-DOS ROM not loaded');
@@ -8639,6 +8770,18 @@ import { Disassembler } from './disasm.js';
                 out.hcIf1 = this.hcIf1.getState();
                 out.hcIf1.paged = !!this.memory.if1Active;
             }
+            // Beta 48: its ROM latch and master register (the WD1793 goes with
+            // the Beta Disk chunks as on the Beta 128)
+            if (this.memory.beta48On) {
+                out.beta48 = { latch: !!this.memory.beta48Latch, master: this._beta48Master,
+                    windowOff: !!this.memory.beta48WindowOff };
+            }
+            // TKMEM-128 II: its RAM is not in the 48K image, so it travels here
+            const m = this.memory;
+            if (m.tkmemRam) {
+                out.tkmem = { ram: m.tkmemRam.slice(), latch: m.tkmemLatch,
+                    bank: m.tkmemBank, locked: m.tkmemLocked };
+            }
             return out;
         }
 
@@ -8682,6 +8825,19 @@ import { Disassembler } from './disasm.js';
             if (state.hcIf1 && this.hcIf1) {
                 this.hcIf1.setState(state.hcIf1);
                 this.memory.if1Active = !!state.hcIf1.paged;
+            }
+            if (state.beta48 && this.memory.beta48On) {
+                this.memory.beta48Latch = !!state.beta48.latch;
+                this._beta48Master = state.beta48.master | 0;
+                this.memory.beta48WindowOff = !!state.beta48.windowOff;
+            }
+            const m = this.memory;
+            if (state.tkmem && m.tkmemRam && state.tkmem.ram &&
+                state.tkmem.ram.length === m.tkmemRam.length) {
+                m.tkmemRam.set(state.tkmem.ram);
+                m.tkmemLatch = state.tkmem.latch | 0;
+                m.tkmemBank = state.tkmem.bank | 0;
+                m.tkmemLocked = !!state.tkmem.locked;
             }
         }
 
@@ -8833,6 +8989,7 @@ import { Disassembler } from './disasm.js';
                 storageGet('zxm8_betaDisk') === 'true';
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
+            this.memory.setTkmem(this.tkmemSize);   // 48K only; a no-op elsewhere
             // The new Memory needs the Opus controller re-linked — its registers
             // are read through the memory map, so a fresh Memory without this
             // reference would return $FF for every FDC and PIA access.
@@ -9638,6 +9795,7 @@ import { Disassembler } from './disasm.js';
             if (mem.specialPagingMode) return 'RAM';
             if (mem.if1Active) return 'IF1';
             if (mem.trdosActive) return 'TRDOS';
+            if (mem.isBeta48RomAt && mem.isBeta48RomAt(pc)) return 'TRDOS';
             if (mem.ramInRomMode || mem.scorpionRamInRomMode) return 'RAM';
             return 'ROM:' + mem.currentRomBank;
         }

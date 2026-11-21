@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Beta 48 Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Beta 48 Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Beta 48 = Technology Research "Beta Disk plus" (TR-DOS 4.x) and its
+        // clones, after MAME's beta.cpp: ROM on any access to $3C00-$3CFF or
+        // while the latch (port $FF bit 7 = 0) is set, I/O switched by bit 7 of
+        // a port xxxxxx00, D0/D7 crossed on original boards. The last section
+        // boots a real ROM from roms/beta48.rom when there is one.
+        import { Memory } from '../core/memory.js';
+        import { prepareBeta48Rom, swapD0D7, crc32 } from '../core/beta48.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function render() {
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // A fake 8KB DOS ROM: a name to be found, and a marker byte per 256
+        function fakeDos(name = 'TR-DOS Ver 4.99 ') {
+            const r = new Uint8Array(8192);
+            for (let i = 0; i < 8192; i++) r[i] = (i >> 8) | 0x40;
+            for (let i = 0; i < name.length; i++) r[0x100 + i] = name.charCodeAt(i);
+            return r;
+        }
+
+        function runRomTests() {
+            section('ROM images (core/beta48.js)');
+            assert(crc32(new TextEncoder().encode('123456789')) === 'cbf43926', 'crc32 check value');
+            const plain = fakeDos();
+            const p1 = prepareBeta48Rom(plain);
+            assert(!p1.swapped && p1.rom.length === 16384, 'readable ROM kept as it is, 16KB');
+            assert(p1.rom[0x2000 + 5] === plain[5] && p1.rom[0x3C00] === plain[0x1C00],
+                '8KB ROM shown twice ($2000 mirrors $0000)');
+            assert(/4\.99/.test(p1.name), 'name read from the ROM', p1.name);
+            const p2 = prepareBeta48Rom(swapD0D7(plain));
+            assert(p2.swapped && p2.rom.every((b, i) => b === p1.rom[i]),
+                'a D0/D7-crossed dump is straightened (its text reads the other way)');
+            const vis = fakeDos('VISION Ver 9.9 ');
+            const big = new Uint8Array(16384); big.set(vis); big.set(vis, 8192);
+            assert(prepareBeta48Rom(big).variant === 'vision', 'Vision recognised by its text');
+            let threw = false;
+            try { prepareBeta48Rom(new Uint8Array(1000)); } catch (e) { threw = true; }
+            assert(threw, 'a ROM that is neither 8KB nor 16KB is refused');
+        }
+
+        function runMemoryTests() {
+            section('Memory: $3Cxx window and the latch');
+            const m = new Memory('48k');
+            const basic = new Uint8Array(16384).fill(0x11);
+            m.loadRom(basic, 0);
+            const dos = new Uint8Array(16384).fill(0x22);
+            m.loadBeta48Rom(dos);
+            m.beta48On = true;
+            m.beta48Latch = false;
+            assert(m.read(0x0000) === 0x11 && m.read(0x3D00) === 0x11, 'latch off: Sinclair ROM outside $3Cxx');
+            assert(m.read(0x3C00) === 0x22 && m.read(0x3CFF) === 0x22, 'any read in $3C00-$3CFF sees the DOS ROM');
+            m.beta48Latch = true;
+            assert(m.read(0x0000) === 0x22 && m.read(0x3D13) === 0x22, 'latch on: DOS ROM over all of $0000-$3FFF');
+            assert(m.read(0x4000) !== 0x22, 'RAM untouched');
+            m.beta48Latch = false;
+            m.beta48WindowOff = true;
+            assert(m.read(0x3C00) === 0x11, 'CBI master bit 6: no $3Cxx window');
+            m.beta48On = false;
+            m.beta48WindowOff = false;
+            assert(m.read(0x3C00) === 0x11, 'interface off: plain 48K');
+        }
+
+        function screenText(sp) {
+            const rom = sp.memory.rom[0];
+            const glyphs = new Map();
+            for (let c = 32; c < 128; c++) {
+                const base = 0x3D00 + (c - 32) * 8;
+                const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
+                if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+            }
+            const scr = sp.memory.getScreenBase().ram;
+            const rows = [];
+            for (let row = 0; row < 24; row++) {
+                let s = '';
+                for (let col = 0; col < 32; col++) {
+                    const bytes = [];
+                    for (let y = 0; y < 8; y++) bytes.push(scr[((row & 0x18) << 8) | ((row & 7) << 5) | (y << 8) | col]);
+                    s += glyphs.get(bytes.join(',')) || '?';
+                }
+                rows.push(s);
+            }
+            return rows.join('\n');
+        }
+
+        async function runMachineTests() {
+            section('Real ROM: roms/beta48.rom on a 48K');
+            const have = await fetch('../roms/beta48.rom').then(r => r.ok, () => false);
+            if (!have) { skip('roms/beta48.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '48k' });
+            await zx.start({ machine: '48k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const prev = { en: sp.betaDiskEnabled, v: sp.betaVariant, opus: sp.opusEnabled };
+            sp.opusEnabled = false; sp.plusDEnabled = false; sp.if1Enabled = false;
+            sp.betaDiskEnabled = true;
+            sp.betaVariant = 'auto';
+            const romBytes = new Uint8Array(await (await fetch('../roms/beta48.rom')).arrayBuffer());
+            const info = sp.loadBeta48Rom(romBytes);
+            assert(sp.memory.beta48On, 'Beta 48 fitted', info.name);
+            sp.reset();
+            assert(sp.memory.beta48Latch && sp._beta48Master === 0, 'reset: latch set, I/O on — the DOS runs first');
+            let outs = 0;
+            const ow = sp.cpu.portWrite;
+            sp.cpu.portWrite = (p, v, t) => { if ((p & 0x03) === 0 && (p & 0xFF) !== 0xFE) outs++; return ow(p, v, t); };
+            await zx.runFrames(250);
+            sp.cpu.portWrite = ow;
+            assert(outs > 0, 'the DOS drives the master register (port xxxxxx00)', outs + ' writes');
+            const t = screenText(sp);
+            assert(/DOS|VISION|CBI|IDS|ARCADE|CAS/i.test(t) || !sp.memory.beta48Latch,
+                'the DOS ran: its banner is up, or it has handed over to BASIC',
+                t.split('\n').filter(l => l.trim()).slice(0, 4).join(' | '));
+            assert(sp.triggerBetaMagic() && sp.memory.beta48Latch, 'magic button: NMI with the ROM latched');
+            sp.betaDiskEnabled = prev.en; sp.betaVariant = prev.v; sp.opusEnabled = prev.opus;
+            sp.updateBetaDiskPagingFlag();
+        }
+
+        (async () => {
+            try {
+                runRomTests();
+                runMemoryTests();
+                await runMachineTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            render();
+        })();
+    </script>
+</body>
+</html>

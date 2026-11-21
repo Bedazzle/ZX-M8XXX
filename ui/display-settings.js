@@ -480,6 +480,41 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
     });
 
+    // ===== TKMEM-128 II (48K memory expansion, Memory.setTkmem) =====
+
+    const selTkmem = document.getElementById('selTkmem');
+    const tkmemStatus = document.getElementById('tkmemStatus');
+    function updateTkmemStatus() {
+        const sp = getSpectrum();
+        selTkmem.value = String(sp.tkmemSize || 0);
+        tkmemStatus.textContent = (sp.tkmemSize && sp.machineType !== '48k')
+            ? '(48K machine only)' : '';
+    }
+    const selTkmemDecode = document.getElementById('selTkmemDecode');
+    if (selTkmemDecode) {
+        selTkmemDecode.value = getSpectrum().tkmemDecode;
+        selTkmemDecode.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemDecode = selTkmemDecode.value === 'gal' ? 'gal' : 'a14';
+            storageSet('zxm8_tkmemDecode', spectrum.tkmemDecode);
+            showMessage('TKMEM-128 II decode: ' + selTkmemDecode.options[selTkmemDecode.selectedIndex].text);
+        });
+    }
+    if (selTkmem) {
+        updateTkmemStatus();
+        selTkmem.addEventListener('focus', updateTkmemStatus);
+        selTkmem.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemSize = parseInt(selTkmem.value, 10) || 0;
+            storageSet('zxm8_tkmem', String(spectrum.tkmemSize));
+            spectrum.memory.setTkmem(spectrum.tkmemSize);
+            spectrum.reset();
+            updateTkmemStatus();
+            showMessage(spectrum.tkmemSize
+                ? `TKMEM-128 II: ${spectrum.tkmemSize}K (machine reset)` : 'TKMEM-128 II off (machine reset)');
+        });
+    }
+
     // ===== CPU variant =====
 
     // Second-source Z80s differ in two ways software can see: the undocumented
