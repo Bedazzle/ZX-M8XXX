@@ -2904,7 +2904,9 @@ import { Disassembler } from './disasm.js';
             const needsInstrPC = xrefEnabled || tracing;
             const contentionEnabled = this.profile.hasContention && this.contentionEnabled;
             const isPentagon = this.profile.ulaProfile === 'pentagon';
-            const tapeTrapsEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+            // (noRomTraps: not at the 48K addresses; exromTapeTraps: the TC2068's own)
+            const tapeTrapsEnabled = this.tapeTrapsEnabled && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
+            const trdosTrapEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
             // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
@@ -2963,7 +2965,7 @@ import { Disassembler } from './disasm.js';
                 }
                 if (tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
-                if (tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+                if (trdosTrapEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (contentionEnabled) {
@@ -3626,10 +3628,10 @@ import { Disassembler } from './disasm.js';
                 if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
                     (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
-                const _traps = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+                const _traps = this.tapeTrapsEnabled && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
                 if (_traps && this.tapeTrap.checkTrap()) continue;
                 if (_traps && this.tapeSaveTrap.checkTrap()) continue;
-                if (_traps && this.trdosTrap.checkTrap()) continue;
+                if (_traps && !this.profile.noRomTraps && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (this.profile.hasContention && this.contentionEnabled) {
@@ -9098,8 +9100,8 @@ import { Disassembler } from './disasm.js';
          * Get current tape load mode
          */
         getTapeFlashLoad() {
-            // A machine whose ROM the traps do not know (TC2068) loads in real time
-            return this.tapeFlashLoad && !this.profile.noRomTraps;
+            // A machine whose ROM the traps do not know loads in real time
+            return this.tapeFlashLoad && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
         }
 
         /**

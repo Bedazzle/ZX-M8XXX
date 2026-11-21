@@ -389,10 +389,12 @@ const MACHINE_PROFILES = {
             ulaProfile: '48k',
             timex: true,
             timexAy: true,             // AY on $F5/$F6, not $FFFD/$BFFD
-            // Its ROM is not the 48K's: the tape traps (LD-BYTES/SA-BYTES at the
-            // 48K addresses, TR-DOS) would fire on other code. Tapes load in
-            // real time instead.
+            // Its ROM is not the 48K's: the traps at the 48K addresses (LD-BYTES,
+            // SA-BYTES, TR-DOS) would fire on other code. LD-BYTES and SA-BYTES
+            // are the 48K's, moved to the EXROM (ROM bank 1, paged in at $0000
+            // while the tape runs): trapped there instead (TapeTrapHandler).
             noRomTraps: true,
+            exromTapeTraps: true,
             hasSnow: false,
             ulaInkSkew: 0,
             ulaSubcarrierLock: false,

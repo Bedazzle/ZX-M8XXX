@@ -1294,6 +1294,14 @@ import { xorChecksum } from './common.js';
     // .z80 RLE decompression. `isV1` selects the version 1 end marker
     // (00 ED ED 00) — v2/v3 blocks are length-prefixed and that byte sequence is
     // ordinary data there, per the .z80 spec. Shared with ui/compare-tool.js.
+    // TC2068: LD-BYTES / SA-BYTES are the 48K ROM's moved $045A down, in the
+    // EXROM; they count only while it is at $0000 (HSR bit 0 with DEC bit 7,
+    // and no cartridge EXROM in that chunk)
+    const EXROM_LD_BYTES = 0x00FC, EXROM_LD_MID = 0x010F, EXROM_LD_START = 0x0112, EXROM_SA_BYTES = 0x0068;
+    function exromAtZero(m) {
+        return !!((m.timexHsr & 1) && (m.timexDec & 0x80) && !(m.timexExrom && m.timexExrom[0]));
+    }
+
     export class TapeTrapHandler {
         constructor(cpu, memory, tapeLoader) {
             this.cpu = cpu;
@@ -1311,7 +1319,16 @@ import { xorChecksum } from './common.js';
             // 0x0569: mid-routine entry used by custom loaders that do their own
             //         preamble (border color, EAR sampling) then CALL 0569h —
             //         flag in A' and carry in F' (caller already did EX AF,AF')
-            if (pc === 0x056c || pc === 0x0556 || pc === 0x0569) {
+            // (the TC2068's are in its EXROM, see EXROM_LD_BYTES)
+            let hit, mid;
+            if (this.memory.profile.exromTapeTraps) {
+                hit = (pc === EXROM_LD_BYTES || pc === EXROM_LD_MID || pc === EXROM_LD_START) && exromAtZero(this.memory);
+                mid = pc === EXROM_LD_MID;
+            } else {
+                hit = pc === 0x056c || pc === 0x0556 || pc === 0x0569;
+                mid = pc === 0x0569;
+            }
+            if (hit) {
                 // In 128K mode, only trap when ROM 1 (48K BASIC) is active
                 // ROM 0 is the 128K editor which has different code at these addresses
                 if (this.memory.profile.ramPages > 1) {
@@ -1339,7 +1356,7 @@ import { xorChecksum } from './common.js';
                     this.returnFromTrap();
                     return true;
                 }
-                return this.handleLoadTrap(pc === 0x0569);
+                return this.handleLoadTrap(mid);
             }
             return false;
         }
@@ -1417,7 +1434,9 @@ import { xorChecksum } from './common.js';
 
         checkTrap() {
             if (!this.enabled) return false;
-            if (this.cpu.pc !== 0x04C2) return false;
+            if (this.memory.profile.exromTapeTraps) {
+                if (this.cpu.pc !== EXROM_SA_BYTES || !exromAtZero(this.memory)) return false;
+            } else if (this.cpu.pc !== 0x04C2) return false;
 
             // In 128K mode, only trap in BASIC ROM
             if (this.memory.profile.ramPages > 1) {
