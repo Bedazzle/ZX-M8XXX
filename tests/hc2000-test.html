@@ -265,6 +265,14 @@
                 skip('HC ROMs (hc2000-0/1.rom or hc2000.rom, and hc-if1.rom) not in roms/');
                 return;
             }
+            // The HC IF1 is a setting (an HC-2000 may be without it): on for this
+            // run whatever the browser has stored, put back afterwards
+            const savedHcIf1 = localStorage.getItem('zxm8_hcIf1');
+            localStorage.setItem('zxm8_hcIf1', 'true');
+            window.addEventListener('beforeunload', () => {
+                if (savedHcIf1 === null) localStorage.removeItem('zxm8_hcIf1');
+                else localStorage.setItem('zxm8_hcIf1', savedHcIf1);
+            });
             const frame = document.getElementById('app');
             frame.src = '../index.html';
             const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);

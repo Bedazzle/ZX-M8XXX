@@ -40,6 +40,11 @@ import {
             // Timex FDD 3000 interface (core/fdd3000.js): 4KB ROM mirrored over
             // $0000-$1FFF and 8KB RAM at $2000-$3FFF while paged in
             this.fdd3000 = null;          // the Fdd3000 (set by Spectrum)
+            // Timex SCLD (TC2048): DEC (port $FF: display mode, INT mask, bank
+            // select) and HSR (port $F4: 8KB chunks switched to DOCK/EXROM,
+            // which are empty on a TC2048 -- they read $FF and ignore writes)
+            this.timexDec = 0;
+            this.timexHsr = 0;
             this.fdd3000Active = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
@@ -159,6 +164,8 @@ import {
             }
             this.pagingDisabled = false;
             this.fdd3000Active = false;
+            this.timexDec = 0;
+            this.timexHsr = 0;
             if (this.tkmemRam) this.tkmemRam.fill(0);
             this.tkmemLatch = 0;
             this.tkmemBank = 0;
@@ -496,7 +503,9 @@ import {
             if (this.hcR !== null) {
                 // HC-2000: 8KB slots, see _hcRemap()
                 val = this.hcR[addr >> 13][addr & 0x1FFF];
-            } else if (this.machineType === '48k') {
+            } else if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) {
+                val = 0xFF;                 // Timex: an empty DOCK/EXROM chunk
+            } else if (this.profile.ramPages === 1) {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
                     val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
@@ -616,7 +625,8 @@ import {
                 return;
             }
 
-            if (this.machineType === '48k') {
+            if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) return;   // Timex DOCK/EXROM
+            if (this.profile.ramPages === 1) {
                 if (this.tkmemRam && addr >= SLOT2_START) {
                     this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)] = val;
                     return;

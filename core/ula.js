@@ -9,6 +9,7 @@ import { getMachineProfile, is128kCompat } from './machines.js';
 import { applySnow, applySnowLine, snowActive, snowRange, DISPLAY_BYTES, M1Log, SnowCalibration } from './ula-snow.js';
 import { inkSkewFor } from './ula-inkskew.js';
 import { renderCell, cellContext } from './ula-blit.js';
+import { timexHiresAttr, timexLoresCell, timexHiresWord } from './timex.js';
 import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
     // PC keys that can act as the ZX modifiers (Caps Shift / Symbol Shift).
@@ -88,6 +89,11 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             this.memory = memory;
             this.machineType = machineType;
             this.profile = getMachineProfile(machineType);
+            // Timex SCLD (core/timex.js): 512x192 hi-res rows go here as well,
+            // and the output stage (Spectrum.blitFrame) puts them on a canvas
+            // twice as wide; hiresRows[y] = 1 where row y was hi-res this frame
+            this.hiresBuf = null;
+            this.hiresRows = new Uint8Array(192);
             this.borderPreset = 'full';  // Current border preset
             this.fullBorderMode = true;  // Derived from preset for backwards compatibility
             this.borderOnly = false;  // When true, don't draw paper area (256x192)
@@ -136,7 +142,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'pentagon': { top: 80, left: 48, right: 48, bottom: 48 },
                 'pentagon1024': { top: 80, left: 48, right: 48, bottom: 48 },
                 'scorpion': { top: 80, left: 48, right: 48, bottom: 48 },
-                'hc2000':  { top: 64, left: 48, right: 48, bottom: 56 }   // 48K timing
+                'hc2000':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
+                'tc2048':  { top: 64, left: 48, right: 48, bottom: 56 }   // 48K timing
             };
 
             // Normal (cropped) border sizes
@@ -150,7 +157,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'pentagon': { top: 24, left: 32, right: 32, bottom: 24 },
                 'pentagon1024': { top: 24, left: 32, right: 32, bottom: 24 },
                 'scorpion': { top: 24, left: 32, right: 32, bottom: 24 },
-                'hc2000':  { top: 24, left: 32, right: 32, bottom: 24 }
+                'hc2000':  { top: 24, left: 32, right: 32, bottom: 24 },
+                'tc2048':  { top: 24, left: 32, right: 32, bottom: 24 }
             };
 
             // Set initial border dimensions
@@ -1378,6 +1386,54 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
         
         // Render a single scanline with pixel-perfect border timing
         // Uses T-state based timing with LINE_TIMES_BASE for accurate positioning
+        /**
+         * Timex SCLD DEC write (port $FF). Entering or leaving hi-res, or a new
+         * hi-res colour, changes the border: hi-res paper, or port $FE's colour.
+         */
+        setTimexDec(val, tStates) {
+            const old = this.memory.timexDec;
+            this.memory.timexDec = val & 0xFF;
+            const hires = (val & 0x04) !== 0;
+            if (hires !== ((old & 0x04) !== 0) || (hires && ((val ^ old) & 0x38))) {
+                if (this.timexLoresBorder === undefined) this.timexLoresBorder = this.borderColor;
+                const colour = hires ? (timexHiresAttr(val) >> 3) & 7 : this.timexLoresBorder;
+                this.setBorderAt(colour, tStates);
+            }
+        }
+
+        /**
+         * Paper of row y in a Timex mode (DEC bits 0-2 non-zero). Low-res modes
+         * draw into the frame buffer as usual; hi-res draws 512 pixels into
+         * hiresBuf and a 256-pixel reduction into the frame buffer, for
+         * everything that reads that.
+         */
+        _renderTimexPaper(visY, y, ram) {
+            const dec = this.memory.timexDec;
+            const fb32 = this.frameBuffer32;
+            const pal32 = this.palette32;
+            const rowOffset = visY * this.TOTAL_WIDTH + this.BORDER_LEFT;
+            if (dec & 0x04) {
+                const attr = timexHiresAttr(dec);
+                const bright = (attr & 0x40) ? 8 : 0;
+                const ink = pal32[(attr & 7) + bright], paper = pal32[((attr >> 3) & 7) + bright];
+                if (!this.hiresBuf) this.hiresBuf = new Uint32Array(512 * 192);
+                const hb = this.hiresBuf, hrow = y * 512;
+                for (let col = 0; col < 32; col++) {
+                    const w = timexHiresWord(ram, dec, y, col);
+                    for (let i = 0; i < 16; i++) hb[hrow + (col << 4) + i] = (w & (0x8000 >> i)) ? ink : paper;
+                    for (let i = 0; i < 8; i++) fb32[rowOffset + (col << 3) + i] = (w & (0x8000 >> (i << 1))) ? ink : paper;
+                }
+                this.hiresRows[y] = 1;
+                return;
+            }
+            this.hiresRows[y] = 0;
+            const cellCtx = cellContext(fb32, pal32, null, this.flashState, 0);
+            for (let col = 0; col < 32; col++) {
+                const [data, attr] = timexLoresCell(ram, dec, y, col);
+                renderCell(cellCtx, rowOffset + (col << 3), data, attr, 0);
+            }
+        }
+
         renderScanline(line) {
             const screen = this.memory.getScreenBase();
             const screenRam = this._displayRam(screen, line);
@@ -1470,6 +1526,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             } else {
                 // Screen line - left border, paper, right border
                 const y = screenLine;
+                if (this.profile.timex) this.hiresRows[y] = 0;     // set again by a hi-res render
 
                 // Left border - skip if beam rendering
                 if (!skipBorderRendering) {
@@ -1503,6 +1560,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                                 this.BORDER_LEFT, this.BORDER_LEFT + this.SCREEN_WIDTH, true);
                         }
                     }
+                } else if (this.profile.timex && (this.memory.timexDec & 0x07)) {
+                    this._renderTimexPaper(visY, y, screenRam);
                 } else if (this.deferPaperRendering) {
                     // Skip paper rendering if already handled by bank-switch catch-up,
                     // or defer to endFrame for remaining lines

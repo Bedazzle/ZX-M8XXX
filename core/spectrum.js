@@ -1321,7 +1321,10 @@ import { Disassembler } from './disasm.js';
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
-            const isUlaPort = (lowByte & 0x01) === 0;
+            // Timex: the SCLD answers $F4, $FE and $FF only (full decoding)
+            const isUlaPort = this.profile.timex
+                ? (lowByte === 0xFE || lowByte === 0xFF || lowByte === 0xF4)
+                : (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
             // Where the I/O cycle sits inside the instruction, which is the tick the
@@ -1389,7 +1392,10 @@ import { Disassembler } from './disasm.js';
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
-            const isUlaPort = (lowByte & 0x01) === 0;
+            // Timex: the SCLD answers $F4, $FE and $FF only (full decoding)
+            const isUlaPort = this.profile.timex
+                ? (lowByte === 0xFE || lowByte === 0xFF || lowByte === 0xF4)
+                : (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
             //   IN A,(n)   11T: pc:4, pc+1:3, IO:4            -> 7
@@ -1444,11 +1450,47 @@ import { Disassembler } from './disasm.js';
 
         updateDisplayDimensions() {
             const dims = this.ula.getDimensions();
-            this.canvas.width = dims.width;
+            // Timex: the canvas is twice as wide so 512-pixel hi-res rows fit;
+            // the frame buffer and everything that reads it stay as they are
+            this.canvasScaleX = this.profile.timex ? 2 : 1;
+            this.canvas.width = dims.width * this.canvasScaleX;
             this.canvas.height = dims.height;
-            this.imageData = this.ctx.createImageData(dims.width, dims.height);
+            this.imageData = this.ctx.createImageData(dims.width * this.canvasScaleX, dims.height);
+            this._wide32 = null;
             // Store previous frame for beam visualization mode
             this.previousFrameBuffer = new Uint8ClampedArray(dims.width * dims.height * 4);
+        }
+
+        /**
+         * Frame buffer -> canvas image. Timex: each pixel twice across, then the
+         * rows the SCLD drew in hi-res replaced by their 512 real pixels.
+         */
+        blitFrame(fb) {
+            if (this.canvasScaleX !== 2) { this.imageData.data.set(fb); return; }
+            const dims = this.ula.getDimensions();
+            const W = dims.width, H = dims.height, W2 = W * 2;
+            if (!this._wide32 || this._wide32.buffer !== this.imageData.data.buffer) {
+                this._wide32 = new Uint32Array(this.imageData.data.buffer);
+            }
+            const dst = this._wide32;
+            const src = new Uint32Array(fb.buffer, fb.byteOffset, W * H);
+            for (let y = 0; y < H; y++) {
+                const s0 = y * W, d0 = y * W2;
+                for (let x = 0; x < W; x++) {
+                    const c = src[s0 + x];
+                    dst[d0 + 2 * x] = c;
+                    dst[d0 + 2 * x + 1] = c;
+                }
+            }
+            const ula = this.ula;
+            if (ula.hiresBuf) {
+                for (let y = 0; y < 192; y++) {
+                    const vy = dims.borderTop + y;
+                    if (ula.hiresRows[y] && vy >= 0 && vy < H) {
+                        dst.set(ula.hiresBuf.subarray(y * 512, y * 512 + 512), vy * W2 + 2 * dims.borderLeft);
+                    }
+                }
+            }
         }
 
         // Save current frame as previous (call at end of each frame)
@@ -1942,12 +1984,15 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
+                if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
+                    // Timex SCLD: DEC (display mode) and HSR read back
+                    result = lowByte === 0xFF ? this.memory.timexDec : this.memory.timexHsr;
+                } else if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
                     // HC-2000 config latch $7E (A7=0, A0=0). The HC decodes its
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
                     // keyboard does not answer here; FUSE reads the latch back.
                     result = this.memory.hcConfig;
-                } else if ((lowByte & 0x01) === 0) {
+                } else if ((lowByte & 0x01) === 0 && !(this.profile.timex && lowByte !== 0xFE)) {
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
                     // Bit 5: HIGH (pulled up)
@@ -2254,8 +2299,15 @@ import { Disassembler } from './disasm.js';
 
             // HC-2000: the ULA port is A7=1, A0=0 — $7E (A7=0) is the config
             // latch alone and leaves border and beeper alone
+            // Timex SCLD: DEC ($FF, display mode / INT mask) and HSR ($F4)
+            if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
+                if (lowByte === 0xFF) this.ula.setTimexDec(val, this.cpu.tStates + 8);
+                else this.memory.timexHsr = val;
+                return;
+            }
             if ((lowByte & 0x01) === 0 &&
-                !(this.profile.pagingModel === 'hc2000' && (lowByte & 0x80) === 0)) {
+                !(this.profile.pagingModel === 'hc2000' && (lowByte & 0x80) === 0) &&
+                !(this.profile.timex && lowByte !== 0xFE)) {
                 // Border change timing
                 // Calculate frame-relative T-state when border color changes
                 // cpu.tStates accumulates from frameStartOffset, need to subtract to get frame-relative
@@ -2317,8 +2369,11 @@ import { Disassembler } from './disasm.js';
                     this.lastDebugBorderColor = val & 0x07;
                 }
 
-                // Pass to ULA - it will calculate beam position internally
-                this.ula.setBorderAt(val & 0x07, frameT);
+                // Pass to ULA - it will calculate beam position internally.
+                // Timex hi-res: the border shows the hi-res paper; port $FE's
+                // colour is kept for when hi-res ends.
+                if (this.profile.timex) this.ula.timexLoresBorder = val & 0x07;
+                if (!(this.profile.timex && (this.memory.timexDec & 0x04))) this.ula.setBorderAt(val & 0x07, frameT);
 
                 // Track beeper output for audio generation (bit 4 = EAR output)
                 const newBeeperLevel = (val & 0x10) ? 1 : 0;
@@ -2546,7 +2601,9 @@ import { Disassembler } from './disasm.js';
             // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
             const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
             const intStart = intOffset;
-            const intEnd = intOffset + intPulseDuration;
+            // Timex: DEC bit 6 masks the frame interrupt
+            const intEnd = (this.profile.timex && (this.memory.timexDec & 0x40))
+                ? intStart : intOffset + intPulseDuration;
 
             // RZX recording: track instruction count before first interrupt
             let rzxRecInstrBeforeInt = this.rzxRecording ? this.cpu.instructionCount : 0;
@@ -2658,7 +2715,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
@@ -2900,7 +2957,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onWatchpoint) this.onWatchpoint(this.lastWatchpoint);
@@ -2921,7 +2978,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onPortBreakpoint) this.onPortBreakpoint(this.lastPortBreakpoint);
@@ -2939,7 +2996,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onCodePathHit) this.onCodePathHit(this.codePath.traceAddr);
@@ -2957,7 +3014,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
@@ -2975,7 +3032,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
@@ -3068,7 +3125,7 @@ import { Disassembler } from './disasm.js';
             // so previousFrameBuffer includes border lines in paper area
             this.savePreviousFrame(frameBuffer);
 
-            this.imageData.data.set(frameBuffer);
+            this.blitFrame(frameBuffer);
             this.ctx.putImageData(this.imageData, 0, 0);
 
             // Draw overlay if enabled
@@ -3250,7 +3307,9 @@ import { Disassembler } from './disasm.js';
             // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
             const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
             const intStart = intOffset;
-            const intEnd = intOffset + intPulseDuration;
+            // Timex: DEC bit 6 masks the frame interrupt
+            const intEnd = (this.profile.timex && (this.memory.timexDec & 0x40))
+                ? intStart : intOffset + intPulseDuration;
 
             // Fire interrupt if within INT pulse window from previous frame overshoot
             // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
@@ -5491,7 +5550,7 @@ import { Disassembler } from './disasm.js';
                 this.savePreviousFrame(frameBuffer);
             }
 
-            this.imageData.data.set(frameBuffer);
+            this.blitFrame(frameBuffer);
             this.ctx.putImageData(this.imageData, 0, 0);
             this.drawOverlay();
         }
@@ -7917,7 +7976,7 @@ import { Disassembler } from './disasm.js';
 
                 // Render current screen
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -7964,7 +8023,7 @@ import { Disassembler } from './disasm.js';
 
                 // Render current screen
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -8095,7 +8154,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.startFrame();
                 this.ula.attrInitial = null;  // Force use of current memory values
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
                 if (wasRunning) this.start();
                 return result;
@@ -8167,7 +8226,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.attrInitial = null;  // Force use of current memory values
                 // Update display
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -8219,7 +8278,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.startFrame();
                 this.ula.attrInitial = null;  // Force use of current memory values
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
                 if (wasRunning) this.start();
                 return result;

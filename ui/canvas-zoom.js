@@ -24,7 +24,7 @@ export function initCanvasZoom({ getSpectrum, getUpdateSpriteRegionPreview }) {
         }
         // Get current dimensions from ULA
         const dims = spectrum.ula.getDimensions();
-        canvas.width = dims.width;
+        canvas.width = dims.width * (spectrum.canvasScaleX || 1);   // Timex: twice as wide
         canvas.height = dims.height;
         // Apply current zoom level to style
         canvas.style.width = (dims.width * currentZoom) + 'px';

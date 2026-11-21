@@ -333,6 +333,43 @@ const MACHINE_PROFILES = {
             szxMachineId: 17,          // FUSE's SZX_MACHINE_HC2000
             is128kCompat: false,
         },
+        // Timex Computer 2048 (Timex Portugal, 1984): a 48K with the SCLD in place
+        // of the ULA. Port $FF (DEC) selects the display -- second screen at
+        // $6000, 8x1 "hi-colour" attributes, 512x192 hi-res (64 columns) -- and
+        // can mask the frame interrupt; port $F4 (HSR) maps DOCK/EXROM chunks,
+        // empty here. No floating bus; Kempston built in. Port of FUSE's
+        // machines/tc2048.c and peripherals/scld.c (see core/timex.js).
+        'tc2048': {
+            id: 'tc2048',
+            name: 'Timex TC2048',
+            group: 'Timex',
+            ramPages: 1,               // one 48K block, as the 48K
+            romBanks: 1,
+            romFile: 'tc2048.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',         // FUSE: 224 T/line, 312 lines, 48K contention
+            timex: true,               // SCLD ports and display modes
+            hasSnow: false,            // not a Ferranti ULA
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // FUSE: spectrum_unattached_port_none
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 14,             // .z80 v3: TC2048
+            szxMachineId: 9,           // ZXSTMID_TC2048
+            is128kCompat: false,
+        },
     };
 
     // Helper: get profile by machine type ID (falls back to 48k)

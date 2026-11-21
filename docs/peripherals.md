@@ -304,6 +304,17 @@ take some other catalogue syntax, which has not been established here.
 - **Monitor Emulator (CP/M terminal) on a 128K: open question.** Its loader tells a Timex from a Spectrum by `OUT 255,0: LET a=IN 255: IF a=0 THEN` (Timex path, 64-column hi-res with odd columns in the second screen at `$6000`). On a Spectrum port `$FF` is the floating bus, so the answer depends on which T-state the `IN` lands on. Here the 48K reads 255 (Spectrum path, CP/M works) and the 128K reads a screen byte of 0 (Timex path, half the text missing); FUSE reads 255 on its 128K. Which one real hardware does is not known: FUSE may be the one that is off, and Monitor may have needed a patch for the 128K. Left as it is.
 - Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
 
+## Timex TC2048 (SCLD)
+
+Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD in `core/timex.js` + `ULA._renderTimexPaper`, after FUSE's `machines/tc2048.c`, `peripherals/scld.c` and `display.c`.
+
+- A 48K (`ramPages: 1`, 48K contention and timing); **no floating bus** (unused ports read `$FF`); the SCLD answers `$F4`, `$FE`, `$FF` only (full decoding, so `OUT ($F4)` is not a border write).
+- **DEC (`$FF`)**, read back: bits 0-2 screen mode (1 second file at `$6000`; 2/3 hi-colour, attribute per 8x1 from `$6000`+offset; 4-7 hi-res 512x192: 4 file byte + its attribute byte, 5 the same on the second file, 6 first file byte + second file byte, 7 second file byte twice), bits 3-5 hi-res ink/paper (FUSE `hires_convert_dec`), bit 6 masks the frame interrupt, bit 7 DOCK/EXROM select.
+- **HSR (`$F4`)**, read back: a set bit maps that 8KB chunk to DOCK/EXROM, empty on a TC2048 (reads `$FF`, writes ignored).
+- **Display.** Low-res modes go through the normal frame buffer. Hi-res rows are drawn at 512 into `ula.hiresBuf` (and a 256-pixel reduction into the frame buffer for everything else); `Spectrum.blitFrame` puts the frame on a canvas twice as wide (`canvasScaleX = 2`, CSS keeps the aspect) and the hi-res rows over it. In hi-res the border is the hi-res paper colour (recorded through `setBorderAt`, so beam rendering follows; port `$FE` is remembered for when hi-res ends).
+- With the FDD 3000 (`fdd3stavi.rom`): Monitor Emulator detects the Timex (`IN 255` = 0) and runs CP/M in 64 columns, hi-res mode 6. `fdd3timex.rom` does not start on the TC2048 (likely the TC2068 build).
+- Not done: TC2068/TS2068 (AY, DOCK cartridges, EXROM, the 2068 ROM), snapshots of the SCLD state, flash in hi-res. `tests/timex-test.html`.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image
