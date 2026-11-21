@@ -90,6 +90,9 @@
             sp.portWrite(0x00FB, 0x10);
             sp.portWrite(0x00DD, 0x40);
             assert(sp.dacLevels[0] === 0x40, 'Covox on a set port ($DD) and not on $FB');
+            sp.setDac('stereocovox', 0xFB, [0x22, 0x3A]);
+            sp.portWrite(0x0022, 0x30); sp.portWrite(0x003A, 0xD0); sp.portWrite(0x00FB, 0x11);
+            assert(sp.dacLevels.join() === '48,48,208,208', 'Stereo Covox: left port to both left channels, right port to both right');
             sp.setDac('specdrum');
             sp.portWrite(0x00DF, 0x90);
             assert(sp.dacLevels.every(v => v === 0x90), 'Specdrum on $DF');
@@ -113,7 +116,7 @@
             assert(sp.dacLevels.every(v => v === 0x80), 'DAC off: no levels change');
 
             sp.setTurboSound(prev.ts);
-            sp.setDac(prev.dac, prev.port);
+            sp.setDac(prev.dac, prev.port, [0x0F, 0x4F]);
         }
 
         (async () => {

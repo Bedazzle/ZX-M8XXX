@@ -324,6 +324,7 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 - **TurboSound** (NedoPC): a second AY (`spectrum.ay2`) on the same ports, wherever there is an AY on `$FFFD`/`$BFFD` (128K, Pentagon..., AY in 48K). `OUT ($FFFD),$FF` selects chip 0, `$FE` chip 1; any other value is a register number for the selected chip, and reads follow the selected chip. With it off, `$FE`/`$FF` are ordinary register writes. AY writes carry the chip in `ayChanges` and are replayed on that chip; the two are mixed at 0.7 each. Checked with AY_YM_TS_test v0.2 (both chips' register tests and the channel tones).
 - **DACs**, write-only and not exclusive (the port still reaches the rest of the bus), four 8-bit channels, `$80` = silence, recorded per frame with their T-state like the beeper:
   - *Covox*: one port, mono, settable (`$FB` by default, Pentagon; `$DD` on the Scorpion);
+  - *Stereo Covox*: two settable ports, left and right (`$0F`/`$4F` by default);
   - *Specdrum* (Cheetah): `$DF`, mono;
   - *Soundrive 1.05*, two jumper modes (as in Unreal Speccy): mode 1 `$0F`/`$1F` left, `$4F`/`$5F` right; mode 2 `$F1`/`$F3` left, `$F9`/`$FB` right.
 - `tests/sound-addons-test.html`.

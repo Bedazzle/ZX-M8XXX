@@ -163,6 +163,11 @@ import { Disassembler } from './disasm.js';
             this.dacType = storageGet('zxm8_dacType') || 'none';
             if (this.dacType === 'soundrive') this.dacType = 'soundrive1';
             this.covoxPort = parseInt(storageGet('zxm8_covoxPort') || 'FB', 16) & 0xFF;
+            // 'stereocovox': two ports, left and right (both settable; $0F/$4F
+            // by default, Soundrive mode 1's left and right channels)
+            this.stereoCovoxPorts = [
+                parseInt(storageGet('zxm8_stereoCovoxL') || '0F', 16) & 0xFF,
+                parseInt(storageGet('zxm8_stereoCovoxR') || '4F', 16) & 0xFF];
             this.dacLevels = [0x80, 0x80, 0x80, 0x80];
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
@@ -1841,10 +1846,11 @@ import { Disassembler } from './disasm.js';
         }
 
         /** DAC type and Covox port (see the constructor) */
-        setDac(type, covoxPort = this.covoxPort) {
+        setDac(type, covoxPort = this.covoxPort, stereoPorts = this.stereoCovoxPorts) {
             if (type === 'soundrive') type = 'soundrive1';
-            this.dacType = ['covox', 'specdrum', 'soundrive1', 'soundrive2'].includes(type) ? type : 'none';
+            this.dacType = ['covox', 'stereocovox', 'specdrum', 'soundrive1', 'soundrive2'].includes(type) ? type : 'none';
             this.covoxPort = covoxPort & 0xFF;
+            this.stereoCovoxPorts = [stereoPorts[0] & 0xFF, stereoPorts[1] & 0xFF];
             this.dacLevels.fill(0x80);
         }
 
@@ -1852,6 +1858,10 @@ import { Disassembler } from './disasm.js';
         _dacWrite(low, val) {
             let ch = -1;
             if (this.dacType === 'covox') { if (low === this.covoxPort) ch = 4; }
+            else if (this.dacType === 'stereocovox') {
+                if (low === this.stereoCovoxPorts[0]) ch = 5;          // left pair
+                else if (low === this.stereoCovoxPorts[1]) ch = 6;     // right pair
+            }
             else if (this.dacType === 'specdrum') { if (low === 0xDF) ch = 4; }
             else if (this.dacType === 'soundrive1') {
                 ch = { 0x0F: 0, 0x1F: 1, 0x4F: 2, 0x5F: 3 }[low];
@@ -1862,6 +1872,8 @@ import { Disassembler } from './disasm.js';
             }
             if (ch < 0) return;
             if (ch === 4) this.dacLevels.fill(val);
+            else if (ch === 5) { this.dacLevels[0] = this.dacLevels[1] = val; }
+            else if (ch === 6) { this.dacLevels[2] = this.dacLevels[3] = val; }
             else this.dacLevels[ch] = val;
             this.dacChanges.push({ tStates: this.cpu.tStates, ch, value: val });
         }
@@ -10741,7 +10753,10 @@ import { Disassembler } from './disasm.js';
                 if (dacOn) {
                     while (dacIdx < dacChanges.length && dacChanges[dacIdx].tStates <= sampleTstates) {
                         const d = dacChanges[dacIdx++];
-                        if (d.ch === 4) dac.fill(d.value); else dac[d.ch] = d.value;
+                        if (d.ch === 4) dac.fill(d.value);
+                        else if (d.ch === 5) { dac[0] = dac[1] = d.value; }
+                        else if (d.ch === 6) { dac[2] = dac[3] = d.value; }
+                        else dac[d.ch] = d.value;
                     }
                     left += ((dac[0] - 128) + (dac[1] - 128)) / 256 * DAC_VOLUME;
                     right += ((dac[2] - 128) + (dac[3] - 128)) / 256 * DAC_VOLUME;

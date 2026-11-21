@@ -94,12 +94,19 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     const selDac = document.getElementById('selDac');
     const txtCovoxPort = document.getElementById('txtCovoxPort');
     const covoxPortLabel = document.getElementById('covoxPortLabel');
+    const stereoCovoxLabel = document.getElementById('stereoCovoxLabel');
+    const txtStereoCovoxL = document.getElementById('txtStereoCovoxL');
+    const txtStereoCovoxR = document.getElementById('txtStereoCovoxR');
+    const hex2 = (v) => v.toString(16).toUpperCase().padStart(2, '0');
     function showDacSettings() {
         const sp = getSpectrum();
         chkTurboSound.checked = !!sp.turboSound;
         selDac.value = sp.dacType;
         txtCovoxPort.value = sp.covoxPort.toString(16).toUpperCase().padStart(2, '0');
         covoxPortLabel.style.display = sp.dacType === 'covox' ? '' : 'none';
+        txtStereoCovoxL.value = hex2(sp.stereoCovoxPorts[0]);
+        txtStereoCovoxR.value = hex2(sp.stereoCovoxPorts[1]);
+        stereoCovoxLabel.style.display = sp.dacType === 'stereocovox' ? '' : 'none';
     }
     if (chkTurboSound) {
         showDacSettings();
@@ -110,17 +117,23 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         });
         const applyDac = () => {
             const sp = getSpectrum();
-            const port = parseInt(txtCovoxPort.value, 16);
-            sp.setDac(selDac.value, Number.isFinite(port) ? port : 0xFB);
+            const hexOr = (txt, d) => { const v = parseInt(txt.value, 16); return Number.isFinite(v) ? v : d; };
+            sp.setDac(selDac.value, hexOr(txtCovoxPort, 0xFB),
+                [hexOr(txtStereoCovoxL, 0x0F), hexOr(txtStereoCovoxR, 0x4F)]);
             storageSet('zxm8_dacType', sp.dacType);
             storageSet('zxm8_covoxPort', sp.covoxPort.toString(16).toUpperCase());
+            storageSet('zxm8_stereoCovoxL', hex2(sp.stereoCovoxPorts[0]));
+            storageSet('zxm8_stereoCovoxR', hex2(sp.stereoCovoxPorts[1]));
             showDacSettings();
             showMessage(sp.dacType === 'none' ? 'DAC off'
                 : 'DAC: ' + selDac.options[selDac.selectedIndex].text +
-                  (sp.dacType === 'covox' ? ' on port $' + txtCovoxPort.value : ''));
+                  (sp.dacType === 'covox' ? ' on port $' + txtCovoxPort.value : '') +
+                  (sp.dacType === 'stereocovox' ? ' on $' + txtStereoCovoxL.value + ' (L) / $' + txtStereoCovoxR.value + ' (R)' : ''));
         };
         selDac.addEventListener('change', applyDac);
         txtCovoxPort.addEventListener('change', applyDac);
+        txtStereoCovoxL.addEventListener('change', applyDac);
+        txtStereoCovoxR.addEventListener('change', applyDac);
     }
 
     chkAY48k.addEventListener('change', () => {

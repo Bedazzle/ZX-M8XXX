@@ -374,6 +374,7 @@
                             <select id="selDac" style="margin-left: 4px;">
                                 <option value="none">none</option>
                                 <option value="covox">Covox</option>
+                                <option value="stereocovox">Stereo Covox</option>
                                 <option value="specdrum">Specdrum</option>
                                 <option value="soundrive1">Soundrive 1.05 mode 1</option>
                                 <option value="soundrive2">Soundrive 1.05 mode 2</option>
@@ -381,6 +382,10 @@
                         </label>
                         <label id="covoxPortLabel" style="margin-left: 10px;" title="Covox port (low byte, hex): $FB on the Pentagon, $DD on the Scorpion">
                             port $<input type="text" id="txtCovoxPort" maxlength="2" style="width: 2.5em;" value="FB">
+                        </label>
+                        <label id="stereoCovoxLabel" style="margin-left: 10px;" title="Stereo Covox ports (low byte, hex): left and right">
+                            L $<input type="text" id="txtStereoCovoxL" maxlength="2" style="width: 2.5em;" value="0F">
+                            R $<input type="text" id="txtStereoCovoxR" maxlength="2" style="width: 2.5em;" value="4F">
                         </label>
                     </div>
                     <div class="settings-row">
