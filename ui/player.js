@@ -30,12 +30,14 @@ import { resolveHardware, pickLaunchFile, fileExt } from '../core/zxart-hardware
 import { ZipLoader } from '../core/loaders/zip.js';
 import { initAutoLoader } from './auto-loader.js';
 import { MidiSynth } from './midi-synth.js';
+import { createTouchJoystick, TOUCH_TYPES } from './touch-joystick.js';
+import { initVirtualKeyboard } from './virtual-keyboard.js';
 import { MGTLoader } from '../core/loaders/disk-mgt.js';
 import { OPDLoader } from '../core/loaders/disk-opus.js';
 import { hasPlusDSystem, addPlusDSystem, addMgtFile, mgtBasicFile } from '../core/mgt-sys.js';
 import { trdHasBootFile, extractBootFile, isHobetaFile, extractBootFromHobeta, injectBootIntoTrd } from '../core/trd-boot.js';
 
-const ICON = { reset: '⟲', sound: '🔊', mute: '🔇', full: '⛶' };
+const ICON = { reset: '⟲', sound: '🔊', mute: '🔇', full: '⛶', joy: '🎮', keys: '⌨' };
 
 function nameFromUrl(url) {
     try {
@@ -499,10 +501,44 @@ export async function create(container, opts = {}) {
         });
     }
 
+    // ---- on-screen joystick and keyboard, for phones and tablets ----
+    // The joystick shows by itself on a touch screen (opts.touch overrides);
+    // its type follows the release's codes and can be changed in the bar.
+    const touchScreen = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    const joyType = hw.spectrum.kempstonExtendedEnabled ? 'kempston8b'
+        : (TOUCH_TYPES.some(t => t.id === hw.joystick) ? hw.joystick : 'kempston');
+    const joy = createTouchJoystick({ spectrum, parent: screen, type: opts.touchType || joyType });
+    const selJoy = document.createElement('select');
+    selJoy.className = 'zxm8-joytype';
+    selJoy.title = 'Joystick type';
+    for (const t of TOUCH_TYPES) selJoy.add(new Option(t.name, t.id));
+    selJoy.value = joy.type;
+    selJoy.addEventListener('change', () => {
+        joy.setType(selJoy.value);
+        // the keyboard's arrows (arrowsAsJoystick) follow the same type
+        spectrum.setJoystickType(selJoy.value === 'kempston8b' ? 'kempston' : selJoy.value);
+        canvas.focus({ preventScroll: true });
+    });
+    const vkbd = document.createElement('div');
+    vkbd.id = 'virtualKeyboard';
+    vkbd.className = 'vkbd hidden';
+    container.append(vkbd);
+
     // ---- controls ----
     const btnSound = button(soundOn ? ICON.sound : ICON.mute, 'Sound on / off', () => setSound(!soundOn));
     button(ICON.reset, 'Start again', () => restart());
+    const btnJoy = button(ICON.joy, 'On-screen joystick', () => showJoystick(!joy.visible));
+    bar.insertBefore(selJoy, btnJoy);
+    const btnKeys = button(ICON.keys, 'On-screen keyboard', () => {});
+    btnKeys.id = 'btnVKbd';
+    initVirtualKeyboard({ getSpectrum: () => spectrum, appVersion: '', persist: false });
     button(ICON.full, 'Full screen', () => setFullscreen(!document.fullscreenElement));
+    function showJoystick(on) {
+        joy.show(on);
+        btnJoy.classList.toggle('active', on);
+        selJoy.hidden = !on;
+    }
+    showJoystick(opts.touch !== undefined ? !!opts.touch : touchScreen);
 
     function setSound(on) {
         soundOn = !!on;
@@ -532,6 +568,7 @@ export async function create(container, opts = {}) {
         autoLoader.cancelAutoLoad();
         if (midiTimer) clearInterval(midiTimer);
         if (midiSynth) midiSynth.allOff();
+        joy.destroy();
         spectrum.destroy();
         container.removeEventListener('pointerdown', onGesture);
         document.removeEventListener('keydown', onGesture);

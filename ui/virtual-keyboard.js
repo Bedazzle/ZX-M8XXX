@@ -64,7 +64,8 @@ const LAYOUT = [
     ]
 ];
 
-export function initVirtualKeyboard({ getSpectrum, appVersion }) {
+// persist: false keeps the position and visibility out of localStorage (the player)
+export function initVirtualKeyboard({ getSpectrum, appVersion, persist = true }) {
     const panel = document.getElementById('virtualKeyboard');
     const btn = document.getElementById('btnVKbd');
     if (!panel || !btn) return;
@@ -173,7 +174,7 @@ export function initVirtualKeyboard({ getSpectrum, appVersion }) {
 
     function applySavedPos() {
         let p = null;
-        try { p = JSON.parse(localStorage.getItem('zxm8_vkbd_pos') || 'null'); } catch {}
+        if (persist) try { p = JSON.parse(localStorage.getItem('zxm8_vkbd_pos') || 'null'); } catch {}
         if (p && typeof p.left === 'number') setPos(p.left, p.top);
     }
 
@@ -194,7 +195,7 @@ export function initVirtualKeyboard({ getSpectrum, appVersion }) {
             if (!dragging) return;
             dragging = false;
             const r = panel.getBoundingClientRect();
-            try { localStorage.setItem('zxm8_vkbd_pos', JSON.stringify({ left: r.left, top: r.top })); } catch {}
+            if (persist) try { localStorage.setItem('zxm8_vkbd_pos', JSON.stringify({ left: r.left, top: r.top })); } catch {}
         };
         handle.addEventListener('pointerup', end);
         handle.addEventListener('pointercancel', end);
@@ -236,12 +237,12 @@ export function initVirtualKeyboard({ getSpectrum, appVersion }) {
         panel.classList.toggle('hidden', !show);
         btn.classList.toggle('active', show);
         if (show) applySavedPos(); // restore dragged position once visible (real size known)
-        try { localStorage.setItem('zxm8_vkbd', show ? '1' : '0'); } catch {}
+        if (persist) try { localStorage.setItem('zxm8_vkbd', show ? '1' : '0'); } catch {}
     }
 
     btn.addEventListener('click', () => toggle(panel.classList.contains('hidden')));
 
     let visible = false;
-    try { visible = localStorage.getItem('zxm8_vkbd') === '1'; } catch {}
+    if (persist) try { visible = localStorage.getItem('zxm8_vkbd') === '1'; } catch {}
     if (visible) toggle(true);
 }

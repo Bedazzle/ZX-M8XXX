@@ -18,6 +18,8 @@
       flash    0: real-time tape loading
       sound    0: start muted
       controls 0: no button bar
+      touch    1 / 0: show the on-screen joystick (default: on a touch screen)
+      joy      its type: kempston, kempston8b, sinclair1, sinclair2, cursor
       roms     the ROM directory URL (default roms/)
       boot5    a boot (TRD with a "boot", or Hobeta) to add to a TR-DOS 5.x disk without one
       boot4    the same for TR-DOS 4.x (default data/boot/trdos5.* / trdos4.*)
@@ -26,6 +28,7 @@
       and {zxm8: 'screenshot', type?} (answered with {zxm8: 'screenshot', blob}).
       It posts {zxm8: 'status', text, kind} to the host as it goes. See docs/player.md.
     -->
+    <link rel="stylesheet" href="css/vkbd.css">
     <link rel="stylesheet" href="css/player.css">
     <script src="lib/pako.min.js"></script>
 </head>
@@ -49,6 +52,8 @@
             flashLoad: flag('flash'),
             sound: flag('sound'),
             controls: flag('controls'),
+            touch: flag('touch'),
+            touchType: q.get('joy') || '',
             romBase: q.get('roms') || 'roms/',
             boot5: q.get('boot5') || '',
             boot4: q.get('boot4') || '',

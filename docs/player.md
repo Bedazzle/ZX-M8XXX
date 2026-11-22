@@ -30,6 +30,8 @@ and leaves none of its own.
 | `flash`    | `0`: tapes load in real time. The default is instant loading where the ROM traps allow it. |
 | `sound`    | `0`: start muted. |
 | `controls` | `0`: no button bar. |
+| `touch`    | `1`/`0`: show the on-screen joystick. The default is on with a touch screen. |
+| `joy`      | Its type: `kempston`, `kempston8b`, `sinclair1`, `sinclair2`, `cursor`. The default follows `hw`. |
 | `roms`     | The URL of the ROM directory. The default is `roms/`. |
 | `boot5`, `boot4` | The boot added to a TR-DOS disk that has none (see below). |
 
@@ -169,6 +171,23 @@ for the redraw.
 
 To try the mouse, `headless/player/mouse.tap` (not in the repository) is a
 BASIC loop that prints X, Y and the buttons and plots where the mouse is.
+
+## Phones and tablets
+
+The bar has a 🎮 button for the on-screen joystick, with a list of types next
+to it, and a ⌨ button for the on-screen ZX keyboard (the app's, from
+`ui/virtual-keyboard.js`). On a touch screen the joystick shows by itself.
+
+- The stick is on the left. It has eight directions and a dead zone in the
+  middle, and follows the thumb.
+- The buttons are on the right. Each control follows its own finger, so
+  moving and firing at the same time works.
+- For Kempston, Sinclair 1/2 and Cursor there is one FIRE button, and also
+  SPACE, ENTER, 1 and 0, the keys games most often ask for.
+- Kempston 8-bit (zxpress.ru, Info Guide #13) has four buttons: B is the
+  usual fire (bit 4), then C (bit 5), A (bit 6) and START (bit 7). The player
+  uses it only when the release lists `kempston8b`, though it can also be
+  picked from the list.
 
 Browsers start sound only after a click or a key. Until then the player
 shows "Click for sound".

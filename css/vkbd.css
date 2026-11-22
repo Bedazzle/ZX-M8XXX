@@ -1,0 +1,99 @@
+/* vkbd.css — the on-screen ZX keyboard (ui/virtual-keyboard.js); used by the app and the player */
+/* Virtual ZX Spectrum keyboard — legends placed like the physical key faces:
+   keyword/colour above the key, green-ext top-left + red symbol top-right
+   inside the key, secondary word below the key. */
+.vkbd {
+    position: fixed;
+    left: 50%;
+    bottom: 10px;
+    transform: translateX(-50%);
+    width: min(720px, 97vw);
+    z-index: 600;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    user-select: none;
+    font-family: sans-serif;
+}
+.vkbd-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: move;
+    margin: -2px 0 5px;
+    padding: 2px 4px 5px;
+    border-bottom: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    touch-action: none;
+}
+.vkbd-title { font-weight: bold; pointer-events: none; }
+.vkbd-close { cursor: pointer; font-size: 15px; line-height: 1; padding: 0 5px; }
+.vkbd-close:hover { color: var(--accent); }
+.vkbd-row {
+    display: flex;
+    gap: 5px;
+    justify-content: center;
+    align-items: flex-start;
+    margin-bottom: 4px;
+}
+.vkbd-row:last-child { margin-bottom: 0; }
+.vkbd-cell {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.vkbd-cell.wide { flex: 1.7 1 0; }
+.vk-above {
+    height: 19px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: center;
+    line-height: 1.05;
+    overflow: hidden;
+}
+.vk-keyword { font-size: 8px; color: var(--text-primary); }
+.vk-aboveext { font-size: 8px; color: #7CFC79; }
+.vk-colour { font-size: 8px; font-weight: bold; }
+.vk-below {
+    height: 11px;
+    font-size: 8px;
+    text-align: center;
+    color: #d0d0d0;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.vk-below.vk-extsym { color: #ff6b6b; }
+.vkbd-key {
+    position: relative;
+    height: 34px;
+    background: var(--bg-button);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.vkbd-key:hover { background: var(--bg-button-hover); }
+.vkbd-key:active, .vkbd-key.pressed { background: var(--accent); color: #fff; }
+.vkbd-key.armed { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.vk-main { font-size: 15px; font-weight: bold; }
+.vk-main.vk-word { font-size: 10px; text-align: center; line-height: 1.05; }
+.vk-corner { position: absolute; top: 1px; font-size: 8px; line-height: 1; }
+.vk-kw { color: var(--text-primary); left: 3px; }
+.vk-sym { color: #ff6b6b; right: 3px; }
+.vkbd-key.mod { filter: brightness(0.92); }
+/* Light theme: darken the bright legends so they read on light keys, and
+   outline the colour names (WHITE/YELLOW would vanish otherwise). */
+body.light-theme .vk-aboveext { color: #1a7d1a; }
+body.light-theme .vk-sym,
+body.light-theme .vk-below.vk-extsym { color: #b3261e; }
+body.light-theme .vk-colour { text-shadow: 0 0 2px rgba(0,0,0,0.85); }

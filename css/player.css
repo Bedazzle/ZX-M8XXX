@@ -1,4 +1,12 @@
 /* player.css — the embeddable player (player.html, ui/player.js) */
+/* the colours css/vkbd.css (the on-screen keyboard) is written with */
+:root {
+    --bg-secondary: #1b1b1b; --bg-button: #2c2c2c; --bg-button-hover: #3a3a3a;
+    --border-primary: #444; --text-primary: #ddd; --text-secondary: #999;
+    --accent: #2d6fd0; --cyan: #4dd0e1;
+}
+.hidden { display: none !important; }
+
 html, body {
     margin: 0;
     height: 100%;
@@ -107,3 +115,89 @@ html, body {
 }
 .zxm8-bar button:hover { background: #333; }
 .zxm8-player:fullscreen .zxm8-bar { display: none; }
+.zxm8-bar button.active { background: #2d4f7a; border-color: #5b8ccc; }
+.zxm8-joytype {
+    height: 28px;
+    margin-right: auto;
+    border: 1px solid #333;
+    border-radius: 4px;
+    background: #222;
+    color: #ddd;
+    font: 13px system-ui, sans-serif;
+}
+.zxm8-joytype[hidden] { display: none; }
+
+/* on-screen joystick: a stick bottom left, buttons bottom right, over the screen */
+.zxm8-touch {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+.zxm8-touch[hidden] { display: none; }
+.zxm8-stick, .zxm8-btn, .zxm8-key { pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none; }
+.zxm8-stick {
+    position: absolute;
+    left: max(12px, env(safe-area-inset-left));
+    bottom: 12px;
+    width: min(36vmin, 160px);
+    height: min(36vmin, 160px);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .10);
+    border: 2px solid rgba(255, 255, 255, .25);
+}
+.zxm8-knob {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 40%; height: 40%;
+    margin: -20% 0 0 -20%;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .35);
+    pointer-events: none;
+}
+.zxm8-fire {
+    position: absolute;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: 12px;
+    display: flex;
+    flex-wrap: wrap-reverse;
+    justify-content: flex-end;
+    align-items: flex-end;
+    gap: 10px;
+    max-width: min(46vmin, 220px);
+}
+.zxm8-btn {
+    width: min(16vmin, 68px);
+    height: min(16vmin, 68px);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, .14);
+    border: 2px solid rgba(255, 255, 255, .3);
+    color: rgba(255, 255, 255, .85);
+    font: bold 15px system-ui, sans-serif;
+}
+.zxm8-btn-fire { width: min(20vmin, 84px); height: min(20vmin, 84px); background: rgba(220, 60, 60, .35); }
+.zxm8-btn-start { width: auto; height: 30px; padding: 0 12px; border-radius: 15px; font-size: 12px; }
+.zxm8-btn.down { background: rgba(255, 255, 255, .45); }
+.zxm8-keys {
+    position: absolute;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(12px + min(20vmin, 84px) + 14px);
+    display: flex;
+    gap: 6px;
+}
+.zxm8-key {
+    min-width: 34px;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, .12);
+    border: 1px solid rgba(255, 255, 255, .3);
+    color: rgba(255, 255, 255, .85);
+    font: bold 12px system-ui, sans-serif;
+}
+.zxm8-key.down { background: rgba(255, 255, 255, .45); }
