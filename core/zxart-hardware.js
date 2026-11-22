@@ -53,17 +53,25 @@ export function resolveHardware(codes = [], fileName = '') {
     const trdos = use('betadisk') | use('trdos') | use('trdos4x');
     const isTrdDisk = ['trd', 'scl', 'udi'].includes(ext);
     let needMachine = null;   // a machine the media itself demands
+    // Kempston Disc: kdi is the stock board (K-DOS 2.1), kdi128 the 128A6
+    // board with its K-DOS on a 128K. Their disks may be named .dsk (x128)
+    const kdi128 = use('kdi128');
+    const kdi = use('kdi') || kdi128 || ext === 'kdi';
+    if (kdi) storage.zxm8_kempdisc = 'true';
+    if (kdi128) storage.zxm8_kempdiscRom = 'kdos21-128a6.rom';
     // A DSK is a +3 disk, unless the release is for the Timex FDD 3000 (TOS)
-    if (ext === 'dsk' && !has.has('tos')) needMachine = '+3';
+    // or the Kempston Disc
+    if ((ext === 'dsk' && !has.has('tos') && !kdi) || use('cpmp3')) needMachine = '+3';
+    if (use('hccpm')) needMachine = 'hc2000';                // HC CP/M: the HC-2000's own
     if (use('timex_cartridge') || ext === 'dck') needMachine = 'tc2068';
+    // gdos is the DISCiPLE's GDOS or the +D's G+DOS: the DISCiPLE when listed
     if (use('disciple')) spectrum.discipleEnabled = true;
-    else if (ext === 'mgt') spectrum.plusDEnabled = true;
+    else if (use('gdos') || ext === 'mgt') spectrum.plusDEnabled = true;
     if (use('opd') || ext === 'opd' || ext === 'opu') spectrum.opusEnabled = true;
     // The Didaktik 80 is a Gama with its D80 drive and MDOS
     if (use('mdos') || has.has('didaktik80') || ext === 'd80' || ext === 'd40') spectrum.didaktikEnabled = true;
     if (use('microdrive') || ext === 'mdr') spectrum.if1Enabled = true;
     if (use('tos')) storage.zxm8_fdd3000 = 'true';
-    if (ext === 'kdi') storage.zxm8_kempdisc = 'true';
     use('3dos'); use('3dosdisk');
 
     // ---- the machine ----
@@ -75,7 +83,10 @@ export function resolveHardware(codes = [], fileName = '') {
         listed = timex.length ? timex : ['tc2048'];
     }
     let machine;
-    if (needMachine) {
+    if (kdi128 && !needMachine) {
+        // the 128A6 board is for a 128K
+        machine = listed.find(m => ['128k', '+2'].includes(m)) || '128k';
+    } else if (needMachine) {
         machine = needMachine;
     } else if (has.has('trdos4x') && !has.has('trdos') && !has.has('betadisk')) {
         // Only TR-DOS 4.x: a Beta 48 (beta48.rom), a 48K add-on. On a 48K, or

@@ -115,7 +115,17 @@
             h = resolveHardware(['zx48', 'microdrive', 'sid', 'divmmc'], 'x.mdr');
             assert(h.spectrum.if1Enabled && h.unsupported.join() === 'sid,divmmc', 'microdrive: Interface 1; what is not emulated is reported', h.unsupported.join());
             h = resolveHardware(['zx48'], 'x.kdi');
-            assert(h.storage.zxm8_kempdisc === 'true', 'a KDI: the Kempston Disc');
+            assert(h.storage.zxm8_kempdisc === 'true' && !h.storage.zxm8_kempdiscRom, 'a KDI: the Kempston Disc, stock K-DOS');
+            h = resolveHardware(['zx48', 'kdi'], 'x.dsk');
+            assert(h.machine === '48k' && h.storage.zxm8_kempdisc === 'true', 'kdi with a .dsk: the Kempston Disc, not the +3');
+            h = resolveHardware(['zx128', 'kdi128'], 'x.kdi');
+            assert(h.machine === '128k' && h.storage.zxm8_kempdiscRom === 'kdos21-128a6.rom', 'kdi128: the 128A6 board on a 128K');
+            h = resolveHardware(['zx48', 'gdos'], 'x.mgt');
+            assert(h.spectrum.plusDEnabled && !h.unsupported.length, 'gdos: the +D (G+DOS)');
+            h = resolveHardware(['cpmp3'], 'x.dsk');
+            assert(h.machine === '+3', 'cpmp3: the +3');
+            h = resolveHardware(['hccpm'], 'x.dsk');
+            assert(h.machine === 'hc2000', 'hccpm: the HC-2000');
 
             section('the file to run from an archive');
             const files = [{ name: 'readme/info.sna', type: 'sna' }, { name: 'GAME.TAP', type: 'tap' },

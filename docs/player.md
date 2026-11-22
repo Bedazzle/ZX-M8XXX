@@ -87,12 +87,17 @@ to fit.
     not bring one.
   - If both `trdos` and `trdos4x` are listed, the player uses TR-DOS 5: a
     128K game is simpler on a 128K than on a 48K with a TKMEM.
-  - A DSK goes to the +3, or to the FDD 3000 with `tos`.
+  - A DSK goes to the +3, to the FDD 3000 with `tos`, or to the Kempston
+    Disc with `kdi` / `kdi128`. `cpmp3` (Locomotive CP/M+) is the +3 too, and
+    `hccpm` is the HC-2000.
   - A DCK goes to the TC2068.
-  - An MGT goes to the DISCiPLE with `disciple`, or else to the +D.
+  - An MGT goes to the DISCiPLE with `disciple`, or else to the +D. So does
+    `gdos` (G+DOS / GDOS).
   - OPD goes to the Opus; D80/D40 or `mdos` to the Didaktik 80. The
     `didaktik80` machine is a Didaktik Gama with that drive and MDOS; MDR or
-    `microdrive` to Interface 1; KDI to the Kempston Disc.
+    `microdrive` to Interface 1.
+  - KDI, or `kdi`, is the Kempston Disc with the stock board (K-DOS 2.1).
+    `kdi128` is the 128A6 board with its K-DOS, on a 128K.
 - **Sound.**
   - `ay` on a 48K-class machine fits an AY.
   - `ts` is TurboSound, and `tsfm` is TurboSound FM.
