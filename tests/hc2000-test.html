@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HC-2000 / HC IF1 Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>HC-2000 / HC IF1 Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // The HC-2000 (Romanian clone) and its built-in HC IF1 floppy interface,
+        // ported from Alex Badea's FUSE branch hc2000-v2. Unit sections pin the
+        // memory map, the overlay, Terminal Count and the raw-image geometry; the
+        // last section boots the real ROMs and runs FUSE's own HC disk test.
+        import { Memory } from '../core/memory.js';
+        import { UPD765 } from '../core/fdc.js';
+        import { HcIf1 } from '../core/hc-if1.js';
+        import { HcDiskLoader, HC_SKEW, HC_LAYOUT_INTERLEAVED, HC_LAYOUT_SIDE_MAJOR } from '../core/loaders/disk-hc.js';
+        import { DSKLoader } from '../core/fdc.js';
+        import { parseBasicText, buildBasicProgram, buildTokenLookup } from '../core/basic-tokens.js';
+
+        const TEST_VERSION = '0.2.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        function render() {
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // ---------- helpers ----------
+        function hcMemory() {
+            const m = new Memory('hc2000');
+            const r0 = new Uint8Array(16384), r1 = new Uint8Array(16384);
+            for (let i = 0; i < 16384; i++) { r0[i] = 0x10 | (i >> 13); r1[i] = 0x20 | (i >> 13); }
+            m.loadRom(r0, 0); m.loadRom(r1, 1);
+            m.reset();
+            return m;
+        }
+
+        // A raw 640K HC BASIC image: one directory entry whose first block (2)
+        // is logical sectors 16..23 = cylinder 0, side 1. Each data sector is
+        // filled with its logical number, so a wrong layout reads the wrong one.
+        function rawImage(layout) {
+            const geom = { cylinders: 80, sides: 2, sectors: 16 };
+            const img = new Uint8Array(655360).fill(0xE5);
+            const off = (c, h, r) => (((layout === HC_LAYOUT_SIDE_MAJOR) ? h * 80 + c : c * 2 + h) * 16 + (r - 1)) * 256;
+            const put = (n, fill) => {
+                const c = Math.floor(n / 32), w = n % 32;
+                img.fill(fill, off(c, w >> 4, HC_SKEW[w & 15]), off(c, w >> 4, HC_SKEW[w & 15]) + 256);
+            };
+            // directory entry at logical 0
+            const dir = off(0, 0, 1);
+            img.fill(0xE5, dir, dir + 256);
+            img[dir] = 0;
+            'TEST       '.split('').forEach((ch, i) => img[dir + 1 + i] = ch.charCodeAt(0));
+            img[dir + 12] = 0; img[dir + 15] = 32;          // 32 records = 4KB = blocks 2,3
+            img[dir + 16] = 2; img[dir + 17] = 0; img[dir + 18] = 3; img[dir + 19] = 0;
+            for (let n = 16; n < 32; n++) put(n, n);         // blocks 2 and 3
+            return { img, geom };
+        }
+
+        function fdcCmd(fdc, bytes) { for (const b of bytes) fdc.writeData(b); }
+
+        // ---------- memory map ----------
+        function runMemoryTests() {
+            section('Memory map (port $7E, $C5/$C7)');
+            const m = hcMemory();
+            assert(m.read(0x0000) === 0x10 && m.read(0x2000) === 0x11, 'reset: BASIC ROM at $0000-$3FFF');
+            assert(m.screenBank === 5, 'reset: screen at $4000 (bank 5)');
+            m.write(0x0000, 0x99);
+            assert(m.read(0x0000) === 0x10, 'ROM ignores writes');
+            m.writeHcConfig(0x01);
+            assert(m.read(0x0000) === 0x20, 'B/OL=1: CP/M ROM at $0000');
+            m.writeHcConfig(0x02);
+            m.write(0x0000, 0x55);
+            assert(m.read(0x0000) === 0x55, 'CPMPL: RAM at $0000');
+            assert(m.read(0xE000) === 0x11, 'CPMPL: upper half of the selected ROM at $E000');
+            m.write(0xE000, 0x77);
+            assert(m.read(0xE000) === 0x11, '$E000 ROM ignores writes under CPMPL');
+            m.writeHcConfig(0x00);
+            m.write(0xE000, 0x66);
+            m.writeHcMemPort(0xC7);
+            assert(m.read(0xC000) === 0x66, '$C7: the $E000 RAM also at $C000');
+            m.writeHcMemPort(0xC5);
+            assert(m.read(0xC000) !== 0x66, '$C5: $C000 is its own RAM again');
+            assert(m.writeHcConfig(0x08) === true && m.screenBank === 7, 'CVS: screen from $C000 (bank 7)');
+            m.writeHcConfig(0x04);
+            m.writeHcConfig(0x01);
+            assert(m.hcLocked && m.hcConfig === 0x04, 'D2 locks the latch until reset');
+            m.reset();
+            assert(!m.hcLocked && m.hcConfig === 0 && m.hcMemPort === 0xC5, 'reset clears latch, lock and CPM');
+
+            section('HC IF1 overlay');
+            const if1rom = new Uint8Array(16384);
+            for (let i = 0; i < 16384; i++) if1rom[i] = 0x40 | (i >> 12);
+            m.loadHcIf1Rom(if1rom);
+            m.hcIf1Ram = new Uint8Array(1024);
+            assert(m.read(0x0000) === 0x10, 'paged out: BASIC ROM');
+            m.if1Active = true;
+            assert(m.read(0x0000) === 0x40 && m.read(0x3000) === 0x43, 'paged in: 16KB ROM over $0000-$3FFF');
+            m.write(0x2800, 0xAB);
+            assert(m.read(0x2800) === 0xAB && m.read(0x2C00) === 0xAB && m.read(0x3800) === 0xAB &&
+                m.read(0x3C00) === 0xAB, '1KB RAM at $2800, mirrored at $2C00/$3800/$3C00');
+            assert(m.read(0x2000) === 0x42, '$2000-$27FF stays ROM');
+            m.write(0x0100, 0x12);
+            assert(m.read(0x0100) === 0x40, 'overlay ROM ignores writes');
+            m.writeHcConfig(0x02);
+            assert(m.read(0x0000) === 0x55 || m.read(0x0000) === 0x00, 'CP/M decoding hides the overlay',
+                '$' + m.read(0).toString(16));
+        }
+
+        // ---------- Terminal Count ----------
+        function runTcTests() {
+            section('µPD765 Terminal Count (HC IF1 wiring)');
+            const { img } = rawImage(HC_LAYOUT_INTERLEAVED);
+            const disk = HcDiskLoader.fromRaw(img, 'x.img').image;
+            const hc = new HcIf1();
+            const fdc = hc.fdc;
+            fdc.drives[0].disk = disk;
+            // Read Data, MFM: C0 H1 R1 N1 EOT16 — what the HC IF1 ROM sends
+            fdcCmd(fdc, [0x46, 0x04, 0, 1, 1, 1, 16, 0x0E, 0xFF]);
+            assert((fdc.readMSR() & 0xE0) === 0xE0, 'execution phase: RQM, DIO, EXM');
+            let ok = true;
+            for (let i = 0; i < 256; i++) if (fdc.readData() !== 16) ok = false;
+            assert(ok, 'sector R1 of C0 H1 = logical 16');
+            hc.write(0x07, 0x19, 0, 3500000);      // TC pulse, as the ROM does it
+            hc.write(0x07, 0x18, 0, 3500000);
+            const msr = fdc.readMSR();
+            assert((msr & 0xC0) === 0xC0, 'TC: result phase');
+            const res = [...Array(7)].map(() => fdc.readData());
+            assert((res[0] & 0xC0) === 0, 'TC: normal termination (IC=00)', 'ST0=$' + res[0].toString(16));
+            assert((res[1] & 0x80) === 0, 'TC: no EN');
+            assert(res[5] === 2, 'TC: R points past the one sector read', 'R=' + res[5]);
+
+            // Without TC the old (+3) ending stays: EN on the first status read
+            fdcCmd(fdc, [0x46, 0x04, 0, 1, 16, 1, 16, 0x0E, 0xFF]);
+            for (let i = 0; i < 256; i++) fdc.readData();
+            fdc.readMSR();
+            const res2 = [...Array(7)].map(() => fdc.readData());
+            assert((res2[0] & 0xC0) === 0x40 && (res2[1] & 0x80), 'no TC: abnormal end with EN, as on the +3');
+
+            // Write Data + TC commits exactly one sector
+            fdcCmd(fdc, [0x45, 0x04, 0, 1, 5, 1, 16, 0x0E, 0xFF]);
+            for (let i = 0; i < 256; i++) fdc.writeData(0xA5);
+            hc.write(0x07, 0x19, 0, 3500000);
+            const res3 = [...Array(7)].map(() => fdc.readData());
+            assert((res3[0] & 0xC0) === 0, 'write + TC: normal termination');
+            assert(disk.readSector(0, 1, 5)[0] === 0xA5 && disk.readSector(0, 1, 6)[0] !== 0xA5,
+                'write + TC: R5 written, R6 untouched');
+
+            section('Select latch ($05/$07) and the 555');
+            hc.write(0x07, 0x1A, 1000, 3500000);    // armed, drive 0
+            assert(hc.read(0x05, 1000) === 0xFE, 'armed with drive 0: bit 0 low (motor on)');
+            hc.write(0x07, 0x10, 2000, 3500000);    // disarm: monostable starts
+            assert(hc.read(0x05, 2000 + 3500000) === 0xFE, 'still turning 1s after disarm');
+            assert(hc.read(0x05, 2000 + 7000000) === 0xFF, 'motors off ~1.7s after disarm');
+            assert(HcIf1.isFdcPort(0x85) && HcIf1.isFdcPort(0x87) && HcIf1.isFdcPort(0x05) &&
+                HcIf1.isFdcPort(0x07) && !HcIf1.isFdcPort(0xE7) && !HcIf1.isFdcPort(0xDF),
+                'port decode: $05/$07/$85/$87 only');
+        }
+
+        // ---------- raw images ----------
+        function runImageTests() {
+            section('Raw IMG geometry');
+            for (const layout of [HC_LAYOUT_INTERLEAVED, HC_LAYOUT_SIDE_MAJOR]) {
+                const { img } = rawImage(layout);
+                const det = HcDiskLoader.detectLayout(img, 'disk.img');
+                assert(det.layout === layout, `${layout}: detected from the directory`, det.layout + ' / ' + det.reason);
+                const conv = HcDiskLoader.fromRaw(img, 'a.img');
+                const d = conv.image;
+                assert(d.numTracks === 80 && d.numSides === 2, `${layout}: 80 cylinders, 2 sides`);
+                const t = d.getTrack(0, 1);
+                assert(t.sectors.length === 16 && t.sectors.every((s, i) => s.id === i + 1 && s.sizeCode === 1 &&
+                    s.cylinder === 0 && s.head === 1), `${layout}: track C0 H1 has R1..16, N=1, real C/H`);
+                let ok = true;
+                for (let n = 16; n < 32; n++) {
+                    const w = n % 32;
+                    if (d.readSector(0, w >> 4, HC_SKEW[w & 15])[0] !== n) ok = false;
+                }
+                assert(ok, `${layout}: logical sectors 16-31 where the ROM looks for them`);
+                const back = HcDiskLoader.toRaw(d, layout);
+                assert(back.length === img.length && back.every((b, i) => b === img[i]), `${layout}: toRaw round-trips`);
+            }
+            // The point of all this: the same disk as IMG (either layout) and as
+            // DSK must give identical sectors
+            const a = HcDiskLoader.fromRaw(rawImage(HC_LAYOUT_INTERLEAVED).img, 'a.img').image;
+            const b = HcDiskLoader.fromRaw(rawImage(HC_LAYOUT_SIDE_MAJOR).img, 'b.img').image;
+            let same = true;
+            for (let c = 0; c < 80 && same; c++) for (let h = 0; h < 2 && same; h++)
+                for (let r = 1; r <= 16; r++) {
+                    const x = a.readSector(c, h, r), y = b.readSector(c, h, r);
+                    if (x.some((v, i) => v !== y[i])) { same = false; break; }
+                }
+            assert(same, 'both raw layouts of one disk give identical C/H/R contents');
+            const cpm = HcDiskLoader.fromRaw(new Uint8Array(737280), 'cpm.img').image;
+            assert(cpm.getTrack(0, 0).sectors.length === 9 && cpm.getTrack(0, 0).sectors[0].sizeCode === 2,
+                '720K raw image: HC CP/M geometry, 9 x 512');
+        }
+
+        // ---------- the real machine ----------
+        function screenText(sp) {
+            const rom = sp.memory.rom[0];
+            const glyphs = new Map();
+            for (let c = 32; c < 128; c++) {
+                const base = 0x3D00 + (c - 32) * 8;
+                const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
+                if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+            }
+            const scr = sp.memory.getScreenBase().ram;
+            const rows = [];
+            for (let row = 0; row < 24; row++) {
+                let s = '';
+                for (let col = 0; col < 32; col++) {
+                    const bytes = [];
+                    for (let y = 0; y < 8; y++) {
+                        const addr = ((row & 0x18) << 8) | ((row & 7) << 5) | (y << 8) | col;
+                        bytes.push(scr[addr]);
+                    }
+                    s += glyphs.get(bytes.join(',')) || '?';
+                }
+                rows.push(s);
+            }
+            return rows.join('\n');
+        }
+
+        async function runMachineTests() {
+            section('Real ROMs: FUSE\'s HC disk test (success_hc.img)');
+            const roms = await Promise.all(['hc2000-0.rom', 'hc2000-1.rom', 'hc-if1.rom'].map(f =>
+                fetch('../roms/' + f).then(r => r.ok, () => false)));
+            const haveFull = await fetch('../roms/hc2000.rom').then(r => r.ok, () => false);
+            if (!(roms[2] && (haveFull || (roms[0] && roms[1])))) {
+                skip('HC ROMs (hc2000-0/1.rom or hc2000.rom, and hc-if1.rom) not in roms/');
+                return;
+            }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: 'hc2000' });
+            await zx.start({ machine: 'hc2000' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            assert(sp.machineType === 'hc2000' && !!sp.hcIf1 && sp.memory.hasHcIf1Rom(), 'HC-2000 with HC IF1 ROM');
+            assert(sp.fdc === sp.hcIf1.fdc, 'the HC IF1 controller is the machine\'s FDC');
+            await zx.runFrames(150);
+            assert(/ICE FELIX/.test(screenText(sp)), 'BASIC boots to the ICE Felix copyright');
+            const res = await zx.loadUrl('tests/success_hc.img.zip');
+            await zx.runFrames(150);
+            assert(!!sp.fdc.drives[0].disk, 'success_hc.img in drive 1');
+            await zx.typeText('\n'); await zx.runFrames(30);
+            await zx.typeText('r\n');                     // RUN: boots "run" off drive 1
+            let acts = 0;
+            sp.fdc.onDiskActivity = () => { acts++; };
+            for (let i = 0; i < 40; i++) await zx.runFrames(10);
+            const text = screenText(sp);
+            assert(acts > 0, 'the ROM drove the controller', acts + ' sector operations');
+            assert(/Congraturation! You sucsess!/.test(text), 'RUN loads and runs the program from disk',
+                text.split('\n').filter(l => l.trim()).join(' | '));
+
+            section('HC-2000 port decode');
+            const b0 = sp.ula.borderColor !== undefined ? sp.ula.borderColor : null;
+            sp.portWrite(0x007E, 0x00);
+            assert(sp.memory.hcConfig === 0, '$7E reaches the config latch');
+            sp.portWrite(0x00FE, 0x02);
+            const bRed = sp.ula.borderColor;
+            sp.portWrite(0x007E, 0x00);         // A7=0: the config latch only
+            assert(sp.ula.borderColor === bRed, '$7E (A7=0) leaves the border alone');
+            assert(sp.portRead(0x007E) === sp.memory.hcConfig, '$7E reads back the latch, not the keyboard');
+
+            section('Real ROMs: a disk written by the Explorer code');
+            // The file system the Explorer edits must be the one the ROM reads:
+            // write "run" with DSKLoader.addFile, then let the HC IF1 ROM RUN it.
+            const disk = HcDiskLoader.fromRaw(new Uint8Array(655360).fill(0xE5), 'blank.img').image;
+            const prog = buildBasicProgram(parseBasicText('10 PRINT "EXPLORER OK"'), buildTokenLookup());
+            const err = DSKLoader.addFile(disk, { data: prog, name: 'run', ext: '', type: 0,
+                autostart: 10, varsOffset: prog.length });
+            assert(!err || err === true || typeof err !== 'string', 'addFile accepted the program', String(err));
+            sp.reset();
+            await zx.runFrames(150);
+            sp.loadDSKImage(disk.toBuffer(), 'explorer.dsk', 0);
+            await zx.typeText('\n'); await zx.runFrames(30);
+            await zx.typeText('r\n');
+            for (let i = 0; i < 40; i++) await zx.runFrames(10);
+            const t2 = screenText(sp);
+            assert(/EXPLORER OK/.test(t2), 'the ROM loads and runs it',
+                t2.split('\n').filter(l => l.trim()).join(' | '));
+        }
+
+        // ---------- the HC file systems (what the Explorer uses) ----------
+        function runFsTests() {
+            section('HC file systems (DSKLoader)');
+            const blank = HcDiskLoader.fromRaw(new Uint8Array(655360).fill(0xE5), 'b.img').image;
+            assert(DSKLoader.isHcDisk(blank), 'an empty 16x256 disk numbered from 1 is HC');
+            const spec = DSKLoader.getDiskSpec(blank);
+            assert(spec.isHC && spec.reservedTracks === 0 && spec.blockSize === 2048 && spec.use16bit &&
+                spec.skewTable.join(',') === '0,2,4,6,8,10,12,14,1,3,5,7,9,11,13,15',
+                'HC BASIC spec: no boot tracks, 2K blocks, 16-bit AL, skew 1,3,5..');
+            const code = new Uint8Array(3000).map((_, i) => i & 0xFF);
+            DSKLoader.addFile(blank, { data: code, name: 'screen.code', ext: '', type: 3, addr: 0x8000 });
+            const basic = buildBasicProgram(parseBasicText('10 REM hi\n20 GO TO 10'), buildTokenLookup());
+            DSKLoader.addFile(blank, { data: basic, name: 'prog', ext: '', type: 0, autostart: 20,
+                varsOffset: basic.length });
+            const files = DSKLoader.listFiles(blank);
+            const c = files.find(f => f.name === 'screen.code');
+            const b = files.find(f => f.name === 'prog');
+            assert(c && c.ext === '', '11-character name kept whole, no 8.3 split', files.map(f => f.name).join(','));
+            assert(c && c.plus3Type === 3 && c.size === 3000 && c.loadAddress === 0x8000 && c.headerSize === 9,
+                'CODE: IF1 header, exact length, load address');
+            assert(b && b.plus3Type === 0 && b.autostart === 20 && b.size === basic.length,
+                'BASIC: IF1 header, exact length, autostart');
+            const data = DSKLoader.readFileData(blank, c.name, c.ext, c.user, c.rawSize);
+            assert(data && data.length >= 3009 && data[9] === 0 && data[9 + 255] === 255 && data[9 + 2999] === (2999 & 0xFF),
+                'readFileData returns header + the bytes written');
+            // the directory slot holds the name the HC ROM looks for: 11 bytes
+            const dirSec = blank.readSector(0, 0, 1);
+            const names = [];
+            for (let e = 0; e < 256; e += 32) if (dirSec[e] <= 15)
+                names.push(String.fromCharCode(...dirSec.subarray(e + 1, e + 12)));
+            assert(names.includes('screen.code'), 'directory holds "screen.code" across the 8+3 bytes', names.join('|'));
+            assert(DSKLoader.deleteFiles(blank, [c]) >= 1 && !DSKLoader.listFiles(blank).some(f => f.name === 'screen.code'),
+                'deleteFiles removes it by its 11-character name');
+            // IMG -> DSKImage -> IMG keeps the side order
+            for (const layout of [HC_LAYOUT_INTERLEAVED, HC_LAYOUT_SIDE_MAJOR]) {
+                const raw = HcDiskLoader.toRaw(blank, layout);
+                const again = HcDiskLoader.fromRaw(raw, 'x.img');
+                assert(again.layout === layout && DSKLoader.listFiles(again.image).some(f => f.name === 'prog'),
+                    `saved as ${layout} .img and read back`);
+            }
+            // blank HC disks made by us stay HC through a save and reload,
+            // even an empty CP/M one (marked in the DSK creator field)
+            for (const [size, res] of [[737280, 4], [368640, 2], [655360, 0], [327680, 0]]) {
+                const im = HcDiskLoader.fromRaw(new Uint8Array(size).fill(0xE5), 'n.img').image;
+                im.hcFormat = true;
+                const back = DSKLoader.parse(im.toBuffer());
+                const sp = DSKLoader.getDiskSpec(back);
+                assert(back.hcFormat === true && sp.isHC && sp.reservedTracks === res,
+                    `blank ${size / 1024}K HC disk survives save/reload (${res} boot tracks)`);
+            }
+            const cpm = HcDiskLoader.fromRaw(new Uint8Array(737280).fill(0xE5), 'c.img').image;
+            cpm.hcFormat = true;
+            DSKLoader.addFile(cpm, { data: new Uint8Array(1000).fill(7), name: 'GAME', ext: 'COM', type: -1 });
+            const cf = DSKLoader.listFiles(cpm).find(f => f.name === 'GAME');
+            assert(cf && cf.ext === 'COM' && !cf.headerSize, 'HC CP/M keeps 8.3 names and headerless files');
+            // even when the Explorer's Add dialog hands over a BASIC/CODE type
+            DSKLoader.addFile(cpm, { data: new Uint8Array(700).fill(9), name: 'TYPED', ext: 'BIN', type: 3, addr: 0x8000 });
+            const tf = DSKLoader.listFiles(cpm).find(f => f.name === 'TYPED');
+            const td = tf && DSKLoader.readFileData(cpm, tf.name, tf.ext, tf.user, tf.rawSize);
+            assert(tf && !tf.headerSize && td && td[0] === 9 && tf.size === 768,
+                'a typed file on HC CP/M is still written without a header (no PLUS3DOS)');
+            // a +3 disk is not mistaken for HC
+            const p3 = DSKLoader.createBlankDSK('p3-ss40');
+            assert(!DSKLoader.isHcDisk(p3), 'a +3 disk is not HC');
+        }
+
+        (async () => {
+            try {
+                runMemoryTests();
+                runTcTests();
+                runImageTests();
+                runFsTests();
+                await runMachineTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            render();
+        })();
+    </script>
+</body>
+</html>

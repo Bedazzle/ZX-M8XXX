@@ -144,11 +144,13 @@
             function allInterfacesOff() {
                 sp.opusEnabled = false;
                 sp.plusDEnabled = false;
+                sp.discipleEnabled = false;
                 sp.if1Enabled = false;
                 sp.didaktikEnabled = false;
                 sp.updateBetaDiskPagingFlag();
                 sp.memory.opusActive = false;
                 sp.memory.plusDActive = false;
+                sp.memory.discipleActive = false;
                 sp.memory.if1Active = false;
                 sp.memory.didaktikActive = false;
             }
@@ -648,6 +650,191 @@
                     sp.updateBetaDiskPagingFlag();
                     assert(!sp.memory.didaktikForceRom1,
                            'and a 48K never holds the ROM at page 1');
+                }
+            }
+
+            // ---------------------------------------------------------------
+            section('DISCiPLE — the ROM boots the machine and hands it back');
+            {
+                // The DISCiPLE's ROM is a BOOTSTRAP, and the ROM itself says so:
+                // its RST 10 vector is OUT ($7B) followed by JP $0550, and $0550
+                // is only code once $7B has swapped the 8K RAM down to $0000. So
+                // GDOS proper is the system file off the disk, running from that
+                // RAM at the ROM's own addresses, and we have no copy of one —
+                // there is no round trip to be had here, any more than for the +D.
+                //
+                // What IS the ROM's own work, and what this section holds to:
+                // it takes the machine over at $0001 (one byte into the Spectrum's
+                // reset), sets itself up, pages itself back out, and leaves 48K
+                // BASIC running. That last part is where the +D once failed: it
+                // soft-reset the machine at boot and never got to say anything.
+                const rom = await fetchRom('disciple.rom');
+                if (!rom) { assert(false, 'disciple.rom is in roms/'); }
+                else {
+                    const win = (a, n) => [...Array(n)].map((_, i) => sp.memory.read(a + i)).join(',');
+                    const romWin = (o, n) => [...rom.slice(o, o + n)].join(',');
+
+                    // Read with nothing paged in. Both ROMs begin F3 AF, so the
+                    // Spectrum's is identified by a run of bytes or not at all —
+                    // one address would prove nothing either way.
+                    allInterfacesOff();
+                    coldBoot(2);
+                    const bare = win(0x0000, 16);
+
+                    sp.memory.loadDiscipleRom(rom);
+                    sp.discipleEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    sp.loadMGTImage(new Uint8Array(819200), 'blank.mgt', 0);
+                    assert(sp._disciplePagingEnabled, 'the interface reports itself usable');
+                    assert(sp.disciple.hasDisk(0),
+                           '  and an MGT image reaches the DISCiPLE, not the +D');
+
+                    // One instruction is the whole of the entry: the Spectrum
+                    // ROM's DI at $0000 runs, and the fetch after it is the
+                    // DISCiPLE's. Stepped by hand because it happens exactly once
+                    // ever — after this the ROM pages itself out and the $0001
+                    // rule never fires again.
+                    sp.reset();
+                    sp.cpu.execute();
+                    sp.updateDisciplePaging();
+                    assert(sp.cpu.pc === 0x0001 && sp.memory.discipleActive,
+                           'the ROM takes $0000-$3FFF one instruction into the reset',
+                           'pc=' + sp.cpu.pc.toString(16) + ' active=' + sp.memory.discipleActive);
+                    assert(win(0x0000, 16) === romWin(0, 16),
+                           '  so the next sixteen bytes are the DISCiPLE\'s, not the Spectrum\'s');
+
+                    // And then it gets out of the way. Run it as the app does and
+                    // 48K BASIC must be up, with the overlay gone: a GDOS that
+                    // kept $0000 would own every RST the machine makes.
+                    coldBoot(200);
+                    assert(!sp.memory.discipleActive,
+                           'it pages itself back out before BASIC starts');
+                    // screenText() follows CHARS, which points into $0000-$3FFF.
+                    // Read it while the overlay is in and every glyph comes from
+                    // the wrong ROM, so this assert has to come after that one.
+                    const boot = screenText();
+                    assert(/1982 Sinclair Research/.test(boot),
+                           '  and the machine is at the BASIC prompt, not reset in a loop',
+                           boot.slice(-70) || '(blank screen)');
+
+                    // The hooks are live in the real frame loop, not just when a
+                    // test calls updateDisciplePaging() by hand: the editor's
+                    // KEY-SCAN at $028E pages the ROM in on every frame and the
+                    // ROM lets go again each time.
+                    {
+                        const hits = [];
+                        const inner = sp.updateDisciplePaging.bind(sp);
+                        sp.updateDisciplePaging = function () {
+                            const was = sp.memory.discipleActive;
+                            inner();
+                            if (!was && sp.memory.discipleActive) hits.push(sp.cpu.pc);
+                        };
+                        for (let i = 0; i < 30; i++) sp.runFrameHeadless();
+                        delete sp.updateDisciplePaging;
+                        assert(hits.length > 0 && hits.every(a => a === 0x028E),
+                               'at the prompt it pages in at KEY-SCAN and nowhere else',
+                               hits.length + ' entries: ' +
+                               [...new Set(hits)].map(a => a.toString(16)).join(' '));
+                        assert(!sp.memory.discipleActive,
+                               '  and is out again each time, or BASIC would not run');
+                    }
+
+                    // ---- the overlay itself -------------------------------
+                    // Paged in deliberately from here: reading $BB is how the
+                    // hardware does it, and it is the only way to look at the
+                    // window without GDOS moving underneath.
+                    coldBoot(200);
+                    sp.portRead(0x00BB);
+                    assert(sp.memory.discipleActive && sp.memory.discipleRomLow,
+                           'IN ($BB) pages the interface in, ROM low as the reset left it');
+
+                    // The RAM is the other half, and it takes writes where the
+                    // ROM half does not. That asymmetry is the whole mechanism:
+                    // GDOS loads its system file into the half it can write, then
+                    // swaps that half down to $0000 and runs it.
+                    const romByte = sp.memory.read(0x0000);
+                    sp.memory.write(0x2000, 0x5A);
+                    sp.memory.write(0x3FFF, 0xA5);
+                    sp.memory.write(0x0000, romByte ^ 0xFF);
+                    assert(sp.memory.read(0x2000) === 0x5A &&
+                           sp.memory.read(0x3FFF) === 0xA5,
+                           'with the ROM low the RAM takes writes at $2000-$3FFF');
+                    assert(sp.memory.read(0x0000) === romByte,
+                           '  and a write to the ROM half is dropped');
+
+                    sp.portWrite(0x007B, 0x00);
+                    assert(sp.memory.read(0x0000) === 0x5A &&
+                           sp.memory.read(0x1FFF) === 0xA5,
+                           'OUT ($7B) brings that RAM down to $0000');
+                    assert(sp.memory.read(0x2000) === rom[0] &&
+                           sp.memory.read(0x3FFF) === rom[0x1FFF],
+                           '  and sends the ROM up to $2000');
+                    sp.portRead(0x007B);
+                    assert(sp.memory.read(0x0000) === rom[0] &&
+                           sp.memory.read(0x2000) === 0x5A,
+                           'IN ($7B) puts them back — checked on the RAM, since both '
+                           + 'halves start F3');
+
+                    // A 16K image is two 8K ROMs — on GDOS 3.0, the Epson and the
+                    // TTY build — chosen by bit 3 of port $1F. The byte they
+                    // differ at is found rather than named.
+                    if (rom.length > 8192) {
+                        let d = -1;
+                        for (let k = 0; k < 8192; k++) {
+                            if (rom[k] !== rom[8192 + k]) { d = k; break; }
+                        }
+                        sp.portWrite(0x001F, 0x08);
+                        assert(d >= 0 && sp.memory.read(d) === rom[8192 + d],
+                               'port $1F bit 3 selects the second 8K of a 16K ROM',
+                               'the banks differ at ' + d);
+                        sp.portWrite(0x001F, 0x00);
+                        assert(d >= 0 && sp.memory.read(d) === rom[d],
+                               '  and clearing it selects the first');
+                    }
+
+                    // $1F is the DISCiPLE's own joystick port as well, and it
+                    // answers WHETHER OR NOT the Kempston is switched on. That is
+                    // the hardware, and it is a DECISION here, because with no
+                    // owner at all $1F floats the bus — and a floating $1F is
+                    // what Venom and Academy read as a fire press. Bits 7 and 6
+                    // are the network line and printer BUSY, both active low:
+                    // GDOS polls bit 7 on every interrupt and sits out two
+                    // timeout loops a frame if it reads 0.
+                    const kempWas = sp.kempstonEnabled;
+                    sp.kempstonEnabled = false;
+                    sp.kempstonState = 0x01;
+                    assert(sp.portRead(0x001F) === 0xC1,
+                           'port $1F is the DISCiPLE\'s joystick even with the Kempston off',
+                           '0x' + sp.portRead(0x001F).toString(16));
+                    sp.kempstonState = 0;
+                    assert((sp.portRead(0x001F) & 0xC0) === 0xC0,
+                           '  with the network and printer lines idle high');
+                    sp.kempstonEnabled = kempWas;
+
+                    // Out again, and it has to take the whole window with it or
+                    // the next RST lands in GDOS.
+                    sp.portWrite(0x00BB, 0x00);
+                    assert(!sp.memory.discipleActive, 'OUT ($BB) pages the interface out');
+                    assert(win(0x0000, 16) === bare,
+                           '  and the Spectrum ROM is back underneath');
+
+                    note('a round trip needs a GDOS system disk, which the tree has no copy of: ' +
+                         'RUN on a blank one ends in the ROM\'s own key loop with no FDC command');
+
+                    // Not on a +2A/+3, which page their own ROMs into $0000-$3FFF
+                    // and leave no room underneath for a second window.
+                    allInterfacesOff();
+                    await w.zxDebug.ready({ machine: '+2a' });
+                    sp.stop();
+                    sp.memory.loadDiscipleRom(rom);
+                    sp.discipleEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(!sp._disciplePagingEnabled, 'and a +2A refuses the interface');
+
+                    allInterfacesOff();
+                    await w.zxDebug.ready({ machine: '48k' });
+                    sp.stop();
+                    sp.updateBetaDiskPagingFlag();
                 }
             }
 

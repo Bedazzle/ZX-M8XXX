@@ -118,7 +118,9 @@
             const sig = 'EXTENDED CPC DSK File\r\nDisk-Info\r\n';
             for (let i = 0; i < sig.length; i++) buf[i] = sig.charCodeAt(i);
             // Creator (14 bytes at offset 0x22)
-            const creator = 'ZX-M8XXX      ';
+            // An HC disk says so in the creator field (14 bytes): an empty HC
+            // CP/M disk has nothing else to recognise it by after a save/reload
+            const creator = this.hcFormat ? 'ZX-M8XXX HC   ' : 'ZX-M8XXX      ';
             for (let i = 0; i < 14; i++) buf[0x22 + i] = creator.charCodeAt(i);
             buf[0x30] = this.numTracks;
             buf[0x31] = this.numSides;
@@ -231,6 +233,9 @@
             } else {
                 DSKLoader._parseStandard(bytes, image);
             }
+
+            // Written by us as an HC disk (see toBuffer): trust it
+            if (String.fromCharCode(...bytes.slice(0x22, 0x2D)) === 'ZX-M8XXX HC') image.hcFormat = true;
 
             return image;
         }
@@ -446,6 +451,14 @@
             const track0 = dskImage.getTrack(0, 0);
             if (!track0 || track0.sectors.length === 0) {
                 return { reservedTracks: 0, blockSize: 1024, dirBlocks: 2, valid: false };
+            }
+            // An HC (ICE Felix) disk: its own file systems rather than the
+            // +3/TOS guesses below. Flagged when it went into the HC-2000's
+            // HC IF1; otherwise (Explorer, a cloned image) recognised here.
+            if (dskImage.hcFormat === undefined) dskImage.hcFormat = DSKLoader.isHcDisk(dskImage);
+            if (dskImage.hcFormat) {
+                const hc = DSKLoader._hcDiskSpec(dskImage, track0);
+                if (hc) return hc;
             }
 
             const sorted = [...track0.sectors].sort((a, b) => a.id - b.id);
@@ -695,6 +708,128 @@
         }
 
         /**
+         * HC (ICE Felix) disk parameters, from "ICE Felix HC Disk File System
+         * Description" (G. Chirtoaca, 2010). Both are CP/M 2.2 file systems,
+         * sides alternating per cylinder, software interleave only (sector IDs
+         * are consecutive on the track; the skew is applied logically):
+         *   BASIC 16x256: no boot tracks, 2K blocks, 128 entries (2 blocks),
+         *                 skew 1,3,5,...,15,2,4,...,16
+         *   CP/M  9x512:  4 boot tracks (2 on 40 cylinders), 2K blocks,
+         *                 128 entries (64 on 40 cylinders), skew 1,3,5,7,9,2,4,6,8
+         * Allocation numbers are 16-bit when the disk has more than 255 blocks.
+         */
+        /**
+         * Is this an HC disk? Geometry first, then the directory where HC puts
+         * it, read through the HC skew:
+         *   16x256, IDs from 1 (the Timex FDD3000 numbers from 0), 2 sides,
+         *     directory at cylinder 0 side 0;
+         *   9x512, IDs 1-9, 2 sides, no +3DOS boot spec, directory after
+         *     the 4 (2 on 40 cylinders) boot tracks.
+         * The directory sector must hold only CP/M entries (user 0-15, or
+         * $E5 empty), and at least one real one.
+         */
+        static isHcDisk(dskImage) {
+            const t0 = dskImage.getTrack(0, 0);
+            if (!t0 || !t0.sectors.length || (dskImage.numSides || 1) !== 2) return false;
+            const n = t0.sectors.length;
+            const secSize = t0.sectors[0].data.length;
+            const minId = Math.min(...t0.sectors.map(sec => sec.id));
+            if (minId !== 1) return false;
+            let reserved;
+            if (n === 16 && secSize === 256) {
+                reserved = 0;
+            } else if (n === 9 && secSize === 512) {
+                // A +3DOS boot spec (checksum 3) makes it a +3/PCW disk
+                const boot = t0.sectors.find(sec => sec.id === 1).data;
+                let sum = 0;
+                for (let i = 0; i < 16; i++) sum = (sum + boot[i]) & 0xFF;
+                if (sum === 3) return false;
+                reserved = dskImage.numTracks > 40 ? 4 : 2;
+            } else {
+                return false;
+            }
+            // Logical track `reserved`, logical sector 0 (ID 1 under either skew)
+            const cyl = Math.floor(reserved / 2), head = reserved % 2;
+            const dir = dskImage.readSector(cyl, head, 1);
+            if (!dir) return false;
+            let real = 0;
+            for (let e = 0; e < dir.length; e += 32) {
+                const u = dir[e];
+                if (u === 0xE5) continue;
+                if (u > 15) return false;
+                for (let j = 1; j <= 8; j++) if ((dir[e + j] & 0x7F) < 0x20) return false;
+                real++;
+            }
+            // 16x256 numbered from 1 is HC's alone (the FDD3000 counts from 0),
+            // so an empty directory is still an HC disk there; 9x512 could be
+            // any CP/M or PC disk and needs a real entry.
+            return real > 0 || n === 16;
+        }
+
+        /**
+         * A directory entry's name. HC BASIC disks keep IF1-style names of up
+         * to 11 characters in the 8+3 slot, so there it is one name and no
+         * extension ("bas2txt.asm" stays itself); everything else is 8.3.
+         */
+        static _dirEntryName(dirData, base, spec) {
+            if (spec && spec.isHC && spec.sectorSize === 256) {
+                let name = '';
+                for (let j = 1; j <= 11; j++) {
+                    const ch = dirData[base + j] & 0x7F;
+                    name += ch >= 0x20 ? String.fromCharCode(ch) : ' ';
+                }
+                return { name: name.trimEnd(), ext: '' };
+            }
+            let name = '';
+            for (let j = 1; j <= 8; j++) {
+                const ch = dirData[base + j] & 0x7F;
+                if (ch >= 0x20) name += String.fromCharCode(ch);
+            }
+            let ext = '';
+            for (let j = 9; j <= 11; j++) {
+                const ch = dirData[base + j] & 0x7F;
+                if (ch >= 0x20) ext += String.fromCharCode(ch);
+            }
+            return { name: name.trimEnd(), ext: ext.trimEnd() };
+        }
+
+        static _hcDiskSpec(dskImage, track0) {
+            const n = track0.sectors.length;
+            const secSize = track0.sectors[0].data.length;
+            const sides = dskImage.numSides || 1;
+            const cyls = dskImage.numTracks;
+            const interleave = (count) => {
+                const t = [];
+                for (let i = 0; i < count; i += 2) t.push(i);
+                for (let i = 1; i < count; i += 2) t.push(i);
+                return t;
+            };
+            let reservedTracks, dirEntries;
+            if (n === 16 && secSize === 256) {
+                reservedTracks = 0;
+                dirEntries = 128;
+            } else if (n === 9 && secSize === 512) {
+                reservedTracks = cyls > 40 ? 4 : 2;
+                dirEntries = cyls > 40 ? 128 : 64;
+            } else {
+                return null;
+            }
+            const blockSize = 2048;
+            const dataBytes = (cyls * sides - reservedTracks) * n * secSize;
+            const blocks = Math.floor(dataBytes / blockSize);
+            return {
+                reservedTracks, blockSize, blockShift: 4,
+                dirBlocks: Math.max(1, (dirEntries * 32) / blockSize),
+                sectorsPerTrack: n, sectorSize: secSize,
+                firstSectorId: Math.min(...track0.sectors.map(s => s.id)),
+                sides, valid: true, recognized: true,
+                isHC: true, isTOS: false,
+                use16bit: blocks > 255,
+                skewTable: interleave(n)
+            };
+        }
+
+        /**
          * Map a logical sector index to a physical sector ID, applying skew if present.
          * Timex FDD3000 DSK images store sectors in physical (interleaved) order;
          * the skew table maps logical sector index to the correct physical sector ID.
@@ -825,6 +960,8 @@
                     if (ch >= 0x20) ext += String.fromCharCode(ch);
                 }
                 ext = ext.trimEnd();
+
+                if (spec.isHC) ({ name, ext } = DSKLoader._dirEntryName(dirData, entryBase, spec));
 
                 if (!validName || name.length === 0) continue;
 
@@ -991,6 +1128,48 @@
                     continue;
                 }
 
+                // HC BASIC: the 9-byte Interface 1 header — type(1), length(2),
+                // start(2), program length(2), autostart line(2). Only on the HC
+                // BASIC format; HC CP/M files are plain CP/M files. A genuine
+                // header's length rounds (with the header, in 128-byte records)
+                // to the directory size or one record less (as hcfs.py checks).
+                if (spec.isHC) {
+                    const t = sectorData[0];
+                    if (spec.sectorSize === 256 && t <= 3 && sectorData.length >= 9) {
+                        const len = sectorData[1] | (sectorData[2] << 8);
+                        const recs = Math.ceil((len + 9) / 128);
+                        const have = Math.ceil(file.size / 128);
+                        // A BASIC loader may carry its code after the program in
+                        // the same file (AllSqr: 1258-byte program in 27904 bytes),
+                        // so for type 0 a longer file is fine when what follows
+                        // the header really is a BASIC line.
+                        const ln = (sectorData[9] << 8) | sectorData[10];
+                        const ll = sectorData[11] | (sectorData[12] << 8);
+                        const basicLine = t === 0 && sectorData.length > 13 && ln < 10000 &&
+                            ll > 0 && ll <= len && (13 + ll - 1 >= sectorData.length ||
+                                sectorData[13 + ll - 1] === 0x0D);
+                        const fits = have >= recs && have <= recs + 1;
+                        if (len > 0 && (fits || (basicLine && have > recs))) {
+                            if (!fits) file.hcTrailing = file.size - 9 - len;
+                            file.plus3Type = t;
+                            file.hcHeader = true;
+                            file.headerSize = 9;
+                            file.size = len;
+                            file.dataLength = len;
+                            const start = sectorData[3] | (sectorData[4] << 8);
+                            const prog = sectorData[5] | (sectorData[6] << 8);
+                            const line = sectorData[7] | (sectorData[8] << 8);
+                            if (t === 3) file.loadAddress = start;
+                            if (t === 0) {
+                                file.dataLength = prog;
+                                file.varsOffset = prog;
+                                file.autostart = line;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 // Try TOS header (Timex FDD3000): type byte 0-3 at offset 0.
                 // BASIC (type 0): 7-byte header — type(1) + autostart(2LE) + totalLen(2LE) + progLen(2LE)
                 //   totalLen = full data size (program + variables), progLen = program body only (varsOffset)
@@ -1071,19 +1250,7 @@
                 const user = dirData[entryBase];
                 if (user === 0xE5 || user > 15) continue;
 
-                let name = '';
-                for (let j = 1; j <= 8; j++) {
-                    const ch = dirData[entryBase + j] & 0x7F;
-                    if (ch >= 0x20) name += String.fromCharCode(ch);
-                }
-                name = name.trimEnd();
-
-                let ext = '';
-                for (let j = 9; j <= 11; j++) {
-                    const ch = dirData[entryBase + j] & 0x7F;
-                    if (ch >= 0x20) ext += String.fromCharCode(ch);
-                }
-                ext = ext.trimEnd();
+                const { name, ext } = DSKLoader._dirEntryName(dirData, entryBase, spec);
 
                 if (user !== fileUser || name !== fileName || ext !== fileExt) continue;
 
@@ -1406,7 +1573,32 @@
             const reservedTracks = spec.reservedTracks;
 
             let fullData;
-            if (type >= 0 && spec.isTOS) {
+            const hcBasic = spec.isHC && sectorSize === 256;
+            if (type >= 0 && hcBasic) {
+                // HC BASIC: 9-byte Interface 1 header
+                const header = new Uint8Array(9);
+                header[0] = type & 0xFF;
+                header[1] = data.length & 0xFF;
+                header[2] = (data.length >> 8) & 0xFF;
+                const start = type === 3 ? (addr & 0xFFFF) : 0x5CCB;
+                header[3] = start & 0xFF;
+                header[4] = (start >> 8) & 0xFF;
+                const prog = type === 0
+                    ? ((varsOffset != null) ? Math.min(varsOffset, data.length) : data.length) : 0xFFFF;
+                header[5] = prog & 0xFF;
+                header[6] = (prog >> 8) & 0xFF;
+                const line = (type === 0 && autostart !== undefined && autostart !== null && autostart !== '')
+                    ? (parseInt(autostart) & 0xFFFF) : 0xFFFF;
+                header[7] = line & 0xFF;
+                header[8] = (line >> 8) & 0xFF;
+                fullData = new Uint8Array(9 + data.length);
+                fullData.set(header);
+                fullData.set(data, 9);
+            } else if (spec.isHC) {
+                // HC CP/M (9x512): plain CP/M files, never a header — the
+                // BASIC/CODE type only means something on the HC BASIC format
+                fullData = data;
+            } else if (type >= 0 && spec.isTOS) {
                 // TOS header: BASIC (type 0) = 7 bytes, Code/arrays (types 1-3) = 5 bytes
                 // BASIC: type(1) + autostart(2LE) + dataLen(2LE) + basLen(2LE)
                 // Code/arrays: type(1) + dataLen(2LE) + address(2LE)
@@ -1531,8 +1723,10 @@
                 }
             }
 
-            const paddedName = (name + '        ').substring(0, 8);
-            const paddedExt = (ext + '   ').substring(0, 3);
+            // HC BASIC: one name of up to 11 characters across the 8+3 slot
+            const hcName = hcBasic ? ((name || '') + (ext ? '.' + ext : '') + '           ').substring(0, 11) : null;
+            const paddedName = hcBasic ? hcName.substring(0, 8) : (name + '        ').substring(0, 8);
+            const paddedExt = hcBasic ? hcName.substring(8, 11) : (ext + '   ').substring(0, 3);
             let freeSlotIdx = 0;
             for (let extNum = 0; extNum < requiredExtents; extNum++) {
                 while (freeSlotIdx < maxEntries && dirData[freeSlotIdx * 32] !== 0xE5) freeSlotIdx++;
@@ -1617,11 +1811,8 @@
                 const base = i * 32;
                 const user = dirData[base];
                 if (user === 0xE5 || user > 15) continue;   // empty/deleted or non-file (label/spec)
-                let name = '';
-                for (let j = 1; j <= 8; j++) { const ch = dirData[base + j] & 0x7F; if (ch >= 0x20) name += String.fromCharCode(ch); }
-                let ext = '';
-                for (let j = 9; j <= 11; j++) { const ch = dirData[base + j] & 0x7F; if (ch >= 0x20) ext += String.fromCharCode(ch); }
-                if (keys.has(`${user}:${name.trimEnd()}:${ext.trimEnd()}`)) { dirData[base] = 0xE5; cleared++; }
+                const { name, ext } = DSKLoader._dirEntryName(dirData, base, spec);
+                if (keys.has(`${user}:${name}:${ext}`)) { dirData[base] = 0xE5; cleared++; }
             }
             if (cleared) DSKLoader.writeDirectory(dskImage, spec, dirData);
             return cleared;
@@ -1699,6 +1890,15 @@
 
             // Debug logging (set to true for FDC command tracing)
             this.debug = false;
+
+            // Terminal Count. Not wired on the +3, so a data command there always
+            // runs to EOT and ends "abnormally" with EN. The HC IF1 drives TC from
+            // its port $07: its ROM asks for R..EOT=16, reads one sector and pulses
+            // TC, expecting a NORMAL termination. With tcConnected the controller
+            // therefore waits, once the CPU has moved the last byte of the buffer,
+            // for either TC (normal end) or the next status read (the old EN end).
+            this.tcConnected = false;
+            this._awaitTC = false;
         }
 
         /**
@@ -1716,9 +1916,54 @@
             this.st2 = 0;
             this.interruptPending = false;
             this.driveBusy = 0;
+            this._awaitTC = false;
+            this._pendingResult = null;
+            this._formatInfo = null;
+            this.commandBytesExpected = 0;
             for (const drive of this.drives) {
                 drive.track = 0;
             }
+        }
+
+        /**
+         * Terminal Count pulse (HC IF1: port $07 bit 0). Ends a Read/Write Data
+         * execution phase after the sectors the CPU has transferred so far, with
+         * a normal termination (ST0 IC=00, no EN). Outside a data transfer it
+         * does nothing, as on the chip.
+         */
+        terminalCount() {
+            if (this.phase !== this.PHASE_EXECUTION) return;
+            const r = this._pendingResult;
+            if (!r || this._formatInfo) return;
+            this._awaitTC = false;
+            if (this.dataDirection === 1 && r.readIds) {
+                // Read: the sector in progress counts as transferred
+                const n = Math.max(1, Math.min(r.readIds.length,
+                    Math.ceil(this.dataIndex / r.sectorDataSize)));
+                this.st0 = r.driveNum | (r.head << 2);
+                this.st1 &= 0x7F;            // no EN: stopped by TC, not by EOT
+                this._setResult7(r.driveNum, r.head, r.cylinder, r.headAddr,
+                    r.readIds[n - 1] + 1, r.sizeCode);
+                this._pendingResult = null;
+            } else if (this.dataDirection === 0) {
+                // Write: commit the sectors the CPU has supplied, then end normally
+                const n = Math.max(1, Math.ceil(this.dataIndex / r.sectorDataSize));
+                this._commitWrite(r, n);
+                this.st0 = r.driveNum | (r.head << 2);
+                this.st1 = 0;
+                this.st2 = this._writeDeleted ? 0x40 : 0x00;
+                this._setResult7(r.driveNum, r.head, r.cylinder, r.headAddr,
+                    r.sectorStart + n, r.sizeCode);
+                this._pendingResult = null;
+            }
+        }
+
+        // The CPU moved the last byte but TC never came: end the way an
+        // unconnected TC would (EN). Called before anything else touches the FDC.
+        _resolveAwaitTC() {
+            this._awaitTC = false;
+            if (this.dataDirection === 1) this._finishDataTransfer();
+            else this._finishWriteTransfer();
         }
 
         /**
@@ -1736,6 +1981,7 @@
          * @returns {number} MSR byte
          */
         readMSR() {
+            if (this._awaitTC) this._resolveAwaitTC();
             // Bit 7: RQM (Request for Master) — always 1 in instant-completion model
             // Bit 6: DIO — 0=CPU→FDC, 1=FDC→CPU
             // Bit 5: EXM — execution mode (non-DMA), set during execution phase
@@ -1767,6 +2013,7 @@
          * @returns {number} data byte
          */
         readData() {
+            if (this._awaitTC) this._resolveAwaitTC();
             if (this.phase === this.PHASE_RESULT) {
                 if (this.resultIndex < this.resultBuffer.length) {
                     const val = this.resultBuffer[this.resultIndex++];
@@ -1791,7 +2038,8 @@
                     if (this.dataIndex >= this.dataBuffer.length) {
                         // Data transfer complete — move to result phase
                         if (this.debug) console.log(`[FDC] Data transfer complete (${this.dataBuffer.length} bytes read) → RESULT`);
-                        this._finishDataTransfer();
+                        if (this.tcConnected) this._awaitTC = true;
+                        else this._finishDataTransfer();
                     }
                     return val;
                 }
@@ -1810,12 +2058,14 @@
          * @param {number} val - byte written
          */
         writeData(val) {
+            if (this._awaitTC) this._resolveAwaitTC();
             if (this.phase === this.PHASE_EXECUTION && this.dataDirection === 0) {
                 // Write data to execution buffer
                 if (this.dataIndex < this.dataBuffer.length) {
                     this.dataBuffer[this.dataIndex++] = val;
                     if (this.dataIndex >= this.dataBuffer.length) {
-                        this._finishWriteTransfer();
+                        if (this.tcConnected && !this._formatInfo) this._awaitTC = true;
+                        else this._finishWriteTransfer();
                     }
                 }
                 return;
@@ -2201,7 +2451,9 @@
                 cylinder: this.opCylinder,
                 headAddr: this.opHead,
                 sector: lastSector.id + 1,  // Points to next sector after last transferred
-                sizeCode: this.opSizeCode
+                sizeCode: this.opSizeCode,
+                readIds: sectorsToRead.map(sec => sec.id),   // for terminalCount()
+                sectorDataSize
             };
 
             // Activity callback
@@ -2518,18 +2770,7 @@
             }
 
             // Write all sectors from R to EOT to disk image
-            // Use physical track position, not logical cylinder from command
-            let bufPos = 0;
-            for (let sId = r.sectorStart; sId <= r.sectorEnd; sId++) {
-                const sectorData = this.dataBuffer.subarray(bufPos, bufPos + r.sectorDataSize);
-                drive.disk.writeSector(r.physicalTrack, r.head, sId, sectorData);
-                bufPos += r.sectorDataSize;
-            }
-
-            // Activity callback
-            if (this.onDiskActivity) {
-                this.onDiskActivity('write', r.physicalTrack, r.sectorStart, r.head, r.driveNum);
-            }
+            this._commitWrite(r, r.sectorEnd - r.sectorStart + 1);
 
             // Abnormal termination + EN (TC not connected on +3)
             this.st0 = 0x40 | r.driveNum | (r.head << 2);
@@ -2537,6 +2778,24 @@
             this.st2 = this._writeDeleted ? 0x40 : 0x00;
             this._setResult7(r.driveNum, r.head, r.cylinder, r.headAddr, r.sectorEnd + 1, r.sizeCode);
             this._pendingResult = null;
+        }
+
+        // Write the first `count` sectors of the execution buffer, starting at R.
+        // Uses the physical track position, not the logical cylinder from the command.
+        // (The PR's onDiskWrite hook is left out: DSKImage.writeSector already sets
+        // `modified`, which is what the Save → Media… dot reads.)
+        _commitWrite(r, count) {
+            const drive = this.drives[r.driveNum];
+            if (!drive.disk) return;
+            let bufPos = 0;
+            for (let i = 0; i < count; i++) {
+                const sectorData = this.dataBuffer.subarray(bufPos, bufPos + r.sectorDataSize);
+                drive.disk.writeSector(r.physicalTrack, r.head, r.sectorStart + i, sectorData);
+                bufPos += r.sectorDataSize;
+            }
+            if (this.onDiskActivity) {
+                this.onDiskActivity('write', r.physicalTrack, r.sectorStart, r.head, r.driveNum);
+            }
         }
 
         /**

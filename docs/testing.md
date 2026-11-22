@@ -348,6 +348,38 @@ separately, so a change to *where* a wait lands cannot quietly change *how long*
 instruction takes; and the same instructions are run again in uncontended RAM, where every
 one of them must still cost exactly its bare length.
 
+## `tests/hc2000-test.html`
+
+**The HC-2000 (ICE Felix) and its built-in HC IF1**, ported from Alex Badea's FUSE branch
+`hc2000-v2`. Four unit sections and one that boots the real ROMs:
+
+- **The memory map**, built against `Memory` directly with two marked ROM halves, so each
+  8KB slot is identified by what it answers rather than by the flag that was set: the $7E
+  latch's B/OL, CPMPL and CVS bits, the lock that holds until reset, $C5/$C7 bringing the
+  $E000 RAM down to $C000, and that writes reach RAM and are dropped on ROM. The RAM is
+  held in the 128K bank numbers (0/5/2/7), which is what makes CVS the ordinary shadow
+  screen and keeps the special cases out of everything else.
+- **The 16K overlay**: the HC IF1's ROM over $0000-$3FFF with its 1KB of RAM mirrored at
+  $2800 and $3800, and — the part worth having a test for — that the overlay is invisible
+  while CP/M decoding is on, as in FUSE's `hc2000_memory_map()`.
+- **Terminal Count**, which the +3 does not have wired: the HC IF1 ROM asks for R..EOT=16,
+  reads one sector and pulses TC, and the command must end **normally** (ST0 IC=00, no EN)
+  after the sectors the CPU actually moved. The +3's own ending is asserted unchanged on a
+  controller without `tcConnected`, so the two behaviours are pinned apart rather than one
+  being replaced.
+- **Raw images**: a 640K/320K/720K/360K file has no geometry of its own, so it becomes a
+  `DSKImage` with real C/H/R/N and the same disk as IMG and as DSK then reads identically.
+  The side order (all of side 0 first, or alternating per cylinder) is **detected from the
+  directory**, and the HC file systems — 11-character BASIC names across the 8+3 slot, the
+  9-byte IF1 header, the logical skew — are read back from a disk the Explorer's own code
+  wrote.
+- **On the real ROMs**, when `roms/hc2000.rom` (or FUSE's `hc2000-0.rom` + `hc2000-1.rom`)
+  and `roms/hc-if1.rom` are present: FUSE's own `success_hc` disk (`tests/success_hc.img.zip`,
+  847 bytes, the one committed binary fixture in `tests/`) plus a disk written here, both
+  booted. **That fixture is the point of the section** — a disk our own writer made can only
+  prove we agree with ourselves, where one from FUSE is an outside oracle. Without the ROMs
+  the section skips and the suite still reports 60 asserts.
+
 ## `tests/disk-boot-test.html`
 
 **The suite that answers "does the disk system actually work".** Everything else can be
@@ -422,6 +454,21 @@ it back, which is exactly the Microdrive bug.
   complete the round trip. Remove the ROM hold and four asserts fail — checked, so this is a
   guard rather than a decoration. Also pins where the patch does **not** reach: the +2A
   (different `$7FFD` decode) and Pentagon (its own disk interface).
+- **DISCiPLE** — no round trip either, and the ROM itself says why: its RST 10 vector is
+  `OUT ($7B)` then `JP $0550`, and $0550 is only code once $7B has swapped the 8K RAM down
+  to $0000. GDOS proper is the system file off the disk, running from that RAM at the ROM's
+  own addresses, and there is no such disk in the tree. What the ROM does on its own is
+  pinned instead: it takes $0000-$3FFF **one instruction into the reset** (the fetch after
+  the Spectrum ROM's `DI`, stepped by hand because it happens exactly once ever), sets
+  itself up, pages itself back out, and leaves 48K BASIC running — which is where the +D
+  once failed. Then the window: the RAM takes writes where the ROM half drops
+  them, `OUT ($7B)` brings it down to $0000 and `IN ($7B)` puts it back, bit 3 of port $1F
+  picks which 8K of a 16K image is live (found by the byte the two banks differ at, not by
+  address), and `OUT ($BB)` must take the whole window away or the next RST lands in GDOS.
+  Flipping one comparison in the overlay fails 13 of the 21 asserts — checked. Also pinned
+  as a **decision**: with the interface on, port $1F is the DISCiPLE's joystick whether or
+  not the Kempston is switched on, because the hardware drives it — and the alternative is
+  a floating $1F, which is what Venom and Academy read as a fire press.
 - **+D** — no round trip is possible: its 8K ROM is a bootstrap that needs G+DOS in a `+SYS`
   file, and there is no such disk in the tree. What is pinned down instead is the failure it
   actually had — the machine soft-resetting before the ROM could say anything. Booting a

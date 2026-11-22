@@ -2,6 +2,12 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.05
+
+- **The MGT DISCiPLE interface**, contributed by Marginal2k.
+- **The HC-2000 and its HC IF1 disk interface**, contributed by Marginal2k.
+- **Fixed: the Help dialog printed mojibake for arrows, dashes and icons.**
+
 ## v26.11.04
 
 - **Save → Media… saves any inserted disk or cartridge**, with a dot on the ones a program has written to. Replaces the DSK and TRD/SCL entries.

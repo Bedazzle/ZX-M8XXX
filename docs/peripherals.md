@@ -98,6 +98,37 @@ External +D disk interface with WD1772 floppy controller. Supports .mgt/.img dis
 - Drive tabs with "MGT:" prefix when multiple controllers active
 - File list with MGT type names and addresses
 
+### DISCiPLE — the same disks, a different machine
+
+The DISCiPLE is the +D's predecessor and takes the same MGT disks through the same WD1772,
+so `PlusDDisk` serves both (`spectrum.disciple`); what differs is the memory window, the
+ports and the way it boots.
+
+- **The ROM is a bootstrap.** Its RST 10 vector is `OUT ($7B)` then `JP $0550`: $0550 is
+  only code once $7B has swapped the RAM down to $0000, so GDOS proper is the **system file
+  off the disk**, loaded into that 8K RAM and run at the ROM's own addresses. The tree has
+  no such disk, so the disk side is untested — `RUN` on a blank one ends in the ROM's own
+  key loop with no FDC command issued.
+- **The window is $0000-$3FFF in either order** (`core/memory.js`): 8K ROM and 8K RAM, and
+  port $7B decides which is low — `IN` puts the ROM at $0000, `OUT` puts the RAM there. A
+  reset pages out and sets the ROM low. Writes reach the RAM half only, whichever end it is
+  at. A 16K ROM image is two banks (GDOS 3.0 ships Epson and TTY in one file) picked by bit
+  3 of port $1F.
+- **Ports** (low byte): $1B/$5B/$9B/$DB = WD1772 command/track/sector/data, $1F = control
+  (bit 0 drive, bit 1 side, bit 3 ROM bank) on write and the **joystick** on read, $BB read
+  = page in / write = page out, $7B as above, $3B (net) and $FB (printer) accepted and
+  ignored. The joystick read answers whether or not the Kempston is enabled, since the
+  hardware drives $1F; bits 7 and 6 are the network line and printer BUSY, both idle high,
+  and GDOS polls bit 7 every interrupt.
+- **Auto-paging** (`updateDisciplePaging()`): page in on an opcode fetch at **$0001**,
+  $0008, $0066 or $028E; page out on an `OUT ($BB)`. $0001 is the byte after the Spectrum
+  ROM's `DI` and is how GDOS gets the machine at reset; it has no $003A entry, unlike the
+  +D. `_disciplePagingEnabled` is computed in `updateBetaDiskPagingFlag()` and needs
+  `discipleEnabled + hasDiscipleRom + pagingModel !== '+2a'`.
+- **UI**: `chkDisciple` in Settings → Input, `disciple.rom`, an NMI button, and mutual
+  exclusion against the +D, IF1, Opus, Didaktik and Beta Disk. `loadMGTImage()` routes to
+  whichever of the two is enabled.
+
 ## Interface 1 / Microdrive (MDR Cartridges)
 
 External Interface 1 with Microdrive tape-loop cartridge support. Supports .mdr cartridge images.
@@ -483,6 +514,21 @@ Format:
 Explorer integration (`ui/explorer.js`): `.d40`/`.d80` open as `type: 'didaktik'` — directly, or drilled from a `.zip` (single-file ZIPs auto-open; multi-file ZIPs list for selection). The info panel shows geometry/label/catalog, files are clickable (P→BASIC view, B→disasm, others→hex), the BASIC/disasm/hex source selectors extract via `DidaktikLoader.extractFile`, and the Disk Map sub-tab renders sector allocation by walking each file's FAT chain (`buildDidaktikSectorMap`).
 
 The Edit sub-tab is a full read-write editor for Didaktik (`didaktikEditorRenderFileList` + `didaktikEditorAddFile`/`didaktikEditorDeleteSelection`/`didaktikEditorApplyInlineEdit`/`didaktikEditorMoveSelection`/`didaktikEditorSave`): Add File (the shared disk-add dialog; dialog `B`=BASIC→MDOS `P`, `C`/other=Code→MDOS `B`), Delete (multi-select), inline Rename + start-address/LINE edit (double-click a row → Apply), reorder (Move Up/Down — `DidaktikLoader.swapDirEntries` swaps directory entries in place, data/FAT untouched), and Save (downloads the edited `.d40`/`.d80`). Extract (selected files out as Hobeta `.$X` via `buildHobeta`, or raw binary; multi-select → zip) and Copy also work. Copy is bidirectional: Didaktik files copy *out* to the other pane via `extractFilesFromPanel`, and files from any other format (TAP/TZX/TRD/SCL/MGT/MDR/OPD/DSK/snapshots) copy *into* a Didaktik disk via `addConvertedFile` (BASIC→MDOS `P` with autostart/vars metadata, Code→`B` with load address; a per-file "Disk full" / "Directory full" error is reported if it doesn't fit). Each edit mutates `panel.rawData` in place and re-derives the view via `didaktikEditorRefresh`. P files map to TAP BASIC (header type 0, autostart from the catalog LINE), B files to TAP Code (type 3, load address from `startAddr`).
+
+## HC IF1 (HC-2000's built-in floppy interface)
+
+Port of FUSE `if1_fdc.c` (branch `hc2000-v2`), checked against "HC Ports" (A. D. Ioan) and the HC IF1 ROM disassembly. `core/hc-if1.js`.
+
+- **Memory**: pages in like an Interface 1 ($0008/$1708 in, $0700 out, any ROM bank), but over 16KB: `hc-if1.rom` at $0000-$3FFF with 1KB RAM at $2800-$2FFF and $3800-$3FFF (mirrored). Hidden while the HC-2000 is in CP/M decoding (CPMPL), as in FUSE. While the HC IF1 is fitted, +D, DISCiPLE, Opus, Interface 1 and the Kempston mouse are not offered — they page in at the same $0008 or overlap its ports.
+- **Switchable**: Settings → Disk interfaces → "HC IF1 (HC-2000)", on by default (`zxm8_hcIf1`), `Spectrum.setHcIf1Enabled()`. An HC-2000 without it (or running an HC-91 ROM) is a plain Spectrum-compatible: no FDC, and the add-on interfaces come back. Toggling resets the HC-2000.
+- **Ports** (only when A4-A6 are low): $85 MSR, $87 data, $05/$07 select latch — D0 TC, D1/D2 drive 0/1, D3 armed, D4=0 resets the 8272; reading bit 0 is low while a motor turns. Disarming starts the 555 (~1.7s) that drops the motors. Answered ahead of Kempston, which would otherwise claim $05/$07. The Kempston mouse is switched off on the HC-2000: on real hardware (and in FUSE-HC) its partial decode overlaps $85/$87 and breaks disk access.
+- **Controller**: a `UPD765` with `tcConnected = true`, and it *is* `spectrum.fdc` on this machine, so DSK loading, drive letters, project save and the activity light use the +3 paths. The HC IF1 ROM asks for R..EOT=16, reads one 256-byte sector and pulses TC; `terminalCount()` ends the command normally (ST0 IC=00, no EN) after the sectors moved so far. Without TC the controller keeps the +3 behaviour.
+- **Disks** (`core/loaders/disk-hc.js`): DSK as is; raw IMG converted (MGT stays the +D/DISCiPLE format and is not offered on the HC) to a DSKImage with real C/H/R/N. HC BASIC 16×256 (640K/320K) and CP/M 9×512 (720K/360K). Raw files store sectors by ID, but their side order varies (FUSE wrote `.img` side-major, `.mgt`/Gotek images alternate per cylinder): it is detected from the CP/M-style directory — the order under which the directory's blocks land on non-empty sectors — and only then from the extension. The ROM maps logical sector n to C=n/32, side=(n%32)/16, R=skew[n%16], skew 1,3,5…15,2,4…16 (ROM $1FF0); HC CP/M uses 1,3,5,7,9,2,4,6,8 on 9×512.
+- **File systems** (`DSKLoader`, used by the disk catalogue and the Explorer): `DSKLoader.isHcDisk()` recognises an HC disk on its own — 16×256 numbered from 1 (the FDD3000 numbers from 0; an empty directory counts), or 9×512 without a +3DOS boot spec and with a CP/M directory after the boot tracks — and `getDiskSpec()` then returns the HC parameters (`_hcDiskSpec`, from hcfsv1.txt: BASIC 0 boot tracks / CP/M 4 (2 on 40 cylinders), 2K blocks, 16-bit allocation above 255 blocks, logical skew). HC BASIC names are one 11-character name across the 8+3 slot (`_dirEntryName`, shared by listing, reading, deleting and `addFile`). HC BASIC files carry the 9-byte IF1 header — type, length, start, program length, autostart line — read in `listFiles` (a BASIC loader may carry code after the program: the header still counts when a real BASIC line follows it; `hcTrailing` says how much) and written by `addFile`. The skew matches HCDisk 2 (G. Chirtoaca: software interleave 1 for all four HC formats).
+- **Explorer**: an HC `.img` is converted to a DSK on opening (`hcRawToDsk`, also inside ZIPs), shown as "Raw HC BASIC/CP/M IMG (side order; why)", edited as a DSK and saved back as the same kind of `.img`. HC DSKs open as they are. New → "HC (ICE Felix)" makes blank HC DSKs (BASIC/CP/M, 80/40 tracks); DSKs we write for HC carry "ZX-M8XXX HC" in the creator field, so even an empty CP/M one is recognised after a reload.
+- **Snapshots**: the 1KB RAM, the latch and the paged flag ride in the `M8MP` media chunk; the FDC state goes with `fdc` as on the +3.
+- **Using it**: `RUN` boots the file `run` from drive 1; `LOAD *"d";1;"name"` etc. as on IF1 with device `d`. CP/M: `PRINT USR 14446` with a CP/M disk in drive 1.
+- Tests: `tests/hc2000-test.html` (memory map, overlay, TC, raw geometry, and FUSE's `success_hc` disk on the real ROMs).
 
 ## Formatting: Write Track and Read Track (all four WD controllers)
 

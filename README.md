@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 26.11.04** | [Changelog](CHANGELOG.md)
+**Version 26.11.05** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just serve from any webserver, local or remote.
 
@@ -10,7 +10,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 
 ### Emulation
 - Full Z80 CPU emulation (all documented + undocumented opcodes)
-- 48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, and Scorpion ZS 256 machine support
+- 48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, Scorpion ZS 256 and HC-2000 machine support
 - Memory banking and contention emulation
 - Pixel-perfect ULA video timing with border effects
 - ULAplus extended palette (64 colors, HAM256 raster effects)
@@ -145,7 +145,9 @@ see them, `--all` to include the long-running `fuse-test`.
 
 ## License
 
-GPL-3.0
+GPL-3.0-or-later — the full text is in [LICENSE](LICENSE).
+
+**Contributions** are offered under the same licence; there is no separate agreement to sign. Code brought in from another project keeps its own copyright header and is credited below.
 
 **Test Programs:** The test programs in the `tests/` folder (z80ccf, z80doc, z80docflags, etc.) are copyright of their respective authors and included for emulator validation purposes only.
 
@@ -159,6 +161,7 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 
 - **dcorp80** — ES module extraction approach ([PR #1](https://github.com/Bedazzle/ZX-M8XXX/pull/1))
 - **introspec** — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support
+- **[FUSE](https://fuse-emulator.sourceforge.net/)** (the Free Unix Spectrum Emulator) — the HC-2000 machine and its HC IF1 floppy interface are ported from **Alex Badea**'s `hc2000.c` and `if1_fdc.c` (fuse-emulator-svn, branch `hc2000-v2`). **GPL-2.0-or-later**, carried into this GPL-3.0-or-later work under its "or later" clause; the ported files name it in their headers
 - **xLook** by Dmitry Kozlov (HalfElf) & Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author
 
 ## Test programs

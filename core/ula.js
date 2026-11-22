@@ -135,7 +135,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 '+3':      { top: 63, left: 48, right: 48, bottom: 56 },
                 'pentagon': { top: 80, left: 48, right: 48, bottom: 48 },
                 'pentagon1024': { top: 80, left: 48, right: 48, bottom: 48 },
-                'scorpion': { top: 80, left: 48, right: 48, bottom: 48 }
+                'scorpion': { top: 80, left: 48, right: 48, bottom: 48 },
+                'hc2000':  { top: 64, left: 48, right: 48, bottom: 56 }   // 48K timing
             };
 
             // Normal (cropped) border sizes
@@ -148,7 +149,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 '+3':      { top: 26, left: 32, right: 32, bottom: 24 },
                 'pentagon': { top: 24, left: 32, right: 32, bottom: 24 },
                 'pentagon1024': { top: 24, left: 32, right: 32, bottom: 24 },
-                'scorpion': { top: 24, left: 32, right: 32, bottom: 24 }
+                'scorpion': { top: 24, left: 32, right: 32, bottom: 24 },
+                'hc2000':  { top: 24, left: 32, right: 32, bottom: 24 }
             };
 
             // Set initial border dimensions

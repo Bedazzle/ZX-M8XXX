@@ -1,6 +1,6 @@
         <div class="fullhelp-content">
             <div class="fullhelp-header">
-                <h3>ZX-M8XXX <span class="help-version">v26.11.04</span> Help</h3>
+                <h3>ZX-M8XXX <span class="help-version">v26.11.05</span> Help</h3>
                 <button class="fullhelp-close" id="btnFullHelpClose">&times;</button>
             </div>
             <div class="fullhelp-body">
@@ -33,7 +33,7 @@
                     <h5>Features</h5>
                     <ul>
                         <li>Full Z80 CPU emulation (all documented + undocumented opcodes)</li>
-                        <li>48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, and Scorpion machine support</li>
+                        <li>48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, Scorpion and HC-2000 machine support</li>
                         <li>Memory banking (128K/+2/+2A/Pentagon/Scorpion)</li>
                         <li>ULA video generation with border</li>
                         <li>ULAplus extended palette (64 colors, HAM256 raster effects)</li>
@@ -56,7 +56,7 @@
                         <li>WAV tape loading &mdash; real recordings of tapes, turbo loaders included</li>
                         <li>Tape SAVE and MIC recording &mdash; a program's own SAVE is captured to a new tape</li>
                         <li>TRD/SCL disk images (TR-DOS)</li>
-                        <li>DSK disk images (+3 ВµPD765 FDC)</li>
+                        <li>DSK disk images (+3 µPD765 FDC)</li>
                         <li>ZIP archive support</li>
                         <li>RZX recording and playback (playback partial &mdash; some recordings desync)</li>
                         <li>Keyboard ghosting, as on real hardware (optional, Settings &rarr; Input)</li>
@@ -84,7 +84,7 @@
                     <ol>
                         <li>Place ROM files in <code>roms/</code> directory (48.rom, 128.rom, plus2.rom, plus2a.rom, plus3.rom, pentagon.rom, scorpion.rom, trdos.rom)</li>
                         <li>Open index.html in a modern browser</li>
-                        <li>Use Load в†’ Web to browse and download games online</li>
+                        <li>Use Load → Web to browse and download games online</li>
                         <li>Or Load в†' File to load SNA/Z80/SZX snapshots, TAP/TZX tapes, TRD/SCL/DSK/MGT/MDR/OPD disks, or project files (.zxproj/.json)</li>
                         <li>F2 = Quicksave, F5 = Quickload during gameplay</li>
                     </ol>
@@ -119,11 +119,11 @@
                         <tr><td>Alt+5</td><td>%</td><td>Alt+T</td><td>&gt;</td><td>Alt+G</td><td>}</td></tr>
                         <tr><td>Alt+6</td><td>&amp;</td><td>Alt+Y</td><td>[</td><td>Alt+H</td><td>^</td></tr>
                         <tr><td>Alt+7</td><td>'</td><td>Alt+U</td><td>]</td><td>Alt+J</td><td>-</td></tr>
-                        <tr><td>Alt+8</td><td>(</td><td>Alt+I</td><td>В©</td><td>Alt+K</td><td>+</td></tr>
+                        <tr><td>Alt+8</td><td>(</td><td>Alt+I</td><td>©</td><td>Alt+K</td><td>+</td></tr>
                         <tr><td>Alt+9</td><td>)</td><td>Alt+O</td><td>;</td><td>Alt+L</td><td>=</td></tr>
                         <tr><td>Alt+0</td><td>_</td><td>Alt+P</td><td>"</td><td>Alt+Z</td><td>:</td></tr>
                         <tr><td>Alt+M</td><td>.</td><td>Alt+N</td><td>,</td><td>Alt+B</td><td>*</td></tr>
-                        <tr><td>Alt+C</td><td>?</td><td>Alt+V</td><td>/</td><td>Alt+X</td><td>ВЈ</td></tr>
+                        <tr><td>Alt+C</td><td>?</td><td>Alt+V</td><td>/</td><td>Alt+X</td><td>£</td></tr>
                     </table>
                     <h5>Joystick type</h5>
                     <p>Settings &rarr; Input chooses what the numpad and gamepad pretend to be. Only Kempston
@@ -147,14 +147,14 @@
                         <tr><td>Numpad 7/9/1/3</td><td>Diagonals</td></tr>
                     </table>
                     <h5>Extended Kempston (Sega Genesis compatible)</h5>
-                    <p>Enable in Settings в†’ Input в†’ Extended. Uses port 0x1F bits 5-7:</p>
+                    <p>Enable in Settings → Input → Extended. Uses port 0x1F bits 5-7:</p>
                     <table>
                         <tr><td>[ (left bracket)</td><td>C button (bit 5)</td></tr>
                         <tr><td>] (right bracket)</td><td>A button (bit 6)</td></tr>
                         <tr><td>\ (backslash)</td><td>Start button (bit 7)</td></tr>
                     </table>
                     <h5>Hardware Gamepad</h5>
-                    <p>Enable in Settings в†’ Input в†’ Gamepad. Supports USB/Bluetooth controllers.</p>
+                    <p>Enable in Settings → Input → Gamepad. Supports USB/Bluetooth controllers.</p>
                     <p><b>Calibration:</b> Click "Calibrate" button to configure non-standard gamepads:</p>
                     <ul style="margin: 5px 0; padding-left: 20px;">
                         <li>Click "Assign" next to each direction/button</li>
@@ -168,12 +168,12 @@
                     </table>
                     <p style="margin-top: 5px; font-size: 11px; color: var(--text-dim);">Mapping saved to browser localStorage and project files.</p>
                     <h5>Kempston Mouse</h5>
-                    <p>Enable in Settings в†’ Input в†’ Kempston Mouse. Ports: FADF (buttons), FBDF (X), FFDF (Y).</p>
+                    <p>Enable in Settings → Input → Kempston Mouse. Ports: FADF (buttons), FBDF (X), FFDF (Y).</p>
                     <table>
-                        <tr><td>Click screen or рџ–±пёЏ button</td><td>Capture mouse</td></tr>
+                        <tr><td>Click screen or 🖱️ button</td><td>Capture mouse</td></tr>
                         <tr><td>Escape</td><td>Release mouse</td></tr>
                         <tr><td>Mouse wheel</td><td>Wheel (bits 7:4 of FADF, if enabled)</td></tr>
-                        <tr><td>Swap L/R</td><td>Swap left/right button bits (bit0в†”bit1)</td></tr>
+                        <tr><td>Swap L/R</td><td>Swap left/right button bits (bit0↔bit1)</td></tr>
                     </table>
                     <h5>Autofire</h5>
                     <p>Automatic rapid key press/release at a configurable rate. Enable in Settings &rarr; Input &rarr; Autofire, or toggle with <b>Ctrl+F</b>.</p>
@@ -254,7 +254,7 @@
                         <li>Four drag bars resize the debug layout: the vertical bars beside the panels change the left and right panel widths (the right one in landscape mode); the bar between the panels and the sub-panel changes the panel height; the bar below the sub-panel (Breakpoints, Labels, Watches, etc.) resizes its lists. Double-click a bar to reset</li>
                         <li>Memory views adapt bytes per line (8/16/32) to the panel width &mdash; widen the panel for 32-byte lines</li>
                         <li>The last active tabs (main, debug sub-panel, Settings/Utils sub-tabs) are remembered across reloads</li>
-                        <li>Bookmarks show panel type: рџ”Ќ disasm, рџ“¦ memory</li>
+                        <li>Bookmarks show panel type: 🔍 disasm, 📦 memory</li>
                     </ul>
                     <h5>Programmer Calculator</h5>
                     <p>Available in the right panel dropdown, and in the ASM tab's split pane (&#9727; button &rarr; pick &#128425; Calculator in the file dropdown) so it is at hand while writing source. It is one calculator shared by both &mdash; the history follows it &mdash; and it moves to whichever panel you are looking at. Features:</p>
@@ -337,14 +337,14 @@
                     <p>Visual overlays for screen analysis (Settings row or F10 to cycle):</p>
                     <ul>
                         <li><strong>Normal</strong>: Standard display, no overlay</li>
-                        <li><strong>Grid</strong>: 8Г—8 character cell grid over the screen</li>
-                        <li><strong>Box</strong>: Yellow rectangle around the paper area boundary (256Г—192 region)</li>
-                        <li><strong>Screen</strong>: Border-only вЂ” removes paper area, showing border colors extended across the full display</li>
-                        <li><strong>Reveal</strong>: Normal screen content rendered at 50% transparency over border-only display вЂ” shows border effects underneath the screen picture</li>
+                        <li><strong>Grid</strong>: 8×8 character cell grid over the screen</li>
+                        <li><strong>Box</strong>: Yellow rectangle around the paper area boundary (256×192 region)</li>
+                        <li><strong>Screen</strong>: Border-only — removes paper area, showing border colors extended across the full display</li>
+                        <li><strong>Reveal</strong>: Normal screen content rendered at 50% transparency over border-only display — shows border effects underneath the screen picture</li>
                         <li><strong>Beam</strong>: ULA beam position indicator</li>
                         <li><strong>BeamScreen</strong>: Beam position over border-only display</li>
                         <li><strong>No Attr</strong>: Screen bitmap without attribute colors (monochrome)</li>
-                        <li><strong>No Bitmap</strong>: Attribute colors only вЂ” bitmap replaced by diagonal X crosses per cell (ink on paper)</li>
+                        <li><strong>No Bitmap</strong>: Attribute colors only — bitmap replaced by diagonal X crosses per cell (ink on paper)</li>
                     </ul>
                     <h5>Shadow Screen</h5>
                     <p>Displays a second screen view below the main canvas (Settings &rarr; Display &rarr; Shadow dropdown):</p>
@@ -566,8 +566,8 @@
                         <li><strong>-1/+1</strong>: Move sprite selection by 1 byte</li>
                         <li><strong>-Line/+Line</strong>: Move by one line (width bytes)</li>
                         <li><strong>-Row/+Row</strong>: Move by 8 lines (character row)</li>
-                        <li><strong>-Spr/+Spr</strong>: Move by full sprite (width Г— height bytes)</li>
-                        <li><strong>-Page/+Page</strong>: Move by 24 rows (192 lines Г— width bytes)</li>
+                        <li><strong>-Spr/+Spr</strong>: Move by full sprite (width × height bytes)</li>
+                        <li><strong>-Page/+Page</strong>: Move by 24 rows (192 lines × width bytes)</li>
                         <li><strong>Mouse wheel</strong>: Scroll the dump view</li>
                     </ul>
                     <h5>Actions</h5>
@@ -880,7 +880,7 @@
                     <p style="font-size: 11px; color: var(--text-dim);">Carry on playing and the rewind settles
                        after a moment: what you rewound past is discarded. Ctrl isn't a Spectrum key, so this
                        never interferes with a game.</p>
-                    <p style="font-size: 11px; color: var(--text-dim);">Also accessible via Save в†’ Quick (F2) and Load в†’ Quick (F5). Uses SZX format internally.</p>
+                    <p style="font-size: 11px; color: var(--text-dim);">Also accessible via Save → Quick (F2) and Load → Quick (F5). Uses SZX format internally.</p>
                     <h5>Tapes</h5>
                     <table>
                         <tr><td><strong>TAP</strong></td><td>Standard tape format</td></tr>
@@ -932,6 +932,12 @@
                         <li>BASIC commands: <code>CAT 1</code>, <code>LOAD *"m";1;"name"</code>, <code>SAVE *"m";1;"name"</code></li>
                         <li>Each cartridge holds 254 sectors of 512 bytes (~128KB)</li>
                     </ul>
+                    <p><strong>HC IF1</strong> (DSK/IMG) &mdash; the HC-2000's own Interface 1 with an i8272 floppy controller, fitted by default on that machine and switchable in Settings &rarr; Input (requires hc-if1.rom, 16KB). While it is fitted, +D, DISCiPLE, Opus, Interface 1 and the Kempston mouse are not offered &mdash; they page in at the same $0008 or overlap its ports.</p>
+                    <ul>
+                        <li>2 drives, HC BASIC 16&times;256 (640K/320K) and HC CP/M 9&times;512 (720K/360K)</li>
+                        <li>DSK images, and raw <code>.img</code> files converted to real geometry</li>
+                        <li>BASIC: <code>RUN</code> boots the file <code>run</code> from drive 1; <code>LOAD *"d";1;"name"</code>. CP/M: <code>PRINT USR 14446</code></li>
+                    </ul>
                     <p><strong>Opus Discovery</strong> (OPD/OPU) &mdash; enable in Settings &rarr; Machines (requires opus.rom). Compatible with 48K, 128K, +2, Pentagon. Mutually exclusive with +D (both overlay $0000-$3FFF).</p>
                     <ul>
                         <li>2 drives (A-B), 40 tracks, 18 sectors/track, 256 bytes/sector (180KB SS / 360KB DS)</li>
@@ -958,7 +964,7 @@
                     <table>
                         <tr><td><strong>ZIP</strong></td><td>Select file from archive dialog</td></tr>
                     </table>
-                    <h5>Game Browser (Load в†’ Web)</h5>
+                    <h5>Game Browser (Load → Web)</h5>
                     <p>Search and download games online from <a href="https://spectrumcomputing.co.uk" target="_blank">Spectrum Computing</a> (ZXDB database).</p>
                     <ul>
                         <li>Search by title - results sorted alphabetically</li>
@@ -968,7 +974,7 @@
                     </ul>
                     <p style="font-size: 11px; color: var(--text-dim);">Powered by ZXInfo API (api.zxinfo.dk). Zero dependencies - works directly from browser.</p>
                     <h5>Project Files</h5>
-                    <p>Save via Save в†’ Project. Load via Load в†’ File or drag-and-drop (.zxproj, .json).</p>
+                    <p>Save via Save → Project. Load via Load → File or drag-and-drop (.zxproj, .json).</p>
                     <p>Complete session state:</p>
                     <ul>
                         <li>Current snapshot</li>
@@ -983,7 +989,7 @@
                         <li>Struct Mapper results (field access maps)</li>
                     </ul>
                     <h5>AY Music Export (PSG)</h5>
-                    <p>Record AY chip output to PSG file format in Settings в†’ AY Capture:</p>
+                    <p>Record AY chip output to PSG file format in Settings → AY Capture:</p>
                     <ul>
                         <li><strong>Record</strong> - Start capturing AY register writes</li>
                         <li><strong>Export</strong> - Stop and save as .psg file</li>
@@ -1240,7 +1246,7 @@ start:  ...</pre>
                     </table>
 
                     <h5>Multi-Step Tests</h5>
-                    <p>For programs with multiple screens (e.g., menu в†’ game в†’ results), use multiple steps with key presses:</p>
+                    <p>For programs with multiple screens (e.g., menu → game → results), use multiple steps with key presses:</p>
                     <pre>{
     "steps": [
         { "frames": 2350, "screen": "tests/menu.png" },
@@ -1318,7 +1324,7 @@ start:  ...</pre>
         { "frames": 800, "screen": "tests/game_menu.png" }
     ]
 }</pre>
-                    <p>DSK tests auto-boot via the +3 ROM. No <code>diskRun</code> needed вЂ” the +3 ROM auto-detects and loads from disk.</p>
+                    <p>DSK tests auto-boot via the +3 ROM. No <code>diskRun</code> needed — the +3 ROM auto-detects and loads from disk.</p>
                 </div>
                 <div class="fullhelp-section hidden" id="help-compare">
                     <h4>Compare Tool</h4>
@@ -1355,7 +1361,7 @@ start:  ...</pre>
                         <li>Left column: Main registers (AF, BC, DE, HL, PC, IX, I, IM, Border)</li>
                         <li>Right column: Alternate registers (AF', BC', DE', HL', SP, IY, R, IFF1, IFF2)</li>
                     </ul>
-                    <p>Differences are highlighted in red with a в—„ marker.</p>
+                    <p>Differences are highlighted in red with a ◄ marker.</p>
 
                     <h5>Memory Comparison</h5>
                     <p>Memory differences are shown in a side-by-side hex dump with:</p>
@@ -1806,10 +1812,10 @@ zxDebug.exportCtl()                    // also exportCsv() / exportSym()</pre>
                         <img src="docs/m8xxx_cat.jpg" alt="M8XXX Cat" style="max-width: 300px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
                     </div>
                     <h5>The Name</h5>
-                    <p><strong>ZX-M8XXX</strong> stands for <strong>ZX Matrix</strong> вЂ” a nod to the iconic 8-bit architecture and the intricate web of code, memory, and pixels that make up the Spectrum experience.</p>
+                    <p><strong>ZX-M8XXX</strong> stands for <strong>ZX Matrix</strong> — a nod to the iconic 8-bit architecture and the intricate web of code, memory, and pixels that make up the Spectrum experience.</p>
                     <h5>License</h5>
-                    <p>This software is released under the <strong>GPL-3.0</strong> license.</p>
-                    <p>You are free to use, modify, and distribute this software under the terms of the GNU General Public License version 3.</p>
+                    <p>This software is released under the <strong>GPL-3.0-or-later</strong> license.</p>
+                    <p>You are free to use, modify, and distribute this software under the terms of the GNU General Public License, either version 3 or (at your option) any later version. The full text ships with the source, in <code>LICENSE</code>.</p>
                     <p><a href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" style="color: var(--cyan);">Read the full GPL-3.0 license text</a></p>
                     <p><strong>Test Programs:</strong> The test programs in the <code>tests/</code> folder (z80ccf, z80doc, z80docflags, etc.) are copyright of their respective authors. These programs are included for emulator validation purposes only.</p>
                     <h5>Source Code</h5>
@@ -1833,6 +1839,7 @@ zxDebug.exportCtl()                    // also exportCsv() / exportSym()</pre>
                     <h5>Libraries &amp; Fonts</h5>
                     <ul>
                         <li><strong>fengari</strong> — Lua 5.3 VM in JavaScript, powering the assembler's LUA/ENDLUA blocks (<a href="https://fengari.io" target="_blank" style="color: var(--cyan);">fengari.io</a>, MIT license)</li>
+                        <li><strong>FUSE</strong> (the Free Unix Spectrum Emulator) — the HC-2000 machine and its HC IF1 floppy interface are ported from Alex Badea's <code>hc2000.c</code> and <code>if1_fdc.c</code> (fuse-emulator-svn, branch hc2000-v2), GPL-2.0-or-later (<a href="https://fuse-emulator.sourceforge.net/" target="_blank" style="color: var(--cyan);">fuse-emulator.sourceforge.net</a>)</li>
                         <li><strong>pako</strong> — zlib decompression library (<a href="https://github.com/nodeca/pako" target="_blank" style="color: var(--cyan);">github.com/nodeca/pako</a>, MIT + Zlib license)</li>
                         <li><strong>ZX82 System</strong> — ZX Spectrum display font by Paul van der Laan (<a href="https://type-invaders.com/sinclair/zx82system/" target="_blank" style="color: var(--cyan);">type-invaders.com</a>)</li>
                     </ul>
