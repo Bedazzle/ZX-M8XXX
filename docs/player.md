@@ -78,8 +78,10 @@ to fit.
 - **What the file demands.**
   - A TRD, SCL or UDI goes to a Pentagon or Scorpion if the list allows it.
     Otherwise it goes to the listed machine with a Beta Disk fitted.
-  - `trdos4x` (without `trdos` / `betadisk`) is a Beta 48 on a Sinclair. It
-    needs `roms/beta48.rom`.
+  - `trdos4x` (without `trdos` / `betadisk`) is a Beta 48 on a 48K. It needs
+    `roms/beta48.rom`. The Beta 48 is a 48K add-on, so if the release also
+    lists a 128K machine, the 48K gets a TKMEM-128 board: that is what the
+    128K versions for TR-DOS 4.x were made for.
   - A DSK goes to the +3, or to the FDD 3000 with `tos`.
   - A DCK goes to the TC2068.
   - An MGT goes to the DISCiPLE with `disciple`, or else to the +D.

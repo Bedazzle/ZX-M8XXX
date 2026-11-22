@@ -75,7 +75,9 @@
             h = resolveHardware(['zx128', 'betadisk'], 'game.scl');
             assert(h.machine === '128k' && h.storage.zxm8_betaDisk === 'true', 'a TRD on zx128 only: a 128K with a Beta Disk');
             h = resolveHardware(['zx48', 'trdos4x'], 'game.trd');
-            assert(h.machine === '48k' && h.storage.zxm8_betaDisk === 'true' && h.storage.zxm8_betaVariant === 'auto', 'trdos4x: a Beta 48 on the 48K', JSON.stringify(h));
+            assert(h.machine === '48k' && h.storage.zxm8_betaDisk === 'true' && h.storage.zxm8_betaVariant === 'auto' && !h.storage.zxm8_tkmem, 'trdos4x: a Beta 48 on the 48K', JSON.stringify(h));
+            h = resolveHardware(['zx128', 'trdos4x'], 'game.scl');
+            assert(h.machine === '48k' && h.storage.zxm8_tkmem === '128', 'trdos4x on a 128K: the 48K with a TKMEM-128 (Beta 48 is a 48K add-on)', JSON.stringify(h));
             h = resolveHardware([], 'game.trd');
             assert(h.machine === 'pentagon', 'a TRD with no machine listed: the Pentagon');
             h = resolveHardware(['zx128+3'], 'game.dsk');

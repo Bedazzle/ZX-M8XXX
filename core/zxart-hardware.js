@@ -72,10 +72,13 @@ export function resolveHardware(codes = [], fileName = '') {
     if (needMachine) {
         machine = needMachine;
     } else if (has.has('trdos4x') && !has.has('trdos') && !has.has('betadisk')) {
-        // TR-DOS 4.x: a Beta 48 (beta48.rom) on a Sinclair, as it was sold
-        machine = listed.find(m => !TRDOS_MACHINES.includes(m)) || '48k';
+        // TR-DOS 4.x: a Beta 48 (beta48.rom), which is a 48K add-on. A
+        // release that also wants 128K memory is a 48K with a TKMEM-128
+        // board under it, as such versions were made for
+        machine = '48k';
         storage.zxm8_betaDisk = 'true';
         storage.zxm8_betaVariant = 'auto';
+        if (listed.some(m => !['48k', 'tk90x', 'tc2048', 'dgama'].includes(m))) storage.zxm8_tkmem = '128';
     } else if (isTrdDisk || trdos) {
         // A TR-DOS release: a Pentagon or Scorpion if it may run on one, else
         // the first machine listed with a Beta Disk fitted, else a Pentagon
