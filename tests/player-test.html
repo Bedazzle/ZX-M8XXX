@@ -92,6 +92,12 @@
             assert(h.machine === 'tc2048', 'tmxhires: a Timex, the TC2048 when none is listed');
             h = resolveHardware(['zx48', 'timex2068', 'tmxhicol'], 'game.tap');
             assert(h.machine === 'tc2068', 'tmxhicol with timex2068 listed: the TC2068');
+            h = resolveHardware(['didaktik80'], 'game.d80');
+            assert(h.machine === 'dgama' && h.spectrum.didaktikEnabled, 'didaktik80: the Gama with MDOS');
+            h = resolveHardware(['pentagon128', 'covoxgs'], 'x.trd');
+            assert(h.storage.zxm8_gs === 'true', 'covoxgs: the General Sound');
+            h = resolveHardware(['zx128', 'midi'], 'game.tap');
+            assert(h.midi && !h.unsupported.length, 'midi: MIDI out to the built-in synth');
             h = resolveHardware(['zx128+3'], 'game.dsk');
             assert(h.machine === '+3', 'a DSK: the +3');
             h = resolveHardware(['timex2068'], 'game.dck');

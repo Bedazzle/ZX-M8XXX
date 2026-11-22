@@ -29,6 +29,7 @@ import { applyRoms, fetchRoms } from '../core/rom-loader.js';
 import { resolveHardware, pickLaunchFile, fileExt } from '../core/zxart-hardware.js';
 import { ZipLoader } from '../core/loaders/zip.js';
 import { initAutoLoader } from './auto-loader.js';
+import { MidiSynth } from './midi-synth.js';
 import { trdHasBootFile, extractBootFile, isHobetaFile, extractBootFromHobeta, injectBootIntoTrd } from '../core/trd-boot.js';
 
 const ICON = { reset: '⟲', sound: '🔊', mute: '🔇', full: '⛶' };
@@ -84,6 +85,7 @@ export async function create(container, opts = {}) {
     let media = null, mediaError = null;
     try { media = await fetchMedia(opts, status); }
     catch (e) { mediaError = e.message; }
+    let soundOn = opts.sound !== false;
     const hw = resolveHardware(opts.hardware || [], media ? media.runName : '');
     const machine = opts.machine && getMachineProfile(opts.machine) ? opts.machine : hw.machine;
     setStorageMemory(hw.storage);
@@ -91,6 +93,26 @@ export async function create(container, opts = {}) {
     spectrum.betaDiskEnabled = spectrum.profile.betaDiskDefault || hw.storage.zxm8_betaDisk === 'true';
     Object.assign(spectrum, hw.spectrum);
     if (hw.joystick) spectrum.setJoystickType(hw.joystick);
+    // MIDI out to the built-in synth, as the app's "Built-in synth" output
+    let midiSynth = null, midiTimer = null;
+    if (hw.midi) {
+        midiSynth = new MidiSynth();
+        spectrum.onMidiMessage = (m) => {
+            if (!soundOn && (m[0] & 0xF0) === 0x90 && m[2] > 0) return;   // sound off: no new notes
+            midiSynth.send(m);
+        };
+        spectrum.setMidiOut(true);
+        // A note held while the emulation stands still (paused, a hidden tab)
+        // or the sound is off would sound on and on: all notes off then, once
+        let lastFrame = -1, lastMove = 0, quiet = false;
+        midiTimer = setInterval(() => {
+            const now = performance.now();
+            if (spectrum.frameCount !== lastFrame) { lastFrame = spectrum.frameCount; lastMove = now; }
+            const still = !soundOn || document.hidden || now - lastMove > 150;
+            if (still && !quiet) midiSynth.allOff();
+            quiet = still;
+        }, 50);
+    }
     // The cursor keys drive the joystick when the release has one; without
     // one they stay the Spectrum's cursor keys (Caps Shift + 5..8)
     spectrum.arrowsAsJoystick = opts.arrowsAsJoystick !== undefined ? !!opts.arrowsAsJoystick : !!hw.joystick;
@@ -134,13 +156,13 @@ export async function create(container, opts = {}) {
     spectrum.addFrameListener(fitCanvas);
 
     // ---- sound: browsers start it only from a click or a key ----
-    let soundOn = opts.sound !== false;
     async function startAudio() {
         try {
             const audio = spectrum.initAudio();
             if (!audio.context) await audio.start();
             if (audio.context && audio.context.state === 'suspended') await audio.context.resume();
             audio.setMuted(!soundOn);
+            if (midiSynth) midiSynth.resume();
             unmute.hidden = !audio.context || audio.context.state === 'running';
         } catch (e) { unmute.hidden = true; }
     }
@@ -148,6 +170,28 @@ export async function create(container, opts = {}) {
     container.addEventListener('pointerdown', onGesture);
     document.addEventListener('keydown', onGesture);
     unmute.addEventListener('click', () => { startAudio(); canvas.focus({ preventScroll: true }); });
+
+    // ---- Kempston mouse: a click on the screen captures it, Esc lets go ----
+    const mouseOn = () => spectrum.kempstonMouseEnabled;
+    const captured = () => document.pointerLockElement === canvas;
+    const mouse = {
+        click: () => { if (mouseOn() && !captured() && menu.hidden) canvas.requestPointerLock(); },
+        lock: () => { if (captured()) status('Mouse captured: Esc lets it go'); else status('', 'ready'); },
+        move: (e) => { if (captured() && mouseOn()) spectrum.updateMousePosition(e.movementX, e.movementY); },
+        down: (e) => { if (captured() && mouseOn()) { spectrum.setMouseButton(e.button, true); e.preventDefault(); } },
+        up: (e) => { if (captured() && mouseOn()) { spectrum.setMouseButton(e.button, false); e.preventDefault(); } },
+        menu: (e) => { if (captured()) e.preventDefault(); },
+        wheel: (e) => {
+            if (captured() && mouseOn() && spectrum.kempstonMouseWheelEnabled) { spectrum.updateMouseWheel(e.deltaY); e.preventDefault(); }
+        },
+    };
+    canvas.addEventListener('click', mouse.click);
+    canvas.addEventListener('mousedown', mouse.down);
+    canvas.addEventListener('mouseup', mouse.up);
+    canvas.addEventListener('contextmenu', mouse.menu);
+    document.addEventListener('pointerlockchange', mouse.lock);
+    document.addEventListener('mousemove', mouse.move);
+    document.addEventListener('wheel', mouse.wheel, { passive: false });
 
     // ---- running the program ----
     async function boot() {
@@ -302,9 +346,15 @@ export async function create(container, opts = {}) {
         destroyed = true;
         if (closeMenu) closeMenu();
         autoLoader.cancelAutoLoad();
+        if (midiTimer) clearInterval(midiTimer);
+        if (midiSynth) midiSynth.allOff();
         spectrum.destroy();
         container.removeEventListener('pointerdown', onGesture);
         document.removeEventListener('keydown', onGesture);
+        if (captured()) document.exitPointerLock();
+        document.removeEventListener('pointerlockchange', mouse.lock);
+        document.removeEventListener('mousemove', mouse.move);
+        document.removeEventListener('wheel', mouse.wheel);
         container.innerHTML = '';
     }
 

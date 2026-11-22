@@ -90,19 +90,25 @@ to fit.
   - A DSK goes to the +3, or to the FDD 3000 with `tos`.
   - A DCK goes to the TC2068.
   - An MGT goes to the DISCiPLE with `disciple`, or else to the +D.
-  - OPD goes to the Opus; D80/D40 or `mdos` to the Didaktik 80; MDR or
+  - OPD goes to the Opus; D80/D40 or `mdos` to the Didaktik 80. The
+    `didaktik80` machine is a Didaktik Gama with that drive and MDOS; MDR or
     `microdrive` to Interface 1; KDI to the Kempston Disc.
 - **Sound.**
   - `ay` on a 48K-class machine fits an AY.
   - `ts` is TurboSound, and `tsfm` is TurboSound FM.
-  - `gs` and `ngs` are General Sound (`roms/gs105b.rom`).
+  - `gs` and `ngs` are General Sound (`roms/gs105b.rom`). So is `covoxgs`:
+    the program itself switches the GS into its Covox mode.
   - `saa` is the SAA1099.
   - `covoxfb` and `covoxdd` are a Covox on port FB or DD.
   - `soundrive` is the Soundrive; `specdrum` and `cheetah` are the SpecDrum.
+  - `midi` sends the 128's MIDI out (AY port A) to the built-in synth. While
+    the emulation stands still or the sound is off, all notes are switched
+    off, so a held note does not drone on.
 - **Input and video.**
   - `kempston`, `cursor`, `int2_1` and `int2_2` pick the joystick.
   - `kempston8b` turns on the extended buttons.
-  - `kempstonmouse` fits the mouse; the canvas captures it on a click.
+  - `kempstonmouse` fits the mouse. A click on the screen captures it, and
+    Esc lets it go.
   - `ulaplus` turns on ULAplus.
   - `tmxhires` and `tmxhicol` (Timex video modes) need a Timex: the one the
     release lists, or else the TC2048.

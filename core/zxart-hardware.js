@@ -59,7 +59,8 @@ export function resolveHardware(codes = [], fileName = '') {
     if (use('disciple')) spectrum.discipleEnabled = true;
     else if (ext === 'mgt') spectrum.plusDEnabled = true;
     if (use('opd') || ext === 'opd' || ext === 'opu') spectrum.opusEnabled = true;
-    if (use('mdos') || ext === 'd80' || ext === 'd40') spectrum.didaktikEnabled = true;
+    // The Didaktik 80 is a Gama with its D80 drive and MDOS
+    if (use('mdos') || has.has('didaktik80') || ext === 'd80' || ext === 'd40') spectrum.didaktikEnabled = true;
     if (use('microdrive') || ext === 'mdr') spectrum.if1Enabled = true;
     if (use('tos')) storage.zxm8_fdd3000 = 'true';
     if (ext === 'kdi') storage.zxm8_kempdisc = 'true';
@@ -104,7 +105,8 @@ export function resolveHardware(codes = [], fileName = '') {
     }
     if (use('ts')) storage.zxm8_turboSound = 'true';
     if (use('tsfm')) { storage.zxm8_turboSound = 'true'; storage.zxm8_tsfm = 'true'; }
-    if (use('gs') | use('ngs')) storage.zxm8_gs = 'true';
+    // covoxgs is the Covox mode of the General Sound: the program sets it up
+    if (use('gs') | use('ngs') | use('covoxgs')) storage.zxm8_gs = 'true';
     if (use('saa')) storage.zxm8_saa = 'true';
     if (use('covoxfb')) { storage.zxm8_dacType = 'covox'; storage.zxm8_covoxPort = 'FB'; }
     else if (use('covoxdd')) { storage.zxm8_dacType = 'covox'; storage.zxm8_covoxPort = 'DD'; }
@@ -119,10 +121,12 @@ export function resolveHardware(codes = [], fileName = '') {
     if (use('kempstonmouse') && machine !== 'hc2000') spectrum.kempstonMouseEnabled = true;
     if (use('ulaplus')) storage.zxm8_ulaplus = 'true';
 
+    // 128 MIDI out (AY port A): played on the player's built-in synth
+    const midi = !!use('midi');
     for (const code of has) {
         if (!handled.has(code) && !NOTHING_TO_FIT.has(code)) unsupported.push(code);
     }
-    return { machine, storage, spectrum, joystick, unsupported };
+    return { machine, storage, spectrum, joystick, midi, unsupported };
 }
 
 // Pick the file to run out of an archive's list ({name, type}). zxart names
