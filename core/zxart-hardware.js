@@ -72,17 +72,21 @@ export function resolveHardware(codes = [], fileName = '') {
     if (needMachine) {
         machine = needMachine;
     } else if (has.has('trdos4x') && !has.has('trdos') && !has.has('betadisk')) {
-        // TR-DOS 4.x: a Beta 48 (beta48.rom), which is a 48K add-on. A
-        // release that also wants 128K memory is a 48K with a TKMEM-128
-        // board under it, as such versions were made for
-        machine = '48k';
+        // Only TR-DOS 4.x: a Beta 48 (beta48.rom), a 48K add-on. On a 48K, or
+        // the TK-90X when the release lists it. Extra memory (TKMEM) only
+        // when the release lists it too; a 128K machine in the list does not
+        // bring one, as the release may mean another version of itself.
+        machine = listed.includes('tk90x') ? 'tk90x' : '48k';
         storage.zxm8_betaDisk = 'true';
         storage.zxm8_betaVariant = 'auto';
-        if (listed.some(m => !['48k', 'tk90x', 'tc2048', 'dgama'].includes(m))) storage.zxm8_tkmem = '128';
+        if (machine === '48k' && (use('tkmem128') | use('tkmem'))) storage.zxm8_tkmem = '128';
+        if (machine === '48k' && use('tkmem512')) storage.zxm8_tkmem = '512';
     } else if (isTrdDisk || trdos) {
-        // A TR-DOS release: a Pentagon or Scorpion if it may run on one, else
-        // the first machine listed with a Beta Disk fitted, else a Pentagon
-        machine = listed.find(m => TRDOS_MACHINES.includes(m)) || listed[0] || 'pentagon';
+        // TR-DOS 5 (also when both 5 and 4.x are listed: a 128K game is
+        // simpler on a 128K than on a 48K with a TKMEM): the machine the
+        // release names, with a Beta 128 where it has none built in. Nothing
+        // named: a Pentagon.
+        machine = listed[0] || 'pentagon';
         if (!TRDOS_MACHINES.includes(machine)) storage.zxm8_betaDisk = 'true';
     } else {
         machine = listed[0] || '128k';

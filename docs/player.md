@@ -76,12 +76,17 @@ to fit.
   lists one is still best off on a Spectrum. With no machine listed, the
   player uses the 128K.
 - **What the file demands.**
-  - A TRD, SCL or UDI goes to a Pentagon or Scorpion if the list allows it.
-    Otherwise it goes to the listed machine with a Beta Disk fitted.
-  - `trdos4x` (without `trdos` / `betadisk`) is a Beta 48 on a 48K. It needs
-    `roms/beta48.rom`. The Beta 48 is a 48K add-on, so if the release also
-    lists a 128K machine, the 48K gets a TKMEM-128 board: that is what the
-    128K versions for TR-DOS 4.x were made for.
+  - A TRD, SCL or UDI, or the codes `trdos` / `betadisk`, mean TR-DOS 5.
+    The disk goes to the machine the release names (zx48 to a 48K, zx128 to
+    a 128K), with a Beta 128 fitted where the machine has none built in.
+    With no machine named, it goes to a Pentagon.
+  - If only `trdos4x` is listed, the release is for TR-DOS 4.x: a Beta 48 on
+    a 48K, or on the TK-90X if `tk9x` is listed. It needs `roms/beta48.rom`.
+    A TKMEM is fitted only when the release lists it (`tkmem128` or
+    `tkmem512`; zxart has no such code yet). A 128K machine in the list does
+    not bring one.
+  - If both `trdos` and `trdos4x` are listed, the player uses TR-DOS 5: a
+    128K game is simpler on a 128K than on a 48K with a TKMEM.
   - A DSK goes to the +3, or to the FDD 3000 with `tos`.
   - A DCK goes to the TC2068.
   - An MGT goes to the DISCiPLE with `disciple`, or else to the +D.
