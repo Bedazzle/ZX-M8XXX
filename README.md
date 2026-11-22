@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 26.11.05** | [Changelog](CHANGELOG.md)
+**Version 26.11.06** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just serve from any webserver, local or remote.
 
@@ -162,6 +162,8 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 - **dcorp80** — ES module extraction approach ([PR #1](https://github.com/Bedazzle/ZX-M8XXX/pull/1))
 - **introspec** — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support
 - **[FUSE](https://fuse-emulator.sourceforge.net/)** (the Free Unix Spectrum Emulator) — the HC-2000 machine and its HC IF1 floppy interface are ported from **Alex Badea**'s `hc2000.c` and `if1_fdc.c` (fuse-emulator-svn, branch `hc2000-v2`). **GPL-2.0-or-later**, carried into this GPL-3.0-or-later work under its "or later" clause; the ported files name it in their headers
+- **[MAME](https://www.mamedev.org/)** — the Beta 48 (the 48K-era Beta Disk plus, the Vision boards and the Brazilian CBI-95 / IDS / AR-20 clones) follows `src/devices/bus/spectrum/beta.cpp` by **Nigel Barnes, David Haywood and MetalliC**. **BSD-3-Clause**. What is taken from it is the hardware behaviour that file documents, not its code; `core/beta48.js` names it and its authors in the header
+- **[fdd3000e](https://sourceforge.net/projects/fdd3000e/)** by **Sławomir Szczyrba** — the Timex FDD 3000 disk station (its own Z80, the WD1770 and the TI-397 interface) is derived from his FUSE patch's `fdd3000.c`, `ti397.c` and `fdd3boot.h`. **LGPL-2.0-or-later**, carried into this GPL-3.0-or-later work under its "or later" clause; `core/fdd3000.js` names it in the header
 - **xLook** by Dmitry Kozlov (HalfElf) & Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author
 
 ## Test programs

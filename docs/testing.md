@@ -348,6 +348,24 @@ separately, so a change to *where* a wait lands cannot quietly change *how long*
 instruction takes; and the same instructions are run again in uncontended RAM, where every
 one of them must still cost exactly its bare length.
 
+## `tests/beta48-test.html`
+
+The 48K-era Beta Disk and its clones. Three sections, the first two needing no ROM at all.
+
+**ROM images** (`core/beta48.js`). `crc32` is pinned against the standard check value (`123456789` → `cbf43926`) rather than against itself, since every ROM is identified through it. Then: a readable 8KB image is mirrored into 16KB and left alone, a name is read out of the ROM text, a **D0/D7-crossed dump of the same ROM produces a byte-identical result** — which is the property that matters, because the dumps in circulation differ in exactly that way — a Vision board is recognised from its text, and anything that is not 8KB or 16KB is refused rather than loaded crookedly.
+
+**The `$3Cxx` window and the latch.** Two marked ROMs (Sinclair `$11`, DOS `$22`) make every question a single byte read. With the latch off, `$0000` and `$3D00` are Sinclair while **every address in `$3C00-$3CFF` is the DOS** — that window is the whole trick of the 48K Beta, and it is live for data reads, not only opcode fetches. With the latch on the DOS covers all of `$0000-$3FFF`, and RAM above `$4000` is untouched either way. Then the CBI's master bit 6 switches the window off, and with the interface not fitted the machine is a plain 48K again.
+
+**Real ROM** (skipped unless `roms/beta48.rom` is present). The app is brought up on a 48K with the interface fitted, and the ROM is left to boot itself: after reset the latch must be set and the master register clear, the DOS must actually **drive the master register** (writes to a port `xxxxxx00`), its sign-on must reach the screen, and the magic button must raise an NMI with the ROM latched.
+
+## `tests/tkmem-test.html`
+
+**TKMEM-128 II**, the external 128K/512K RAM for a 48K. Two sections, neither needing a ROM.
+
+**Memory** (`core/memory.js`). Eight banks at `$C000` each keep their own byte, `$8000` is bank 2 whichever bank is latched, and `$4000` is still the machine's own screen RAM with latch bit 3 set — which is how the suite pins that there is **no shadow screen**, the one thing a 7FFD-shaped latch invites you to add. Bit 5 locks the latch until reset; in 512K mode bits 6-7 become bank bits 3-4, checked by bank 25 not being bank 1 rather than by reading the field back. Fitting it to a 128K does nothing, and removing it gives a plain 48K `$C000` again.
+
+**Port decode**, driven through the real `portWrite` on a 48K. `7FFD` pages under both decodes; the Beta 48 DOS's own `$00FC`/`$07FC` page under the board's GAL equation and **not** under the default `a14`, which is the whole reason that option exists — under `gal` a TR-DOS 4.x call pages bank 0 or 7 in beneath its own stack. `A15=1`, `A1=1` and `A5=0` are all rejected.
+
 ## `tests/hc2000-test.html`
 
 **The HC-2000 (ICE Felix) and its built-in HC IF1**, ported from Alex Badea's FUSE branch
@@ -379,6 +397,14 @@ one of them must still cost exactly its bare length.
   booted. **That fixture is the point of the section** — a disk our own writer made can only
   prove we agree with ourselves, where one from FUSE is an outside oracle. Without the ROMs
   the section skips and the suite still reports 60 asserts.
+
+## `tests/fdd3000-test.html`
+
+**The Timex FDD 3000**, which is a computer rather than an interface. Two sections.
+
+**Station, controller, latches** — no ROMs needed, because the station's Z80 is given hand-written code to run. Seven asserts on the things that make it a second machine rather than a disk controller: a byte fetched from a sector by C/H/R and handed across the two latches (station port `$20` out, Spectrum port `$EF` in) and back the other way, the config register's bit 6 paging the boot ROM out, the interface ROM mirrored at `$1000`, RAM at `$2000` with the ROM below it read-only, and the one that is a real trap — **INTRQ must rise a few station instructions after a command ends, not instantly**. TOS reads the status register (which clears INTRQ), does `EI` and *then* waits, so an instantaneous INTRQ is lost and every Seek times out.
+
+**Real ROMs** (skipped without `roms/fdd3stavi.rom`, `roms/fdd3000-boot.rom` and `headless/fdd3000/tos.dsk`, which are all gitignored). TOS A.2 booted on a 128K: the station loads its system from drive A, the 48K ROM is selected as in FUSE, the second copyright line `© 91 STAVI 128K TOS A.2` reaches the screen, `CAT *` lists the disk, and `SAVE *`/`LOAD *` is a **round trip through the station** — 2048 bytes written and read back and compared, which is the only thing here that cannot pass by accident. Then CP/M on a 48K through the Monitor Emulator terminal, including the disk swap `fdd3000AutoBoot` does by hand.
 
 ## `tests/disk-boot-test.html`
 

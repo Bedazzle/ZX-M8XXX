@@ -422,7 +422,23 @@
                         <button id="btnLoadTrdosRom" class="control-btn iface-rom-btn" title="Load TR-DOS ROM file (trdos.rom)">Load ROM</button>
                         <input type="file" id="romTrdosRomInput" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="betaDiskRomName" class="iface-rom-name"></span>
+                        <button id="btnBetaMagic" class="control-btn iface-rom-btn" title="Beta Disk magic button: NMI with the DOS ROM paged in (save the machine to disk)" disabled>Magic</button>
                         <span id="betaDiskStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row" id="betaVariantRow">
+                        <label class="iface-name" style="margin-left: 15px;" title="Which Beta Disk an add-on Beta is. Beta 48 = the 48K-era Beta Disk plus (TR-DOS 4.x) and its clones, e.g. the Brazilian CBI-95 / IDS / AR-20 and the Vision boards. Pentagon and Scorpion keep their built-in Beta 128.">
+                            Type
+                            <select id="selBetaVariant" style="margin-left: 4px;">
+                                <option value="128">Beta 128 (TR-DOS 5.x)</option>
+                                <option value="auto">Beta 48 — from the ROM</option>
+                                <option value="plus">Beta 48 — Beta Disk plus / Vision</option>
+                                <option value="cbi">Beta 48 — CBI-95 / IDS / AR-20</option>
+                            </select>
+                        </label>
+                        <button id="btnLoadBeta48Rom" class="control-btn iface-rom-btn" title="Load the Beta 48 ROM (beta48.rom: TR-DOS 4.x, Vision, CBI-95, IDS, AR-20...; 8KB or 16KB, D0/D7-swapped dumps are straightened)">Load ROM</button>
+                        <input type="file" id="romBeta48Input" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="beta48RomName" class="iface-rom-name"></span>
+                        <span id="beta48Status" class="iface-status"></span>
                     </div>
 
                     <div class="iface-row">
@@ -498,11 +514,44 @@
                         <span id="hcIf1RomName" class="iface-rom-name"></span>
                         <span id="hcIf1Status" class="iface-status"></span>
                     </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Timex FDD 3000 disk station (TOS / CP/M DSK disks, up to 4 drives): its own Z80 with 64KB, a WD1770 and a 2KB boot ROM (fdd3000-boot.rom), plus the TI-397 interface (4KB ROM + 8KB RAM at $0000-$3FFF, port $EF). 48K / 128K / +2; not with the +D (port $EF). Port of the FUSE fdd3000e patch.">
+                            <input type="checkbox" id="chkFdd3000"> Timex FDD 3000
+                        </label>
+                        <select id="selFdd3000Rom" title="Interface ROM: fdd3stavi.rom (for the Spectrum) or fdd3timex.rom (the TC2068 original)">
+                            <option value="fdd3stavi.rom">fdd3stavi.rom</option>
+                            <option value="fdd3timex.rom">fdd3timex.rom</option>
+                        </select>
+                        <button id="btnFdd3000Boot" class="control-btn iface-rom-btn" title="Boot from drive A: FDD reset, then Spectrum reset. A CP/M disk in A is started through the Monitor Emulator terminal, which must be in drive B, C or D (Monitor boots first, then CP/M goes back into A and the station is reset). Auto load does this when a disk goes into A.">Boot</button>
+                        <button id="btnFdd3000Reset" class="control-btn iface-rom-btn" title="FDD3000 reset (as in FUSE): restart the station, which loads its system from drive A (done at once). The Spectrum is not reset: with TOS, reset it to get the second copyright line; with Monitor running, this is how CP/M is started.">Reset FDD</button>
+                        <span id="fdd3000Status" class="iface-status"></span>
+                    </div>
                     <div class="iface-row" id="didaktik128Row">
                         <label class="checkbox-label" style="margin-left: 15px;" title="The 48-to-128K upgrade patch that made a D40/D80 usable on a 128K: the paging port decoder requires A5, and the ROM is hardwired to page 1 (48K BASIC). A stock 128K cannot run a Didaktik; some upgrade services fitted this.">
                             <input type="checkbox" id="chkDidaktik128"> 128K hardware patch
                         </label>
                         <span id="didaktik128Status" class="iface-status"></span>
+                    </div>
+
+                    <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Memory expansion</div>
+
+                    <div class="iface-row">
+                        <label class="iface-name wide" title="TKMEM-128 II (github.com/lrrosa/tkmem128-ii): external 128K (or 512K) RAM for a 48K / TK90X / TK95. Port 7FFD (A15=0, A5=1, A1=0): bits 0-2 = bank at $C000, bit 5 = lock, bits 6-7 = upper banks in 512K mode; $8000 is bank 2. No shadow screen (bit 3 ignored), the 48K ROM stays. Enough for most 128K games. 48K machine only; changing it resets the machine.">
+                            TKMEM-128 II
+                            <select id="selTkmem" style="margin-left: 4px;">
+                                <option value="0">off</option>
+                                <option value="128">128K</option>
+                                <option value="512">512K</option>
+                            </select>
+                        </label>
+                        <label class="iface-name" style="margin-left: 10px;" title="Which address lines select the latch. The board's GAL (A15=0, A5=1, A1=0) also answers $00FC/$07FC, which every Beta 48 DOS writes on each call (OUT ($FC),A with A = 0 / 7): bank 0/7 is paged in under its stack and the DOS hangs. Adding A14=1 keeps 7FFD and leaves those ports alone.">
+                            decode
+                            <select id="selTkmemDecode" style="margin-left: 4px;">
+                                <option value="a14">A15 A14 A5 A1 (works with Beta 48)</option>
+                                <option value="gal">A15 A5 A1 (board GAL as is)</option>
+                            </select>
+                        </label>
+                        <span id="tkmemStatus" class="iface-status"></span>
                     </div>
 
                     <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Emulation accuracy</div>

@@ -69,8 +69,10 @@ import {
     revolutionTStates, byteTStates
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
+import { prepareBeta48Rom } from './beta48.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
+import { Fdd3000 } from './fdd3000.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -115,6 +117,26 @@ import { Disassembler } from './disasm.js';
             this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
             this.betaDiskEnabled = this.profile.betaDiskDefault;  // Beta Disk enabled by default for Pentagon machines
             this._betaDiskPagingEnabled = false;  // Cached flag for fast updateBetaDiskPaging check
+            // Which Beta Disk an add-on Beta is: '128' (TR-DOS 5.x, the default), or
+            // a Beta 48 — 'auto' (from its ROM), 'plus' (Beta Disk plus / Vision),
+            // 'cbi' (Brazilian CBI-95 / IDS / AR-20). See core/beta48.js.
+            this.betaVariant = storageGet('zxm8_betaVariant') || '128';
+            this.beta48Info = null;       // what prepareBeta48Rom() made of the ROM
+            // TKMEM-128 II on a 48K: 0 (none), 128 or 512 (KB). See Memory.setTkmem.
+            this.tkmemSize = parseInt(storageGet('zxm8_tkmem') || '0', 10) || 0;
+            // Port decode: 'a14' (A15=0, A14=1, A5=1, A1=0; works with a Beta 48)
+            // or 'gal' (A15=0, A5=1, A1=0, exactly as the board's GAL equation)
+            this.tkmemDecode = storageGet('zxm8_tkmemDecode') === 'gal' ? 'gal' : 'a14';
+            // Timex FDD 3000 disk station (core/fdd3000.js): 48K/128K/+2 only,
+            // not with the +D (both on port $EF)
+            this.fdd3000 = new Fdd3000();
+            this.fdd3000Enabled = storageGet('zxm8_fdd3000') === 'true';
+            // Interface ROM: fdd3stavi.rom (Spectrum, the FUSE default) or fdd3timex.rom
+            this.fdd3000RomFile = storageGet('zxm8_fdd3000Rom') || 'fdd3stavi.rom';
+            this._fdd3000PagingEnabled = false;
+            this.memory.fdd3000 = this.fdd3000;
+            this.memory.setTkmem(this.tkmemSize);
+            this._beta48Master = 0;       // last write to a port xxxxxx00
 
             // µPD765 FDC (ZX Spectrum +3)
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
@@ -337,6 +359,7 @@ import { Disassembler } from './disasm.js';
             // The Opus registers live in the memory map, so Memory needs the
             // controller itself, not just a ROM image.
             this.memory.opusDisk = this.opus;
+            this.memory.fdd3000 = this.fdd3000;
 
             // Every WD17xx here gets the disk's own clock, now that all four
             // exist. Without it a controller has no rotation and falls back to
@@ -1483,6 +1506,17 @@ import { Disassembler } from './disasm.js';
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
             if (this.hcIf1) this.hcIf1.reset(false);
+            // Beta 48: reset clears the system port, so the ROM latch is set and the
+            // DOS runs from $0000; the master register clears too (I/O on).
+            this.memory.beta48Latch = this.memory.beta48On;
+            // FDD 3000: interface paged out (it pages in at the $0000 fetch).
+            // The station is a separate box with its own power: a Spectrum reset
+            // leaves it running, as in FUSE (only switching it on resets it).
+            this.memory.fdd3000Active = false;
+            this._beta48Master = 0;
+            this.memory.beta48WindowOff = false;
+            // HC IF1: select latch and motors drop; its static RAM keeps its contents
+            if (this.hcIf1) this.hcIf1.reset(false);
 
             // Reset frame timing
             this.frameStartOffset = 0;
@@ -1522,7 +1556,7 @@ import { Disassembler } from './disasm.js';
             // - Reset WD1772 FDC
             // - Page in +D ROM so boot code at $0000 runs and initializes workspace
             if (this.plusDEnabled && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a') {
+                this.profile.pagingModel !== '+2a' && !this.hcIf1 && !this._fdd3000PagingEnabled) {
                 this.plusD.reset();
                 this.memory.plusDActive = true;
             }
@@ -1539,7 +1573,7 @@ import { Disassembler } from './disasm.js';
             // through one of its hook addresses, the first of which is normally
             // the $0048 KEY-INT on the first maskable interrupt.
             if (this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a') {
+                this.profile.pagingModel !== '+2a' && !this.hcIf1) {
                 this.opus.reset();
                 this.memory.opusActive = false;
             }
@@ -1554,18 +1588,142 @@ import { Disassembler } from './disasm.js';
             }
         }
 
+        /**
+         * Timex FDD 3000: switched on, both ROMs loaded, and a 48K or a
+         * 128K/+2 (FUSE offers it on those two families). There is no HC-2000
+         * test here because its paging model is neither 'none' nor '128k' --
+         * and this tree states that rule as `!this.hcIf1`, the collision being
+         * with the HC IF1 on the bus rather than the badge on the case.
+         */
+        _fdd3000Ok() {
+            return this.fdd3000Enabled && this.fdd3000.hasRoms() &&
+                (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
+        }
+
+        /**
+         * FDD 3000 boot, the way it is done by hand: "FDD3000 reset" (the
+         * station loads its system from drive A — run at once, see
+         * Fdd3000.boot), then reset the Spectrum. A CP/M disk in A needs the
+         * Spectrum to run the Monitor Emulator terminal first: if a Monitor
+         * disk is in B-D it goes into A for the first boot, and once Monitor
+         * is up and waiting, CP/M goes back into A and only the station is
+         * reset. Returns { ok, msg }.
+         */
+        fdd3000AutoBoot() {
+            if (!this._fdd3000PagingEnabled) return { ok: false, msg: 'Timex FDD 3000 is off' };
+            const fdc = this.fdd3000.fdc;
+            const a = fdc.drives[0];
+            if (!a.dsk) return { ok: false, msg: 'FDD 3000: no disk in drive A' };
+            if (this._fdd3000AutoBootOff) { this._fdd3000AutoBootOff(); this._fdd3000AutoBootOff = null; }
+            const kind = Fdd3000.diskKind(a.dsk);
+            if (kind !== 'cpm') {
+                this.fdd3000.boot();
+                this.reset();
+                return { ok: true, msg: kind === 'tos' ? 'FDD 3000: TOS boot' : 'FDD 3000: no system on the disk in A' };
+            }
+            const mi = [1, 2, 3].find(i => fdc.drives[i].dsk && Fdd3000.isMonitorDisk(fdc.drives[i].dsk));
+            if (mi === undefined) {
+                return { ok: false, msg: 'CP/M needs the Monitor Emulator terminal: put its disk in drive B' };
+            }
+            const swap = () => { const t = fdc.drives[0]; fdc.drives[0] = fdc.drives[mi]; fdc.drives[mi] = t; };
+            swap();                                 // Monitor into A
+            this.fdd3000.boot();
+            this.reset();
+            let frames = 0, inMonitor = 0;
+            const done = () => { if (this._fdd3000AutoBootOff) { this._fdd3000AutoBootOff(); this._fdd3000AutoBootOff = null; } };
+            this._fdd3000AutoBootOff = this.addFrameListener(() => {
+                frames++;
+                // Monitor is up when the Spectrum runs it ($8000 on) and the
+                // station waits; give up after ~30 s of emulated time (the
+                // interface's start-up code also runs up there, from a copy at
+                // $7FFD-$8022, while the machine boots)
+                inMonitor = this.cpu.pc >= 0x8040 ? inMonitor + 1 : 0;
+                const ready = frames > 50 && inMonitor > 10 && this.fdd3000.isIdle();
+                if (ready || frames > 1500) {
+                    done();
+                    swap();                         // CP/M back into A
+                    this.fdd3000.boot();            // station only
+                }
+            });
+            return { ok: true, msg: `FDD 3000: CP/M — Monitor Emulator from drive ${String.fromCharCode(65 + mi)} first` };
+        }
+
         // ========== Port I/O ==========
 
         _isBetaDiskActive() {
-            return this.betaDiskEnabled &&
+            return this.betaDiskEnabled && !this.memory.beta48On && !this.hcIf1 &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
+        }
+
+        /** The Beta 48 flavour in use: 'plus' or 'cbi' (auto follows the ROM). */
+        _beta48Variant() {
+            if (this.betaVariant === 'cbi') return 'cbi';
+            if (this.betaVariant === 'auto' && this.beta48Info) {
+                return this.beta48Info.variant === 'cbi' ? 'cbi' : 'plus';
+            }
+            return 'plus';
+        }
+
+        /**
+         * Load a Beta 48 ROM image (TR-DOS 4.x, Vision, CBI-95...): identified,
+         * D0/D7 straightened and an 8KB ROM doubled by core/beta48.js.
+         */
+        loadBeta48Rom(data) {
+            const info = prepareBeta48Rom(data);
+            this.beta48Info = info;
+            this.memory.loadBeta48Rom(info.rom);
+            this.updateBetaDiskPagingFlag();
+            return info;
+        }
+
+        // Beta 48 port read; undefined when not its port (or its I/O is off)
+        _beta48Read(lowByte) {
+            if ((this._beta48Master & 0x80) || (lowByte & 0x07) !== 0x07) return undefined;
+            if ((lowByte & 0x87) === 0x07) {
+                return this.betaDisk.read([0x1F, 0x3F, 0x5F, 0x7F][(lowByte >> 5) & 3]);
+            }
+            // System port: bit 7 INTRQ, bit 6 DRQ; the rest is open bus on the
+            // Beta plus, a jumper (bit 4 = 1) and printer BUSY (bit 5) on the CBI
+            const st = this.betaDisk.read(0xFF) & 0xC0;
+            return this._beta48Variant() === 'cbi' ? (st | 0x1F) : (st | 0x3F);
+        }
+
+        // Beta 48 port write; true when the interface took it (it then blocks
+        // the I/O cycle for the rest of the bus)
+        _beta48Write(lowByte, val) {
+            if ((this._beta48Master & 0x80) || (lowByte & 0x07) !== 0x07) return false;
+            if ((lowByte & 0x87) === 0x07) {
+                this.betaDisk.write([0x1F, 0x3F, 0x5F, 0x7F][(lowByte >> 5) & 3], val);
+            } else {
+                this.betaDisk.write(0xFF, val);
+                this.memory.beta48Latch = (val & 0x80) === 0;   // ROM latch: 0 = paged
+            }
+            return true;
+        }
+
+        /**
+         * The Beta Disk "magic button": NMI with the DOS ROM paged in, so the
+         * DOS can save the machine to disk. Beta 48: the latch is set as well
+         * (MAME betaplus); Beta 128: the TR-DOS ROM is paged (MAME beta128).
+         */
+        triggerBetaMagic() {
+            if (this.memory.beta48On) {
+                this.memory.beta48Latch = true;
+            } else if (this._betaDiskPagingEnabled) {
+                this.memory.trdosActive = true;
+            } else {
+                return false;
+            }
+            this.cpu.nmi();
+            return true;
         }
 
         _isPlusDActive() {
             // Per FUSE: +D ports always respond when hardware is available
             // (not gated by memory paging state or disk presence)
             return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this.hcIf1;
+                this.profile.pagingModel !== '+2a' && !this.hcIf1 &&
+                !this._fdd3000PagingEnabled;      // both claim port $EF
         }
 
         _isIF1Active() {
@@ -1702,7 +1860,7 @@ import { Disassembler } from './disasm.js';
         }
 
         triggerPlusDNmi() {
-            if (!this.plusDEnabled || !this.memory.hasPlusDRom()) return;
+            if (!this._isPlusDActive()) return;
             this.memory.plusDActive = true;
             // An NMI acknowledge is 11 T-states and the CPU does not charge them
             // itself — `nmi()` returns them the way `interrupt()` does, and every
@@ -1891,6 +2049,11 @@ import { Disassembler } from './disasm.js';
                            lowByte === DIDAKTIK_PORT_DATA)) {
                     // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
                     result = this.didaktik.read(port);
+                } else if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
+                    result = this.fdd3000.portIn();     // FDD 3000: station -> Spectrum
+                } else if (this.memory.beta48On &&
+                           (this._beta48In = this._beta48Read(lowByte)) !== undefined) {
+                    result = this._beta48In;        // Beta 48 FDC / system port
                 } else if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
                            lowByte === PORT_WD_SECTOR || lowByte === PORT_WD_DATA)) {
                     // Beta Disk WD1793 registers
@@ -2064,6 +2227,26 @@ import { Disassembler } from './disasm.js';
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
+            // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
+            // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports
+            // $00FC / $07FC, in every TR-DOS 4.x, CAS, Vision and CBI ROM) pages
+            // bank 0/7 in under the DOS's own stack and hangs it. 'a14' adds
+            // A14=1 to the decode, which 7FFD has and $xxFC with B < $40 has not.
+            // Write-only, not exclusive (the port carries on to the rest).
+            if (this.memory.tkmemRam &&
+                (this.tkmemDecode === 'gal' ? (port & 0x8022) === 0x0020
+                                            : (port & 0xC022) === 0x4020)) {
+                this.memory.writeTkmem(val);
+            }
+
+            // Beta 48 master register: any port xxxxxx00 ($FC is the border as
+            // well). Bit 7 = 1 switches its I/O off; on the CBI clones bit 6 = 1
+            // switches the $3Cxx ROM window off.
+            if (this.memory.beta48On && (lowByte & 0x03) === 0) {
+                this._beta48Master = val;
+                this.memory.beta48WindowOff = this._beta48Variant() === 'cbi' && (val & 0x40) !== 0;
+            }
+
             // The wait is decided by the port's HIGH byte, not by whether the ULA
             // answers: a port in $40xx-$7Fxx is contended whatever its low byte, and
             // an odd one waits four times over. This used to sit inside the
@@ -2195,6 +2378,13 @@ import { Disassembler } from './disasm.js';
                 (lowByte & DIDAKTIK_PORT_AUX_MASK) === DIDAKTIK_PORT_AUX)) {
                 // Didaktik 80 WD2797 registers plus the aux register at $89
                 this.didaktik.write(port, val);
+                return;
+            }
+            if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
+                this.fdd3000.portOut(val);              // FDD 3000: Spectrum -> station
+                return;
+            }
+            if (this.memory.beta48On && this._beta48Write(lowByte, val)) {
                 return;
             }
             if (betaDiskActive && (lowByte === PORT_WD_CMD || lowByte === PORT_WD_TRACK ||
@@ -2463,6 +2653,9 @@ import { Disassembler } from './disasm.js';
                 if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
+                // Timex FDD 3000 interface ROM ($0000/$0008 in, after $0604 out)
+                if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
+                    (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
                 const execTrigger = hasBreakpoints ? this.checkExecTriggers(this.cpu.pc) : null;
                 if (execTrigger) {
@@ -2524,6 +2717,7 @@ import { Disassembler } from './disasm.js';
                     const _haltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
                     if (this.profiler.enabled) {
                         const _pcKey = this.getAutoMapKey(this.cpu.pc);
@@ -2601,6 +2795,12 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // FDD 3000: out once the RET at $0604 has run; its station's
+                    // Z80 runs along, one instruction per ours (two every fifth)
+                    if (this._fdd3000PagingEnabled) {
+                        if (this._currentInstrPC === 0x0604) this.memory.fdd3000Active = false;
+                        this.fdd3000.step();
+                    }
                     // IF1 page-out: deferred to after RET at $0700 executes
                     if (this._if1PageOutPending) {
                         this.memory.if1Active = false;
@@ -3132,6 +3332,9 @@ import { Disassembler } from './disasm.js';
                 if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
+                // Timex FDD 3000 interface ROM ($0000/$0008 in, after $0604 out)
+                if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
+                    (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
                 if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
@@ -3171,6 +3374,7 @@ import { Disassembler } from './disasm.js';
                     const _hlHaltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
                     this.cpu.incR();
+                    if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
                     if (this.profiler.enabled) {
                         const _pcKey = this.getAutoMapKey(this.cpu.pc);
@@ -3211,6 +3415,12 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    // FDD 3000: out once the RET at $0604 has run; its station's
+                    // Z80 runs along, one instruction per ours (two every fifth)
+                    if (this._fdd3000PagingEnabled) {
+                        if (this._currentInstrPC === 0x0604) this.memory.fdd3000Active = false;
+                        this.fdd3000.step();
+                    }
                     // IF1 page-out: deferred to after RET at $0700 executes
                     if (this._if1PageOutPending) {
                         this.memory.if1Active = false;
@@ -4467,13 +4677,26 @@ import { Disassembler } from './disasm.js';
         // Beta Disk automatic ROM paging
         // Update cached flag for Beta Disk paging (call when conditions change)
         updateBetaDiskPagingFlag() {
+            // Beta 48: an add-on Beta Disk (not the built-in one of a Pentagon or
+            // Scorpion) set to a Beta 48 variant, with its ROM loaded. Never on an
+            // HC-2000: a Beta 48 claims any port xxxxx111, which takes $07 and $87
+            // from the HC IF1, and the two were never fitted together anyway.
+            const beta48 = !this.profile.betaDiskDefault && this.betaDiskEnabled &&
+                this.betaVariant !== '128' && this.memory.hasBeta48Rom() && !this.hcIf1;
+            if (beta48 !== this.memory.beta48On) {
+                this.memory.beta48On = beta48;
+                this.memory.beta48Latch = false;
+                this.memory.trdosActive = false;
+            }
             // DECISION, not an omission: there is no `pagingModel !== '+2a'`
             // here, the way there is on all four below. A Beta Disk wired to a
             // +2A/+3 is a Frankenstein, but it is a buildable one, so TR-DOS
             // stays on offer wherever trdos.rom is loaded and the interface is
             // on -- including on a +3, which then shows both +3DOS and TR-DOS.
             // The other four overlay $0000-$3FFF, which +2A/+3 paging owns.
-            this._betaDiskPagingEnabled =
+            // Not beside an HC IF1 either: it pages in at the same $0008 and
+            // TR-DOS overlays $0000-$3FFF. Only the Beta 48 was guarded before.
+            this._betaDiskPagingEnabled = !beta48 && !this.hcIf1 &&
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
             // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
@@ -4488,7 +4711,15 @@ import { Disassembler } from './disasm.js';
             // An HC-2000 with its HC IF1 pages that in at the same $0008, so
             // none of the add-on interfaces go with it (without it, they do).
             const hc = !!this.hcIf1;
-            this._plusDPagingEnabled =
+            // The FDD 3000's TI-397 board overlays $0000-$3FFF and shares port
+            // $EF with the +D, so the two are mutually exclusive
+            const fdd3 = this._fdd3000Ok();
+            if (fdd3 !== this._fdd3000PagingEnabled) {
+                this._fdd3000PagingEnabled = fdd3;
+                this.memory.fdd3000Active = false;
+                if (fdd3) this.fdd3000.reset(true);
+            }
+            this._plusDPagingEnabled = !fdd3 &&
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
                 this.profile.pagingModel !== '+2a' && !hc;
@@ -7510,7 +7741,7 @@ import { Disassembler } from './disasm.js';
             // Request switch to Pentagon if Beta Disk not available on current machine
             // No switch needed if: Pentagon mode OR (Beta Disk enabled AND TR-DOS ROM loaded)
             const betaDiskAvailable = this.profile.betaDiskDefault ||
-                (this.betaDiskEnabled && this.memory.hasTrdosRom());
+                (this.betaDiskEnabled && this.memory.hasTrdosRom()) || this.memory.beta48On;
             const needsMachineSwitch = !betaDiskAvailable;
 
             // Return disk inserted result - no file selection needed
@@ -7563,6 +7794,16 @@ import { Disassembler } from './disasm.js';
 
         // Load DSK disk image - inserts disk into µPD765 FDC (+3, or the HC IF1)
         loadDSKImage(data, fileName, driveIndex = 0) {
+            // Timex FDD 3000: DSK images go to the station's four drives
+            if (!this.fdc && this._fdd3000PagingEnabled) {
+                const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+                this.fdd3000.fdc.loadDisk(bytes, 'dsk', driveIndex & 3);
+                this.fdd3000.fdc.drives[driveIndex & 3].name = fileName;
+                return {
+                    diskInserted: true, diskType: 'fdd3', diskName: fileName,
+                    fileCount: 0, _driveIndex: driveIndex & 3, needsMachineSwitch: false
+                };
+            }
             if (!this.fdc && this.profile.pagingModel === 'hc2000') {
                 throw new Error('HC-2000: the HC IF1 disk interface is switched off ' +
                     '(Settings → Disk interfaces → HC IF1)');
@@ -7658,7 +7899,7 @@ import { Disassembler } from './disasm.js';
             this.opus.loadDisk(diskData, 'opd', driveIndex);
 
             const opusAvailable = this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a';
+                this.profile.pagingModel !== '+2a' && !this.hcIf1;
 
             return {
                 diskInserted: true,
@@ -7770,6 +8011,21 @@ import { Disassembler } from './disasm.js';
         // sets up system variables, channels, and workspace — much more reliable
         // than manually constructing system variables.
         bootTrdos() {
+            // Beta 48: the DOS runs from reset (latch set), so a reset is the boot
+            if (this.memory.beta48On) {
+                const keep = this.betaDisk ? this.betaDisk.drives.map(d => ({
+                    diskData: d.diskData, diskType: d.diskType })) : null;
+                this.stop();
+                this.reset();
+                if (keep) keep.forEach((d, i) => {
+                    if (d.diskData) {
+                        this.betaDisk.drives[i].diskData = d.diskData;
+                        this.betaDisk.drives[i].diskType = d.diskType;
+                        this.betaDisk.drives[i].headTrack = 0;
+                    }
+                });
+                return true;
+            }
             // Check if TR-DOS ROM is loaded
             if (!this.memory.hasTrdosRom()) {
                 console.warn('[TR-DOS] Cannot boot TR-DOS: TR-DOS ROM not loaded');
@@ -7953,6 +8209,8 @@ import { Disassembler } from './disasm.js';
         // Load from pre-extracted data (used after ZIP selection)
         loadFileData(data, fileName, driveIndex = 0) {
             const type = this.snapshotLoader.detectType(data, fileName);
+            const hcDisk = this._hcDiskRoute(data, fileName, type, driveIndex);
+            if (hcDisk) return hcDisk;
             switch (type) {
                 case 'sna': return this.loadSnapshot(data);
                 case 'z80': return this.loadZ80Snapshot(data);
@@ -8944,6 +9202,24 @@ import { Disassembler } from './disasm.js';
                 out.fdc.resultBuffer = Array.from(this.fdc.resultBuffer || []);
                 out.fdc.dataBuffer = Array.from(this.fdc.dataBuffer || []);
             }
+            // HC IF1: its 1KB RAM, the select latch and whether it is paged in.
+            // The FDC itself is this.fdc above.
+            if (this.hcIf1) {
+                out.hcIf1 = this.hcIf1.getState();
+                out.hcIf1.paged = !!this.memory.if1Active;
+            }
+            // Beta 48: its ROM latch and master register (the WD1793 goes with
+            // the Beta Disk chunks as on the Beta 128)
+            if (this.memory.beta48On) {
+                out.beta48 = { latch: !!this.memory.beta48Latch, master: this._beta48Master,
+                    windowOff: !!this.memory.beta48WindowOff };
+            }
+            // TKMEM-128 II: its RAM is not in the 48K image, so it travels here
+            const m = this.memory;
+            if (m.tkmemRam) {
+                out.tkmem = { ram: m.tkmemRam.slice(), latch: m.tkmemLatch,
+                    bank: m.tkmemBank, locked: m.tkmemLocked };
+            }
             return out;
         }
 
@@ -8983,6 +9259,23 @@ import { Disassembler } from './disasm.js';
                 if (state.fdc.commandBuffer) this.fdc.commandBuffer = state.fdc.commandBuffer.slice();
                 if (state.fdc.resultBuffer) this.fdc.resultBuffer = state.fdc.resultBuffer.slice();
                 if (state.fdc.dataBuffer) this.fdc.dataBuffer = state.fdc.dataBuffer.slice();
+            }
+            if (state.hcIf1 && this.hcIf1) {
+                this.hcIf1.setState(state.hcIf1);
+                this.memory.if1Active = !!state.hcIf1.paged;
+            }
+            if (state.beta48 && this.memory.beta48On) {
+                this.memory.beta48Latch = !!state.beta48.latch;
+                this._beta48Master = state.beta48.master | 0;
+                this.memory.beta48WindowOff = !!state.beta48.windowOff;
+            }
+            const m = this.memory;
+            if (state.tkmem && m.tkmemRam && state.tkmem.ram &&
+                state.tkmem.ram.length === m.tkmemRam.length) {
+                m.tkmemRam.set(state.tkmem.ram);
+                m.tkmemLatch = state.tkmem.latch | 0;
+                m.tkmemBank = state.tkmem.bank | 0;
+                m.tkmemLocked = !!state.tkmem.locked;
             }
         }
 
@@ -9134,10 +9427,12 @@ import { Disassembler } from './disasm.js';
                 storageGet('zxm8_betaDisk') === 'true';
             if (this.ay) this.ay.reset();  // Stop any playing AY sound
             this.memory = new Memory(type);
+            this.memory.setTkmem(this.tkmemSize);   // 48K only; a no-op elsewhere
             // The new Memory needs the Opus controller re-linked — its registers
             // are read through the memory map, so a fresh Memory without this
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
+            this.memory.fdd3000 = this.fdd3000;
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
             this.ula.cpu = this.cpu;  // For debug access to CPU state
@@ -9942,6 +10237,7 @@ import { Disassembler } from './disasm.js';
             if (mem.specialPagingMode) return 'RAM';
             if (mem.if1Active) return 'IF1';
             if (mem.trdosActive) return 'TRDOS';
+            if (mem.isBeta48RomAt && mem.isBeta48RomAt(pc)) return 'TRDOS';
             if (mem.ramInRomMode || mem.scorpionRamInRomMode) return 'RAM';
             return 'ROM:' + mem.currentRomBank;
         }

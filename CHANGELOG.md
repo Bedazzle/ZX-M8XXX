@@ -2,6 +2,12 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.06
+
+- **The 48K Beta Disk and its clones**, contributed by Marginal2k.
+- **TKMEM-128 II: paged 128K or 512K RAM for a 48K**, contributed by Marginal2k.
+- **The Timex FDD 3000 disk station, a second Z80 of its own**, contributed by Marginal2k.
+
 ## v26.11.05
 
 - **The MGT DISCiPLE interface**, contributed by Marginal2k.

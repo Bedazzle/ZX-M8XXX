@@ -112,7 +112,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.11.05';
+    const APP_VERSION = '26.11.06';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -623,11 +623,13 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             const betaDisk = profile.betaDiskDefault ||
                 storageGet('zxm8_betaDisk') === 'true';
             if (!profile.trdosInRom && betaDisk) await maybe('trdos.rom');
+            if (betaDisk && !profile.betaDiskDefault && spectrum.betaVariant !== '128') await maybe('beta48.rom');
             if (spectrum.plusDEnabled) await maybe('plusd.rom');
             if (spectrum.discipleEnabled) await maybe('disciple.rom');
             if (spectrum.if1Enabled) await maybe('if1.rom');
             if (spectrum.opusEnabled) await maybe('opus.rom');
             if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
+            if (spectrum.fdd3000Enabled) { await maybe(spectrum.fdd3000RomFile); await maybe('fdd3000-boot.rom'); }
             if (profile.pagingModel === 'hc2000') await maybe('hc-if1.rom');   // built-in HC IF1
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);
@@ -3107,6 +3109,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateDidaktikStatus();
         updateMouseStatus();   // the HC-2000 takes the Kempston mouse away
         updateHcIf1Status();   // and brings its own disk interface
+        updateTkmemStatus();   // a TKMEM-128 II is for a 48K only
         diskActivityAPI.setup();
         // Which disk interfaces exist has just changed, so the catalogue and
         // its drive tabs are stale: they were left showing the old machine's
@@ -3138,7 +3141,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
     
     // Input & Mouse Settings (extracted to ui/input-settings.js)
-    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateHcIf1Status, updateMouseStatus, gamepadAPI, bootAPI } =
+    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateHcIf1Status, updateTkmemStatus, updateMouseStatus, gamepadAPI, bootAPI } =
         initInputSettings({
             getSpectrum: () => spectrum,
             getCanvas: () => canvas,

@@ -412,6 +412,43 @@ ROM `tests/opus-test.html` drives. The v2.x ROMs, EXCOM and both QuickDOS versio
 the one shipped as `roms/opus.rom`) boot and load fine but print nothing for `CAT 1` — they
 take some other catalogue syntax, which has not been established here.
 
+## Beta 48 (TR-DOS 4.x, Vision, CBI-95 / IDS / AR-20)
+
+`core/beta48.js`, wired in `core/spectrum.js` / `core/memory.js`. The 48K-era Beta Disk ("Beta Disk plus") and its clones, modelled on MAME's `bus/spectrum/beta.cpp` (Nigel Barnes, David Haywood, MetalliC; BSD-3-Clause). Selected by **Settings → Disk interfaces → Beta Disk → Type** (`zxm8_betaVariant`: `128` default, `auto`, `plus`, `cbi`) on a machine without a built-in Beta 128; its ROM is `roms/beta48.rom` (or Load ROM).
+
+- **ROM paging.** The DOS ROM answers any access to `$3C00-$3CFF` (for that access only), and all of `$0000-$3FFF` while the latch is set: system port `1xxxx111` (`$FF`) written with bit 7 = 0. Reset sets the latch, so the DOS boots first (`memory.beta48Latch`).
+- **Master register.** Any write to a port `xxxxxx00` (`$FC` is the border too): bit 7 = 1 turns the interface's I/O off; on `cbi`, bit 6 = 1 turns the `$3Cxx` window off (`memory.beta48WindowOff`).
+- **I/O.** FDC at `0YYxx111` (`$1F/$3F/$5F/$7F`), system port at `1xxxx111`. A read of the system port gives INTRQ (bit 7) and DRQ (bit 6); the rest reads 1 (`cbi`: bit 5 = printer BUSY = 0). The Beta 128 port handlers stay out while `memory.beta48On`.
+- **ROM images.** `prepareBeta48Rom()` knows MAME's CRCs and a few Brazilian dumps; otherwise it decides by which way round the DOS text reads. Original boards cross D0 and D7, so such dumps are straightened; 8KB ROMs are mirrored to 16KB. `auto` takes `cbi` only from a known CBI-95/IDS91/AR-20 ROM.
+- **Magic button** (Beta 48 and Beta 128): `triggerBetaMagic()` pages the DOS ROM and raises NMI.
+- Tape traps run only with the Sinclair ROM in; the Beta 128 TR-DOS traps are off for Beta 48 (the real DOS does the FDC work).
+- **Not offered on an HC-2000**: a Beta 48 claims any port `xxxxx111`, which takes `$07` and `$87` from the HC IF1.
+- `tests/beta48-test.html` covers ROM identification, the window/latch logic and (with `roms/beta48.rom` present) a real boot and the magic button.
+
+## TKMEM-128 II (128K/512K RAM for a 48K)
+
+`Memory.setTkmem()` / `Memory.writeTkmem()`, port decode in `Spectrum.portWrite`. A model of [TKMEM-128 II](https://github.com/lrrosa/tkmem128-ii), the Brazilian external RAM board for the TK90X/TK95 and 48K Spectrum. **Settings → Machines → Memory expansion** (`zxm8_tkmem`: 0 / 128 / 512; `zxm8_tkmemDecode`); 48K machine only.
+
+- `$8000-$BFFF` = external bank 2, `$C000-$FFFF` = the latched bank; the 48K's own `$8000-$FFFF` is switched off. `$4000-$7FFF` stays the 48K's RAM: no shadow screen (bit 3 is latched and ignored), and the 48K ROM stays (bit 4 only matters with the board's optional EPROM, not modelled). External RAM is uncontended.
+- Latch: bits 0-2 bank, bit 5 lock until reset, bits 6-7 bank bits 3-4 in 512K mode (JP3). Write-only.
+- **Port decode.** The board's GAL decodes A15=0, A5=1, A1=0 (`gal`). Every Beta 48 DOS (TR-DOS 4.x, CAS, Vision, CBI-95/IDS/AR-20) writes `OUT ($FC),A` with A = 0 / 7 on each call — ports `$00FC` / `$07FC` — which that decode takes as 7FFD: bank 0/7 is paged in under the DOS's stack and it hangs (TR-DOS 4.11) or crashes the program (CBI-95). The default `a14` adds A14=1, which 7FFD has and those ports have not. Checked with Saboteur II 128, Pac-Mania 128 and T2 (loads all of its data into the banks in one go) on Beta 48.
+- Save states/rewind carry its RAM and latch (`_snapshotMedia().tkmem`); `.sna`/`.z80`/`.szx` of a 48K do not.
+- `tests/tkmem-test.html`.
+
+## Timex FDD 3000 (TOS / CP/M DSK)
+
+`core/fdd3000.js`, port of the FUSE patch fdd3000e 0.2.1.1 (Sławomir Szczyrba). **Settings → Machines → Disk interfaces → Timex FDD 3000**; 48K / 128K / +2 (not HC-2000, not +2A/+3); the +D is off while it is on (both use port `$EF`).
+
+- **Two computers.** The station is its own Z80 (64KB RAM, 2KB boot ROM `roms/fdd3000-boot.rom`, WD1770) — a second `Z80` instance stepped once per Spectrum instruction and twice every fifth (as FUSE), HALT included. A Spectrum reset leaves it running; **Reset FDD** restarts it (FUSE's "FDD3000 reset"), and it loads TOS from drive A.
+- **Spectrum side (TI-397).** 4KB ROM (`fdd3stavi.rom` for the Spectrum — FUSE's default — or `fdd3timex.rom`), mirrored over `$0000-$1FFF`, 8KB RAM at `$2000-$3FFF`; paged in at the `$0000`/`$0008` fetch, out after the instruction at `$0604`. Port `$xxEF`: write = Spectrum → station latch, read = station → Spectrum.
+- **Station I/O** (A7-A5): `$20` latches (read: Spectrum byte | DRQ in bit 7), `$C0` WD registers, `$E0` config (active-low drive select, side, density, head; bit 6 = boot ROM out); serial ports not emulated. INTRQ → station INT.
+- **Controller.** `Fdd3000Fdc` = the +D's instant-completion WD177x reading sectors by C/H/R from DSK images (4 drives). INTRQ rises a few station instructions after a command ends (`FDD3000_INTRQ_DELAY`): TOS reads the status (which clears INTRQ), does EI and waits for the interrupt, so an instant INTRQ would be lost and every Seek would time out.
+- **Use.** Insert a DSK (Disk tab, system "FDD 3000"), Reset FDD, reset the Spectrum: with a system disk the second copyright line (`© 91 STAVI 128K TOS A.2`) appears, a disk with autostart starts; `CAT *` lists a disk. On a 128K the 48K ROM is selected, as in FUSE.
+- **Boot / auto load** (`Spectrum.fdd3000AutoBoot`). Reset FDD runs the station's boot at once (`Fdd3000.boot`: alone, until it polls port `$20` with no other I/O — the boot ROM's delay loops are ~3M instructions). Boot (and Auto load, for a disk put into A) = Reset FDD + Spectrum reset. A CP/M disk in A (boot sector `ED 56`; TOS is `01 C3`) is started the way it is by hand: the Monitor Emulator disk (TOS, `MONITOR` in its directory) must be in B-D; it is swapped into A and booted, and once Monitor runs (Spectrum PC ≥ `$8040` for 10 frames, station idle) CP/M goes back into A and only the station is reset. ~2.7 s of emulated time to `A>`.
+- `tests/fdd3000-test.html` (with the ROMs and `headless/fdd3000/tos.dsk`: the real boot and `CAT *`). Checked: TOS A.2 (CAT *), Battle Command (autostart, 80-track DS disk).
+- **Monitor Emulator (CP/M terminal) on a 128K: open question.** Its loader tells a Timex from a Spectrum by `OUT 255,0: LET a=IN 255: IF a=0 THEN` (Timex path, 64-column hi-res with odd columns in the second screen at `$6000`). On a Spectrum port `$FF` is the floating bus, so the answer depends on which T-state the `IN` lands on. Here the 48K reads 255 (Spectrum path, CP/M works) and the 128K reads a screen byte of 0 (Timex path, half the text missing); FUSE reads 255 on its 128K. Which one real hardware does is not known: FUSE may be the one that is off, and Monitor may have needed a patch for the 128K. Left as it is.
+- Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
+
 ## Didaktik 40/80 (MDOS D40/D80 images)
 
 **Status: emulated.** `core/loaders/disk-didaktik.js` holds both `DidaktikLoader` (the image

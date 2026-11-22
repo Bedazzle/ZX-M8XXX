@@ -45,6 +45,13 @@ export function initInputSettings({
     const btnMouse = document.getElementById('btnMouse');
     const chkBetaDisk = document.getElementById('chkBetaDisk');
     const betaDiskStatus = document.getElementById('betaDiskStatus');
+    // Beta 48 row (declared up here: updateBetaDiskStatus runs during init)
+    const selBetaVariant = document.getElementById('selBetaVariant');
+    const chkFdd3000 = document.getElementById('chkFdd3000');
+    const selFdd3000Rom = document.getElementById('selFdd3000Rom');
+    const fdd3000Status = document.getElementById('fdd3000Status');
+    const beta48Status = document.getElementById('beta48Status');
+    const btnBetaMagic = document.getElementById('btnBetaMagic');
     const chkPlusD = document.getElementById('chkPlusD');
     const plusDStatus = document.getElementById('plusDStatus');
     const btnNmiPlusD = document.getElementById('btnNmiPlusD');
@@ -62,6 +69,7 @@ export function initInputSettings({
     // mirror the machine list above: checkbox, Load ROM, filename in cyan.
     const IFACE_ROMS = {
         betaDisk: { rom: 'trdos.rom',    span: 'betaDiskRomName' },
+        beta48:   { rom: 'beta48.rom',   span: 'beta48RomName' },
         plusD:    { rom: 'plusd.rom',    span: 'plusDRomName' },
         disciple: { rom: 'disciple.rom', span: 'discipleRomName' },
         if1:      { rom: 'if1.rom',      span: 'if1RomName' },
@@ -428,14 +436,21 @@ export function initInputSettings({
     // Beta Disk (TR-DOS) interface toggle
     function updateBetaDiskStatus() {
         updateIfaceRomName('betaDisk');
+        updateBeta48Status();
+        updateFdd3000Status();
         const spectrum = getSpectrum();
         if (spectrum.profile.betaDiskDefault) {
             betaDiskStatus.textContent = '(always on for ' + spectrum.profile.name + ')';
             chkBetaDisk.checked = true;
             chkBetaDisk.disabled = true;
+        } else if (spectrum.profile.pagingModel === 'hc2000') {
+            betaDiskStatus.textContent = 'not available on HC-2000 — only its HC IF1';
+            chkBetaDisk.disabled = true;
         } else {
             chkBetaDisk.disabled = false;
-            if (!romData['trdos.rom']) {
+            if (spectrum.betaVariant !== '128') {
+                betaDiskStatus.textContent = '';    // a Beta 48 needs beta48.rom (row below)
+            } else if (!romData['trdos.rom']) {
                 betaDiskStatus.textContent = '(trdos.rom required)';
             } else if (chkBetaDisk.checked) {
                 betaDiskStatus.textContent = '';
@@ -453,6 +468,11 @@ export function initInputSettings({
         if (chkBetaDisk.checked && romData['trdos.rom'] && !spectrum.memory.hasTrdosRom()) {
             spectrum.memory.loadTrdosRom(romData['trdos.rom']);
             spectrum.trdosTrap.updateTrdosRomFlag();
+        }
+        // ...or the Beta 48 ROM, when the Beta is a Beta 48
+        if (chkBetaDisk.checked && spectrum.betaVariant !== '128' && romData['beta48.rom'] &&
+            !spectrum.memory.hasBeta48Rom()) {
+            try { spectrum.loadBeta48Rom(romData['beta48.rom']); } catch (err) { showMessage(err.message, 'error'); }
         }
         spectrum.updateBetaDiskPagingFlag();
         updateBetaDiskStatus();
@@ -485,10 +505,11 @@ export function initInputSettings({
         // The +D cannot page its ROM in on a +2A/+3 — same as real hardware, and
         // the reason spectrum.js gates _plusDPagingEnabled on pagingModel. Say so
         // rather than letting the box be ticked and silently doing nothing.
-        const incompatible = spectrum.profile.pagingModel === '+2a';
+        const isHc = spectrum.profile.pagingModel === 'hc2000';
+        const incompatible = spectrum.profile.pagingModel === '+2a' || isHc;
         chkPlusD.disabled = incompatible;
         if (incompatible) {
-            plusDStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            plusDStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['plusd.rom']) {
             plusDStatus.textContent = '(plusd.rom required)';
         } else {
@@ -590,10 +611,11 @@ export function initInputSettings({
     const btnNmiDisciple = document.getElementById('btnNmiDisciple');
 
     function updateDiscipleStatus() {
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkDisciple.disabled = incompatible;
         if (incompatible) {
-            discipleStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            discipleStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['disciple.rom']) {
             discipleStatus.textContent = '(disciple.rom required)';
         } else {
@@ -637,7 +659,7 @@ export function initInputSettings({
                     spectrum[flag] = false; storageSet(key, false); off.push(name);
                 }
             }
-            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus();
+            updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus(); if (typeof updateFdd3000Status === 'function') updateFdd3000Status();
             updateBetaDiskStatus();
             if (off.length) showMessage('DISCiPLE enabled — ' + off.join(', ') + ' disabled');
         }
@@ -689,6 +711,81 @@ export function initInputSettings({
         updateDiscipleStatus();
     }
 
+    // ---- Beta 48 (core/beta48.js): type, its own ROM, the magic button ----
+
+    function updateBeta48Status() {
+        const sp = getSpectrum();
+        if (!sp || !selBetaVariant) return;
+        const builtIn = !!sp.profile.betaDiskDefault;
+        const hc = sp.profile.pagingModel === 'hc2000';   // HC: no Beta at all
+        selBetaVariant.value = (builtIn || hc) ? '128' : (sp.betaVariant || '128');
+        selBetaVariant.disabled = builtIn || hc;  // Pentagon/Scorpion: their own Beta 128
+        const wants48 = !builtIn && !hc && sp.betaVariant !== '128';
+        document.getElementById('btnLoadBeta48Rom').disabled = !wants48;
+        updateIfaceRomName('beta48');
+        if (builtIn) {
+            beta48Status.textContent = '(built-in Beta 128 on this machine)';
+        } else if (hc) {
+            beta48Status.textContent = '';
+        } else if (!wants48) {
+            beta48Status.textContent = '';
+        } else if (!romData['beta48.rom']) {
+            beta48Status.textContent = '(beta48.rom required)';
+        } else if (sp.beta48Info) {
+            const i = sp.beta48Info;
+            const kind = sp._beta48Variant() === 'cbi' ? 'CBI-95 / IDS / AR-20' : 'Beta Disk plus';
+            beta48Status.textContent = `${i.name}${i.swapped ? ', D0/D7 straightened' : ''} — ${kind}` +
+                (sp.memory.beta48On ? '' : ' (enable Beta Disk)');
+        } else {
+            beta48Status.textContent = '';
+        }
+        btnBetaMagic.disabled = !(sp.memory.beta48On || sp._betaDiskPagingEnabled);
+    }
+
+    selBetaVariant.addEventListener('change', () => {
+        const spectrum = getSpectrum();
+        spectrum.betaVariant = selBetaVariant.value;
+        storageSet('zxm8_betaVariant', selBetaVariant.value);
+        if (selBetaVariant.value !== '128' && romData['beta48.rom'] && !spectrum.memory.hasBeta48Rom()) {
+            try { spectrum.loadBeta48Rom(romData['beta48.rom']); } catch (err) { showMessage(err.message, 'error'); }
+        }
+        spectrum.updateBetaDiskPagingFlag();
+        updateBetaDiskStatus();
+        notifyDiskSystems();
+        // A Beta 48 runs its DOS from reset; the interface changes under the machine
+        spectrum.reset();
+        showMessage('Beta Disk type: ' + selBetaVariant.options[selBetaVariant.selectedIndex].text + ' (machine reset)');
+    });
+
+    document.getElementById('btnLoadBeta48Rom').addEventListener('click', () => {
+        document.getElementById('romBeta48Input').click();
+    });
+
+    document.getElementById('romBeta48Input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const data = new Uint8Array(ev.target.result);
+            const spectrum = getSpectrum();
+            let info;
+            try { info = spectrum.loadBeta48Rom(data); }
+            catch (err) { showMessage(err.message, 'error'); return; }
+            romData['beta48.rom'] = data;
+            setIfaceRomName('beta48', file.name);
+            updateBetaDiskStatus();
+            notifyDiskSystems();
+            if (spectrum.memory.beta48On) spectrum.reset();
+            showMessage(`Beta 48 ROM: ${info.name}${info.swapped ? ' (D0/D7 straightened)' : ''}`);
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+    });
+
+    btnBetaMagic.addEventListener('click', () => {
+        if (getSpectrum().triggerBetaMagic()) showMessage('Beta Disk magic button (NMI)');
+    });
+
     // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
     // ROM could only be reached through the Load ROMs... dialog, which is not
     // where anyone looks when the status line says "(trdos.rom required)".
@@ -719,10 +816,11 @@ export function initInputSettings({
     // Interface 1 (Microdrive) toggle
     function updateIF1Status() {
         // Interface 1 is gated on pagingModel exactly like the +D — see above
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkIF1.disabled = incompatible;
         if (incompatible) {
-            if1Status.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            if1Status.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['if1.rom']) {
             if1Status.textContent = '(if1.rom required)';
         } else {
@@ -797,10 +895,11 @@ export function initInputSettings({
     function updateOpusStatus() {
         // Gated on pagingModel exactly like the +D and IF1 — the Opus overlays
         // $0000-$3FFF, which +2A/+3 paging already owns.
-        const incompatible = getSpectrum().profile.pagingModel === '+2a';
+        const isHc = getSpectrum().profile.pagingModel === 'hc2000';
+        const incompatible = getSpectrum().profile.pagingModel === '+2a' || isHc;
         chkOpus.disabled = incompatible;
         if (incompatible) {
-            opusStatus.textContent = 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
+            opusStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1' : 'not available on +2A/+3 — use 48K, 128K, +2 or Pentagon';
         } else if (!romData['opus.rom']) {
             opusStatus.textContent = '(opus.rom required)';
         } else {
@@ -940,7 +1039,8 @@ export function initInputSettings({
         if (incompatible) {
             didaktikStatus.textContent = patchable
                 ? 'needs the 128K hardware patch below'
-                : '48K or a patched 128K only — not this machine';
+                : (sp.profile.pagingModel === 'hc2000' ? 'not available on HC-2000 — only its HC IF1'
+                    : '48K or a patched 128K only — not this machine');
         } else if (!romData['didaktik.rom']) {
             didaktikStatus.textContent = '(didaktik.rom required)';
         } else {
@@ -974,6 +1074,84 @@ export function initInputSettings({
                 : '128K hardware patch off — Didaktik disabled (machine reset)');
         }
     });
+
+    // ---- Timex FDD 3000 (core/fdd3000.js) ----
+
+    async function fetchRomIfMissing(file) {
+        if (romData[file]) return true;
+        try {
+            const res = await fetch('roms/' + file);
+            if (res.ok) { romData[file] = await res.arrayBuffer(); return true; }
+        } catch (e) { /* not served */ }
+        return false;
+    }
+
+    function updateFdd3000Status() {
+        const sp = getSpectrum();
+        if (!sp || !chkFdd3000) return;
+        chkFdd3000.checked = !!sp.fdd3000Enabled;
+        selFdd3000Rom.value = sp.fdd3000RomFile;
+        // The HC-2000 needs no term of its own here: its paging model is
+        // neither 'none' nor '128k'. See Spectrum._fdd3000Ok.
+        const isHc = sp.profile.pagingModel === 'hc2000';
+        const machineOk = sp.profile.pagingModel === 'none' ||
+            sp.profile.pagingModel === '128k';
+        chkFdd3000.disabled = !machineOk;
+        if (!machineOk) {
+            fdd3000Status.textContent = isHc ? 'not available on HC-2000 — only its HC IF1'
+                : '48K, 128K or +2 only';
+        } else if (!romData[sp.fdd3000RomFile] || !romData['fdd3000-boot.rom']) {
+            fdd3000Status.textContent = `(${!romData[sp.fdd3000RomFile] ? sp.fdd3000RomFile : 'fdd3000-boot.rom'} required)`;
+        } else if (sp.fdd3000Enabled && sp.plusDEnabled) {
+            fdd3000Status.textContent = '+D is off while the FDD 3000 is on (both use port $EF)';
+        } else {
+            fdd3000Status.textContent = '';
+        }
+    }
+
+    async function applyFdd3000() {
+        const sp = getSpectrum();
+        if (sp.fdd3000Enabled) {
+            await fetchRomIfMissing(sp.fdd3000RomFile);
+            await fetchRomIfMissing('fdd3000-boot.rom');
+            try {
+                if (romData[sp.fdd3000RomFile]) sp.fdd3000.loadRom(new Uint8Array(romData[sp.fdd3000RomFile]));
+                if (romData['fdd3000-boot.rom']) sp.fdd3000.loadBootRom(new Uint8Array(romData['fdd3000-boot.rom']));
+            } catch (err) { showMessage(err.message, 'error'); }
+        }
+        sp.updateBetaDiskPagingFlag();
+        updateFdd3000Status();
+        notifyDiskSystems();
+        sp.reset();
+    }
+
+    if (chkFdd3000) {
+        chkFdd3000.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.fdd3000Enabled = chkFdd3000.checked;
+            storageSet('zxm8_fdd3000', chkFdd3000.checked);
+            await applyFdd3000();
+            showMessage(chkFdd3000.checked ? 'Timex FDD 3000 on (machine reset)' : 'Timex FDD 3000 off (machine reset)');
+        });
+        selFdd3000Rom.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            sp.fdd3000RomFile = selFdd3000Rom.value;
+            storageSet('zxm8_fdd3000Rom', selFdd3000Rom.value);
+            await applyFdd3000();
+            showMessage('FDD 3000 interface ROM: ' + selFdd3000Rom.value + ' (machine reset)');
+        });
+        document.getElementById('btnFdd3000Reset').addEventListener('click', () => {
+            const sp = getSpectrum();
+            if (!sp._fdd3000PagingEnabled) { showMessage('Timex FDD 3000 is off', 'error'); return; }
+            sp.fdd3000.boot();
+            showMessage('FDD 3000 station reset: system loaded from drive A');
+        });
+        document.getElementById('btnFdd3000Boot').addEventListener('click', () => {
+            const r = getSpectrum().fdd3000AutoBoot();
+            showMessage(r.msg, r.ok ? undefined : 'error');
+        });
+        updateFdd3000Status();
+    }
 
     chkDidaktik.addEventListener('change', () => {
         const spectrum = getSpectrum();
@@ -1138,6 +1316,57 @@ export function initInputSettings({
         updateDidaktikStatus();
     }
 
+    // ---- TKMEM-128 II (Memory.setTkmem): 128K/512K external RAM on a 48K ----
+
+    const selTkmem = document.getElementById('selTkmem');
+    const selTkmemDecode = document.getElementById('selTkmemDecode');
+    const tkmemStatus = document.getElementById('tkmemStatus');
+
+    // The board plugs into a 48K and nothing else — setTkmem() refuses any
+    // other machine — so the row goes dead and says so rather than staying
+    // live and doing nothing. The chosen size is kept either way, so a trip
+    // through a 128K and back fits the board again.
+    function updateTkmemStatus() {
+        const sp = getSpectrum();
+        if (!selTkmem) return;
+        const is48 = sp.machineType === '48k';
+        selTkmem.value = String(sp.tkmemSize || 0);
+        selTkmem.disabled = !is48;
+        if (selTkmemDecode) {
+            selTkmemDecode.value = sp.tkmemDecode;
+            // The decode only decides which OUT reaches a board that is fitted
+            selTkmemDecode.disabled = !is48 || !sp.tkmemSize;
+        }
+        tkmemStatus.textContent = is48 ? '' : '48K machine only — not this machine';
+    }
+
+    if (selTkmemDecode) {
+        selTkmemDecode.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemDecode = selTkmemDecode.value === 'gal' ? 'gal' : 'a14';
+            storageSet('zxm8_tkmemDecode', spectrum.tkmemDecode);
+            showMessage('TKMEM-128 II decode: ' +
+                selTkmemDecode.options[selTkmemDecode.selectedIndex].text);
+        });
+    }
+
+    if (selTkmem) {
+        selTkmem.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemSize = parseInt(selTkmem.value, 10) || 0;
+            storageSet('zxm8_tkmem', String(spectrum.tkmemSize));
+            spectrum.memory.setTkmem(spectrum.tkmemSize);
+            // The 48K's own $8000-$FFFF is switched off under the board, so the
+            // machine is a different one from the moment it is fitted.
+            spectrum.reset();
+            updateTkmemStatus();
+            showMessage(spectrum.tkmemSize
+                ? 'TKMEM-128 II: ' + spectrum.tkmemSize + 'K (machine reset)'
+                : 'TKMEM-128 II off (machine reset)');
+        });
+        updateTkmemStatus();
+    }
+
     // The ROM auto-load from roms/ is async and usually lands after this panel
     // is built, so paint the filenames once here and again whenever a status
     // refresh runs.
@@ -1226,6 +1455,7 @@ export function initInputSettings({
         updateOpusStatus,
         updateDidaktikStatus,
         updateHcIf1Status,
+        updateTkmemStatus,
         updateAllIfaceRomNames,
         updateMouseStatus,
         gamepadAPI,
