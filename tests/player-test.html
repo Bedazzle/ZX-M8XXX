@@ -88,6 +88,10 @@
             assert(h.machine === '128k' && h.storage.zxm8_betaDisk === 'true' && !h.storage.zxm8_betaVariant, 'both TR-DOS 5 and 4.x: TR-DOS 5 on the 128K', JSON.stringify(h));
             h = resolveHardware([], 'game.trd');
             assert(h.machine === 'pentagon', 'a TRD with no machine listed: the Pentagon');
+            h = resolveHardware(['zx48', 'tmxhires'], 'game.tap');
+            assert(h.machine === 'tc2048', 'tmxhires: a Timex, the TC2048 when none is listed');
+            h = resolveHardware(['zx48', 'timex2068', 'tmxhicol'], 'game.tap');
+            assert(h.machine === 'tc2068', 'tmxhicol with timex2068 listed: the TC2068');
             h = resolveHardware(['zx128+3'], 'game.dsk');
             assert(h.machine === '+3', 'a DSK: the +3');
             h = resolveHardware(['timex2068'], 'game.dck');
@@ -151,8 +155,11 @@
                 assert(r && r.s.machineType === '128k' && r.s.saaOn && r.s.cpu.pc >= 0x8000, 'a tape: loaded and running by itself, with the SAA', r && r.s.cpu.pc.toString(16));
             } else skip('headless/saa/krunel2068_en.tap not present');
             if (await ok('../headless/tsfm/tech_support.sna')) {
-                const r = await play('url=headless/tsfm/tech_support.sna&hw=zx128,tsfm', 150);
-                assert(r && r.s.tsfm && r.s.fm[0].ops.some(o => o.keyState), 'a snapshot with TurboSound FM: the FM plays');
+                const r = await play('url=headless/tsfm/tech_support.sna&hw=zx128,tsfm', 50);
+                // keyed at some moment: between two notes none may be
+                let keyed = false;
+                for (let i = 0; i < 300 && r && !keyed; i++) { r.s.runFrame(); keyed = r.s.fm.some(f => f.ops.some(o => o.keyState)); }
+                assert(r && r.s.tsfm && keyed, 'a snapshot with TurboSound FM: the FM plays');
             } else skip('headless/tsfm/tech_support.sna not present');
             if (await ok('../headless/beta48/Pac-Mania48-128.scl')) {
                 const r = await play('url=headless/beta48/Pac-Mania48-128.scl&hw=zx48,trdos4x', 0);

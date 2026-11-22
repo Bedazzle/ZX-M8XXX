@@ -83,7 +83,7 @@ to fit.
   - If only `trdos4x` is listed, the release is for TR-DOS 4.x: a Beta 48 on
     a 48K, or on the TK-90X if `tk9x` is listed. It needs `roms/beta48.rom`.
     A TKMEM is fitted only when the release lists it (`tkmem128` or
-    `tkmem512`; zxart has no such code yet). A 128K machine in the list does
+    `tkmem512`; zxart.ee has `tkmem128`). A 128K machine in the list does
     not bring one.
   - If both `trdos` and `trdos4x` are listed, the player uses TR-DOS 5: a
     128K game is simpler on a 128K than on a 48K with a TKMEM.
@@ -104,6 +104,8 @@ to fit.
   - `kempston8b` turns on the extended buttons.
   - `kempstonmouse` fits the mouse; the canvas captures it on a click.
   - `ulaplus` turns on ULAplus.
+  - `tmxhires` and `tmxhicol` (Timex video modes) need a Timex: the one the
+    release lists, or else the TC2048.
 
 The player logs the codes it cannot emulate (`sid`, `divmmc`, and others) to
 the console and ignores them.

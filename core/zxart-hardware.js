@@ -66,8 +66,13 @@ export function resolveHardware(codes = [], fileName = '') {
     use('3dos'); use('3dosdisk');
 
     // ---- the machine ----
-    const listed = MACHINES.filter(([code]) => use(code)).map(([, id]) => id);
+    let listed = MACHINES.filter(([code]) => use(code)).map(([, id]) => id);
     for (const [code] of MACHINES) handled.add(code);
+    // Timex hi-res / hi-colour modes need a Timex: one listed, else the TC2048
+    if (use('tmxhires') | use('tmxhicol')) {
+        const timex = listed.filter(m => m === 'tc2068' || m === 'tc2048');
+        listed = timex.length ? timex : ['tc2048'];
+    }
     let machine;
     if (needMachine) {
         machine = needMachine;
