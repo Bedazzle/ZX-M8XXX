@@ -613,6 +613,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
                 storageGet('zxm8_betaDisk') === 'true';
             if (!profile.trdosInRom && betaDisk) await maybe('trdos.rom');
             if (spectrum.plusDEnabled) await maybe('plusd.rom');
+            if (spectrum.discipleEnabled) await maybe('disciple.rom');
             if (spectrum.if1Enabled) await maybe('if1.rom');
             if (spectrum.opusEnabled) await maybe('opus.rom');
             if (spectrum.didaktikEnabled) await maybe('didaktik.rom');

@@ -267,6 +267,10 @@ import { Disassembler } from './disasm.js';
             this.plusD = new PlusDDisk();
             this.plusDEnabled = false;
             this._plusDPagingEnabled = false;
+            // DISCiPLE: the same WD1772 model, other ports and paging
+            this.disciple = new PlusDDisk();
+            this.discipleEnabled = false;
+            this._disciplePagingEnabled = false;
 
             // Interface 1 (Microdrive)
             this.microdrive = new Microdrive();
@@ -1514,6 +1518,12 @@ import { Disassembler } from './disasm.js';
                 this.memory.plusDActive = true;
             }
 
+            // DISCiPLE reset: FDC reset, ROM low, paged out; the Spectrum ROM's
+            // DI at $0000 runs, the fetch at $0001 pages the DISCiPLE in
+            if (this.discipleEnabled) {
+                this.disciple.reset();
+            }
+
             // Opus reset (per FUSE opus_reset): reset the WD1770 and the PIA, and
             // leave the interface paged OUT. The +D above pages itself in at reset
             // to run its boot code; the Opus does not — it waits to be entered
@@ -1582,6 +1592,57 @@ import { Disassembler } from './disasm.js';
             return this.didaktikEnabled && this.didaktik &&
                 this.memory.hasDidaktikRom() &&
                 this._didaktikMachineOk();
+        }
+
+        _isDiscipleActive() {
+            return this.discipleEnabled && this.memory.hasDiscipleRom() &&
+                this.profile.pagingModel !== '+2a';
+        }
+
+        triggerDiscipleNmi() {
+            if (!this._isDiscipleActive()) return;
+            this.memory.discipleActive = true;
+            this.cpu.nmi();
+        }
+
+        // DISCiPLE port read: FDC $1B/$5B/$9B/$DB, $BB pages in, $7B sets the
+        // ROM low. Returns undefined for ports it does not own ($1F reads the
+        // Kempston joystick as usual).
+        _discipleRead(lowByte) {
+            switch (lowByte) {
+                case 0x1B: return this.disciple.readRegister(0);
+                case 0x5B: return this.disciple.readRegister(1);
+                case 0x9B: return this.disciple.readRegister(2);
+                case 0xDB: return this.disciple.readRegister(3);
+                case 0xBB: this.memory.discipleActive = true; return 0xFF;
+                case 0x7B: this.memory.discipleRomLow = true; return 0xFF;
+                case 0x1F:
+                    // Joystick 1 (Kempston-compatible, bits 0-4) plus the network
+                    // line (bit 7) and printer BUSY (bit 6), both active low: idle
+                    // = 1. GDOS polls bit 7 on every interrupt (NET_SERVER); read
+                    // as 0 it waits out two timeout loops each frame.
+                    return ((this.kempstonState | this.gamepadState) & 0x1F) | 0xC0;
+            }
+            return undefined;
+        }
+
+        // DISCiPLE port write; true when the port was the DISCiPLE's
+        _discipleWrite(lowByte, val) {
+            switch (lowByte) {
+                case 0x1B: this.disciple.writeRegister(0, val); return true;
+                case 0x5B: this.disciple.writeRegister(1, val); return true;
+                case 0x9B: this.disciple.writeRegister(2, val); return true;
+                case 0xDB: this.disciple.writeRegister(3, val); return true;
+                case 0x1F:  // control: b0 1 = drive 1 / 0 = drive 2, b1 side, b3 ROM bank
+                    this.disciple.drive = (val & 0x01) ? 0 : 1;
+                    this.disciple.side = (val & 0x02) ? 1 : 0;
+                    this.memory.discipleRomBank = (val >> 3) & 1;
+                    return true;
+                case 0xBB: this.memory.discipleActive = false; return true;
+                case 0x7B: this.memory.discipleRomLow = false; return true;
+                case 0x3B: case 0xFB: return true;      // net wait, printer data: no-ops
+            }
+            return false;
         }
 
         triggerPlusDNmi() {
@@ -1744,6 +1805,9 @@ import { Disassembler } from './disasm.js';
                     } else {
                         result = this.microdrive.readStatus();
                     }
+                } else if (this.discipleEnabled && this._isDiscipleActive() &&
+                           (this._discipleIn = this._discipleRead(lowByte)) !== undefined) {
+                    result = this._discipleIn;      // DISCiPLE ports
                 } else if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
                            lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_DATA)) {
                     // +D WD1772 registers ($E3/$EB/$F3/$FB) — $EF is write-only per FUSE
@@ -2038,6 +2102,9 @@ import { Disassembler } from './disasm.js';
                 }
                 return;
             }
+            if (this.discipleEnabled && this._isDiscipleActive() && this._discipleWrite(lowByte, val)) {
+                return;
+            }
             if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
                 lowByte === PORT_PLUSD_SEC || lowByte === PORT_PLUSD_DATA ||
                 lowByte === PORT_PLUSD_CTRL)) {
@@ -2305,6 +2372,8 @@ import { Disassembler } from './disasm.js';
                 if (this._if1PagingEnabled) this.updateIF1Paging();
                 // +D ROM auto-paging ($0008/$003A/$0066/$028E page in, port $E3 bit 6 page out)
                 if (this._plusDPagingEnabled) this.updatePlusDPaging();
+                // DISCiPLE auto-paging ($0001/$0008/$0066/$028E page in, port $BB page out)
+                if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
                 // Check breakpoint using unified trigger system (skip if no breakpoints)
@@ -2972,6 +3041,8 @@ import { Disassembler } from './disasm.js';
                 if (this._if1PagingEnabled) this.updateIF1Paging();
                 // +D ROM auto-paging
                 if (this._plusDPagingEnabled) this.updatePlusDPaging();
+                // DISCiPLE auto-paging ($0001/$0008/$0066/$028E page in, port $BB page out)
+                if (this._disciplePagingEnabled) this.updateDisciplePaging();
                 // Didaktik 80 ROM auto-paging ($0000/$0008 page in, $1700 page out)
                 if (this._didaktikPagingEnabled) this.updateDidaktikPaging();
                 // Tape traps still active for test loading
@@ -4330,6 +4401,7 @@ import { Disassembler } from './disasm.js';
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
                 this.profile.pagingModel !== '+2a';
+            this._disciplePagingEnabled = this._isDiscipleActive();
             // Opus Discovery paging flag: same machine restriction as the +D and
             // IF1 — it overlays $0000-$3FFF, which +2A/+3 paging already owns.
             this._opusPagingEnabled =
@@ -4419,6 +4491,14 @@ import { Disassembler } from './disasm.js';
          * Note: FUSE does NOT restrict page-in to BASIC ROM only — the +D
          * intercepts these addresses regardless of which ROM bank is selected.
          */
+        updateDisciplePaging() {
+            if (this.memory.discipleActive) return;
+            const pc = this.cpu.pc;
+            if (pc === 0x0001 || pc === 0x0008 || pc === 0x0066 || pc === 0x028E) {
+                this.memory.discipleActive = true;
+            }
+        }
+
         updatePlusDPaging() {
             if (!this._plusDPagingEnabled) return;
             if (this.memory.plusDActive) return;  // Already paged in
@@ -7400,11 +7480,12 @@ import { Disassembler } from './disasm.js';
             };
             this.loadedPlusDDiskFiles[driveIndex & 0x01] = files;
 
-            // Load disk into +D interface
-            this.plusD.loadDisk(diskData, 'mgt', driveIndex);
+            // Load disk into +D interface (or the DISCiPLE when that is the one enabled)
+            (this.discipleEnabled ? this.disciple : this.plusD).loadDisk(diskData, 'mgt', driveIndex);
 
             // Check if +D is available
-            const plusDAvailable = this.plusDEnabled && this.memory.hasPlusDRom();
+            const plusDAvailable = (this.plusDEnabled && this.memory.hasPlusDRom()) ||
+                (this.discipleEnabled && this.memory.hasDiscipleRom());
 
             return {
                 diskInserted: true,
@@ -8541,6 +8622,7 @@ import { Disassembler } from './disasm.js';
                 this.loadedFDCDiskFiles[driveIndex & 0x01] = null;
             } else if (type === 'plusd') {
                 this.plusD.ejectDisk(driveIndex & 0x01);
+                this.disciple.ejectDisk(driveIndex & 0x01);
                 this.loadedPlusDDisks[driveIndex & 0x01] = null;
                 this.loadedPlusDDiskFiles[driveIndex & 0x01] = null;
             } else if (type === 'if1') {

@@ -140,6 +140,8 @@ export function initFileLoader({
         // drive nothing could ever read.
         if (spectrum._plusDPagingEnabled) {
             systems.push({ id: 'mgt', name: '+D', blankLabel: 'Blank MGT', drives: 2 });
+        } else if (spectrum._disciplePagingEnabled) {
+            systems.push({ id: 'mgt', name: 'DISCiPLE', blankLabel: 'Blank MGT', drives: 2 });
         }
         if (spectrum._if1PagingEnabled) {
             systems.push({ id: 'mdr', name: 'Microdrive', blankLabel: 'Blank MDR', drives: 4, numbered: true });
@@ -330,7 +332,7 @@ export function initFileLoader({
             if (!spectrum.isRunning()) spectrum.start();
             let msg = `MGT disk inserted in +D ${mgtLetter}: ${result.diskName} (${result.fileCount} files).`;
             if (result.plusDRequired) {
-                msg += ' Enable +D interface and load plusd.rom in Settings to use.';
+                msg += ' Enable the +D (plusd.rom) or the DISCiPLE (disciple.rom) in Settings to use.';
             }
             showMessage(msg);
         } else if (result.diskInserted && result.diskType === 'opd') {

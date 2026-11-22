@@ -224,6 +224,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         if (romData['plusd.rom'] && spec.plusDEnabled) {
             spec.memory.loadPlusDRom(romData['plusd.rom']);
         }
+        // Load DISCiPLE ROM if available and the DISCiPLE is enabled
+        if (romData['disciple.rom'] && spec.discipleEnabled) {
+            spec.memory.loadDiscipleRom(romData['disciple.rom']);
+        }
         // Load Interface 1 ROM if available and IF1 is enabled
         if (romData['if1.rom'] && spec.if1Enabled) {
             spec.memory.loadIF1Rom(romData['if1.rom']);
@@ -320,6 +324,10 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         // +D ROM (for MGT disks)
         if (!seen.has('plusd.rom')) {
             romPaths.push({ path: 'roms/plusd.rom', file: 'plusd.rom' });
+        }
+        // DISCiPLE ROM (for MGT disks, GDOS 3 or Uni-DOS)
+        if (!seen.has('disciple.rom')) {
+            romPaths.push({ path: 'roms/disciple.rom', file: 'disciple.rom' });
         }
         // Interface 1 ROM (for Microdrive cartridges)
         if (!seen.has('if1.rom')) {
