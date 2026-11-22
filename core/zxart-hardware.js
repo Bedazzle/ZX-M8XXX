@@ -1,0 +1,142 @@
+// zxart-hardware.js — turns a release's hardware list, as zxart.ee keeps it
+// (project/core/ZxArt/Hardware/HardwareItem.php), into a machine and the
+// peripherals to fit to it. Used by the embeddable player (ui/player.js).
+//
+//   resolveHardware(['pentagon128', 'ts', 'kempston'], 'game.trd')
+//   -> { machine: 'pentagon', storage: { zxm8_turboSound: 'true' },
+//        spectrum: {}, joystick: 'kempston', unsupported: [] }
+//
+// `storage` holds the settings the Spectrum core reads itself while it is
+// built and on every machine change (core/utils.js storageGet); `spectrum`
+// holds fields to set on the instance before the ROMs are fetched.
+
+// Machines in the order of preference when a release lists more than one: a
+// 128K Sinclair first (an AY and the most common target), then the clones,
+// the 48K, and the machines with a ROM of their own last, as a 48K game that
+// also lists a Timex is still best off on a Spectrum.
+const MACHINES = [
+    ['zx128', '128k'], ['zx128+2', '+2'], ['pentagon128', 'pentagon'],
+    ['pentagon512', 'pentagon1024'], ['pentagon1024', 'pentagon1024'],
+    ['pentagon2666', 'pentagon1024'],
+    ['scorpion', 'scorpion'], ['scorpion1024', 'scorpion'],
+    ['zx128+2b', '+2a'], ['zx128+3', '+3'],
+    ['zx48', '48k'], ['zx16', '48k'],
+    ['timex2068', 'tc2068'], ['timex2048', 'tc2048'],
+    ['tk9x', 'tk90x'], ['didaktik80', 'dgama'],
+];
+
+// TR-DOS machines, in preference for a TR-DOS disk
+const TRDOS_MACHINES = ['pentagon', 'pentagon1024', 'scorpion'];
+
+const JOYSTICKS = { kempston: 'kempston', cursor: 'cursor', int2_1: 'sinclair1', int2_2: 'sinclair2' };
+
+// Codes that need nothing (the machine has it) or are about the release, not
+// the machine
+const NOTHING_TO_FIT = new Set(['beeper', 'tape', 'flashcolor', 'cpm']);
+
+export function fileExt(name) {
+    const m = /\.([a-z0-9]+)$/i.exec(name || '');
+    return m ? m[1].toLowerCase() : '';
+}
+
+export function resolveHardware(codes = [], fileName = '') {
+    const has = new Set((codes || []).map(c => String(c).toLowerCase()));
+    const ext = fileExt(fileName);
+    const storage = {};
+    const spectrum = {};
+    const unsupported = [];
+    let joystick = null;
+    const handled = new Set();
+    const use = (code) => { handled.add(code); return has.has(code); };
+
+    // ---- the disk system, from the codes or else the file's format ----
+    const trdos = use('betadisk') | use('trdos') | use('trdos4x');
+    const isTrdDisk = ['trd', 'scl', 'udi'].includes(ext);
+    let needMachine = null;   // a machine the media itself demands
+    // A DSK is a +3 disk, unless the release is for the Timex FDD 3000 (TOS)
+    if (ext === 'dsk' && !has.has('tos')) needMachine = '+3';
+    if (use('timex_cartridge') || ext === 'dck') needMachine = 'tc2068';
+    if (use('disciple')) spectrum.discipleEnabled = true;
+    else if (ext === 'mgt') spectrum.plusDEnabled = true;
+    if (use('opd') || ext === 'opd' || ext === 'opu') spectrum.opusEnabled = true;
+    if (use('mdos') || ext === 'd80' || ext === 'd40') spectrum.didaktikEnabled = true;
+    if (use('microdrive') || ext === 'mdr') spectrum.if1Enabled = true;
+    if (use('tos')) storage.zxm8_fdd3000 = 'true';
+    if (ext === 'kdi') storage.zxm8_kempdisc = 'true';
+    use('3dos'); use('3dosdisk');
+
+    // ---- the machine ----
+    const listed = MACHINES.filter(([code]) => use(code)).map(([, id]) => id);
+    for (const [code] of MACHINES) handled.add(code);
+    let machine;
+    if (needMachine) {
+        machine = needMachine;
+    } else if (has.has('trdos4x') && !has.has('trdos') && !has.has('betadisk')) {
+        // TR-DOS 4.x: a Beta 48 (beta48.rom) on a Sinclair, as it was sold
+        machine = listed.find(m => !TRDOS_MACHINES.includes(m)) || '48k';
+        storage.zxm8_betaDisk = 'true';
+        storage.zxm8_betaVariant = 'auto';
+    } else if (isTrdDisk || trdos) {
+        // A TR-DOS release: a Pentagon or Scorpion if it may run on one, else
+        // the first machine listed with a Beta Disk fitted, else a Pentagon
+        machine = listed.find(m => TRDOS_MACHINES.includes(m)) || listed[0] || 'pentagon';
+        if (!TRDOS_MACHINES.includes(machine)) storage.zxm8_betaDisk = 'true';
+    } else {
+        machine = listed[0] || '128k';
+    }
+    if (has.has('pentagon2666')) unsupported.push('pentagon2666');
+
+    // ---- sound ----
+    if (use('ay') && ['48k', 'tc2048', 'tk90x', 'dgama', 'hc2000'].includes(machine)) {
+        spectrum.ay48kEnabled = true;
+    }
+    if (use('ts')) storage.zxm8_turboSound = 'true';
+    if (use('tsfm')) { storage.zxm8_turboSound = 'true'; storage.zxm8_tsfm = 'true'; }
+    if (use('gs') | use('ngs')) storage.zxm8_gs = 'true';
+    if (use('saa')) storage.zxm8_saa = 'true';
+    if (use('covoxfb')) { storage.zxm8_dacType = 'covox'; storage.zxm8_covoxPort = 'FB'; }
+    else if (use('covoxdd')) { storage.zxm8_dacType = 'covox'; storage.zxm8_covoxPort = 'DD'; }
+    else if (use('soundrive')) storage.zxm8_dacType = 'soundrive1';
+    else if (use('specdrum') | use('cheetah')) storage.zxm8_dacType = 'specdrum';
+
+    // ---- input and video ----
+    for (const [code, type] of Object.entries(JOYSTICKS)) {
+        if (use(code) && !joystick) joystick = type;
+    }
+    if (use('kempston8b')) { joystick = joystick || 'kempston'; spectrum.kempstonExtendedEnabled = true; }
+    if (use('kempstonmouse') && machine !== 'hc2000') spectrum.kempstonMouseEnabled = true;
+    if (use('ulaplus')) storage.zxm8_ulaplus = 'true';
+
+    for (const code of has) {
+        if (!handled.has(code) && !NOTHING_TO_FIT.has(code)) unsupported.push(code);
+    }
+    return { machine, storage, spectrum, joystick, unsupported };
+}
+
+// Pick the file to run out of an archive's list ({name, type}). zxart names
+// the file it means (launchFilePath) when it knows; otherwise a disk the
+// machine boots beats a tape, a tape beats a snapshot, and within a kind the
+// first one wins (side A, part 1).
+const KIND_ORDER = ['trd', 'scl', 'udi', 'dsk', 'kdi', 'mgt', 'opd', 'd80', 'd40', 'mdr',
+                    'tzx', 'tap', 'z80', 'szx', 'sna', 'dck', 'rzx', 'wav'];
+
+export function pickLaunchFile(files, launchFilePath = '') {
+    if (!files || !files.length) return -1;
+    if (launchFilePath) {
+        const want = launchFilePath.replace(/\\/g, '/').toLowerCase();
+        const base = want.split('/').pop();
+        let i = files.findIndex(f => f.name.replace(/\\/g, '/').toLowerCase() === want);
+        if (i < 0) i = files.findIndex(f => f.name.replace(/\\/g, '/').toLowerCase().endsWith('/' + want));
+        if (i < 0) i = files.findIndex(f => f.name.replace(/\\/g, '/').split('/').pop().toLowerCase() === base);
+        if (i >= 0) return i;
+    }
+    const rank = (f) => {
+        const r = KIND_ORDER.indexOf(f.type || fileExt(f.name));
+        return r < 0 ? KIND_ORDER.length : r;
+    };
+    let best = 0;
+    for (let i = 1; i < files.length; i++) {
+        if (rank(files[i]) < rank(files[best])) best = i;
+    }
+    return best;
+}

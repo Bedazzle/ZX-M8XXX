@@ -1,0 +1,109 @@
+/* player.css — the embeddable player (player.html, ui/player.js) */
+html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #ddd;
+    font: 13px system-ui, sans-serif;
+    overflow: hidden;
+}
+#player { height: 100%; }
+
+.zxm8-player {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #000;
+}
+.zxm8-screen {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.zxm8-screen canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    outline: none;
+    display: block;
+}
+.zxm8-msg {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, .6);
+    pointer-events: none;
+}
+.zxm8-msg:empty { display: none; }
+.zxm8-error { color: #ff8080; }
+.zxm8-unmute {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 4px 10px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, .7);
+    color: #ddd;
+    font: inherit;
+    cursor: pointer;
+}
+.zxm8-menu {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: rgba(0, 0, 0, .75);
+    outline: none;
+}
+.zxm8-menu[hidden] { display: none; }
+.zxm8-menu-title { font-size: 15px; color: #fff; }
+.zxm8-menu-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 4px;
+    width: min(90%, 520px);
+    max-height: 70%;
+    overflow-y: auto;
+}
+.zxm8-menu-list button {
+    padding: 6px 8px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #1a1a1a;
+    color: #ddd;
+    font: 14px monospace;
+    text-align: left;
+    cursor: pointer;
+}
+.zxm8-menu-list button.zxm8-sel { background: #2d4f7a; border-color: #5b8ccc; color: #fff; }
+.zxm8-bar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+    padding: 4px;
+    background: #111;
+}
+.zxm8-bar button {
+    min-width: 34px;
+    height: 28px;
+    border: 1px solid #333;
+    border-radius: 4px;
+    background: #222;
+    color: #ddd;
+    font-size: 15px;
+    cursor: pointer;
+}
+.zxm8-bar button:hover { background: #333; }
+.zxm8-player:fullscreen .zxm8-bar { display: none; }

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Player Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Player Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // The embeddable player (player.html, ui/player.js): zxart hardware codes
+        // to a machine, the file it picks from an archive, and a program started
+        // by itself.
+        import { resolveHardware, pickLaunchFile } from '../core/zxart-hardware.js';
+        import { trdHasBootFile, extractBootFile, injectBootIntoTrd } from '../core/trd-boot.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('zxart hardware codes');
+            let h = resolveHardware(['zx48', 'zx128', 'ay', 'kempston'], 'game.tap');
+            assert(h.machine === '128k' && h.joystick === 'kempston' && !h.spectrum.ay48kEnabled, 'zx48 + zx128: the 128K, with its own AY', JSON.stringify(h));
+            h = resolveHardware(['zx48', 'ay'], 'game.tap');
+            assert(h.machine === '48k' && h.spectrum.ay48kEnabled, 'zx48 + ay: a 48K with an AY fitted');
+            h = resolveHardware(['zx128', 'pentagon128'], 'game.trd');
+            assert(h.machine === 'pentagon' && !h.storage.zxm8_betaDisk, 'a TRD on zx128 + pentagon128: the Pentagon');
+            h = resolveHardware(['zx128', 'betadisk'], 'game.scl');
+            assert(h.machine === '128k' && h.storage.zxm8_betaDisk === 'true', 'a TRD on zx128 only: a 128K with a Beta Disk');
+            h = resolveHardware(['zx48', 'trdos4x'], 'game.trd');
+            assert(h.machine === '48k' && h.storage.zxm8_betaDisk === 'true' && h.storage.zxm8_betaVariant === 'auto', 'trdos4x: a Beta 48 on the 48K', JSON.stringify(h));
+            h = resolveHardware([], 'game.trd');
+            assert(h.machine === 'pentagon', 'a TRD with no machine listed: the Pentagon');
+            h = resolveHardware(['zx128+3'], 'game.dsk');
+            assert(h.machine === '+3', 'a DSK: the +3');
+            h = resolveHardware(['timex2068'], 'game.dck');
+            assert(h.machine === 'tc2068', 'a DCK: the TC2068');
+            h = resolveHardware(['pentagon128', 'ts', 'gs', 'saa', 'covoxfb', 'int2_1', 'ulaplus'], 'x.trd');
+            assert(h.storage.zxm8_turboSound === 'true' && h.storage.zxm8_gs === 'true' && h.storage.zxm8_saa === 'true' &&
+                   h.storage.zxm8_dacType === 'covox' && h.storage.zxm8_covoxPort === 'FB' &&
+                   h.joystick === 'sinclair1' && h.storage.zxm8_ulaplus === 'true', 'sound, joystick and ULAplus codes', JSON.stringify(h));
+            h = resolveHardware(['zx128', 'tsfm'], 'x.tap');
+            assert(h.storage.zxm8_tsfm === 'true' && h.storage.zxm8_turboSound === 'true', 'tsfm: TurboSound FM (on TurboSound)');
+            h = resolveHardware(['zx48', 'disciple'], 'x.mgt');
+            assert(h.spectrum.discipleEnabled && !h.spectrum.plusDEnabled, 'an MGT with disciple: the DISCiPLE');
+            h = resolveHardware(['zx48'], 'x.mgt');
+            assert(h.spectrum.plusDEnabled, 'an MGT without: the +D');
+            h = resolveHardware(['zx48', 'microdrive', 'sid', 'divmmc'], 'x.mdr');
+            assert(h.spectrum.if1Enabled && h.unsupported.join() === 'sid,divmmc', 'microdrive: Interface 1; what is not emulated is reported', h.unsupported.join());
+            h = resolveHardware(['zx48'], 'x.kdi');
+            assert(h.storage.zxm8_kempdisc === 'true', 'a KDI: the Kempston Disc');
+
+            section('the file to run from an archive');
+            const files = [{ name: 'readme/info.sna', type: 'sna' }, { name: 'GAME.TAP', type: 'tap' },
+                           { name: 'disk/side_a.trd', type: 'trd' }, { name: 'disk/side_b.trd', type: 'trd' }];
+            assert(pickLaunchFile(files, 'disk/side_b.trd') === 3, 'launchFilePath, the whole path');
+            assert(pickLaunchFile(files, 'SIDE_B.TRD') === 3, 'launchFilePath, the name alone, any case');
+            assert(pickLaunchFile(files, 'missing.tap') === 2 && pickLaunchFile(files) === 2, 'otherwise a disk, side A first');
+            assert(pickLaunchFile(files.slice(0, 2)) === 1, 'a tape before a snapshot');
+        }
+
+        async function play(q, frames) {
+            const f = document.getElementById('app');
+            f.src = '../player.html?' + q;
+            // the iframe still holds the last page until the new one loads
+            const p = await until(() => f.contentWindow.location.search === (q ? '?' + q : '') && f.contentWindow.zxm8Player, 600, 50);
+            if (!p) return null;
+            const s = p.spectrum;
+            s.stop();
+            for (let i = 0; i < frames; i++) s.runFrame();
+            return { p, s, msg: f.contentDocument.querySelector('.zxm8-msg').textContent };
+        }
+
+        async function runTests() {
+            units();
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            section('a boot for a TR-DOS disk without one');
+            if (await ok('../headless/sound/AYtest_v0.2.trd')) {
+                const src = new Uint8Array(await (await fetch('../headless/sound/AYtest_v0.2.trd')).arrayBuffer());
+                const boot = extractBootFile(src);
+                const blank = new Uint8Array(await (await fetch('../tests/pristine/ref-trd-blank.trd')).arrayBuffer());
+                const out = injectBootIntoTrd(blank, boot);
+                assert(boot && !trdHasBootFile(blank) && trdHasBootFile(out) && out[0x8E4] === 1, 'added to a blank disk: in the catalogue, one file');
+            } else skip('headless/sound/AYtest_v0.2.trd not present');
+
+            section('the player');
+            if (await ok('../headless/gs/SeaDragon.scl')) {
+                const r = await play('url=headless/gs/SeaDragon.scl&hw=pentagon128,gs&boot5=none', 1500);
+                assert(r && r.s.machineType === 'pentagon' && r.s.gsOn && r.s.gs.rom, 'SeaDragon: a Pentagon with General Sound', r && r.msg);
+                assert(r && r.s.cpu.pc >= 0x5B00 && r.s.cpu.pc < 0xFFFF, 'no boot and none to add: its BASIC program is RUN', r && r.s.cpu.pc.toString(16));
+            } else skip('headless/gs/SeaDragon.scl not present');
+            if (await ok('../headless/saa/krunel2068_en.tap')) {
+                const r = await play('url=headless/saa/krunel2068_en.tap&hw=zx128,saa', 1500);
+                assert(r && r.s.machineType === '128k' && r.s.saaOn && r.s.cpu.pc >= 0x8000, 'a tape: loaded and running by itself, with the SAA', r && r.s.cpu.pc.toString(16));
+            } else skip('headless/saa/krunel2068_en.tap not present');
+            if (await ok('../headless/tsfm/tech_support.sna')) {
+                const r = await play('url=headless/tsfm/tech_support.sna&hw=zx128,tsfm', 150);
+                assert(r && r.s.tsfm && r.s.fm[0].ops.some(o => o.keyState), 'a snapshot with TurboSound FM: the FM plays');
+            } else skip('headless/tsfm/tech_support.sna not present');
+            if (await ok('../headless/beta48/Pac-Mania48-128.scl')) {
+                const r = await play('url=headless/beta48/Pac-Mania48-128.scl&hw=zx48,trdos4x', 0);
+                const doc = document.getElementById('app').contentDocument;
+                const items = [...doc.querySelectorAll('.zxm8-menu-list button')].map(b => b.textContent);
+                assert(r && r.s.memory.hasBeta48Rom() && !doc.querySelector('.zxm8-menu').hidden && items.join() === 'PacMania,PcManiaV,PcManiaI',
+                       'TR-DOS 4.x, three programs and no boot: the player asks which', items.join());
+                doc.querySelectorAll('.zxm8-menu-list button')[1].click();
+                await wait(50);                     // the choice is taken in a .then
+                r.s.stop();                         // the auto load started it; drive it here
+                for (let i = 0; i < 1500; i++) r.s.runFrame();
+                assert(doc.querySelector('.zxm8-menu').hidden && r.s.cpu.pc >= 0x5B00, 'the chosen one is RUN', r.s.cpu.pc.toString(16));
+            } else skip('headless/beta48/Pac-Mania48-128.scl not present');
+            const r = await play('url=no/such/file.tap', 1);
+            assert(r && /HTTP 404/.test(r.msg), 'a file that is not there: said so', r && r.msg);
+            const b = await play('', 120);
+            assert(b && b.s.machineType === '128k' && b.s.romLoaded, 'no file: a 128K at BASIC');
+            document.getElementById('app').src = 'about:blank';
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

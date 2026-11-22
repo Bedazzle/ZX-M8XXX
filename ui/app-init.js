@@ -7,6 +7,7 @@
 // so paths like 'roms/48.rom' stay as they were.
 
 import { MACHINE_PROFILES, getMachineProfile, getMachineTypes, DEFAULT_VISIBLE_MACHINES, is128kCompat } from '../core/machines.js';
+import { fetchRoms } from '../core/rom-loader.js';
 import { Spectrum } from '../core/spectrum.js';
 import { createRewindBuffer } from '../core/rewind.js';
 import { Disassembler } from '../core/disasm.js';
@@ -587,66 +588,11 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         // in scorpion.rom (trdosInRom) and so never missed it. Nothing healed it
         // afterwards either -- switching away and back fetches nothing new.
         async ensureRom(machineType = spectrum.machineType) {
-            const profile = getMachineProfile(machineType);
-            if (!profile) throw new Error(`Unknown machine: ${machineType}`);
-            if (!romData[profile.romFile] && profile.romFile === 'hc2000.rom') {
-                // HC-2000 also comes as FUSE's two 16KB halves
-                const halves = await Promise.all([0, 1].map(h =>
-                    fetch('roms/hc2000-' + h + '.rom').then(r => r.ok ? r.arrayBuffer() : null)));
-                if (halves[0] && halves[1]) {
-                    const full = new Uint8Array(32768);
-                    full.set(new Uint8Array(halves[0]).subarray(0, 16384), 0);
-                    full.set(new Uint8Array(halves[1]).subarray(0, 16384), 16384);
-                    romData['hc2000.rom'] = full.buffer;
-                }
-            }
-            if (!romData[profile.romFile] && profile.romFile === 'tc2068.rom') {
-                // TC2068 also comes as FUSE's tc2068-0.rom (16KB) + tc2068-1.rom (8KB)
-                const parts = await Promise.all([0, 1].map(h =>
-                    fetch('roms/tc2068-' + h + '.rom').then(r => r.ok ? r.arrayBuffer() : null)));
-                if (parts[0] && parts[1]) {
-                    const full = new Uint8Array(24576).fill(0xFF);
-                    full.set(new Uint8Array(parts[0]).subarray(0, 16384), 0);
-                    full.set(new Uint8Array(parts[1]).subarray(0, 8192), 16384);
-                    romData['tc2068.rom'] = full.buffer;
-                }
-            }
-            if (!romData[profile.romFile]) {
-                const res = await fetch('roms/' + profile.romFile);
-                if (!res.ok) {
-                    throw new Error(`roms/${profile.romFile} not available (HTTP ${res.status})`);
-                }
-                romData[profile.romFile] = await res.arrayBuffer();
-            }
-            // An interface ROM is optional in a way the machine's is not: without
-            // it the machine simply cannot offer that interface, so a miss here is
-            // not an error.
-            const maybe = async (file) => {
-                if (romData[file]) return;
-                try {
-                    const res = await fetch('roms/' + file);
-                    if (res.ok) romData[file] = await res.arrayBuffer();
-                } catch (e) { /* not served */ }
-            };
-            // Beta Disk follows the TARGET machine, worked out the way
-            // setMachineType does it -- reading spectrum.betaDiskEnabled would
-            // answer for the machine being left behind.
-            const betaDisk = profile.betaDiskDefault ||
-                storageGet('zxm8_betaDisk') === 'true';
-            if (!profile.trdosInRom && betaDisk) await maybe('trdos.rom');
-            if (betaDisk && !profile.betaDiskDefault && spectrum.betaVariant !== '128') await maybe('beta48.rom');
-            if (spectrum.plusDEnabled) await maybe('plusd.rom');
-            if (spectrum.discipleEnabled) await maybe('disciple.rom');
-            if (spectrum.if1Enabled) await maybe('if1.rom');
-            if (spectrum.opusEnabled) await maybe('opus.rom');
-            if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
-            if (spectrum.fdd3000Enabled) { await maybe(spectrum.fdd3000RomFile); await maybe('fdd3000-boot.rom'); }
-            if (spectrum.kempdiscEnabled) await maybe(spectrum.kempdiscRomFile);
-            if (profile.pagingModel === 'hc2000') await maybe('hc-if1.rom');   // built-in HC IF1
+            await fetchRoms(spectrum, machineType, romData);
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);
             }
-            return !!romData[profile.romFile];
+            return !!romData[getMachineProfile(machineType).romFile];
         },
 
         // Debug managers (read or add labels / regions / comments / xrefs)

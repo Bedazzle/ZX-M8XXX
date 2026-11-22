@@ -31,9 +31,11 @@ const AUTO_LOAD_KEY_GAP_SLOW  = 8;   // ~150ms
 const AUTO_LOAD_SCORPION_BASIC_WAIT = 75; // ~1.5s after choosing 128 BASIC
 
 export function initAutoLoader({ getSpectrum }) {
-    const chkAutoLoad = document.getElementById('chkAutoLoad');
-    const chkFlashLoad = document.getElementById('chkFlashLoad');
-    const tapeLoadModeEl = document.getElementById('tapeLoadMode');
+    // The player page has none of these controls: auto load is always on there
+    const chkAutoLoad = document.getElementById('chkAutoLoad') ||
+        { checked: true, addEventListener() {} };
+    const chkFlashLoad = document.getElementById('chkFlashLoad') || { checked: false };
+    const tapeLoadModeEl = document.getElementById('tapeLoadMode') || {};
     let autoLoadQueue = [];          // pending [{frame, fn}], sorted by absolute frame
     let autoLoadStartFrame = 0;      // spectrum.totalFrames when the sequence began
     let autoLoadActive = false;
