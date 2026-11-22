@@ -52,6 +52,15 @@ import {
             this.plusDRom = null;         // 8KB ROM (Uint8Array)
             this.plusDRam = new Uint8Array(8192); // 8KB RAM
 
+            // DISCiPLE interface state. The ROM and the RAM share 0x0000-0x3FFF in
+            // either order: after a reset (or IN 0x7B) the ROM is low and the RAM
+            // at 0x2000; GDOS then OUTs 0x7B to put its RAM (the system file) low.
+            this.discipleActive = false;  // True when DISCiPLE memory is paged in
+            this.discipleRomLow = true;   // ROM at 0x0000 (true) or at 0x2000 (false)
+            this.discipleRom = null;      // 8KB or 16KB ROM (16KB: bank = port 0x1F bit 3)
+            this.discipleRomBank = 0;
+            this.discipleRam = new Uint8Array(8192);
+
             // Interface 1 (Microdrive) state
             this.if1Active = false;      // True when IF1 ROM paged in at 0x0000-0x1FFF
             this.if1Rom = null;          // 8KB ROM (Uint8Array)
@@ -144,6 +153,11 @@ import {
             this.scorpionRamInRomMode = false;
             this.plusDActive = false;
             this.plusDRam.fill(0);
+            // DISCiPLE: the reset button sets the ROM low and pages out; the
+            // static RAM keeps its contents (GDOS relies on that, see port 0x7B)
+            this.discipleActive = false;
+            this.discipleRomLow = true;
+            this.discipleRomBank = 0;
             this.if1Active = false;
             this.opusActive = false;
             this.opusRam.fill(0);
@@ -274,6 +288,25 @@ import {
             return false;
         }
 
+        // Load DISCiPLE ROM (8KB, or 16KB with two banks)
+        loadDiscipleRom(data) {
+            const src = new Uint8Array(data);
+            this.discipleRom = new Uint8Array(src.length > 8192 ? 16384 : 8192);
+            this.discipleRom.set(src.subarray(0, Math.min(src.length, this.discipleRom.length)));
+        }
+
+        hasDiscipleRom() {
+            if (!this.discipleRom) return false;
+            for (let i = 0; i < 256; i++) {
+                if (this.discipleRom[i] !== 0) return true;
+            }
+            return false;
+        }
+
+        _discipleRomByte(off) {
+            return this.discipleRom[(this.discipleRom.length > 8192 ? this.discipleRomBank * 8192 : 0) + off];
+        }
+
         // Load Interface 1 ROM (8KB)
         // Load the HC IF1 ROM (16KB). Only the HC-2000 has one.
         loadHcIf1Rom(data) {
@@ -389,6 +422,14 @@ import {
                 return val;
             }
 
+            // DISCiPLE ROM/RAM overlay, in either order (port 0x7B)
+            if (this.discipleActive && addr < SLOT1_START) {
+                const hi = addr >= 0x2000, off = addr & 0x1FFF;
+                val = (hi !== this.discipleRomLow) ? this._discipleRomByte(off) : this.discipleRam[off];
+                if (this.onRead) this.onRead(addr, val);
+                return val;
+            }
+
             // +D ROM/RAM overlay: 0x0000-0x1FFF = ROM, 0x2000-0x3FFF = RAM
             if (this.plusDActive && addr < SLOT1_START) {
                 val = (addr < 0x2000) ? this.plusDRom[addr] : this.plusDRam[addr - 0x2000];
@@ -474,6 +515,12 @@ import {
                 if (addr >= DIDAKTIK_RAM_START) {
                     this.didaktikRam[addr - DIDAKTIK_RAM_START] = val;
                 }
+                return;
+            }
+
+            // DISCiPLE RAM write: whichever half the RAM occupies
+            if (this.discipleActive && addr < SLOT1_START) {
+                if ((addr >= 0x2000) === this.discipleRomLow) this.discipleRam[addr & 0x1FFF] = val;
                 return;
             }
 

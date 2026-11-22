@@ -1336,7 +1336,7 @@ import { xorChecksum } from './common.js';
                 // so `RUN` and `CAT 1` returned from the trap with carry clear
                 // instead of reading the filename, and the Opus answered
                 // "C Nonsense in BASIC" to a command it had built itself.
-                if (this.memory.plusDActive || this.memory.opusActive ||
+                if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
                     this.memory.if1Active || this.memory.didaktikActive) {
                     return false;
                 }
@@ -1433,7 +1433,7 @@ import { xorChecksum } from './common.js';
             // Don't trap under TR-DOS, or with another interface's ROM paged in
             // over the bottom of the address space (see LD-BYTES)
             if (this.memory.trdosActive) return false;
-            if (this.memory.plusDActive || this.memory.opusActive ||
+            if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
                 this.memory.if1Active || this.memory.didaktikActive) return false;
 
             // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
