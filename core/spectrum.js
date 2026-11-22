@@ -1800,8 +1800,16 @@ import { Disassembler } from './disasm.js';
             return { ok: true, msg: `FDD 3000: CP/M — Monitor Emulator from drive ${String.fromCharCode(65 + mi)} first` };
         }
 
+        // The Beta Disk answers its ports only while the TR-DOS ROM is paged in
+        // (the DOS signal), as on a real Beta 128 / Pentagon. Answering them
+        // whenever a disk was in the drive took port $1F from the Kempston
+        // joystick ($1F is also the WD1793's command/status register), so no
+        // game could read a joystick on a Pentagon with its disk inserted.
+        // TR-DOS code in RAM reaches the ports through the ROM ($3D2F), which
+        // pages it in.
         _isBetaDiskActive() {
             return this.betaDiskEnabled && !this.memory.beta48On && !this._isHc() &&
+                this.memory.trdosActive &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
         }
 
