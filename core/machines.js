@@ -297,6 +297,42 @@ const MACHINE_PROFILES = {
             trdosInRom: true,
             trdosRomBank: 3,
         },
+        // Romanian clone by ICE Felix (1985+). 64KB RAM, a 32KB ROM chip holding
+        // BASIC (bank 0) and CP/M (bank 1), a config latch at $7E and a CP/M
+        // memory map. Port of Alex Badea's FUSE hc2000.c (fuse-emulator-svn,
+        // branch hc2000-v2); see Memory._hcRemap() for the map itself.
+        'hc2000': {
+            id: 'hc2000',
+            name: 'HC-2000',
+            group: 'Clones',
+            // RAM uses the 128K bank numbers: 0 (under the ROM, CP/M), 5, 2, 7
+            ramPages: 8,
+            romBanks: 2,
+            romFile: 'hc2000.rom',     // 32KB: hc2000-0.rom (BASIC) + hc2000-1.rom (CP/M)
+            romSize: 32768,
+            basicRomBank: 0,
+            pagingModel: 'hc2000',
+            // FUSE treats the HC as a 48K for the display: 224 T/line, 312 lines
+            ulaProfile: '48k',
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: false,      // no contended RAM, no contended ports
+            hasIOContention: false,
+            hasFloatingBus: true,      // FUSE: spectrum_unattached_port
+            hasInternalContention: false,
+            contentionPattern: 'none',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,
+            szxMachineId: 17,          // FUSE's SZX_MACHINE_HC2000
+            is128kCompat: false,
+        },
     };
 
     // Helper: get profile by machine type ID (falls back to 48k)

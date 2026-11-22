@@ -589,6 +589,17 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         async ensureRom(machineType = spectrum.machineType) {
             const profile = getMachineProfile(machineType);
             if (!profile) throw new Error(`Unknown machine: ${machineType}`);
+            if (!romData[profile.romFile] && profile.romFile === 'hc2000.rom') {
+                // HC-2000 also comes as FUSE's two 16KB halves
+                const halves = await Promise.all([0, 1].map(h =>
+                    fetch('roms/hc2000-' + h + '.rom').then(r => r.ok ? r.arrayBuffer() : null)));
+                if (halves[0] && halves[1]) {
+                    const full = new Uint8Array(32768);
+                    full.set(new Uint8Array(halves[0]).subarray(0, 16384), 0);
+                    full.set(new Uint8Array(halves[1]).subarray(0, 16384), 16384);
+                    romData['hc2000.rom'] = full.buffer;
+                }
+            }
             if (!romData[profile.romFile]) {
                 const res = await fetch('roms/' + profile.romFile);
                 if (!res.ok) {
@@ -617,6 +628,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             if (spectrum.if1Enabled) await maybe('if1.rom');
             if (spectrum.opusEnabled) await maybe('opus.rom');
             if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
+            if (profile.pagingModel === 'hc2000') await maybe('hc-if1.rom');   // built-in HC IF1
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);
             }
@@ -3093,6 +3105,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateIF1Status();
         updateOpusStatus();
         updateDidaktikStatus();
+        updateMouseStatus();   // the HC-2000 takes the Kempston mouse away
+        updateHcIf1Status();   // and brings its own disk interface
         diskActivityAPI.setup();
         // Which disk interfaces exist has just changed, so the catalogue and
         // its drive tabs are stale: they were left showing the old machine's
@@ -3124,7 +3138,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
     
     // Input & Mouse Settings (extracted to ui/input-settings.js)
-    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateMouseStatus, gamepadAPI, bootAPI } =
+    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateHcIf1Status, updateMouseStatus, gamepadAPI, bootAPI } =
         initInputSettings({
             getSpectrum: () => spectrum,
             getCanvas: () => canvas,
@@ -3144,6 +3158,8 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateIF1Status();
         updateOpusStatus();
         updateDidaktikStatus();
+        updateHcIf1Status();
+        updateMouseStatus();   // the HC-2000 takes the Kempston mouse away
     }
 
     // Autofire (extracted to ui/autofire.js)

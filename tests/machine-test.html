@@ -153,7 +153,8 @@
             assert(types.includes('pentagon'), 'pentagon exists');
             assert(types.includes('pentagon1024'), 'pentagon1024 exists');
             assert(types.includes('scorpion'), 'scorpion exists');
-            assert(types.length === 8, `8 machine types total, got ${types.length}`);
+            assert(types.includes('hc2000'), 'hc2000 exists');
+            assert(types.length === 9, `9 machine types total, got ${types.length}`);
         }
 
         section('Profiles - getMachineProfile returns correct profiles');

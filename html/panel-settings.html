@@ -360,7 +360,7 @@
                         <label class="checkbox-label" title="Enable AY-3-8910 sound output">
                             <input type="checkbox" id="chkSound"> Sound
                         </label>
-                        <label class="checkbox-label" title="Enable AY chip in 48K mode (like Melodik interface)" style="margin-left: 15px;">
+                        <label class="checkbox-label" title="Add an AY chip to a 48K-class machine — 48K or HC-2000 (like the Melodik interface)" style="margin-left: 15px;">
                             <input type="checkbox" id="chkAY48k"> AY in 48K
                         </label>
                         <button id="btnMute" class="control-btn" style="margin-left: 15px;" title="Mute/unmute sound">🔊</button>
@@ -487,6 +487,16 @@
                         <input type="file" id="romDidaktikInput" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="didaktikRomName" class="iface-rom-name"></span>
                         <span id="didaktikStatus" class="iface-status"></span>
+                    </div>
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="HC IF1: the HC-2000's Interface 1 with an i8272 floppy controller (DSK/IMG disks). HC-2000 only. Most machines had it built in; switch it off for an HC-2000 without one (then +D, Opus, Interface 1 etc. can be used instead).">
+                            <input type="checkbox" id="chkHcIf1"> HC IF1 (HC-2000)
+                        </label>
+                        <button id="btnLoadHcIf1Rom" class="control-btn iface-rom-btn" title="Load HC IF1 ROM file (hc-if1.rom, 16KB)">Load ROM</button>
+                        <input type="file" id="romHcIf1Input" class="file-input" accept=".rom,.bin" style="display:none">
+                        <span id="hcIf1RomName" class="iface-rom-name"></span>
+                        <span id="hcIf1Status" class="iface-status"></span>
                     </div>
                     <div class="iface-row" id="didaktik128Row">
                         <label class="checkbox-label" style="margin-left: 15px;" title="The 48-to-128K upgrade patch that made a D40/D80 usable on a 128K: the paging port decoder requires A5, and the ROM is hardwired to page 1 (48K BASIC). A stock 128K cannot run a Didaktik; some upgrade services fitted this.">

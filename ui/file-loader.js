@@ -2,6 +2,7 @@
 import { hex16 } from '../core/utils.js';
 import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
+import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 
 export function initFileLoader({
     getSpectrum,
@@ -101,6 +102,7 @@ export function initFileLoader({
     // container, and its contents are filtered by the same list.
     const DISK_SYSTEM_TYPES = {
         dsk: ['dsk'],
+        hc: ['dsk', 'img'],            // HC IF1: DSK, or raw IMG (converted). MGT is +D/DISCiPLE
         trd: ['trd', 'scl', 'udi'],
         mgt: ['mgt', 'img'],
         mdr: ['mdr'],
@@ -127,7 +129,10 @@ export function initFileLoader({
     function getAvailableDiskSystems() {
         const spectrum = getSpectrum();
         const systems = [];
-        if (spectrum.fdc) {
+        if (spectrum.hcIf1) {
+            // HC-2000: its µPD765 is the HC IF1's, and it reads raw IMG too
+            systems.push({ id: 'hc', name: 'HC IF1', blankLabel: 'Blank HC disk', drives: 2 });
+        } else if (spectrum.fdc) {
             systems.push({ id: 'dsk', name: '+3DOS', blankLabel: 'Blank DSK', drives: 2 });
         }
         if (spectrum.profile.betaDiskDefault || (spectrum.betaDiskEnabled && spectrum.memory.hasTrdosRom())) {
@@ -143,7 +148,8 @@ export function initFileLoader({
         } else if (spectrum._disciplePagingEnabled) {
             systems.push({ id: 'mgt', name: 'DISCiPLE', blankLabel: 'Blank MGT', drives: 2 });
         }
-        if (spectrum._if1PagingEnabled) {
+        // The HC IF1 pages in through the IF1 machinery but has no microdrives
+        if (spectrum._if1PagingEnabled && !spectrum.hcIf1) {
             systems.push({ id: 'mdr', name: 'Microdrive', blankLabel: 'Blank MDR', drives: 4, numbered: true });
         }
         if (spectrum._opusPagingEnabled) {
@@ -899,6 +905,10 @@ export function initFileLoader({
         if (sys.id === 'dsk') {
             const dskImage = DSKLoader.createBlankDSK('p3-ss40');
             result = spectrum.loadDSKImage(dskImage.toBuffer(), '[blank]', driveIndex & 0x01);
+        } else if (sys.id === 'hc') {
+            // HC BASIC 3.5" format, empty: 80 x 2 x 16 x 256, all $E5
+            const blank = HcDiskLoader.fromRaw(new Uint8Array(655360).fill(0xE5), 'blank.img').image;
+            result = spectrum.loadDSKImage(blank.toBuffer(), '[blank]', driveIndex & 0x01);
         } else if (sys.id === 'mgt') {
             // Blank MGT: all-zero directory = all slots unused
             result = spectrum.loadMGTImage(new Uint8Array(819200), '[blank]', driveIndex & 0x01);
