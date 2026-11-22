@@ -26,6 +26,8 @@
         // by itself.
         import { resolveHardware, pickLaunchFile } from '../core/zxart-hardware.js';
         import { trdHasBootFile, extractBootFile, injectBootIntoTrd } from '../core/trd-boot.js';
+        import { hasPlusDSystem, extractPlusDSystem, addPlusDSystem } from '../core/mgt-sys.js';
+        import { MGTLoader } from '../core/loaders/disk-mgt.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -109,7 +111,7 @@
             h = resolveHardware(['zx128', 'tsfm'], 'x.tap');
             assert(h.storage.zxm8_tsfm === 'true' && h.storage.zxm8_turboSound === 'true', 'tsfm: TurboSound FM (on TurboSound)');
             h = resolveHardware(['zx48', 'disciple'], 'x.mgt');
-            assert(h.spectrum.discipleEnabled && !h.spectrum.plusDEnabled, 'an MGT with disciple: the DISCiPLE');
+            assert(h.spectrum.plusDEnabled && !h.spectrum.discipleEnabled, 'an MGT with disciple: still the +D, which runs it too');
             h = resolveHardware(['zx48'], 'x.mgt');
             assert(h.spectrum.plusDEnabled, 'an MGT without: the +D');
             h = resolveHardware(['zx48', 'microdrive', 'sid', 'divmmc'], 'x.mdr');
@@ -189,6 +191,47 @@
                 for (let i = 0; i < 1500; i++) r.s.runFrame();
                 assert(doc.querySelector('.zxm8-menu').hidden && r.s.cpu.pc >= 0x5B00, 'the chosen one is RUN', r.s.cpu.pc.toString(16));
             } else skip('headless/beta48/Pac-Mania48-128.scl not present');
+            // A disk with no G+DOS on it: ours is added, and found by name
+            section('+D (MGT) and Opus disks');
+            if (await ok('../headless/gs/SeaDragon_boot.mgt')) {
+                const disk = new Uint8Array(await (await fetch('../headless/gs/SeaDragon_boot.mgt')).arrayBuffer());
+                const sys = extractPlusDSystem(disk);
+                const bare = disk.slice();
+                for (const slot of [0, 1, 2, 3]) bare[slot * 256] = 0;          // no DOS files, no "auto"
+                const added = addPlusDSystem(bare, sys);
+                const f = MGTLoader.listFiles(added).find(x => x.name.trim() === '+SYS 2a');
+                assert(hasPlusDSystem(disk) && !hasPlusDSystem(bare) && hasPlusDSystem(added) && f &&
+                       MGTLoader.extractFile(added, f).length === MGTLoader.extractFile(disk, MGTLoader.listFiles(disk)[0]).length,
+                       'G+DOS taken from one disk and added to another');
+                const url = URL.createObjectURL(new Blob([bare]));
+                let r = await play('url=' + encodeURIComponent(url) + '&name=nosys.mgt&hw=zx48', 2500);
+                assert(r && r.s.plusDEnabled && r.s.cpu.pc >= 0x8000, 'no G+DOS, no auto, one program: G+DOS added, RUN, LOAD d1 and the game runs', r && r.s.cpu.pc.toString(16));
+                const two = bare.slice();
+                two.set(two.subarray(4 * 256, 5 * 256), 5 * 256);
+                two.set([...'Other     '].map(c => c.charCodeAt(0)), 5 * 256 + 1);
+                const url2 = URL.createObjectURL(new Blob([two]));
+                r = await play('url=' + encodeURIComponent(url2) + '&name=two.mgt&hw=zx128,disciple', 0);
+                const doc = document.getElementById('app').contentDocument;
+                const items = [...doc.querySelectorAll('.zxm8-menu-list button')].map(b => b.textContent);
+                assert(r && r.s.plusDEnabled && !r.s.discipleEnabled && items.join() === 'SeaDragon,Other',
+                       'two programs, disciple listed: the +D, and the player asks which', items.join());
+                doc.querySelectorAll('.zxm8-menu-list button')[1].click();
+                await wait(50); r.s.stop();
+                for (let i = 0; i < 3000; i++) r.s.runFrame();
+                assert(r.s.cpu.pc >= 0x8000, 'on a 128K: 128 BASIC, run, load d1"Other" and the game runs', r.s.cpu.pc.toString(16));
+            } else skip('headless/gs/SeaDragon_boot.mgt not present');
+            for (const hw of ['zx48', 'zx128']) {
+                const r = await play('url=tests/pristine/ref-opd.opd&hw=' + hw + ',opd', 0);
+                const doc = document.getElementById('app').contentDocument;
+                const items = [...doc.querySelectorAll('.zxm8-menu-list button')].map(b => b.textContent);
+                doc.querySelectorAll('.zxm8-menu-list button')[0].click();
+                await wait(50); r.s.stop();
+                for (let i = 0; i < 2500; i++) r.s.runFrame();
+                const m = r.s.memory, rd = (a) => m.read(a) | (m.read(a + 1) << 8);
+                const varsUsed = rd(0x5C59) - rd(0x5C4B);          // E_LINE - VARS: "a" was made
+                assert(r && r.s.opusEnabled && items.join() === '6BASPROG,7BASVARS' && varsUsed > 1,
+                       `Opus on ${hw}, no "run": the menu, then LOAD *"m";1; and RUN (no LINE)`, items.join() + ' vars ' + varsUsed);
+            }
             const r = await play('url=no/such/file.tap', 1);
             assert(r && /HTTP 404/.test(r.msg), 'a file that is not there: said so', r && r.msg);
             const b = await play('', 120);

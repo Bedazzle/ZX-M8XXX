@@ -64,9 +64,9 @@ export function resolveHardware(codes = [], fileName = '') {
     if ((ext === 'dsk' && !has.has('tos') && !kdi) || use('cpmp3')) needMachine = '+3';
     if (use('hccpm')) needMachine = 'hc2000';                // HC CP/M: the HC-2000's own
     if (use('timex_cartridge') || ext === 'dck') needMachine = 'tc2068';
-    // gdos is the DISCiPLE's GDOS or the +D's G+DOS: the DISCiPLE when listed
-    if (use('disciple')) spectrum.discipleEnabled = true;
-    else if (use('gdos') || ext === 'mgt') spectrum.plusDEnabled = true;
+    // MGT disks (disciple, gdos) all go to the +D: it runs the DISCiPLE's
+    // software too, on a 48K or a 128K
+    if (use('disciple') | use('gdos') || ext === 'mgt') spectrum.plusDEnabled = true;
     if (use('opd') || ext === 'opd' || ext === 'opu') spectrum.opusEnabled = true;
     // The Didaktik 80 is a Gama with its D80 drive and MDOS
     if (use('mdos') || has.has('didaktik80') || ext === 'd80' || ext === 'd40') spectrum.didaktikEnabled = true;
@@ -129,7 +129,10 @@ export function resolveHardware(codes = [], fileName = '') {
         if (use(code) && !joystick) joystick = type;
     }
     if (use('kempston8b')) { joystick = joystick || 'kempston'; spectrum.kempstonExtendedEnabled = true; }
-    if (use('kempstonmouse') && machine !== 'hc2000') spectrum.kempstonMouseEnabled = true;
+    if (use('kempstonmouse') && machine !== 'hc2000') {
+        spectrum.kempstonMouseEnabled = true;
+        spectrum.kempstonMouseWheelEnabled = true;   // the wheel in the buttons port's top bits
+    }
     if (use('ulaplus')) storage.zxm8_ulaplus = 'true';
 
     // 128 MIDI out (AY port A): played on the player's built-in synth

@@ -91,8 +91,8 @@ to fit.
     Disc with `kdi` / `kdi128`. `cpmp3` (Locomotive CP/M+) is the +3 too, and
     `hccpm` is the HC-2000.
   - A DCK goes to the TC2068.
-  - An MGT goes to the DISCiPLE with `disciple`, or else to the +D. So does
-    `gdos` (G+DOS / GDOS).
+  - An MGT goes to the +D, also with `disciple` or `gdos`: the +D runs the
+    DISCiPLE's software too, on a 48K or a 128K.
   - OPD goes to the Opus; D80/D40 or `mdos` to the Didaktik 80. The
     `didaktik80` machine is a Didaktik Gama with that drive and MDOS; MDR or
     `microdrive` to Interface 1.
@@ -112,8 +112,8 @@ to fit.
 - **Input and video.**
   - `kempston`, `cursor`, `int2_1` and `int2_2` pick the joystick.
   - `kempston8b` turns on the extended buttons.
-  - `kempstonmouse` fits the mouse. A click on the screen captures it, and
-    Esc lets it go.
+  - `kempstonmouse` fits the mouse, with its wheel (the top four bits of the
+    buttons port). A click on the screen captures it, and Esc lets it go.
   - `ulaplus` turns on ULAplus.
   - `tmxhires` and `tmxhicol` (Timex video modes) need a Timex: the one the
     release lists, or else the TC2048.
@@ -126,21 +126,49 @@ the console and ignores them.
 The player starts the program the way the app does with auto load on:
 - A tape is loaded with LOAD "" (on the +3, the disk drives are emptied
   first).
-- A TR-DOS disk boots TR-DOS:
-  - TR-DOS runs the disk's `boot`.
-  - A disk without one gets ours, if there is one for that TR-DOS:
-    `data/boot/trdos5.*` for 5.x and `data/boot/trdos4.*` for 4.x, as a TRD
-    holding a `boot` or as a `.hobeta` file. The TR-DOS 5.x boot is Dimon's
-    boot, which runs a lone program straight away.
-  - With no boot to add, a single BASIC program is RUN. If there are
-    several, the player shows a list of them over the screen, picked with the
-    arrows and Enter or with a click. This is the TR-DOS 4.x case, which has
-    no boot yet.
 - A +3 disk boots through the Loader, and an FDD 3000 disk through its own
   boot.
 - A snapshot or a cartridge just runs.
-- +D, Opus, Didaktik, Microdrive and Kempston Disc disks are inserted, and
-  the machine is started at BASIC.
+- Didaktik, Microdrive, Kempston Disc and HC disks are inserted, and the
+  machine is started at BASIC.
+
+Disks of TR-DOS, the +D and the Opus follow one rule:
+1. If the disk has its own autostart, it runs.
+2. If not, and `data/boot/` has a boot of ours for that system, it is added
+   to the disk, and it runs, with its own menu inside the emulator.
+3. If neither, one BASIC program on the disk is run. If there are several,
+   the player shows them over the screen, picked with the arrows and Enter
+   or with a click.
+
+| System | Its autostart | Our boot | How the player runs a program |
+|--------|---------------|----------|-------------------------------|
+| TR-DOS 5.x | `boot` | `trdos5.trd` / `trdos5.hobeta` (Dimon's boot, which runs a lone program straight away) | RUN "name" |
+| TR-DOS 4.x | `boot` | `trdos4.trd` / `trdos4.hobeta` (none yet) | RUN "name" |
+| +D (MGT) | `auto…` | `plusd-auto.tap`: a TAP holding one BASIC program, written to the disk as `auto` (none yet) | RUN (G+DOS boots), then LOAD d1"name" |
+| Opus | `run` | `opus-run.tap`: the same, written as `run` (none yet) | LOAD *"m";1;"name" |
+
+`boot5` / `boot4` in the query string point to another TR-DOS boot.
+
+The +D's ROM is only a bootstrap: RUN loads G+DOS from the disk, from the
+file whose name begins `+SYS` (found by its name, wherever it is in the
+directory). A disk without one is given G+DOS 2a from `data/boot/plusd.sys`
+(its directory entry, then its data, 510 bytes a sector; taken from a
+working disk).
+
+A program saved without a LINE to start at would only load. The player gives
+the copy on the disk LINE 0 before loading it, so it runs as it loads. Typing
+RUN after it does not work in 128 BASIC: the screen editor's cursor sits on a
+program line, and the word lands in it.
+
+How the player types: it waits until BASIC sits scanning the keyboard with
+the interface paged out, plus at least 2 seconds after a command (the disk
+spins up with the interface ROM paged out). On a 128K it takes 128 BASIC
+from the menu and types words letter by letter. It presses a cursor key
+first to clear the report that 128 BASIC shows after a command, then waits
+for the redraw.
+
+To try the mouse, `headless/player/mouse.tap` (not in the repository) is a
+BASIC loop that prints X, Y and the buttons and plots where the mouse is.
 
 Browsers start sound only after a click or a key. Until then the player
 shows "Click for sound".

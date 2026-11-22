@@ -30,6 +30,9 @@ import { resolveHardware, pickLaunchFile, fileExt } from '../core/zxart-hardware
 import { ZipLoader } from '../core/loaders/zip.js';
 import { initAutoLoader } from './auto-loader.js';
 import { MidiSynth } from './midi-synth.js';
+import { MGTLoader } from '../core/loaders/disk-mgt.js';
+import { OPDLoader } from '../core/loaders/disk-opus.js';
+import { hasPlusDSystem, addPlusDSystem, addMgtFile, mgtBasicFile } from '../core/mgt-sys.js';
 import { trdHasBootFile, extractBootFile, isHobetaFile, extractBootFromHobeta, injectBootIntoTrd } from '../core/trd-boot.js';
 
 const ICON = { reset: '⟲', sound: '🔊', mute: '🔇', full: '⛶' };
@@ -118,6 +121,13 @@ export async function create(container, opts = {}) {
     spectrum.arrowsAsJoystick = opts.arrowsAsJoystick !== undefined ? !!opts.arrowsAsJoystick : !!hw.joystick;
     spectrum.setTapeFlashLoad(opts.flashLoad !== false);
     const boots = await fetchBoots(opts);
+    const bootBase = opts.bootBase || 'data/boot/';
+    const plusDSys = await fetchBytes(bootBase + 'plusd.sys');
+    // Our own boot programs for disks with no autostart, as one-program TAPs:
+    // "auto" for the +D, "run" for the Opus. Without one the player's menu
+    // does the choosing.
+    const plusDAuto = tapBasic(await fetchBytes(bootBase + 'plusd-auto.tap'));
+    const opusRun = tapBasic(await fetchBytes(bootBase + 'opus-run.tap'));
     // A TR-DOS disk without a "boot" gets ours, one for each TR-DOS: the menu
     // a TR-DOS 5.x boot draws does not run under 4.x and the other way round
     spectrum.onBeforeTrdLoad = (data) => {
@@ -196,6 +206,8 @@ export async function create(container, opts = {}) {
     // ---- running the program ----
     async function boot() {
         if (closeMenu) closeMenu();
+        stopScript();
+        diskBytes = null;
         spectrum.stop();
         autoLoader.cancelAutoLoad();
         if (spectrum.machineType !== machine) spectrum.setMachineType(machine);
@@ -209,11 +221,179 @@ export async function create(container, opts = {}) {
             return;
         }
         status('Starting ' + media.runName + '…');
-        let result = await spectrum.loadFile(new File([media.data], media.name), 0);
-        if (result.needsSelection) result = spectrum.loadFromZipSelection(result, media.index);
+        let result;
+        if (media.zip) {
+            result = await spectrum.loadFile(new File([media.data], media.name), 0);
+            if (result.needsSelection) {
+                const f = result._zipFiles[media.index];
+                f.data = prepareDisk(f.name, f.data);
+                diskBytes = f.data; diskName = f.name;
+                result = spectrum.loadFromZipSelection(result, media.index);
+            }
+        } else {
+            const data = prepareDisk(media.name, media.data);
+            diskBytes = data; diskName = media.name;
+            result = await spectrum.loadFile(new File([data], media.name), 0);
+        }
         await dispatch(result, media.runName);
         fitCanvas();
         if (menu.hidden) canvas.focus({ preventScroll: true });
+    }
+
+    // An MGT without G+DOS on it gets ours: the +D cannot start one otherwise
+    let diskBytes = null, diskName = '';
+    // The rule for every disk system: its own autostart runs; without one,
+    // ours (data/boot/) is added if there is one; else the player's menu.
+    function prepareDisk(name, data) {
+        const ext = fileExt(name);
+        try {
+            if (ext === 'mgt' && MGTLoader.isMGT(data)) {
+                if (plusDSys && !hasPlusDSystem(data)) data = addPlusDSystem(data, plusDSys).buffer;
+                const basic = MGTLoader.listFiles(data).filter(f => f.type === 1);
+                if (plusDAuto && !basic.some(f => f.name.trim().toLowerCase().startsWith('auto'))) {
+                    data = addMgtFile(data, mgtBasicFile('auto', plusDAuto.prog, plusDAuto.autostart)).buffer;
+                }
+            } else if ((ext === 'opd' || ext === 'opu') && opusRun) {
+                const files = OPDLoader.listFiles(data);
+                if (!files.some(f => f.type === 0 && f.name.trim().toLowerCase() === 'run')) {
+                    const bytes = new Uint8Array(data);
+                    const keep = files.map(f => ({
+                        name: f.name, type: f.type, startAddr: f.startAddr, autostart: f.autostart,
+                        progLength: f.progLength, declaredLength: f.length, data: OPDLoader.extractFile(bytes, f),
+                    }));
+                    const run = { name: 'run', type: 0, autostart: opusRun.autostart,
+                                  progLength: opusRun.prog.length, data: opusRun.prog };
+                    data = OPDLoader.buildOPD([run, ...keep], OPDLoader.getDiskInfo(bytes).diskLabel || '', 1, bytes).buffer;
+                }
+            }
+        } catch (e) { console.info('[player] disk left as it was: ' + e.message); }
+        return data;
+    }
+
+    // ---- typing at the machine, frame by frame ----
+    // Steps: {ready} waits for the ROM to sit scanning the keyboard (after a
+    // reset or a disk load) for a moment; {keys} presses keys together;
+    // {text} types characters one by one.
+    let scriptOff = null;
+    function stopScript() { if (scriptOff) { scriptOff(); scriptOff = null; } }
+    function charKeys(c) {
+        if (/[A-Z]/.test(c)) return ['CAPS', c.toLowerCase()];
+        if (c === ' ') return ['Space'];
+        return [c];
+    }
+    function runScript(steps) {
+        stopScript();
+        const ula = spectrum.ula;
+        const queue = [];
+        for (const st of steps) {
+            if (st.text) for (const c of st.text) queue.push({ keys: charKeys(c) });
+            else queue.push(st);
+        }
+        let i = 0, phase = 0, t = 0, reads = ula.keyboardReads, scanning = 0, held = null;
+        scriptOff = spectrum.addFrameListener(() => {
+            const st = queue[i];
+            if (!st) { stopScript(); return; }
+            t++;
+            if (st.ready) {
+                const now = ula.keyboardReads;
+                // A DOS checks BREAK while it loads, so a scan alone does not
+                // mean BASIC is waiting: the interface must be paged out too
+                const mem = spectrum.memory;
+                const idle = !mem.plusDActive && !mem.opusActive;
+                scanning = now > reads && idle ? scanning + 1 : 0;
+                reads = now;
+                if ((scanning >= (st.settle || 20) && t >= (st.min || 0)) || t > (st.timeout || 1500)) {
+                    i++; t = 0; scanning = 0;
+                }
+            } else if (phase === 0) {
+                held = st.keys.map(k => ula.resolveKeyName(k) || k);
+                held.forEach(k => ula.keyDown(k));
+                phase = 1; t = 0;
+            } else if (phase === 1 && t >= 5) {
+                held.forEach(k => ula.keyUp(k));
+                phase = 2; t = 0;
+            } else if (phase === 2 && t >= 5) {
+                phase = 0; t = 0; i++; reads = ula.keyboardReads;
+            }
+        });
+    }
+    // Into BASIC from reset: a 128K's menu goes to 128 BASIC, where words are
+    // typed letter by letter; a 48K types keywords as single keys
+    const isMenuMachine = () => spectrum.profile.pagingModel !== 'none' && spectrum.machineType !== 'scorpion';
+    function basicSteps() {
+        return isMenuMachine()
+            ? [{ ready: true }, { keys: ['ArrowDown'] }, { keys: ['Enter'] }, { ready: true }]
+            : [{ ready: true }];
+    }
+    // After a command (a DOS loading, a LOAD): BASIC waiting again, the disk
+    // spun down. 128 BASIC first shows its report, and the key that clears it
+    // is lost: a cursor key does that and nothing else. It redraws the screen
+    // some 40 frames later, and keys typed before that are lost too.
+    function afterCommand() {
+        const wait = { ready: true, min: 100, settle: 30 };
+        return isMenuMachine() ? [wait, { keys: ['ArrowDown'] }, { ready: true, min: 60 }] : [wait];
+    }
+    // RUN, or LOAD and what follows it, as this machine's BASIC takes it
+    const kw = (word, key) => isMenuMachine() ? { text: word + ' ' } : { keys: [key] };
+    const typeRun = () => [kw('run', 'r'), { keys: ['Enter'] }];
+    const typeLoad = (rest) => [kw('load', 'j'), { text: rest }, { keys: ['Enter'] }];
+
+    // +D (MGT): RUN loads G+DOS, which runs "auto". Without one a lone BASIC
+    // program is loaded; of several the player asks which.
+    function startPlusD() {
+        const files = diskBytes ? MGTLoader.listFiles(diskBytes) : [];
+        const basic = files.filter(f => f.type === 1);
+        const hasAuto = basic.some(f => f.name.trim().toLowerCase().startsWith('auto'));
+        const go = (f) => {
+            if (f) startAtLine0(f, 'mgt');
+            spectrum.reset();
+            runScript([...basicSteps(), ...typeRun(),
+                ...(f ? [...afterCommand(), ...typeLoad('d1"' + f.name.trim() + '"')] : [])]);
+            spectrum.start();
+        };
+        pickAndGo(hasAuto ? [] : basic, go);
+    }
+    // Opus: RUN runs the disk's "run". Without one a lone BASIC program is
+    // loaded; of several the player asks which.
+    function startOpus() {
+        const files = diskBytes ? OPDLoader.listFiles(diskBytes) : [];
+        const basic = files.filter(f => f.type === 0);
+        const hasRun = basic.some(f => f.name.trim().toLowerCase() === 'run');
+        const go = (f) => {
+            if (f) startAtLine0(f, 'opd');
+            spectrum.reset();
+            runScript([...basicSteps(),
+                ...(f ? typeLoad('*"m";1;"' + f.name.trim() + '"') : typeRun())]);
+            spectrum.start();
+        };
+        pickAndGo(hasRun ? [] : basic, go);
+    }
+    // A program saved without a LINE to start at would only load, and typing
+    // RUN after it is unreliable in 128 BASIC's screen editor (the cursor sits
+    // on a program line, and the word lands in it). So the copy on the disk is
+    // given LINE 0, and the disk inserted again: it runs as it loads.
+    function startAtLine0(f, kind) {
+        if (f.autostart != null && f.autostart < 0x8000) return;
+        const b = new Uint8Array(diskBytes).slice();
+        if (kind === 'mgt') {
+            const o = f.slotIndex * 256;
+            b[o + 218] = 0; b[o + 219] = 0;
+            const t = f.firstTrack, x = (((t & 0x7F) * 2 + (t >> 7)) * 10 + (f.firstSector - 1)) * 512;
+            if (b[x] === 0) { b[x + 7] = 0; b[x + 8] = 0; }     // the file's own 9-byte header
+        } else {
+            b[f.dataOffset + 3] = 0; b[f.dataOffset + 4] = 0;   // param1 of the Opus file header
+        }
+        diskBytes = b.buffer;
+        spectrum.loadFileData(diskBytes, diskName, 0);
+    }
+    // Nothing to choose (an autostart, or nothing to run): go(null). One
+    // program: go(it). Several: the menu first.
+    function pickAndGo(files, go) {
+        if (files.length === 0) go(null);
+        else if (files.length === 1) go(files[0]);
+        else chooseProgram(files.map(f => f.name.trim())).then(name => {
+            if (name !== null) { go(files.find(f => f.name.trim() === name)); canvas.focus({ preventScroll: true }); }
+        });
     }
 
     // What the full app does with a loaded file when auto load is on
@@ -231,6 +411,10 @@ export async function create(container, opts = {}) {
         } else if (result.diskInserted && result.diskType === 'fdd3') {
             spectrum.fdd3000AutoBoot();
             start();
+        } else if (result.diskInserted && result.diskType === 'mgt' && spectrum.plusDEnabled) {
+            startPlusD();
+        } else if (result.diskInserted && result.diskType === 'opd' && spectrum.opusEnabled) {
+            startOpus();
         } else if (result.diskInserted && ['mgt', 'opd', 'mdr', 'd80', 'kdi', 'hc'].includes(result.diskType)) {
             start();
         } else if (result.diskInserted) {
@@ -372,6 +556,29 @@ export async function create(container, opts = {}) {
 // (Beta 128, Pentagon, Scorpion), data/boot/trdos4.* for 4.x (Beta 48).
 // opts.boot5 / opts.boot4 point elsewhere; a missing one means no boot is
 // added, and such a disk has its first BASIC program RUN instead.
+// The first BASIC program of a TAP: { prog, autostart }, or null
+function tapBasic(tap) {
+    if (!tap) return null;
+    let i = 0, header = null;
+    while (i + 2 <= tap.length) {
+        const len = tap[i] | (tap[i + 1] << 8);
+        const block = tap.subarray(i + 2, i + 2 + len);
+        i += 2 + len;
+        if (block[0] === 0 && block[1] === 0) header = block;
+        else if (block[0] === 0xFF && header) {
+            return { prog: block.slice(1, block.length - 1), autostart: header[14] | (header[15] << 8) };
+        }
+    }
+    return null;
+}
+
+async function fetchBytes(url) {
+    try {
+        const r = await fetch(url);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+    } catch (e) { return null; }
+}
+
 async function fetchBoots(opts) {
     const base = opts.bootBase || 'data/boot/';
     const one = async (urls) => {
@@ -412,7 +619,7 @@ async function fetchMedia(opts, status) {
         runName = files[index].name;
     }
     // The loaders tell formats by extension too, so an archive keeps one
-    return { data, name: zip && !fileExt(name) ? name + '.zip' : name, runName, index };
+    return { data, name: zip && !fileExt(name) ? name + '.zip' : name, runName, index, zip };
 }
 
 if (typeof window !== 'undefined') window.ZXM8 = { create };
