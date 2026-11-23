@@ -180,7 +180,7 @@
                 assert(r && r.s.tsfm && keyed, 'a snapshot with TurboSound FM: the FM plays');
             } else skip('headless/tsfm/tech_support.sna not present');
             if (await ok('../headless/beta48/Pac-Mania48-128.scl')) {
-                const r = await play('url=headless/beta48/Pac-Mania48-128.scl&hw=zx48,trdos4x', 0);
+                const r = await play('url=headless/beta48/Pac-Mania48-128.scl&hw=zx48,trdos4x&boot4=none', 0);
                 const doc = document.getElementById('app').contentDocument;
                 const items = [...doc.querySelectorAll('.zxm8-menu-list button')].map(b => b.textContent);
                 assert(r && r.s.memory.hasBeta48Rom() && !doc.querySelector('.zxm8-menu').hidden && items.join() === 'PacMania,PcManiaV,PcManiaI',
@@ -191,6 +191,22 @@
                 for (let i = 0; i < 1500; i++) r.s.runFrame();
                 assert(doc.querySelector('.zxm8-menu').hidden && r.s.cpu.pc >= 0x5B00, 'the chosen one is RUN', r.s.cpu.pc.toString(16));
             } else skip('headless/beta48/Pac-Mania48-128.scl not present');
+            if (await ok('../headless/beta48/Pac-Mania48-128.scl') && await ok('../data/boot/trdos4.hobeta')) {
+                // Our TR-DOS 4.x boot (Dimon's, adapted): it draws its own menu
+                const r = await play('url=headless/beta48/Pac-Mania48-128.scl&hw=zx48,trdos4x', 0);
+                const doc = document.getElementById('app').contentDocument;
+                r.s.stop();
+                for (let i = 0; i < 1500; i++) r.s.runFrame();
+                assert(r && doc.querySelector('.zxm8-menu').hidden && r.s.cpu.pc >= 0x5B00,
+                       'TR-DOS 4.x, no boot: ours is added and its menu shown, not the player menu', r && r.s.cpu.pc.toString(16));
+                const tap = (k) => {
+                    r.s.ula.keyDown(k); for (let i = 0; i < 4; i++) r.s.runFrame();
+                    r.s.ula.keyUp(k); for (let i = 0; i < 10; i++) r.s.runFrame();
+                };
+                tap('KeyA'); tap('Enter');
+                for (let i = 0; i < 1500; i++) r.s.runFrame();
+                assert(r.s.cpu.pc >= 0x6000 && !r.s.memory.trdosActive, 'the second program, chosen in the boot, runs', r.s.cpu.pc.toString(16));
+            } else skip('Pac-Mania or data/boot/trdos4.hobeta not present');
             // A disk with no G+DOS on it: ours is added, and found by name
             section('+D (MGT) and Opus disks');
             if (await ok('../headless/gs/SeaDragon_boot.mgt')) {

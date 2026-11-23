@@ -145,7 +145,7 @@ Disks of TR-DOS, the +D and the Opus follow one rule:
 | System | Its autostart | Our boot | How the player runs a program |
 |--------|---------------|----------|-------------------------------|
 | TR-DOS 5.x | `boot` | `trdos5.trd` / `trdos5.hobeta` (Dimon's boot, which runs a lone program straight away) | RUN "name" |
-| TR-DOS 4.x | `boot` | `trdos4.trd` / `trdos4.hobeta` (none yet) | RUN "name" |
+| TR-DOS 4.x | `boot` | `trdos4.trd` / `trdos4.hobeta` (Dimon's boot adapted for TR-DOS 4.11 and 4.12) | RUN "name" |
 | +D (MGT) | `auto…` | `plusd-auto.tap`: a TAP holding one BASIC program, written to the disk as `auto` (none yet) | RUN (G+DOS boots), then LOAD d1"name" |
 | Opus | `run` | `opus-run.tap`: the same, written as `run` (none yet) | LOAD *"m";1;"name" |
 

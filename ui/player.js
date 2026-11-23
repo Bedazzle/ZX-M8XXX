@@ -67,8 +67,8 @@ export async function create(container, opts = {}) {
     unmute.hidden = true;
     const msg = document.createElement('div');
     msg.className = 'zxm8-msg';
-    // The programs on a TR-DOS disk that has no boot of its own (and none of
-    // ours to add, as under TR-DOS 4.x): one of them is picked here
+    // The programs on a disk that has no autostart of its own and none of
+    // ours to add: one of them is picked here
     const menu = document.createElement('div');
     menu.className = 'zxm8-menu';
     menu.tabIndex = 0;
