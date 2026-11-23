@@ -7,6 +7,29 @@
 
 import { writeField } from './common.js';
 import { PlusDDisk } from './disk-mgt.js';
+import { DSKLoader } from '../fdc.js';
+import { KdosLoader, KDOS_SECTORS } from './disk-kdos.js';
+
+// The Explorer edits K-DOS (Kempston Disc) disks with the MDOS editor: every
+// DidaktikLoader call it makes hands an EDSK image with a K-DOS directory to
+// KdosLoader instead. A K-DOS file's firstSec is its first block (unique).
+const KDOS_TO_MDOS = ['P', 'N', 'C', 'B'];
+function kdosDisk(data) {
+    const b = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (b.length < 0x200 || b[0] !== 0x45 || String.fromCharCode(...b.subarray(0, 8)) !== 'EXTENDED') return null;
+    try {
+        const dsk = DSKLoader.parse(b);
+        return KdosLoader.isKdos(dsk) ? dsk : null;
+    } catch (e) { return null; }
+}
+const kdosBytes = (dsk) => new Uint8Array(dsk.toBuffer());
+function kdosFiles(dsk) {
+    return KdosLoader.listFiles(dsk).map(f => ({
+        name: f.name, type: KDOS_TO_MDOS[f.type], typeName: f.typeName, ext: KDOS_TO_MDOS[f.type],
+        length: f.length, startAddr: f.param1, basicLength: f.param2, firstSec: f.firstBlock,
+        attributes: 0, fullName: `${f.name}.${KDOS_TO_MDOS[f.type]}`, kdos: f
+    }));
+}
 
     /**
      * Didaktik 40/80 MDOS disk loader (read-only).
@@ -78,6 +101,8 @@ import { PlusDDisk } from './disk-mgt.js';
         }
 
         static listFiles(data) {
+            const k = kdosDisk(data);
+            if (k) return kdosFiles(k);
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const files = [];
             for (const physSec of DidaktikLoader.DIR_SECTORS) {
@@ -117,6 +142,14 @@ import { PlusDDisk } from './disk-mgt.js';
          * Returns Uint8Array, or null on a bad/unreadable chain.
          */
         static extractFile(data, fileInfo) {
+            // A file of another disk shown through the MDOS views (K-DOS in the
+            // Explorer) reads itself
+            if (fileInfo && typeof fileInfo.extract === 'function') return fileInfo.extract();
+            const k = kdosDisk(data);
+            if (k) {
+                const f = KdosLoader.listFiles(k).find(x => x.firstBlock === fileInfo.firstSec);
+                return f ? KdosLoader.readFile(k, f) : null;
+            }
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const sectors = [];
             let sec = fileInfo.firstSec;
@@ -158,6 +191,16 @@ import { PlusDDisk } from './disk-mgt.js';
         }
 
         static getDiskInfo(data) {
+            const k = kdosDisk(data);
+            if (k) {
+                const g = KdosLoader.geometry(k);
+                return {
+                    diskLabel: KdosLoader.diskName(k), tracks: g.tracks, sides: g.sides,
+                    sectorsPerTrack: KDOS_SECTORS, bytesPerSector: 512, totalSize: data.length,
+                    totalSectors: g.blocks * 2, fileCount: KdosLoader.listFiles(k).length,
+                    formatName: 'Kempston Disc (K-DOS) Disk Image', kdos: true
+                };
+            }
             const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
             const hasBoot = bytes.length > 207;
             let diskLabel = '';
@@ -189,6 +232,8 @@ import { PlusDDisk } from './disk-mgt.js';
          * space-padded). Returns a new array; no-op if the disk has no boot sector.
          */
         static setDiskLabel(data, label) {
+            const k = kdosDisk(data);
+            if (k) return kdosBytes(KdosLoader.setLabel(k, label || ''));
             const bytes = new Uint8Array(data);
             if (bytes.length <= 207) return bytes; // no boot sector → no label area
             writeField(bytes, 192, label || '', 10);
@@ -332,6 +377,8 @@ import { PlusDDisk } from './disk-mgt.js';
 
         // Free data sectors (FAT entry 0x000), data area starts at sector 14.
         static _freeSectors(bytes) {
+            const k = kdosDisk(bytes);
+            if (k) return new Array(KdosLoader.freeBlocks(k) * 2).fill(0);     // 512-byte sectors
             const total = DidaktikLoader._totalSectors(bytes);
             const free = [];
             for (let s = 14; s < total; s++) {
@@ -376,6 +423,15 @@ import { PlusDDisk } from './disk-mgt.js';
          * Throws on a full disk or full directory.
          */
         static addFile(data, file) {
+            const k = kdosDisk(data);
+            if (k) {
+                const t = Math.max(0, KDOS_TO_MDOS.indexOf((file.type || 'B').charAt(0)));
+                const payload = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
+                return kdosBytes(KdosLoader.addFile(k, {
+                    name: file.name, type: t, data: payload, param1: file.startAddr || 0,
+                    param2: t === 0 ? (file.basicLength || payload.length) : 0
+                }));
+            }
             const bytes = new Uint8Array(data);
             const payload = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data || 0);
             const len = payload.length;
@@ -435,6 +491,8 @@ import { PlusDDisk } from './disk-mgt.js';
 
         /** Delete a file (free its FAT chain, clear the directory slot). Returns a new Uint8Array. */
         static deleteFile(data, fileInfo) {
+            const k = kdosDisk(data);
+            if (k) return kdosBytes(KdosLoader.deleteFile(k, fileInfo.firstSec));
             const bytes = new Uint8Array(data);
             const total = DidaktikLoader._totalSectors(bytes);
             let s = fileInfo.firstSec, guard = 0;
@@ -452,6 +510,8 @@ import { PlusDDisk } from './disk-mgt.js';
 
         /** Rename a file in place. Returns a new Uint8Array. */
         static renameFile(data, fileInfo, newName) {
+            const k = kdosDisk(data);
+            if (k) return kdosBytes(KdosLoader.renameFile(k, fileInfo.firstSec, newName || ''));
             const bytes = new Uint8Array(data);
             const off = DidaktikLoader._findDirEntry(bytes, fileInfo.firstSec);
             if (off < 0) return bytes;
@@ -465,6 +525,8 @@ import { PlusDDisk } from './disk-mgt.js';
          * Returns a new Uint8Array.
          */
         static setStartAddr(data, firstSec, value) {
+            const k = kdosDisk(data);
+            if (k) return kdosBytes(KdosLoader.setParam1(k, firstSec, value));
             const bytes = new Uint8Array(data);
             const off = DidaktikLoader._findDirEntry(bytes, firstSec);
             if (off < 0) return bytes;
@@ -479,6 +541,8 @@ import { PlusDDisk } from './disk-mgt.js';
          * new Uint8Array. Used to reorder files (Move Up/Down).
          */
         static swapDirEntries(data, firstSecA, firstSecB) {
+            const k = kdosDisk(data);
+            if (k) return kdosBytes(KdosLoader.swapFiles(k, firstSecA, firstSecB));
             const bytes = new Uint8Array(data);
             const a = DidaktikLoader._findDirEntry(bytes, firstSecA);
             const b = DidaktikLoader._findDirEntry(bytes, firstSecB);

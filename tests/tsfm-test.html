@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TurboSound FM Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>TurboSound FM Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // TurboSound FM (core/ym2203.js): the FM halves of two YM2203s, the
+        // board's control word, status and timers.
+        //
+        // core/ym2203.js is a PORT OF CODE -- ymfm's OPN core, translated from
+        // C++ -- which makes "it applied cleanly" worth nothing and a round
+        // trip through our own capture worth little more. So the oracle here is
+        // the arithmetic the chip is DEFINED by, written out longhand:
+        //
+        //   * the log-sin and exp ROMs rebuilt from -log2(sin x) and 2^-x and
+        //     compared with the port's tables DIGIT FOR DIGIT, with no
+        //     tolerance, over all 256 entries each;
+        //   * the operator output rebuilt the same way and compared sample for
+        //     sample over the whole phase x attenuation space;
+        //   * the pitch against the YM2203 datasheet's own F-number formula,
+        //     and the keycode against the datasheet's F11/F10/F9/F8 rule;
+        //   * the envelope's documented "every 4 rate steps halves the time",
+        //     measured on the real pipeline;
+        //   * the carrier set of each of the 8 algorithms, read off by
+        //     silencing three operators at a time.
+        //
+        // A mistyped table digit fails here instead of sounding 0.3% wrong.
+        import { YM2203FM, YM2203Timers } from '../core/ym2203.js';
+
+        const TEST_VERSION = '0.2.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+        // The board's master clock is the ZX-Bus clock: 3.5 MHz on a Pentagon,
+        // which is the figure TS-FM is documented with. One FM sample takes 72
+        // of them (12 operator slots x the /6 prescale).
+        const FM_CLOCK = 3500000;
+        const RATE = FM_CLOCK / 72;
+
+        // ---- the definitions, written out ----------------------------------
+        // The chip's log-sin ROM: |sin| as an attenuation in 1/256 of an octave.
+        const logsin = (x) => Math.round(-Math.log2(Math.sin((x + 0.5) * Math.PI / 512)) * 256);
+        // Its exp ROM: 2^-x with the leading 1 implied (the port keeps it as
+        // POW_RAW = this - 1024, and shifts the whole thing up by 2).
+        const expt = (i) => Math.round(2048 * Math.pow(2, -(i + 1) / 256));
+        /** One operator's output, from the two ROMs above and nothing else. */
+        function refVolume(phase, env) {
+            const i = phase & 0x3FF;
+            const x = (i & 0x100) ? (~i & 0xFF) : (i & 0xFF);
+            const a = logsin(x) + (env << 2);
+            const v = (expt(a & 0xFF) << 2) >> (a >> 8);
+            return (i & 0x200) ? -v : v;
+        }
+        /** The keycode, by the datasheet's rule rather than the port's packing. */
+        function refKeycode(block, fnum) {
+            const f11 = (fnum >> 10) & 1, f10 = (fnum >> 9) & 1;
+            const f9 = (fnum >> 8) & 1, f8 = (fnum >> 7) & 1;
+            const low = (f11 & (f10 | f9 | f8)) | ((f11 ^ 1) & (f10 & f9 & f8));
+            return (block << 2) | (f11 << 1) | low;
+        }
+        /** The datasheet's F-number formula: f = FNUM x fM / (2^(20-B) x 144) */
+        const sheetHz = (fnum, block) => fnum * FM_CLOCK / (Math.pow(2, 20 - block) * 144);
+
+        // ---- driving one chip ----------------------------------------------
+        /** A plain voice on channel 0: algorithm `alg`, one block/fnum, fast attack. */
+        function voice(f, alg = 7, fnum = Math.round(440 * (1 << 20) / RATE / 8)) {
+            f.write(0xB0, alg);
+            for (const o of [0, 4, 8, 12]) {
+                f.write(0x30 + o, 0x01); f.write(0x40 + o, 0x7F); f.write(0x50 + o, 0x1F);
+                f.write(0x60 + o, 0); f.write(0x70 + o, 0); f.write(0x80 + o, 0x0F);
+            }
+            f.write(0x40, 0x00);
+            f.write(0xA4, (4 << 3) | (fnum >> 8)); f.write(0xA0, fnum & 0xFF);
+            f.write(0x28, 0x10);
+        }
+        /** The same, on any channel, addressing each operator by its own offset. */
+        function voiceCh(f, ch, alg = 7, fnum = 0x100) {
+            f.write(0xB0 + ch, alg);
+            for (const o of f.channels[ch].op) {
+                f.write(0x30 + o.opoffs, 0x01); f.write(0x40 + o.opoffs, 0x00);
+                f.write(0x50 + o.opoffs, 0x1F); f.write(0x60 + o.opoffs, 0x00);
+                f.write(0x70 + o.opoffs, 0x00); f.write(0x80 + o.opoffs, 0x0F);
+            }
+            f.write(0xA4 + ch, (4 << 3) | (fnum >> 8)); f.write(0xA0 + ch, fnum & 0xFF);
+        }
+        function measure(f, n = Math.round(RATE)) {
+            let zc = 0, prev = 0, peak = 0;
+            for (let i = 0; i < n; i++) { const v = f.clock(); if (i && (prev < 0) !== (v < 0)) zc++; prev = v; peak = Math.max(peak, Math.abs(v)); }
+            return { hz: zc / 2 * RATE / n, peak };
+        }
+        /** block/fnum/detune/multiple in, the port's own phase step out. */
+        function phaseStep(f, { fnum, block, mul = 1, dt = 0, ch = 0, slot = 0 }) {
+            const o = f.channels[ch].op[slot];
+            f.write(0x30 + o.opoffs, (dt << 4) | mul);
+            f.write(0xA4 + ch, (block << 3) | (fnum >> 8)); f.write(0xA0 + ch, fnum & 0xFF);
+            o.prepare();
+            return o.cache.phaseStep;
+        }
+
+        // =====================================================================
+        function tables() {
+            section('the two ROMs, against the functions they hold');
+            // The port carries 512 hand-copied hex numbers. These two asserts
+            // are what makes them something other than 512 hand-copied hex
+            // numbers: they are rebuilt from the definitions and compared with
+            // NO tolerance, which a single wrong digit cannot survive.
+            const f = new YM2203FM();
+            const o = f.channels[0].op[0];
+            o.att = 0; o.state = 1;                       // attacking: never the quiet gate
+            let worst = -1, worstAt = '';
+            for (let env = 0; env <= 0x3FF; env += 1) {
+                o.cache.totalLevel = env;
+                for (let p = 0; p < 1024; p += 7) {
+                    const got = o.volume(p), want = refVolume(p, env);
+                    if (got !== want && worst < 0) { worst = got; worstAt = `env ${env} phase ${p}: ${got} != ${want}`; }
+                }
+            }
+            assert(worst < 0, 'the operator output IS 8192 x |sin| x 2^(-E/64), rebuilt from -log2(sin) and 2^-x and equal digit for digit over 1024 attenuations x 147 phases', worstAt);
+            // and the two halves on their own, so a failure above says which
+            o.cache.totalLevel = 0;
+            let sinBad = -1;
+            for (let x = 0; x < 256; x++) {
+                // phase x sits in the first quarter, where WAVE[x] = SIN[x]
+                if (o.volume(x) !== refVolume(x, 0) && sinBad < 0) sinBad = x;
+            }
+            assert(sinBad < 0, 'the log-sin ROM: all 256 entries are round(-log2(sin((x + 0.5) pi / 512)) x 256)', 'index ' + sinBad);
+            // the exp ROM read off through the attenuation path: TL n must come
+            // out as 2^(-n/8) of full scale, which is the documented 0.75 dB a step
+            let dbBad = '';
+            for (let tl = 0; tl < 128; tl++) {
+                o.cache.totalLevel = tl << 3;
+                const got = o.volume(0x100);              // |sin| = 1
+                const want = refVolume(0x100, tl << 3);
+                if (got !== want) { dbBad = `TL ${tl}: ${got} != ${want}`; break; }
+            }
+            assert(!dbBad, 'the exp ROM: every one of the 128 total levels is 2^(-TL/8) of full scale (0.75 dB a step, 96 dB in all)', dbBad);
+            // ...and through the REGISTER, which is a different claim. The loop
+            // above writes cache.totalLevel by hand, so it says nothing about
+            // the `<< 3` that turns a 7-bit register into it -- a mutation
+            // making TL 1.5 dB a step survived this suite until this assert.
+            let regBad = '';
+            for (const tl of [0, 1, 8, 32, 64]) {
+                const f = new YM2203FM(); voice(f, 7);
+                f.write(0x40, tl);
+                const peak = measure(f, 4000).peak;
+                const want = Math.abs(refVolume(0x100, tl << 3));
+                if (peak !== want) regBad = `TL ${tl}: measured ${peak}, wanted ${want}`;
+            }
+            assert(!regBad, 'the total-level register really is 0.75 dB a step: the measured peak for TL 0, 1, 8, 32 and 64 is exact', regBad);
+            o.cache.totalLevel = 0;
+            const top = o.volume(0x100), bottom = o.volume(0x300);
+            assert(top === 8168 && bottom === -8168,
+                   'full scale is +/-8168 and the sign is phase bit 9 -- the negative half of the cycle', `${top} ${bottom}`);
+            o.cache.totalLevel = 0x3FF;
+            assert(o.volume(0x100) === 0, 'the bottom of the envelope is silence, not a floor');
+            o.cache.totalLevel = 0;
+        }
+
+        function envelope() {
+            section('the envelope generator');
+            const f = new YM2203FM();
+            // The increment table is 64 rates x 8 steps of 4 bits, and its
+            // documented property is that every 4 steps of the EFFECTIVE rate
+            // halves the envelope time. That is a property of the pipeline, not
+            // of the digits, so it is measured rather than read.
+            /**
+             * A note keyed with a slow decay, run until the attenuation passes
+             * `target`. Sustain level 15 (`$80` high nibble) is what keeps the
+             * generator in DECAY all the way: with SL 0 the decay ends at once
+             * and the SUSTAIN rate takes over, which is a different register.
+             */
+            function decayTicks(dr, target = 0x300, ssg = 0) {
+                const g = new YM2203FM();
+                g.write(0xB0, 7);
+                for (const o of [0, 4, 8, 12]) { g.write(0x40 + o, 0x7F); g.write(0x50 + o, 0x1F); }
+                g.write(0x40, 0x00);
+                g.write(0x60, dr & 0x1F);                  // DR
+                g.write(0x80, 0xF0);                       // SL 15, RR 0: decay nearly all the way
+                if (ssg) g.write(0x90, ssg);
+                g.write(0xA4, 0x20); g.write(0xA0, 0x00);
+                g.write(0x28, 0x10);
+                const op = g.channels[0].op[0];
+                for (let i = 0; i < 2000000; i++) {
+                    g.clock();
+                    if (op.att >= target) return i;
+                }
+                return -1;
+            }
+            // DR is 5 bits and the effective rate is DR x 2, so each step of 2
+            // in DR is +4 on the rate and must halve the time.
+            const t = [4, 6, 8, 10, 12].map(dr => decayTicks(dr));
+            const ratios = [];
+            for (let i = 1; i < t.length; i++) ratios.push(t[i - 1] / t[i]);
+            assert(t.every(v => v > 0) && ratios.every(r => Math.abs(r - 2) < 0.08),
+                   'every 4 steps of the effective rate halves the decay time, measured on the pipeline',
+                   t.join(',') + ' -> ' + ratios.map(r => r.toFixed(3)).join(' '));
+            // Rate 0 is "stopped", not "very slow"
+            assert(decayTicks(0) === -1, 'rate 0 does not decay at all');
+            // AN ABSOLUTE TIME, not a ratio. At the top rate the increment is 8
+            // a tick, and the envelope generator is clocked at a THIRD of the
+            // FM sample rate (the divide-by-3 in clock()), so the attenuation
+            // reaches 768 in 768 / 8 x 3 = 288 samples. Every assert above is a
+            // ratio and would pass with the divider missing or doubled.
+            const fastest = decayTicks(31, 0x300);
+            assert(Math.abs(fastest - 288) <= 4,
+                   'the envelope generator ticks once every three FM samples: at the top rate the attenuation reaches 768 in 288 samples',
+                   String(fastest));
+            // Attack rate 31 is not "very fast" but instant, by its own branch
+            const inst = new YM2203FM(); voice(inst, 7, 0x100);
+            inst.clock();
+            assert(inst.channels[0].op[0].att === 0, 'attack rate 31 takes the attenuation to 0 at once, in one sample');
+            // ...and a slower attack closes on 0 by a SIXTEENTH of what is left,
+            // so its first step from full attenuation is exactly 64.
+            const slowA = new YM2203FM();
+            slowA.write(0xB0, 7);
+            for (const o of [0, 4, 8, 12]) { slowA.write(0x40 + o, 0x7F); slowA.write(0x80 + o, 0x0F); }
+            slowA.write(0x40, 0x00); slowA.write(0x50, 0x04);
+            slowA.write(0xA4, 0x20); slowA.write(0xA0, 0x00); slowA.write(0x28, 0x10);
+            const sop = slowA.channels[0].op[0];
+            let first = -1;
+            for (let i = 0; i < 400000; i++) { slowA.clock(); if (sop.att !== 0x3FF) { first = 0x3FF - sop.att; break; } }
+            assert(first === 64, 'the attack moves a sixteenth of the remaining attenuation: 64 on the first step from full', String(first));
+            // The attack is exponential -- att += (~att * inc) >> 4 -- so its
+            // steps shrink as it closes on 0 rather than being a ramp.
+            const g = new YM2203FM(); voice(g, 7, 0x100);
+            g.write(0x50, 0x05);                           // slow attack
+            const op = g.channels[0].op[0];
+            const steps = [];
+            let prev = op.att;
+            for (let i = 0; i < 400000 && op.att > 0; i++) {
+                g.clock();
+                if (op.att < prev) { steps.push(prev - op.att); prev = op.att; }
+            }
+            const shrinking = steps.every((v, i) => i === 0 || v <= steps[i - 1]);
+            assert(op.att === 0 && steps.length > 20 && shrinking && steps[0] > steps[steps.length - 1] * 8,
+                   'the attack is exponential: every step is smaller than the last, the first many times the final one',
+                   `${steps.length} steps, ${steps[0]} down to ${steps[steps.length - 1]}`);
+            // SSG-EG: above half, the envelope moves FOUR TIMES as fast
+            const plainHalf = decayTicks(8, 0x1F0);
+            const ssgHalf = decayTicks(8, 0x1F0, 0x08);    // SSG-EG on, mode 0
+            assert(plainHalf > 0 && ssgHalf > 0 && Math.abs(plainHalf / ssgHalf - 4) < 0.1,
+                   'SSG-EG: while the attenuation is above half the envelope runs four times as fast', `${plainHalf} vs ${ssgHalf}`);
+            // and it repeats rather than staying at the bottom
+            const h = new YM2203FM();
+            h.write(0xB0, 7);
+            for (const o of [0, 4, 8, 12]) { h.write(0x40 + o, 0x7F); h.write(0x50 + o, 0x1F); }
+            h.write(0x40, 0x00); h.write(0x60, 0x10); h.write(0x80, 0xF0); h.write(0x90, 0x08);
+            h.write(0xA4, 0x20); h.write(0xA0, 0x00); h.write(0x28, 0x10);
+            const ho = h.channels[0].op[0];
+            let high = false, back = false;
+            for (let i = 0; i < 400000; i++) {
+                h.clock();
+                if (ho.att >= 0x1F0) high = true;
+                else if (high && ho.att < 0x40) { back = true; break; }
+            }
+            assert(high && back, 'SSG-EG mode 0 repeats the envelope instead of holding at the bottom');
+        }
+
+        function pitch() {
+            section('pitch, against the datasheet');
+            const f = new YM2203FM();
+            // f = FNUM x fM / (2^(20-B) x 144). The phase accumulator is 20
+            // bits to a cycle, so the step and that formula must agree exactly.
+            let bad = '';
+            for (const [fnum, block] of [[617, 4], [1234, 3], [300, 7], [2047, 1], [1, 1], [1186, 4]]) {
+                const step = phaseStep(f, { fnum, block });
+                const hz = step * RATE / (1 << 20);
+                if (Math.abs(hz - sheetHz(fnum, block)) > 1e-6) bad = `fnum ${fnum} block ${block}: ${hz} vs ${sheetHz(fnum, block)}`;
+            }
+            assert(!bad, 'the phase step gives exactly the datasheet frequency for six block/fnum pairs', bad);
+            // Block 0 is the one place it cannot: the step is fnum / 2 in whole
+            // units, so an odd fnum loses its half -- the chip's own truncation,
+            // not a rounding choice of ours.
+            let b0 = '';
+            for (const fnum of [1, 2, 3, 1023, 2047]) {
+                if (phaseStep(f, { fnum, block: 0 }) !== (fnum >> 1)) b0 = 'fnum ' + fnum;
+            }
+            assert(!b0, 'at block 0 the step is fnum >> 1: an odd F-number loses its half, as the chip does', b0);
+            // ...and the chip really runs at it
+            const g = new YM2203FM(); voice(g);
+            const m = measure(g);
+            assert(Math.abs(m.hz - sheetHz(1186, 4)) < 2 && m.peak === 8168,
+                   'a carrier at block 4 fnum 1186 measures 439.9 Hz and peaks at full scale', m.hz.toFixed(2) + ' Hz, ' + m.peak);
+            // MULTIPLE: n multiplies the frequency, and 0 halves it
+            const base = phaseStep(f, { fnum: 1024, block: 4, mul: 1 });
+            let mulBad = '';
+            for (let mul = 0; mul < 16; mul++) {
+                const want = mul === 0 ? base >> 1 : base * mul;
+                const got = phaseStep(f, { fnum: 1024, block: 4, mul });
+                if (got !== want) mulBad = `mul ${mul}: ${got} != ${want}`;
+            }
+            assert(!mulBad, 'MULTIPLE 1-15 multiply the frequency and MULTIPLE 0 halves it', mulBad);
+            // DETUNE: 1/2/3 sharpen, |4 flattens by the same amount, 0 is exact
+            let dtBad = '';
+            for (const [fnum, block] of [[1024, 4], [600, 2], [1900, 6]]) {
+                const z = phaseStep(f, { fnum, block, dt: 0 });
+                if (phaseStep(f, { fnum, block, dt: 4 }) !== z) dtBad = 'DT 4 (minus 0) is not exact';
+                let prev = 0;
+                for (let d = 1; d <= 3; d++) {
+                    const up = phaseStep(f, { fnum, block, dt: d }) - z;
+                    const down = z - phaseStep(f, { fnum, block, dt: d | 4 });
+                    if (up !== down) dtBad = `block ${block} DT ${d}: up ${up} down ${down}`;
+                    if (up <= prev) dtBad = `block ${block} DT ${d} is not sharper than DT ${d - 1}`;
+                    prev = up;
+                }
+            }
+            assert(!dtBad, 'DETUNE 1-3 sharpen by a rising amount and bit 2 flattens by exactly as much', dtBad);
+            // The keycode: the datasheet's F11/F10/F9/F8 rule, not the port's
+            // `bit(0xfe80, top four bits)` packing of it. Read back through the
+            // key scaling, which with KS = 3 adds the keycode to the rate.
+            const k = new YM2203FM();
+            const o = k.channels[0].op[0];
+            k.write(0x50 + o.opoffs, 0xC1);                // KS 3, AR 1 -> rate = 2 + keycode
+            let kcBad = '';
+            for (let block = 0; block < 8; block++) {
+                for (const top of [0, 6, 7, 8, 9, 15]) {
+                    const fnum = (top << 7) | 0x2A;
+                    k.write(0xA4, (block << 3) | (fnum >> 8)); k.write(0xA0, fnum & 0xFF);
+                    o.prepare();
+                    const got = o.cache.egRate[1] - 2, want = refKeycode(block, fnum);
+                    if (got !== Math.min(want, 61)) kcBad = `block ${block} top ${top}: ${got} != ${want}`;
+                }
+            }
+            assert(!kcBad, 'the keycode is block, F11, and the datasheet rule on F10/F9/F8 -- 48 block/fnum pairs', kcBad);
+        }
+
+        function registers() {
+            section('the register file');
+            const f = new YM2203FM();
+            // The block/fnum high byte is LATCHED: it reaches the channel only
+            // when the low byte is written, so a tune that writes high-then-low
+            // never sounds a half-updated pitch.
+            f.write(0xA4, 0x22);
+            const notYet = f.regs[0xA4];
+            f.write(0xA0, 0x55);
+            assert(notYet === 0 && f.regs[0xA4] === 0x22 && f.regs[0xA0] === 0x55,
+                   'block/fnum: the high byte waits in a latch until the low byte is written');
+            // There are TWO latches -- one for the channel pairs ($A4-$A6) and
+            // one for channel 3's multi-frequency pairs ($AC-$AE) -- so writing
+            // one must not disturb the other.
+            const g = new YM2203FM();
+            g.write(0xA4, 0x11);                           // channel 0 high, latched
+            g.write(0xAC, 0x2F);                           // the OTHER latch
+            g.write(0xA0, 0x01);                           // channel 0 low
+            g.write(0xA8, 0x02);                           // multi-frequency 0 low
+            assert(g.regs[0xA4] === 0x11 && g.regs[0xAC] === 0x2F,
+                   'the channel latch and the multi-frequency latch are separate',
+                   `${g.regs[0xA4].toString(16)} ${g.regs[0xAC].toString(16)}`);
+            // $A3/$A7/$AB/$AF are not registers (there is no fourth channel)
+            const h = new YM2203FM();
+            h.write(0xA7, 0x3F); h.write(0xA3, 0xFF);
+            assert(h.regs[0xA3] === 0 && h.regs[0xA7] === 0, 'the fourth channel does not exist: $A3 and $A7 are ignored');
+            // ...nor are the latches themselves writable from outside
+            h.write(0xB8, 0x3F); h.write(0xB9, 0x3F);
+            assert(h.regs[0xB8] === 0 && h.regs[0xB9] === 0, 'the latches are internal: a write to $B8/$B9 does nothing');
+            // Key on/off: $28 low 2 bits pick the channel, high nibble the slots
+            const j = new YM2203FM();
+            j.write(0x28, 0xF3);                           // "channel 4" of a 3-channel chip
+            assert(j.channels.length === 3 && j.ops.every(o => o.keyonLive === 0),
+                   'the YM2203 has three channels: a key-on for the fourth is ignored, not wrapped round');
+            // The key-on nibble runs S1, S2, S3, S4 while the REGISTER offsets
+            // of those four slots run 0, 8, 4, 12. Getting that crossing wrong
+            // swaps a modulator for a carrier and every instrument is wrong.
+            const kk = new YM2203FM();
+            kk.write(0x28, 0xA1);                          // S2 and S4 of channel 1
+            const live = kk.channels[1].op.map(o => o.keyonLive & 1).join('');
+            const offs = kk.channels[1].op.map(o => o.opoffs - 1).join(',');
+            assert(live === '0101' && offs === '0,8,4,12',
+                   'key-on bit n is slot n+1, and slots 1-4 sit at register offsets 0, 8, 4, 12', `${live} / ${offs}`);
+        }
+
+        function algorithms() {
+            section('the eight algorithms');
+            // The datasheet's carrier sets, read off by silencing three
+            // operators and listening for the fourth. A modulator at the bottom
+            // of its range cannot be heard; a carrier at the top of its can.
+            const CARRIERS = [[4], [4], [4], [4], [2, 4], [2, 3, 4], [2, 3, 4], [1, 2, 3, 4]];
+            let bad = '';
+            for (let alg = 0; alg < 8; alg++) {
+                for (let op = 1; op <= 4; op++) {
+                    const f = new YM2203FM();
+                    voice(f, alg);                         // every TL at $7F...
+                    f.write(0x28, 0x00);
+                    const o = f.channels[0].op[op - 1];
+                    for (const q of f.channels[0].op) f.write(0x40 + q.opoffs, 0x7F);
+                    f.write(0x40 + o.opoffs, 0x00);        // ...except this one
+                    f.write(0x28, 0xF0);
+                    const m = measure(f, 4000);
+                    const isCarrier = CARRIERS[alg].includes(op);
+                    if (isCarrier ? m.peak < 4000 : m.peak > 16) {
+                        bad = `alg ${alg} op ${op}: peak ${m.peak}, expected ${isCarrier ? 'loud' : 'silent'}`;
+                    }
+                }
+                if (bad) break;
+            }
+            assert(!bad, 'all 8 algorithms have the datasheet\'s carrier set -- 32 operators, each silent or loud as the table says', bad);
+            // Algorithm 7 is four independent carriers, so four times one
+            const f7 = new YM2203FM(); voice(f7, 7);
+            for (const q of f7.channels[0].op) f7.write(0x40 + q.opoffs, 0x00);
+            f7.write(0x28, 0xF0);
+            const four = measure(f7, 4000).peak;
+            assert(four > 8168 * 3.9 && four <= 8168 * 4, 'algorithm 7 sums four carriers: four times one carrier\'s full scale', four);
+            // Algorithm 0 is a chain: with every operator loud the output is no
+            // longer a sine, which is the whole point of FM
+            const f0 = new YM2203FM(); voice(f0, 0);
+            for (const q of f0.channels[0].op) f0.write(0x40 + q.opoffs, 0x00);
+            f0.write(0x28, 0xF0);
+            let zc = 0, prev = 0;
+            for (let i = 0; i < 4000; i++) { const v = f0.clock(); if (i && (prev < 0) !== (v < 0)) zc++; prev = v; }
+            const pure = Math.round(4000 / RATE * sheetHz(1186, 4) * 2);
+            assert(zc > pure * 1.5, 'algorithm 0 is a modulation chain: the output crosses zero far more often than the carrier alone', `${zc} vs ${pure}`);
+            // The eight algorithms are eight different connections, and two of
+            // them (5 and 6) have the SAME carrier set -- so the carrier test
+            // above cannot tell them apart and a swap in the table would pass.
+            // With every operator sounding, all eight must differ pairwise --
+            // and the four operators are given DIFFERENT multiples, because
+            // four identical ones make algorithms 2 and 3 the same sum by
+            // symmetry (each is the other with its two inner operators
+            // swapped) and the test would read that as a fault.
+            const shapes = [];
+            for (let alg = 0; alg < 8; alg++) {
+                const f = new YM2203FM(); voice(f, alg);
+                f.channels[0].op.forEach((q, i) => {
+                    f.write(0x40 + q.opoffs, 0x00);
+                    f.write(0x30 + q.opoffs, [1, 2, 3, 5][i]);
+                });
+                f.write(0x28, 0xF0);
+                const out = [];
+                for (let i = 0; i < 1500; i++) out.push(f.clock());
+                shapes.push(out.join(','));
+            }
+            assert(new Set(shapes).size === 8, 'all eight algorithms give eight different waveforms, so none of them is another one',
+                   String(new Set(shapes).size));
+            // ...which still cannot tell one algorithm from another POSITIONALLY:
+            // eight different waveforms stay eight different waveforms when two
+            // table entries are swapped, and the mutation that swaps 5 and 6 --
+            // the pair with the same carrier set -- survived exactly that.
+            // So: for each algorithm, WHICH of its carriers are modulated,
+            // decided by whether silencing the modulators changes the output.
+            const MODULATED = [[4], [4], [4], [4], [2, 4], [2, 3, 4], [2], []];
+            let modBad = '';
+            for (let alg = 0; alg < 8 && !modBad; alg++) {
+                for (const k of CARRIERS[alg]) {
+                    const shape = (modsLoud) => {
+                        const f = new YM2203FM(); voice(f, alg);
+                        f.channels[0].op.forEach((q, i) => {
+                            const loud = CARRIERS[alg].includes(i + 1) ? (i + 1 === k) : modsLoud;
+                            f.write(0x40 + q.opoffs, loud ? 0x00 : 0x7F);
+                        });
+                        f.write(0x28, 0xF0);
+                        const out = [];
+                        for (let i = 0; i < 1200; i++) out.push(f.clock());
+                        return out.join(',');
+                    };
+                    const modulated = shape(true) !== shape(false);
+                    if (modulated !== MODULATED[alg].includes(k)) {
+                        modBad = `alg ${alg} carrier ${k} is ${modulated ? '' : 'not '}modulated`;
+                    }
+                }
+            }
+            assert(!modBad, 'and positionally: in each algorithm exactly the datasheet\'s carriers are modulated -- 16 carriers, which is what tells 5 and 6 apart', modBad);
+            // Feedback modulates operator 1 with the mean of its own last two
+            // outputs, shifted right by (10 - level): so the level is a
+            // modulation DEPTH and more of it must bend the waveform further.
+            // Written as `>> (10 - fbLevel)` it is easy to get backwards, and
+            // backwards still sounds like feedback -- just inverted in depth.
+            const run = (fb) => {
+                const f = new YM2203FM(); voice(f, 7);
+                f.write(0xB0, 7 | (fb << 3));
+                const out = [];
+                for (let i = 0; i < 2000; i++) out.push(f.clock());
+                return out;
+            };
+            const plain = run(0);
+            const dev = [];
+            for (let fb = 0; fb <= 7; fb++) {
+                const o = run(fb);
+                dev.push(o.reduce((s, v, i) => s + Math.abs(v - plain[i]), 0) / o.length);
+            }
+            // Each level doubles the modulation index. This measure -- the mean
+            // distance from the unmodulated sine -- can follow that up to level
+            // 5 (508, 1008, 1912, 3442, 7650); at 6 and 7 the phase swing passes
+            // a whole cycle, the wave wraps round and comes back CLOSER to the
+            // sine (4993, 6026), so the doubling is asserted where it can be
+            // seen and the folding is written down here rather than averaged
+            // into a weaker claim.
+            let fbBad = dev[0] !== 0 ? 'feedback 0 is not identical to no feedback' : '';
+            for (let fb = 2; fb <= 5; fb++) {
+                const r = dev[fb] / dev[fb - 1];
+                if (r < 1.6 || r > 2.4) fbBad = `feedback ${fb} is ${r.toFixed(2)}x level ${fb - 1}, not 2x`;
+            }
+            if (dev[6] < dev[4] || dev[7] < dev[4]) fbBad = 'feedback 6 or 7 barely modulates at all';
+            assert(!fbBad, 'feedback is a modulation index and each of the 7 levels doubles it -- so `>> (10 - level)` is that way round',
+                   (fbBad ? fbBad + ' -- ' : '') + dev.map(d => d.toFixed(0)).join(' '));
+        }
+
+        function channel3() {
+            section('channel 3: multi-frequency and CSM');
+            const f = new YM2203FM();
+            voice(f, 7);
+            // In multi-frequency mode three of channel 3's operators take their
+            // own block/fnum from $A8-$AE and the fourth keeps the channel's.
+            f.write(0xA6, (2 << 3) | 0); f.write(0xA2, 0x10);        // channel 3's own
+            f.write(0xAC, (3 << 3) | 0); f.write(0xA8, 0x20);
+            f.write(0xAD, (4 << 3) | 0); f.write(0xA9, 0x30);
+            f.write(0xAE, (5 << 3) | 0); f.write(0xAA, 0x40);
+            f.write(0x27, 0x40);                                     // multi-frequency
+            assert(f.multiFreq() && !f.csm(), 'reg $27 bits 6-7 = 01: multi-frequency, not CSM');
+            const bf = f.channels[2].op.map(o => { o.prepare(); return o.cache.blockFreq; });
+            const own = ((2 << 3) << 8) | 0x10;
+            assert(bf[3] === own && new Set(bf).size === 4,
+                   'slot 4 keeps the channel\'s own block/fnum while the other three take their own -- four different values',
+                   bf.map(v => v.toString(16)).join(' '));
+            // WHICH of $A8-$AE goes to which slot is ymfm's order, pinned here
+            // so a regression shows, NOT verified against a datasheet: slot 1
+            // takes $A9/$AD, slot 2 $AA/$AE and slot 3 $A8/$AC. Four distinct
+            // values would survive any permutation of them, which is exactly
+            // the weak assert this tree keeps learning about.
+            assert(bf[0] === (((4 << 3) << 8) | 0x30) && bf[1] === (((5 << 3) << 8) | 0x40) &&
+                   bf[2] === (((3 << 3) << 8) | 0x20),
+                   'the multi-frequency registers reach slots 1, 2 and 3 in ymfm\'s order ($A9, $AA, $A8)',
+                   bf.map(v => v.toString(16)).join(' '));
+            f.write(0x27, 0x00);
+            const plain = f.channels[2].op.map(o => { o.prepare(); return o.cache.blockFreq; });
+            assert(new Set(plain).size === 1 && plain[0] === own, 'switched off, all four go back to the channel\'s own');
+            // CSM keys channel 3 for ONE sample, from timer A: the operators
+            // attack and release inside the same prepare, so what is left to see
+            // afterwards is that the attack happened (a fast AR takes the
+            // attenuation straight to 0) and that they are releasing again.
+            const g = new YM2203FM(); voiceCh(g, 2, 7);
+            g.write(0x27, 0x80);
+            assert(g.csm() && g.multiFreq(), 'reg $27 bits 6-7 = 10 is CSM (and multi-frequency with it)');
+            g.write(0x28, 0x02);                                      // key channel 3 off
+            for (let i = 0; i < 100000; i++) g.clock();                // let it die away
+            const quiet = g.channels[2].op.every(o => o.att >= 0x3F0 && o.state === 4);
+            g.csmKeyOn();
+            g.clock();
+            const loud = g.channels[2].op.map(o => o.att).join(',');
+            const releasing = g.channels[2].op.every(o => o.state === 4 && o.keyState === 0);
+            assert(quiet && loud === '0,0,0,0' && releasing,
+                   'CSM takes all four operators of channel 3 through an attack and back to release in one sample',
+                   `${quiet} / ${loud} / ${releasing}`);
+            // ...and one sample is one sample. The CSM key-on must be TAKEN
+            // AWAY, not merely overridden: left in place it re-attacks at every
+            // prepare, and since a prepare only happens on a register write or
+            // once in 4096 samples, a suite that just waits sees the release
+            // and passes. So the next prepare is forced and must key nothing.
+            for (let i = 0; i < 20000; i++) g.clock();
+            const dying = g.channels[2].op.every(o => o.att > 0x100);
+            g.write(0x40 + g.channels[2].op[0].opoffs, 0x00);   // same value: only to force a prepare
+            g.clock();
+            assert(dying && g.channels[2].op.every(o => o.att > 0x100),
+                   'the CSM key-on is cleared after its sample, so the next prepare does not key the note again',
+                   `${dying} / ${g.channels[2].op.map(o => o.att).join(',')}`);
+            for (let i = 0; i < 100000; i++) g.clock();
+            assert(g.channels[2].op.every(o => o.att >= 0x3F0), 'after that one sample the note is released, not held');
+            const h = new YM2203FM(); voiceCh(h, 2, 7); h.write(0x27, 0x40);
+            h.write(0x28, 0x02);
+            for (let i = 0; i < 100000; i++) h.clock();
+            h.csmKeyOn(); h.clock();
+            assert(h.channels[2].op.every(o => o.att >= 0x3F0), 'without CSM mode a timer-A overflow keys nothing');
+        }
+
+        function timers() {
+            section('the timers, the busy flag and the clock they count in');
+            // Busy, on a timer of its own so the flags cannot be confused with it
+            const bz = new YM2203Timers();
+            bz.write(0x26, 0x00);
+            assert(bz.readStatus() & 0x80, 'busy is set by a write');
+            bz.advance(32 * 6 - 1);
+            const stillBusy = !!(bz.readStatus() & 0x80);
+            bz.advance(1);
+            assert(stillBusy && !(bz.readStatus() & 0x80), 'busy lasts 32 x 6 master clocks and no longer');
+            // Timer A: (1024 - TA) x 72 master clocks. TA is 10 bits, split
+            // across $24 (high 8) and $25 (low 2), so TA = 1023 is 72 clocks.
+            const t = new YM2203Timers();
+            t.write(0x24, 0xFF); t.write(0x25, 0x03); t.write(0x27, 0x05);
+            t.advance(71);
+            const s1 = t.readStatus() & 3;
+            t.advance(1);
+            const s2 = t.readStatus() & 3;
+            assert(s1 === 0 && s2 === 1, 'timer A raises its flag after exactly (1024 - TA) x 72 clocks', `${s1} ${s2}`);
+            t.write(0x27, 0x15);
+            assert((t.readStatus() & 1) === 0, 'reg $27 bit 4 resets timer A\'s flag');
+            // the 10 bits really are split that way round
+            const sp10 = new YM2203Timers();
+            sp10.write(0x24, 0x01); sp10.write(0x25, 0x00); sp10.write(0x27, 0x05);
+            assert(sp10.ta === 4 && sp10.aLeft === (1024 - 4) * 72,
+                   '$24 is TA bits 9-2 and $25 is bits 1-0, not the other way about', `ta ${sp10.ta}`);
+            // Timer B: 16 x (256 - TB) x 72, so sixteen times A's granularity
+            const b = new YM2203Timers();
+            b.write(0x26, 0xFF); b.write(0x27, 0x0A);
+            b.advance(16 * 72 - 1);
+            const b1 = b.readStatus() & 2;
+            b.advance(1);
+            const b2 = b.readStatus() & 2;
+            assert(b1 === 0 && b2 === 2, 'timer B raises its flag after 16 x (256 - TB) x 72 clocks', `${b1} ${b2}`);
+            b.write(0x27, 0x2A);
+            assert((b.readStatus() & 2) === 0, 'reg $27 bit 5 resets timer B\'s flag');
+            // Running and flagging are separate bits: a timer can run with its
+            // flag disabled (which is how CSM is used without an interrupt)
+            const c = new YM2203Timers();
+            c.write(0x24, 0xFF); c.write(0x25, 0x03); c.write(0x27, 0x01);
+            c.advance(72 * 10);
+            assert((c.readStatus() & 3) === 0, 'bit 0 starts timer A, bit 2 enables its flag: running with the flag off sets nothing');
+            // Stopping and starting: a stopped timer begins its period afresh
+            const d = new YM2203Timers();
+            d.write(0x24, 0xFF); d.write(0x25, 0x03); d.write(0x27, 0x05);
+            d.advance(40);
+            d.write(0x27, 0x04);              // stop
+            d.advance(100000);
+            d.write(0x27, 0x05);              // start again
+            d.advance(71);
+            const r1 = d.readStatus() & 1;
+            d.advance(1);
+            assert(r1 === 0 && (d.readStatus() & 1) === 1, 'a stopped timer A starts its period again from the beginning');
+            // ...but a RUNNING one is not. An interrupt handler clears the flag
+            // by writing $27 with the run bit still set, every period; if that
+            // restarted the count the tempo would drift by the handler's own
+            // latency and CSM would lose its grip on the beat.
+            const k2 = new YM2203Timers();
+            k2.write(0x24, 0xFF); k2.write(0x25, 0x03); k2.write(0x27, 0x05);
+            k2.advance(36);
+            k2.write(0x27, 0x15);             // clear the flag, keep it running
+            k2.advance(35);
+            const p1 = k2.readStatus() & 1;
+            k2.advance(1);
+            assert(p1 === 0 && (k2.readStatus() & 1) === 1,
+                   'clearing the flag of a running timer does not restart its period');
+            // CSM comes off timer A only, and only in CSM mode
+            let csmHits = 0;
+            const e = new YM2203Timers();
+            e.onCsm = () => csmHits++;
+            e.write(0x24, 0xFF); e.write(0x25, 0x03); e.write(0x27, 0x85);
+            e.advance(72 * 5);
+            const inCsm = csmHits;
+            e.write(0x27, 0x45);              // multi-frequency, not CSM
+            csmHits = 0;
+            e.advance(72 * 5);
+            assert(inCsm === 5 && csmHits === 0, 'timer A calls CSM once a period in CSM mode and never outside it', `${inCsm} then ${csmHits}`);
+            // THE CLOCK. Timer A's shortest period is 72 master clocks, which
+            // puts it in the same danger as the disk's 112 and MIDI's 113: a
+            // clock rebuilt from totalFrames sits a whole frame away from the
+            // real count by an amount that CHANGES, so it jumps a frame and the
+            // catch-up loop below runs a thousand periods in one go. This is
+            // what that costs, written down where it can be seen.
+            let jumped = 0;
+            const z = new YM2203Timers();
+            z.onCsm = () => jumped++;
+            z.write(0x24, 0xFF); z.write(0x25, 0x03); z.write(0x27, 0x85);
+            z.advance(70908);                 // one 128K frame arriving at once
+            assert(jumped === Math.floor(70908 / 72), 'a frame-sized jump in the clock fires CSM 984 times in one call -- why the FM takes absTStates(), not a count rebuilt from totalFrames', String(jumped));
+        }
+
+        async function board() {
+            section('the board on a 128K');
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { tsfm: sp.tsfm, ts: sp.turboSound };
+            sp.setTsfm(true);
+            assert(sp.tsfm && sp.turboSound, 'TurboSound FM brings TurboSound with it');
+            sp.portWrite(0xFFFD, 0xF8);                       // bit 0 = 0: the second chip; status mode; FM on
+            assert(sp._aySel === 1 && sp._fmStatusRead && sp._fmOn, 'OUT $FFFD,$F8: the second chip, status mode, FM on');
+            sp.portWrite(0xFFFD, 0xFF);
+            assert(sp._aySel === 0 && !sp._fmStatusRead && !sp._fmOn, 'OUT $FFFD,$FF: the first chip, register reads, FM off (as TurboSound)');
+            sp.portWrite(0xFFFD, 0xF9);
+            sp.portWrite(0xFFFD, 0x07); const r7 = sp.ay.selectedRegister;
+            sp.portWrite(0xFFFD, 0x28);
+            assert(sp.ay.selectedRegister === r7 && sp._fmAddr[0] === 0x28, 'an address >= $10 latches an FM register; the SSG keeps its register');
+            sp.portWrite(0xFFFD, 0xFB);                       // chip 0, register reads (not status)
+            sp.portWrite(0xFFFD, 0x28);
+            assert(sp.portRead(0xFFFD) === 0xFF, 'IN $FFFD with an FM address latched reads $FF, not an AY register');
+            sp.portWrite(0xFFFD, 0xF9);                       // chip 0, status mode
+            sp.portWrite(0xFFFD, 0x28);
+            sp.portWrite(0xBFFD, 0x00);
+            assert((sp.portRead(0xFFFD) & 0x80) === 0x80, 'IN $FFFD in status mode: busy right after a write');
+            assert(sp.fmChanges.length > 0 && sp.fmChanges[sp.fmChanges.length - 1].reg === 0x28, 'the FM write is queued for the audio at its T-state');
+            // An SSG register still goes to the AY, and is not queued for the FM
+            const before = sp.fmChanges.length;
+            sp.portWrite(0xFFFD, 0x08); sp.portWrite(0xBFFD, 0x0A);
+            assert(sp.ay.registers[8] === 0x0A && sp.fmChanges.length === before,
+                   'an address below $10 is the SSG\'s: the write reaches the AY and the FM queue is untouched');
+            // and the other way about: an FM write must not fall through into
+            // the AY, which would put FM data in a channel's volume
+            const ayWas = Array.from(sp.ay.registers);
+            sp.portWrite(0xFFFD, 0x44); sp.portWrite(0xBFFD, 0x3C);
+            assert(Array.from(sp.ay.registers).join() === ayWas.join() && sp.ay.selectedRegister === 8,
+                   'an FM write stops at the FM: the AY\'s registers and its selected register are untouched');
+            // The boundary itself, from both sides. $0F is the AY's last
+            // register and $10 is the first address on the FM side -- the chip
+            // has 16 SSG registers and the mode and timer registers begin at
+            // $10 -- so `>= $10` has to be inclusive.
+            sp.portWrite(0xFFFD, 0x0F); sp.portWrite(0xBFFD, 0x07);
+            const ssgTook = sp.ay.selectedRegister === 0x0F && sp.ay.registers[0x0F] === 0x07;
+            const queued = sp.fmChanges.length;
+            sp.portWrite(0xFFFD, 0x10); sp.portWrite(0xBFFD, 0x5A);
+            assert(ssgTook && sp.ay.selectedRegister === 0x0F && sp.fmChanges.length === queued + 1 &&
+                   sp.fmChanges[sp.fmChanges.length - 1].reg === 0x10,
+                   'the SSG / FM boundary: $0F is the AY\'s last register and $10 the FM\'s first');
+            // The two chips keep their own FM halves
+            sp.portWrite(0xFFFD, 0xF9); sp.portWrite(0xFFFD, 0x30); sp.portWrite(0xBFFD, 0x77);
+            sp.portWrite(0xFFFD, 0xF8); sp.portWrite(0xFFFD, 0x30); sp.portWrite(0xBFFD, 0x11);
+            sp._fmFlush();
+            assert(sp.fm[0].regs[0x30] === 0x77 && sp.fm[1].regs[0x30] === 0x11,
+                   'the control word\'s chip bit picks which YM2203 an FM write lands in');
+            assert(sp.fmChanges.length === 0, '_fmFlush gives the chips the writes the audio never took (sound off, high speed)');
+            // The timers count in the monotonic clock, across frames. A status
+            // read syncs them; the control word does not, and does not need to.
+            sp.portWrite(0xFFFD, 0xF9);                       // status mode
+            sp.portRead(0xFFFD);
+            const t0 = sp._fmT;
+            await zx.runFrames(3);
+            zx.pause();
+            sp.portRead(0xFFFD);
+            const tpf = sp.timing.tstatesPerFrame;
+            assert(sp._fmT === sp.absTStates() && sp._fmT - t0 > 2.5 * tpf && sp._fmT - t0 < 4.5 * tpf,
+                   'three frames later the timers have been advanced by three frames of T-states, from absTStates()', `${sp._fmT - t0} vs ${tpf}`);
+            assert(sp._fmMasterClock() === 3546900, 'on a 128K the master clock is the bus clock, 3.5469 MHz');
+            // Reset. There must be something queued when it happens, or the
+            // "the queue is empty" half of this says nothing -- a frame start
+            // flushes the queue, so after running frames it is empty anyway.
+            sp.portWrite(0xFFFD, 0xFB); sp.portWrite(0xFFFD, 0x34); sp.portWrite(0xBFFD, 0x66);
+            const pending = sp.fmChanges.length;
+            sp.reset();
+            assert(pending > 0 && sp._fmAddr[0] === 0 && sp.fmChanges.length === 0 && sp.fm[0].regs[0x30] === 0,
+                   'reset clears the board, both chips and the writes still waiting for the audio', `${pending} were queued`);
+            // With no AY on the ports there is nothing for TS-FM to sit on
+            await zx.ready({ machine: '48k' });
+            const sp48 = frame.contentWindow.spectrum;
+            zx.pause();
+            sp48.setTsfm(true);
+            sp48.ayEnabled = false; sp48.ay48kEnabled = false;
+            sp48.portWrite(0xFFFD, 0x30); sp48.portWrite(0xBFFD, 0x55);
+            assert(sp48.fmChanges.length === 0 && sp48.fm[0].regs[0x30] === 0,
+                   'a 48K with no AY fitted: $FFFD/$BFFD reach nothing, FM included');
+            assert(sp48._fmMasterClock() === 3500000, 'on a 48K the master clock is 3.5 MHz');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (await ok('../headless/tsfm/tech_support.sna')) {
+                await zx.ready({ machine: '128k' });
+                const s = frame.contentWindow.spectrum;
+                s.setTsfm(true);
+                await zx.loadUrl('../headless/tsfm/tech_support.sna');
+                zx.pause();
+                await zx.runFrames(150);
+                const f0 = s.fm[0];
+                let peak = 0;
+                for (let i = 0; i < 2000; i++) peak = Math.max(peak, Math.abs(f0.clock()));
+                const keyed = f0.ops.filter(o => o.keyState).length;
+                assert(keyed > 0 && peak > 1000, 'Tech Support (Moe-bius): the player keys the FM operators and they sound', `keyed ${keyed}, peak ${peak}`);
+            } else skip('headless/tsfm/tech_support.sna not present (Tech Support, the player round trip)');
+            try { sp.setTsfm(was.tsfm); sp.setTurboSound(was.ts); } catch (e) {}
+        }
+
+        (async () => {
+            try {
+                tables();
+                envelope();
+                pitch();
+                registers();
+                algorithms();
+                channel3();
+                timers();
+                await board();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

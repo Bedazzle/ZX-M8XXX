@@ -112,7 +112,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.11.07';
+    const APP_VERSION = '26.11.08';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -641,6 +641,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
             if (spectrum.opusEnabled) await maybe('opus.rom');
             if (spectrum.didaktikEnabled) await maybe('didaktik.rom');
             if (spectrum.fdd3000Enabled) { await maybe(spectrum.fdd3000RomFile); await maybe('fdd3000-boot.rom'); }
+            if (spectrum.kempdiscEnabled) await maybe(spectrum.kempdiscRomFile);
             if (profile.pagingModel === 'hc2000') await maybe('hc-if1.rom');   // built-in HC IF1
             if (machineType === spectrum.machineType) {
                 loadRomsForMachineType(spectrum, machineType);

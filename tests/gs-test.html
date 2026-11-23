@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>General Sound Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>General Sound Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // General Sound (core/gs.js): a Z80 at 12 MHz with its own ROM and RAM,
+        // ports $BB/$B3, four DACs.
+        import { GeneralSound } from '../core/gs.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('the board on its own');
+            const gs = new GeneralSound(512);
+            gs.reset();
+            gs.ram[0x6000] = 0x90;                       // $4000-$7FFF is RAM $4000-$7FFF
+            gs.ram[0x6300] = 0x70;
+            gs._out(6, 63); gs._out(9, 63);
+            gs._read(0x6000); gs._read(0x6300);
+            const last = gs.changes[gs.changes.length - 1];
+            assert(gs.ch[0] === 0x90 && gs.ch[3] === 0x70 && last && last.l > 0 && last.r < 0,
+                'a read from $6000 / $6300 feeds DAC 1 / 4 (1+2 left, 3+4 right)', JSON.stringify(last));
+            gs._out(6, 0); gs._out(9, 0);
+            assert(gs.level[0] === 0 && gs.level[1] === 0, 'volume 0 silences the channel');
+            gs._out(0, 0);
+            gs.rom = new Uint8Array(32768).map((_, i) => i & 0xFF);
+            assert(gs._read(0x8005) === 5 && gs._read(0xC005) === 5, 'page 0: the ROM at $8000');
+            gs._out(0, 1); gs._write(0x8000, 0x11); gs._write(0xC000, 0x33); gs._out(0, 2); gs._write(0x8000, 0x22);
+            gs._out(0, 1);
+            assert(gs._read(0x8000) === 0x11 && gs._read(0x4000) === 0x33, 'page 1 is RAM 0-32K; $4000-$7FFF is its upper half (as in Unreal)');
+            gs._out(0, 17);
+            assert(gs._read(0x8000) === 0x11, '512KB: page 17 wraps to page 1 (16 pages of 32KB)');
+            gs.portOut(0xBB, 0x23);
+            assert((gs.status & 1) && gs._in(1) === 0x23, '$BB: command, status bit 0');
+            gs._in(5);
+            assert(!(gs.status & 1), 'GS port 5 clears bit 0');
+            gs.portOut(0xB3, 0x5A);
+            assert((gs.status & 0x80) && gs._in(2) === 0x5A && !(gs.status & 0x80), '$B3 out: data to the GS, bit 7 until taken');
+            gs._out(3, 0xA5);
+            assert((gs.portIn(0xBB) & 0x80) && gs.portIn(0xB3) === 0xA5 && !(gs.portIn(0xBB) & 0x80), 'GS port 3: data to the Spectrum, bit 7 until read');
+            assert(gs.isPort(0xB3) && gs.isPort(0xBB) && !gs.isPort(0xB7) && !gs.isPort(0xFB), 'ports: (port & $F7) = $B3');
+            gs._out(0, 5); gs.cpu.pc = 0x1234; gs.status = 0x7F;
+            gs.control(0x80);
+            assert(gs.cpu.pc === 0 && gs.page === 0 && gs.status === 0x7F, '$33 bit 7: card reset, the mailbox stays');
+            gs.control(0x40);
+            assert(gs._nmiPending, '$33 bit 6: an NMI for the card');
+
+            // ---- what the layer left unmeasured ----
+            // Nothing above runs the GS Z80 at all, so neither the 12 MHz clock
+            // nor the 37.5 kHz interrupt -- the card's whole heartbeat -- is
+            // pinned, and the firmware boots either way, just faster or slower.
+            // A ROM of our own measures both without it: IM 1, EI, a two-byte
+            // self-loop, and a handler that re-enables and returns.
+            const tinyRom = () => {
+                const r = new Uint8Array(32768);
+                r[0] = 0xED; r[1] = 0x56;                       // im 1
+                r[2] = 0xFB;                                    // ei
+                r[3] = 0x18; r[4] = 0xFE;                       // jr $  (12 T)
+                r[0x38] = 0xFB; r[0x39] = 0xED; r[0x3A] = 0x4D; // ei ; reti
+                return r;
+            };
+            const runner = (clock) => {
+                const g = new GeneralSound(128);
+                g.loadRom(tinyRom());
+                g.reset();
+                g.cpu.sp = 0x7FF0;              // the INT push must land in RAM
+                g.specClock = clock;
+                let ints = 0;
+                const real = g.cpu.interrupt.bind(g.cpu);
+                g.cpu.interrupt = () => { ints++; return real(); };
+                g.syncTo(70000);
+                return { cycles: g.cpu.tStates, ints, gs: g };
+            };
+            const a48 = runner(3500000), a128 = runner(3546900);
+            assert(Math.abs(a48.cycles - 240000) < 60 && Math.abs(a48.ints - 750) <= 2,
+                '12 MHz: 70000 T of a 48K is 240000 GS cycles, and an INT every 320 of them (750)',
+                `${a48.cycles} cycles, ${a48.ints} ints`);
+            assert(a128.cycles < a48.cycles && Math.abs(a128.cycles - 236827) < 60,
+                "and a 128K's 3.5469 MHz gives 1.3% fewer: the time base is per machine",
+                `${a128.cycles} against ${a48.cycles}`);
+            // The NMI is only recorded as pending above; nothing takes it.
+            {
+                const g = new GeneralSound(128);
+                g.loadRom(tinyRom());
+                g.reset();
+                g.cpu.sp = 0x7FF0;
+                let nmis = 0;
+                const real = g.cpu.nmi.bind(g.cpu);
+                g.cpu.nmi = () => { nmis++; return real(); };
+                g.syncTo(1000);
+                g.control(0x40);
+                g.syncTo(2000);
+                assert(nmis === 1 && !g._nmiPending && g.cpu.pc !== 0x0003,
+                    '$33 bit 6: the NMI is taken once, and the card leaves its loop',
+                    `${nmis} nmi, pc ${g.cpu.pc.toString(16)}`);
+            }
+
+            // A volume register is 6 bits, not 8: $FF is 63, not 255 -- and
+            // without this a wider mask makes every channel four times too loud
+            const g6 = new GeneralSound(512);
+            g6._out(6, 0xFF);
+            assert(g6.vol[0] === 0x3F, 'a volume is 6-bit: $FF reads back as 63', g6.vol[0]);
+
+            // DACs 2 and 3 ($6100 / $6200) are never touched above, so which
+            // side each channel goes to is only half checked
+            const gm = new GeneralSound(512);
+            gm.ram[0x6100] = 0xC0; gm.ram[0x6200] = 0x40;
+            gm._out(7, 63); gm._out(8, 63);
+            gm._read(0x6100); gm._read(0x6200);
+            assert(gm.ch[1] === 0xC0 && gm.ch[2] === 0x40 &&
+                gm.level[0] > 0 && gm.level[1] < 0,
+                'A9-A8 pick the channel: $6100 is DAC 2 (left), $6200 is DAC 3 (right)',
+                JSON.stringify(gm.level));
+
+            // GS ports 10 and 11 report a page bit and a volume bit back
+            // through the status register, both INVERTED senses
+            const gf = new GeneralSound(512);
+            gf._out(0, 1); gf._in(10);
+            const pageOdd = !(gf.status & 0x80);
+            gf._out(0, 2); gf._in(10);
+            const pageEven = !!(gf.status & 0x80);
+            assert(pageOdd && pageEven, 'GS port 10: status bit 7 is page bit 0, inverted');
+            gf._out(6, 0x20); gf._in(11);
+            const volSet = !!(gf.status & 1);
+            gf._out(6, 0x1F); gf._in(11);
+            assert(volSet && !(gf.status & 1), 'GS port 11: status bit 0 is volume 1 bit 5');
+
+            // 128KB has four pages, not sixteen, so it wraps on a different mask
+            const g128 = new GeneralSound(128);
+            g128.rom = new Uint8Array(32768);
+            assert(g128.pages === 4, '128KB is 4 pages of 32KB', g128.pages);
+            g128._out(0, 1); g128._write(0x8000, 0x77);
+            g128._out(0, 5);
+            assert(g128._read(0x8000) === 0x77, '128KB: page 5 wraps to page 1 (4 pages, not 16)');
+        }
+
+        async function runTests() {
+            units();
+            section('the real ROM (gs105b), commands from a 128K');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/gs105b.rom'))) { skip('roms/gs105b.rom not present'); return; }
+            const rom = new Uint8Array(await (await fetch('../roms/gs105b.rom')).arrayBuffer());
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { on: sp.gsOn, ram: sp.gs.ramKB, rom: sp.gs.rom };
+            async function cmd(c, nread) {
+                sp.portWrite(0x00BB, c);
+                let n = 0;
+                while ((sp.portRead(0x00BB) & 1) && n++ < 50) await zx.runFrames(1);
+                const out = [];
+                for (let i = 0; i < nread; i++) {
+                    let k = 0;
+                    while (!(sp.portRead(0x00BB) & 0x80) && k++ < 50) await zx.runFrames(1);
+                    out.push(sp.portRead(0x00B3));
+                }
+                return { taken: n < 50, out };
+            }
+            async function ready() {
+                for (let f = 0; f < 1500; f += 25) {
+                    await zx.runFrames(25);
+                    const pc = sp.gs.cpu.pc;
+                    if (pc >= 0x26E && pc <= 0x283) return true;    // the command loop
+                }
+                return false;
+            }
+            for (const [ram, pages, free] of [[128, 3, 0x01C000], [512, 15, 0x07C000], [2048, 62, 0x1F4000]]) {
+                sp.setGs(true, ram, rom);
+                const up = await ready();
+                const a = await cmd(0x23, 1), b = await cmd(0x20, 3);
+                const total = b.out[0] | (b.out[1] << 8) | (b.out[2] << 16);
+                assert(up && a.taken && a.out[0] === pages && total === free,
+                    `${ram}KB: the ROM tests its RAM and answers $23 (pages-1) = ${pages}, $20 = $${free.toString(16)}`,
+                    `ready ${up} pages ${a.out[0]} total ${total.toString(16)}`);
+            }
+            // The settings offer three firmwares and only gs105b was ever run.
+            // Each stamps its own version straight after the entry jump (DI,
+            // JP $0148, then the version), which is an identity the filename
+            // cannot fake -- and then it has to boot and answer for itself.
+            for (const [file, want] of [['gs104.rom', [4, 1]], ['gs105a.rom', [5, 1]]]) {
+                if (!(await ok('../roms/' + file))) { skip(file + ' not present'); continue; }
+                const r = new Uint8Array(await (await fetch('../roms/' + file)).arrayBuffer());
+                const stamped = r.length === 32768 && r[0] === 0xF3 && r[1] === 0xC3 &&
+                    r[4] === want[0] && r[5] === want[1];
+                sp.setGs(true, 128, r);
+                const up = await ready();
+                const a = await cmd(0x23, 1);
+                assert(stamped && up && a.taken && a.out[0] === 3,
+                    `${file}: stamped v1.${String(want[0]).padStart(2, '0')}, boots, $23 = 3`,
+                    `stamp ${r[4]}.${r[5]} ready ${up} pages ${a.out[0]}`);
+            }
+            // The clock the Spectrum side hands it is per machine: 1.3% on the
+            // card's whole time base, and nothing else here would notice
+            assert(sp.gs.specClock === 3546900,
+                'on a 128K the card is clocked against 3.5469 MHz', sp.gs.specClock);
+            sp.setGs(true, 512, rom);
+            await ready();
+
+            // A port access brings the card up to the Spectrum's T-state. It is
+            // also brought up to time at every frame end, so without the sync on
+            // access everything else here still passes -- the mailbox is simply
+            // read a frame late. Put the card at a frame's start and reach it
+            // mid-frame, which is the only place the difference exists.
+            {
+                const frameT = sp.timing.tstatesPerFrame, tsWas = sp.cpu.tStates;
+                sp.gs.endFrame(frameT);
+                sp.gs.beginFrame(frameT);
+                const tBefore = sp.gs.t;
+                sp.cpu.tStates = 40000;
+                sp.portWrite(0x00BB, 0x23);
+                assert(tBefore < 1000 && sp.gs.t >= 40000,
+                    'a port access syncs the card to now, not to the last frame end',
+                    `${tBefore.toFixed(0)} -> ${sp.gs.t.toFixed(0)}`);
+                sp.cpu.tStates = tsWas;
+            }
+
+            const gsPc = sp.gs.cpu.pc;
+            sp.reset();
+            assert(sp.gs.cpu.pc === gsPc && gsPc !== 0, 'a Spectrum reset leaves the GS running (its own reset line, as Unreal)');
+            sp.portWrite(0x0033, 0x80);
+            assert(sp.gs.cpu.pc === 0 && sp.gs.page === 0, 'OUT $33,$80 resets the card');
+            sp.setGs(false);
+            sp.portWrite(0x00BB, 0x23);
+            assert(sp.gs.cmd === 0, 'off: its ports are not decoded');
+            sp.setGs(was.on, was.ram, null);
+            if (!was.rom) sp.gs.rom = null;
+            // The other half of the per-machine clock, last because switching
+            // machines builds a new Spectrum and everything above holds one
+            await zx.ready({ machine: '48k' });
+            const sp48 = frame.contentWindow.spectrum;
+            zx.pause();
+            sp48.setGs(true, 128, rom);
+            assert(sp48.gs.specClock === 3500000,
+                'and against 3.5 MHz on a 48K', sp48.gs.specClock);
+            sp48.setGs(false);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

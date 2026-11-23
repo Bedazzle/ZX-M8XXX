@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 26.11.07** | [Changelog](CHANGELOG.md)
+**Version 26.11.08** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just serve from any webserver, local or remote.
 
@@ -162,7 +162,10 @@ Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
 - **dcorp80** — ES module extraction approach ([PR #1](https://github.com/Bedazzle/ZX-M8XXX/pull/1))
 - **introspec** — his LUA script library for sjasmplus was the real-world test case that drove the assembler's LUA support
 - **[FUSE](https://fuse-emulator.sourceforge.net/)** (the Free Unix Spectrum Emulator) — the HC-2000 machine and its HC IF1 floppy interface are ported from **Alex Badea**'s `hc2000.c` and `if1_fdc.c` (fuse-emulator-svn, branch `hc2000-v2`). **GPL-2.0-or-later**, carried into this GPL-3.0-or-later work under its "or later" clause; the ported files name it in their headers
-- **[MAME](https://www.mamedev.org/)** — the Beta 48 (the 48K-era Beta Disk plus, the Vision boards and the Brazilian CBI-95 / IDS / AR-20 clones) follows `src/devices/bus/spectrum/beta.cpp` by **Nigel Barnes, David Haywood and MetalliC**. **BSD-3-Clause**. What is taken from it is the hardware behaviour that file documents, not its code; `core/beta48.js` names it and its authors in the header
+- **[ymfm](https://github.com/aaronsgiles/ymfm)** by **Aaron Giles** — the FM half of the two YM2203s in TurboSound FM is a **port of its OPN core** (`ymfm_fm.ipp`, `ymfm_opn.cpp`), the one unreal-ng plays TS-FM with. **BSD-3-Clause**, Copyright (c) 2021 Aaron Giles. Unlike the entries below this is code and not only behaviour, so `core/ym2203.js` reproduces his copyright notice and the three conditions in full, as that licence asks of a redistribution in source form; BSD-3-Clause is permissive and GPL-compatible, so the file as a whole stays GPL-3.0-or-later
+- **[MAME](https://www.mamedev.org/)** — **BSD-3-Clause**; what is taken is the hardware behaviour these files document, not their code, and each porting file names them in its header. The Beta 48 (the 48K-era Beta Disk plus, the Vision boards and the Brazilian CBI-95 / IDS / AR-20 clones) follows `src/devices/bus/spectrum/beta.cpp` by **Nigel Barnes, David Haywood and MetalliC**; the SAA1099 follows `src/devices/sound/saa1099.cpp`; the Kempston Disc Interface follows `src/devices/bus/spectrum/kempdisc.cpp`
+- **[Xpeccy](https://github.com/samstyle/Xpeccy)** by **samstyle** — the General Sound card and its DACs follow `sound/gs.c`. **MIT**; behaviour, not code, with the notice kept in `core/gs.js`
+- **[unreal-ng](https://github.com/alfishe/unreal-ng)** — the General Sound's port `$33`, memory map and reset policy follow `soundchip_gs.cpp`, and its `data/rom/` is where the gs104 / gs105a / gs105b firmware comes from. **GPL-3.0 with no "or later"**, which is stricter than this tree's licence, so only its account of the hardware is relied on and none of its text is carried across
 - **[fdd3000e](https://sourceforge.net/projects/fdd3000e/)** by **Sławomir Szczyrba** — the Timex FDD 3000 disk station (its own Z80, the WD1770 and the TI-397 interface) is derived from his FUSE patch's `fdd3000.c`, `ti397.c` and `fdd3boot.h`. **LGPL-2.0-or-later**, carried into this GPL-3.0-or-later work under its "or later" clause; `core/fdd3000.js` names it in the header
 - **xLook** by Dmitry Kozlov (HalfElf) & Alexander Medvedev — the ALASM/TASM detokenizers used by Import Foreign are ports of the xLook v0.2b FAR plugin sources, kindly provided by the author
 

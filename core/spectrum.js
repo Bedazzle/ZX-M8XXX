@@ -73,8 +73,13 @@ import { prepareBeta48Rom } from './beta48.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
 import { Fdd3000 } from './fdd3000.js';
+import { KempstonDisc, KEMPDISC_A6_ROMS, KEMPDISC_128_ROMS } from './kempdisc.js';
+import { KdosLoader } from './loaders/disk-kdos.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
+import { SAA1099, SAA_CLOCK } from './saa1099.js';
+import { GeneralSound } from './gs.js';
+import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -137,6 +142,15 @@ import { Disassembler } from './disasm.js';
             this.fdd3000RomFile = storageGet('zxm8_fdd3000Rom') || 'fdd3stavi.rom';
             this._fdd3000PagingEnabled = false;
             this.memory.fdd3000 = this.fdd3000;
+            // Kempston Disc Interface (core/kempdisc.js): K-DOS, a WD1770 on
+            // $E5/$E7/$ED/$EF, drive select $DF, ROM in $FD / out $D7; 48K only
+            this.kempdisc = new KempstonDisc();
+            this.kempdiscEnabled = storageGet('zxm8_kempdisc') === 'true';
+            this.kempdiscRomFile = storageGet('zxm8_kempdiscRom') || 'kdos21.rom';
+            this._kempdiscEnabledFlag = false;
+            this.memory.kempdisc = this.kempdisc;
+            this.loadedKempdiscDisks = [null, null, null, null];       // { name, data } per drive
+            this.loadedKempdiscDiskFiles = [null, null, null, null];   // the K-DOS directory
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
 
@@ -156,6 +170,18 @@ import { Disassembler } from './disasm.js';
             this.ay2 = new AY(this.profile.ayClockHz);
             this.turboSound = storageGet('zxm8_turboSound') === 'true';
             this._aySel = 0;
+            // TurboSound FM (NedoPC TS-FM, as Unreal-NG): the two AYs become two
+            // YM2203s -- the AY is their SSG half, core/ym2203.js their FM half.
+            // OUT $FFFD,%11111xyz: z chip ($FF/$FE as TurboSound), y=0 status
+            // reads on IN $FFFD, x=0 FM on. An address >= $10 is an FM register.
+            this.tsfm = storageGet('zxm8_tsfm') === 'true';
+            this.fm = [new YM2203FM(), new YM2203FM()];
+            this.fmTimers = [new YM2203Timers(), new YM2203Timers()];
+            this._fmAddr = [0, 0];
+            this._fmStatusRead = false;
+            this._fmOn = true;
+            this._fmT = 0;
+            this.fmChanges = [];
             this.ay2StateSnapshot = null;
             // DAC: 'none' | 'covox' (one port, settable, $FB by default) |
             // 'specdrum' ($DF) | Soundrive 1.05, set by jumper to one of two port
@@ -173,6 +199,18 @@ import { Disassembler } from './disasm.js';
             this.dacLevels = [0x80, 0x80, 0x80, 0x80];
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            // SAA1099 (ZXM-SoundCard, as in Xpeccy / Unreal Speccy): $01FF
+            // selects a register, $00FF writes it. The writes are kept per frame
+            // with their T-state and played into the chip by the audio, which
+            // owns its state (core/saa1099.js).
+            this.saa = new SAA1099();
+            this.saaOn = storageGet('zxm8_saa') === 'true';
+            this.saaChanges = [];
+            // General Sound (core/gs.js): its own Z80 at 12 MHz, ports $BB/$B3.
+            // The ROM (gs104 / gs105a / gs105b) is loaded by the UI.
+            this.gs = new GeneralSound(parseInt(storageGet('zxm8_gsRam') || '512', 10));
+            this.gsOn = storageGet('zxm8_gs') === 'true';
+            this.gsRomFile = storageGet('zxm8_gsRom') || 'gs105b.rom';
             // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded
             // into MIDI messages for onMidiMessage (Web MIDI in the UI)
             this.midiEnabled = false;
@@ -392,6 +430,7 @@ import { Disassembler } from './disasm.js';
             // controller itself, not just a ROM image.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this.memory.kempdisc = this.kempdisc;
 
             // Every WD17xx here gets the disk's own clock, now that all four
             // exist. Without it a controller has no rotation and falls back to
@@ -1578,6 +1617,17 @@ import { Disassembler } from './disasm.js';
             this.rzxStop();
             if (this.ay) this.ay.reset();
             if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            if (this.fm) this._fmReset();
+            if (this.saa) { this.saa.reset(); this.saaChanges = []; }
+            // General Sound has a reset line of its own (port $33, power-on):
+            // a Spectrum reset leaves it running, as Unreal does (GSReset=0),
+            // so a program started after a reset finds it past its RAM test
+            // (0.5 s on 128KB, 2.5 s on 512KB, 10 s on 2MB). Only its clock
+            // follows the Spectrum's frame again.
+            if (this.gs) {
+                this.gs.specClock = this._gsSpecClock();
+                this.gs.t = 0; this.gs._ended = false; this.gs.changes = [];
+            }
             this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
             if (this.dacLevels) this.dacLevels.fill(0x80);
             // MIDI out: a note held at reset would never get its Note Off, so
@@ -1596,6 +1646,11 @@ import { Disassembler } from './disasm.js';
             // The station is a separate box with its own power: a Spectrum reset
             // leaves it running, as in FUSE (only switching it on resets it).
             this.memory.fdd3000Active = false;
+            // Kempston Disc: its ROM is paged in at reset; K-DOS starts first
+            if (this._kempdiscEnabledFlag) {
+                this.kempdisc.reset();
+                this.memory.kempdiscActive = true;
+            }
             this._beta48Master = 0;
             this.memory.beta48WindowOff = false;
 
@@ -1679,6 +1734,21 @@ import { Disassembler } from './disasm.js';
         _fdd3000Ok() {
             return this.fdd3000Enabled && this.fdd3000.hasRoms() &&
                 (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
+        }
+
+        /**
+         * Kempston Disc: switched on, its ROM loaded, and a machine the board
+         * fits. The stock board is a 48K one -- its ROM-in port is `$xxFD`,
+         * which is the 128K's own `$7FFD` -- so only the three ROMs built for
+         * a 128K (128A6, A6J, and A1J, which locks the machine to 48K) are
+         * offered there. No HC-2000 test, for the same reason `_fdd3000Ok`
+         * has none: its paging model is neither 'none' nor '128k'.
+         */
+        _kempdiscOk() {
+            this.kempdisc.setA6(KEMPDISC_A6_ROMS.includes(this.kempdiscRomFile));
+            return this.kempdiscEnabled && this.kempdisc.hasRom() && !this.profile.timex &&
+                (this.profile.pagingModel === 'none' ||
+                 (KEMPDISC_128_ROMS.includes(this.kempdiscRomFile) && this.profile.pagingModel === '128k'));
         }
 
         /**
@@ -1925,6 +1995,86 @@ import { Disassembler } from './disasm.js';
             this.ay2.reset();
         }
 
+        /** TurboSound FM on or off (it brings TurboSound with it) */
+        setTsfm(on) {
+            this.tsfm = !!on;
+            if (this.tsfm && !this.turboSound) this.setTurboSound(true);
+            this._fmReset();
+        }
+
+        _fmReset() {
+            for (const f of this.fm) f.reset();
+            for (const t of this.fmTimers) t.reset();
+            this.fmTimers[0].onCsm = () => this.fmChanges.push({ tStates: this.cpu.tStates, chip: 0, reg: -1, value: 0 });
+            this.fmTimers[1].onCsm = () => this.fmChanges.push({ tStates: this.cpu.tStates, chip: 1, reg: -1, value: 0 });
+            this._fmAddr = [0, 0];
+            this._fmStatusRead = false;
+            this._fmOn = true;
+            this._fmT = this.absTStates();
+            this.fmChanges = [];
+        }
+
+        /**
+         * Bring both chips' timers and busy flags up to now (a T-state is a
+         * TS-FM master clock).
+         *
+         * The clock must be `absTStates()`, the monotonic one, for the reason
+         * the disk byte rate and the MIDI bit rate need it: timer A's shortest
+         * period is 72 T-states, and a clock rebuilt from `totalFrames` sits a
+         * whole frame off by an amount that CHANGES, so it steps forward by a
+         * frame at some point and the catch-up loop below would run a thousand
+         * periods in one go. See the note on `absTStates`.
+         */
+        _fmSync() {
+            const now = this.absTStates();
+            const d = now - this._fmT;
+            this._fmT = now;
+            if (d > 0) { this.fmTimers[0].advance(d); this.fmTimers[1].advance(d); }
+        }
+
+        // FM writes the audio did not take: straight into the chips
+        _fmFlush() {
+            for (const c of this.fmChanges) {
+                if (c.reg < 0) this.fm[c.chip].csmKeyOn(); else this.fm[c.chip].write(c.reg, c.value);
+            }
+            this.fmChanges.length = 0;
+        }
+
+        // SAA1099 writes the audio did not take (no sound, high speed, or
+        // made between frames): straight into the chip, so it keeps its registers
+        _saaFlush() {
+            for (const c of this.saaChanges) { if (c.addr) this.saa.writeAddress(c.value); else this.saa.writeData(c.value); }
+            this.saaChanges.length = 0;
+        }
+
+        /** The Spectrum's clock, for the General Sound's time base */
+        _gsSpecClock() { return is128kCompat(this.machineType) ? 3546900 : 3500000; }
+
+        /**
+         * The YM2203s' master clock. TS-FM is documented as clocking them at
+         * 3.5 MHz, which is what the ZX-Bus carries on a Pentagon -- its usual
+         * home -- so this is the bus clock, the same one the GS is given. The
+         * timers already count in T-states; taking the sample rate from the
+         * same clock keeps the board on one time base instead of two.
+         */
+        _fmMasterClock() { return this._gsSpecClock(); }
+
+        /** General Sound on or off, its RAM (128 / 512 / 2048 KB) and ROM data */
+        setGs(on, ramKB = this.gs.ramKB, romData = null) {
+            this.gsOn = !!on;
+            if (ramKB !== this.gs.ramKB) this.gs.setRamSize(ramKB);
+            if (romData) this.gs.loadRom(romData);
+            this.gs.reset();
+            this.gs.specClock = this._gsSpecClock();
+        }
+
+        /** SAA1099 on or off (it starts silent) */
+        setSaa(on) {
+            this.saaOn = !!on;
+            this.saa.reset();
+            this.saaChanges = [];
+        }
+
         /** DAC type and Covox port (see the constructor) */
         setDac(type, covoxPort = this.covoxPort, stereoPorts = this.stereoCovoxPorts) {
             if (type === 'soundrive') type = 'soundrive1';
@@ -2154,7 +2304,11 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
+                if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                    // General Sound: $BB status, $B3 data from the GS
+                    this.gs.syncTo(this.cpu.tStates);
+                    result = this.gs.portIn(lowByte);
+                } else if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
                     // Didaktik Gama 8255: control reads $FF (MHB8255), port C its latch
                     result = lowByte === 0x7F ? 0xFF : this._gamaPortC;
                 } else if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
@@ -2273,6 +2427,8 @@ import { Disassembler } from './disasm.js';
                            lowByte === DIDAKTIK_PORT_DATA)) {
                     // Didaktik 80 WD2797 registers ($81/$83/$85/$87)
                     result = this.didaktik.read(port);
+                } else if (this._kempdiscEnabledFlag && this.kempdisc.isFdcPort(lowByte)) {
+                    result = this.kempdisc.portIn(lowByte);     // Kempston Disc WD1770
                 } else if (this._fdd3000PagingEnabled && lowByte === 0xEF) {
                     result = this.fdd3000.portIn();     // FDD 3000: station -> Spectrum
                 } else if (this.memory.beta48On &&
@@ -2323,7 +2479,15 @@ import { Disassembler } from './disasm.js';
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
-                        result = this._curAy().readRegister();
+                        if (this.tsfm && this._fmStatusRead) {
+                            // TS-FM status mode: busy | timer B | timer A
+                            this._fmSync();
+                            result = this.fmTimers[this._aySel].readStatus();
+                        } else if (this.tsfm && this._fmAddr[this._aySel] >= 0x10) {
+                            result = 0xFF;      // an FM address latched: nothing to read
+                        } else {
+                            result = this._curAy().readRegister();
+                        }
                     }
                 } else {
                     // Floating bus: the byte the ULA has on the bus right now.
@@ -2453,6 +2617,19 @@ import { Disassembler } from './disasm.js';
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
+            // General Sound: $BB command, $B3 data to the GS, $33 control
+            if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                this.gs.syncTo(this.cpu.tStates);
+                this.gs.portOut(lowByte, val);
+            } else if (this.gsOn && this.gs.rom && lowByte === 0x33) {
+                this.gs.syncTo(this.cpu.tStates);
+                this.gs.control(val);           // $33: bit 7 card reset, bit 6 NMI
+            }
+            // SAA1099: $01FF address, $00FF data (not on a Timex, whose $FF is
+            // the SCLD's, nor while TR-DOS is paged in, as in Xpeccy)
+            if (this.saaOn && lowByte === 0xFF && !this.profile.timex && !this.memory.trdosActive) {
+                this.saaChanges.push({ tStates: this.cpu.tStates, addr: (port >> 8) & 1, value: val });
+            }
 
             // Didaktik Gama: its 8255 (ports xxx11111, A6-A5 pick A/B/C/control);
             // PC0 selects the 32KB bank at $8000. Not while TR-DOS owns the ports.
@@ -2627,6 +2804,11 @@ import { Disassembler } from './disasm.js';
                 this.fdd3000.portOut(val);              // FDD 3000: Spectrum -> station
                 return;
             }
+            // Kempston Disc: WD1770, drive select $DF, ROM in $FD / out $D7
+            if (this._kempdiscEnabledFlag && this.kempdisc.portOut(port & 0xFFFF, val)) {
+                this.memory.kempdiscActive = this.kempdisc.active;
+                if (this.kempdisc.isFdcPort(lowByte)) return;
+            }
             if (this.memory.beta48On && this._beta48Write(lowByte, val)) {
                 return;
             }
@@ -2721,13 +2903,32 @@ import { Disassembler } from './disasm.js';
             if (this._ayOnPorts() && !this.profile.timexAy && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
                 if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
                     // Port 0xFFFD: AY register select (TurboSound: $FF/$FE pick the chip)
-                    if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
+                    if (this.tsfm && (val & 0xF8) === 0xF8) {
+                        // TS-FM control word: chip, status mode, FM on
+                        this._aySel = (val & 1) ? 0 : 1;
+                        this._fmStatusRead = !(val & 2);
+                        this._fmOn = !(val & 4);
+                    } else if (this.tsfm) {
+                        // an address: < $10 the SSG's register, >= $10 an FM one
+                        // (the SSG keeps its previous register then)
+                        this._fmAddr[this._aySel] = val;
+                        if (val < 0x10) this._curAy().selectRegister(val);
+                    } else if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
                     else this._curAy().selectRegister(val);
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_DATA) {
                     // Port 0xBFFD: AY register write. Applied immediately (so register
                     // readback / AY-detection see the value), and also recorded with its
                     // frame-relative T-state so processFrame can replay intra-frame
                     // volume changes (digitized speech) at the right moment.
+                    if (this.tsfm) {
+                        this._fmSync();
+                        const chip = this._aySel, a = this._fmAddr[chip];
+                        this.fmTimers[chip].write(a, val);       // busy, and the timer registers
+                        if (a >= 0x10) {
+                            this.fmChanges.push({ tStates: this.cpu.tStates, chip, reg: a, value: val });
+                            return;
+                        }
+                    }
                     const ay = this._curAy();
                     const reg = ay.selectedRegister;
                     ay.writeRegister(val);
@@ -2804,6 +3005,9 @@ import { Disassembler } from './disasm.js';
             this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            this._saaFlush();
+            this._fmFlush();
+            if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -2894,7 +3098,9 @@ import { Disassembler } from './disasm.js';
             const needsInstrPC = xrefEnabled || tracing;
             const contentionEnabled = this.profile.hasContention && this.contentionEnabled;
             const isPentagon = this.profile.ulaProfile === 'pentagon';
-            const tapeTrapsEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+            // (noRomTraps: not at the 48K addresses; exromTapeTraps: the TC2068's own)
+            const tapeTrapsEnabled = this.tapeTrapsEnabled && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
+            const trdosTrapEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
             // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
@@ -2953,7 +3159,7 @@ import { Disassembler } from './disasm.js';
                 }
                 if (tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
                 if (tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
-                if (tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+                if (trdosTrapEnabled && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (contentionEnabled) {
@@ -3381,6 +3587,9 @@ import { Disassembler } from './disasm.js';
                 }
             }
 
+            // General Sound: run it to the end of the frame
+            if (this.gsOn) this.gs.endFrame(tstatesPerFrame);
+
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
@@ -3395,7 +3604,10 @@ import { Disassembler } from './disasm.js';
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
-                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
+                      gs: this.gsOn && this.gs.rom ? this.gs : null,
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
             }
 
             // Advance AY logging frame counter
@@ -3521,6 +3733,9 @@ import { Disassembler } from './disasm.js';
             this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
             this.dacChanges = [];
             this._dacStart = this.dacLevels.slice();
+            this._saaFlush();
+            this._fmFlush();
+            if (this.gsOn) this.gs.beginFrame(tstatesPerFrame);
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3616,10 +3831,10 @@ import { Disassembler } from './disasm.js';
                 if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
                     (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
-                const _traps = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+                const _traps = this.tapeTrapsEnabled && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
                 if (_traps && this.tapeTrap.checkTrap()) continue;
                 if (_traps && this.tapeSaveTrap.checkTrap()) continue;
-                if (_traps && this.trdosTrap.checkTrap()) continue;
+                if (_traps && !this.profile.noRomTraps && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (this.profile.hasContention && this.contentionEnabled) {
@@ -3816,6 +4031,9 @@ import { Disassembler } from './disasm.js';
                 }
             }
 
+            // General Sound: run it to the end of the frame
+            if (this.gsOn) this.gs.endFrame(tstatesPerFrame);
+
             // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
             if (this.audio && this.audio.enabled && !this.audioSuppressed && this.speed > 0 && this.speed <= 200) {
                 // Get tape audio from tape player (if playing and enabled)
@@ -3830,7 +4048,10 @@ import { Disassembler } from './disasm.js';
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
                 this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
                     { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
-                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
+                      saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
+                      gs: this.gsOn && this.gs.rom ? this.gs : null,
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
             }
 
             // Advance AY logging frame counter
@@ -5011,6 +5232,12 @@ import { Disassembler } from './disasm.js';
             // An HC-2000 with its HC IF1 pages that in at the same $0008, so
             // none of the add-on interfaces go with it (without it, they do).
             const hc = !!this.hcIf1;
+            const kd = this._kempdiscOk();
+            if (kd !== this._kempdiscEnabledFlag) {
+                this._kempdiscEnabledFlag = kd;
+                this.kempdisc.reset();
+                this.memory.kempdiscActive = false;
+            }
             // The FDD 3000's TI-397 board overlays $0000-$3FFF and shares port
             // $EF with the +D, so the two are mutually exclusive
             const fdd3 = this._fdd3000Ok();
@@ -8132,6 +8359,19 @@ import { Disassembler } from './disasm.js';
 
         // Load DSK disk image - inserts disk into µPD765 FDC (+3, or the HC IF1)
         loadDSKImage(data, fileName, driveIndex = 0) {
+            // Kempston Disc: DSK / .kdi (EDSK) into its four drives
+            if (!this.fdc && this._kempdiscEnabledFlag) {
+                const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
+                this.kempdisc.fdc.loadDisk(bytes, 'dsk', driveIndex & 3);
+                this.kempdisc.fdc.drives[driveIndex & 3].name = fileName;
+                const files = KdosLoader.listFiles(this.kempdisc.fdc.drives[driveIndex & 3].dsk);
+                this.loadedKempdiscDisks[driveIndex & 3] = { name: fileName, data: bytes };
+                this.loadedKempdiscDiskFiles[driveIndex & 3] = files;
+                return {
+                    diskInserted: true, diskType: 'kdi', diskName: fileName,
+                    fileCount: files.length, _driveIndex: driveIndex & 3, needsMachineSwitch: false
+                };
+            }
             // Timex FDD 3000: DSK images go to the station's four drives
             if (!this.fdc && this._fdd3000PagingEnabled) {
                 const bytes = new Uint8Array(data instanceof Uint8Array ? data : new Uint8Array(data));
@@ -9405,8 +9645,8 @@ import { Disassembler } from './disasm.js';
          * Get current tape load mode
          */
         getTapeFlashLoad() {
-            // A machine whose ROM the traps do not know (TC2068) loads in real time
-            return this.tapeFlashLoad && !this.profile.noRomTraps;
+            // A machine whose ROM the traps do not know loads in real time
+            return this.tapeFlashLoad && (!this.profile.noRomTraps || !!this.profile.exromTapeTraps);
         }
 
         /**
@@ -9772,6 +10012,7 @@ import { Disassembler } from './disasm.js';
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this.memory.kempdisc = this.kempdisc;
             this._applyTimexCartridge();
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
@@ -11097,8 +11338,21 @@ import { Disassembler } from './disasm.js';
             const dac = extra && extra.dacStart ? extra.dacStart.slice() : [0x80, 0x80, 0x80, 0x80];
             let dacIdx = 0;
             const DAC_VOLUME = 0.5;
+            // SAA1099: its writes are played into the chip here, at their T-state
+            const saa = extra && extra.saa;
+            const saaChanges = (extra && extra.saaChanges) || [];
+            let saaIdx = 0;
+            const SAA_VOLUME = 1.0;
+            const saaWrite = (c) => { if (c.addr) saa.writeAddress(c.value); else saa.writeData(c.value); };
+            // General Sound: its DAC levels, changed at Spectrum frame T-states
+            const gs = extra && extra.gs;
+            const gsChanges = gs ? gs.changes : [];
+            let gsIdx = 0, gsL = gs ? gs.startLevel[0] : 0, gsR = gs ? gs.startLevel[1] : 0;
+            const GS_VOLUME = 1.0;
             if (ay2 && extra.ay2Snapshot) ay2.importState(extra.ay2Snapshot);
-            if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
+            if (!this.enabled || (!this.workletNode && !this.scriptNode)) {
+                return;                 // (Spectrum._saaFlush gives the chip its writes)
+            }
 
             // Restore the AY to its start-of-frame state so the timestamped register
             // writes can be replayed at the right T-state during the sample loop. The
@@ -11117,6 +11371,15 @@ import { Disassembler } from './disasm.js';
 
             // AY steps per sample
             const ayStepsPerSample = this.ay ? cyclesPerSample * this.ayPerCpu : 0;
+            const saaClocksPerSample = SAA_CLOCK / this.sampleRate;
+            // TurboSound FM: two YM2203 FM halves, one FM sample per 72 master
+            // clocks (12 operator slots x the /6 prescale); their writes played
+            // in at their T-state, as the AY's and the SAA's are
+            const fm = extra && extra.fm, fmOn = !!(extra && extra.fmOn);
+            const fmChanges = (extra && extra.fmChanges) || [];
+            let fmIdx = 0, fmAcc = this._fmAcc || 0, fmLast = this._fmLast || 0;
+            const fmPerSample = this._fmMasterClock() / 72 / this.sampleRate;
+            const FM_GAIN = 0.7 * 0.333 / 16382;     // a TL 0 carrier = one AY channel at 15
 
             // Audio levels
             const BEEPER_VOLUME = 0.5;
@@ -11180,6 +11443,33 @@ import { Disassembler } from './disasm.js';
                     }
                 }
 
+                if (saa) {
+                    while (saaIdx < saaChanges.length && saaChanges[saaIdx].tStates <= sampleTstates) saaWrite(saaChanges[saaIdx++]);
+                    const [sl, sr] = saa.run(saaClocksPerSample);
+                    left += sl * SAA_VOLUME;
+                    right += sr * SAA_VOLUME;
+                }
+
+                if (fm) {
+                    while (fmIdx < fmChanges.length && fmChanges[fmIdx].tStates <= sampleTstates) {
+                        const c = fmChanges[fmIdx++];
+                        if (c.reg < 0) fm[c.chip].csmKeyOn(); else fm[c.chip].write(c.reg, c.value);
+                    }
+                    fmAcc += fmPerSample;
+                    let sum = 0, n = 0;
+                    while (fmAcc >= 1) { sum += fm[0].clock() + fm[1].clock(); n++; fmAcc -= 1; }
+                    if (n) fmLast = sum / n;
+                    if (fmOn) { left += fmLast * FM_GAIN; right += fmLast * FM_GAIN; }
+                }
+
+                if (gs) {
+                    while (gsIdx < gsChanges.length && gsChanges[gsIdx].t <= sampleTstates) {
+                        gsL = gsChanges[gsIdx].l; gsR = gsChanges[gsIdx].r; gsIdx++;
+                    }
+                    left += gsL * GS_VOLUME;
+                    right += gsR * GS_VOLUME;
+                }
+
                 // DAC: channels 0/1 left, 2/3 right; $80 is silence
                 if (dacOn) {
                     while (dacIdx < dacChanges.length && dacChanges[dacIdx].tStates <= sampleTstates) {
@@ -11231,6 +11521,16 @@ import { Disassembler } from './disasm.js';
                     else this.ay.setRegisterForReplay(c.reg, c.value);
                     ayIdx++;
                 }
+            }
+
+            if (saa) { while (saaIdx < saaChanges.length) saaWrite(saaChanges[saaIdx++]); saaChanges.length = 0; }
+            if (fm) {
+                while (fmIdx < fmChanges.length) {
+                    const c = fmChanges[fmIdx++];
+                    if (c.reg < 0) fm[c.chip].csmKeyOn(); else fm[c.chip].write(c.reg, c.value);
+                }
+                fmChanges.length = 0;
+                this._fmAcc = fmAcc; this._fmLast = fmLast;
             }
 
             // Flush remaining samples at end of frame

@@ -2,6 +2,14 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.08
+
+- **TurboSound FM: two YM2203s, with their FM halves**, contributed by Marginal2k.
+- **The Kempston Disc Interface and K-DOS disks**, contributed by Marginal2k.
+- **General Sound: a 12 MHz Z80 card with four DACs**, contributed by Marginal2k.
+- **The SAA1099 sound card: six channels, in stereo**, contributed by Marginal2k.
+- **Timex TC2068 tapes flash load, out of its EXROM**, contributed by Marginal2k.
+
 ## v26.11.07
 
 - **Fixed: a crafted tape or archive could run script in the Explorer (XSS)**, reported in PR #27.

@@ -369,6 +369,28 @@
                         <label class="checkbox-label" title="TurboSound (NedoPC): a second AY on the same ports. OUT ($FFFD),$FF selects chip 0, $FE chip 1; any other value selects a register of the current chip. Where there is an AY (128K, Pentagon..., or AY in 48K).">
                             <input type="checkbox" id="chkTurboSound"> TurboSound (2 x AY)
                         </label>
+                        <label class="checkbox-label" style="margin-left: 15px;" title="TurboSound FM (NedoPC TS-FM): two YM2203 -- each an AY (SSG) plus 3 FM channels of 4 operators. OUT $FFFD,%11111xyz: z picks the chip ($FF/$FE as TurboSound), y=0 IN $FFFD reads the status, x=0 FM on; an address >= $10 is an FM register. FM core: a port of ymfm (Aaron Giles), as in Unreal-NG.">
+                            <input type="checkbox" id="chkTsfm"> TurboSound FM
+                        </label>
+                        <label class="checkbox-label" style="margin-left: 15px;" title="SAA1099 (ZXM-SoundCard, as in Xpeccy and Unreal Speccy): 6 channels, 8 MHz, stereo. OUT $01FF selects a register, OUT $00FF writes it. Not on the Timex machines ($FF is the SCLD's), silent while TR-DOS is paged in.">
+                            <input type="checkbox" id="chkSaa"> SAA1099
+                        </label>
+                    </div>
+                    <div class="settings-row">
+                        <label class="checkbox-label" title="General Sound: a Z80 at 12 MHz with its own ROM and RAM, four 8-bit DACs. Port $BB: command / status, $B3: data. ROMs: roms/gs104.rom, gs105a.rom, gs105b.rom (32KB).">
+                            <input type="checkbox" id="chkGs"> General Sound
+                        </label>
+                        <select id="selGsRom" style="margin-left: 6px;" title="General Sound ROM">
+                            <option value="gs105b.rom">ROM 1.05b</option>
+                            <option value="gs105a.rom">ROM 1.05a</option>
+                            <option value="gs104.rom">ROM 1.04</option>
+                        </select>
+                        <select id="selGsRam" style="margin-left: 6px;" title="General Sound RAM: 128KB and 512KB are the classic boards, 2MB the modern ones">
+                            <option value="128">128KB</option>
+                            <option value="512">512KB</option>
+                            <option value="2048">2MB</option>
+                        </select>
+                        <span id="gsStatus" class="iface-status" style="margin-left: 6px;"></span>
                         <label style="margin-left: 15px;" title="8-bit DAC: Covox (one port, mono), Specdrum (Cheetah, port $DF, mono), Soundrive 1.05, four channels: mode 1 $0F/$1F left, $4F/$5F right; mode 2 $F1/$F3 left, $F9/$FB right">
                             DAC
                             <select id="selDac" style="margin-left: 4px;">
@@ -560,6 +582,20 @@
                         <button id="btnFdd3000Boot" class="control-btn iface-rom-btn" title="Boot from drive A: FDD reset, then Spectrum reset. A CP/M disk in A is started through the Monitor Emulator terminal, which must be in drive B, C or D (Monitor boots first, then CP/M goes back into A and the station is reset). Auto load does this when a disk goes into A.">Boot</button>
                         <button id="btnFdd3000Reset" class="control-btn iface-rom-btn" title="FDD3000 reset (as in FUSE): restart the station, which loads its system from drive A (done at once). The Spectrum is not reset: with TOS, reset it to get the second copyright line; with Monitor running, this is how CP/M is started.">Reset FDD</button>
                         <span id="fdd3000Status" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name" title="Kempston Disc Interface (Abbeydale Designers, 1985): K-DOS in an 8KB ROM, a WD1770 on $E5/$E7/$ED/$EF, drive select $DF; the ROM pages in at reset and with OUT $FD, out with OUT $D7. Disks: .kdi / .dsk (EDSK, 80 x 2 x 10 x 512), up to 4 drives. Commands: PRINT #4: CAT, LOAD &quot;name&quot;, COPY, FORMAT. The stock board is for a 48K ($FD is the 128K's paging port); the 128A6 modification (ROM 2.1 128A6, Mario Prato) moves the ports to $A7/$E7/$AF/$EF and ROM-in to $BF and works on 48K / 128K / +2 (the K128_* disks). After MAME's kempdisc.cpp.">
+                            <input type="checkbox" id="chkKempdisc"> Kempston Disc
+                        </label>
+                        <select id="selKempdiscRom" title="K-DOS ROM">
+                            <option value="kdos21.rom">K-DOS 2.1</option>
+                            <option value="kdos20.rom">K-DOS 2.0</option>
+                            <option value="kdos21it.rom">K-DOS 2.1 Italian</option>
+                            <option value="kdos21-a1j.rom">K-DOS 2.1 A1J (stock board, 128K as 48K)</option>
+                            <option value="kdos21-128a6.rom">K-DOS 2.1 128A6 (A6 board, 128K)</option>
+                            <option value="kdos21-a6j.rom">K-DOS 2.1 A6J (A6 board, 128K)</option>
+                        </select>
+                        <span id="kempdiscStatus" class="iface-status"></span>
                     </div>
                     <div class="iface-row" id="didaktik128Row">
                         <label class="checkbox-label" style="margin-left: 15px;" title="The 48-to-128K upgrade patch that made a D40/D80 usable on a 128K: the paging port decoder requires A5, and the ROM is hardwired to page 1 (48K BASIC). A stock 128K cannot run a Didaktik; some upgrade services fitted this.">

@@ -116,6 +116,53 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             storageSet('zxm8_turboSound', chkTurboSound.checked);
             showMessage(chkTurboSound.checked ? 'TurboSound on (2 x AY)' : 'TurboSound off');
         });
+        // General Sound: ROM fetched from roms/ when switched on
+        const chkGs = document.getElementById('chkGs');
+        const selGsRom = document.getElementById('selGsRom');
+        const selGsRam = document.getElementById('selGsRam');
+        const gsStatus = document.getElementById('gsStatus');
+        async function applyGs(announce) {
+            const sp = getSpectrum();
+            const on = chkGs.checked, file = selGsRom.value, ram = parseInt(selGsRam.value, 10);
+            let rom = null;
+            if (on && (!sp.gs.rom || sp.gsRomFile !== file)) {
+                try {
+                    const r = await fetch('roms/' + file);
+                    if (r.ok) rom = new Uint8Array(await r.arrayBuffer());
+                } catch (e) { /* reported below */ }
+            }
+            sp.gsRomFile = file;
+            try { sp.setGs(on, ram, rom); } catch (e) { gsStatus.textContent = e.message; return; }
+            storageSet('zxm8_gs', on); storageSet('zxm8_gsRom', file); storageSet('zxm8_gsRam', String(ram));
+            gsStatus.textContent = on && !sp.gs.rom ? `(roms/${file} required)` : '';
+            if (announce) showMessage(on ? (sp.gs.rom ? `General Sound on (${selGsRam.options[selGsRam.selectedIndex].text}, ${file})` : `General Sound: roms/${file} not found`) : 'General Sound off');
+        }
+        {
+            const sp = getSpectrum();
+            chkGs.checked = !!sp.gsOn;
+            selGsRom.value = sp.gsRomFile;
+            selGsRam.value = String(sp.gs.ramKB);
+            if (sp.gsOn) applyGs(false);
+            chkGs.addEventListener('change', () => applyGs(true));
+            selGsRom.addEventListener('change', () => applyGs(true));
+            selGsRam.addEventListener('change', () => applyGs(true));
+        }
+        const chkTsfm = document.getElementById('chkTsfm');
+        chkTsfm.checked = !!getSpectrum().tsfm;
+        chkTsfm.addEventListener('change', () => {
+            const sp = getSpectrum();
+            sp.setTsfm(chkTsfm.checked);
+            storageSet('zxm8_tsfm', chkTsfm.checked);
+            if (chkTsfm.checked) { chkTurboSound.checked = true; storageSet('zxm8_turboSound', true); }
+            showMessage(chkTsfm.checked ? 'TurboSound FM on (2 x YM2203)' : 'TurboSound FM off');
+        });
+        const chkSaa = document.getElementById('chkSaa');
+        chkSaa.checked = !!getSpectrum().saaOn;
+        chkSaa.addEventListener('change', () => {
+            getSpectrum().setSaa(chkSaa.checked);
+            storageSet('zxm8_saa', chkSaa.checked);
+            showMessage(chkSaa.checked ? 'SAA1099 on ($01FF register, $00FF data)' : 'SAA1099 off');
+        });
         const applyDac = () => {
             const sp = getSpectrum();
             const hexOr = (txt, d) => { const v = parseInt(txt.value, 16); return Number.isFinite(v) ? v : d; };

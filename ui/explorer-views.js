@@ -957,6 +957,10 @@ export function initExplorerViews(xp) {
             sectorMap = buildOPDSectorMap(xp.explorerData, xp.explorerParsed.files, xp.explorerParsed.info);
         } else if (t === 'mdr') {
             sectorMap = buildMDRSectorMap(xp.explorerData, xp.explorerParsed.files);
+        } else if (t === 'didaktik' && xp.explorerParsed.kdos) {
+            xp.diskmapGridContainer.innerHTML = '<div class="explorer-empty">No disk map for K-DOS disks</div>';
+            xp.diskmapSectorMap = null;
+            return;
         } else if (t === 'didaktik') {
             sectorMap = buildDidaktikSectorMap(xp.explorerData, xp.explorerParsed.files, xp.explorerParsed.info);
         }

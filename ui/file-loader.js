@@ -4,6 +4,7 @@ import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
 import { Fdd3000 } from '../core/fdd3000.js';
+import { KdosLoader } from '../core/loaders/disk-kdos.js';
 
 export function initFileLoader({
     getSpectrum,
@@ -105,6 +106,7 @@ export function initFileLoader({
         dsk: ['dsk'],
         hc: ['dsk', 'img'],            // HC IF1: DSK, or raw IMG (converted). MGT is +D/DISCiPLE
         fdd3: ['dsk'],                 // Timex FDD 3000 (TOS / CP/M)
+        kdi: ['kdi', 'dsk'],           // Kempston Disc (x128's .kdi are EDSK)
         trd: ['trd', 'scl', 'udi'],
         mgt: ['mgt', 'img'],
         mdr: ['mdr'],
@@ -136,6 +138,8 @@ export function initFileLoader({
             systems.push({ id: 'hc', name: 'HC IF1', blankLabel: 'Blank HC disk', drives: 2 });
         } else if (spectrum.fdc) {
             systems.push({ id: 'dsk', name: '+3DOS', blankLabel: 'Blank DSK', drives: 2 });
+        } else if (spectrum._kempdiscEnabledFlag) {
+            systems.push({ id: 'kdi', name: 'Kempston Disc', blankLabel: 'Blank KDI', drives: 4 });
         } else if (spectrum._fdd3000PagingEnabled) {
             systems.push({ id: 'fdd3', name: 'FDD 3000', blankLabel: 'Blank DSK', drives: 4 });
         }
@@ -303,6 +307,7 @@ export function initFileLoader({
                 : result.diskType === 'opd' ? 'opus'
                 : result.diskType === 'd80' ? 'didaktik'
                 : result.diskType === 'fdd3' ? 'fdd3'
+                : result.diskType === 'kdi' ? 'kdi'
                 : 'beta';
             updateMediaIndicator(fileName, 'disk', drv);
             mediaCatalogAPI.buildDiskCatalog(drv, ctrl);
@@ -792,6 +797,7 @@ export function initFileLoader({
                        ext === 'szx' || ext === 'zip' || ext === 'trd' || ext === 'scl' ||
                        ext === 'dsk' || ext === 'mdr' || ext === 'mgt' || ext === 'img' ||
                        ext === 'opd' || ext === 'opu' || ext === 'd80' || ext === 'd40' || ext === 'udi' ||
+                       ext === 'kdi' || ext === 'dck' ||
                        ext === 'rzx' || ext === 'wav') {
                 const spectrum = getSpectrum();
                 if (!spectrum.romLoaded) {
@@ -928,7 +934,10 @@ export function initFileLoader({
         // +3DOS / +D / Microdrive: build a blank image and insert it through the
         // normal load path so per-drive state, indicators, and catalog update uniformly
         let result;
-        if (sys.id === 'fdd3') {
+        if (sys.id === 'kdi') {
+            // K-DOS: 80 x 2 x 10 x 512, as its FORMAT leaves it (KdosLoader.createBlank)
+            result = spectrum.loadDSKImage(KdosLoader.createBlank('BLANK').toBuffer(), '[blank]', driveIndex & 3);
+        } else if (sys.id === 'fdd3') {
             // TOS / CP/M: 40 tracks, one side, 16 x 256-byte sectors 0-15, $E5
             result = spectrum.loadDSKImage(DSKLoader.createBlankDSK('tos-40').toBuffer(), '[blank]', driveIndex & 3);
         } else if (sys.id === 'dsk') {
@@ -992,6 +1001,7 @@ export function initFileLoader({
             : result.diskType === 'opd' ? 'opus'
             : result.diskType === 'd80' ? 'didaktik'
             : result.diskType === 'fdd3' ? 'fdd3'
+            : result.diskType === 'kdi' ? 'kdi'
             : 'beta';
         updateMediaIndicator(fileName, 'disk', drv);
 

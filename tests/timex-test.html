@@ -276,7 +276,38 @@
             sp.reset();
             await zx.runFrames(200);
             assert(/Timex Computer Corp/.test(screenText(sp)), 'TC2068 ROM boots (HOME + EXROM)');
-            assert(!sp.getTapeFlashLoad(), 'no ROM traps: tapes load in real time');
+            // Flash load: LD-BYTES trapped in the EXROM ($00FC), not at $0556
+            {
+                const flashWas = sp.tapeFlashLoad;
+                sp.setTapeFlashLoad ? sp.setTapeFlashLoad(true) : (sp.tapeFlashLoad = true);
+                assert(sp.getTapeFlashLoad(), 'flash load is on for the TC2068');
+                const data = [0xFF, ...Array.from({ length: 16 }, (_, i) => 0xA0 + i)];
+                data.push(data.reduce((a, b) => a ^ b, 0));
+                const tap = new Uint8Array([data.length & 0xFF, data.length >> 8, ...data]);
+                await zx.loadFile(tap, 'exrom.tap');
+                zx.pause();
+                const c = sp.cpu, saved = { pc: c.pc, sp: c.sp };
+                for (let i = 0; i < 16; i++) sp.memory.write(40000 + i, 0);
+                const call = (pc) => {
+                    c.sp = 0xF000; sp.memory.write(0xF000, 0x34); sp.memory.write(0xF001, 0x12);
+                    sp.memory.write(0x1234, 0x18); sp.memory.write(0x1235, 0xFE);     // (ROM: no effect)
+                    c.ix = 40000; c.de = 16; c.a = 0xFF; c.f |= 0x01; c.pc = pc;
+                };
+                // HOME ROM at $0000: $00FC is not LD-BYTES there
+                call(0x00FC);
+                sp.tapeTrap.checkTrap();
+                const homeTrapped = c.pc === 0x1234;
+                sp.portWrite(0x00FF, 0x80); sp.portWrite(0x00F4, 0x01);              // EXROM at $0000
+                call(0x00FC);
+                const trapped = sp.tapeTrap.checkTrap();
+                const got = Array.from({ length: 16 }, (_, i) => sp.memory.read(40000 + i));
+                sp.portWrite(0x00F4, 0x00); sp.portWrite(0x00FF, 0x00);
+                assert(!homeTrapped && trapped && c.pc === 0x1234 && (c.f & 1) && c.ix === 40016 &&
+                    got.every((v, i) => v === 0xA0 + i), 'LD-BYTES in the EXROM ($00FC) is trapped, only while the EXROM is paged in',
+                    `home ${homeTrapped} trapped ${trapped} pc ${c.pc.toString(16)} ix ${c.ix}`);
+                c.pc = saved.pc; c.sp = saved.sp;
+                sp.setTapeFlashLoad ? sp.setTapeFlashLoad(flashWas) : (sp.tapeFlashLoad = flashWas);
+            }
             // EXROM: HSR bit + DEC bit 7 put the 8KB ROM bank 1 into a chunk
             const home0 = sp.memory.read(0x0000), ex0 = sp.memory.rom[1][0];
             sp.portWrite(0x00FF, 0x80); sp.portWrite(0x00F4, 0x01);

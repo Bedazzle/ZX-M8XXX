@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Kempston Disc Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Kempston Disc Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Kempston Disc Interface (core/kempdisc.js): K-DOS, a WD1770, the stock
+        // board and the 128A6 modification.
+        import { KempstonDisc } from '../core/kempdisc.js';
+        import { KdosLoader, KDOS_DIR_TRACK } from '../core/loaders/disk-kdos.js';
+        import { DSKLoader } from '../core/fdc.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('ports');
+            const kd = new KempstonDisc();
+            kd.rom = new Uint8Array(8192).map((_, i) => i & 0xFF);
+            assert([0xE5, 0xE7, 0xED, 0xEF].map(p => kd.fdcReg(p)).join() === '0,1,2,3' && !kd.isFdcPort(0xA7),
+                'stock: WD on $E5/$E7/$ED/$EF (A1 | A3 << 1)');
+            kd.setA6(true);
+            assert([0xA7, 0xE7, 0xAF, 0xEF].map(p => kd.fdcReg(p)).join() === '0,1,2,3' && !kd.isFdcPort(0xE5),
+                '128A6: WD on $A7/$E7/$AF/$EF (A6 | A3 << 1), as the schematic');
+            kd.setA6(false);
+            kd.reset();
+            assert(kd.active && kd.readMemory(0x2005) === 5, 'ROM in at reset, 8KB mirrored');
+            kd.portOut(0x00D7, 0); const off = kd.active;
+            kd.portOut(0x7FFD, 0x10);
+            assert(!off && kd.active, 'stock: OUT $D7 pages out, any $xxFD in (the 128K conflict)');
+            kd.setA6(true); kd.portOut(0x00D7, 0); kd.portOut(0x7FFD, 0x10); const a6Off = !kd.active;
+            kd.portOut(0x00BF, 0);
+            assert(a6Off && kd.active, '128A6: $7FFD leaves it alone, OUT $BF pages in');
+            kd.setA6(false);
+            kd.fdc.drives[2].dsk = { getTrack: () => null };
+            kd.portOut(0x00DF, 0x09);
+            assert(kd.fdc.drive === 2 && kd.fdc.side === 1 && kd.fdc.selected, '$DF: bit 3 = drive 2, bit 0 = side 1');
+            kd.portOut(0x00DF, 0x00);
+            assert(!kd.fdc.selected, '$DF: no drive bit, nothing selected');
+            kd.fdc.drives[2].dsk = null;
+        }
+
+        // The K-DOS file system (core/loaders/disk-kdos.js) is 298 lines of pure
+        // code with fourteen public methods, and every assert the layer wrote
+        // for it sat behind the roms/kdos21.rom gate -- so without that ROM the
+        // whole format, which is what the Explorer's editor is built on, ran
+        // nothing at all. None of it needs a ROM.
+        function kdosUnits() {
+            section('the K-DOS file system, with no ROM');
+
+            // FORMAT's own layout, read back out of the directory sector
+            const ds = KdosLoader.createBlank('MYDISK');
+            const d = ds.readSector(KDOS_DIR_TRACK, 0, 0);
+            assert(KdosLoader.diskName(ds) === 'MYDISK' && d[0x1D] === 80 && d[0x1E] === 9 &&
+                d[0x1F] === 1 && (d[0x22] | (d[0x23] << 8)) === 800,
+                'blank DS 80: the label and the fixed bytes (80 tracks, 10 sectors, 2 sides, 800 blocks)',
+                `${KdosLoader.diskName(ds)} ${d[0x1D]}T ${d[0x1E] + 1}sec ${d[0x1F] + 1}S ${d[0x22] | (d[0x23] << 8)}blk`);
+            assert(KdosLoader.freeBlocks(ds) === 795 && KdosLoader.listFiles(ds).length === 0 &&
+                d.subarray(0x100, 0x200).every(b => b === 0),
+                'and 795K free: the directory takes five blocks, and every slot byte is clear',
+                KdosLoader.freeBlocks(ds) + 'K');
+            assert(ds.readSector(0, 0, 0).every(b => b === 0xA5) &&
+                ds.readSector(79, 1, 9).every(b => b === 0xA5) && !ds.readSector(0, 0, 10),
+                'every sector outside the directory is $A5, and there is no sector 10');
+            const ss = KdosLoader.createBlank('SMALL', { tracks: 40, sides: 1 });
+            const g = KdosLoader.geometry(ss);
+            assert(g.tracks === 40 && g.sides === 1 && g.blocks === 200 &&
+                KdosLoader.freeBlocks(ss) === 195,
+                'blank SS 40: 200 blocks, 195 free', JSON.stringify(g) + ' ' + KdosLoader.freeBlocks(ss));
+            assert(KdosLoader.isKdos(ds) && KdosLoader.isKdos(ss),
+                'isKdos: a blank of either geometry is recognised');
+            // ...and refuses a disk with an eleventh sector, which is the guard
+            // a blank can never exercise on its own
+            const odd = KdosLoader.createBlank('ODD');
+            odd.tracks[0].sectors.push({ cylinder: 0, head: 0, id: 10, sizeCode: 2,
+                st1: 0, st2: 0, data: new Uint8Array(512).fill(0xA5) });
+            assert(!KdosLoader.isKdos(odd), 'isKdos refuses a disk with an eleventh sector');
+
+            // WHERE the five directory blocks are. Nothing reads the directory
+            // through the block map -- readSector(20, 0, 0) goes straight at it
+            // -- so marking the wrong five is invisible until a file is
+            // allocated on top of them. The directory is track 20 side 0, which
+            // on a DS disk is block 200, because both sides of a track come
+            // before the next track, and on an SS disk block 100.
+            const mapBit = (dsk, b) => (KdosLoader._dir(dsk)[0x60 + (b >> 3)] >> (b & 7)) & 1;
+            assert([200, 201, 202, 203, 204].every(b => mapBit(ds, b)) &&
+                !mapBit(ds, 199) && !mapBit(ds, 205),
+                'the five blocks FORMAT marks used on a DS disk are 200-204 (track 20, side 0)');
+            assert([100, 101, 102, 103, 104].every(b => mapBit(ss, b)) &&
+                !mapBit(ss, 99) && !mapBit(ss, 105),
+                'and 100-104 on an SS one');
+            assert([800, 900, 1279].every(b => mapBit(ds, b)) &&
+                [200, 500, 1279].every(b => mapBit(ss, b)),
+                'every block past the end of the disk is marked used, so nothing is put there');
+            // Which makes freeBlocks' clamp to the disk's size belt and braces
+            // on a disk THIS format made -- but a disk from elsewhere may leave
+            // those bits clear, and then the clamp is the only thing stopping an
+            // 800-block disk reporting 1275 free.
+            const foreign = KdosLoader.createBlank('FOREIGN');
+            KdosLoader._dir(foreign).fill(0, 0x60 + 100, 0x100);
+            assert(KdosLoader.freeBlocks(foreign) === 795,
+                'and a disk that leaves them clear still reports only its own blocks free',
+                KdosLoader.freeBlocks(foreign));
+
+            // The slot byte. The ROM's routine ($14D6) is written out longhand
+            // here rather than reused, else it would only equal itself -- and
+            // AUTO = $93 on every real disk is the oracle for it.
+            const hashLonghand = (name) => {
+                const n = String(name).slice(0, 10).padEnd(10, ' ');
+                let c = 0;
+                for (let i = 0; i < 10; i++) {
+                    const a = (n.charCodeAt(i) & 0xFF) ^ c;
+                    c = ((a << 1) & 0xFF) | (a >> 7);        // RLCA
+                }
+                return c || 1;
+            };
+            const names = ['AUTO', 'myth$', 'mythc0', 'a', 'ZZZZZZZZZZ', '', ' ', 'run'];
+            assert(KdosLoader.nameHash('AUTO') === 0x93 &&
+                names.every(n => KdosLoader.nameHash(n) === hashLonghand(n)) &&
+                KdosLoader.nameHash('AUTO') === hashLonghand('AUTO'),
+                'nameHash: AUTO is $93, and it matches the ROM routine written out longhand',
+                names.map(n => KdosLoader.nameHash(n).toString(16)).join(' '));
+            // A slot byte of 0 means FREE, so a name whose hash really comes out
+            // 0 has to be stored as 1 or its file disappears. "SY" is one.
+            assert(KdosLoader.nameHash('SY') === 1,
+                'a name whose hash comes out 0 is stored as 1, since 0 marks a free slot',
+                KdosLoader.nameHash('SY'));
+
+            // WHERE a logical sector lands. A round trip through addFile and
+            // readFile cannot answer this: both go through _sector, so ANY
+            // consistent permutation of the mapping round-trips perfectly --
+            // which is this tree's standing warning that our own capture proves
+            // "unchanged", never "correct". So the mapping is read off physical
+            // sectors marked one by one, against the layout written longhand.
+            const probe = KdosLoader.createBlank('PROBE');
+            for (let t = 0; t < 3; t++) {
+                for (let h = 0; h < 2; h++) {
+                    for (let s = 0; s < 10; s++) probe.readSector(t, h, s)[0] = (t << 5) | (h << 4) | s;
+                }
+            }
+            let wrongAt = -1;
+            for (let n = 0; n < 60; n++) {
+                const t = Math.floor(n / 20), h = Math.floor(n / 10) % 2, s = n % 10;
+                if (KdosLoader._sector(probe, n, 2)[0] !== ((t << 5) | (h << 4) | s)) { wrongAt = n; break; }
+            }
+            assert(wrongAt < 0,
+                'logical sector n is track n/20, side (n/10)%2, sector n%10: both sides of a track, then the next',
+                'first wrong at logical sector ' + wrongAt);
+
+            // addFile / readFile, across the side boundary. A block is two
+            // sectors and both sides of a track come before the next track, so
+            // a file starting at block 4 of a DS disk runs off side 0 onto
+            // side 1 -- which is the one thing in _sector that can be wrong.
+            const rt = KdosLoader.createBlank('RT');
+            const big = new Uint8Array(3000).map((_, i) => (i * 7 + 13) & 0xFF);
+            KdosLoader.addFile(rt, { name: 'first', type: 3, data: new Uint8Array(1024).fill(1), param1: 0x8000 });
+            KdosLoader.addFile(rt, { name: 'second', type: 3, data: new Uint8Array(2048).fill(2), param1: 0x9000 });
+            KdosLoader.addFile(rt, { name: 'cross', type: 3, data: big, param1: 0xC000 });
+            const list = KdosLoader.listFiles(rt);
+            const cross = list.find(f => f.name === 'cross');
+            const back = KdosLoader.readFile(rt, cross);
+            assert(list.length === 3 && cross && cross.blocks === 3 && cross.length === 3000 &&
+                cross.param1 === 0xC000 && cross.typeName === 'CODE',
+                'addFile: three files, contiguous blocks, type and start address read back',
+                list.map(f => `${f.name}:${f.firstBlock}+${f.blocks}`).join(' '));
+            // The exact blocks, not merely three files: 1K + 2K + 3K must pack
+            // at 0, 1 and 3. Taking the END of the free run as the start instead
+            // of its beginning still round-trips, but leaves gaps and can claim
+            // blocks the run search never checked were free.
+            assert(list.map(f => f.firstBlock).join() === '0,1,3',
+                'and they pack from block 0 with no gap: 0, 1, 3',
+                list.map(f => f.firstBlock).join());
+            assert(back.length === 3000 && back.every((b, i) => b === big[i]),
+                'readFile: 3000 bytes back byte for byte, across the side boundary',
+                'first mismatch at ' + back.findIndex((b, i) => b !== big[i]));
+            assert(KdosLoader.freeBlocks(rt) === 795 - 6,
+                'the block map: six blocks taken by 1K + 2K + 3K', KdosLoader.freeBlocks(rt));
+            const slots = KdosLoader._dir(rt).subarray(0x100, 0x103);
+            assert(slots[0] === KdosLoader.nameHash('first') && slots[1] === KdosLoader.nameHash('second') &&
+                slots[2] === KdosLoader.nameHash('cross'),
+                'and each slot byte at $100 is that file\'s name hash');
+
+            // delete / rename / swap / label / param1
+            const second = list.find(f => f.name === 'second');
+            KdosLoader.deleteFile(rt, second.firstBlock);
+            assert(KdosLoader.listFiles(rt).length === 2 && KdosLoader.freeBlocks(rt) === 795 - 4 &&
+                KdosLoader._dir(rt)[0x101] === 0,
+                'deleteFile: gone from the catalogue, its blocks free, its slot byte cleared');
+            KdosLoader.renameFile(rt, cross.firstBlock, 'renamed');
+            const after = KdosLoader.listFiles(rt);
+            assert(after.some(f => f.name === 'renamed') && !after.some(f => f.name === 'cross') &&
+                KdosLoader._dir(rt)[0x102] === KdosLoader.nameHash('renamed'),
+                'renameFile: the name and its hash both follow');
+            KdosLoader.setParam1(rt, cross.firstBlock, 0x7000);
+            assert(KdosLoader.listFiles(rt).find(f => f.name === 'renamed').param1 === 0x7000,
+                'setParam1 writes the start address');
+            const order = KdosLoader.listFiles(rt).map(f => f.name);
+            KdosLoader.swapFiles(rt, after[0].firstBlock, cross.firstBlock);
+            const swapped = KdosLoader.listFiles(rt).map(f => f.name);
+            assert(order.join() !== swapped.join() && swapped[0] === order[1] && swapped[1] === order[0] &&
+                KdosLoader._dir(rt)[0x100] === KdosLoader.nameHash(swapped[0]),
+                'swapFiles: catalogue order changes and the slot bytes go with it',
+                order.join() + ' -> ' + swapped.join());
+            KdosLoader.setLabel(rt, 'RELABEL');
+            assert(KdosLoader.diskName(rt) === 'RELABEL', 'setLabel');
+
+            // What it refuses. A blank SS 40 holds 195 blocks, so a 196K file
+            // cannot fit anywhere; and a directory holds 144 entries.
+            let full = '';
+            try { KdosLoader.addFile(ss, { name: 'toobig', type: 3, data: new Uint8Array(196 * 1024) }); }
+            catch (e) { full = e.message; }
+            assert(/Disk full/.test(full) && /195K free/.test(full),
+                'addFile refuses a file with no run long enough, and says how much is free', full);
+            const many = KdosLoader.createBlank('MANY');
+            let dirFull = '';
+            try {
+                for (let i = 0; i < 200; i++) {
+                    KdosLoader.addFile(many, { name: 'f' + i, type: 3, data: new Uint8Array(1) });
+                }
+            } catch (e) { dirFull = e.message; }
+            assert(/Directory full/.test(dirFull) && KdosLoader.listFiles(many).length === 144,
+                'and a directory of 144 entries is full at 144', dirFull);
+
+            // The Explorer takes a K-DOS disk through the MDOS (Didaktik) views
+            const xp = KdosLoader.asExplorerDisk(rt, 819200);
+            const types = xp.files.map(f => f.type).join('');
+            assert(xp.type === 'didaktik' && xp.kdos && xp.info.kdos && types === 'BB' &&
+                xp.info.sectorsPerTrack === 10 && xp.info.bytesPerSector === 512 &&
+                /RELABEL \(\d+K free of 800K\)/.test(xp.info.diskLabel),
+                'asExplorerDisk: MDOS type letters, geometry and the label with the free count',
+                types + ' / ' + xp.info.diskLabel);
+            assert(xp.files[0].extract().length === KdosLoader.listFiles(rt)[0].length,
+                'and each entry extracts its own bytes');
+        }
+
+        async function runTests() {
+            units();
+            kdosUnits();
+            section('K-DOS on a 48K');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/kdos21.rom'))) { skip('roms/kdos21.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '48k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const was = { on: sp.kempdiscEnabled, rom: sp.kempdiscRomFile, others: [sp.opusEnabled, sp.plusDEnabled, sp.discipleEnabled, sp.if1Enabled, sp.didaktikEnabled, sp.fdd3000Enabled, sp.betaDiskEnabled] };
+            sp.opusEnabled = sp.plusDEnabled = sp.discipleEnabled = sp.if1Enabled = sp.didaktikEnabled = sp.fdd3000Enabled = sp.betaDiskEnabled = false;
+            sp.kempdiscRomFile = 'kdos21.rom';
+            sp.kempdisc.loadRom(new Uint8Array(await (await fetch('../roms/kdos21.rom')).arrayBuffer()));
+            for (let d = 0; d < 4; d++) sp.kempdisc.fdc.ejectDisk(d);
+            sp.kempdiscEnabled = true;
+            sp.updateBetaDiskPagingFlag();
+            assert(sp._kempdiscEnabledFlag && !sp.kempdisc.a6, 'on a 48K with K-DOS 2.1 (stock board)');
+            const cmds = [];
+            const pw = sp.cpu.portWrite;
+            sp.cpu.portWrite = (p, v, t) => { if ((p & 0xFF) === 0xE5) cmds.push(v); return pw(p, v, t); };
+            sp.reset();
+            await zx.runFrames(150);
+            sp.cpu.portWrite = pw;
+            assert(/KEMPSTON/.test(screenText(sp)) && !sp.memory.kempdiscActive,
+                'K-DOS boots, prints its copyright and pages itself out', screenText(sp).trim().slice(0, 80));
+            assert(cmds.includes(0xC4) && sp.kempdisc.fdc.status !== 0x03,
+                'its drive test (Read Address, never read) finishes, as on a real WD',
+                cmds.map(c => c.toString(16)).join(' '));
+            // A blank disk (the "Blank KDI" button): K-DOS catalogues it and saves to it
+            {
+                const blank = KdosLoader.createBlank('MYDISK');
+                assert(KdosLoader.diskName(blank) === 'MYDISK' && KdosLoader.freeBlocks(blank) === 795 &&
+                    KdosLoader.listFiles(blank).length === 0 && blank.readSector(20, 0, 0)[0x100] === 0,
+                    'blank: label, 795K free (5 directory blocks used), no files, the slot bytes clear');
+                for (const [f, opt] of [['kempston_dsdd.dsk', {}], ['kempston_sssd.dsk', { tracks: 40, sides: 1 }]]) {
+                    const r = await fetch('../headless/kdi/blank/' + f);
+                    if (!r.ok) { skip('headless/kdi/blank/' + f + ' not present'); continue; }
+                    const ref = DSKLoader.parse(new Uint8Array(await r.arrayBuffer()));
+                    const mine = KdosLoader.createBlank('SPECCYPL', opt);
+                    let diff = 0;
+                    for (let t = 0; t < ref.numTracks; t++) for (let h = 0; h < ref.numSides; h++) for (let x = 0; x < 10; x++) {
+                        const a = ref.readSector(t, h, x), b = mine.readSector(t, h, x);
+                        for (let i = 0; i < 512; i++) if (!b || a[i] !== b[i]) diff++;
+                    }
+                    assert(diff === 0, `blank ${opt.sides === 1 ? 'SS 40' : 'DS 80'} is byte for byte the reference ${f}`, diff + ' bytes differ');
+                }
+                sp.loadDSKImage(blank.toBuffer(), '[blank]', 0);
+                sp.reset();
+                await zx.runFrames(200);
+                const u = sp.ula;
+                const press = async (keys, h = 4, g = 6) => {
+                    for (const k of keys) u.keyDown(k); await zx.runFrames(h);
+                    for (const k of keys) u.keyUp(k); await zx.runFrames(g);
+                };
+                await press(['1']); await press(['0']); await press(['e']); await press(['Enter']);          // 10 REM
+                await press(['p']); await press(['#']); await press(['4']); await press([':']); await press(['s']); // PRINT #4: SAVE
+                await press(['SYM', 'p']); await press(['t']); await press(['SYM', 'p']); await press(['Enter']);
+                await zx.runFrames(400);
+                const dsk = sp.kempdisc.fdc.drives[0].dsk;
+                const saved = KdosLoader.listFiles(dsk);
+                assert(saved.length === 1 && saved[0].name === 't' && saved[0].typeName === 'BASIC' &&
+                    KdosLoader.freeBlocks(dsk) === 794 && /0 OK/.test(screenText(sp)),
+                    'K-DOS saves a BASIC program to it (PRINT #4: SAVE "t"): one file, 794K free',
+                    saved.map(f => f.name).join() + ' / ' + screenText(sp).trim().slice(0, 40));
+                for (let d = 0; d < 4; d++) sp.kempdisc.fdc.ejectDisk(d);
+            }
+            if (await ok('../headless/kdi/K48_Myth.kdi')) {
+                await zx.loadUrl('../headless/kdi/K48_Myth.kdi');
+                zx.pause();
+                sp.reset();
+                await zx.runFrames(1200);
+                assert(sp.kempdisc.fdc.track > 0, 'K48_Myth.kdi boots and loads (head past track 0)', 'track ' + sp.kempdisc.fdc.track);
+                const dsk = sp.kempdisc.fdc.drives[0].dsk;
+                const files = KdosLoader.listFiles(dsk);
+                const scr = files.find(f => f.name === 'myth$');
+                const code = files.find(f => f.name === 'mythc0');
+                const cbytes = code && KdosLoader.readFile(dsk, code);
+                assert(files.length === 10 && files[0].name === 'AUTO' && files[1].typeName === 'BASIC' &&
+                    scr && scr.length === 6912 && scr.param1 === 0x4000 && KdosLoader.diskName(dsk) === 'Empty KDOS',
+                    'K-DOS directory (track 20): 10 files, types, lengths, start addresses',
+                    files.map(f => f.name + ':' + f.length).join(' '));
+                assert(cbytes && cbytes.length === 4236 && cbytes[0] === 0xF3 && cbytes[1] === 0x31,
+                    'a file reads off its blocks (both sides of a track in turn): mythc0 starts DI; LD SP');
+                const used = files.reduce((n, f) => n + f.blocks, 0);
+                assert(KdosLoader.freeBlocks(dsk) === 800 - 5 - used,
+                    'the block map: free = 800 - 5 directory blocks - the blocks of the files', KdosLoader.freeBlocks(dsk) + ' vs ' + (795 - used));
+                assert(sp.loadedKempdiscDiskFiles[0] && sp.loadedKempdiscDiskFiles[0].length === 10,
+                    'the disk catalogue gets the directory');
+                const slots = dsk.readSector(20, 0, 0);
+                assert(files.every((f, i) => slots[0x100 + i] === KdosLoader.nameHash(f.name)) && KdosLoader.nameHash('AUTO') === 0x93,
+                    'the slot bytes at $100 are the K-DOS name hash (ROM $14D6: C = RLCA(c XOR C))');
+                // copy every file onto a blank disk with addFile: K-DOS boots the copy
+                const copy = KdosLoader.createBlank('COPY');
+                for (const f of files) KdosLoader.addFile(copy, { name: f.name, type: f.type, data: KdosLoader.readFile(dsk, f), param1: f.param1, param2: f.param2 });
+                assert(KdosLoader.freeBlocks(copy) === KdosLoader.freeBlocks(dsk), 'addFile: the copy takes the same blocks');
+                sp.loadDSKImage(copy.toBuffer(), 'copy.kdi', 0);
+                sp.reset();
+                await zx.runFrames(1200);
+                assert(sp.kempdisc.fdc.track > 0, 'K-DOS boots the disk built with addFile and loads Myth from it', 'track ' + sp.kempdisc.fdc.track);
+            } else skip('headless/kdi/K48_Myth.kdi not present');
+            section('128A6 on a 128K');
+            if (await ok('../roms/kdos21-128a6.rom')) {
+                await zx.ready({ machine: '128k' });
+                const sp2 = frame.contentWindow.spectrum;
+                zx.pause();
+                sp2.kempdiscRomFile = 'kdos21-128a6.rom';
+                sp2.kempdisc.loadRom(new Uint8Array(await (await fetch('../roms/kdos21-128a6.rom')).arrayBuffer()));
+                sp2.kempdiscEnabled = true;
+                sp2.updateBetaDiskPagingFlag();
+                for (let d = 0; d < 4; d++) sp2.kempdisc.fdc.ejectDisk(d);     // no disk: K-DOS boots to BASIC
+                sp2.reset();
+                await zx.runFrames(150);
+                assert(sp2._kempdiscEnabledFlag && sp2.kempdisc.a6 && /KEMPSTON/.test(screenText(sp2)) && !sp2.memory.kempdiscActive,
+                    'the 128A6 board works on a 128K (48 BASIC, K-DOS paged out)', screenText(sp2).trim().slice(0, 80));
+                if (await ok('../headless/kdi/R-Type2019.kdi')) {
+                    await zx.loadUrl('../headless/kdi/R-Type2019.kdi');
+                    zx.pause();
+                    sp2.reset();
+                    await zx.runFrames(1500);
+                    assert(sp2.kempdisc.fdc.track > 0, 'R-Type 2019 (a 128K disk) boots and loads', 'track ' + sp2.kempdisc.fdc.track);
+                } else skip('headless/kdi/R-Type2019.kdi not present');
+                sp2.kempdiscRomFile = 'kdos21.rom';
+                sp2.updateBetaDiskPagingFlag();
+                assert(!sp2._kempdiscEnabledFlag, 'the stock board is not offered on a 128K');
+                sp2.kempdiscEnabled = was.on; sp2.kempdiscRomFile = was.rom;
+                sp2.updateBetaDiskPagingFlag();
+            } else skip('roms/kdos21-128a6.rom not present');
+            sp.kempdiscEnabled = was.on; sp.kempdiscRomFile = was.rom;
+            [sp.opusEnabled, sp.plusDEnabled, sp.discipleEnabled, sp.if1Enabled, sp.didaktikEnabled, sp.fdd3000Enabled, sp.betaDiskEnabled] = was.others;
+            sp.updateBetaDiskPagingFlag();
+        }
+
+        function screenText(sp) {
+            // the ROM font, matched row by row in each 8x8 cell
+            const m = sp.memory, rom = m.rom[m.profile.basicRomBank || 0] || m.rom[0];
+            let out = '';
+            for (let row = 0; row < 24; row++) {
+                for (let col = 0; col < 32; col++) {
+                    let ch = ' ';
+                    for (let c = 32; c < 128; c++) {
+                        let match = true;
+                        for (let y = 0; y < 8 && match; y++) {
+                            const a = 0x4000 | ((row & 0x18) << 8) | (y << 8) | ((row & 7) << 5) | col;
+                            if (m.read(a) !== rom[0x3D00 + (c - 32) * 8 + y]) match = false;
+                        }
+                        if (match) { ch = String.fromCharCode(c); break; }
+                    }
+                    out += ch;
+                }
+                out += '\n';
+            }
+            return out;
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

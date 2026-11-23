@@ -147,12 +147,17 @@
                 sp.discipleEnabled = false;
                 sp.if1Enabled = false;
                 sp.didaktikEnabled = false;
+                // The Kempston Disc belongs here for the sharpest version of
+                // the reason above: its ROM pages in AT RESET, so it does not
+                // wait to be asked before owning the next section's machine.
+                sp.kempdiscEnabled = false;
                 sp.updateBetaDiskPagingFlag();
                 sp.memory.opusActive = false;
                 sp.memory.plusDActive = false;
                 sp.memory.discipleActive = false;
                 sp.memory.if1Active = false;
                 sp.memory.didaktikActive = false;
+                sp.memory.kempdiscActive = false;
             }
 
             // The shared round trip. saveCmd/loadCmd are whole BASIC statements.
@@ -872,6 +877,62 @@
                            'and the machine has not silently reset to a bare BASIC screen',
                            '(screen empty)');
                     note('a full +D round trip needs a G+DOS +SYS disk, which is not in the tree');
+                }
+            }
+
+            // ---------------------------------------------------------------
+            section('Kempston Disc / K-DOS — SAVE, reset and LOAD');
+            {
+                // Adding a disk interface means adding a section here. This one
+                // cannot do its round trip yet: K-DOS lives in an 8KB ROM that
+                // no emulator distribution bundles -- MAME is the only emulator
+                // that supports the board and MAME ships CRCs, not images -- so
+                // roms/kdos21.rom (MAME CRC 3a0705eb) has to arrive first. Two
+                // things do not need it, and the first of them is what keeps
+                // every section below this one honest.
+                allInterfacesOff();
+                coldBoot();
+                let same = true;
+                for (let a = 0; a < 256; a++) {
+                    if (sp.memory.read(a) !== sp.memory.rom[0][a]) { same = false; break; }
+                }
+                assert(!sp._kempdiscEnabledFlag && !sp.memory.kempdiscActive && same,
+                       'allInterfacesOff switches it off, and $0000 is the Spectrum ROM again');
+
+                sp.kempdiscEnabled = true;
+                sp.updateBetaDiskPagingFlag();
+                const noRom = !sp._kempdiscEnabledFlag;
+                coldBoot();
+                let stillSpectrum = true;
+                for (let a = 0; a < 256; a++) {
+                    if (sp.memory.read(a) !== sp.memory.rom[0][a]) { stillSpectrum = false; break; }
+                }
+                const rom = await fetchRom('kdos21.rom');
+                if (!rom) {
+                    assert(noRom && stillSpectrum && !sp.memory.kempdiscActive,
+                           'switched on with no ROM it does not page itself in, and a reset still reaches BASIC');
+                    note('the SAVE/reset/LOAD round trip waits for roms/kdos21.rom (K-DOS 2.0, 2.1 '
+                         + 'and 2.1 Italian are in MAME as kd20/kd21/kd21it, CRC 244816a7 / 3a0705eb / f8ccdf8a)');
+                    allInterfacesOff();
+                } else {
+                    allInterfacesOff();
+                    sp.kempdisc.loadRom(rom);
+                    sp.kempdiscRomFile = 'kdos21.rom';
+                    sp.kempdiscEnabled = true;
+                    sp.updateBetaDiskPagingFlag();
+                    assert(sp._kempdiscEnabledFlag, 'the interface reports itself usable');
+                    // A disk K-DOS can write to, made by our own FORMAT
+                    const { KdosLoader } = await import('../core/loaders/disk-kdos.js');
+                    sp.loadDSKImage(KdosLoader.createBlank('BOOTTEST').toBuffer(), 'boot.kdi', 0);
+                    const r = roundTrip('PRINT #4: SAVE "rt"', 'PRINT #4: LOAD "rt"');
+                    assert(r.ok, 'a BASIC program survives PRINT #4: SAVE, a hard reset and LOAD',
+                           r.afterLoad.slice(-70));
+                    const dsk = sp.kempdisc.fdc.drives[0].dsk;
+                    const saved = KdosLoader.listFiles(dsk);
+                    assert(saved.length === 1 && saved[0].name === 'rt' && saved[0].typeName === 'BASIC',
+                           'and our own reader finds exactly that file in the directory it wrote',
+                           saved.map(f => f.name + ':' + f.typeName).join(' '));
+                    allInterfacesOff();
                 }
             }
 
