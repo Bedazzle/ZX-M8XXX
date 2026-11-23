@@ -2,6 +2,15 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.07
+
+- **Fixed: a crafted tape or archive could run script in the Explorer (XSS)**, reported in PR #27.
+- **The Didaktik Gama and its 80KB**, contributed by Marginal2k.
+- **Microdigital TK-90X and TK-95, with their 228-T ULA**, contributed by Marginal2k.
+- **TurboSound and the Covox, Specdrum and Soundrive DACs**, contributed by Marginal2k.
+- **Timex TC2048 and TC2068: SCLD display modes and DOCK cartridges**, contributed by Marginal2k.
+- **Spectrum 128 MIDI out, with a built-in synth**, contributed by Marginal2k.
+
 ## v26.11.06
 
 - **The 48K Beta Disk and its clones**, contributed by Marginal2k.

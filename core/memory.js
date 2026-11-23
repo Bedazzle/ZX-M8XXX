@@ -40,6 +40,19 @@ import {
             // Timex FDD 3000 interface (core/fdd3000.js): 4KB ROM mirrored over
             // $0000-$1FFF and 8KB RAM at $2000-$3FFF while paged in
             this.fdd3000 = null;          // the Fdd3000 (set by Spectrum)
+            // Timex SCLD (TC2048): DEC (port $FF: display mode, INT mask, bank
+            // select) and HSR (port $F4: 8KB chunks switched to DOCK/EXROM,
+            // which are empty on a TC2048 -- they read $FF and ignore writes)
+            this.timexDec = 0;
+            this.timexHsr = 0;
+            // DOCK / EXROM chunk overrides from a DCK cartridge: 8 entries each,
+            // null or { data: Uint8Array(8KB), writable }. Set by Spectrum.
+            this.timexDock = null;
+            this.timexExrom = null;
+            // Didaktik Gama: the second 32KB bank at $8000-$FFFF (bank 0 is the
+            // ordinary 48K block), selected by gamaBank (its 8255's PC0)
+            this.gamaBank1 = this.profile.gama80k ? new Uint8Array(32768) : null;
+            this.gamaBank = 0;
             this.fdd3000Active = false;
             this.tkmem512 = false;        // JP3 closed: latch bits 6-7 = bank bits 3-4
             this.tkmemLatch = 0;          // last value latched
@@ -159,6 +172,10 @@ import {
             }
             this.pagingDisabled = false;
             this.fdd3000Active = false;
+            this.timexDec = 0;
+            this.timexHsr = 0;
+            this.gamaBank = 0;
+            if (this.gamaBank1) this.gamaBank1.fill(0);
             if (this.tkmemRam) this.tkmemRam.fill(0);
             this.tkmemLatch = 0;
             this.tkmemBank = 0;
@@ -496,10 +513,24 @@ import {
             if (this.hcR !== null) {
                 // HC-2000: 8KB slots, see _hcRemap()
                 val = this.hcR[addr >> 13][addr & 0x1FFF];
-            } else if (this.machineType === '48k') {
+            } else if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) {
+                // Timex: DOCK (empty: $FF) or, DEC bit 7 set, the EXROM -- the
+                // TC2068's 8KB ROM bank 1 in every chunk (none on a TC2048)
+                const chunk = addr >> 13;
+                if (this.timexDec & 0x80) {
+                    const c = this.timexExrom && this.timexExrom[chunk];
+                    val = c ? c.data[addr & 0x1FFF]
+                        : (this.profile.romBanks > 1 ? this.rom[1][addr & 0x1FFF] : 0xFF);
+                } else {
+                    const c = this.timexDock && this.timexDock[chunk];
+                    val = c ? c.data[addr & 0x1FFF] : 0xFF;
+                }
+            } else if (this.profile.ramPages === 1) {
                 if (addr < SLOT1_START) {
                     // When TR-DOS is active, read from TR-DOS ROM instead of main ROM
                     val = (this.trdosActive && this.trdosRom) ? this.trdosRom[addr] : this.rom[0][addr];
+                } else if (this.gamaBank && addr >= SLOT2_START) {
+                    val = this.gamaBank1[addr - SLOT2_START];       // Didaktik Gama bank 1
                 } else if (this.tkmemRam && addr >= SLOT2_START) {
                     val = this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)];
                 } else {
@@ -616,7 +647,18 @@ import {
                 return;
             }
 
-            if (this.machineType === '48k') {
+            if (this.timexHsr && ((this.timexHsr >> (addr >> 13)) & 1)) {
+                // Timex DOCK/EXROM: only a cartridge's RAM chunks take writes
+                const bank = (this.timexDec & 0x80) ? this.timexExrom : this.timexDock;
+                const c = bank && bank[addr >> 13];
+                if (c && c.writable) c.data[addr & 0x1FFF] = val;
+                return;
+            }
+            if (this.profile.ramPages === 1) {
+                if (this.gamaBank && addr >= SLOT2_START) {
+                    this.gamaBank1[addr - SLOT2_START] = val;          // Didaktik Gama bank 1
+                    return;
+                }
                 if (this.tkmemRam && addr >= SLOT2_START) {
                     this.tkmemRam[((addr < SLOT3_START ? 2 : this.tkmemBank) << 14) | (addr & BANK_MASK)] = val;
                     return;
@@ -634,7 +676,8 @@ import {
          * Its RAM starts empty, as after power-on.
          */
         setTkmem(sizeKB) {
-            if (this.machineType !== '48k' || !sizeKB) {
+            // a 48K, or the TK-90X/TK-95 the board was made for
+            if (!['48k', 'tk90x', 'tk95'].includes(this.machineType) || !sizeKB) {
                 this.tkmemRam = null;
                 this.tkmem512 = false;
             } else {

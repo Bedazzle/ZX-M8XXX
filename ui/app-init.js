@@ -112,7 +112,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.11.06';
+    const APP_VERSION = '26.11.07';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -598,6 +598,17 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
                     full.set(new Uint8Array(halves[0]).subarray(0, 16384), 0);
                     full.set(new Uint8Array(halves[1]).subarray(0, 16384), 16384);
                     romData['hc2000.rom'] = full.buffer;
+                }
+            }
+            if (!romData[profile.romFile] && profile.romFile === 'tc2068.rom') {
+                // TC2068 also comes as FUSE's tc2068-0.rom (16KB) + tc2068-1.rom (8KB)
+                const parts = await Promise.all([0, 1].map(h =>
+                    fetch('roms/tc2068-' + h + '.rom').then(r => r.ok ? r.arrayBuffer() : null)));
+                if (parts[0] && parts[1]) {
+                    const full = new Uint8Array(24576).fill(0xFF);
+                    full.set(new Uint8Array(parts[0]).subarray(0, 16384), 0);
+                    full.set(new Uint8Array(parts[1]).subarray(0, 8192), 16384);
+                    romData['tc2068.rom'] = full.buffer;
                 }
             }
             if (!romData[profile.romFile]) {

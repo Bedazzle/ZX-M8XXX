@@ -292,7 +292,13 @@ const MACHINE_PROFILES = {
             betaDiskDefault: true,
             hasFDC: false,
             z80HwMode: 9,
-            szxMachineId: 8,
+            // ZXSTMID_SCORPION. Was 8, which is ZXSTMID_TC2048 -- so every
+            // Scorpion .szx this app wrote named itself a TC2048 to any other
+            // emulator, and adding the Timex machines turned that into a
+            // collision that getMachineBySzxId resolved by declaration order.
+            // The zx-state ids run 0-16: 16K=0, PENTAGON128=7, TC2048=8,
+            // TC2068=9, SCORPION=10, SE=11, 128KE=16.
+            szxMachineId: 10,
             is128kCompat: false,
             trdosInRom: true,
             trdosRomBank: 3,
@@ -331,6 +337,208 @@ const MACHINE_PROFILES = {
             hasFDC: false,
             z80HwMode: 0,
             szxMachineId: 17,          // FUSE's SZX_MACHINE_HC2000
+            is128kCompat: false,
+        },
+        // Timex Computer 2048 (Timex Portugal, 1984): a 48K with the SCLD in place
+        // of the ULA. Port $FF (DEC) selects the display -- second screen at
+        // $6000, 8x1 "hi-colour" attributes, 512x192 hi-res (64 columns) -- and
+        // can mask the frame interrupt; port $F4 (HSR) maps DOCK/EXROM chunks,
+        // empty here. No floating bus; Kempston built in. Port of FUSE's
+        // machines/tc2048.c and peripherals/scld.c (see core/timex.js).
+        'tc2048': {
+            id: 'tc2048',
+            name: 'Timex TC2048',
+            group: 'Timex',
+            ramPages: 1,               // one 48K block, as the 48K
+            romBanks: 1,
+            romFile: 'tc2048.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',         // FUSE: 224 T/line, 312 lines, 48K contention
+            timex: true,               // SCLD ports and display modes
+            hasSnow: false,            // not a Ferranti ULA
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // FUSE: spectrum_unattached_port_none
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 14,             // .z80 v3: TC2048
+            szxMachineId: 8,           // ZXSTMID_TC2048 (9 is the TC2068)
+            is128kCompat: false,
+        },
+        // Timex Computer 2068 (Timex Portugal, PAL): the TC2048's SCLD plus a
+        // 24KB ROM -- 16KB HOME at $0000 and an 8KB EXROM (the 2068 BASIC
+        // extension), which the HSR maps into any 8KB chunk with DEC bit 7
+        // set; with it clear a chunk goes to the DOCK (cartridge slot, empty).
+        // AY on ports $F5/$F6, register 14 the joystick port. Port of FUSE's
+        // machines/tc2068.c; ROM tc2068.rom (24KB) or tc2068-0.rom + tc2068-1.rom.
+        'tc2068': {
+            id: 'tc2068',
+            name: 'Timex TC2068',
+            group: 'Timex',
+            ramPages: 1,
+            romBanks: 2,               // bank 0 HOME (16KB), bank 1 EXROM (8KB)
+            romFile: 'tc2068.rom',
+            romSize: 24576,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            timex: true,
+            timexAy: true,             // AY on $F5/$F6, not $FFFD/$BFFD
+            // Its ROM is not the 48K's: the tape traps (LD-BYTES/SA-BYTES at the
+            // 48K addresses, TR-DOS) would fire on other code. Tapes load in
+            // real time instead.
+            noRomTraps: true,
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: true,
+            ayClockHz: 1750000,        // 3.5 MHz / 2
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 15,             // .z80 v3: TC2068
+            // ZXSTMID_TC2068. The PR left this -1 "no SZX here yet", but the
+            // header byte is written into a Uint8Array, so -1 becomes 255: a
+            // snapshot claiming a machine that does not exist, silently. The
+            // SCLD and DOCK state still is not saved (see docs/peripherals.md),
+            // so a Timex .szx is an incomplete snapshot -- but an incomplete
+            // one that names its machine correctly beats a corrupt header.
+            szxMachineId: 9,
+            is128kCompat: false,
+        },
+        // Microdigital TK-90X (Microdigital, Brazil): a 48K clone. TK 90X Color
+        // Computer, 1985; MAME tk90x.rom (CRC 3e785f6f), v1/v3 ROMs load as well.
+        // Its ULA (the Microdigital one) runs 228 T-states a line, 312 lines at
+        // 50 Hz -- 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por
+        // linea"), with the 48K contention pattern; the 48K ROM entry points are
+        // kept, so tape traps work. 60 Hz (262 lines) is not offered yet.
+        'tk90x': {
+            id: 'tk90x',
+            name: 'Microdigital TK-90X',
+            group: 'Microdigital',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'tk90x.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            tstatesPerLine: 228,       // Microdigital ULA
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            // 0 = a plain 48K in .z80 v3. The format has no TK-90X, and these
+            // ARE 48K clones, so a .z80 saved here loads elsewhere as a 48K --
+            // right but for the line timing. Note that is the opposite trade to
+            // szxMachineId below, deliberately: .z80 keeps interoperability and
+            // loses the machine, SZX keeps the machine and loses interoperability.
+            z80HwMode: 0,
+            // A PRIVATE id: the zx-state format stops at 16 and has no TK-90X,
+            // and no libspectrum id for one could be found either. So this
+            // round-trips the machine inside this app and reads as unknown
+            // anywhere else, which is the honest version of "not supported".
+            szxMachineId: 102,
+            is128kCompat: false,
+        },
+        // Microdigital TK-95 (Microdigital, Brazil): a 48K clone. TK 95 Color
+        // Computer, 1986, Spectrum+ style keyboard; MAME tk95.rom (CRC 17368e07).
+        // Same Microdigital ULA at 228 T-states a line; see the TK-90X above.
+        'tk95': {
+            id: 'tk95',
+            name: 'Microdigital TK-95',
+            group: 'Microdigital',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'tk95.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            tstatesPerLine: 228,       // Microdigital ULA
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,              // as the TK-90X
+            szxMachineId: 103,         // private id, as the TK-90X
+            is128kCompat: false,
+        },
+        // Didaktik Gama (Didaktik Skalica, 1987-89): a 48K clone with 80KB RAM --
+        // 16KB at $4000 (contended) and two 32KB banks at $8000-$FFFF, picked by
+        // PC0 of its MHB8255 (ports $1F A, $3F B, $5F C, $7F control; PC0 is an
+        // input after reset and pulled low: bank 0). After ZEsarUX's
+        // machines/didaktikgama.c; MAME has the ROMs but no 80K. ROM dgama89.rom
+        // (MAME CRC 45c29401); the '87 (43104909) and '88 (4ec7e078) load too.
+        'dgama': {
+            id: 'dgama',
+            name: 'Didaktik Gama',
+            group: 'Didaktik',
+            ramPages: 1,
+            romBanks: 1,
+            romFile: 'dgama89.rom',
+            romSize: 16384,
+            basicRomBank: 0,
+            pagingModel: 'none',
+            ulaProfile: '48k',
+            gama80k: true,             // second 32KB bank at $8000, 8255 PC0
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: true,
+            hasIOContention: true,
+            hasFloatingBus: false,     // MAME: a clone, unattached ports read $FF
+            hasInternalContention: true,
+            contentionPattern: '65432100',
+            borderQuantization: true,
+            intPulseDuration: 32,
+            earlyIntTiming: true,
+            ayDefault: false,
+            ayClockHz: 1773400,
+            betaDiskDefault: false,
+            hasFDC: false,
+            z80HwMode: 0,              // a plain 48K in .z80 v3; as the TK machines
+            szxMachineId: 104,         // private id, as the TK machines
             is128kCompat: false,
         },
     };

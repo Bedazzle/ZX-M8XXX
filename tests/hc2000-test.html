@@ -40,7 +40,17 @@
             const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
         }
         function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result). This suite
+        // boots a real disk over many frames and runFrames is synchronous, so
+        // without it a long stretch looks like a finished run.
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
         function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
                 `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
                 (skipped ? ` | Skipped: ${skipped}` : '');
@@ -265,6 +275,14 @@
                 skip('HC ROMs (hc2000-0/1.rom or hc2000.rom, and hc-if1.rom) not in roms/');
                 return;
             }
+            // The HC IF1 is a setting (an HC-2000 may be without it): on for this
+            // run whatever the browser has stored, put back afterwards
+            const savedHcIf1 = localStorage.getItem('zxm8_hcIf1');
+            localStorage.setItem('zxm8_hcIf1', 'true');
+            window.addEventListener('beforeunload', () => {
+                if (savedHcIf1 === null) localStorage.removeItem('zxm8_hcIf1');
+                else localStorage.setItem('zxm8_hcIf1', savedHcIf1);
+            });
             const frame = document.getElementById('app');
             frame.src = '../index.html';
             const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
@@ -413,6 +431,7 @@
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }
+            finished = true;
             render();
         })();
     </script>

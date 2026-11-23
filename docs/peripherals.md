@@ -447,7 +447,64 @@ take some other catalogue syntax, which has not been established here.
 - **Boot / auto load** (`Spectrum.fdd3000AutoBoot`). Reset FDD runs the station's boot at once (`Fdd3000.boot`: alone, until it polls port `$20` with no other I/O — the boot ROM's delay loops are ~3M instructions). Boot (and Auto load, for a disk put into A) = Reset FDD + Spectrum reset. A CP/M disk in A (boot sector `ED 56`; TOS is `01 C3`) is started the way it is by hand: the Monitor Emulator disk (TOS, `MONITOR` in its directory) must be in B-D; it is swapped into A and booted, and once Monitor runs (Spectrum PC ≥ `$8040` for 10 frames, station idle) CP/M goes back into A and only the station is reset. ~2.7 s of emulated time to `A>`.
 - `tests/fdd3000-test.html` (with the ROMs and `headless/fdd3000/tos.dsk`: the real boot and `CAT *`). Checked: TOS A.2 (CAT *), Battle Command (autostart, 80-track DS disk).
 - **Monitor Emulator (CP/M terminal) on a 128K: open question.** Its loader tells a Timex from a Spectrum by `OUT 255,0: LET a=IN 255: IF a=0 THEN` (Timex path, 64-column hi-res with odd columns in the second screen at `$6000`). On a Spectrum port `$FF` is the floating bus, so the answer depends on which T-state the `IN` lands on. Here the 48K reads 255 (Spectrum path, CP/M works) and the 128K reads a screen byte of 0 (Timex path, half the text missing); FUSE reads 255 on its 128K. Which one real hardware does is not known: FUSE may be the one that is off, and Monitor may have needed a patch for the 128K. Left as it is.
-- Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
+- Not done: save states do not carry the station.
+
+## Timex TC2048 / TC2068 (SCLD)
+
+Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD in `core/timex.js` + `ULA._renderTimexPaper`, after FUSE's `machines/tc2048.c`, `peripherals/scld.c` and `display.c`.
+
+- A 48K (`ramPages: 1`, 48K contention and timing); **no floating bus** (unused ports read `$FF`); the SCLD answers `$F4`, `$FE`, `$FF` only (full decoding, so `OUT ($F4)` is not a border write).
+- **DEC (`$FF`)**, read back: bits 0-2 screen mode (1 second file at `$6000`; 2/3 hi-colour, attribute per 8x1 from `$6000`+offset; 4-7 hi-res 512x192: 4 file byte + its attribute byte, 5 the same on the second file, 6 first file byte + second file byte, 7 second file byte twice), bits 3-5 hi-res ink/paper (FUSE `hires_convert_dec`), bit 6 masks the frame interrupt, bit 7 DOCK/EXROM select.
+- **HSR (`$F4`)**, read back: a set bit maps that 8KB chunk to DOCK/EXROM, empty on a TC2048 (reads `$FF`, writes ignored).
+- **Display.** Low-res modes go through the normal frame buffer. Hi-res rows are drawn at 512 into `ula.hiresBuf` (and a 256-pixel reduction into the frame buffer for everything else); `Spectrum.blitFrame` puts the frame on a canvas twice as wide (`canvasScaleX = 2`, CSS keeps the aspect) and the hi-res rows over it. In hi-res the border is the hi-res paper colour (recorded through `setBorderAt`, so beam rendering follows; port `$FE` is remembered for when hi-res ends).
+- With the FDD 3000 (`fdd3stavi.rom`): Monitor Emulator detects the Timex (`IN 255` = 0) and runs CP/M in 64 columns, hi-res mode 6. `fdd3timex.rom` does not start on the TC2048 (likely the TC2068 build).
+- **TC2068** (machine `tc2068`, PAL, FUSE `machines/tc2068.c`): ROM `tc2068.rom` (24KB) or FUSE's `tc2068-0.rom` + `tc2068-1.rom`: 16KB HOME + 8KB EXROM. With DEC bit 7 set, an HSR bit maps the EXROM into that 8KB chunk (every chunk sees the same 8KB); clear, the DOCK (empty, or a cartridge). AY on `$F5` (select) / `$F6` (data), register 14 the joystick port: read through `$F6`, address bit 8 puts joystick 1 and bit 9 joystick 2 on it (a pressed direction pulls its bit low: up $01, down $02, left $04, right $08, fire $80). The numpad/gamepad drives them with the joystick type *Timex 1* / *Timex 2* (which leaves the Kempston port alone). Its ROM is not the 48K's, so the tape/TR-DOS traps are off (`noRomTraps`): tapes load in real time, and Auto load types `LOAD ""` and starts the tape.
+- **DCK cartridges** (`parseDck`, `Spectrum.loadDCK` / `ejectDCK`; open a `.dck` on a TC2068): DOCK and EXROM blocks (HOME blocks ignored), ROM and RAM chunks; the machine resets and the ROM starts the cartridge. Checked: Donkey Kong (`dk-spectrum.dck`), Timmy for the 2068 (tape).
+- Not done: TS2068 (NTSC), HOME blocks in DCK, snapshots of the SCLD/DOCK state, flash in hi-res. `tests/timex-test.html`.
+
+## TurboSound and DACs (Covox / Specdrum / Soundrive)
+
+`Spectrum.setTurboSound`, `Spectrum.setDac`, mixed in `AudioManager.processFrame`. **Settings → Audio**.
+
+- **TurboSound** (NedoPC): a second AY (`spectrum.ay2`) on the same ports, wherever there is an AY on `$FFFD`/`$BFFD` (128K, Pentagon..., AY in 48K). `OUT ($FFFD),$FF` selects chip 0, `$FE` chip 1; any other value is a register number for the selected chip, and reads follow the selected chip. With it off, `$FE`/`$FF` are ordinary register writes. AY writes carry the chip in `ayChanges` and are replayed on that chip; the two are mixed at 0.7 each. Checked with AY_YM_TS_test v0.2 (both chips' register tests and the channel tones).
+- The **128's MIDI out** follows the FIRST chip only — MIDI OUT is the 128K's own AY port A, so a TurboSound second chip writing R14 must not move the line. See the MIDI section below.
+- **DACs**, write-only and not exclusive (the port still reaches the rest of the bus), four 8-bit channels, `$80` = silence, recorded per frame with their T-state like the beeper:
+  - *Covox*: one port, mono, settable (`$FB` by default, Pentagon; `$DD` on the Scorpion);
+  - *Stereo Covox*: two settable ports, left and right (`$0F`/`$4F` by default);
+  - *Specdrum* (Cheetah): `$DF`, mono;
+  - *Soundrive 1.05*, two jumper modes (as in Unreal Speccy): mode 1 `$0F`/`$1F` left, `$4F`/`$5F` right; mode 2 `$F1`/`$F3` left, `$F9`/`$FB` right.
+  - While TR-DOS is paged in, the DACs do not hear the bus (as in Unreal Speccy): mode 1's `$1F`/`$5F` are the Beta Disk's command and sector registers, and disk work would otherwise click through it. Likewise on a Beta 48's live FDC/system ports.
+- `tests/sound-addons-test.html`.
+
+## Microdigital TK-90X / TK-95
+
+Machines `tk90x` and `tk95` (group Microdigital; ROMs `roms/tk90x.rom`, MAME's CRC `3e785f6f`, and `roms/tk95.rom`, `17368e07`; the TK-90X v1/v3 ROMs load the same way).
+
+- 48K clones with the Microdigital ULA: **228 T-states a line**, 312 lines at 50 Hz = 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por línea"), the 48K contention pattern; `profile.tstatesPerLine` in the ULA's 48K branch (the 48K itself is unchanged, 224, and `TOP_LEFT_PIXEL_TSTATE` is now derived as `64 × tstatesPerLine` rather than written down).
+- The ROM keeps the 48K entry points: tape traps and flash load work. Auto load types `LOAD ""` (keyword BASIC, as on every `pagingModel: 'none'` machine).
+- TKMEM-128 II and "AY in 48K" are allowed on them; the Brazilian Beta 48 clones work (checked: Chase HQ 128 for TKMEM on CBI-95; T2 on TK-95 + TKMEM, no snow).
+- **Snapshots**: `.z80` writes hardware mode 0, so these save as a plain 48K and load anywhere — right but for the line timing. SZX takes a **private** id (102/103): the zx-state format stops at 16 and has no TK-90X, so a `.szx` round-trips the machine here and reads as unknown elsewhere. The two formats trade interoperability against fidelity in opposite directions, deliberately.
+- Not done: the 60 Hz mode (262 lines), the TK-95's Spectrum+ keyboard layout as such, MAME's unexplained `$DF` write at start-up. `tests/tk-test.html`.
+
+## Spectrum 128 MIDI out (AY register 14)
+
+`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.
+
+- The 128K's MIDI OUT is RS232 TXD: bit 2 of AY register 14 (port A), while R7 bit 6 makes port A an output (otherwise the line idles high — a program using R14 as an input latch is not MIDI). The ROM's `PLAY` with a `Y` channel, and programs, bit-bang bytes at 31250 baud.
+- Every change of the line is recorded with its absolute T-state; `UartDecoder` samples each bit in its middle (bit time = CPU clock / 31250: 3.5469 MHz on the 128K family, 3.5 MHz elsewhere), a frame listener finishes bytes whose last bits change nothing. It starts from the line as it is (a low line is not a start bit until it has been high, and a start bit is the line *falling*).
+- **The clock is `Spectrum.absTStates()`, not a clock rebuilt from `totalFrames`.** A bit is ~113 T-states, so this is the same hazard the disk code hit at 112: the `totalFrames` pair sits a whole frame away from the real count and the offset is not stable, so it steps forward by 70908 T at some point and a byte in flight loses the rest of its bits. See the note on `diskClockNow`.
+- `MidiAssembler` makes whole messages for `send()`: running status, real-time bytes, SysEx.
+- A note sounding when the machine is reset would never get its Note Off, so reset sends All Notes Off on all 16 channels; so does the UI when the emulation stands still (pause, a breakpoint, a hidden tab) or the sound is switched off.
+- Checked: `PLAY "Y1c"` on a 128K sends `90 3C 78` / `80 3C 40` (Note On / Note Off, middle C, channel 1). Output to a real Web MIDI device is not covered by the tests. `tests/midi-test.html`.
+
+## Didaktik Gama (80KB)
+
+Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; the '87 `43104909` and '88 `4ec7e078` load the same way). After ZEsarUX's `machines/didaktikgama.c` (MAME has the ROMs and a TODO for the 80K).
+
+- A 48K clone (48K timing and contention, no floating bus) with 80KB: 16KB at `$4000` and two 32KB banks at `$8000-$FFFF` (`memory.gamaBank`, bank 1 in `gamaBank1`).
+- The bank is **PC0** of its MHB8255, on ports `$1F` (A), `$3F` (B), `$5F` (C), `$7F` (control; decoded `xxx11111`, A6-A5 pick the register). A mode set (`$7F`, D7=1) clears the outputs; D7=0 sets/resets one port C bit (so `OUT 127,1` / `OUT 127,0` switch banks). PC0 counts only while the lower half of C is an output, else it is pulled low: bank 0. Power-on: mode `$9B` (all inputs); the ROM sets `$92` at start. Control reads `$FF`, port C its latch. While TR-DOS is paged in the ports are the Beta Disk's.
+- Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
+- Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)
 

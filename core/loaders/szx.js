@@ -26,10 +26,16 @@ import { getMachineBySzxId } from '../machines.js';
             // Use profile-based lookup when available
             const profileType = getMachineBySzxId(machineId);
             if (profileType !== 'unknown') return profileType;
-            // Fallback for IDs not in our profiles
+            // Fallback for IDs not in our profiles. The zx-state ids run 0-16:
+            // 16K=0, 48K=1, 128K=2, +2=3, +2A=4, +3=5, +3E=6, PENTAGON128=7,
+            // TC2048=8, TC2068=9, SCORPION=10, SE=11, TS2068=12,
+            // PENTAGON512=13, PENTAGON1024=14, NTSC48K=15, 128KE=16.
+            // 8, 9 and 10 used to read 'scorpion', 'didaktik' and '+2c' here,
+            // which is the TC2048, the TC2068 and the Scorpion -- all three are
+            // real profiles now, so those entries were both wrong and dead.
             const types = {
-                0: '16k', 5: '+3', 6: '+3e',
-                8: 'scorpion', 9: 'didaktik', 10: '+2c', 11: '+2cs'
+                0: '16k', 6: '+3e', 11: 'se', 12: 'ts2068',
+                13: 'pentagon512', 15: 'ntsc48k', 16: '128ke'
             };
             return types[machineId] || 'unknown';
         }
@@ -49,7 +55,15 @@ import { getMachineBySzxId } from '../machines.js';
                 flags: bytes[7],
                 chunks: [],
                 // 17 = HC-2000 (FUSE's SZX_MACHINE_HC2000): banked like a 128K here
-                is128: (bytes[6] >= 2 && bytes[6] <= 8) || bytes[6] === 17
+                // Which ids are banked like a 128K. This was 2-8, which held
+                // while 8 was taken for the Scorpion; 8 and 9 are the TC2048
+                // and TC2068, both 48K-class with one RAM block, so including
+                // them would read a Timex snapshot as 128K-paged. 10 is the
+                // Scorpion, 13/14 the big Pentagons, 16 the 128KE, 17 FUSE's
+                // HC-2000.
+                is128: (bytes[6] >= 2 && bytes[6] <= 7) ||
+                       bytes[6] === 10 || bytes[6] === 13 || bytes[6] === 14 ||
+                       bytes[6] === 16 || bytes[6] === 17
             };
 
             let offset = 8;

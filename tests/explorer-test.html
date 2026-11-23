@@ -903,6 +903,56 @@
                 }
             });
 
+            // A crafted file must not be able to put MARKUP on the page. Every
+            // one of these fields is rendered by building an HTML string and
+            // assigning innerHTML, so an unescaped one is script execution in
+            // this origin -- the TZX text and message blocks are 255 bytes
+            // each, which is room enough for a working payload.
+            await part('a crafted file cannot inject markup (XSS)', async () => {
+                const tzxText = (id, text) => {
+                    const t = [...text].map(c => c.charCodeAt(0));
+                    const head = [...'ZXTape!'].map(c => c.charCodeAt(0)).concat([0x1A, 1, 20]);
+                    return new Uint8Array(head.concat([id, t.length], t));
+                };
+                const payload = '<img src=x onerror="window.__xssRan=1">';
+                w.__xssRan = undefined;
+
+                // TZX 0x30, text description
+                await loadIntoExplorer(tzxText(0x30, payload), 'xss-text.tzx');
+                const panel = d.getElementById('explorerInfoOutput');
+                assert(panel.querySelectorAll('img').length === 0,
+                       'a TZX text block cannot add an <img>',
+                       panel.querySelectorAll('img').length + ' found');
+                assert(w.__xssRan === undefined, 'and its onerror never runs');
+                assert((panel.textContent || '').includes('<img src=x'),
+                       'the payload is shown as text, not parsed',
+                       (panel.textContent || '').slice(0, 60));
+
+                // TZX 0x31, message -- the same field a block further on
+                await loadIntoExplorer(tzxText(0x31, '\x05' + payload), 'xss-msg.tzx');
+                assert(d.getElementById('explorerInfoOutput').querySelectorAll('img').length === 0,
+                       'nor can a TZX message block');
+
+                // A TAP filename is only 10 bytes, too few for the payload
+                // above -- but plenty for a tag, and a tag is the thing that
+                // must not survive.
+                const tap = makeTAP();
+                const tagName = '<b>PWNED!';                  // exactly 10
+                for (let i = 0; i < 10; i++) tap[3 + i] = tagName.charCodeAt(i);
+                // the header checksum is the XOR of flag..length, recomputed
+                let ck = 0;
+                for (let i = 2; i < 2 + 18; i++) ck ^= tap[i];
+                tap[2 + 18] = ck;
+                await loadIntoExplorer(tap, 'xss-name.tap');
+                const panel2 = d.getElementById('explorerInfoOutput');
+                const injected = [...panel2.querySelectorAll('b')]
+                    .filter(el => (el.textContent || '').includes('PWNED'));
+                assert(injected.length === 0,
+                       'a TAP filename cannot add a <b> either',
+                       injected.length + ' injected');
+                assert(w.__xssRan === undefined, 'and nothing ran at any point');
+            });
+
             assert(errors.length === 0, 'no uncaught errors while driving the Explorer',
                    errors.slice(0, 3).join(' | '));
 

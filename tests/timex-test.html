@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Timex TC2048 / TC2068 Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Timex TC2048 / TC2068 Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Timex TC2048 (core/timex.js, after FUSE scld.c / tc2048.c): the SCLD
+        // display modes, ports $FF/$F4, no floating bus, the INT mask; with the
+        // ROMs and disks present, the FDD 3000 Monitor Emulator in hi-res.
+        import { timexHiresAttr, timexLoresCell, timexHiresWord, pixelRowOffset, parseDck,
+                 DCK_BANK_EXROM } from '../core/timex.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+        function screenText(sp) {
+            const rom = sp.memory.rom[sp.profile.basicRomBank || 0];
+            const glyphs = new Map();
+            for (let c = 32; c < 128; c++) {
+                const base = 0x3D00 + (c - 32) * 8;
+                const key = [...Array(8)].map((_, i) => rom[base + i]).join(',');
+                if (!glyphs.has(key)) glyphs.set(key, String.fromCharCode(c));
+            }
+            const scr = sp.memory.getScreenBase().ram;
+            const rows = [];
+            for (let row = 0; row < 24; row++) {
+                let s = '';
+                for (let col = 0; col < 32; col++) {
+                    const bytes = [];
+                    for (let y = 0; y < 8; y++) bytes.push(scr[((row & 0x18) << 8) | ((row & 7) << 5) | (y << 8) | col]);
+                    s += glyphs.get(bytes.join(',')) || '?';
+                }
+                rows.push(s);
+            }
+            return rows.join('\n');
+        }
+
+        function runUnitTests() {
+            section('SCLD modes (core/timex.js)');
+            assert(timexHiresAttr(0x00) === 0x78 && timexHiresAttr(0x38) === 0x47 && timexHiresAttr(0x08) === 0x71,
+                'hi-res colours: DEC bits 3-5 -> ink/paper (FUSE hires_convert_dec)');
+            // Every row, against the display-file layout written out longhand
+            // rather than reused from the implementation -- else it would only
+            // prove the code equals itself. A file is three thirds of 64 rows;
+            // inside a third the pixel row within the cell picks bits 0-2 of
+            // the HIGH byte and the character row bits 5-7 of the low one.
+            // Every assert below uses a row in the FIRST third, where the
+            // third's own term is zero, so without this the term that places
+            // two thirds of the screen is not exercised at all.
+            let rowsOk = 0, firstBad = -1;
+            for (let yy = 0; yy < 192; yy++) {
+                const third = (yy / 64) | 0, charRow = ((yy % 64) / 8) | 0, pixel = yy % 8;
+                const want = third * 0x800 + pixel * 0x100 + charRow * 0x20;
+                if (pixelRowOffset(yy) === want) rowsOk++;
+                else if (firstBad < 0) firstBad = yy;
+            }
+            assert(rowsOk === 192, 'the display-file offset of all 192 rows, thirds included',
+                firstBad < 0 ? '' : `row ${firstBad} gave $${pixelRowOffset(firstBad).toString(16)}`);
+            const ram = new Uint8Array(49152);
+            const y = 9, col = 5, p = pixelRowOffset(y) + col, a = 0x1800 + ((y >> 3) << 5) + col;
+            ram[p] = 0x11; ram[p + 0x2000] = 0x22; ram[a] = 0x33; ram[a + 0x2000] = 0x44;
+            let c = timexLoresCell(ram, 1, y, col);
+            assert(c[0] === 0x22 && c[1] === 0x44, 'mode 1: second display file, pixels and attributes');
+            c = timexLoresCell(ram, 2, y, col);
+            assert(c[0] === 0x11 && c[1] === 0x22, 'mode 2: hi-colour, attribute per 8x1 from $6000 + offset');
+            assert(timexHiresWord(ram, 6, y, col) === 0x1122, 'mode 6: hi-res, first file byte then second file byte');
+            assert(timexHiresWord(ram, 4, y, col) === 0x1133, 'mode 4: first file byte then its attribute byte');
+            assert(timexHiresWord(ram, 7, y, col) === 0x2222, 'mode 7: second file byte twice');
+            assert(timexHiresWord(ram, 5, y, col) === 0x2244, 'mode 5: as 4 on the second file (its byte, then its attribute)');
+            const dck = new Uint8Array(9 + 2 * 0x2000);
+            dck.set([0x00, 0, 2, 0, 0, 0, 0, 3, 0]);
+            dck[9] = 0xAB; dck[9 + 0x2000] = 0xCD;
+            const blocks = parseDck(dck);
+            assert(blocks.length === 1 && blocks[0].bank === 0 && blocks[0].chunks[1].data[0] === 0xAB &&
+                !blocks[0].chunks[1].writable && blocks[0].chunks[6].data[0] === 0xCD && blocks[0].chunks[6].writable &&
+                blocks[0].chunks[0] === null, 'DCK: DOCK block, a ROM chunk and a RAM chunk');
+            // Access type 1 is "empty RAM": a whole 8KB chunk that consumes no
+            // file bytes at all. The fixture above has only ROM (2) and RAM (3)
+            // chunks, so nothing checked the size or the contents of this one.
+            const dckEmpty = new Uint8Array(9);
+            dckEmpty.set([DCK_BANK_EXROM, 1, 0, 0, 0, 0, 0, 0, 0]);
+            const empty = parseDck(dckEmpty);
+            assert(empty.length === 1 && empty[0].bank === DCK_BANK_EXROM &&
+                empty[0].chunks[0].data.length === 0x2000 && empty[0].chunks[0].writable &&
+                empty[0].chunks[0].data.every(v => v === 0) && empty[0].chunks[1] === null,
+                'DCK: an EXROM block whose empty-RAM chunk is 8KB of zeros and takes no file bytes');
+        }
+
+        async function runMachineTests() {
+            section('TC2048');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/tc2048.rom'))) { skip('roms/tc2048.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: 'tc2048' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            sp.reset();
+            await zx.runFrames(150);
+            assert(/Sinclair Research/.test(screenText(sp)), 'TC2048 ROM boots');
+            assert(sp.canvasScaleX === 2 && sp.canvas.width === 2 * sp.ula.getDimensions().width,
+                'canvas twice as wide for 512-pixel hi-res');
+            // Ports: DEC and HSR read back; $F4/$FF are not the ULA (border stays)
+            // Put a known colour on the border through the real ULA port first.
+            // Reading it off the boot screen instead let this pass by accident:
+            // a $F4 write of 0 would leave border 0, which is what the ROM had
+            // left there, so dropping the full-$FE decode changed nothing the
+            // assert could see. 5 is not what any write below would produce.
+            sp.portWrite(0x00FE, 0x05);
+            const border = sp.ula.borderColor;
+            sp.portWrite(0x00F4, 0x00);
+            sp.portWrite(0x00FF, 0x02);
+            assert(sp.portRead(0x00FF) === 0x02 && sp.portRead(0x00F4) === 0x00, 'DEC ($FF) and HSR ($F4) read back');
+            assert(border === 5 && sp.ula.borderColor === 5,
+                'port $F4/$FF writes leave the border alone (full $FE decode)',
+                'border ' + sp.ula.borderColor);
+            // $F4 and $FF are claimed by the SCLD branch before the ULA one is
+            // reached, so the assert above does not actually exercise the full
+            // $FE decode -- what does is ANY OTHER even port. On a 48K an
+            // `OUT ($F0),2` is a border write, because only bit 0 is decoded;
+            // on an SCLD machine it must do nothing at all.
+            sp.portWrite(0x00F0, 0x02);
+            assert(sp.ula.borderColor === 5,
+                'an unrelated even port ($F0) is not a border write either',
+                'border ' + sp.ula.borderColor);
+            sp.portWrite(0x00FF, 0x00);
+            // No floating bus: an unused port reads $FF. Pinned as a DECISION
+            // as well as a read, because the read alone cannot tell: turning
+            // hasFloatingBus on still answers $FF whenever the beam is outside
+            // the display area, which is where a paused suite usually sits, so
+            // the assert below passes either way. Seeing the difference needs a
+            // read at a chosen display T-state, which this does not do.
+            assert(sp.portRead(0x00FD) === 0xFF, 'no floating bus (unattached port reads $FF)');
+            assert(sp.profile.hasFloatingBus === false,
+                'and the TC2048 profile says so (FUSE: spectrum_unattached_port_none)');
+            // HSR: a chunk switched to the (empty) DOCK reads $FF
+            const was = sp.memory.read(0x8000);
+            sp.memory.write(0x8000, 0x5A);
+            sp.portWrite(0x00F4, 0x10);
+            const viaDock = sp.memory.read(0x8000);
+            sp.portWrite(0x00F4, 0x00);
+            assert(viaDock === 0xFF && sp.memory.read(0x8000) === 0x5A, 'HSR bit 4 maps $8000-$9FFF to the empty DOCK');
+            sp.memory.write(0x8000, was);
+            // INT mask: FRAMES ($5C78) stops counting with DEC bit 6
+            const frames = () => sp.memory.read(0x5C78) | (sp.memory.read(0x5C79) << 8);
+            let f0 = frames(); await zx.runFrames(10);
+            const ran = frames() - f0;
+            sp.portWrite(0x00FF, 0x40);
+            f0 = frames(); await zx.runFrames(10);
+            const masked = frames() - f0;
+            sp.portWrite(0x00FF, 0x00);
+            assert(ran >= 9 && masked === 0, 'DEC bit 6 masks the frame interrupt', `ran ${ran}, masked ${masked}`);
+            // Hi-res: rows drawn at 512, border = hi-res paper
+            for (let i = 0; i < 6144; i++) { sp.memory.write(0x4000 + i, 0xF0); sp.memory.write(0x6000 + i, 0x0F); }
+            sp.portWrite(0x00FF, 0x06 | (1 << 3));             // yellow paper, blue ink
+            await zx.runFrames(2);
+            const rows = sp.ula.hiresRows.reduce((s, v) => s + v, 0);
+            const hb = sp.ula.hiresBuf, pal = sp.ula.palette32;
+            const ink = pal[1 + 8], paper = pal[6 + 8];
+            assert(rows === 192 && hb[0] === ink && hb[4] === paper && hb[8] === paper && hb[12] === ink,
+                'mode 6: 512 pixels a row, $F0 then $0F per cell');
+            assert(sp.ula.borderColor === 6, 'border shows the hi-res paper colour', 'border ' + sp.ula.borderColor);
+            // The whole point of the guard on the $FE write is what happens
+            // NEXT: while hi-res is on the border must keep showing the hi-res
+            // paper, and the colour $FE asked for has to be remembered for when
+            // hi-res ends. Nothing wrote $FE while hi-res was on, so neither
+            // half was exercised -- dropping the guard failed nothing.
+            sp.portWrite(0x00FE, 0x03);
+            assert(sp.ula.borderColor === 6,
+                'a $FE write while hi-res is on does not disturb the border',
+                'border ' + sp.ula.borderColor);
+            sp.portWrite(0x00FF, 0x00);
+            await zx.runFrames(2);
+            assert(sp.ula.hiresRows.every(v => v === 0) && sp.ula.borderColor === 3,
+                'back to mode 0: no hi-res rows, and the border the $FE write asked for',
+                'border ' + sp.ula.borderColor);
+
+            section('FDD 3000 on the TC2048: Monitor Emulator in hi-res, CP/M');
+            if (!(await ok('../roms/fdd3stavi.rom')) || !(await ok('../roms/fdd3000-boot.rom')) ||
+                !(await ok('../headless/fdd3000/monitor.dsk')) || !(await ok('../headless/fdd3000/cpm.dsk'))) {
+                skip('FDD 3000 ROMs or headless/fdd3000/monitor.dsk, cpm.dsk not present');
+                return;
+            }
+            const rd = async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer());
+            const prev = { en: sp.fdd3000Enabled, beta: sp.betaDiskEnabled, plusD: sp.plusDEnabled };
+            sp.betaDiskEnabled = false; sp.plusDEnabled = false; sp.fdd3000Enabled = true;
+            sp.fdd3000.loadRom(await rd('../roms/fdd3stavi.rom'));
+            sp.fdd3000.loadBootRom(await rd('../roms/fdd3000-boot.rom'));
+            sp.updateBetaDiskPagingFlag();
+            sp.loadDSKImage(await rd('../headless/fdd3000/cpm.dsk'), 'cpm.dsk', 0);
+            sp.loadDSKImage(await rd('../headless/fdd3000/monitor.dsk'), 'monitor.dsk', 1);
+            let in255 = null;
+            const pr = sp.cpu.portRead;
+            sp.cpu.portRead = (p, t) => {
+                const v = pr(p, t);
+                if ((p & 0xFF) === 0xFF && sp._currentInstrPC === 0x34A8 && in255 === null) in255 = v;
+                return v;
+            };
+            sp.fdd3000AutoBoot();
+            let f = 0;
+            for (; f < 1600 && sp._fdd3000AutoBootOff; f++) await zx.runFrames(1);
+            sp.cpu.portRead = pr;
+            await zx.runFrames(300);
+            assert(in255 === 0, 'Monitor reads 0 from IN 255 after OUT 255,0: a Timex', 'IN 255 = ' + in255);
+            assert((sp.memory.timexDec & 0x07) === 6 && sp.ula.hiresRows.some(v => v),
+                'Monitor works in 64-column hi-res (DEC mode 6)', 'DEC ' + sp.memory.timexDec.toString(16));
+            assert(sp.fdd3000.cpu.pc >= 0xE000, 'CP/M runs in the station', 'station PC ' + sp.fdd3000.cpu.pc.toString(16));
+            sp.fdd3000Enabled = prev.en; sp.betaDiskEnabled = prev.beta; sp.plusDEnabled = prev.plusD;
+            sp.updateBetaDiskPagingFlag();
+        }
+
+        async function runTc2068Tests() {
+            section('TC2068');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/tc2068-0.rom')) && !(await ok('../roms/tc2068.rom'))) {
+                skip('roms/tc2068.rom or tc2068-0/1.rom not present'); return;
+            }
+            const frame = document.getElementById('app');
+            const zx = frame.contentWindow.zxDebug;
+            await zx.ready({ machine: 'tc2068' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            if (sp.timexCartridge) sp.ejectDCK();
+            sp.reset();
+            await zx.runFrames(200);
+            assert(/Timex Computer Corp/.test(screenText(sp)), 'TC2068 ROM boots (HOME + EXROM)');
+            assert(!sp.getTapeFlashLoad(), 'no ROM traps: tapes load in real time');
+            // EXROM: HSR bit + DEC bit 7 put the 8KB ROM bank 1 into a chunk
+            const home0 = sp.memory.read(0x0000), ex0 = sp.memory.rom[1][0];
+            sp.portWrite(0x00FF, 0x80); sp.portWrite(0x00F4, 0x01);
+            const viaExrom = sp.memory.read(0x0000), viaExrom5 = sp.memory.read(0xA000);
+            sp.portWrite(0x00F4, 0x20);
+            const chunk5 = sp.memory.read(0xA000);
+            sp.portWrite(0x00F4, 0x00); sp.portWrite(0x00FF, 0x00);
+            assert(viaExrom === ex0 && sp.memory.read(0x0000) === home0 && chunk5 === ex0,
+                'HSR + DEC bit 7 map the EXROM into any 8KB chunk');
+            // AY on $F5/$F6
+            sp.portWrite(0x00F5, 2); sp.portWrite(0x00F6, 0x5A);
+            sp.portWrite(0x00F5, 2);
+            assert(sp.ay.registers[2] === 0x5A && sp.portRead(0x00F6) === 0x5A, 'AY on $F5 (select) / $F6 (data)');
+            sp.portWrite(0x00F5, 14);
+            assert(sp.portRead(0x00F5) === 0xFF, 'AY register 14 (joystick) reads $FF via $F5');
+            // The TC2068's AY is on $F5/$F6 INSTEAD of the 128K's $FFFD/$BFFD,
+            // and nothing checked the "instead". With both answering, a program
+            // written for a 128K would drive this machine's sound chip.
+            sp.portWrite(0x00F5, 8); sp.portWrite(0x00F6, 0x0A);   // R8 = $0A via the Timex ports
+            sp.portWrite(0xFFFD, 8); sp.portWrite(0xBFFD, 0x05);   // the 128K pair must be ignored
+            sp.portWrite(0x00F5, 8);
+            assert(sp.ay.registers[8] === 0x0A,
+                'the 128K AY ports ($FFFD/$BFFD) do not reach the TC2068 AY',
+                'R8 = $' + sp.ay.registers[8].toString(16));
+            sp.portWrite(0x00F5, 14);     // R14 back: the joystick reads below need it selected
+            // Timex joysticks: numpad/gamepad as Timex 1/2, read via R14 with A8/A9
+            const prevType = sp.joystickType;
+            sp.setJoystickType('timex1');
+            sp.kempstonState = 0x08 | 0x10;                   // up + fire
+            const j1 = sp.portRead(0x01F6), j2 = sp.portRead(0x02F6), none = sp.portRead(0x00F6);
+            const kemp = sp.portRead(0x001F);
+            sp.setJoystickType('timex2');
+            sp.kempstonState = 0x02;                          // left
+            const k1 = sp.portRead(0x01F6), k2 = sp.portRead(0x02F6);
+            sp.kempstonState = 0;
+            sp.setJoystickType(prevType);
+            assert(j1 === (0xFF & ~0x81) && j2 === 0xFF && none === 0xFF,
+                'Timex joystick 1: up+fire pull bits 0 and 7 low on A8', [j1, j2, none].map(v => v.toString(16)).join(' '));
+            assert(k1 === 0xFF && k2 === (0xFF & ~0x04), 'Timex joystick 2: left on A9',
+                [k1, k2].map(v => v.toString(16)).join(' '));
+            assert(kemp === 0xFF, 'a Timex joystick does not show on the Kempston port', kemp.toString(16));
+            // DCK cartridge
+            if (await ok('../headless/timex/dk-spectrum.dck')) {
+                const dck = new Uint8Array(await (await fetch('../headless/timex/dk-spectrum.dck')).arrayBuffer());
+                const r = sp.loadDCK(dck, 'dk-spectrum.dck');
+                zx.pause();
+                await zx.runFrames(300);
+                assert(r.cartridgeInserted && r.chunks === 7, 'DCK into the DOCK (7 chunks)');
+                assert(sp.cpu.pc >= 0x4000 && !/Timex Computer Corp/.test(screenText(sp)),
+                    'the ROM starts the cartridge (Donkey Kong), not BASIC', 'PC ' + sp.cpu.pc.toString(16));
+                sp.ejectDCK();
+                await zx.runFrames(200);
+                assert(/Timex Computer Corp/.test(screenText(sp)), 'eject: back to BASIC');
+            } else {
+                skip('headless/timex/dk-spectrum.dck not present');
+            }
+        }
+
+        (async () => {
+            try {
+                runUnitTests();
+                await runMachineTests();
+                await runTc2068Tests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

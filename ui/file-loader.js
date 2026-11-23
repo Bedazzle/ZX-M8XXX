@@ -1,5 +1,5 @@
 // file-loader.js — File loading, drag-drop, ZIP selection, media indicators (extracted from index.html)
-import { hex16 } from '../core/utils.js';
+import { hex16, escapeHtml } from '../core/utils.js';
 import { MDRLoader, OPDLoader, DidaktikLoader } from '../core/loaders.js';
 import { DSKLoader } from '../core/fdc.js';
 import { HcDiskLoader } from '../core/loaders/disk-hc.js';
@@ -325,6 +325,10 @@ export function initFileLoader({
         getAnalysisAPI().updateXrefStats();
 
         // Check result type by properties
+        if (result.cartridgeInserted) {
+            showMessage(`Timex cartridge: ${result.cartridgeName} (${result.chunks} x 8KB), machine reset`);
+            return;
+        }
         if (result.isDSK && result.diskInserted) {
             // DSK disk inserted into µPD765 FDC (+3)
             const dskDrive = result._driveIndex || 0;
@@ -577,7 +581,7 @@ export function initFileLoader({
                 const startHex = hex16(file.start);
                 const bootBadge = isBoot ? ' <span style="color: var(--success-color); font-weight: bold;">[BOOT]</span>' : '';
                 item.innerHTML = `
-                    <span class="zip-file-name">${file.name}${bootBadge}</span>
+                    <span class="zip-file-name">${escapeHtml(file.name)}${bootBadge}</span>
                     <span class="zip-file-type">${typeLabel}</span>
                     <span class="zip-file-info">${startHex}h, ${file.length} bytes</span>
                 `;
@@ -586,7 +590,7 @@ export function initFileLoader({
                 }
             } else {
                 item.innerHTML = `
-                    <span class="zip-file-name">${file.name}</span>
+                    <span class="zip-file-name">${escapeHtml(file.name)}</span>
                     <span class="zip-file-type">${file.type}</span>
                 `;
             }

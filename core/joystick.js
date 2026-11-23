@@ -56,7 +56,19 @@ export const JOYSTICK_TYPES = [
     { id: 'sinclair2', name: 'Sinclair 2 (12345)',  hint: 'Interface 2 left port' },
     { id: 'cursor',    name: 'Cursor / Protek',     hint: 'keys 5678 + 0' },
     { id: 'custom',    name: 'Custom keys',         hint: 'bind any keys — e.g. QAOP + Space' },
+    { id: 'timex1',    name: 'Timex 1 (TC2068)',    hint: 'TC2068 left port, read through the AY (R14)' },
+    { id: 'timex2',    name: 'Timex 2 (TC2068)',    hint: 'TC2068 right port, read through the AY (R14)' },
 ];
+
+/**
+ * Kempston-numbered direction bits -> a Timex joystick port byte (FUSE
+ * timex_mask: up $01, down $02, left $04, right $08, fire $80), active high.
+ */
+export function kempstonToTimex(k) {
+    return ((k & JOY_UP) ? 0x01 : 0) | ((k & JOY_DOWN) ? 0x02 : 0) |
+           ((k & JOY_LEFT) ? 0x04 : 0) | ((k & JOY_RIGHT) ? 0x08 : 0) |
+           ((k & JOY_FIRE) ? 0x80 : 0);
+}
 
 export function isJoystickType(id) {
     return JOYSTICK_TYPES.some(t => t.id === id);

@@ -5,7 +5,7 @@
 
 import { getMachineProfile, is128kCompat } from './machines.js';
 import { looksLikeMarkup } from './utils.js';
-import { normalizeCustomKeys, DEFAULT_CUSTOM_KEYS } from './joystick.js';
+import { normalizeCustomKeys, DEFAULT_CUSTOM_KEYS, kempstonToTimex } from './joystick.js';
 import { DebugInstrumentation } from './debug-instrument.js';
 import { InputHandling } from './input.js';
 import {
@@ -73,6 +73,8 @@ import { prepareBeta48Rom } from './beta48.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
 import { Fdd3000 } from './fdd3000.js';
+import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
+import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
 import { Disassembler } from './disasm.js';
 
     export class Spectrum {
@@ -148,6 +150,36 @@ import { Disassembler } from './disasm.js';
 
             // AY-3-8910 sound chip
             this.ay = new AY(this.profile.ayClockHz);
+            // TurboSound (NedoPC): a second AY on the same ports; OUT ($FFFD),$FF
+            // selects chip 0 and $FE chip 1, any other value is a register number
+            // for the selected chip. Off by default.
+            this.ay2 = new AY(this.profile.ayClockHz);
+            this.turboSound = storageGet('zxm8_turboSound') === 'true';
+            this._aySel = 0;
+            this.ay2StateSnapshot = null;
+            // DAC: 'none' | 'covox' (one port, settable, $FB by default) |
+            // 'specdrum' ($DF) | Soundrive 1.05, set by jumper to one of two port
+            // sets: 'soundrive1' ($0F/$1F left, $4F/$5F right) or 'soundrive2'
+            // ($F1/$F3 left, $F9/$FB right). Four 8-bit channels, $80 = silence;
+            // writes are kept per frame with their T-state, as the beeper's are.
+            this.dacType = storageGet('zxm8_dacType') || 'none';
+            if (this.dacType === 'soundrive') this.dacType = 'soundrive1';
+            this.covoxPort = parseInt(storageGet('zxm8_covoxPort') || 'FB', 16) & 0xFF;
+            // 'stereocovox': two ports, left and right (both settable; $0F/$4F
+            // by default, Soundrive mode 1's left and right channels)
+            this.stereoCovoxPorts = [
+                parseInt(storageGet('zxm8_stereoCovoxL') || '0F', 16) & 0xFF,
+                parseInt(storageGet('zxm8_stereoCovoxR') || '4F', 16) & 0xFF];
+            this.dacLevels = [0x80, 0x80, 0x80, 0x80];
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
+            // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded
+            // into MIDI messages for onMidiMessage (Web MIDI in the UI)
+            this.midiEnabled = false;
+            this.onMidiMessage = null;
+            this.midiBytes = 0;
+            this.midiLog = [];            // the last bytes, for a monitor
+            this._midiLevel = 1;
             this.ayEnabled = this.profile.ayDefault;  // AY enabled by default for 128K/Pentagon
             this.ay48kEnabled = false;  // Optional AY for 48K (like Melodik interface)
             this.aySelectedRegister = 0;
@@ -1334,7 +1366,10 @@ import { Disassembler } from './disasm.js';
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
-            const isUlaPort = (lowByte & 0x01) === 0;
+            // Timex: the SCLD answers $F4, $FE and $FF only (full decoding)
+            const isUlaPort = this.profile.timex
+                ? (lowByte === 0xFE || lowByte === 0xFF || lowByte === 0xF4)
+                : (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
             // Where the I/O cycle sits inside the instruction, which is the tick the
@@ -1402,7 +1437,10 @@ import { Disassembler } from './disasm.js';
 
             const highByte = (port >> 8) & 0xFF;
             const lowByte = port & 0xFF;
-            const isUlaPort = (lowByte & 0x01) === 0;
+            // Timex: the SCLD answers $F4, $FE and $FF only (full decoding)
+            const isUlaPort = this.profile.timex
+                ? (lowByte === 0xFE || lowByte === 0xFF || lowByte === 0xF4)
+                : (lowByte & 0x01) === 0;
             const highByteContended = (highByte >= 0x40 && highByte <= 0x7F);
 
             //   IN A,(n)   11T: pc:4, pc+1:3, IO:4            -> 7
@@ -1457,11 +1495,47 @@ import { Disassembler } from './disasm.js';
 
         updateDisplayDimensions() {
             const dims = this.ula.getDimensions();
-            this.canvas.width = dims.width;
+            // Timex: the canvas is twice as wide so 512-pixel hi-res rows fit;
+            // the frame buffer and everything that reads it stay as they are
+            this.canvasScaleX = this.profile.timex ? 2 : 1;
+            this.canvas.width = dims.width * this.canvasScaleX;
             this.canvas.height = dims.height;
-            this.imageData = this.ctx.createImageData(dims.width, dims.height);
+            this.imageData = this.ctx.createImageData(dims.width * this.canvasScaleX, dims.height);
+            this._wide32 = null;
             // Store previous frame for beam visualization mode
             this.previousFrameBuffer = new Uint8ClampedArray(dims.width * dims.height * 4);
+        }
+
+        /**
+         * Frame buffer -> canvas image. Timex: each pixel twice across, then the
+         * rows the SCLD drew in hi-res replaced by their 512 real pixels.
+         */
+        blitFrame(fb) {
+            if (this.canvasScaleX !== 2) { this.imageData.data.set(fb); return; }
+            const dims = this.ula.getDimensions();
+            const W = dims.width, H = dims.height, W2 = W * 2;
+            if (!this._wide32 || this._wide32.buffer !== this.imageData.data.buffer) {
+                this._wide32 = new Uint32Array(this.imageData.data.buffer);
+            }
+            const dst = this._wide32;
+            const src = new Uint32Array(fb.buffer, fb.byteOffset, W * H);
+            for (let y = 0; y < H; y++) {
+                const s0 = y * W, d0 = y * W2;
+                for (let x = 0; x < W; x++) {
+                    const c = src[s0 + x];
+                    dst[d0 + 2 * x] = c;
+                    dst[d0 + 2 * x + 1] = c;
+                }
+            }
+            const ula = this.ula;
+            if (ula.hiresBuf) {
+                for (let y = 0; y < 192; y++) {
+                    const vy = dims.borderTop + y;
+                    if (ula.hiresRows[y] && vy >= 0 && vy < H) {
+                        dst.set(ula.hiresBuf.subarray(y * 512, y * 512 + 512), vy * W2 + 2 * dims.borderLeft);
+                    }
+                }
+            }
         }
 
         // Save current frame as previous (call at end of each frame)
@@ -1503,6 +1577,15 @@ import { Disassembler } from './disasm.js';
             this._turboBlockPending = false;
             this.rzxStop();
             if (this.ay) this.ay.reset();
+            if (this.ay2) { this.ay2.reset(); this._aySel = 0; }
+            this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
+            if (this.dacLevels) this.dacLevels.fill(0x80);
+            // MIDI out: a note held at reset would never get its Note Off, so
+            // All Notes Off on every channel, and the UART starts afresh
+            if (this.midiEnabled) {
+                if (this.onMidiMessage) for (let ch = 0; ch < 16; ch++) this.onMidiMessage([0xB0 | ch, 123, 0]);
+                this.setMidiOut(true);
+            }
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
             if (this.hcIf1) this.hcIf1.reset(false);
@@ -1515,8 +1598,6 @@ import { Disassembler } from './disasm.js';
             this.memory.fdd3000Active = false;
             this._beta48Master = 0;
             this.memory.beta48WindowOff = false;
-            // HC IF1: select latch and motors drop; its static RAM keeps its contents
-            if (this.hcIf1) this.hcIf1.reset(false);
 
             // Reset frame timing
             this.frameStartOffset = 0;
@@ -1648,6 +1729,43 @@ import { Disassembler } from './disasm.js';
             return { ok: true, msg: `FDD 3000: CP/M — Monitor Emulator from drive ${String.fromCharCode(65 + mi)} first` };
         }
 
+        /**
+         * 128 MIDI out on or off. The bit time follows the machine's clock:
+         * 3.5469 MHz on the 128K family, 3.5 MHz elsewhere.
+         */
+        setMidiOut(on) {
+            this.midiEnabled = !!on;
+            if (this._midiFlushOff) { this._midiFlushOff(); this._midiFlushOff = null; }
+            if (!this.midiEnabled) return;
+            const clock = is128kCompat(this.machineType) ? 3546900 : 3500000;
+            this._midiAsm = new MidiAssembler((msg) => {
+                if (this.onMidiMessage) this.onMidiMessage(msg);
+            });
+            this._midiUart = new UartDecoder(clock / MIDI_BAUD, (b) => {
+                this.midiBytes++;
+                this.midiLog.push(b);
+                if (this.midiLog.length > 64) this.midiLog.shift();
+                this._midiAsm.push(b);
+            });
+            // start from the line as it is now, not from idle: a low line is
+            // not a start bit until it has been high
+            const r = this.ay.registers;
+            this._midiLevel = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            this._midiUart.level = this._midiLevel;
+            // a byte whose last bits change nothing is finished by the clock
+            this._midiFlushOff = this.addFrameListener(() => this._midiUart.flush(this.absTStates()));
+        }
+
+        // The MIDI OUT line: R14 bit 2 while R7 makes port A an output, else idle
+        _midiLine() {
+            const r = this.ay.registers;
+            const level = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            if (level !== this._midiLevel) {
+                this._midiLevel = level;
+                this._midiUart.edge(this.absTStates(), level);
+            }
+        }
+
         // ========== Port I/O ==========
 
         _isBetaDiskActive() {
@@ -1766,11 +1884,95 @@ import { Disassembler } from './disasm.js';
         /**
          * Does the AY answer on its ports? Built in (128K and up), or the
          * "AY in 48K" add-on (Melodik-style) on a 48K-class machine — the 48K
-         * itself and the HC-2000, which has no AY of its own.
+         * itself, the HC-2000 and the TC2048, which have no AY of their own
+         * ("Timex 2048 + AY" is what demos like Timmy ask for).
          */
         _ayOnPorts() {
             return this.ayEnabled || (this.ay48kEnabled &&
-                (this.machineType === '48k' || this.profile.pagingModel === 'hc2000'));
+                (this.machineType === '48k' || this.profile.pagingModel === 'hc2000' ||
+                 this.machineType === 'tc2048' || this.machineType === 'tk90x' || this.machineType === 'tk95'));
+        }
+
+        /**
+         * Didaktik Gama 8255 write: reg 0 A, 1 B, 2 C, 3 control (mode set with
+         * D7=1 -- it clears the outputs; bit set/reset of port C with D7=0).
+         * Bank = PC0 while the lower half of C is an output, else 0 (pulled low).
+         */
+        _gama8255Write(reg, val) {
+            if (reg === 3) {
+                if (val & 0x80) { this._gamaMode = val; this._gamaPortC = 0; }
+                else {
+                    const bit = (val >> 1) & 7;
+                    if (val & 1) this._gamaPortC |= (1 << bit);
+                    else this._gamaPortC &= ~(1 << bit);
+                }
+            } else if (reg === 2) {
+                this._gamaPortC = val;
+            }
+            const cLowOut = ((this._gamaMode ?? 0x9B) & 0x01) === 0;
+            this.memory.gamaBank = (cLowOut && (this._gamaPortC & 1)) ? 1 : 0;
+        }
+
+        /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */
+        _curAy() {
+            return (this.turboSound && this._aySel) ? this.ay2 : this.ay;
+        }
+
+        /** Turn TurboSound on or off (the second AY starts silent) */
+        setTurboSound(on) {
+            this.turboSound = !!on;
+            this._aySel = 0;
+            this.ay2.reset();
+        }
+
+        /** DAC type and Covox port (see the constructor) */
+        setDac(type, covoxPort = this.covoxPort, stereoPorts = this.stereoCovoxPorts) {
+            if (type === 'soundrive') type = 'soundrive1';
+            this.dacType = ['covox', 'stereocovox', 'specdrum', 'soundrive1', 'soundrive2'].includes(type) ? type : 'none';
+            this.covoxPort = covoxPort & 0xFF;
+            this.stereoCovoxPorts = [stereoPorts[0] & 0xFF, stereoPorts[1] & 0xFF];
+            this.dacLevels.fill(0x80);
+        }
+
+        // A DAC port write: channel 0-3, or all four for the mono DACs.
+        // While TR-DOS is paged in the ports belong to the Beta Disk (Soundrive
+        // mode 1's $1F/$5F are its command and sector registers): the DAC
+        // does not hear them, as in Unreal Speccy. A Beta 48's ports are live
+        // whenever its I/O is on.
+        _dacWrite(low, val) {
+            if (this.memory.trdosActive) return;
+            if (this.memory.beta48On && !(this._beta48Master & 0x80) && (low & 0x07) === 0x07) return;
+            let ch = -1;
+            if (this.dacType === 'covox') { if (low === this.covoxPort) ch = 4; }
+            else if (this.dacType === 'stereocovox') {
+                if (low === this.stereoCovoxPorts[0]) ch = 5;          // left pair
+                else if (low === this.stereoCovoxPorts[1]) ch = 6;     // right pair
+            }
+            else if (this.dacType === 'specdrum') { if (low === 0xDF) ch = 4; }
+            else if (this.dacType === 'soundrive1') {
+                ch = { 0x0F: 0, 0x1F: 1, 0x4F: 2, 0x5F: 3 }[low];
+                if (ch === undefined) ch = -1;
+            } else if (this.dacType === 'soundrive2') {
+                ch = { 0xF1: 0, 0xF3: 1, 0xF9: 2, 0xFB: 3 }[low];
+                if (ch === undefined) ch = -1;
+            }
+            if (ch < 0) return;
+            if (ch === 4) this.dacLevels.fill(val);
+            else if (ch === 5) { this.dacLevels[0] = this.dacLevels[1] = val; }
+            else if (ch === 6) { this.dacLevels[2] = this.dacLevels[3] = val; }
+            else this.dacLevels[ch] = val;
+            this.dacChanges.push({ tStates: this.cpu.tStates, ch, value: val });
+        }
+
+        /** Numpad/gamepad set to a Timex joystick (not the Kempston port) */
+        _joystickIsTimex() {
+            return this.joystickType === 'timex1' || this.joystickType === 'timex2';
+        }
+
+        /** Timex joystick port byte (active high) for joystick 0 or 1 */
+        _timexJoystick(which) {
+            if (this.joystickType !== (which ? 'timex2' : 'timex1')) return 0;
+            return kempstonToTimex(this.kempstonState | this.gamepadState);
         }
 
         /** Is the HC IF1 usable: HC-2000 with hc-if1.rom loaded. */
@@ -1952,12 +2154,34 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
+                if (this.profile.gama80k && (lowByte === 0x7F || lowByte === 0x5F) && !this.memory.trdosActive) {
+                    // Didaktik Gama 8255: control reads $FF (MHB8255), port C its latch
+                    result = lowByte === 0x7F ? 0xFF : this._gamaPortC;
+                } else if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
+                    // Timex SCLD: DEC (display mode) and HSR read back
+                    result = lowByte === 0xFF ? this.memory.timexDec : this.memory.timexHsr;
+                } else if (this.profile.timexAy && (lowByte === 0xF5 || lowByte === 0xF6)) {
+                    // TC2068 AY (FUSE tc2068_ay_*port_read): register 14 is the
+                    // joystick port -- reads $FF via $F5; via $F6 its latch when
+                    // R7 bit 6 makes it an output, else $FF (no joystick fitted)
+                    const reg = this.ay.selectedRegister;
+                    if (reg !== 14) result = this.ay.readRegister();
+                    else if (lowByte === 0xF5) result = 0xFF;
+                    else {
+                        // FUSE tc2068_ay_dataport_read: the port latch if R7 bit 6
+                        // makes it an output, else $FF; A8 selects joystick 1 and
+                        // A9 joystick 2 onto it, a pressed direction pulling its
+                        // bit low
+                        result = (this.ay.registers[7] & 0x40) ? this.ay.registers[14] : 0xFF;
+                        if (port & 0x0100) result &= ~this._timexJoystick(0);
+                        if (port & 0x0200) result &= ~this._timexJoystick(1);
+                    }
+                } else if (this.profile.pagingModel === 'hc2000' && (lowByte & 0x81) === 0) {
                     // HC-2000 config latch $7E (A7=0, A0=0). The HC decodes its
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
                     // keyboard does not answer here; FUSE reads the latch back.
                     result = this.memory.hcConfig;
-                } else if ((lowByte & 0x01) === 0) {
+                } else if ((lowByte & 0x01) === 0 && !(this.profile.timex && lowByte !== 0xFE)) {
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
                     // Bit 5: HIGH (pulled up)
@@ -2061,7 +2285,7 @@ import { Disassembler } from './disasm.js';
                 } else if (betaDiskActive && lowByte === PORT_WD_SYS) {
                     // Beta Disk system register
                     result = this.betaDisk.read(port);
-                } else if (this.kempstonEnabled &&
+                } else if (this.kempstonEnabled && !this._joystickIsTimex() &&
                            (lowByte & DECODE_KEMPSTON_MASK) === DECODE_KEMPSTON) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
                     // Bits 0-4: standard (Right, Left, Down, Up, Fire/B)
@@ -2096,10 +2320,10 @@ import { Disassembler } from './disasm.js';
                 } else if (this.ula.ulaplus.enabled && port === PORT_ULAPLUS_REG) {
                     // ULAplus data port read
                     result = this.ula.ulaplusReadData();
-                } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
+                } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
-                        result = this.ay.readRegister();
+                        result = this._curAy().readRegister();
                     }
                 } else {
                     // Floating bus: the byte the ULA has on the bus right now.
@@ -2227,6 +2451,15 @@ import { Disassembler } from './disasm.js';
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
 
+            // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
+            if (this.dacType !== 'none') this._dacWrite(lowByte, val);
+
+            // Didaktik Gama: its 8255 (ports xxx11111, A6-A5 pick A/B/C/control);
+            // PC0 selects the 32KB bank at $8000. Not while TR-DOS owns the ports.
+            if (this.profile.gama80k && (lowByte & 0x9F) === 0x1F && !this.memory.trdosActive) {
+                this._gama8255Write((lowByte >> 5) & 3, val);
+            }
+
             // TKMEM-128 II latch. The board's GAL decodes A15=0, A5=1, A1=0 only,
             // so the Beta 48 DOS trampoline (OUT ($FC),A with A = 0 / 7, i.e. ports
             // $00FC / $07FC, in every TR-DOS 4.x, CAS, Vision and CBI ROM) pages
@@ -2264,8 +2497,15 @@ import { Disassembler } from './disasm.js';
 
             // HC-2000: the ULA port is A7=1, A0=0 — $7E (A7=0) is the config
             // latch alone and leaves border and beeper alone
+            // Timex SCLD: DEC ($FF, display mode / INT mask) and HSR ($F4)
+            if (this.profile.timex && (lowByte === 0xFF || lowByte === 0xF4)) {
+                if (lowByte === 0xFF) this.ula.setTimexDec(val, this.cpu.tStates + 8);
+                else this.memory.timexHsr = val;
+                return;
+            }
             if ((lowByte & 0x01) === 0 &&
-                !(this.profile.pagingModel === 'hc2000' && (lowByte & 0x80) === 0)) {
+                !(this.profile.pagingModel === 'hc2000' && (lowByte & 0x80) === 0) &&
+                !(this.profile.timex && lowByte !== 0xFE)) {
                 // Border change timing
                 // Calculate frame-relative T-state when border color changes
                 // cpu.tStates accumulates from frameStartOffset, need to subtract to get frame-relative
@@ -2327,8 +2567,11 @@ import { Disassembler } from './disasm.js';
                     this.lastDebugBorderColor = val & 0x07;
                 }
 
-                // Pass to ULA - it will calculate beam position internally
-                this.ula.setBorderAt(val & 0x07, frameT);
+                // Pass to ULA - it will calculate beam position internally.
+                // Timex hi-res: the border shows the hi-res paper; port $FE's
+                // colour is kept for when hi-res ends.
+                if (this.profile.timex) this.ula.timexLoresBorder = val & 0x07;
+                if (!(this.profile.timex && (this.memory.timexDec & 0x04))) this.ula.setBorderAt(val & 0x07, frameT);
 
                 // Track beeper output for audio generation (bit 4 = EAR output)
                 const newBeeperLevel = (val & 0x10) ? 1 : 0;
@@ -2464,18 +2707,43 @@ import { Disassembler } from './disasm.js';
             // AY-3-8910 ports (128K/Pentagon, or 48K with AY enabled)
             // (not on the HC IF1's own ports: OUT ($87),A with A15 set would
             // otherwise also hit an add-on AY's decode)
-            if (this._ayOnPorts() && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
-                if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
-                    // Port 0xFFFD: AY register select
+            // TC2068: its AY sits on $F5 (register select) and $F6 (data)
+            if (this.profile.timexAy && (lowByte === 0xF5 || lowByte === 0xF6)) {
+                if (lowByte === 0xF5) {
                     this.ay.selectRegister(val);
+                } else {
+                    const reg = this.ay.selectedRegister;
+                    this.ay.writeRegister(val);
+                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: this.ay.registers[reg] });
+                }
+                return;
+            }
+            if (this._ayOnPorts() && !this.profile.timexAy && !(this.hcIf1 && HcIf1.isFdcPort(lowByte))) {
+                if ((port & DECODE_AY_MASK) === DECODE_AY_REG) {
+                    // Port 0xFFFD: AY register select (TurboSound: $FF/$FE pick the chip)
+                    if (this.turboSound && (val & 0xFE) === 0xFE) this._aySel = (val & 1) ? 0 : 1;
+                    else this._curAy().selectRegister(val);
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_DATA) {
                     // Port 0xBFFD: AY register write. Applied immediately (so register
                     // readback / AY-detection see the value), and also recorded with its
                     // frame-relative T-state so processFrame can replay intra-frame
                     // volume changes (digitized speech) at the right moment.
-                    const reg = this.ay.selectedRegister;
-                    this.ay.writeRegister(val);
-                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: this.ay.registers[reg] });
+                    const ay = this._curAy();
+                    const reg = ay.selectedRegister;
+                    ay.writeRegister(val);
+                    this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: ay.registers[reg],
+                        chip: ay === this.ay2 ? 1 : 0 });
+                    // 128 MIDI out: R14 bit 2 (or R7 turning port A round), and the
+                    // FIRST chip only -- MIDI OUT is the 128K's own AY port A.
+                    // `ay === this.ay` is belt-and-braces rather than the thing
+                    // that makes it so: _midiLine() reads this.ay whatever is
+                    // selected, and acts only on a CHANGE of level, so a write to
+                    // a TurboSound second chip could not move the line even
+                    // without this test (measured -- removing it alters nothing
+                    // either suite can see). It stays because it says what is
+                    // meant and saves the call; what would really break MIDI is
+                    // _midiLine() reading _curAy(), which midi-test pins.
+                    if (this.midiEnabled && ay === this.ay && (reg === 14 || reg === 7)) this._midiLine();
                 }
             }
 
@@ -2533,6 +2801,9 @@ import { Disassembler } from './disasm.js';
             // Snapshot AY state (replay baseline) and clear this frame's writes
             this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
             this.ayChanges = [];
+            this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -2558,7 +2829,9 @@ import { Disassembler } from './disasm.js';
             // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
             const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
             const intStart = intOffset;
-            const intEnd = intOffset + intPulseDuration;
+            // Timex: DEC bit 6 masks the frame interrupt
+            const intEnd = (this.profile.timex && (this.memory.timexDec & 0x40))
+                ? intStart : intOffset + intPulseDuration;
 
             // RZX recording: track instruction count before first interrupt
             let rzxRecInstrBeforeInt = this.rzxRecording ? this.cpu.instructionCount : 0;
@@ -2621,7 +2894,7 @@ import { Disassembler } from './disasm.js';
             const needsInstrPC = xrefEnabled || tracing;
             const contentionEnabled = this.profile.hasContention && this.contentionEnabled;
             const isPentagon = this.profile.ulaProfile === 'pentagon';
-            const tapeTrapsEnabled = this.tapeTrapsEnabled;
+            const tapeTrapsEnabled = this.tapeTrapsEnabled && !this.profile.noRomTraps;
             const tapeIsPlaying = this.tapePlayer.isPlaying();
 
             // Main frame loop - runs until tstatesPerFrame (or until instruction count during RZX)
@@ -2670,7 +2943,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
@@ -2913,7 +3186,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onWatchpoint) this.onWatchpoint(this.lastWatchpoint);
@@ -2934,7 +3207,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const frameBuffer = this.ula.endFrame();
                     // Don't overwrite previousFrameBuffer - keep the last complete frame for beam mode
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onPortBreakpoint) this.onPortBreakpoint(this.lastPortBreakpoint);
@@ -2952,7 +3225,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onCodePathHit) this.onCodePathHit(this.codePath.traceAddr);
@@ -2970,7 +3243,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
@@ -2988,7 +3261,7 @@ import { Disassembler } from './disasm.js';
                         this.ula.renderScanline(nextLineToRender++);
                     }
                     const frameBuffer = this.ula.endFrame();
-                    this.imageData.data.set(frameBuffer);
+                    this.blitFrame(frameBuffer);
                     this.ctx.putImageData(this.imageData, 0, 0);
                     this.drawOverlay();
                     if (this.onTrigger) this.onTrigger(this.lastTrigger);
@@ -3081,7 +3354,7 @@ import { Disassembler } from './disasm.js';
             // so previousFrameBuffer includes border lines in paper area
             this.savePreviousFrame(frameBuffer);
 
-            this.imageData.data.set(frameBuffer);
+            this.blitFrame(frameBuffer);
             this.ctx.putImageData(this.imageData, 0, 0);
 
             // Draw overlay if enabled
@@ -3120,7 +3393,9 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
+                    { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
             }
 
             // Advance AY logging frame counter
@@ -3243,6 +3518,9 @@ import { Disassembler } from './disasm.js';
             // Snapshot AY state (replay baseline) and clear this frame's writes
             this.ayStateSnapshot = this.ay ? this.ay.exportState() : null;
             this.ayChanges = [];
+            this.ay2StateSnapshot = this.turboSound ? this.ay2.exportState() : null;
+            this.dacChanges = [];
+            this._dacStart = this.dacLevels.slice();
 
             // Start new frame for tape player (reset edge transitions)
             if (this.tapePlayer.isPlaying()) {
@@ -3264,7 +3542,9 @@ import { Disassembler } from './disasm.js';
             // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
             const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
             const intStart = intOffset;
-            const intEnd = intOffset + intPulseDuration;
+            // Timex: DEC bit 6 masks the frame interrupt
+            const intEnd = (this.profile.timex && (this.memory.timexDec & 0x40))
+                ? intStart : intOffset + intPulseDuration;
 
             // Fire interrupt if within INT pulse window from previous frame overshoot
             // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
@@ -3336,9 +3616,10 @@ import { Disassembler } from './disasm.js';
                 if (this._fdd3000PagingEnabled && !this.memory.fdd3000Active &&
                     (this.cpu.pc === 0x0000 || this.cpu.pc === 0x0008)) this.memory.fdd3000Active = true;
                 // Tape traps still active for test loading
-                if (this.tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
-                if (this.tapeTrapsEnabled && this.tapeSaveTrap.checkTrap()) continue;
-                if (this.tapeTrapsEnabled && this.trdosTrap.checkTrap()) continue;
+                const _traps = this.tapeTrapsEnabled && !this.profile.noRomTraps;
+                if (_traps && this.tapeTrap.checkTrap()) continue;
+                if (_traps && this.tapeSaveTrap.checkTrap()) continue;
+                if (_traps && this.trdosTrap.checkTrap()) continue;
 
                 // Apply ULA contention per-line for 48K and 128K
                 if (this.profile.hasContention && this.contentionEnabled) {
@@ -3547,7 +3828,9 @@ import { Disassembler } from './disasm.js';
                     ? this.tapePlayer.getEdgeTransitions() : [];
 
                 // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
-                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot);
+                this.audio.processFrame(tstatesPerFrame, this.beeperChanges, this.beeperLevel, tapeAudioChanges, this.ayChanges, this.ayStateSnapshot,
+                    { ay2: this.turboSound ? this.ay2 : null, ay2Snapshot: this.ay2StateSnapshot,
+                      dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none' });
             }
 
             // Advance AY logging frame counter
@@ -4591,9 +4874,26 @@ import { Disassembler } from './disasm.js';
          * transfer and `opus-test` caught as a retry storm. The base is advanced
          * in lockstep with the subtraction instead, at all four places it
          * happens, so this only ever moves forward.
+         *
+         * **Not only the disk wants it.** The 128's MIDI out times its bits off
+         * this too, and at 31250 baud a bit is ~113 T-states — the same order as
+         * the 112 above. Measured here, the `totalFrames` pair does not go
+         * backwards at the two points MIDI reads the clock (a frame listener and
+         * an AY port write); it sits a whole frame above this one. But the offset
+         * is not stable — a frame in one run, two in another — so it steps
+         * FORWARD by a frame at some point, and a byte that is mid-flight when it
+         * does has one bit stretched by 70908 T: the UART then samples the rest
+         * at whatever the line happens to hold and every edge after arrives in
+         * the past. `absTStates()` is the neutral name for anything that needs
+         * this clock; `diskClockNow()` is kept for the callers that read better
+         * that way.
          */
-        diskClockNow() {
+        absTStates() {
             return this._diskClockBase + this.cpu.tStates;
+        }
+
+        diskClockNow() {
+            return this.absTStates();
         }
 
         /**
@@ -5623,7 +5923,7 @@ import { Disassembler } from './disasm.js';
                 this.savePreviousFrame(frameBuffer);
             }
 
-            this.imageData.data.set(frameBuffer);
+            this.blitFrame(frameBuffer);
             this.ctx.putImageData(this.imageData, 0, 0);
             this.drawOverlay();
         }
@@ -7568,6 +7868,9 @@ import { Disassembler } from './disasm.js';
                     `if it was fetched, the URL probably returned an error page (404)`);
             }
 
+            // Timex DCK cartridge
+            if (/\.dck$/i.test(fileName || '')) return this.loadDCK(data, fileName);
+
             // Check if it's a ZIP file
             if (ZipLoader.isZip(data)) {
                 const spectrumFiles = await ZipLoader.findAllSpectrum(data);
@@ -7758,6 +8061,41 @@ import { Disassembler } from './disasm.js';
                 needsMachineSwitch: needsMachineSwitch,
                 targetMachine: 'pentagon'
             };
+        }
+
+        /**
+         * Timex DCK cartridge into the DOCK (and EXROM, if the file has it) of a
+         * TC2068; the machine restarts, so the ROM finds it. FUSE dck_reset.
+         */
+        loadDCK(data, fileName) {
+            if (!this.profile.timexAy) {
+                throw new Error('DCK cartridges need a Timex TC2068 (Machine)');
+            }
+            const blocks = parseDck(new Uint8Array(data));
+            const dock = new Array(8).fill(null), exrom = new Array(8).fill(null);
+            for (const blk of blocks) {
+                const dest = blk.bank === DCK_BANK_DOCK ? dock : blk.bank === DCK_BANK_EXROM ? exrom : null;
+                if (!dest) continue;            // HOME blocks: not supported here
+                blk.chunks.forEach((c, i) => { if (c) dest[i] = c; });
+            }
+            this.timexCartridge = { dock, exrom, name: fileName };
+            this._applyTimexCartridge();
+            this.reset();
+            if (!this.isRunning()) this.start();
+            return { cartridgeInserted: true, cartridgeName: fileName,
+                chunks: dock.filter(Boolean).length + exrom.filter(Boolean).length };
+        }
+
+        ejectDCK() {
+            this.timexCartridge = null;
+            this._applyTimexCartridge();
+            this.reset();
+        }
+
+        _applyTimexCartridge() {
+            const c = this.profile.timexAy ? this.timexCartridge : null;
+            this.memory.timexDock = c ? c.dock : null;
+            this.memory.timexExrom = c && c.exrom.some(Boolean) ? c.exrom : null;
         }
 
         /**
@@ -8121,7 +8459,7 @@ import { Disassembler } from './disasm.js';
 
                 // Render current screen
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -8168,7 +8506,7 @@ import { Disassembler } from './disasm.js';
 
                 // Render current screen
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -8300,7 +8638,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.startFrame();
                 this.ula.attrInitial = null;  // Force use of current memory values
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
                 if (wasRunning) this.start();
                 return result;
@@ -8372,7 +8710,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.attrInitial = null;  // Force use of current memory values
                 // Update display
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
 
                 if (wasRunning) this.start();
@@ -8424,7 +8762,7 @@ import { Disassembler } from './disasm.js';
                 this.ula.startFrame();
                 this.ula.attrInitial = null;  // Force use of current memory values
                 const frameBuffer = this.ula.renderFrame();
-                this.imageData.data.set(frameBuffer);
+                this.blitFrame(frameBuffer);
                 this.ctx.putImageData(this.imageData, 0, 0);
                 if (wasRunning) this.start();
                 return result;
@@ -9067,7 +9405,8 @@ import { Disassembler } from './disasm.js';
          * Get current tape load mode
          */
         getTapeFlashLoad() {
-            return this.tapeFlashLoad;
+            // A machine whose ROM the traps do not know (TC2068) loads in real time
+            return this.tapeFlashLoad && !this.profile.noRomTraps;
         }
 
         /**
@@ -9111,7 +9450,7 @@ import { Disassembler } from './disasm.js';
          * Start real-time tape playback
          */
         playTape() {
-            if (this.tapeFlashLoad) return false;
+            if (this.getTapeFlashLoad()) return false;
             this._lastTapeUpdate = this.cpu.tStates;  // Reset tape timing tracker
             return this.tapePlayer.play();
         }
@@ -9433,6 +9772,7 @@ import { Disassembler } from './disasm.js';
             // reference would return $FF for every FDC and PIA access.
             this.memory.opusDisk = this.opus;
             this.memory.fdd3000 = this.fdd3000;
+            this._applyTimexCartridge();
             this.ula = new ULA(this.memory, type);
             this.cpu = new Z80(this.memory);
             this.ula.cpu = this.cpu;  // For debug access to CPU state
@@ -10749,7 +11089,15 @@ import { Disassembler } from './disasm.js';
          * @param {number} beeperLevel - Final beeper level at end of frame
          * @param {Array} tapeAudioChanges - Array of {tStates, level} tape signal changes
          */
-        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = [], ayChanges = [], aySnapshot = null) {
+        processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = [], ayChanges = [], aySnapshot = null, extra = null) {
+            // TurboSound's second AY and the DAC channels (see Spectrum constructor)
+            const ay2 = extra && extra.ay2;
+            const dacChanges = (extra && extra.dacChanges) || [];
+            const dacOn = !!(extra && extra.dacOn);
+            const dac = extra && extra.dacStart ? extra.dacStart.slice() : [0x80, 0x80, 0x80, 0x80];
+            let dacIdx = 0;
+            const DAC_VOLUME = 0.5;
+            if (ay2 && extra.ay2Snapshot) ay2.importState(extra.ay2Snapshot);
             if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
 
             // Restore the AY to its start-of-frame state so the timestamped register
@@ -10816,11 +11164,33 @@ import { Disassembler } from './disasm.js';
                     // Apply any AY register writes that occurred up to this sample's
                     // T-state, then step. This reproduces intra-frame volume changes.
                     while (ayIdx < ayChanges.length && ayChanges[ayIdx].tStates <= sampleTstates) {
-                        this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                        const c = ayChanges[ayIdx];
+                        if (c.chip === 1) { if (ay2) ay2.setRegisterForReplay(c.reg, c.value); }
+                        else this.ay.setRegisterForReplay(c.reg, c.value);
                         ayIdx++;
                     }
                     this.ay.stepMultiple(Math.round(ayStepsPerSample));
                     [left, right] = this.ay.getAveragedSample();
+                    if (ay2) {
+                        // two chips: each at 0.7, so a pair at full tilt stays in range
+                        ay2.stepMultiple(Math.round(ayStepsPerSample));
+                        const [l2, r2] = ay2.getAveragedSample();
+                        left = (left + l2) * 0.7;
+                        right = (right + r2) * 0.7;
+                    }
+                }
+
+                // DAC: channels 0/1 left, 2/3 right; $80 is silence
+                if (dacOn) {
+                    while (dacIdx < dacChanges.length && dacChanges[dacIdx].tStates <= sampleTstates) {
+                        const d = dacChanges[dacIdx++];
+                        if (d.ch === 4) dac.fill(d.value);
+                        else if (d.ch === 5) { dac[0] = dac[1] = d.value; }
+                        else if (d.ch === 6) { dac[2] = dac[3] = d.value; }
+                        else dac[d.ch] = d.value;
+                    }
+                    left += ((dac[0] - 128) + (dac[1] - 128)) / 256 * DAC_VOLUME;
+                    right += ((dac[2] - 128) + (dac[3] - 128)) / 256 * DAC_VOLUME;
                 }
 
                 // Add beeper to both channels (mono beeper) - only when active
@@ -10856,7 +11226,9 @@ import { Disassembler } from './disasm.js';
             // ends the frame at the final register state (matches immediate-write state).
             if (this.ay) {
                 while (ayIdx < ayChanges.length) {
-                    this.ay.setRegisterForReplay(ayChanges[ayIdx].reg, ayChanges[ayIdx].value);
+                    const c = ayChanges[ayIdx];
+                    if (c.chip === 1) { if (ay2) ay2.setRegisterForReplay(c.reg, c.value); }
+                    else this.ay.setRegisterForReplay(c.reg, c.value);
                     ayIdx++;
                 }
             }

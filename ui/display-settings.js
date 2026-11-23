@@ -2,6 +2,7 @@
 import { storageGet, storageSet } from '../core/utils.js';
 import { setAddrBase, setValueBase, setOpcodeBase } from '../core/addr-format.js';
 import { createSaveSlots } from '../core/save-slots.js';
+import { MidiSynth } from './midi-synth.js';
 
 export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadResult, updateCanvasSize }) {
 
@@ -88,6 +89,144 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
     chkSound.addEventListener('change', async () => {
         await toggleSound(chkSound.checked);
     });
+
+    // ---- TurboSound and DAC (Spectrum.setTurboSound / setDac) ----
+    const chkTurboSound = document.getElementById('chkTurboSound');
+    const selDac = document.getElementById('selDac');
+    const txtCovoxPort = document.getElementById('txtCovoxPort');
+    const covoxPortLabel = document.getElementById('covoxPortLabel');
+    const stereoCovoxLabel = document.getElementById('stereoCovoxLabel');
+    const txtStereoCovoxL = document.getElementById('txtStereoCovoxL');
+    const txtStereoCovoxR = document.getElementById('txtStereoCovoxR');
+    const hex2 = (v) => v.toString(16).toUpperCase().padStart(2, '0');
+    function showDacSettings() {
+        const sp = getSpectrum();
+        chkTurboSound.checked = !!sp.turboSound;
+        selDac.value = sp.dacType;
+        txtCovoxPort.value = sp.covoxPort.toString(16).toUpperCase().padStart(2, '0');
+        covoxPortLabel.style.display = sp.dacType === 'covox' ? '' : 'none';
+        txtStereoCovoxL.value = hex2(sp.stereoCovoxPorts[0]);
+        txtStereoCovoxR.value = hex2(sp.stereoCovoxPorts[1]);
+        stereoCovoxLabel.style.display = sp.dacType === 'stereocovox' ? '' : 'none';
+    }
+    if (chkTurboSound) {
+        showDacSettings();
+        chkTurboSound.addEventListener('change', () => {
+            getSpectrum().setTurboSound(chkTurboSound.checked);
+            storageSet('zxm8_turboSound', chkTurboSound.checked);
+            showMessage(chkTurboSound.checked ? 'TurboSound on (2 x AY)' : 'TurboSound off');
+        });
+        const applyDac = () => {
+            const sp = getSpectrum();
+            const hexOr = (txt, d) => { const v = parseInt(txt.value, 16); return Number.isFinite(v) ? v : d; };
+            sp.setDac(selDac.value, hexOr(txtCovoxPort, 0xFB),
+                [hexOr(txtStereoCovoxL, 0x0F), hexOr(txtStereoCovoxR, 0x4F)]);
+            storageSet('zxm8_dacType', sp.dacType);
+            storageSet('zxm8_covoxPort', sp.covoxPort.toString(16).toUpperCase());
+            storageSet('zxm8_stereoCovoxL', hex2(sp.stereoCovoxPorts[0]));
+            storageSet('zxm8_stereoCovoxR', hex2(sp.stereoCovoxPorts[1]));
+            showDacSettings();
+            showMessage(sp.dacType === 'none' ? 'DAC off'
+                : 'DAC: ' + selDac.options[selDac.selectedIndex].text +
+                  (sp.dacType === 'covox' ? ' on port $' + txtCovoxPort.value : '') +
+                  (sp.dacType === 'stereocovox' ? ' on $' + txtStereoCovoxL.value + ' (L) / $' + txtStereoCovoxR.value + ' (R)' : ''));
+        };
+        selDac.addEventListener('change', applyDac);
+        txtCovoxPort.addEventListener('change', applyDac);
+        txtStereoCovoxL.addEventListener('change', applyDac);
+        txtStereoCovoxR.addEventListener('change', applyDac);
+    }
+
+    // ---- 128 MIDI out -> Web MIDI (Spectrum.setMidiOut / onMidiMessage) ----
+    const selMidiOut = document.getElementById('selMidiOut');
+    const midiStatus = document.getElementById('midiStatus');
+    let midiAccess = null, midiOutput = null, midiSynth = null;
+    let midiChoice = '';                  // the working choice ('search' is only an action)
+    // Fill the list with the Web MIDI outputs. Asks for access (a browser
+    // prompt) only when `ask`; otherwise only if access was granted before.
+    async function listMidiOutputs(ask) {
+        if (!navigator.requestMIDIAccess) { midiStatus.textContent = '(no Web MIDI in this browser)'; return false; }
+        if (!midiAccess) {
+            if (!ask) {
+                try {
+                    const p = await navigator.permissions.query({ name: 'midi' });
+                    if (p.state !== 'granted') return false;
+                } catch (e) { return false; }
+            }
+            try { midiAccess = await navigator.requestMIDIAccess(); }
+            catch (e) { midiStatus.textContent = '(MIDI access refused)'; return false; }
+            midiAccess.onstatechange = () => listMidiOutputs(false);
+        }
+        for (const o of [...selMidiOut.options]) if (o.dataset.dev) o.remove();
+        for (const out of midiAccess.outputs.values()) {
+            const opt = document.createElement('option');
+            opt.value = out.id; opt.textContent = out.name; opt.dataset.dev = '1';
+            selMidiOut.appendChild(opt);
+        }
+        selMidiOut.value = [...selMidiOut.options].some(o => o.value === midiChoice) ? midiChoice : '';
+        return true;
+    }
+    function showMidi() {
+        const sp = getSpectrum();
+        if (!sp.midiEnabled) { midiStatus.textContent = ''; return; }
+        const last = sp.midiLog.slice(-6).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+        midiStatus.textContent = `${sp.midiBytes} bytes` + (last ? `: ${last}` : '');
+    }
+    if (selMidiOut) {
+        listMidiOutputs(false);
+        selMidiOut.addEventListener('change', async () => {
+            const sp = getSpectrum();
+            if (selMidiOut.value === 'search') {
+                selMidiOut.value = midiChoice;
+                const n0 = selMidiOut.querySelectorAll('option[data-dev]').length;
+                if (await listMidiOutputs(true)) {
+                    const n = selMidiOut.querySelectorAll('option[data-dev]').length;
+                    showMessage(n ? `MIDI: ${n} output(s) found` : 'MIDI: no outputs (Windows has none built in now; try loopMIDI + a synth, or the built-in synth)');
+                    if (n > n0) selMidiOut.focus();
+                }
+                return;
+            }
+            const v = selMidiOut.value;
+            if (midiSynth && v !== 'synth') midiSynth.allOff();
+            if (midiOutput && v !== midiChoice) { try { midiOutput.send([0xB0, 123, 0]); } catch (e) {} }
+            midiChoice = v;
+            midiOutput = (v && v !== 'monitor' && v !== 'synth' && midiAccess) ? midiAccess.outputs.get(v) || null : null;
+            if (v === 'synth') {
+                if (!midiSynth) midiSynth = new MidiSynth();
+                midiSynth.resume();
+            }
+            sp.onMidiMessage = (msg) => {
+                // Sound off: no new notes (the rest, note offs included, still goes)
+                if (!chkSound.checked && (msg[0] & 0xF0) === 0x90 && msg[2] > 0) return;
+                if (midiChoice === 'synth') midiSynth.send(msg);
+                else if (midiOutput) { try { midiOutput.send(msg); } catch (e) { /* a malformed message */ } }
+            };
+            sp.setMidiOut(!!v);
+            showMidi();
+            showMessage(!v ? 'MIDI out off'
+                : v === 'monitor' ? 'MIDI out: monitor only'
+                : 'MIDI out: ' + selMidiOut.options[selMidiOut.selectedIndex].text);
+        });
+        setInterval(showMidi, 500);
+        // Notes held while the emulation stands still (pause, a breakpoint, the
+        // tab in the background) or the sound is switched off would sound on
+        // and on: their Note Off never comes. So all notes off then, once.
+        let lastFrame = -1, lastMove = 0, quiet = false;
+        setInterval(() => {
+            const sp = getSpectrum();
+            if (!sp || !sp.midiEnabled || !midiChoice || midiChoice === 'monitor') return;
+            const now = performance.now();
+            if (sp.frameCount !== lastFrame) { lastFrame = sp.frameCount; lastMove = now; }
+            const still = !chkSound.checked || document.hidden || now - lastMove > 150;
+            if (still && !quiet) {
+                if (midiSynth) midiSynth.allOff();
+                if (midiOutput) {
+                    for (let ch = 0; ch < 16; ch++) { try { midiOutput.send([0xB0 | ch, 123, 0]); } catch (e) {} }
+                }
+            }
+            quiet = still;
+        }, 50);
+    }
 
     chkAY48k.addEventListener('change', () => {
         const spectrum = getSpectrum();

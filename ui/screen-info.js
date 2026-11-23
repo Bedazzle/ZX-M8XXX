@@ -15,7 +15,7 @@ export function initScreenInfo({ getSpectrum }) {
 
         // Get click position relative to canvas
         const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
+        const scaleX = canvas.width / (spectrum.canvasScaleX || 1) / rect.width;
         const scaleY = canvas.height / rect.height;
         const canvasX = Math.floor((e.clientX - rect.left) * scaleX);
         const canvasY = Math.floor((e.clientY - rect.top) * scaleY);

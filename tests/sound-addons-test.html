@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Sound Add-ons Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Sound Add-ons Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // TurboSound (two AYs, NedoPC chip select on $FFFD) and the DACs
+        // (Covox on a settable port, Specdrum $DF, Soundrive 1.05).
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        async function runTests() {
+            section('TurboSound (128K)');
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const prev = { ts: sp.turboSound, dac: sp.dacType, port: sp.covoxPort };
+            sp.setTurboSound(false);
+            sp.portWrite(0xFFFD, 0xFE);                       // not a chip select without TS
+            assert(sp._curAy() === sp.ay, 'TurboSound off: $FE on $FFFD does not switch chips');
+            sp.setTurboSound(true);
+            sp.portWrite(0xFFFD, 0xFF); sp.portWrite(0xFFFD, 0); sp.portWrite(0xBFFD, 0x11);
+            sp.portWrite(0xFFFD, 0xFE); sp.portWrite(0xFFFD, 0); sp.portWrite(0xBFFD, 0x22);
+            assert(sp.ay.registers[0] === 0x11 && sp.ay2.registers[0] === 0x22,
+                '$FF selects chip 0, $FE chip 1; each keeps its registers');
+            const r2 = sp.portRead(0xFFFD);
+            sp.portWrite(0xFFFD, 0xFF); sp.portWrite(0xFFFD, 0);
+            const r1 = sp.portRead(0xFFFD);
+            assert(r1 === 0x11 && r2 === 0x22, 'register read-back follows the selected chip');
+            const marked = sp.ayChanges.filter(c => c.chip === 1).length;
+            assert(marked >= 1, 'writes to the second chip are replayed on it (chip-tagged)');
+            sp.reset();
+            assert(sp._aySel === 0 && sp.ay2.registers[0] === 0, 'reset: chip 0 selected, second AY cleared');
+
+            section('DACs');
+            sp.setDac('covox', 0xFB);
+            sp.dacChanges = [];
+            sp.portWrite(0x00FB, 0xC0);
+            assert(sp.dacLevels.every(v => v === 0xC0) && sp.dacChanges.length === 1 && sp.dacChanges[0].ch === 4,
+                'Covox $FB: one write drives all channels (mono)');
+            sp.setDac('covox', 0xDD);
+            sp.portWrite(0x00FB, 0x10);
+            sp.portWrite(0x00DD, 0x40);
+            assert(sp.dacLevels[0] === 0x40, 'Covox on a set port ($DD) and not on $FB');
+            // $DD against $FB differ in nearly every bit, so a port compare that
+            // ignored bit 0 would still pass above. The neighbour that differs
+            // ONLY in bit 0 is what pins a full 8-bit compare.
+            sp.portWrite(0x00DC, 0x60);
+            assert(sp.dacLevels[0] === 0x40,
+                'and not on $DC, the port one bit away',
+                'level $' + sp.dacLevels[0].toString(16));
+            sp.setDac('stereocovox', 0xFB, [0x22, 0x3A]);
+            sp.portWrite(0x0022, 0x30); sp.portWrite(0x003A, 0xD0); sp.portWrite(0x00FB, 0x11);
+            assert(sp.dacLevels.join() === '48,48,208,208', 'Stereo Covox: left port to both left channels, right port to both right');
+            sp.setDac('specdrum');
+            sp.portWrite(0x00DF, 0x90);
+            assert(sp.dacLevels.every(v => v === 0x90), 'Specdrum on $DF');
+            sp.setDac('soundrive1');
+            sp.portWrite(0x000F, 0x01); sp.portWrite(0x001F, 0x02);
+            sp.portWrite(0x004F, 0x03); sp.portWrite(0x005F, 0x04);
+            const a = sp.dacLevels.slice();
+            sp.portWrite(0x00F1, 0x05); sp.portWrite(0x00FB, 0x06);
+            assert(a.join() === '1,2,3,4' && sp.dacLevels.join() === '1,2,3,4',
+                'Soundrive mode 1: $0F/$1F left, $4F/$5F right; mode 2 ports ignored');
+            sp.setDac('soundrive2');
+            sp.portWrite(0x00F1, 0x05); sp.portWrite(0x00F3, 0x06);
+            sp.portWrite(0x00F9, 0x07); sp.portWrite(0x00FB, 0x08);
+            const b = sp.dacLevels.slice();
+            sp.portWrite(0x000F, 0x09);
+            assert(b.join() === '5,6,7,8' && sp.dacLevels[0] === 5,
+                'Soundrive mode 2: $F1/$F3 left, $F9/$FB right; mode 1 ports ignored');
+            sp.setDac('soundrive1');
+            sp.portWrite(0x001F, 0x02);
+            sp.memory.trdosActive = true;
+            sp.portWrite(0x001F, 0xEE);
+            sp.memory.trdosActive = false;
+            assert(sp.dacLevels[1] === 0x02, 'TR-DOS paged in: its port $1F does not reach the Soundrive');
+            sp.setDac('none');
+            sp.portWrite(0x00FB, 0x77);
+            assert(sp.dacLevels.every(v => v === 0x80), 'DAC off: no levels change');
+            // Reset must put the DACs back to SILENCE, which is $80 and not 0 --
+            // a DAC held at 0 is a full-scale offset, not quiet. The assert above
+            // cannot see this: with the DAC off the levels were never moved from
+            // the $80 they start at, so reset had nothing to restore.
+            sp.setDac('covox', 0xFB);
+            sp.portWrite(0x00FB, 0x1234 & 0xFF);
+            const moved = sp.dacLevels.every(v => v === 0x34);
+            sp.reset();
+            assert(moved && sp.dacLevels.every(v => v === 0x80),
+                'reset returns the DACs to silence ($80, not 0)',
+                'moved ' + moved + ', now ' + sp.dacLevels.join());
+
+            sp.setTurboSound(prev.ts);
+            sp.setDac(prev.dac, prev.port, [0x0F, 0x4F]);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

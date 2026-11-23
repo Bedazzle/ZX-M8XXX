@@ -48,7 +48,7 @@
 
         section('Types');
         {
-            assert(JOYSTICK_TYPES.length === 5, 'five types offered', String(JOYSTICK_TYPES.length));
+            assert(JOYSTICK_TYPES.length === 7, 'seven types offered (five, and Timex 1 / Timex 2 of the TC2068)', String(JOYSTICK_TYPES.length));
             assert(JOYSTICK_TYPES.some(t => t.id === 'custom'), 'including user-defined keys');
             assert(JOYSTICK_TYPES[0].id === 'kempston', 'Kempston first (the common one)');
             assert(isJoystickType('cursor') === true, 'a known id is recognised');

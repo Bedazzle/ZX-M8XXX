@@ -1322,22 +1322,26 @@ export function initInputSettings({
     const selTkmemDecode = document.getElementById('selTkmemDecode');
     const tkmemStatus = document.getElementById('tkmemStatus');
 
-    // The board plugs into a 48K and nothing else — setTkmem() refuses any
-    // other machine — so the row goes dead and says so rather than staying
-    // live and doing nothing. The chosen size is kept either way, so a trip
-    // through a 128K and back fits the board again.
+    // The board plugs into a 48K or the TK-90X/TK-95 it was also made for, and
+    // nothing else — setTkmem() refuses any other machine — so the row goes dead
+    // and says so rather than staying live and doing nothing. The chosen size is
+    // kept either way, so a trip through a 128K and back fits the board again.
+    // (The #21 layer makes this same change in ui/display-settings.js, where the
+    // contributor keeps the TKMEM controls; this tree put them in the Input tab
+    // during the #16 port, so the edit lands here instead.)
+    const TKMEM_MACHINES = ['48k', 'tk90x', 'tk95'];
     function updateTkmemStatus() {
         const sp = getSpectrum();
         if (!selTkmem) return;
-        const is48 = sp.machineType === '48k';
+        const fits = TKMEM_MACHINES.includes(sp.machineType);
         selTkmem.value = String(sp.tkmemSize || 0);
-        selTkmem.disabled = !is48;
+        selTkmem.disabled = !fits;
         if (selTkmemDecode) {
             selTkmemDecode.value = sp.tkmemDecode;
             // The decode only decides which OUT reaches a board that is fitted
-            selTkmemDecode.disabled = !is48 || !sp.tkmemSize;
+            selTkmemDecode.disabled = !fits || !sp.tkmemSize;
         }
-        tkmemStatus.textContent = is48 ? '' : '48K machine only — not this machine';
+        tkmemStatus.textContent = fits ? '' : '48K or TK-90X/TK-95 only — not this machine';
     }
 
     if (selTkmemDecode) {

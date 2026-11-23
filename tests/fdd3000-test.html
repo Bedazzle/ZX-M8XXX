@@ -48,7 +48,7 @@
         setInterval(() => { if (!finished) render(); }, 300);
         function render() {
             if (!finished) {
-                summaryEl.textContent = `running\u2026 ${passed} ok, ${failed} bad (${++beat})`;
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
                 return;
             }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +

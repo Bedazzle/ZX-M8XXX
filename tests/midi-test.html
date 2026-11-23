@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>128 MIDI Out Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>128 MIDI Out Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // 128 MIDI out (core/midi.js): AY R14 bit 2 at 31250 baud, decoded by a
+        // UART model into MIDI messages.
+        import { UartDecoder, MidiAssembler } from '../core/midi.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        function units() {
+            section('UART and MIDI assembler');
+            const bytes = [];
+            const T = 113.5;
+            const u = new UartDecoder(T, (b) => bytes.push(b));
+            // send a byte: start, 8 data LSB first, stop; edges only on change
+            let t = 1000, level = 1;
+            const set = (l) => { if (l !== level) { u.edge(t, l); level = l; } };
+            const send = (b) => {
+                set(0); t += T;
+                for (let i = 0; i < 8; i++) { set((b >> i) & 1); t += T; }
+                set(1); t += T;
+            };
+            for (const b of [0x90, 0x3C, 0x78, 0xFF, 0x00]) { send(b); t += 37; }
+            u.flush(t + 2000);
+            assert(bytes.join(',') === [0x90, 0x3C, 0x78, 0xFF, 0x00].join(','), 'UART: bytes back, including $FF and $00', bytes.map(b => b.toString(16)).join(' '));
+            const u2 = new UartDecoder(T, () => {});
+            u2.level = 0;                                  // line low before anything
+            u2.edge(5000, 1);
+            assert(u2.start < 0, 'a low line rising is not a start bit');
+            // The other half of that rule, and the one the assert above cannot
+            // see: a start bit is the line FALLING, so it must have been high.
+            // Drop the `level === 1` test and a line that is merely still low
+            // begins a byte out of nothing.
+            const u2b = new UartDecoder(T, () => {});
+            u2b.level = 0;                                 // already low
+            u2b.edge(5000, 0);                             // and low again
+            assert(u2b.start < 0, 'a low line going low again is not a start bit');
+            // Why the clock behind edge() has to be monotonic: one edge stamped
+            // a frame late (which a totalFrames-based clock does, between the
+            // frame counter moving and the T-state subtraction) finishes the
+            // byte early at whatever level the line happens to hold, and every
+            // edge after it is in the past and changes nothing. Here the third
+            // data bit's edge jumps a frame and the byte comes back wrong.
+            const got3 = [];
+            const u3 = new UartDecoder(T, (b) => got3.push(b));
+            let t3 = 1000, lv3 = 1;
+            const set3 = (l, skew = 0) => { if (l !== lv3) { u3.edge(t3 + skew, l); lv3 = l; } };
+            const B = 0x5A;                                 // 0101 1010, edges on most bits
+            set3(0); t3 += T;
+            for (let i = 0; i < 8; i++) { set3((B >> i) & 1, i === 2 ? 70908 : 0); t3 += T; }
+            set3(1); t3 += T;
+            u3.flush(t3 + 2000);
+            assert(!(got3.length === 1 && got3[0] === B),
+                'a single edge stamped a frame late corrupts the byte (so the clock must not leap)',
+                got3.map(b => b.toString(16)).join(' ') || 'nothing decoded');
+            const msgs = [];
+            const a = new MidiAssembler((m) => msgs.push(m.join(' ')));
+            [0x90, 60, 120, 62, 100, 0xF8, 0xC0, 5, 0xF0, 1, 2, 0xF7, 0x80, 60, 64].forEach(b => a.push(b));
+            assert(msgs.join(' | ') === '144 60 120 | 144 62 100 | 248 | 192 5 | 240 1 2 247 | 128 60 64',
+                'assembler: running status, real-time, program change, SysEx', msgs.join(' | '));
+        }
+
+        async function runTests() {
+            units();
+            section('128K ROM: PLAY "Y1c"');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/128.rom'))) { skip('roms/128.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            // TurboSound off while this runs, and put back after. A second AY
+            // answers the same $FFFD/$BFFD, so with it on and chip 1 selected
+            // the R14 writes below would land on the wrong chip and no MIDI
+            // would come out -- a Settings checkbox deciding a result, which is
+            // what the app tests force off one by one for the same reason. The
+            // #17 port had to drop this because TurboSound did not exist yet.
+            const ts = sp.turboSound;
+            sp.setTurboSound(false);
+            sp.reset();
+            await zx.runFrames(120);
+            const msgs = [];
+            sp.onMidiMessage = (m) => msgs.push(m.map(b => b.toString(16)).join(' '));
+            sp.setMidiOut(true);
+            const chord = async (keys, n = 4) => {
+                for (const k of keys) zx.keyDown(k);
+                await zx.runFrames(n);
+                for (const k of keys) zx.keyUp(k);
+                await zx.runFrames(n + 2);
+            };
+            await chord(['ArrowDown']); await chord(['Enter']);          // 128 BASIC
+            await zx.runFrames(50);
+            await zx.typeText('play "', { hold: 4, gap: 6 });
+            await chord(['CAPS', 'y']);
+            await zx.typeText('1c"\n', { hold: 4, gap: 6 });
+            await zx.runFrames(200);
+            assert(msgs.join(' | ') === '90 3c 78 | 80 3c 40' && sp._midiUart.errors === 0,
+                'Note On / Note Off for middle C on channel 1', msgs.join(' | '));
+            sp.setMidiOut(false);
+            sp.onMidiMessage = null;
+
+            // R7 bit 6 is port A's direction. Clear means the Spectrum is
+            // READING port A, so there is nothing driving MIDI OUT and the line
+            // idles high whatever R14 bit 2 holds. Without that gate a program
+            // using R14 as an input latch would be decoded as MIDI.
+            section('R7 bit 6: port A must be an output');
+            sp.setMidiOut(true);
+            sp.ay.registers[7] = 0x3F;                  // bit 6 clear: port A an input
+            sp.ay.registers[14] = 0x00;                 // would read as a start bit
+            sp._midiLine();
+            const idleIn = sp._midiLevel;
+            sp.ay.registers[7] = 0x7F;                  // bit 6 set: port A an output
+            sp._midiLine();
+            const followsOut = sp._midiLevel;
+            assert(idleIn === 1 && followsOut === 0,
+                'the line idles high while port A is an input, and follows R14 bit 2 once it is an output',
+                `input -> ${idleIn}, output -> ${followsOut}`);
+
+            // A note sounding when the machine is reset would never get its
+            // Note Off: the program that would have sent it is gone.
+            section('reset silences what was playing');
+            const atReset = [];
+            sp.onMidiMessage = (m) => atReset.push(m.join(' '));
+            sp.setMidiOut(true);
+            sp.reset();
+            const allOff = atReset.filter(m => /^(1[7-9][0-9]|19[01]) 123 0$/.test(m));
+            assert(allOff.length === 16 && atReset[0] === '176 123 0' && atReset[15] === '191 123 0',
+                'All Notes Off on all 16 channels at reset',
+                `${atReset.length} messages, ${allOff.length} of them all-notes-off`);
+            sp.onMidiMessage = null;
+
+            // Which clock the UART is timed off cannot be seen from outside --
+            // the naive totalFrames pair sits a whole frame away and, measured
+            // here, does not go backwards -- so what is pinned is the
+            // collaboration: MIDI must ask for absTStates(). The hazard it
+            // avoids is that frame offset changing mid-byte.
+            section('the UART is timed off the monotonic clock');
+            let asked = 0;
+            const realAbs = sp.absTStates;
+            sp.absTStates = function () { asked++; return realAbs.call(this); };
+            sp.setMidiOut(true);
+            const askedBefore = asked;
+            sp.ay.registers[7] = 0x7F;
+            sp.ay.registers[14] = sp._midiLevel ? 0x00 : 0x04;   // force a change
+            sp._midiLine();
+            const edgeAsked = asked > askedBefore;
+            const afterEdge = asked;
+            await zx.runFrames(2);                               // the flush listener runs
+            const flushAsked = asked > afterEdge;
+            sp.absTStates = realAbs;
+            assert(edgeAsked && flushAsked,
+                'both the edge and the per-frame flush take their time from absTStates()',
+                `edge: ${edgeAsked}, flush: ${flushAsked}`);
+
+            // The MIDI line is the FIRST AY's port A, whichever chip $FFFD has
+            // selected. What holds that is _midiLine() reading `this.ay` rather
+            // than `_curAy()` -- not the `ay === this.ay` test at the call site,
+            // which is belt-and-braces and provably changes nothing here. So
+            // this pins the property, and it would catch _midiLine() being
+            // "tidied" to follow the selected chip.
+            section('MIDI out follows the first AY, not the selected chip');
+            // Put chip 0 in a known idle state first: port A an input, so its
+            // line reads high. The section above left it as an OUTPUT with R14
+            // low, which is a perfectly correct level 0 -- asserting a bare
+            // `_midiLevel === 1` failed on that leftover rather than on
+            // anything to do with TurboSound.
+            sp.ay.registers[7] = 0x3F;
+            sp.ay.registers[14] = 0x00;
+            sp.setTurboSound(true);
+            sp.setMidiOut(true);
+            const before = sp.midiBytes;
+            const lvl0 = sp._midiLevel, err0 = sp._midiUart.errors;
+            sp.portWrite(0xFFFD, 0xFE);                  // select chip 1
+            for (let i = 0; i < 20; i++) {               // drive R7/R14 on the wrong chip
+                sp.portWrite(0xFFFD, 7); sp.portWrite(0xBFFD, 0x40);   // port A an output
+                sp.portWrite(0xFFFD, 14); sp.portWrite(0xBFFD, i & 1 ? 0x04 : 0x00);
+                await zx.runFrames(1);
+            }
+            // What is checked is EDGES, not bytes. Writing ports from a test
+            // cannot produce a byte however the chips are wired: the Z80 is not
+            // running between the writes, so a frame passes per bit and the stop
+            // bit is never high when it is sampled -- every attempt is a framing
+            // error and midiBytes stays put either way. The first version of
+            // this assert looked at midiBytes and so could not fail at all,
+            // which breaking BOTH guards by hand is how I found out.
+            assert(lvl0 === 1 && sp._midiLevel === lvl0 &&
+                   sp._midiUart.errors === err0 && sp.midiBytes === before,
+                'the line never even moves: no edge, no framing error, no byte',
+                `level ${lvl0} -> ${sp._midiLevel}, errors ${err0} -> ${sp._midiUart.errors}, ` +
+                `${sp.midiBytes - before} bytes`);
+            sp.portWrite(0xFFFD, 0xFF);                  // chip 0 again
+            sp.setTurboSound(false);
+            sp.setMidiOut(false);
+            sp.setTurboSound(ts);
+
+            // The clock the UART times its bits off must only ever move
+            // forward. `totalFrames * tstatesPerFrame + cpu.tStates` does not:
+            // totalFrames is incremented at the END of a frame and the frame is
+            // subtracted from cpu.tStates at the START of the next, so between
+            // the two the pair reads a whole frame high and then drops back.
+            // A frame listener -- which is where setMidiOut flushes the UART --
+            // runs inside exactly that window. At revolution scale the wobble
+            // hid; at 113 T-states a bit it samples all ten bits of a byte at a
+            // timestamp a frame away and every edge after it arrives in the
+            // past. Spectrum.absTStates() is kept monotonic for this reason,
+            // and this assert is what stops it being "simplified" back.
+            section('the MIDI clock only moves forward');
+            const seen = [];
+            const off = sp.addFrameListener(() => seen.push(sp.absTStates()));
+            for (let i = 0; i < 12; i++) {
+                await zx.runFrames(1);
+                seen.push(sp.absTStates());          // mid-frame, after the subtraction
+            }
+            off();
+            let backwards = -1;
+            for (let i = 1; i < seen.length; i++) if (seen[i] < seen[i - 1]) { backwards = i; break; }
+            assert(seen.length >= 20 && backwards < 0,
+                'absTStates() never goes backwards, frame end or mid-frame',
+                backwards < 0 ? `${seen.length} samples` : `sample ${backwards}: ${seen[backwards - 1]} -> ${seen[backwards]}`);
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

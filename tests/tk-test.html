@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TK-90X / TK-95 Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>TK-90X / TK-95 Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // Microdigital TK-90X / TK-95: 48K clones with the Microdigital ULA (228
+        // T-states a line, 312 lines at 50 Hz), no floating bus; TKMEM-128 II and
+        // the Brazilian Beta 48 clones work on them.
+        import { ULA } from '../core/ula.js';
+        import { Memory } from '../core/memory.js';
+        import { Spectrum } from '../core/spectrum.js';
+        import { getMachineProfile } from '../core/machines.js';
+
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+
+        // The Microdigital ULA's line time, with NO ROM. Everything below this
+        // needs roms/tk90x.rom and skips without it, so on a tree that does not
+        // have those ROMs -- they are not in FUSE, which does not emulate these
+        // machines -- the suite ran 0 asserts and still reported green. The
+        // 228 T-states a line IS the layer, so it is pinned here where it can
+        // always run, together with the thing the generalisation could break:
+        // the 48K itself must still be 224.
+        function timing() {
+            section('the Microdigital ULA line time (no ROM needed)');
+            const fakeMemory = (mt) => ({
+                profile: getMachineProfile(mt), currentRamBank: 0,
+                read: () => 0, write: () => {}, readScreen: () => 0
+            });
+            const of = (mt) => {
+                const u = new ULA(fakeMemory(mt), mt);
+                return { line: u.TSTATES_PER_LINE, frame: u.TSTATES_PER_FRAME,
+                         lines: u.LINES_PER_FRAME, topLeft: u.TOP_LEFT_PIXEL_TSTATE };
+            };
+            const t90 = of('tk90x'), t95 = of('tk95'), f48 = of('48k');
+            assert(t90.line === 228 && t95.line === 228,
+                'TK-90X and TK-95: 228 T-states a line',
+                `${t90.line} / ${t95.line}`);
+            assert(t90.lines === 312 && t90.frame === 228 * 312 && t90.frame === 71136,
+                'and 312 lines, so 71136 T a frame',
+                `${t90.lines} lines, ${t90.frame} T`);
+            // TOP_LEFT_PIXEL_TSTATE used to be the constant 14336; the layer
+            // derives it as 64 * the line time. If that were left written down,
+            // every TK screen would be drawn a third of a frame out of step.
+            assert(t90.topLeft === 64 * 228 && t90.topLeft === 14592,
+                'the first pixel at 64 lines in, derived from the line time',
+                String(t90.topLeft));
+            assert(f48.line === 224 && f48.frame === 69888 && f48.topLeft === 14336,
+                'and the 48K is untouched: 224, 69888, 14336',
+                `${f48.line} / ${f48.frame} / ${f48.topLeft}`);
+            // The default is what makes the 48K branch work for both: a profile
+            // without tstatesPerLine must fall back to 224, not to nothing.
+            assert(getMachineProfile('tk90x').tstatesPerLine === 228 &&
+                   getMachineProfile('48k').tstatesPerLine === undefined,
+                'the TK profiles declare the line time and the 48K does not',
+                String(getMachineProfile('48k').tstatesPerLine));
+
+            // TKMEM-128 II is the other half of the layer: the board was sold
+            // for the TK-90X and TK-95 as well as the 48K, and setTkmem decides
+            // who may have one. Nothing asserted that before -- narrowing it
+            // back to the 48K alone failed no test at all.
+            const fits = (mt, kb) => {
+                const m = new Memory(mt);
+                m.setTkmem(kb);
+                return { ram: m.tkmemRam ? m.tkmemRam.length : 0, big: m.tkmem512 };
+            };
+            const k90 = fits('tk90x', 128), k95 = fits('tk95', 512), k48 = fits('48k', 128);
+            assert(k90.ram === 128 * 1024 && k95.ram === 512 * 1024 && k95.big &&
+                   k48.ram === 128 * 1024,
+                'TKMEM-128 II fits a TK-90X and a TK-95 as well as a 48K',
+                `tk90x ${k90.ram}, tk95 ${k95.ram}, 48k ${k48.ram}`);
+            assert(fits('128k', 128).ram === 0 && fits('pentagon', 128).ram === 0 &&
+                   fits('tc2048', 128).ram === 0,
+                'and still nothing else, the Timex included',
+                `128k ${fits('128k', 128).ram}, tc2048 ${fits('tc2048', 128).ram}`);
+
+            // "AY in 48K" is the third relaxation, and the one most easily lost:
+            // which machines may have an AY added is a hardcoded list inside
+            // _ayOnPorts(), not a profile field like ayDefault, so adding a
+            // machine means remembering to edit it. Taking the TKs back out
+            // failed nothing either.
+            const canvas = document.createElement('canvas');
+            const ayOn = (mt) => {
+                const sp = new Spectrum(canvas, { machineType: mt });
+                sp.ayEnabled = false;
+                sp.ay48kEnabled = true;
+                return sp._ayOnPorts();
+            };
+            assert(ayOn('tk90x') && ayOn('tk95') && ayOn('48k'),
+                'an AY can be added to a TK-90X and a TK-95, as to a 48K',
+                `tk90x ${ayOn('tk90x')}, tk95 ${ayOn('tk95')}`);
+            assert(!ayOn('pentagon') && !ayOn('tc2068'),
+                'and the switch does nothing where there is an AY already',
+                `pentagon ${ayOn('pentagon')}, tc2068 ${ayOn('tc2068')}`);
+        }
+
+        async function runTests() {
+            timing();
+            section('TK-90X / TK-95');
+            const ok = async (u) => fetch(u).then(r => r.ok, () => false);
+            if (!(await ok('../roms/tk90x.rom'))) { skip('roms/tk90x.rom not present'); return; }
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            for (const mt of ['tk90x', 'tk95']) {
+                if (!(await ok('../roms/' + mt + '.rom'))) { skip('roms/' + mt + '.rom not present'); continue; }
+                await zx.ready({ machine: mt });
+                const sp = frame.contentWindow.spectrum;
+                zx.pause();
+                sp.reset();
+                await zx.runFrames(150);
+                assert(sp.ula.TSTATES_PER_LINE === 228 && sp.ula.TSTATES_PER_FRAME === 71136,
+                    mt + ': Microdigital ULA, 228 x 312 = 71136 T-states', String(sp.ula.TSTATES_PER_FRAME));
+                assert(sp.portRead(0x00FD) === 0xFF, mt + ': no floating bus');
+                assert(sp.cpu.pc < 0x4000 && sp.memory.read(0) === 0xF3, mt + ': ROM runs');
+                sp.memory.setTkmem(128);
+                assert(!!sp.memory.tkmemRam, mt + ': TKMEM-128 II can be fitted');
+                sp.memory.setTkmem(sp.tkmemSize);
+            }
+            const sp = frame.contentWindow.spectrum;
+            // Chase HQ 128 for TKMEM on a CBI-95, if the files are there
+            if (await ok('../roms/beta48.rom') && await ok('../headless/tk/ChaseHQ_TKMEM.scl')) {
+                await zx.ready({ machine: 'tk90x' });
+                zx.pause();
+                const prev = { en: sp.betaDiskEnabled, v: sp.betaVariant, tk: sp.tkmemSize, fdd: sp.fdd3000Enabled };
+                sp.betaDiskEnabled = true; sp.betaVariant = 'auto'; sp.fdd3000Enabled = false;
+                sp.loadBeta48Rom(new Uint8Array(await (await fetch('../roms/beta48.rom')).arrayBuffer()));
+                sp.tkmemSize = 128; sp.memory.setTkmem(128);
+                sp.updateBetaDiskPagingFlag();
+                await zx.loadFile(new Uint8Array(await (await fetch('../headless/tk/ChaseHQ_TKMEM.scl')).arrayBuffer()), 'ChaseHQ_TKMEM.scl');
+                zx.pause();
+                const d = sp.betaDisk.drives[0].diskData;
+                'boot    '.split('').forEach((c, i) => { d[i] = c.charCodeAt(0); });
+                sp.reset();
+                await zx.runFrames(200);
+                await zx.typeText('r\n');
+                const banks = new Set();
+                const pw = sp.cpu.portWrite;
+                sp.cpu.portWrite = (p, v, t) => { if ((p & 0xC022) === 0x4020) banks.add(v & 7); return pw(p, v, t); };
+                await zx.runFrames(1200);
+                sp.cpu.portWrite = pw;
+                assert(sp.memory.beta48On && banks.size >= 4 && sp.cpu.pc >= 0x8000,
+                    'TK-90X + CBI-95 + TKMEM: Chase HQ 128 loads into the banks', [...banks].join(','));
+                sp.betaDiskEnabled = prev.en; sp.betaVariant = prev.v; sp.fdd3000Enabled = prev.fdd;
+                sp.tkmemSize = prev.tk; sp.memory.setTkmem(prev.tk);
+                sp.updateBetaDiskPagingFlag();
+            } else {
+                skip('Chase HQ: roms/beta48.rom or headless/tk/ChaseHQ_TKMEM.scl not present');
+            }
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

@@ -406,6 +406,52 @@ The 48K-era Beta Disk and its clones. Three sections, the first two needing no R
 
 **Real ROMs** (skipped without `roms/fdd3stavi.rom`, `roms/fdd3000-boot.rom` and `headless/fdd3000/tos.dsk`, which are all gitignored). TOS A.2 booted on a 128K: the station loads its system from drive A, the 48K ROM is selected as in FUSE, the second copyright line `© 91 STAVI 128K TOS A.2` reaches the screen, `CAT *` lists the disk, and `SAVE *`/`LOAD *` is a **round trip through the station** — 2048 bytes written and read back and compared, which is the only thing here that cannot pass by accident. Then CP/M on a 48K through the Monitor Emulator terminal, including the disk swap `fdd3000AutoBoot` does by hand.
 
+## `tests/explorer-test.html` — the XSS section
+
+**A crafted file must not be able to put markup on the page.** The Explorer renders every field it shows by building an HTML string and assigning `innerHTML`, so one unescaped field is script execution in this origin. A TZX text block and a TZX message block are 255 bytes each, which is room for a working payload: both are loaded carrying `<img src=x onerror="window.__xssRan=1">` and the suite requires that no `<img>` appears, that `__xssRan` stays `undefined`, and that the payload is **shown as text**. Then a TAP filename, which is only ten bytes — too few for that payload but plenty for `<b>PWNED!`, and a tag is the thing that must not survive.
+
+This section is checked against the bug it exists for: reverting the four escapes in `ui/explorer-banks.js` fails six asserts, and **`and its onerror never runs` is among them** — the payload really does execute without the fix, so the test is a demonstrated exploit rather than a theoretical one.
+
+## `tests/gama-test.html`
+
+**The Didaktik Gama's 80KB.** Ten asserts with no ROM, and the ROM section after them.
+
+**The 8255 and the second bank** — reachable always, and for the same reason as `tk-test`: everything the contributor wrote gates on `roms/dgama89.rom`, which is in neither FUSE's nor ZEsarUX's distribution, so **this suite ran 0 asserts and reported green**. The 80KB is the layer, so it is pinned here. The profile declaring `gama80k` and nothing else having a second bank; **power-on mode `$9B` leaves every port an input, so PC0 is pulled low and cannot select** — a set PC0 still reads bank 0, which is the detail that makes the Gama boot as a 48K until its ROM writes `$92`; a mode set clearing the outputs (hence bank 0 again); PC0 then selecting bank 1 and clearing back; `$8000-$FFFF` being **two genuinely separate 32KB stores** (a byte written in each bank, both read back); `$4000-$7FFF` being the same contended RAM whichever bank is in; and a BSR aimed at another port C bit leaving the bank alone, since the bit is addressed by D3-D1.
+
+**On the real ROM** (skipped without `roms/dgama89.rom`): the ROM booting to "© 1989 DIDAKTIK SKALICA", and the bank-B detection routine every Czechoslovak program used (`OUT (127)` with 1/0 around a write to 50000) answering 80KB here and 48KB on a 48K. Not run here.
+
+## `tests/tk-test.html`
+
+**The Microdigital TK-90X and TK-95.** Nine asserts with no ROM, and three sections that need one.
+
+**The line time, and the two relaxations** — reachable always, which matters here more than usual. Everything the contributor wrote is behind a `roms/tk90x.rom` gate, and those ROMs are not in FUSE (it does not emulate these machines), so on a tree without them **the suite ran 0 asserts and still reported green** — the exact shape of a false pass. So the thing the layer *is* gets pinned up front: both machines at **228 T-states a line**, 312 lines, 71136 a frame, and the first pixel at `64 × 228 = 14592` — that last one because the layer stopped writing 14336 down and derived it instead, and a reverted constant would draw every TK screen a third of a frame out of step. The 48K is asserted unchanged (224 / 69888 / 14336) and the fallback pinned, since a profile with no `tstatesPerLine` must land on 224 rather than `undefined`. Then the two "allowed on a TK as well" changes, neither of which had any coverage: **TKMEM-128 II** fitting a TK-90X and TK-95 (and still refusing a 128K, a Pentagon and a Timex), and **AY in 48K** being offered on them — that one a hardcoded machine list inside `_ayOnPorts()` rather than a profile field, so adding a machine means remembering to edit it.
+
+**On the real ROMs** (skipped without `roms/tk90x.rom` / `tk95.rom`, and the Chase HQ section also wants `roms/beta48.rom` and `headless/tk/ChaseHQ_TKMEM.scl`): the ROM booting on each machine, the frame timing measured on the running ULA, and a Brazilian Beta 48 clone loading a TKMEM game. None of it runs here.
+
+## `tests/sound-addons-test.html`
+
+**TurboSound and the DACs**, driven in the real app on a 128K. Fifteen asserts, no ROM needed.
+
+**TurboSound** — that `$FE`/`$FF` on `$FFFD` are ordinary register writes while it is off; that with it on `$FF` picks chip 0 and `$FE` chip 1 and each keeps its own registers; that a register read follows the selected chip; that a write to the second chip is tagged with the chip so the mixer replays it there; and that reset clears the second AY and selects chip 0.
+
+**DACs** — Covox mono on `$FB` driving all four channels, Covox moved to `$DD` and answering there and **not on `$DC`, the port one bit away** (which is what pins a full 8-bit compare — `$DD` against `$FB` differ in too many bits for a loose match to fail); Stereo Covox putting each port on its own pair; Specdrum on `$DF`; Soundrive's two jumper modes with the other mode's ports ignored; and the one that is a decision rather than an arithmetic — **while TR-DOS is paged in the DACs do not hear the bus**, because Soundrive mode 1's `$1F` and `$5F` are the Beta Disk's own registers and disk work would otherwise click through them. Then that with the DAC off nothing moves, and that **reset returns the levels to silence, `$80` and not 0** — a DAC held at 0 is a full-scale offset, not quiet, and the "DAC off" assert cannot see that because with it off the levels never left `$80` to begin with.
+
+## `tests/timex-test.html`
+
+**The Timex TC2048 / TC2068 and their SCLD.** Ten asserts with no ROM at all, and two sections that need one.
+
+**SCLD modes and DCK** — pure, against `core/timex.js`. The hi-res ink/paper pair from DEC bits 3-5; the second display file at `$6000` (mode 1), 8x1 hi-colour attributes (mode 2) and the hi-res pairings (modes 4-7), each checked with bytes planted so that no two modes could return the same answer. **The display-file offset of all 192 rows** against the layout written out longhand rather than reused from the implementation — every other assert here uses a row in the first third, where the third's own term is zero, so without this the term that places two thirds of the screen is not exercised at all. Then a DCK cartridge parsed: a DOCK block with a ROM chunk and a RAM chunk, and separately an EXROM block whose **empty-RAM** chunk must be 8KB of zeros and consume no file bytes — the access type the first fixture does not use.
+
+**The machines themselves** (skipped without `roms/tc2048.rom` and `roms/tc2068.rom`, or FUSE's `tc2068-0.rom` + `tc2068-1.rom`; all gitignored). The SCLD ports and their read-back, the hi-res display, DOCK/EXROM paging, the AY on `$F5`/`$F6`, the Timex joysticks and a `.dck` cartridge booting are **all** inside those sections, so with no ROMs present the two machines are unverified and only the pure SCLD arithmetic above is covered. Worth knowing when reading a green run.
+
+## `tests/midi-test.html`
+
+**The 128's MIDI out**, which is a UART written in software by the ROM. Ten asserts.
+
+**UART and assembler** — pure, no machine. Five bytes bit-banged into `UartDecoder` and read back (`$FF` and `$00` among them, because they are the two with no edges in the middle); the start-bit rule from **both** sides, since a start bit is the line *falling* — a low line rising is not one, and neither is a low line going low again, which is the half an "is it low?" test would get wrong; the assembler's running status, real-time bytes, program change and SysEx; and a byte with **one edge stamped a frame late**, which must come back wrong — that is the hazard the monotonic clock exists to avoid, written down where it can be seen.
+
+**On the real 128K ROM** (needs `roms/128.rom`). `PLAY "Y1c"` typed at 128 BASIC, and the bytes that come out must be `90 3C 78` / `80 3C 40` — Note On and Note Off for middle C on channel 1, with no framing error. That is an outside oracle: the ROM decides the baud rate, the bit order and the message, not us. Then three things the port had to add because nothing asserted them: **R7 bit 6** is port A's direction, so the line idles high while the Spectrum is reading port A and only follows R14 bit 2 once it is driving it; **reset sends All Notes Off on all 16 channels**, since a note sounding when the machine is reset would never get its Note Off; and the UART takes its time from `absTStates()` at both the edge and the per-frame flush. That last one is pinned as a collaboration rather than a behaviour on purpose — the two clocks differ by a whole frame and, measured, the naive one does not go backwards, so there is nothing observable to assert, only the choice to be kept.
+
 ## `tests/disk-boot-test.html`
 
 **The suite that answers "does the disk system actually work".** Everything else can be
