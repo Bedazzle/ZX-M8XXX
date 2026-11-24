@@ -805,6 +805,67 @@
             try { sp.setTsfm(was.tsfm); sp.setTurboSound(was.ts); } catch (e) {}
         }
 
+        // The audio path itself, which nothing in this tree had ever executed.
+        // `initAudio()` is only called from a user gesture, so every suite runs
+        // with `audio` null and processFrame's body never runs -- which is how a
+        // `this._fmMasterClock()` inside it survived: that is a Spectrum method
+        // and `this` there is the AUDIO object, so it threw on EVERY frame, with
+        // TS-FM on or off, and stopped the machine as soon as sound was switched
+        // on. Nothing below is about FM arithmetic; it is about the frame
+        // surviving with the speaker on, and the clock crossing the boundary.
+        async function audioPath() {
+            section('the audio path, with the speaker actually on');
+            const frame = document.getElementById('app');
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+            await zx.ready({ machine: '128k' });
+            const sp = frame.contentWindow.spectrum;
+            zx.pause();
+            const audio = sp.initAudio();
+            const buffers = [];
+            audio.enabled = true;
+            audio.scriptNode = {};                       // past the "no output node" return
+            audio._scriptWrite = (l) => buffers.push(l.length);
+            const extras = [];
+            const real = audio.processFrame.bind(audio);
+            audio.processFrame = function (...a) { extras.push(a[6]); return real(...a); };
+
+            let threw = null;
+            try { zx.runFrames(2); } catch (e) { threw = e; }
+            assert(!threw, 'a frame with the speaker on does not throw, TS-FM off', threw && String(threw));
+            assert(buffers.length > 0, 'and samples really reached the output, so the body ran', `${buffers.length} buffers`);
+
+            sp.setTurboSound(true); sp.setTsfm(true);
+            const before = buffers.length;
+            threw = null;
+            try { zx.runFrames(2); } catch (e) { threw = e; }
+            assert(!threw, 'nor with TurboSound FM switched on', threw && String(threw));
+            assert(buffers.length > before, 'which also ran the body, so the pass above is not a silent skip');
+
+            const last = extras[extras.length - 1];
+            assert(last && last.fmClock === sp._fmMasterClock() && last.fmClock === 3546900,
+                   'the master clock is HANDED to the audio in `extra`; it cannot read one off the Spectrum',
+                   `${last && last.fmClock}`);
+            assert(audio._fmMasterClock === undefined,
+                   'and the audio object has no _fmMasterClock of its own to fall back on');
+
+            // The same on a 48K, where the clock is the other one -- so the value
+            // crossing the boundary follows the machine rather than being a constant.
+            await zx.ready({ machine: '48k' });
+            const sp48 = frame.contentWindow.spectrum;
+            zx.pause();
+            const a48 = sp48.initAudio();
+            a48.enabled = true; a48.scriptNode = {}; a48._scriptWrite = () => {};
+            const e48 = [];
+            const r48 = a48.processFrame.bind(a48);
+            a48.processFrame = function (...a) { e48.push(a[6]); return r48(...a); };
+            threw = null;
+            try { zx.runFrames(2); } catch (e) { threw = e; }
+            assert(!threw, 'a 48K frame with the speaker on does not throw either', threw && String(threw));
+            assert(e48.length > 0 && e48[e48.length - 1].fmClock === 3500000,
+                   'and it is given 3.5 MHz, not the 128K figure', `${e48.length && e48[e48.length - 1].fmClock}`);
+        }
+
         (async () => {
             try {
                 tables();
@@ -815,6 +876,7 @@
                 channel3();
                 timers();
                 await board();
+                await audioPath();
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }

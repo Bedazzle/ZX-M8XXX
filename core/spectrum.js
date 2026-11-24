@@ -3607,7 +3607,7 @@ import { Disassembler } from './disasm.js';
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
                       gs: this.gsOn && this.gs.rom ? this.gs : null,
-                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges, fmClock: this._fmMasterClock() });
             }
 
             // Advance AY logging frame counter
@@ -4051,7 +4051,7 @@ import { Disassembler } from './disasm.js';
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
                       gs: this.gsOn && this.gs.rom ? this.gs : null,
-                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges, fmClock: this._fmMasterClock() });
             }
 
             // Advance AY logging frame counter
@@ -11378,7 +11378,11 @@ import { Disassembler } from './disasm.js';
             const fm = extra && extra.fm, fmOn = !!(extra && extra.fmOn);
             const fmChanges = (extra && extra.fmChanges) || [];
             let fmIdx = 0, fmAcc = this._fmAcc || 0, fmLast = this._fmLast || 0;
-            const fmPerSample = this._fmMasterClock() / 72 / this.sampleRate;
+            // The master clock follows the machine, so it is handed over in `extra`
+            // like every other value here: `this` is the AUDIO object, which has no
+            // _fmMasterClock -- reaching for one threw on every frame, with or
+            // without TS-FM, and only where audio is really running (so no suite saw it).
+            const fmPerSample = fm ? (extra.fmClock || 3546900) / 72 / this.sampleRate : 0;
             const FM_GAIN = 0.7 * 0.333 / 16382;     // a TL 0 carrier = one AY channel at 15
 
             // Audio levels

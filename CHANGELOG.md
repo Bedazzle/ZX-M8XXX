@@ -2,6 +2,11 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.09
+
+- **Fixed: enabling sound threw on every frame, stopping the machine**.
+- **Fixed: oversized text in some UI controls**.
+
 ## v26.11.08
 
 - **TurboSound FM: two YM2203s, with their FM halves**, contributed by Marginal2k.
