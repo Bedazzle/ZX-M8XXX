@@ -348,6 +348,166 @@ separately, so a change to *where* a wait lands cannot quietly change *how long*
 instruction takes; and the same instructions are run again in uncontended RAM, where every
 one of them must still cost exactly its bare length.
 
+## `tests/beta48-test.html`
+
+The 48K-era Beta Disk and its clones. Three sections, the first two needing no ROM at all.
+
+**ROM images** (`core/beta48.js`). `crc32` is pinned against the standard check value (`123456789` → `cbf43926`) rather than against itself, since every ROM is identified through it. Then: a readable 8KB image is mirrored into 16KB and left alone, a name is read out of the ROM text, a **D0/D7-crossed dump of the same ROM produces a byte-identical result** — which is the property that matters, because the dumps in circulation differ in exactly that way — a Vision board is recognised from its text, and anything that is not 8KB or 16KB is refused rather than loaded crookedly.
+
+**The `$3Cxx` window and the latch.** Two marked ROMs (Sinclair `$11`, DOS `$22`) make every question a single byte read. With the latch off, `$0000` and `$3D00` are Sinclair while **every address in `$3C00-$3CFF` is the DOS** — that window is the whole trick of the 48K Beta, and it is live for data reads, not only opcode fetches. With the latch on the DOS covers all of `$0000-$3FFF`, and RAM above `$4000` is untouched either way. Then the CBI's master bit 6 switches the window off, and with the interface not fitted the machine is a plain 48K again.
+
+**Real ROM** (skipped unless `roms/beta48.rom` is present). The app is brought up on a 48K with the interface fitted, and the ROM is left to boot itself: after reset the latch must be set and the master register clear, the DOS must actually **drive the master register** (writes to a port `xxxxxx00`), its sign-on must reach the screen, and the magic button must raise an NMI with the ROM latched.
+
+## `tests/tkmem-test.html`
+
+**TKMEM-128 II**, the external 128K/512K RAM for a 48K. Two sections, neither needing a ROM.
+
+**Memory** (`core/memory.js`). Eight banks at `$C000` each keep their own byte, `$8000` is bank 2 whichever bank is latched, and `$4000` is still the machine's own screen RAM with latch bit 3 set — which is how the suite pins that there is **no shadow screen**, the one thing a 7FFD-shaped latch invites you to add. Bit 5 locks the latch until reset; in 512K mode bits 6-7 become bank bits 3-4, checked by bank 25 not being bank 1 rather than by reading the field back. Fitting it to a 128K does nothing, and removing it gives a plain 48K `$C000` again.
+
+**Port decode**, driven through the real `portWrite` on a 48K. `7FFD` pages under both decodes; the Beta 48 DOS's own `$00FC`/`$07FC` page under the board's GAL equation and **not** under the default `a14`, which is the whole reason that option exists — under `gal` a TR-DOS 4.x call pages bank 0 or 7 in beneath its own stack. `A15=1`, `A1=1` and `A5=0` are all rejected.
+
+## `tests/hc2000-test.html`
+
+**The HC-2000 (ICE Felix) and its built-in HC IF1**, ported from Alex Badea's FUSE branch
+`hc2000-v2`. Four unit sections and one that boots the real ROMs:
+
+- **The memory map**, built against `Memory` directly with two marked ROM halves, so each
+  8KB slot is identified by what it answers rather than by the flag that was set: the $7E
+  latch's B/OL, CPMPL and CVS bits, the lock that holds until reset, $C5/$C7 bringing the
+  $E000 RAM down to $C000, and that writes reach RAM and are dropped on ROM. The RAM is
+  held in the 128K bank numbers (0/5/2/7), which is what makes CVS the ordinary shadow
+  screen and keeps the special cases out of everything else.
+- **The 16K overlay**: the HC IF1's ROM over $0000-$3FFF with its 1KB of RAM mirrored at
+  $2800 and $3800, and — the part worth having a test for — that the overlay is invisible
+  while CP/M decoding is on, as in FUSE's `hc2000_memory_map()`.
+- **Terminal Count**, which the +3 does not have wired: the HC IF1 ROM asks for R..EOT=16,
+  reads one sector and pulses TC, and the command must end **normally** (ST0 IC=00, no EN)
+  after the sectors the CPU actually moved. The +3's own ending is asserted unchanged on a
+  controller without `tcConnected`, so the two behaviours are pinned apart rather than one
+  being replaced.
+- **Raw images**: a 640K/320K/720K/360K file has no geometry of its own, so it becomes a
+  `DSKImage` with real C/H/R/N and the same disk as IMG and as DSK then reads identically.
+  The side order (all of side 0 first, or alternating per cylinder) is **detected from the
+  directory**, and the HC file systems — 11-character BASIC names across the 8+3 slot, the
+  9-byte IF1 header, the logical skew — are read back from a disk the Explorer's own code
+  wrote.
+- **On the real ROMs**, when `roms/hc2000.rom` (or FUSE's `hc2000-0.rom` + `hc2000-1.rom`)
+  and `roms/hc-if1.rom` are present: FUSE's own `success_hc` disk (`tests/success_hc.img.zip`,
+  847 bytes, the one committed binary fixture in `tests/`) plus a disk written here, both
+  booted. **That fixture is the point of the section** — a disk our own writer made can only
+  prove we agree with ourselves, where one from FUSE is an outside oracle. Without the ROMs
+  the section skips and the suite still reports 60 asserts.
+
+## `tests/fdd3000-test.html`
+
+**The Timex FDD 3000**, which is a computer rather than an interface. Two sections.
+
+**Station, controller, latches** — no ROMs needed, because the station's Z80 is given hand-written code to run. Seven asserts on the things that make it a second machine rather than a disk controller: a byte fetched from a sector by C/H/R and handed across the two latches (station port `$20` out, Spectrum port `$EF` in) and back the other way, the config register's bit 6 paging the boot ROM out, the interface ROM mirrored at `$1000`, RAM at `$2000` with the ROM below it read-only, and the one that is a real trap — **INTRQ must rise a few station instructions after a command ends, not instantly**. TOS reads the status register (which clears INTRQ), does `EI` and *then* waits, so an instantaneous INTRQ is lost and every Seek times out.
+
+**Real ROMs** (skipped without `roms/fdd3stavi.rom`, `roms/fdd3000-boot.rom` and `headless/fdd3000/tos.dsk`, which are all gitignored). TOS A.2 booted on a 128K: the station loads its system from drive A, the 48K ROM is selected as in FUSE, the second copyright line `© 91 STAVI 128K TOS A.2` reaches the screen, `CAT *` lists the disk, and `SAVE *`/`LOAD *` is a **round trip through the station** — 2048 bytes written and read back and compared, which is the only thing here that cannot pass by accident. Then CP/M on a 48K through the Monitor Emulator terminal, including the disk swap `fdd3000AutoBoot` does by hand.
+
+## `tests/explorer-test.html` — the XSS section
+
+**A crafted file must not be able to put markup on the page.** The Explorer renders every field it shows by building an HTML string and assigning `innerHTML`, so one unescaped field is script execution in this origin. A TZX text block and a TZX message block are 255 bytes each, which is room for a working payload: both are loaded carrying `<img src=x onerror="window.__xssRan=1">` and the suite requires that no `<img>` appears, that `__xssRan` stays `undefined`, and that the payload is **shown as text**. Then a TAP filename, which is only ten bytes — too few for that payload but plenty for `<b>PWNED!`, and a tag is the thing that must not survive.
+
+This section is checked against the bug it exists for: reverting the four escapes in `ui/explorer-banks.js` fails six asserts, and **`and its onerror never runs` is among them** — the payload really does execute without the fix, so the test is a demonstrated exploit rather than a theoretical one.
+
+## `tests/gama-test.html`
+
+**The Didaktik Gama's 80KB.** Ten asserts with no ROM, and the ROM section after them.
+
+**The 8255 and the second bank** — reachable always, and for the same reason as `tk-test`: everything the contributor wrote gates on `roms/dgama89.rom`, which is in neither FUSE's nor ZEsarUX's distribution, so **this suite ran 0 asserts and reported green**. The 80KB is the layer, so it is pinned here. The profile declaring `gama80k` and nothing else having a second bank; **power-on mode `$9B` leaves every port an input, so PC0 is pulled low and cannot select** — a set PC0 still reads bank 0, which is the detail that makes the Gama boot as a 48K until its ROM writes `$92`; a mode set clearing the outputs (hence bank 0 again); PC0 then selecting bank 1 and clearing back; `$8000-$FFFF` being **two genuinely separate 32KB stores** (a byte written in each bank, both read back); `$4000-$7FFF` being the same contended RAM whichever bank is in; and a BSR aimed at another port C bit leaving the bank alone, since the bit is addressed by D3-D1.
+
+**On the real ROM** (skipped without `roms/dgama89.rom`): the ROM booting to "© 1989 DIDAKTIK SKALICA", and the bank-B detection routine every Czechoslovak program used (`OUT (127)` with 1/0 around a write to 50000) answering 80KB here and 48KB on a 48K. Not run here.
+
+## `tests/tk-test.html`
+
+**The Microdigital TK-90X and TK-95.** Nine asserts with no ROM, and three sections that need one.
+
+**The line time, and the two relaxations** — reachable always, which matters here more than usual. Everything the contributor wrote is behind a `roms/tk90x.rom` gate, and those ROMs are not in FUSE (it does not emulate these machines), so on a tree without them **the suite ran 0 asserts and still reported green** — the exact shape of a false pass. So the thing the layer *is* gets pinned up front: both machines at **228 T-states a line**, 312 lines, 71136 a frame, and the first pixel at `64 × 228 = 14592` — that last one because the layer stopped writing 14336 down and derived it instead, and a reverted constant would draw every TK screen a third of a frame out of step. The 48K is asserted unchanged (224 / 69888 / 14336) and the fallback pinned, since a profile with no `tstatesPerLine` must land on 224 rather than `undefined`. Then the two "allowed on a TK as well" changes, neither of which had any coverage: **TKMEM-128 II** fitting a TK-90X and TK-95 (and still refusing a 128K, a Pentagon and a Timex), and **AY in 48K** being offered on them — that one a hardcoded machine list inside `_ayOnPorts()` rather than a profile field, so adding a machine means remembering to edit it.
+
+**On the real ROMs** (skipped without `roms/tk90x.rom` / `tk95.rom`, and the Chase HQ section also wants `roms/beta48.rom` and `headless/tk/ChaseHQ_TKMEM.scl`): the ROM booting on each machine, the frame timing measured on the running ULA, and a Brazilian Beta 48 clone loading a TKMEM game. None of it runs here.
+
+## `tests/sound-addons-test.html`
+
+**TurboSound and the DACs**, driven in the real app on a 128K. Fifteen asserts, no ROM needed.
+
+**TurboSound** — that `$FE`/`$FF` on `$FFFD` are ordinary register writes while it is off; that with it on `$FF` picks chip 0 and `$FE` chip 1 and each keeps its own registers; that a register read follows the selected chip; that a write to the second chip is tagged with the chip so the mixer replays it there; and that reset clears the second AY and selects chip 0.
+
+**DACs** — Covox mono on `$FB` driving all four channels, Covox moved to `$DD` and answering there and **not on `$DC`, the port one bit away** (which is what pins a full 8-bit compare — `$DD` against `$FB` differ in too many bits for a loose match to fail); Stereo Covox putting each port on its own pair; Specdrum on `$DF`; Soundrive's two jumper modes with the other mode's ports ignored; and the one that is a decision rather than an arithmetic — **while TR-DOS is paged in the DACs do not hear the bus**, because Soundrive mode 1's `$1F` and `$5F` are the Beta Disk's own registers and disk work would otherwise click through them. Then that with the DAC off nothing moves, and that **reset returns the levels to silence, `$80` and not 0** — a DAC held at 0 is a full-scale offset, not quiet, and the "DAC off" assert cannot see that because with it off the levels never left `$80` to begin with.
+
+## `tests/timex-test.html`
+
+**The Timex TC2048 / TC2068 and their SCLD.** Ten asserts with no ROM at all, and two sections that need one.
+
+**SCLD modes and DCK** — pure, against `core/timex.js`. The hi-res ink/paper pair from DEC bits 3-5; the second display file at `$6000` (mode 1), 8x1 hi-colour attributes (mode 2) and the hi-res pairings (modes 4-7), each checked with bytes planted so that no two modes could return the same answer. **The display-file offset of all 192 rows** against the layout written out longhand rather than reused from the implementation — every other assert here uses a row in the first third, where the third's own term is zero, so without this the term that places two thirds of the screen is not exercised at all. Then a DCK cartridge parsed: a DOCK block with a ROM chunk and a RAM chunk, and separately an EXROM block whose **empty-RAM** chunk must be 8KB of zeros and consume no file bytes — the access type the first fixture does not use.
+
+**The machines themselves** (skipped without `roms/tc2048.rom` and `roms/tc2068.rom`, or FUSE's `tc2068-0.rom` + `tc2068-1.rom`; all gitignored). The SCLD ports and their read-back, the hi-res display, DOCK/EXROM paging, the AY on `$F5`/`$F6`, the Timex joysticks and a `.dck` cartridge booting are **all** inside those sections, so with no ROMs present the two machines are unverified and only the pure SCLD arithmetic above is covered. Worth knowing when reading a green run.
+
+## `tests/midi-test.html`
+
+**The 128's MIDI out**, which is a UART written in software by the ROM. Ten asserts.
+
+**UART and assembler** — pure, no machine. Five bytes bit-banged into `UartDecoder` and read back (`$FF` and `$00` among them, because they are the two with no edges in the middle); the start-bit rule from **both** sides, since a start bit is the line *falling* — a low line rising is not one, and neither is a low line going low again, which is the half an "is it low?" test would get wrong; the assembler's running status, real-time bytes, program change and SysEx; and a byte with **one edge stamped a frame late**, which must come back wrong — that is the hazard the monotonic clock exists to avoid, written down where it can be seen.
+
+**On the real 128K ROM** (needs `roms/128.rom`). `PLAY "Y1c"` typed at 128 BASIC, and the bytes that come out must be `90 3C 78` / `80 3C 40` — Note On and Note Off for middle C on channel 1, with no framing error. That is an outside oracle: the ROM decides the baud rate, the bit order and the message, not us. Then three things the port had to add because nothing asserted them: **R7 bit 6** is port A's direction, so the line idles high while the Spectrum is reading port A and only follows R14 bit 2 once it is driving it; **reset sends All Notes Off on all 16 channels**, since a note sounding when the machine is reset would never get its Note Off; and the UART takes its time from `absTStates()` at both the edge and the per-frame flush. That last one is pinned as a collaboration rather than a behaviour on purpose — the two clocks differ by a whole frame and, measured, the naive one does not go backwards, so there is nothing observable to assert, only the choice to be kept.
+
+## `tests/saa-test.html`
+
+**The SAA1099**, the ZXM-SoundCard's chip. 26 asserts, and **nothing here skips**: the chip is arithmetic on its own registers, so there is no ROM to be without and no "ran 0 asserts and reported green" to worry about — the trap the last three layers all fell into.
+
+**The chip model** — pure, against `core/saa1099.js`. A tone measured at two octaves against the half period `(511 - f) << (8 - octave)` written out as a frequency, so a changed shift or an off-by-one in the 511 shows as the wrong number of edges per second; the amplitude nibbles going to their own channel and nothing reaching the other; **six channels at 15 together reaching exactly 1.0**, which is what fixes the scaling; the noise rate; a single decay running down to 0 and staying silent; the external envelope clock, one step per address write, with its inverted right side; and new parameters written into a running envelope **waiting for the end of the period** — the data sheet, SAASound and Xpeccy against MAME, which restarts at once.
+
+**The eight the layer shipped without**, which is where the reading was worth it. Everything above exercises envelope generator 0 on channel 2; the chip has **two**, so the data sheet's "channels 2 and 5" was only half pinned and nothing at all reached generator 1. It is now its own object, stepped by **tone 4**, reaching **channel 5 alone** — and that last one is the assert that fails if the envelopes are given all three channels of their group, which is exactly what MAME does. Then `$1C` bit 1 **holding and resetting** the generators (the existing "six channels reach 1.0" case writes that bit only to get a known starting level, so it passed whether it held or not); tone and noise on one channel giving the tone at **half** amplitude while the noise is high and silence while it is low, counted one clock at a time so every level is exact and nothing is averaged away; noise parameter 3 being **tone 0's clock** and not a fourth divider rate, pinned by the rate differing by four at octave 7; the 3-bit envelope bit, where 15 must read as 14 and every level is even; and a **48K with no AY** taking the card, since nothing in the decode may be standing on an AY being there.
+
+**The ports** (`$01FF` / `$00FF`), driven through the real `portWrite` in the app. The two told apart by A8, the writes reaching the chip at the frame's end — which is `_saaFlush`, the path that runs when the audio is not taking them — and then four silences: while TR-DOS is paged in (the ports are the Beta Disk's), on a Timex (whose `$FF` is the SCLD's), while the card is switched off, and after a reset.
+
+**Mutation-tested, 16 of 16 killed**, each by the assert named after the behaviour it broke. One was put in expecting it to survive: moving the noise LFSR's tap, since the suite measures the noise *rate* and not its sequence. It was killed anyway — x^18+x^12+x is not a maximal-length polynomial, so the register degenerates and the rate collapses with it. The rate assert catches a moved tap by accident; **the sequence is still unpinned**, and that is worth knowing rather than counting as cover.
+
+## `tests/kempdisc-test.html`
+
+**The Kempston Disc Interface and the K-DOS file system.** 34 asserts, none of which needs a ROM — which is the whole point of how this suite ended up shaped the way it is.
+
+**The board.** The stock port decode (`$E5`/`$E7`/`$ED`/`$EF`, register = A1 | A3 << 1) and the 128A6 one (`$A7`/`$E7`/`$AF`/`$EF`, A6 | A3 << 1), each rejecting the other's ports; the 8KB ROM mirrored over `$0000-$3FFF` and in at reset; `OUT $D7` paging out and then the difference that matters — on the stock board **any** `$xxFD` pages it back in, which is the 128K's own `$7FFD` and the reason the board is a 48K one, while on the 128A6 board `$7FFD` is ignored and `OUT $BF` does it; and `$DF` picking drive and side.
+
+**The file system, which had no reachable assert at all.** `core/loaders/disk-kdos.js` is 298 lines with fourteen public methods and it is what the Explorer's editor is built on, but every assert the layer wrote for it sat behind the `roms/kdos21.rom` gate — and that gate `return`s, so with no ROM the format ran nothing. None of it needs one. Pinned now: `FORMAT`'s layout for DS 80 and SS 40 (label, the fixed geometry bytes, 795K and 195K free, `$A5` everywhere outside the directory, no sector 10) and **which** five blocks the directory takes — 200-204 on a DS disk, 100-104 on an SS one, which nothing reads through the map, so marking the wrong five is invisible until a file is allocated on top of them; every block past the end of the disk marked used, and a foreign disk that leaves them clear still reporting only its own blocks free; the name hash against the ROM routine written out longhand, with `AUTO` = `$93` as the oracle and a name whose hash really comes out 0 stored as 1; `addFile` packing from block 0 with no gap; a 3000-byte file read back byte for byte across the side boundary; delete, rename, swap, label and param1 each with their slot byte; the two refusals, disk full and directory full, with their messages; and the Explorer view's MDOS type letters and free count.
+
+**The one that a round trip cannot check.** Logical sector *n* maps to a track, a side and a sector, and `addFile` and `readFile` both go through that same mapping — so **any** consistent permutation of it round-trips perfectly, which is this tree's standing warning that our own capture proves "unchanged" and never "correct". Two mutations of the mapping survived a full round-trip test. It is now read off physical sectors marked one by one and compared with the layout written longhand, and both mutations die.
+
+**Mutation-tested 18 of 18 — after two passes.** The first pass killed only ten: the round-trip asserts above, `addFile` taking the end of a free run instead of its beginning, the directory's block position, a zero name hash, and `freeBlocks`' clamp all survived. Each survivor was a real weakness in an assert written here, not a missing mutation, and six asserts were added or sharpened because of them.
+
+**What waits for the ROM.** K-DOS is an 8KB firmware no emulator distribution ships (MAME alone supports the board, and ships CRCs), so the sections that boot it skip: the ROM booting and printing its copyright, the drive test, real `.kdi` games, and the 128A6 board on a 128K. `disk-boot-test` carries the interface's required section and, until the ROM arrives, asserts the two things that do not need it — that `allInterfacesOff` really switches a board that pages in **at reset** off, and that switching it on with no ROM leaves `$0000` as the Spectrum's own.
+
+## `tests/gs-test.html`
+
+**General Sound**, which is a computer rather than a chip. 32 asserts, and the interesting thing about them is that this suite has an **outside oracle**: the card's own firmware, which boots, tests its RAM and reports what it found.
+
+**The board on its own** — pure, against `core/gs.js`. A read from `$6000`/`$6100`/`$6200`/`$6300` feeding DACs 1-4 with A9-A8 picking the channel and 1+2 going left, 3+4 right; volume 0 silencing a channel and a volume register being **6 bits**, so `$FF` reads back as 63 and not 255; page 0 putting the whole ROM at `$8000` and page *n* 32KB of RAM; the wrap **following the RAM fitted** — page 17 to page 1 on a 512KB board, page 5 to page 1 on a 128KB one, which is four pages and not sixteen; the `$BB`/`$B3` mailbox each way with its status bits and the GS-side ports that clear them; `(port & $F7) === $B3`; and `$33` resetting the card while leaving the mailbox alone.
+
+**The clock and the interrupt**, which is what the layer left unmeasured. Nothing it shipped runs the GS's Z80 at all, so neither the 12 MHz nor the 37.5 kHz interrupt was pinned and the firmware boots either way, just faster or slower. A 32KB ROM written here — `IM 1`, `EI`, a two-byte self-loop, and a handler that re-enables and returns — measures both without the firmware: 70000 T-states of a 48K must be 240000 GS cycles with 750 interrupts in them, and a 128K's 3.5469 MHz must give **1.3% fewer**, because the time base is per machine. Then the NMI from `$33` bit 6, which the layer only recorded as *pending*: it must actually be taken, once, and the card must leave its loop.
+
+**The firmware** (needs `roms/gs105b.rom`; `gs104.rom` and `gs105a.rom` extend it). Each one must boot, run its own RAM test and answer command `$23` with the number of 32KB pages and `$20` with the free RAM — gs105b at 128KB, 512KB **and** 2MB, gs104 and gs105a at 128KB. Those numbers come from the card, not from us, which is what makes them an oracle: the mutation that fixes the page wrap at 16 is caught here, by a 2MB board reporting itself as 512KB, and so is a missing status bit on the command port. Each ROM also carries its own version stamp straight after the entry jump (`F3 C3 48 01`, then `04 01` or `05 01`), an identity the filename cannot fake. Then a Spectrum reset leaving the card running, `OUT $33,$80` stopping it, its ports vanishing when it is switched off, and the per-machine clock from both ends.
+
+**The sync, pinned because a mutation survived.** `syncTo` is called at every port access *and* at each frame's end, and dropping the per-access call first passed all 31 asserts — the card still ran, a frame behind, and nothing looked within a frame. The assert now puts the card at a frame's start and reaches it mid-frame, which is the only place the difference exists. **Mutation-tested 17 of 17** after that.
+
+## `tests/tsfm-test.html`
+
+**TurboSound FM**, and the one suite here whose subject is **a port of someone else's code**. `core/ym2203.js` is ymfm's OPN core translated from C++, which makes "it applied cleanly" worth nothing — a clean apply is a textual fact — and makes a round trip through our own output worth little more, for the reason the Kempston Disc layer wrote down: a consistent error in a shared path survives any capture of ours. So the oracle here is the arithmetic the chip is *defined* by, written out longhand as `ula-blit-test` does for the cell blit. 70 asserts, none needing a ROM.
+
+**The two ROMs, rebuilt rather than trusted.** The port carries 512 hand-copied hex numbers. The log-sin table is rebuilt from `round(-log2(sin((x + 0.5) × pi / 512)) × 256)` and the exp table from `round(2048 × 2^(-(i+1)/256)) - 1024`, and both are compared with the port's **digit for digit, with no tolerance, over all 256 entries each**; then the whole operator output is rebuilt the same way and compared sample for sample over 1024 attenuations × 147 phases. A mistyped digit fails here instead of sounding 0.3% wrong, and the mutation that changes one hex digit of either table dies on it. Full scale is ±8168, the sign is phase bit 9, total level is 0.75 dB a step over 128 steps, and the bottom of the envelope is silence rather than a floor.
+
+**Pitch, against the datasheet.** `f = FNUM × fM / (2^(20−B) × 144)` for six block/fnum pairs, exactly — and at block 0, where the step is `fnum >> 1`, the half an odd F-number loses is pinned as the chip's own truncation. MULTIPLE 1-15 multiply and 0 halves; DETUNE 1-3 sharpen by a rising amount and bit 2 flattens by exactly as much. The **keycode** is checked against the datasheet's own F11/F10/F9/F8 rule over 48 block/fnum pairs rather than against the port's `bit(0xfe80, …)` packing of it, read back through the key scaling.
+
+**The envelope.** The documented *every 4 steps of the effective rate halves the time*, measured on the pipeline over five rates; rate 0 stopped rather than very slow; the attack exponential, with every step smaller than the last and the first from full attenuation exactly 64 (a sixteenth of what is left); attack rate 31 instant by its own branch. Then **one absolute time**, because every other envelope assert is a ratio and all of them would pass with the divide-by-3 missing or doubled: the generator ticks once every three FM samples, so at the top rate the attenuation reaches 768 in 288 samples. SSG-EG runs four times as fast above half and repeats instead of holding.
+
+**The algorithms.** Each of the eight carrier sets read off by silencing three operators and listening for the fourth — 32 operators, each silent or loud as the datasheet says. Then all eight waveforms **pairwise different** — with the four operators given different MULTIPLEs, since four identical ones make algorithms 2 and 3 the same sum by symmetry. That assert is not enough on its own and the mutation pass said so: eight different waveforms stay eight different waveforms when two table entries are swapped, so swapping algorithms 5 and 6 — the pair that shares a carrier set — survived it. What tells them apart is **positional**: for each algorithm, which of its carriers are *modulated*, decided by whether silencing the modulators changes the output at all. 16 carriers, and alg 5's `{2,3,4}` against alg 6's `{2}` is the difference. Feedback is checked as a modulation index that **doubles at every level**, which is what `>> (10 - level)` means and is easy to write backwards; above level 5 the phase swing passes a whole cycle and the measure folds back, so the doubling is asserted where it can be seen and the folding is written down rather than averaged into a weaker claim.
+
+**Channel 3, the timers and the board.** Multi-frequency mode with slot 4 keeping the channel's own F-number (the other three registers' slot order is ymfm's, pinned so a regression shows but not verified against a datasheet); CSM taking all four operators through an attack and back to release in one sample, and nothing at all outside CSM mode. Timer A at `(1024 − TA) × 72`, timer B at sixteen times the granularity, each flag's enable and reset bit separately, busy at 32 × 6, and that clearing a running timer's flag does **not** restart its period. Then the board on a 128K: the `%11111xyz` control word, the SSG / FM address split with the SSG keeping its own register, an FM write that stops at the FM and never reaches the AY, `$FF` from a latched FM address, both chips' own FM halves, `_fmFlush`, reset, and a 48K with no AY fitted hearing nothing.
+
+**The clock, and what the layer got wrong.** The layer timed the chip from `totalFrames × tstatesPerFrame + cpu.tStates` — the clock this tree threw out for the disk at 112 T-states and MIDI at 113. Timer A's shortest period is 72, so the hazard is worse here, and one assert says what it costs: a frame arriving at once fires CSM **984 times in a single call**. Another pins that the port path reads `absTStates()` and that three frames of emulation advance the timers by three frames.
+
+**Mutation-tested 48 of 48.**
+
 ## `tests/disk-boot-test.html`
 
 **The suite that answers "does the disk system actually work".** Everything else can be
@@ -422,6 +582,21 @@ it back, which is exactly the Microdrive bug.
   complete the round trip. Remove the ROM hold and four asserts fail — checked, so this is a
   guard rather than a decoration. Also pins where the patch does **not** reach: the +2A
   (different `$7FFD` decode) and Pentagon (its own disk interface).
+- **DISCiPLE** — no round trip either, and the ROM itself says why: its RST 10 vector is
+  `OUT ($7B)` then `JP $0550`, and $0550 is only code once $7B has swapped the 8K RAM down
+  to $0000. GDOS proper is the system file off the disk, running from that RAM at the ROM's
+  own addresses, and there is no such disk in the tree. What the ROM does on its own is
+  pinned instead: it takes $0000-$3FFF **one instruction into the reset** (the fetch after
+  the Spectrum ROM's `DI`, stepped by hand because it happens exactly once ever), sets
+  itself up, pages itself back out, and leaves 48K BASIC running — which is where the +D
+  once failed. Then the window: the RAM takes writes where the ROM half drops
+  them, `OUT ($7B)` brings it down to $0000 and `IN ($7B)` puts it back, bit 3 of port $1F
+  picks which 8K of a 16K image is live (found by the byte the two banks differ at, not by
+  address), and `OUT ($BB)` must take the whole window away or the next RST lands in GDOS.
+  Flipping one comparison in the overlay fails 13 of the 21 asserts — checked. Also pinned
+  as a **decision**: with the interface on, port $1F is the DISCiPLE's joystick whether or
+  not the Kempston is switched on, because the hardware drives it — and the alternative is
+  a floating $1F, which is what Venom and Academy read as a fire press.
 - **+D** — no round trip is possible: its 8K ROM is a bootstrap that needs G+DOS in a `+SYS`
   file, and there is no such disk in the tree. What is pinned down instead is the failure it
   actually had — the machine soft-resetting before the ROM could say anything. Booting a

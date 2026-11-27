@@ -13,7 +13,7 @@ carries only the map. Each section here is the detail for one file.
 
 ## `core/memory.js`
 
-Memory banking for 128K/+2/+2A/Pentagon/Pentagon 1024/Scorpion, +D ROM/RAM paging, IF1 ROM paging, Opus ROM/RAM/register paging
+Memory banking for 128K/+2/+2A/Pentagon/Pentagon 1024/Scorpion, +D ROM/RAM paging, IF1 ROM paging, Opus ROM/RAM/register paging, and the TKMEM-128 II external RAM board on a 48K (`setTkmem`/`writeTkmem`)
 
 ## `core/ula.js`
 

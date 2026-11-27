@@ -3215,7 +3215,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
             html += `<div class="editor-block-row snapshot-row${selected}" data-block-idx="${i}">` +
                 `<span class="editor-block-info">` +
                 `<span class="dim">${i + 1}:</span>` +
-                `<span class="file-name">${e.name}</span>` +
+                `<span class="file-name">${escapeHtml(e.name)}</span>` +
                 `<span class="file-flag"></span>` +
                 `<span class="file-ext">${typeLabel}</span>` +
                 `<span class="file-addr">${fmtAddrPair(e.addr)}</span>` +
@@ -3653,7 +3653,7 @@ export function initExplorer({ DSKLoader, Disassembler, SZXLoader, RZXLoader, Zi
     // Inline edit form for a tape header (shared by the combined and raw views).
     function editorTapeHeaderEditHtml(panel, block, i) {
         let h = `<div class="editor-inline-edit" data-edit-idx="${i}">`;
-        h += `<input type="text" maxlength="10" value="${block.name}" data-field="name" placeholder="Name" class="editor-input">`;
+        h += `<input type="text" maxlength="10" value="${escapeHtml(block.name)}" data-field="name" placeholder="Name" class="editor-input">`;
         h += `<select data-field="type" class="editor-input">`;
         h += `<option value="0"${block.headerType === 0 ? ' selected' : ''}>Program</option>`;
         h += `<option value="1"${block.headerType === 1 ? ' selected' : ''}>Num array</option>`;

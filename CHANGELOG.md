@@ -2,6 +2,40 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v26.11.09
+
+- **Fixed: enabling sound threw on every frame, stopping the machine**.
+- **Fixed: oversized text in some UI controls**.
+
+## v26.11.08
+
+- **TurboSound FM: two YM2203s, with their FM halves**, contributed by Marginal2k.
+- **The Kempston Disc Interface and K-DOS disks**, contributed by Marginal2k.
+- **General Sound: a 12 MHz Z80 card with four DACs**, contributed by Marginal2k.
+- **The SAA1099 sound card: six channels, in stereo**, contributed by Marginal2k.
+- **Timex TC2068 tapes flash load, out of its EXROM**, contributed by Marginal2k.
+
+## v26.11.07
+
+- **Fixed: a crafted tape or archive could run script in the Explorer (XSS)**, reported in PR #27.
+- **The Didaktik Gama and its 80KB**, contributed by Marginal2k.
+- **Microdigital TK-90X and TK-95, with their 228-T ULA**, contributed by Marginal2k.
+- **TurboSound and the Covox, Specdrum and Soundrive DACs**, contributed by Marginal2k.
+- **Timex TC2048 and TC2068: SCLD display modes and DOCK cartridges**, contributed by Marginal2k.
+- **Spectrum 128 MIDI out, with a built-in synth**, contributed by Marginal2k.
+
+## v26.11.06
+
+- **The 48K Beta Disk and its clones**, contributed by Marginal2k.
+- **TKMEM-128 II: paged 128K or 512K RAM for a 48K**, contributed by Marginal2k.
+- **The Timex FDD 3000 disk station, a second Z80 of its own**, contributed by Marginal2k.
+
+## v26.11.05
+
+- **The MGT DISCiPLE interface**, contributed by Marginal2k.
+- **The HC-2000 and its HC IF1 disk interface**, contributed by Marginal2k.
+- **Fixed: the Help dialog printed mojibake for arrows, dashes and icons.**
+
 ## v26.11.04
 
 - **Save → Media… saves any inserted disk or cartridge**, with a dot on the ones a program has written to. Replaces the DSK and TRD/SCL entries.

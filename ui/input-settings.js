@@ -714,9 +714,6 @@ export function initInputSettings({
         updateDiscipleStatus();
     }
 
-    // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
-    // ROM could only be reached through the Load ROMs... dialog, which is not
-    // where anyone looks when the status line says "(trdos.rom required)".
     // ---- Beta 48 (core/beta48.js): type, its own ROM, the magic button ----
 
     function updateBeta48Status() {
@@ -792,6 +789,9 @@ export function initInputSettings({
         if (getSpectrum().triggerBetaMagic()) showMessage('Beta Disk magic button (NMI)');
     });
 
+    // TR-DOS ROM load button. The Beta Disk had no row of its own before; its
+    // ROM could only be reached through the Load ROMs... dialog, which is not
+    // where anyone looks when the status line says "(trdos.rom required)".
     document.getElementById('btnLoadTrdosRom').addEventListener('click', () => {
         document.getElementById('romTrdosRomInput').click();
     });
@@ -1094,11 +1094,14 @@ export function initInputSettings({
         if (!sp || !chkFdd3000) return;
         chkFdd3000.checked = !!sp.fdd3000Enabled;
         selFdd3000Rom.value = sp.fdd3000RomFile;
-        const machineOk = !sp._isHc() &&
-            (sp.profile.pagingModel === 'none' || sp.profile.pagingModel === '128k');
+        // The HC-2000 needs no term of its own here: its paging model is
+        // neither 'none' nor '128k'. See Spectrum._fdd3000Ok.
+        const isHc = sp.profile.pagingModel === 'hc2000';
+        const machineOk = sp.profile.pagingModel === 'none' ||
+            sp.profile.pagingModel === '128k';
         chkFdd3000.disabled = !machineOk;
         if (!machineOk) {
-            fdd3000Status.textContent = sp._isHc() ? 'not available on HC-2000 — only its HC IF1'
+            fdd3000Status.textContent = isHc ? 'not available on HC-2000 — only its HC IF1'
                 : '48K, 128K or +2 only';
         } else if (!romData[sp.fdd3000RomFile] || !romData['fdd3000-boot.rom']) {
             fdd3000Status.textContent = `(${!romData[sp.fdd3000RomFile] ? sp.fdd3000RomFile : 'fdd3000-boot.rom'} required)`;
@@ -1159,13 +1162,18 @@ export function initInputSettings({
         if (!sp || !chkKempdisc) return;
         chkKempdisc.checked = !!sp.kempdiscEnabled;
         selKempdiscRom.value = sp.kempdiscRomFile;
-        const a6 = ['kdos21-128a6.rom', 'kdos21-a6j.rom', 'kdos21-a1j.rom'].includes(sp.kempdiscRomFile);
-        const machineOk = !sp._isHc() && !sp.profile.timex &&
-            (sp.profile.pagingModel === 'none' || (a6 && sp.profile.pagingModel === '128k'));
+        // The three ROMs built for a 128K: the two A6-board ones and A1J,
+        // which locks the machine to 48K. Kept in step with KEMPDISC_128_ROMS.
+        const on128 = ['kdos21-128a6.rom', 'kdos21-a6j.rom', 'kdos21-a1j.rom'].includes(sp.kempdiscRomFile);
+        // The HC-2000 needs no term of its own here either: its paging model is
+        // neither 'none' nor '128k'. See Spectrum._kempdiscOk.
+        const isHc = sp.profile.pagingModel === 'hc2000';
+        const machineOk = !sp.profile.timex &&
+            (sp.profile.pagingModel === 'none' || (on128 && sp.profile.pagingModel === '128k'));
         chkKempdisc.disabled = !machineOk && !sp.kempdiscEnabled;
         if (!machineOk) {
-            kempdiscStatus.textContent = sp._isHc() ? 'not available on HC-2000 — only its HC IF1'
-                : a6 ? '48K, 128K or +2 only' : '48K only — on a 128K: ROM 2.1 128A6 / A6J / A1J';
+            kempdiscStatus.textContent = isHc ? 'not available on HC-2000 — only its HC IF1'
+                : on128 ? '48K, 128K or +2 only' : '48K only — on a 128K: ROM 2.1 128A6 / A6J / A1J';
         } else if (!romData[sp.kempdiscRomFile]) {
             kempdiscStatus.textContent = `(${sp.kempdiscRomFile} required)`;
         } else {
@@ -1277,7 +1285,8 @@ export function initInputSettings({
             spectrum.updateBetaDiskPagingFlag();
         }
         updateHcIf1Status();
-        updatePlusDStatus(); updateIF1Status(); updateOpusStatus(); updateDidaktikStatus();
+        updatePlusDStatus(); updateDiscipleStatus(); updateIF1Status();
+        updateOpusStatus(); updateDidaktikStatus();
         updateMouseStatus();
         notifyDiskSystems();
         // The interface is on the bus or not from power-on: restart an HC-2000
@@ -1365,6 +1374,61 @@ export function initInputSettings({
         }
         spectrum.updateBetaDiskPagingFlag();
         updateDidaktikStatus();
+    }
+
+    // ---- TKMEM-128 II (Memory.setTkmem): 128K/512K external RAM on a 48K ----
+
+    const selTkmem = document.getElementById('selTkmem');
+    const selTkmemDecode = document.getElementById('selTkmemDecode');
+    const tkmemStatus = document.getElementById('tkmemStatus');
+
+    // The board plugs into a 48K or the TK-90X/TK-95 it was also made for, and
+    // nothing else — setTkmem() refuses any other machine — so the row goes dead
+    // and says so rather than staying live and doing nothing. The chosen size is
+    // kept either way, so a trip through a 128K and back fits the board again.
+    // (The #21 layer makes this same change in ui/display-settings.js, where the
+    // contributor keeps the TKMEM controls; this tree put them in the Input tab
+    // during the #16 port, so the edit lands here instead.)
+    const TKMEM_MACHINES = ['48k', 'tk90x', 'tk95'];
+    function updateTkmemStatus() {
+        const sp = getSpectrum();
+        if (!selTkmem) return;
+        const fits = TKMEM_MACHINES.includes(sp.machineType);
+        selTkmem.value = String(sp.tkmemSize || 0);
+        selTkmem.disabled = !fits;
+        if (selTkmemDecode) {
+            selTkmemDecode.value = sp.tkmemDecode;
+            // The decode only decides which OUT reaches a board that is fitted
+            selTkmemDecode.disabled = !fits || !sp.tkmemSize;
+        }
+        tkmemStatus.textContent = fits ? '' : '48K or TK-90X/TK-95 only — not this machine';
+    }
+
+    if (selTkmemDecode) {
+        selTkmemDecode.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemDecode = selTkmemDecode.value === 'gal' ? 'gal' : 'a14';
+            storageSet('zxm8_tkmemDecode', spectrum.tkmemDecode);
+            showMessage('TKMEM-128 II decode: ' +
+                selTkmemDecode.options[selTkmemDecode.selectedIndex].text);
+        });
+    }
+
+    if (selTkmem) {
+        selTkmem.addEventListener('change', () => {
+            const spectrum = getSpectrum();
+            spectrum.tkmemSize = parseInt(selTkmem.value, 10) || 0;
+            storageSet('zxm8_tkmem', String(spectrum.tkmemSize));
+            spectrum.memory.setTkmem(spectrum.tkmemSize);
+            // The 48K's own $8000-$FFFF is switched off under the board, so the
+            // machine is a different one from the moment it is fitted.
+            spectrum.reset();
+            updateTkmemStatus();
+            showMessage(spectrum.tkmemSize
+                ? 'TKMEM-128 II: ' + spectrum.tkmemSize + 'K (machine reset)'
+                : 'TKMEM-128 II off (machine reset)');
+        });
+        updateTkmemStatus();
     }
 
     // The ROM auto-load from roms/ is async and usually lands after this panel
@@ -1455,6 +1519,7 @@ export function initInputSettings({
         updateOpusStatus,
         updateDidaktikStatus,
         updateHcIf1Status,
+        updateTkmemStatus,
         updateAllIfaceRomNames,
         updateMouseStatus,
         gamepadAPI,

@@ -127,6 +127,71 @@
             s = chip([[0x00, 0x0F], [0x01, 0x0F], [0x08, 0x00], [0x09, 0x00], [0x10, 0x44], [0x14, 0x03], [0x18, 0x80], [0x1C, 0x01]]);
             assert(s.env[0].l === 0 && s.amp[0] === 15, 'envelope acts on channel 2 only: channels 0/1 still sound');
             assert(edges(s, 100000) > 0, '(and they are heard)');
+
+            // ---- the second of each pair, and three behaviours the docs claim ----
+            // Everything above exercises envelope generator 0 on channel 2. The
+            // chip has TWO, and the data sheet's "channels 2 and 5" is only half
+            // pinned by that: env 1 is a separate object, clocked by tone 4, and
+            // nothing reached it.
+            s = chip([[0x05, 0xFF], [0x0C, 0x00], [0x12, 0x33], [0x14, 0x20], [0x19, 0x84], [0x1C, 0x01]]);
+            assert(s.env[1].l === 15 && s.env[0].l === 16,
+                'envelope 1 is its own generator: single decay starts at 15, envelope 0 still off',
+                s.env[1].l + ' / ' + s.env[0].l);
+            s.run(400000);                                  // tone 4 half period 16352 x 16 steps
+            assert(s.env[1].l === 0, 'and it is stepped by tone 4, down to 0', s.env[1].l);
+            // Its reach is channel 5 alone: MAME gives an envelope all three
+            // channels of its group, where the data sheet and SAASound give it one
+            s = chip([[0x03, 0x0F], [0x04, 0x0F], [0x05, 0x0F], [0x0B, 0x00], [0x0C, 0x00], [0x0D, 0x00],
+                [0x11, 0x40], [0x12, 0x44], [0x14, 0x38], [0x19, 0x80], [0x1C, 0x01]]);
+            assert(s.env[1].l === 0 && s.amp[6] === 15 && edges(s, 100000) > 0,
+                'envelope 1 acts on channel 5 only: channels 3/4 are still heard');
+
+            // Register $1C bit 1: the generators are held AND reset. Nothing
+            // asserted it -- the "six channels reach 1.0" case writes it only to
+            // get a known starting level, which passes whether it holds or not.
+            s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x04], [0x14, 0x01], [0x1C, 0x01]]);
+            const moving = edges(s, 100000);
+            s.writeAddress(0x1C); s.writeData(0x03);
+            const held = edges(s, 100000);
+            assert(moving > 0 && held === 0 && s.level[0] === 0,
+                'reg $1C bit 1 holds the generators and resets them to 0',
+                moving + ' edges -> ' + held);
+
+            // Tone and noise on the same channel: the tone at HALF amplitude
+            // while the noise is high, silent while it is low. Documented, and
+            // every level here is exact, so a wrong divisor cannot hide.
+            s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x04], [0x14, 0x01], [0x15, 0x01], [0x16, 0x00], [0x1C, 0x01]]);
+            const fullLvl = 15 / 90, halfLvl = fullLvl / 2;
+            let nFull = 0, nHalf = 0, nOther = 0;
+            for (let i = 0; i < 60000; i++) {
+                const v = s.run(1)[0];
+                if (v < 1e-9) continue;
+                if (Math.abs(v - fullLvl) < 1e-9) nFull++;
+                else if (Math.abs(v - halfLvl) < 1e-9) nHalf++;
+                else nOther++;
+            }
+            assert(nFull > 1000 && nHalf > 1000 && nOther === 0,
+                'tone and noise together: the tone at half amplitude while the noise is high',
+                `full ${nFull} half ${nHalf} other ${nOther}`);
+
+            // Noise parameter 3 is not a fourth rate: the generator is clocked by
+            // tone 0 (or tone 3 for the second one). Octave 7 makes that 1022
+            // clocks against the divider's 256, so the rates differ by four.
+            s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x07], [0x15, 0x01], [0x16, 0x03], [0x1C, 0x01]]);
+            const byTone = edges(s, 800000, 8);
+            s = chip([[0x00, 0x0F], [0x08, 0x00], [0x10, 0x07], [0x15, 0x01], [0x16, 0x00], [0x1C, 0x01]]);
+            const byDivider = edges(s, 800000, 8);
+            assert(byTone > 100 && byDivider / byTone > 3 && byDivider / byTone < 5,
+                'noise parameter 3: clocked by tone 0 (1022 clocks), not by its own 256',
+                `${byTone} vs ${byDivider} edges`);
+
+            // Envelope bit 4: 3-bit resolution, so the level is masked even
+            s = chip([[0x02, 0x0F], [0x14, 0x04], [0x1C, 0x01], [0x18, 0xB4]]);   // ext clock, 3-bit, single decay
+            const levels = [s.env[0].l];
+            for (let i = 0; i < 15; i++) { s.writeAddress(0x00); levels.push(s.env[0].l); }
+            assert(levels[0] === 14 && levels.every(v => v % 2 === 0),
+                'envelope bit 4: 3-bit resolution, every level even (15 reads as 14)',
+                levels.join(','));
         }
 
         async function runTests() {
@@ -159,6 +224,16 @@
             await zx.runFrames(1);
             assert(sp.saa.freq[0] === 0 && !sp.saa.enabled, 'reset: the chip is silent');
             sp.setSaa(was);
+            // A 48K has no AY, and the card is not the AY's: nothing in the
+            // decode may be standing on one being there
+            await zx.ready({ machine: '48k' });
+            const sp48 = frame.contentWindow.spectrum;
+            zx.pause();
+            sp48.setSaa(true);
+            sp48.portWrite(0x01FF, 0x0A); sp48.portWrite(0x00FF, 0x6C);
+            await zx.runFrames(1);
+            assert(sp48.saa.freq[2] === 0x6C, 'a 48K with no AY takes the card all the same', sp48.saa.freq[2]);
+            sp48.setSaa(was);
             await zx.ready({ machine: 'tc2048' });
             const sp2 = frame.contentWindow.spectrum;
             zx.pause();

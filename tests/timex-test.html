@@ -24,7 +24,8 @@
         // Timex TC2048 (core/timex.js, after FUSE scld.c / tc2048.c): the SCLD
         // display modes, ports $FF/$F4, no floating bus, the INT mask; with the
         // ROMs and disks present, the FDD 3000 Monitor Emulator in hi-res.
-        import { timexHiresAttr, timexLoresCell, timexHiresWord, pixelRowOffset, parseDck } from '../core/timex.js';
+        import { timexHiresAttr, timexLoresCell, timexHiresWord, pixelRowOffset, parseDck,
+                 DCK_BANK_EXROM } from '../core/timex.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -40,7 +41,7 @@
         setInterval(() => { if (!finished) render(); }, 300);
         function render() {
             if (!finished) {
-                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
                 return;
             }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
@@ -88,6 +89,23 @@
             section('SCLD modes (core/timex.js)');
             assert(timexHiresAttr(0x00) === 0x78 && timexHiresAttr(0x38) === 0x47 && timexHiresAttr(0x08) === 0x71,
                 'hi-res colours: DEC bits 3-5 -> ink/paper (FUSE hires_convert_dec)');
+            // Every row, against the display-file layout written out longhand
+            // rather than reused from the implementation -- else it would only
+            // prove the code equals itself. A file is three thirds of 64 rows;
+            // inside a third the pixel row within the cell picks bits 0-2 of
+            // the HIGH byte and the character row bits 5-7 of the low one.
+            // Every assert below uses a row in the FIRST third, where the
+            // third's own term is zero, so without this the term that places
+            // two thirds of the screen is not exercised at all.
+            let rowsOk = 0, firstBad = -1;
+            for (let yy = 0; yy < 192; yy++) {
+                const third = (yy / 64) | 0, charRow = ((yy % 64) / 8) | 0, pixel = yy % 8;
+                const want = third * 0x800 + pixel * 0x100 + charRow * 0x20;
+                if (pixelRowOffset(yy) === want) rowsOk++;
+                else if (firstBad < 0) firstBad = yy;
+            }
+            assert(rowsOk === 192, 'the display-file offset of all 192 rows, thirds included',
+                firstBad < 0 ? '' : `row ${firstBad} gave $${pixelRowOffset(firstBad).toString(16)}`);
             const ram = new Uint8Array(49152);
             const y = 9, col = 5, p = pixelRowOffset(y) + col, a = 0x1800 + ((y >> 3) << 5) + col;
             ram[p] = 0x11; ram[p + 0x2000] = 0x22; ram[a] = 0x33; ram[a + 0x2000] = 0x44;
@@ -106,6 +124,16 @@
             assert(blocks.length === 1 && blocks[0].bank === 0 && blocks[0].chunks[1].data[0] === 0xAB &&
                 !blocks[0].chunks[1].writable && blocks[0].chunks[6].data[0] === 0xCD && blocks[0].chunks[6].writable &&
                 blocks[0].chunks[0] === null, 'DCK: DOCK block, a ROM chunk and a RAM chunk');
+            // Access type 1 is "empty RAM": a whole 8KB chunk that consumes no
+            // file bytes at all. The fixture above has only ROM (2) and RAM (3)
+            // chunks, so nothing checked the size or the contents of this one.
+            const dckEmpty = new Uint8Array(9);
+            dckEmpty.set([DCK_BANK_EXROM, 1, 0, 0, 0, 0, 0, 0, 0]);
+            const empty = parseDck(dckEmpty);
+            assert(empty.length === 1 && empty[0].bank === DCK_BANK_EXROM &&
+                empty[0].chunks[0].data.length === 0x2000 && empty[0].chunks[0].writable &&
+                empty[0].chunks[0].data.every(v => v === 0) && empty[0].chunks[1] === null,
+                'DCK: an EXROM block whose empty-RAM chunk is 8KB of zeros and takes no file bytes');
         }
 
         async function runMachineTests() {
@@ -125,14 +153,38 @@
             assert(sp.canvasScaleX === 2 && sp.canvas.width === 2 * sp.ula.getDimensions().width,
                 'canvas twice as wide for 512-pixel hi-res');
             // Ports: DEC and HSR read back; $F4/$FF are not the ULA (border stays)
+            // Put a known colour on the border through the real ULA port first.
+            // Reading it off the boot screen instead let this pass by accident:
+            // a $F4 write of 0 would leave border 0, which is what the ROM had
+            // left there, so dropping the full-$FE decode changed nothing the
+            // assert could see. 5 is not what any write below would produce.
+            sp.portWrite(0x00FE, 0x05);
             const border = sp.ula.borderColor;
             sp.portWrite(0x00F4, 0x00);
             sp.portWrite(0x00FF, 0x02);
             assert(sp.portRead(0x00FF) === 0x02 && sp.portRead(0x00F4) === 0x00, 'DEC ($FF) and HSR ($F4) read back');
-            assert(sp.ula.borderColor === border, 'port $F4/$FF writes leave the border alone (full $FE decode)');
+            assert(border === 5 && sp.ula.borderColor === 5,
+                'port $F4/$FF writes leave the border alone (full $FE decode)',
+                'border ' + sp.ula.borderColor);
+            // $F4 and $FF are claimed by the SCLD branch before the ULA one is
+            // reached, so the assert above does not actually exercise the full
+            // $FE decode -- what does is ANY OTHER even port. On a 48K an
+            // `OUT ($F0),2` is a border write, because only bit 0 is decoded;
+            // on an SCLD machine it must do nothing at all.
+            sp.portWrite(0x00F0, 0x02);
+            assert(sp.ula.borderColor === 5,
+                'an unrelated even port ($F0) is not a border write either',
+                'border ' + sp.ula.borderColor);
             sp.portWrite(0x00FF, 0x00);
-            // No floating bus: an unused port reads $FF
+            // No floating bus: an unused port reads $FF. Pinned as a DECISION
+            // as well as a read, because the read alone cannot tell: turning
+            // hasFloatingBus on still answers $FF whenever the beam is outside
+            // the display area, which is where a paused suite usually sits, so
+            // the assert below passes either way. Seeing the difference needs a
+            // read at a chosen display T-state, which this does not do.
             assert(sp.portRead(0x00FD) === 0xFF, 'no floating bus (unattached port reads $FF)');
+            assert(sp.profile.hasFloatingBus === false,
+                'and the TC2048 profile says so (FUSE: spectrum_unattached_port_none)');
             // HSR: a chunk switched to the (empty) DOCK reads $FF
             const was = sp.memory.read(0x8000);
             sp.memory.write(0x8000, 0x5A);
@@ -160,10 +212,20 @@
             assert(rows === 192 && hb[0] === ink && hb[4] === paper && hb[8] === paper && hb[12] === ink,
                 'mode 6: 512 pixels a row, $F0 then $0F per cell');
             assert(sp.ula.borderColor === 6, 'border shows the hi-res paper colour', 'border ' + sp.ula.borderColor);
+            // The whole point of the guard on the $FE write is what happens
+            // NEXT: while hi-res is on the border must keep showing the hi-res
+            // paper, and the colour $FE asked for has to be remembered for when
+            // hi-res ends. Nothing wrote $FE while hi-res was on, so neither
+            // half was exercised -- dropping the guard failed nothing.
+            sp.portWrite(0x00FE, 0x03);
+            assert(sp.ula.borderColor === 6,
+                'a $FE write while hi-res is on does not disturb the border',
+                'border ' + sp.ula.borderColor);
             sp.portWrite(0x00FF, 0x00);
             await zx.runFrames(2);
-            assert(sp.ula.hiresRows.every(v => v === 0) && sp.ula.borderColor === border,
-                'back to mode 0: no hi-res rows, port $FE border again');
+            assert(sp.ula.hiresRows.every(v => v === 0) && sp.ula.borderColor === 3,
+                'back to mode 0: no hi-res rows, and the border the $FE write asked for',
+                'border ' + sp.ula.borderColor);
 
             section('FDD 3000 on the TC2048: Monitor Emulator in hi-res, CP/M');
             if (!(await ok('../roms/fdd3stavi.rom')) || !(await ok('../roms/fdd3000-boot.rom')) ||
@@ -261,6 +323,16 @@
             assert(sp.ay.registers[2] === 0x5A && sp.portRead(0x00F6) === 0x5A, 'AY on $F5 (select) / $F6 (data)');
             sp.portWrite(0x00F5, 14);
             assert(sp.portRead(0x00F5) === 0xFF, 'AY register 14 (joystick) reads $FF via $F5');
+            // The TC2068's AY is on $F5/$F6 INSTEAD of the 128K's $FFFD/$BFFD,
+            // and nothing checked the "instead". With both answering, a program
+            // written for a 128K would drive this machine's sound chip.
+            sp.portWrite(0x00F5, 8); sp.portWrite(0x00F6, 0x0A);   // R8 = $0A via the Timex ports
+            sp.portWrite(0xFFFD, 8); sp.portWrite(0xBFFD, 0x05);   // the 128K pair must be ignored
+            sp.portWrite(0x00F5, 8);
+            assert(sp.ay.registers[8] === 0x0A,
+                'the 128K AY ports ($FFFD/$BFFD) do not reach the TC2068 AY',
+                'R8 = $' + sp.ay.registers[8].toString(16));
+            sp.portWrite(0x00F5, 14);     // R14 back: the joystick reads below need it selected
             // Timex joysticks: numpad/gamepad as Timex 1/2, read via R14 with A8/A9
             const prevType = sp.joystickType;
             sp.setJoystickType('timex1');

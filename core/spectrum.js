@@ -69,15 +69,15 @@ import {
     revolutionTStates, byteTStates
 } from './loaders.js';
 import { UPD765, DSKImage, DSKLoader } from './fdc.js';
+import { prepareBeta48Rom } from './beta48.js';
 import { HcIf1 } from './hc-if1.js';
 import { HcDiskLoader } from './loaders/disk-hc.js';
-import { prepareBeta48Rom } from './beta48.js';
 import { Fdd3000 } from './fdd3000.js';
 import { KempstonDisc, KEMPDISC_A6_ROMS, KEMPDISC_128_ROMS } from './kempdisc.js';
 import { KdosLoader } from './loaders/disk-kdos.js';
 import { parseDck, DCK_BANK_DOCK, DCK_BANK_EXROM } from './timex.js';
 import { UartDecoder, MidiAssembler, MIDI_BAUD, MIDI_TX_BIT } from './midi.js';
-import { SAA1099 } from './saa1099.js';
+import { SAA1099, SAA_CLOCK } from './saa1099.js';
 import { GeneralSound } from './gs.js';
 import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
@@ -1629,13 +1629,13 @@ import { Disassembler } from './disasm.js';
                 this.gs.t = 0; this.gs._ended = false; this.gs.changes = [];
             }
             this._gamaMode = 0x9B; this._gamaPortC = 0;     // Didaktik Gama 8255: all inputs
+            if (this.dacLevels) this.dacLevels.fill(0x80);
             // MIDI out: a note held at reset would never get its Note Off, so
             // All Notes Off on every channel, and the UART starts afresh
             if (this.midiEnabled) {
                 if (this.onMidiMessage) for (let ch = 0; ch < 16; ch++) this.onMidiMessage([0xB0 | ch, 123, 0]);
                 this.setMidiOut(true);
             }
-            if (this.dacLevels) this.dacLevels.fill(0x80);
             if (this.fdc) this.fdc.reset();
             // HC IF1: select latch and motors drop; its static RAM keeps its contents
             if (this.hcIf1) this.hcIf1.reset(false);
@@ -1692,7 +1692,7 @@ import { Disassembler } from './disasm.js';
             // - Reset WD1772 FDC
             // - Page in +D ROM so boot code at $0000 runs and initializes workspace
             if (this.plusDEnabled && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc() && !this._fdd3000PagingEnabled) {
+                this.profile.pagingModel !== '+2a' && !this.hcIf1 && !this._fdd3000PagingEnabled) {
                 this.plusD.reset();
                 this.memory.plusDActive = true;
             }
@@ -1709,7 +1709,7 @@ import { Disassembler } from './disasm.js';
             // through one of its hook addresses, the first of which is normally
             // the $0048 KEY-INT on the first maskable interrupt.
             if (this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc()) {
+                this.profile.pagingModel !== '+2a' && !this.hcIf1) {
                 this.opus.reset();
                 this.memory.opusActive = false;
             }
@@ -1724,42 +1724,41 @@ import { Disassembler } from './disasm.js';
             }
         }
 
-        // ========== Port I/O ==========
-
         /**
-         * HC-2000: no add-on disk interface at all — either nothing or its own
-         * HC IF1. Beta 128/48, +D, DISCiPLE, Opus, Didaktik and the Sinclair
-         * IF1 are all off on it.
+         * Timex FDD 3000: switched on, both ROMs loaded, and a 48K or a
+         * 128K/+2 (FUSE offers it on those two families). There is no HC-2000
+         * test here because its paging model is neither 'none' nor '128k' --
+         * and this tree states that rule as `!this.hcIf1`, the collision being
+         * with the HC IF1 on the bus rather than the badge on the case.
          */
-        _isHc() {
-            return this.profile.pagingModel === 'hc2000';
+        _fdd3000Ok() {
+            return this.fdd3000Enabled && this.fdd3000.hasRoms() &&
+                (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
         }
 
         /**
-         * Timex FDD 3000: enabled, both ROMs loaded, a 48K or 128K/+2 (FUSE
-         * offers it on the 48K and 128K families), not the HC-2000.
+         * Kempston Disc: switched on, its ROM loaded, and a machine the board
+         * fits. The stock board is a 48K one -- its ROM-in port is `$xxFD`,
+         * which is the 128K's own `$7FFD` -- so only the three ROMs built for
+         * a 128K (128A6, A6J, and A1J, which locks the machine to 48K) are
+         * offered there. No HC-2000 test, for the same reason `_fdd3000Ok`
+         * has none: its paging model is neither 'none' nor '128k'.
          */
-        /** Kempston Disc: on, its ROM loaded; 48K, or 128K / +2 with a 128K ROM (128A6, A6J, A1J) */
         _kempdiscOk() {
             this.kempdisc.setA6(KEMPDISC_A6_ROMS.includes(this.kempdiscRomFile));
-            return this.kempdiscEnabled && this.kempdisc.hasRom() && !this._isHc() && !this.profile.timex &&
+            return this.kempdiscEnabled && this.kempdisc.hasRom() && !this.profile.timex &&
                 (this.profile.pagingModel === 'none' ||
                  (KEMPDISC_128_ROMS.includes(this.kempdiscRomFile) && this.profile.pagingModel === '128k'));
-        }
-
-        _fdd3000Ok() {
-            return this.fdd3000Enabled && this.fdd3000.hasRoms() && !this._isHc() &&
-                (this.profile.pagingModel === 'none' || this.profile.pagingModel === '128k');
         }
 
         /**
          * FDD 3000 boot, the way it is done by hand: "FDD3000 reset" (the
          * station loads its system from drive A — run at once, see
          * Fdd3000.boot), then reset the Spectrum. A CP/M disk in A needs the
-         * Spectrum to run the Monitor Emulator terminal first: if a Monitor disk
-         * is in B-D it goes into A for the first boot, and once Monitor is up and
-         * waiting, CP/M goes back into A and only the station is reset.
-         * Returns { ok, msg }.
+         * Spectrum to run the Monitor Emulator terminal first: if a Monitor
+         * disk is in B-D it goes into A for the first boot, and once Monitor
+         * is up and waiting, CP/M goes back into A and only the station is
+         * reset. Returns { ok, msg }.
          */
         fdd3000AutoBoot() {
             if (!this._fdd3000PagingEnabled) return { ok: false, msg: 'Timex FDD 3000 is off' };
@@ -1786,9 +1785,9 @@ import { Disassembler } from './disasm.js';
             this._fdd3000AutoBootOff = this.addFrameListener(() => {
                 frames++;
                 // Monitor is up when the Spectrum runs it ($8000 on) and the
-                // station waits; give up after ~30 s of emulated time
-                // (the interface's start-up code also runs up there, from a
-                // copy at $7FFD-$8022, while the machine boots)
+                // station waits; give up after ~30 s of emulated time (the
+                // interface's start-up code also runs up there, from a copy at
+                // $7FFD-$8022, while the machine boots)
                 inMonitor = this.cpu.pc >= 0x8040 ? inMonitor + 1 : 0;
                 const ready = frames > 50 && inMonitor > 10 && this.fdd3000.isIdle();
                 if (ready || frames > 1500) {
@@ -1800,6 +1799,45 @@ import { Disassembler } from './disasm.js';
             return { ok: true, msg: `FDD 3000: CP/M — Monitor Emulator from drive ${String.fromCharCode(65 + mi)} first` };
         }
 
+        /**
+         * 128 MIDI out on or off. The bit time follows the machine's clock:
+         * 3.5469 MHz on the 128K family, 3.5 MHz elsewhere.
+         */
+        setMidiOut(on) {
+            this.midiEnabled = !!on;
+            if (this._midiFlushOff) { this._midiFlushOff(); this._midiFlushOff = null; }
+            if (!this.midiEnabled) return;
+            const clock = is128kCompat(this.machineType) ? 3546900 : 3500000;
+            this._midiAsm = new MidiAssembler((msg) => {
+                if (this.onMidiMessage) this.onMidiMessage(msg);
+            });
+            this._midiUart = new UartDecoder(clock / MIDI_BAUD, (b) => {
+                this.midiBytes++;
+                this.midiLog.push(b);
+                if (this.midiLog.length > 64) this.midiLog.shift();
+                this._midiAsm.push(b);
+            });
+            // start from the line as it is now, not from idle: a low line is
+            // not a start bit until it has been high
+            const r = this.ay.registers;
+            this._midiLevel = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            this._midiUart.level = this._midiLevel;
+            // a byte whose last bits change nothing is finished by the clock
+            this._midiFlushOff = this.addFrameListener(() => this._midiUart.flush(this.absTStates()));
+        }
+
+        // The MIDI OUT line: R14 bit 2 while R7 makes port A an output, else idle
+        _midiLine() {
+            const r = this.ay.registers;
+            const level = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
+            if (level !== this._midiLevel) {
+                this._midiLevel = level;
+                this._midiUart.edge(this.absTStates(), level);
+            }
+        }
+
+        // ========== Port I/O ==========
+
         // The Beta Disk answers its ports only while the TR-DOS ROM is paged in
         // (the DOS signal), as on a real Beta 128 / Pentagon. Answering them
         // whenever a disk was in the drive took port $1F from the Kempston
@@ -1808,7 +1846,7 @@ import { Disassembler } from './disasm.js';
         // TR-DOS code in RAM reaches the ports through the ROM ($3D2F), which
         // pages it in.
         _isBetaDiskActive() {
-            return this.betaDiskEnabled && !this.memory.beta48On && !this._isHc() &&
+            return this.betaDiskEnabled && !this.memory.beta48On && !this.hcIf1 &&
                 this.memory.trdosActive &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
         }
@@ -1880,12 +1918,13 @@ import { Disassembler } from './disasm.js';
             // Per FUSE: +D ports always respond when hardware is available
             // (not gated by memory paging state or disk presence)
             return this.plusDEnabled && this.plusD && this.memory.hasPlusDRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc() && !this._fdd3000PagingEnabled;
+                this.profile.pagingModel !== '+2a' && !this.hcIf1 &&
+                !this._fdd3000PagingEnabled;      // both claim port $EF
         }
 
         _isIF1Active() {
             return this.if1Enabled && this.microdrive && this.microdrive.hasAnyCartridge() &&
-                this.memory.hasIF1Rom() && !this._isHc();
+                this.memory.hasIF1Rom() && !this.hcIf1;
         }
 
         /**
@@ -1952,43 +1991,6 @@ import { Disassembler } from './disasm.js';
             this.memory.gamaBank = (cLowOut && (this._gamaPortC & 1)) ? 1 : 0;
         }
 
-        /**
-         * 128 MIDI out on or off. The bit time follows the machine's clock:
-         * 3.5469 MHz on the 128K family, 3.5 MHz elsewhere.
-         */
-        setMidiOut(on) {
-            this.midiEnabled = !!on;
-            if (this._midiFlushOff) { this._midiFlushOff(); this._midiFlushOff = null; }
-            if (!this.midiEnabled) return;
-            const clock = is128kCompat(this.machineType) ? 3546900 : 3500000;
-            this._midiAsm = new MidiAssembler((msg) => {
-                if (this.onMidiMessage) this.onMidiMessage(msg);
-            });
-            this._midiUart = new UartDecoder(clock / MIDI_BAUD, (b) => {
-                this.midiBytes++;
-                this.midiLog.push(b);
-                if (this.midiLog.length > 64) this.midiLog.shift();
-                this._midiAsm.push(b);
-            });
-            // start from the line as it is now, not from idle: a low line is
-            // not a start bit until it has been high
-            const r = this.ay.registers;
-            this._midiLevel = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
-            this._midiUart.level = this._midiLevel;
-            // a byte whose last bits change nothing is finished by the clock
-            this._midiFlushOff = this.addFrameListener(() => this._midiUart.flush(this._absTStates()));
-        }
-
-        // The MIDI OUT line: R14 bit 2 while R7 makes port A an output, else idle
-        _midiLine() {
-            const r = this.ay.registers;
-            const level = (r[7] & 0x40) ? ((r[14] & MIDI_TX_BIT) ? 1 : 0) : 1;
-            if (level !== this._midiLevel) {
-                this._midiLevel = level;
-                this._midiUart.edge(this._absTStates(), level);
-            }
-        }
-
         /** The AY that $FFFD/$BFFD talk to: the second one when TurboSound selects it */
         _curAy() {
             return (this.turboSound && this._aySel) ? this.ay2 : this.ay;
@@ -2016,13 +2018,23 @@ import { Disassembler } from './disasm.js';
             this._fmAddr = [0, 0];
             this._fmStatusRead = false;
             this._fmOn = true;
-            this._fmT = this._absTStates();
+            this._fmT = this.absTStates();
             this.fmChanges = [];
         }
 
-        // Bring both chips' timers / busy up to now (T-states = TS-FM master clocks)
+        /**
+         * Bring both chips' timers and busy flags up to now (a T-state is a
+         * TS-FM master clock).
+         *
+         * The clock must be `absTStates()`, the monotonic one, for the reason
+         * the disk byte rate and the MIDI bit rate need it: timer A's shortest
+         * period is 72 T-states, and a clock rebuilt from `totalFrames` sits a
+         * whole frame off by an amount that CHANGES, so it steps forward by a
+         * frame at some point and the catch-up loop below would run a thousand
+         * periods in one go. See the note on `absTStates`.
+         */
         _fmSync() {
-            const now = this._absTStates();
+            const now = this.absTStates();
             const d = now - this._fmT;
             this._fmT = now;
             if (d > 0) { this.fmTimers[0].advance(d); this.fmTimers[1].advance(d); }
@@ -2045,6 +2057,15 @@ import { Disassembler } from './disasm.js';
 
         /** The Spectrum's clock, for the General Sound's time base */
         _gsSpecClock() { return is128kCompat(this.machineType) ? 3546900 : 3500000; }
+
+        /**
+         * The YM2203s' master clock. TS-FM is documented as clocking them at
+         * 3.5 MHz, which is what the ZX-Bus carries on a Pentagon -- its usual
+         * home -- so this is the bus clock, the same one the GS is given. The
+         * timers already count in T-states; taking the sample rate from the
+         * same clock keeps the board on one time base instead of two.
+         */
+        _fmMasterClock() { return this._gsSpecClock(); }
 
         /** General Sound on or off, its RAM (128 / 512 / 2048 KB) and ROM data */
         setGs(on, ramKB = this.gs.ramKB, romData = null) {
@@ -2117,11 +2138,6 @@ import { Disassembler } from './disasm.js';
             return this.hcIf1 !== null && this.memory.hasHcIf1Rom();
         }
 
-        // A T-state count that keeps growing across frames (the 555 monostable)
-        _absTStates() {
-            return (this.totalFrames || 0) * this.timing.tstatesPerFrame + this.cpu.tStates;
-        }
-
         /**
          * Which machines may have a Didaktik at all.
          *
@@ -2154,13 +2170,13 @@ import { Disassembler } from './disasm.js';
 
         _isDiscipleActive() {
             return this.discipleEnabled && this.memory.hasDiscipleRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc();
+                this.profile.pagingModel !== '+2a' && !this.hcIf1;
         }
 
         triggerDiscipleNmi() {
             if (!this._isDiscipleActive()) return;
             this.memory.discipleActive = true;
-            this.cpu.nmi();
+            this.cpu.tStates += this.cpu.nmi();
         }
 
         // DISCiPLE port read: FDC $1B/$5B/$9B/$DB, $BB pages in, $7B sets the
@@ -2208,7 +2224,7 @@ import { Disassembler } from './disasm.js';
             this.memory.plusDActive = true;
             // An NMI acknowledge is 11 T-states and the CPU does not charge them
             // itself — `nmi()` returns them the way `interrupt()` does, and every
-            // one of these five call sites used to drop the number on the floor,
+            // one of these six call sites used to drop the number on the floor,
             // so an NMI cost the machine nothing at all. Invisible at the scale
             // of a frame; not invisible against a DRQ due 112 T out.
             this.cpu.tStates += this.cpu.nmi();
@@ -2382,7 +2398,7 @@ import { Disassembler } from './disasm.js';
                 } else if (this.hcIf1 && HcIf1.isFdcPort(lowByte)) {
                     // HC IF1 floppy controller ($85/$87) and select latch ($05/$07).
                     // Ahead of Kempston, which would otherwise answer $05/$07.
-                    result = this.hcIf1.read(lowByte, this._absTStates());
+                    result = this.hcIf1.read(lowByte, this.diskClockNow());
                 } else if (this.fdc && this.profile.hasFDC && (port & DECODE_PLUS2A_MASK2) === DECODE_FDC_MSR) {
                     // µPD765 FDC Main Status Register (0x2FFD) — ZX Spectrum +3
                     result = this.fdc.readMSR();
@@ -2398,7 +2414,7 @@ import { Disassembler } from './disasm.js';
                     } else {
                         result = this.microdrive.readStatus();
                     }
-                } else if (this.discipleEnabled && this._isDiscipleActive() &&
+                } else if (this._isDiscipleActive() &&
                            (this._discipleIn = this._discipleRead(lowByte)) !== undefined) {
                     result = this._discipleIn;      // DISCiPLE ports
                 } else if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
@@ -2609,9 +2625,7 @@ import { Disassembler } from './disasm.js';
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
-            // SAA1099: $01FF address, $00FF data (not on a Timex, whose $FF is
-            // the SCLD's, nor while TR-DOS is paged in, as in Xpeccy)
-            // General Sound: $BB command, $B3 data to the GS
+            // General Sound: $BB command, $B3 data to the GS, $33 control
             if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
                 this.gs.syncTo(this.cpu.tStates);
                 this.gs.portOut(lowByte, val);
@@ -2619,6 +2633,8 @@ import { Disassembler } from './disasm.js';
                 this.gs.syncTo(this.cpu.tStates);
                 this.gs.control(val);           // $33: bit 7 card reset, bit 6 NMI
             }
+            // SAA1099: $01FF address, $00FF data (not on a Timex, whose $FF is
+            // the SCLD's, nor while TR-DOS is paged in, as in Xpeccy)
             if (this.saaOn && lowByte === 0xFF && !this.profile.timex && !this.memory.trdosActive) {
                 this.saaChanges.push({ tStates: this.cpu.tStates, addr: (port >> 8) & 1, value: val });
             }
@@ -2765,7 +2781,7 @@ import { Disassembler } from './disasm.js';
                 }
                 return;
             }
-            if (this.discipleEnabled && this._isDiscipleActive() && this._discipleWrite(lowByte, val)) {
+            if (this._isDiscipleActive() && this._discipleWrite(lowByte, val)) {
                 return;
             }
             if (plusDActive && (lowByte === PORT_PLUSD_CMD || lowByte === PORT_PLUSD_TRACK ||
@@ -2855,9 +2871,10 @@ import { Disassembler } from './disasm.js';
                 if (this.fdc) this.fdc.setMotor(!!(val & 0x08));
             }
 
-            // HC IF1 floppy controller and select latch
+            // HC IF1 floppy controller and select latch. 3.5 MHz is the HC's
+            // clock; the 555 monostable does not care about the odd part per mille.
             if (this.hcIf1 && HcIf1.isFdcPort(lowByte)) {
-                this.hcIf1.write(lowByte, val, this._absTStates(), 3500000);
+                this.hcIf1.write(lowByte, val, this.diskClockNow(), 3500000);
             }
 
             // µPD765 FDC data register write (port 0x3FFD)
@@ -2925,7 +2942,16 @@ import { Disassembler } from './disasm.js';
                     ay.writeRegister(val);
                     this.ayChanges.push({ tStates: this.cpu.tStates, reg, value: ay.registers[reg],
                         chip: ay === this.ay2 ? 1 : 0 });
-                    // 128 MIDI out: R14 bit 2 (or R7 turning port A round)
+                    // 128 MIDI out: R14 bit 2 (or R7 turning port A round), and the
+                    // FIRST chip only -- MIDI OUT is the 128K's own AY port A.
+                    // `ay === this.ay` is belt-and-braces rather than the thing
+                    // that makes it so: _midiLine() reads this.ay whatever is
+                    // selected, and acts only on a CHANGE of level, so a write to
+                    // a TurboSound second chip could not move the line even
+                    // without this test (measured -- removing it alters nothing
+                    // either suite can see). It stays because it says what is
+                    // meant and saves the call; what would really break MIDI is
+                    // _midiLine() reading _curAy(), which midi-test pins.
                     if (this.midiEnabled && ay === this.ay && (reg === 14 || reg === 7)) this._midiLine();
                 }
             }
@@ -3589,7 +3615,7 @@ import { Disassembler } from './disasm.js';
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
                       gs: this.gsOn && this.gs.rom ? this.gs : null,
-                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges, fmClock: this._fmMasterClock() });
             }
 
             // Advance AY logging frame counter
@@ -4033,7 +4059,7 @@ import { Disassembler } from './disasm.js';
                       dacChanges: this.dacChanges, dacStart: this._dacStart, dacOn: this.dacType !== 'none',
                       saa: this.saaOn ? this.saa : null, saaChanges: this.saaChanges,
                       gs: this.gsOn && this.gs.rom ? this.gs : null,
-                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges });
+                      fm: this.tsfm && this.turboSound ? this.fm : null, fmOn: this._fmOn, fmChanges: this.fmChanges, fmClock: this._fmMasterClock() });
             }
 
             // Advance AY logging frame counter
@@ -5077,9 +5103,26 @@ import { Disassembler } from './disasm.js';
          * transfer and `opus-test` caught as a retry storm. The base is advanced
          * in lockstep with the subtraction instead, at all four places it
          * happens, so this only ever moves forward.
+         *
+         * **Not only the disk wants it.** The 128's MIDI out times its bits off
+         * this too, and at 31250 baud a bit is ~113 T-states — the same order as
+         * the 112 above. Measured here, the `totalFrames` pair does not go
+         * backwards at the two points MIDI reads the clock (a frame listener and
+         * an AY port write); it sits a whole frame above this one. But the offset
+         * is not stable — a frame in one run, two in another — so it steps
+         * FORWARD by a frame at some point, and a byte that is mid-flight when it
+         * does has one bit stretched by 70908 T: the UART then samples the rest
+         * at whatever the line happens to hold and every edge after arrives in
+         * the past. `absTStates()` is the neutral name for anything that needs
+         * this clock; `diskClockNow()` is kept for the callers that read better
+         * that way.
          */
-        diskClockNow() {
+        absTStates() {
             return this._diskClockBase + this.cpu.tStates;
+        }
+
+        diskClockNow() {
+            return this.absTStates();
         }
 
         /**
@@ -5165,10 +5208,10 @@ import { Disassembler } from './disasm.js';
         updateBetaDiskPagingFlag() {
             // Beta 48: an add-on Beta Disk (not the built-in one of a Pentagon or
             // Scorpion) set to a Beta 48 variant, with its ROM loaded. Never on an
-            // HC-2000 (no Beta of either kind there, see _isHc).
+            // HC-2000: a Beta 48 claims any port xxxxx111, which takes $07 and $87
+            // from the HC IF1, and the two were never fitted together anyway.
             const beta48 = !this.profile.betaDiskDefault && this.betaDiskEnabled &&
-                !this._isHc() &&
-                this.betaVariant !== '128' && this.memory.hasBeta48Rom();
+                this.betaVariant !== '128' && this.memory.hasBeta48Rom() && !this.hcIf1;
             if (beta48 !== this.memory.beta48On) {
                 this.memory.beta48On = beta48;
                 this.memory.beta48Latch = false;
@@ -5180,7 +5223,9 @@ import { Disassembler } from './disasm.js';
             // stays on offer wherever trdos.rom is loaded and the interface is
             // on -- including on a +3, which then shows both +3DOS and TR-DOS.
             // The other four overlay $0000-$3FFF, which +2A/+3 paging owns.
-            this._betaDiskPagingEnabled = !beta48 && !this._isHc() &&
+            // Not beside an HC IF1 either: it pages in at the same $0008 and
+            // TR-DOS overlays $0000-$3FFF. Only the Beta 48 was guarded before.
+            this._betaDiskPagingEnabled = !beta48 && !this.hcIf1 &&
                 this.memory.hasTrdosRom() &&
                 (this.profile.betaDiskDefault || this.betaDiskEnabled);
             // Interface 1 ROM paging flag: IF1 enabled + ROM loaded + compatible machine
@@ -5189,17 +5234,20 @@ import { Disassembler } from './disasm.js';
                 this.if1Enabled &&
                 this.memory.hasIF1Rom() &&
                 this.profile.pagingModel !== '+2a' &&
-                !this._isHc());
+                !this.hcIf1);
             // +D ROM auto-paging flag: +D enabled + ROM loaded + compatible machine
             // +D is NOT compatible with +2A/+3 (they have their own extended paging)
-            // HC-2000: nothing, or its HC IF1 — no add-on interfaces (see _isHc)
-            const hc = this._isHc();
+            // An HC-2000 with its HC IF1 pages that in at the same $0008, so
+            // none of the add-on interfaces go with it (without it, they do).
+            const hc = !!this.hcIf1;
             const kd = this._kempdiscOk();
             if (kd !== this._kempdiscEnabledFlag) {
                 this._kempdiscEnabledFlag = kd;
                 this.kempdisc.reset();
                 this.memory.kempdiscActive = false;
             }
+            // The FDD 3000's TI-397 board overlays $0000-$3FFF and shares port
+            // $EF with the +D, so the two are mutually exclusive
             const fdd3 = this._fdd3000Ok();
             if (fdd3 !== this._fdd3000PagingEnabled) {
                 this._fdd3000PagingEnabled = fdd3;
@@ -5210,6 +5258,7 @@ import { Disassembler } from './disasm.js';
                 this.plusDEnabled &&
                 this.memory.hasPlusDRom() &&
                 this.profile.pagingModel !== '+2a' && !hc;
+            // _isDiscipleActive() already excludes the HC IF1, for the same $0008
             this._disciplePagingEnabled = this._isDiscipleActive();
             // Opus Discovery paging flag: same machine restriction as the +D and
             // IF1 — it overlays $0000-$3FFF, which +2A/+3 paging already owns.
@@ -5295,6 +5344,21 @@ import { Disassembler } from './disasm.js';
         }
 
         /**
+         * DISCiPLE ROM auto-paging. Same mechanism as the +D below at different
+         * addresses: page IN on an opcode fetch at $0001 (the byte after the
+         * Spectrum ROM's DI, which is how GDOS gets control at reset), $0008,
+         * $0066 and $028E; page OUT by writing port $BB. It has no $003A entry.
+         */
+        updateDisciplePaging() {
+            if (!this._disciplePagingEnabled) return;
+            if (this.memory.discipleActive) return;  // Already paged in
+            const pc = this.cpu.pc;
+            if (pc === 0x0001 || pc === 0x0008 || pc === 0x0066 || pc === 0x028E) {
+                this.memory.discipleActive = true;
+            }
+        }
+
+        /**
          * +D (DISCiPLE/+D) ROM auto-paging (per FUSE z80_ops.c)
          * Page IN: opcode fetch at $0008 (RST 8), $003A (KEY-NEXT),
          *          $0066 (NMI), $028E (KEY-SCAN)
@@ -5302,14 +5366,6 @@ import { Disassembler } from './disasm.js';
          * Note: FUSE does NOT restrict page-in to BASIC ROM only — the +D
          * intercepts these addresses regardless of which ROM bank is selected.
          */
-        updateDisciplePaging() {
-            if (this.memory.discipleActive) return;
-            const pc = this.cpu.pc;
-            if (pc === 0x0001 || pc === 0x0008 || pc === 0x0066 || pc === 0x028E) {
-                this.memory.discipleActive = true;
-            }
-        }
-
         updatePlusDPaging() {
             if (!this._plusDPagingEnabled) return;
             if (this.memory.plusDActive) return;  // Already paged in
@@ -8429,7 +8485,7 @@ import { Disassembler } from './disasm.js';
             this.opus.loadDisk(diskData, 'opd', driveIndex);
 
             const opusAvailable = this.opusEnabled && this.memory.hasOpusRom() &&
-                this.profile.pagingModel !== '+2a' && !this._isHc();
+                this.profile.pagingModel !== '+2a' && !this.hcIf1;
 
             return {
                 diskInserted: true,
@@ -10030,6 +10086,9 @@ import { Disassembler } from './disasm.js';
 
             // Recreate FDC for new machine type
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
+            // ...and on the HC-2000 the FDC is the HC IF1's, not the +3's. This
+            // runs on every machine change, so it also drops the HC IF1 when
+            // leaving the HC-2000 and builds it when arriving.
             this._setupHcIf1();
 
             // Restore ROM data
@@ -11320,13 +11379,18 @@ import { Disassembler } from './disasm.js';
 
             // AY steps per sample
             const ayStepsPerSample = this.ay ? cyclesPerSample * this.ayPerCpu : 0;
-            const saaClocksPerSample = 8000000 / this.sampleRate;
+            const saaClocksPerSample = SAA_CLOCK / this.sampleRate;
             // TurboSound FM: two YM2203 FM halves, one FM sample per 72 master
-            // clocks (3.5 MHz); their writes played in at their T-state
+            // clocks (12 operator slots x the /6 prescale); their writes played
+            // in at their T-state, as the AY's and the SAA's are
             const fm = extra && extra.fm, fmOn = !!(extra && extra.fmOn);
             const fmChanges = (extra && extra.fmChanges) || [];
             let fmIdx = 0, fmAcc = this._fmAcc || 0, fmLast = this._fmLast || 0;
-            const fmPerSample = 3500000 / 72 / this.sampleRate;
+            // The master clock follows the machine, so it is handed over in `extra`
+            // like every other value here: `this` is the AUDIO object, which has no
+            // _fmMasterClock -- reaching for one threw on every frame, with or
+            // without TS-FM, and only where audio is really running (so no suite saw it).
+            const fmPerSample = fm ? (extra.fmClock || 3546900) / 72 / this.sampleRate : 0;
             const FM_GAIN = 0.7 * 0.333 / 16382;     // a TL 0 carrier = one AY channel at 15
 
             // Audio levels

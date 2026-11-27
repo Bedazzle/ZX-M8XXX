@@ -338,6 +338,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
                 // ROM not found, continue
             }
         }
+
         // TC2068: no tc2068.rom? Join FUSE's tc2068-0.rom (16KB HOME) and
         // tc2068-1.rom (8KB EXROM)
         if (!romData['tc2068.rom']) {

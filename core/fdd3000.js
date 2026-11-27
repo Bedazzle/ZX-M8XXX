@@ -1,9 +1,13 @@
 /**
  * ZX-M8XXX - Timex FDD 3000 disk station
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
- * Port of the FUSE patch fdd3000e 0.2.1.1 (Sławomir Szczyrba; sourceforge.net/
- * projects/fdd3000e): fdd3000.c, ti397.c, fdd3boot.h and the z80_ops.c hooks.
+ * Derived from the FUSE patch fdd3000e 0.2.1.1 by Sławomir Szczyrba
+ * (sourceforge.net/projects/fdd3000e): fdd3000.c, ti397.c, fdd3boot.h and the
+ * z80_ops.c hooks. Those files are LGPL-2.0-or-later ("version 2 of the
+ * License, or (at your option) any later version"), Copyright (C) 2018 by
+ * Sławomir Szczyrba, and the copyright stays with him; the "or later"
+ * clause is what lets the work be carried into this GPL-3.0-or-later one.
  *
  * The FDD 3000 is a computer of its own: a Z80 with 64KB of RAM, a 2KB boot
  * ROM and a WD1770/1772, talking to the Spectrum through two byte latches.

@@ -1,10 +1,16 @@
 /**
  * ZX-M8XXX - Beta 48: Technology Research "Beta Disk plus" (TR-DOS 4.x) and its clones
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * The 48K-era Beta Disk Interface, as described by MAME's
  * src/devices/bus/spectrum/beta.cpp (N. Barnes, D. Haywood, MetalliC), which
- * follows the BDI schematics:
+ * follows the BDI schematics. What is taken from it is the hardware
+ * behaviour it documents, not its code. That file is BSD-3-Clause
+ * (https://opensource.org/license/bsd-3-clause) and its copyright stays
+ * with its authors — a licence GPL-3.0-or-later admits with the notice
+ * kept, so the credit stands however closely the two are read.
+ *
+ * The behaviour:
  *
  *   - its ROM answers ANY memory access (opcode, data) to $3C00-$3CFF, for
  *     that access only — there is no Beta 128-style "stays paged" state;

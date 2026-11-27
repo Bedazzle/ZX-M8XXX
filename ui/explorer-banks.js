@@ -188,7 +188,7 @@ export function initExplorerBanks(ctx) {
                 html += `<div class="explorer-block-header">${i + 1}: ${block.typeName}</div>`;
                 html += `<div class="explorer-block-meta">Flag: ${fmtByte(block.flag)} | Length: ${block.length - 2} bytes | Checksum: ${fmtByte(storedChecksum)} <span class="${checksumClass}">${checksumMark}</span></div>`;
                 html += `<div class="explorer-block-details">`;
-                html += `<span class="label">Filename:</span> <span class="filename">"${block.name}"</span><br>`;
+                html += `<span class="label">Filename:</span> <span class="filename">"${escapeHtml(block.name)}"</span><br>`;
                 const tapPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.dataLength);
                 const tapPreviewIcon = !tapPreviewable ? '' : block.dataLength === SCREEN_ATTR_SIZE ? ' 🔤' : ' 🖼️';
                 html += `<span class="label">Data length:</span> ${block.dataLength} bytes<span class="explorer-tap-preview">${tapPreviewIcon}</span>`;
@@ -241,7 +241,7 @@ export function initExplorerBanks(ctx) {
             // Indent a data block that follows a header (a header has a fileName) to show pairing
             const tzxAfterHeader = block.dataBlock && i > 0 && ctx.explorerBlocks[i - 1].fileName != null;
             html += `<div class="${blockClass}" data-block-index="${i}"${tzxAfterHeader ? ' style="margin-left:18px"' : ''}>`;
-            html += `<div class="explorer-block-header">${i + 1}: ${block.name}</div>`;
+            html += `<div class="explorer-block-header">${i + 1}: ${escapeHtml(block.name)}</div>`;
             let displayLen = block.dataLength !== undefined ? block.dataLength : block.length;
             if ((block.id === 0x10 || block.id === 0x11) && (block.headerType || block.dataBlock)) displayLen -= 2;
             html += `<div class="explorer-block-meta">Offset: ${block.offset} | ID: $${hex8(block.id)} | Length: ${displayLen} bytes</div>`;
@@ -254,7 +254,7 @@ export function initExplorerBanks(ctx) {
                         const tzxPreviewable = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.fileLength);
                         const tzxPreviewIcon = !tzxPreviewable ? '' : block.fileLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
-                        details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
+                        details += `<span class="label">Filename:</span> <span class="filename">"${escapeHtml(block.fileName)}"</span><br>`;
                         details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
                         details += `<span class="label">File length:</span> ${block.fileLength} bytes<span class="explorer-tap-preview">${tzxPreviewIcon}</span>`;
                         if (block.autostart !== undefined && block.autostart !== null) {
@@ -276,7 +276,7 @@ export function initExplorerBanks(ctx) {
                         const tzxPreviewable11 = [SCREEN_SIZE, SCREEN_BITMAP_SIZE, 4096, 2048, SCREEN_ATTR_SIZE, 9216, 11136, 12288, 18432].includes(block.fileLength);
                         const tzxPreviewIcon11 = !tzxPreviewable11 ? '' : block.fileLength === SCREEN_ATTR_SIZE ? ' \uD83D\uDD24' : ' \uD83D\uDDBC\uFE0F';
                         details = `<span class="label">Type:</span> ${block.headerType}<br>`;
-                        details += `<span class="label">Filename:</span> <span class="filename">"${block.fileName}"</span><br>`;
+                        details += `<span class="label">Filename:</span> <span class="filename">"${escapeHtml(block.fileName)}"</span><br>`;
                         details += `<span class="label">Data length:</span> ${block.dataLength - 2} bytes<br>`;
                         details += `<span class="label">File length:</span> ${block.fileLength} bytes<span class="explorer-tap-preview">${tzxPreviewIcon11}</span>`;
                         if (block.autostart !== undefined && block.autostart !== null) {
@@ -330,25 +330,25 @@ export function initExplorerBanks(ctx) {
                     break;
 
                 case 0x30: // Text description
-                    details = `<span class="label">Text:</span> "${block.text}"`;
+                    details = `<span class="label">Text:</span> "${escapeHtml(block.text)}"`;
                     break;
 
                 case 0x31: // Message
                     details = `<span class="label">Display time:</span> ${block.displayTime}s<br>`;
-                    details += `<span class="label">Message:</span> "${block.message}"`;
+                    details += `<span class="label">Message:</span> "${escapeHtml(block.message)}"`;
                     break;
 
                 case 0x32: // Archive info
                     if (block.archiveInfo && block.archiveInfo.length > 0) {
                         for (const info of block.archiveInfo) {
-                            details += `<span class="label">${info.type}:</span> "${info.value}"<br>`;
+                            details += `<span class="label">${info.type}:</span> "${escapeHtml(info.value)}"<br>`;
                         }
                         details = details.slice(0, -4); // Remove trailing <br>
                     }
                     break;
 
                 case 0x35: // Custom info
-                    details = `<span class="label">Custom ID:</span> "${block.customId}"`;
+                    details = `<span class="label">Custom ID:</span> "${escapeHtml(block.customId)}"`;
                     break;
             }
 
@@ -461,7 +461,7 @@ export function initExplorerBanks(ctx) {
 
     function explorerRenderSZXInfo() {
         if (ctx.explorerParsed.error) {
-            return `<div class="explorer-info-section"><div class="explorer-info-header">SZX File</div><table class="explorer-info-table"><tr><th>Error</th><td>${ctx.explorerParsed.error}</td></tr></table></div>`;
+            return `<div class="explorer-info-section"><div class="explorer-info-header">SZX File</div><table class="explorer-info-table"><tr><th>Error</th><td>${escapeHtml(ctx.explorerParsed.error)}</td></tr></table></div>`;
         }
 
         const r = ctx.explorerParsed.registers;
@@ -510,7 +510,7 @@ export function initExplorerBanks(ctx) {
 
     function explorerRenderRZXInfo() {
         if (ctx.explorerParsed.error) {
-            return `<div class="explorer-info-section"><div class="explorer-info-header">RZX File</div><table class="explorer-info-table"><tr><th>Error</th><td>${ctx.explorerParsed.error}</td></tr></table></div>`;
+            return `<div class="explorer-info-section"><div class="explorer-info-header">RZX File</div><table class="explorer-info-table"><tr><th>Error</th><td>${escapeHtml(ctx.explorerParsed.error)}</td></tr></table></div>`;
         }
 
         const stats = ctx.explorerParsed.stats;
@@ -1049,7 +1049,7 @@ export function initExplorerBanks(ctx) {
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
-                <span class="explorer-file-name">${file.name}</span>
+                <span class="explorer-file-name">${escapeHtml(file.name)}</span>
                 <span class="explorer-file-size"${sizeAttr}>${explorerFileSizeText(file)}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
@@ -1086,7 +1086,7 @@ export function initExplorerBanks(ctx) {
         if (ctx.explorerParsed.error) {
             return `<div class="explorer-info-section">
                 <div class="explorer-info-header">SCL File</div>
-                <div style="color:#e74c3c">Error: ${ctx.explorerParsed.error}</div>
+                <div style="color:#e74c3c">Error: ${escapeHtml(ctx.explorerParsed.error)}</div>
             </div>`;
         }
 
@@ -1122,7 +1122,7 @@ export function initExplorerBanks(ctx) {
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
-                <span class="explorer-file-name">${file.name}</span>
+                <span class="explorer-file-name">${escapeHtml(file.name)}</span>
                 <span class="explorer-file-size"${sizeAttr}>${explorerFileSizeText(file)}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
@@ -1172,7 +1172,7 @@ export function initExplorerBanks(ctx) {
             html += `<div class="explorer-file-entry" data-index="${i}">
                 <span class="explorer-file-num">${i + 1}</span>
                 <span class="explorer-file-type" title="${typeName}">${typeName}</span>
-                <span class="explorer-file-name">${file.name}</span>
+                <span class="explorer-file-name">${escapeHtml(file.name)}</span>
                 <span class="explorer-file-size">${file.length}</span>
                 <span class="explorer-file-addr">${detail}</span>
                 <span class="explorer-file-preview">${previewIcon}</span>
@@ -1343,7 +1343,7 @@ export function initExplorerBanks(ctx) {
         if (ctx.explorerParsed.error) {
             return `<div class="explorer-info-section">
                 <div class="explorer-info-header">Hobeta File</div>
-                <div style="color:#e74c3c">Error: ${ctx.explorerParsed.error}</div>
+                <div style="color:#e74c3c">Error: ${escapeHtml(ctx.explorerParsed.error)}</div>
             </div>`;
         }
 

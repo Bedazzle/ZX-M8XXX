@@ -1,14 +1,27 @@
-// saa1099.js — Philips SAA1099 (6 tone channels, 2 noise, 2 envelope
-// generators, stereo), as on the ZXM-SoundCard / Xpeccy / Unreal Speccy
-// "SAA1099" option: port $01FF (A8 = 1) selects a register, $00FF (A8 = 0)
-// writes it. 8 MHz clock.
-//
-// The generators follow MAME's saa1099.cpp (BSD-3-Clause, Juergen
-// Buchmueller, Manuel Abadia): tone half period (511 - f) << (8 - octave)
-// clocks, noise an 18-bit LFSR (x^18 + x^11 + x) clocked at 31.25/15.6/7.8 kHz
-// or by tone 0/3, the envelope stepped on every half period of tone 1/4 (or by
-// an address write when external). After the data sheet (and SAASound), the
-// envelopes act on channels 2 and 5 only.
+/**
+ * ZX-M8XXX - Philips SAA1099 (ZXM-SoundCard)
+ * @license GPL-3.0-or-later
+ *
+ * Six tone channels, two noise and two envelope generators, in stereo, on an
+ * 8 MHz clock. As on the ZXM-SoundCard, which is how Xpeccy and Unreal Speccy
+ * offer it: port $01FF (A8 = 1) selects a register, $00FF (A8 = 0) writes it.
+ *
+ * The generators follow MAME's sound/saa1099.cpp (Juergen Buchmueller, Manuel
+ * Abadia). What is taken from it is the behaviour it documents, not its code.
+ * That file is BSD-3-Clause (https://opensource.org/license/bsd-3-clause) and
+ * its copyright stays with its authors — a licence GPL-3.0-or-later admits
+ * with the notice kept, so the credit stands however closely the two are read.
+ *
+ *   tone    half period (511 - f) << (8 - octave) clocks
+ *   noise   an 18-bit LFSR (x^18 + x^11 + x), clocked at 31.25/15.6/7.8 kHz
+ *           or by tone 0/3
+ *   env     stepped on every half period of tone 1/4, or by an address write
+ *           when external
+ *
+ * One place the sources disagree, and the data sheet decides it: the envelope
+ * generators act on channels 2 and 5 ALONE, as the sheet and SAASound have it,
+ * where MAME applies each to all three channels of its group.
+ */
 
 export const SAA_CLOCK = 8000000;
 

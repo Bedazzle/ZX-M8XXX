@@ -292,7 +292,13 @@ const MACHINE_PROFILES = {
             betaDiskDefault: true,
             hasFDC: false,
             z80HwMode: 9,
-            szxMachineId: 8,
+            // ZXSTMID_SCORPION. Was 8, which is ZXSTMID_TC2048 -- so every
+            // Scorpion .szx this app wrote named itself a TC2048 to any other
+            // emulator, and adding the Timex machines turned that into a
+            // collision that getMachineBySzxId resolved by declaration order.
+            // The zx-state ids run 0-16: 16K=0, PENTAGON128=7, TC2048=8,
+            // TC2068=9, SCORPION=10, SE=11, 128KE=16.
+            szxMachineId: 10,
             is128kCompat: false,
             trdosInRom: true,
             trdosRomBank: 3,
@@ -367,7 +373,7 @@ const MACHINE_PROFILES = {
             betaDiskDefault: false,
             hasFDC: false,
             z80HwMode: 14,             // .z80 v3: TC2048
-            szxMachineId: 9,           // ZXSTMID_TC2048
+            szxMachineId: 8,           // ZXSTMID_TC2048 (9 is the TC2068)
             is128kCompat: false,
         },
         // Timex Computer 2068 (Timex Portugal, PAL): the TC2048's SCLD plus a
@@ -411,14 +417,21 @@ const MACHINE_PROFILES = {
             betaDiskDefault: false,
             hasFDC: false,
             z80HwMode: 15,             // .z80 v3: TC2068
-            szxMachineId: 101,         // private id (no SZX support for it here yet)
+            // ZXSTMID_TC2068. The PR left this -1 "no SZX here yet", but the
+            // header byte is written into a Uint8Array, so -1 becomes 255: a
+            // snapshot claiming a machine that does not exist, silently. The
+            // SCLD and DOCK state still is not saved (see docs/peripherals.md),
+            // so a Timex .szx is an incomplete snapshot -- but an incomplete
+            // one that names its machine correctly beats a corrupt header.
+            szxMachineId: 9,
             is128kCompat: false,
         },
-        // Microdigital TK-90X (Microdigital, Brazil): a 48K clone. TK 90X Color Computer, 1985; MAME tk90x.rom (CRC 3e785f6f), v1/v3 ROMs load as well. Its ULA (the
-        // Microdigital one) runs 228 T-states a line, 312 lines at 50 Hz -- 71136
-        // a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por linea"), with
-        // the 48K contention pattern; the 48K ROM entry points are kept, so tape
-        // traps work. 60 Hz (262 lines) is not offered yet.
+        // Microdigital TK-90X (Microdigital, Brazil): a 48K clone. TK 90X Color
+        // Computer, 1985; MAME tk90x.rom (CRC 3e785f6f), v1/v3 ROMs load as well.
+        // Its ULA (the Microdigital one) runs 228 T-states a line, 312 lines at
+        // 50 Hz -- 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por
+        // linea"), with the 48K contention pattern; the 48K ROM entry points are
+        // kept, so tape traps work. 60 Hz (262 lines) is not offered yet.
         'tk90x': {
             id: 'tk90x',
             name: 'Microdigital TK-90X',
@@ -446,15 +459,22 @@ const MACHINE_PROFILES = {
             ayClockHz: 1773400,
             betaDiskDefault: false,
             hasFDC: false,
+            // 0 = a plain 48K in .z80 v3. The format has no TK-90X, and these
+            // ARE 48K clones, so a .z80 saved here loads elsewhere as a 48K --
+            // right but for the line timing. Note that is the opposite trade to
+            // szxMachineId below, deliberately: .z80 keeps interoperability and
+            // loses the machine, SZX keeps the machine and loses interoperability.
             z80HwMode: 0,
-            szxMachineId: 102,         // private id, not in the SZX spec
+            // A PRIVATE id: the zx-state format stops at 16 and has no TK-90X,
+            // and no libspectrum id for one could be found either. So this
+            // round-trips the machine inside this app and reads as unknown
+            // anywhere else, which is the honest version of "not supported".
+            szxMachineId: 102,
             is128kCompat: false,
         },
-        // Microdigital TK-95 (Microdigital, Brazil): a 48K clone. TK 95 Color Computer, 1986, Spectrum+ style keyboard; MAME tk95.rom (CRC 17368e07). Its ULA (the
-        // Microdigital one) runs 228 T-states a line, 312 lines at 50 Hz -- 71136
-        // a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por linea"), with
-        // the 48K contention pattern; the 48K ROM entry points are kept, so tape
-        // traps work. 60 Hz (262 lines) is not offered yet.
+        // Microdigital TK-95 (Microdigital, Brazil): a 48K clone. TK 95 Color
+        // Computer, 1986, Spectrum+ style keyboard; MAME tk95.rom (CRC 17368e07).
+        // Same Microdigital ULA at 228 T-states a line; see the TK-90X above.
         'tk95': {
             id: 'tk95',
             name: 'Microdigital TK-95',
@@ -482,8 +502,8 @@ const MACHINE_PROFILES = {
             ayClockHz: 1773400,
             betaDiskDefault: false,
             hasFDC: false,
-            z80HwMode: 0,
-            szxMachineId: 103,         // private id, not in the SZX spec
+            z80HwMode: 0,              // as the TK-90X
+            szxMachineId: 103,         // private id, as the TK-90X
             is128kCompat: false,
         },
         // Didaktik Gama (Didaktik Skalica, 1987-89): a 48K clone with 80KB RAM --
@@ -519,8 +539,8 @@ const MACHINE_PROFILES = {
             ayClockHz: 1773400,
             betaDiskDefault: false,
             hasFDC: false,
-            z80HwMode: 0,
-            szxMachineId: 104,         // private id, not in the SZX spec
+            z80HwMode: 0,              // a plain 48K in .z80 v3; as the TK machines
+            szxMachineId: 104,         // private id, as the TK machines
             is128kCompat: false,
         },
     };

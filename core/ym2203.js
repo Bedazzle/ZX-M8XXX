@@ -1,16 +1,65 @@
 /**
  * ZX-M8XXX - YM2203 (OPN) FM part, for TurboSound FM
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
- * A port of the OPN parts of ymfm (ymfm_fm.ipp / ymfm_opn.cpp; BSD-3-Clause,
- * Copyright (c) 2021, Aaron Giles), the core Unreal-NG plays TS-FM with:
- * 3 channels x 4 operators, 8 algorithms, feedback, the OPN envelope with
- * SSG-EG, detune / multiple, the channel 3 special (multi-frequency) mode and
- * CSM, timers A / B and the busy flag. No LFO (the YM2203 has none).
+ * The FM half of a YM2203: 3 channels of 4 operators, 8 algorithms, feedback,
+ * the OPN envelope with SSG-EG, detune / multiple, channel 3's
+ * multi-frequency mode, CSM, and timers A / B with the busy flag. There is no
+ * LFO -- the YM2203 has none. The SSG half of the chip is the emulator's own
+ * AY (core/ay.js); this class is only the FM half.
  *
- * The SSG half of the chip is the emulator's AY (core/ay.js); this class is
- * only the FM half. One FM sample (an engine clock) every 72 master clocks
- * (12 operators x prescale 6); TS-FM runs the chip at 3.5 MHz, so 48.6 kHz.
+ * TurboSound FM clocks the chip from the ZX-Bus (3.5 MHz on a Pentagon), and
+ * one FM sample takes 72 master clocks -- 12 operator slots x the /6 prescale
+ * -- so 48.6 kHz.
+ *
+ * THIS FILE IS A PORT OF CODE, not of an account of hardware. Unlike
+ * beta48.js or gs.js, which follow what another emulator's source DOCUMENTS
+ * about a board, the operator pipeline, the envelope generator, the algorithm
+ * matrix and the SIN / POW / INC / DETUNE tables below are ymfm's own,
+ * translated from its C++ (ymfm_fm.ipp, ymfm_opn.cpp) -- the OPN core
+ * Unreal-NG plays TS-FM with. So this is a derivative work of ymfm, and its
+ * notice is reproduced in full, as BSD-3-Clause asks of a redistribution in
+ * source form. That licence is permissive and GPL-compatible, so the file as
+ * a whole is GPL-3.0-or-later like the rest of the tree, with Aaron Giles's
+ * copyright and the conditions below standing over what is taken from ymfm.
+ *
+ * ---------------------------------------------------------------------------
+ * BSD 3-Clause License
+ *
+ * Copyright (c) 2021, Aaron Giles
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ * ---------------------------------------------------------------------------
+ *
+ * The tables are not taken on trust as copied digits. tests/tsfm-test.html
+ * checks SIN against -log2(sin((x + 0.5) * pi / 512)) and POW against
+ * 2^(-x/256) -- which is what the chip's own log-sin and exp ROMs hold -- so
+ * a mistyped entry fails a test instead of sounding very slightly wrong.
  */
 
 const SIN = [

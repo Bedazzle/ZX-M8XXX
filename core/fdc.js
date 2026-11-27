@@ -2782,6 +2782,8 @@
 
         // Write the first `count` sectors of the execution buffer, starting at R.
         // Uses the physical track position, not the logical cylinder from the command.
+        // (The PR's onDiskWrite hook is left out: DSKImage.writeSector already sets
+        // `modified`, which is what the Save → Media… dot reads.)
         _commitWrite(r, count) {
             const drive = this.drives[r.driveNum];
             if (!drive.disk) return;
@@ -2791,7 +2793,6 @@
                 drive.disk.writeSector(r.physicalTrack, r.head, r.sectorStart + i, sectorData);
                 bufPos += r.sectorDataSize;
             }
-            if (this.onDiskWrite) this.onDiskWrite(r.driveNum);
             if (this.onDiskActivity) {
                 this.onDiskActivity('write', r.physicalTrack, r.sectorStart, r.head, r.driveNum);
             }

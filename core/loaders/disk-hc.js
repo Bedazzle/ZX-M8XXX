@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - HC IF1 disk images
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * A raw (.img) HC disk has no geometry of its own, so it is turned into
  * a DSKImage here — real tracks with real C/H/R/N — and the controller never

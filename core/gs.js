@@ -1,10 +1,21 @@
 /**
  * ZX-M8XXX - General Sound
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
- * After Xpeccy's sound/gs.c (MIT, SAM style). General Sound is a computer of
- * its own: a Z80 at 12 MHz with a 32KB ROM (gs104 / gs105a / gs105b) and
- * 128KB, 512KB or 2MB of RAM, and four 8-bit DACs with 6-bit volumes.
+ * General Sound is a computer of its own: a Z80 at 12 MHz with a 32KB ROM
+ * (gs104 / gs105a / gs105b) and 128KB, 512KB or 2MB of RAM, and four 8-bit
+ * DACs with 6-bit volumes.
+ *
+ * Written after two emulators, and what is taken from each is the hardware
+ * behaviour it documents, not its code:
+ *   - Xpeccy's sound/gs.c (github.com/samstyle/Xpeccy, MIT) for the card and
+ *     its DACs;
+ *   - unreal-ng's soundchip_gs.cpp (github.com/alfishe/unreal-ng, GPL-3.0,
+ *     no "or later") for port $33, the memory map and the reset policy.
+ * Both copyrights stay with their authors. The MIT notice is kept here, as
+ * beta48.js keeps MAME's; the GPL-3.0 file is a stricter licence than this
+ * tree's own GPL-3.0-or-later, which is why only its account of the hardware
+ * is relied on and none of its text is carried across.
  *
  * GS memory:
  *   $0000-$3FFF  ROM, first 16KB

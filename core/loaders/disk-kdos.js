@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - K-DOS (Kempston Disc Interface) file system on a DSK image
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * Read off the x128 .kdi disks (Myth, R-Type 2019, ChaseHQ...) and the user's
  * blank references (kempston_dsdd.dsk, kempston_sssd.dsk):

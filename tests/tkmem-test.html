@@ -63,9 +63,16 @@
             let ok = true;
             for (let b = 0; b < 8; b++) { m.writeTkmem(b); if (m.read(0xC000) !== 0xA0 + b) ok = false; }
             assert(ok, 'eight separate banks at $C000');
-            m.writeTkmem(2);
+            // $8000 is WIRED to bank 2, not to the latch. Latching bank 2 and
+            // then going through $8000 passes either way, because the two
+            // coincide there -- so latch something else. Read and write are
+            // separate asserts: the board wires both halves, and breaking one
+            // of them leaves the other answering correctly.
+            m.writeTkmem(5);
+            assert(m.read(0x8000) === 0xA2, '$8000 READS bank 2, not the latched bank');
             m.write(0x8000, 0x5A);
-            assert(m.read(0xC000) === 0x5A, '$8000 is bank 2');
+            m.writeTkmem(2);
+            assert(m.read(0xC000) === 0x5A, '$8000 WRITES bank 2, not the latched bank');
             m.write(0x4000, 0x33);
             m.writeTkmem(0x0F);
             assert(m.read(0x4000) === 0x33 && m.tkmemBank === 7, 'bit 3 ignored: $4000 is the 48K screen RAM, no shadow screen');

@@ -98,6 +98,37 @@ External +D disk interface with WD1772 floppy controller. Supports .mgt/.img dis
 - Drive tabs with "MGT:" prefix when multiple controllers active
 - File list with MGT type names and addresses
 
+### DISCiPLE — the same disks, a different machine
+
+The DISCiPLE is the +D's predecessor and takes the same MGT disks through the same WD1772,
+so `PlusDDisk` serves both (`spectrum.disciple`); what differs is the memory window, the
+ports and the way it boots.
+
+- **The ROM is a bootstrap.** Its RST 10 vector is `OUT ($7B)` then `JP $0550`: $0550 is
+  only code once $7B has swapped the RAM down to $0000, so GDOS proper is the **system file
+  off the disk**, loaded into that 8K RAM and run at the ROM's own addresses. The tree has
+  no such disk, so the disk side is untested — `RUN` on a blank one ends in the ROM's own
+  key loop with no FDC command issued.
+- **The window is $0000-$3FFF in either order** (`core/memory.js`): 8K ROM and 8K RAM, and
+  port $7B decides which is low — `IN` puts the ROM at $0000, `OUT` puts the RAM there. A
+  reset pages out and sets the ROM low. Writes reach the RAM half only, whichever end it is
+  at. A 16K ROM image is two banks (GDOS 3.0 ships Epson and TTY in one file) picked by bit
+  3 of port $1F.
+- **Ports** (low byte): $1B/$5B/$9B/$DB = WD1772 command/track/sector/data, $1F = control
+  (bit 0 drive, bit 1 side, bit 3 ROM bank) on write and the **joystick** on read, $BB read
+  = page in / write = page out, $7B as above, $3B (net) and $FB (printer) accepted and
+  ignored. The joystick read answers whether or not the Kempston is enabled, since the
+  hardware drives $1F; bits 7 and 6 are the network line and printer BUSY, both idle high,
+  and GDOS polls bit 7 every interrupt.
+- **Auto-paging** (`updateDisciplePaging()`): page in on an opcode fetch at **$0001**,
+  $0008, $0066 or $028E; page out on an `OUT ($BB)`. $0001 is the byte after the Spectrum
+  ROM's `DI` and is how GDOS gets the machine at reset; it has no $003A entry, unlike the
+  +D. `_disciplePagingEnabled` is computed in `updateBetaDiskPagingFlag()` and needs
+  `discipleEnabled + hasDiscipleRom + pagingModel !== '+2a'`.
+- **UI**: `chkDisciple` in Settings → Input, `disciple.rom`, an NMI button, and mutual
+  exclusion against the +D, IF1, Opus, Didaktik and Beta Disk. `loadMGTImage()` routes to
+  whichever of the two is enabled.
+
 ## Interface 1 / Microdrive (MDR Cartridges)
 
 External Interface 1 with Microdrive tape-loop cartridge support. Supports .mdr cartridge images.
@@ -383,7 +414,7 @@ take some other catalogue syntax, which has not been established here.
 
 ## Beta 48 (TR-DOS 4.x, Vision, CBI-95 / IDS / AR-20)
 
-`core/beta48.js`, wired in `core/spectrum.js` / `core/memory.js`. The 48K-era Beta Disk ("Beta Disk plus") and its clones, modelled on MAME's `bus/spectrum/beta.cpp`. Selected by **Settings → Disk interfaces → Beta Disk → Type** (`zxm8_betaVariant`: `128` default, `auto`, `plus`, `cbi`) on a machine without a built-in Beta 128; its ROM is `roms/beta48.rom` (or Load ROM).
+`core/beta48.js`, wired in `core/spectrum.js` / `core/memory.js`. The 48K-era Beta Disk ("Beta Disk plus") and its clones, modelled on MAME's `bus/spectrum/beta.cpp` (Nigel Barnes, David Haywood, MetalliC; BSD-3-Clause). Selected by **Settings → Disk interfaces → Beta Disk → Type** (`zxm8_betaVariant`: `128` default, `auto`, `plus`, `cbi`) on a machine without a built-in Beta 128; its ROM is `roms/beta48.rom` (or Load ROM).
 
 - **ROM paging.** The DOS ROM answers any access to `$3C00-$3CFF` (for that access only), and all of `$0000-$3FFF` while the latch is set: system port `1xxxx111` (`$FF`) written with bit 7 = 0. Reset sets the latch, so the DOS boots first (`memory.beta48Latch`).
 - **Master register.** Any write to a port `xxxxxx00` (`$FC` is the border too): bit 7 = 1 turns the interface's I/O off; on `cbi`, bit 6 = 1 turns the `$3Cxx` window off (`memory.beta48WindowOff`).
@@ -391,7 +422,8 @@ take some other catalogue syntax, which has not been established here.
 - **ROM images.** `prepareBeta48Rom()` knows MAME's CRCs and a few Brazilian dumps; otherwise it decides by which way round the DOS text reads. Original boards cross D0 and D7, so such dumps are straightened; 8KB ROMs are mirrored to 16KB. `auto` takes `cbi` only from a known CBI-95/IDS91/AR-20 ROM.
 - **Magic button** (Beta 48 and Beta 128): `triggerBetaMagic()` pages the DOS ROM and raises NMI.
 - Tape traps run only with the Sinclair ROM in; the Beta 128 TR-DOS traps are off for Beta 48 (the real DOS does the FDC work).
-- Checked by hand with TR-DOS 4.09/4.11/4.12, CAS DOS 1986/1987, IC-DOS, Vision 1.0-1.9e, CBI-95 2.3/2.4, IDS91, IDS2001ne, AR-20. `tests/beta48-test.html` covers ROM identification, the window/latch logic and (with `roms/beta48.rom` present) a real boot and the magic button.
+- **Not offered on an HC-2000**: a Beta 48 claims any port `xxxxx111`, which takes `$07` and `$87` from the HC IF1.
+- `tests/beta48-test.html` covers ROM identification, the window/latch logic and (with `roms/beta48.rom` present) a real boot and the magic button.
 
 ## TKMEM-128 II (128K/512K RAM for a 48K)
 
@@ -415,7 +447,7 @@ take some other catalogue syntax, which has not been established here.
 - **Boot / auto load** (`Spectrum.fdd3000AutoBoot`). Reset FDD runs the station's boot at once (`Fdd3000.boot`: alone, until it polls port `$20` with no other I/O — the boot ROM's delay loops are ~3M instructions). Boot (and Auto load, for a disk put into A) = Reset FDD + Spectrum reset. A CP/M disk in A (boot sector `ED 56`; TOS is `01 C3`) is started the way it is by hand: the Monitor Emulator disk (TOS, `MONITOR` in its directory) must be in B-D; it is swapped into A and booted, and once Monitor runs (Spectrum PC ≥ `$8040` for 10 frames, station idle) CP/M goes back into A and only the station is reset. ~2.7 s of emulated time to `A>`.
 - `tests/fdd3000-test.html` (with the ROMs and `headless/fdd3000/tos.dsk`: the real boot and `CAT *`). Checked: TOS A.2 (CAT *), Battle Command (autostart, 80-track DS disk).
 - **Monitor Emulator (CP/M terminal) on a 128K: open question.** Its loader tells a Timex from a Spectrum by `OUT 255,0: LET a=IN 255: IF a=0 THEN` (Timex path, 64-column hi-res with odd columns in the second screen at `$6000`). On a Spectrum port `$FF` is the floating bus, so the answer depends on which T-state the `IN` lands on. Here the 48K reads 255 (Spectrum path, CP/M works) and the 128K reads a screen byte of 0 (Timex path, half the text missing); FUSE reads 255 on its 128K. Which one real hardware does is not known: FUSE may be the one that is off, and Monitor may have needed a patch for the 128K. Left as it is.
-- Not done: Timex TC2048/TC2068 machines; save states do not carry the station.
+- Not done: save states do not carry the station.
 
 ## Timex TC2048 / TC2068 (SCLD)
 
@@ -426,7 +458,7 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 - **HSR (`$F4`)**, read back: a set bit maps that 8KB chunk to DOCK/EXROM, empty on a TC2048 (reads `$FF`, writes ignored).
 - **Display.** Low-res modes go through the normal frame buffer. Hi-res rows are drawn at 512 into `ula.hiresBuf` (and a 256-pixel reduction into the frame buffer for everything else); `Spectrum.blitFrame` puts the frame on a canvas twice as wide (`canvasScaleX = 2`, CSS keeps the aspect) and the hi-res rows over it. In hi-res the border is the hi-res paper colour (recorded through `setBorderAt`, so beam rendering follows; port `$FE` is remembered for when hi-res ends).
 - With the FDD 3000 (`fdd3stavi.rom`): Monitor Emulator detects the Timex (`IN 255` = 0) and runs CP/M in 64 columns, hi-res mode 6. `fdd3timex.rom` does not start on the TC2048 (likely the TC2068 build).
-- **TC2068** (machine `tc2068`, PAL, FUSE `machines/tc2068.c`): ROM `tc2068.rom` (24KB) or FUSE's `tc2068-0.rom` + `tc2068-1.rom`: 16KB HOME + 8KB EXROM. With DEC bit 7 set, an HSR bit maps the EXROM into that 8KB chunk (every chunk sees the same 8KB); clear, the DOCK (empty, or a cartridge). AY on `$F5` (select) / `$F6` (data), register 14 the joystick port: read through `$F6`, address bit 8 puts joystick 1 and bit 9 joystick 2 on it (a pressed direction pulls its bit low: up $01, down $02, left $04, right $08, fire $80). The numpad/gamepad drives them with the joystick type *Timex 1* / *Timex 2* (which leaves the Kempston port alone). Its ROM is not the 48K's, so the traps at the 48K addresses are off (`noRomTraps`; no TR-DOS trap). LD-BYTES and SA-BYTES are the 48K's moved into the EXROM (`$00FC`, mid-entry `$010F`, `$0112`; SA-BYTES `$0068`): those are trapped while the EXROM is at `$0000` (`exromTapeTraps`), so tapes flash load (Krunel 2068: about 4 s instead of 6 minutes). Auto load types `LOAD ""`.
+- **TC2068** (machine `tc2068`, PAL, FUSE `machines/tc2068.c`): ROM `tc2068.rom` (24KB) or FUSE's `tc2068-0.rom` + `tc2068-1.rom`: 16KB HOME + 8KB EXROM. With DEC bit 7 set, an HSR bit maps the EXROM into that 8KB chunk (every chunk sees the same 8KB); clear, the DOCK (empty, or a cartridge). AY on `$F5` (select) / `$F6` (data), register 14 the joystick port: read through `$F6`, address bit 8 puts joystick 1 and bit 9 joystick 2 on it (a pressed direction pulls its bit low: up $01, down $02, left $04, right $08, fire $80). The numpad/gamepad drives them with the joystick type *Timex 1* / *Timex 2* (which leaves the Kempston port alone). Its ROM is not the 48K's, so the traps at the 48K addresses are off (`noRomTraps`; no TR-DOS trap). LD-BYTES and SA-BYTES are the 48K's moved into the EXROM (`$00FC`, mid-entry `$010F`, `$0112`; SA-BYTES `$0068`): those are trapped while the EXROM is at `$0000` (`exromTapeTraps`), so tapes flash load. **Only while it is paged in**: `$00FC` in the HOME ROM is other code, and trapping it there would fire on it — which is what `timex-test` asserts, by calling both. (Marginal2k reports Krunel 2068 loading in about 4 s instead of 6 minutes; not checked here — no copy of that tape.) Auto load types `LOAD ""`.
 - **DCK cartridges** (`parseDck`, `Spectrum.loadDCK` / `ejectDCK`; open a `.dck` on a TC2068): DOCK and EXROM blocks (HOME blocks ignored), ROM and RAM chunks; the machine resets and the ROM starts the cartridge. Checked: Donkey Kong (`dk-spectrum.dck`), Timmy for the 2068 (tape).
 - Not done: TS2068 (NTSC), HOME blocks in DCK, snapshots of the SCLD/DOCK state, flash in hi-res. `tests/timex-test.html`.
 
@@ -435,6 +467,7 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
 `Spectrum.setTurboSound`, `Spectrum.setDac`, mixed in `AudioManager.processFrame`. **Settings → Audio**.
 
 - **TurboSound** (NedoPC): a second AY (`spectrum.ay2`) on the same ports, wherever there is an AY on `$FFFD`/`$BFFD` (128K, Pentagon..., AY in 48K). `OUT ($FFFD),$FF` selects chip 0, `$FE` chip 1; any other value is a register number for the selected chip, and reads follow the selected chip. With it off, `$FE`/`$FF` are ordinary register writes. AY writes carry the chip in `ayChanges` and are replayed on that chip; the two are mixed at 0.7 each. Checked with AY_YM_TS_test v0.2 (both chips' register tests and the channel tones).
+- The **128's MIDI out** follows the FIRST chip only — MIDI OUT is the 128K's own AY port A, so a TurboSound second chip writing R14 must not move the line. See the MIDI section below.
 - **DACs**, write-only and not exclusive (the port still reaches the rest of the bus), four 8-bit channels, `$80` = silence, recorded per frame with their T-state like the beeper:
   - *Covox*: one port, mono, settable (`$FB` by default, Pentagon; `$DD` on the Scorpion);
   - *Stereo Covox*: two settable ports, left and right (`$0F`/`$4F` by default);
@@ -443,14 +476,86 @@ Machine `tc2048` (`core/machines.js`, group Timex; ROM `roms/tc2048.rom`), SCLD 
   - While TR-DOS is paged in, the DACs do not hear the bus (as in Unreal Speccy): mode 1's `$1F`/`$5F` are the Beta Disk's command and sector registers, and disk work would otherwise click through it. Likewise on a Beta 48's live FDC/system ports.
 - `tests/sound-addons-test.html`.
 
+## TurboSound FM (two YM2203)
+
+`core/ym2203.js`, `Spectrum.setTsfm`. **Settings → Audio → TurboSound FM**; it switches TurboSound on with it.
+
+- **What it is:** NedoPC TS-FM, as Unreal-NG plays it. The two AYs become two YM2203s. Each chip's SSG half *is* the emulator's AY (`core/ay.js`); `core/ym2203.js` is only the FM half: 3 channels of 4 operators, 8 algorithms, feedback, the OPN envelope with SSG-EG, detune / multiple, channel 3's multi-frequency mode, CSM, and timers A / B with the busy flag. There is no LFO — the YM2203 has none.
+- **It is a port of CODE, not of an account of hardware.** The other peripherals here follow what another emulator's source *documents* about a board; this one is ymfm's own OPN core (`ymfm_fm.ipp`, `ymfm_opn.cpp`), translated from C++ — the core Unreal-NG plays TS-FM with. So the file is a derivative work of ymfm, Aaron Giles's **BSD-3-Clause** notice is reproduced in it in full as that licence asks of a source redistribution, and the file as a whole stays GPL-3.0-or-later (BSD-3-Clause is permissive and GPL-compatible).
+- **Ports:**
+  - `OUT $FFFD,%11111xyz` is a control word. z picks the chip (`$FF` / `$FE`, as TurboSound); y = 0 makes `IN $FFFD` read the status; x = 0 turns FM on.
+  - Any other value is an address. Below `$10` it selects an SSG register; from `$10` up it is an FM register, and the SSG keeps the register it had.
+  - `OUT $BFFD` writes data to the selected register. An FM write stops at the FM and never reaches the AY.
+- **Status:** `IN $FFFD` in status mode returns busy (bit 7, for 32 × 6 master clocks after a write), timer B (bit 1) and timer A (bit 0). With an FM address latched and status mode off it reads `$FF`.
+- **The clock.** The board takes the ZX-Bus clock — 3.5 MHz on a Pentagon, which is the figure TS-FM is documented with, and 3.5469 MHz on a 128K — so `Spectrum._fmMasterClock()` is the bus clock, the same one the General Sound is given. Timer A is `(1024 − TA) × 72` of those clocks and timer B `16 × (256 − TB) × 72`, and one FM sample takes 72 (12 operator slots × the /6 prescale), so 48.6 kHz. **Its time base must be `absTStates()`**, the monotonic clock: timer A's shortest period is 72 T-states, which is the same hazard the disk byte rate met at 112 and the MIDI bit rate at 113 — a count rebuilt from `totalFrames` sits a whole frame away by an amount that changes, and a frame arriving at once fires CSM 984 times in one call. The layer this was ported from used that clock; `tests/tsfm-test.html` pins the cost of it.
+- **Sound:** the FM writes are played into the chips at their T-state, as the AY's and the SAA's are, and `_fmFlush` gives the chips the ones the audio never took (sound off, high speed) so their registers survive either way. FM is mixed at the level Unreal-NG calibrates to: a carrier at TL 0 as loud as one AY channel at 15.
+- **Checked** — and for a ported DSP core the oracle is the arithmetic the chip is *defined* by, not a capture of our own output:
+  - the **log-sin and exp ROMs rebuilt from `-log2(sin x)` and `2^-x`** and compared with the port's tables digit for digit, no tolerance, all 256 entries each; then the whole operator output the same way over 1024 attenuations × 147 phases. A mistyped digit fails there instead of sounding 0.3% wrong.
+  - pitch against the datasheet's own F-number formula `f = FNUM × fM / (2^(20−B) × 144)`, the keycode against its F11/F10/F9/F8 rule over 48 block/fnum pairs, MULTIPLE and DETUNE including the sign of bit 2.
+  - the envelope's documented *every 4 rate steps halves the time*, measured on the pipeline; the attack moving a sixteenth of what is left; one **absolute** time (the generator ticks once every three FM samples), since every other envelope assert is a ratio and would pass with the divider missing.
+  - each of the 8 algorithms' carrier set, read off by silencing three operators at a time — and then, positionally, which of each algorithm's carriers are *modulated*. The second is needed because algorithms 5 and 6 share a carrier set: "all 8 waveforms differ" survives any permutation of the table, and the mutation that swaps those two passed it.
+  - the timers, the busy flag, CSM, and that clearing a running timer's flag does not restart its period.
+  - `tests/tsfm-test.html`, 70 asserts, none needing a ROM.
+- **Not done:**
+  - The prescaler registers `$2D-$2F` (the TS-FM board leaves them at /6).
+  - A snapshot does not keep the FM halves.
+  - Which of `$A8-$AE` feeds which slot in channel 3's multi-frequency mode is ymfm's order, pinned by a test but not checked against a datasheet. Slot 4 keeping the channel's own F-number is.
+  - The mixing level and the sample rate are not covered by a test: nothing here listens.
+  - Tech Support (Moe-bius), the player Unreal-NG ships as its TS-FM test, needs `headless/tsfm/tech_support.sna`, which is not in the tree; that section skips.
+
 ## Microdigital TK-90X / TK-95
 
 Machines `tk90x` and `tk95` (group Microdigital; ROMs `roms/tk90x.rom`, MAME's CRC `3e785f6f`, and `roms/tk95.rom`, `17368e07`; the TK-90X v1/v3 ROMs load the same way).
 
-- 48K clones with the Microdigital ULA: **228 T-states a line**, 312 lines at 50 Hz = 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por línea"), the 48K contention pattern; `profile.tstatesPerLine` in the ULA's 48K branch (the 48K itself is unchanged, 224). No floating bus (MAME: unattached ports read `$FF`), no snow.
+- 48K clones with the Microdigital ULA: **228 T-states a line**, 312 lines at 50 Hz = 71136 a frame (ZEsarUX: "La ULA Microdigital emplea 228 T por línea"), the 48K contention pattern; `profile.tstatesPerLine` in the ULA's 48K branch (the 48K itself is unchanged, 224, and `TOP_LEFT_PIXEL_TSTATE` is now derived as `64 × tstatesPerLine` rather than written down).
 - The ROM keeps the 48K entry points: tape traps and flash load work. Auto load types `LOAD ""` (keyword BASIC, as on every `pagingModel: 'none'` machine).
 - TKMEM-128 II and "AY in 48K" are allowed on them; the Brazilian Beta 48 clones work (checked: Chase HQ 128 for TKMEM on CBI-95; T2 on TK-95 + TKMEM, no snow).
+- **Snapshots**: `.z80` writes hardware mode 0, so these save as a plain 48K and load anywhere — right but for the line timing. SZX takes a **private** id (102/103): the zx-state format stops at 16 and has no TK-90X, so a `.szx` round-trips the machine here and reads as unknown elsewhere. The two formats trade interoperability against fidelity in opposite directions, deliberately.
 - Not done: the 60 Hz mode (262 lines), the TK-95's Spectrum+ keyboard layout as such, MAME's unexplained `$DF` write at start-up. `tests/tk-test.html`.
+
+## Spectrum 128 MIDI out (AY register 14)
+
+`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.
+
+- The 128K's MIDI OUT is RS232 TXD: bit 2 of AY register 14 (port A), while R7 bit 6 makes port A an output (otherwise the line idles high — a program using R14 as an input latch is not MIDI). The ROM's `PLAY` with a `Y` channel, and programs, bit-bang bytes at 31250 baud.
+- Every change of the line is recorded with its absolute T-state; `UartDecoder` samples each bit in its middle (bit time = CPU clock / 31250: 3.5469 MHz on the 128K family, 3.5 MHz elsewhere), a frame listener finishes bytes whose last bits change nothing. It starts from the line as it is (a low line is not a start bit until it has been high, and a start bit is the line *falling*).
+- **The clock is `Spectrum.absTStates()`, not a clock rebuilt from `totalFrames`.** A bit is ~113 T-states, so this is the same hazard the disk code hit at 112: the `totalFrames` pair sits a whole frame away from the real count and the offset is not stable, so it steps forward by 70908 T at some point and a byte in flight loses the rest of its bits. See the note on `diskClockNow`.
+- `MidiAssembler` makes whole messages for `send()`: running status, real-time bytes, SysEx.
+- A note sounding when the machine is reset would never get its Note Off, so reset sends All Notes Off on all 16 channels; so does the UI when the emulation stands still (pause, a breakpoint, a hidden tab) or the sound is switched off.
+- Checked: `PLAY "Y1c"` on a 128K sends `90 3C 78` / `80 3C 40` (Note On / Note Off, middle C, channel 1). Output to a real Web MIDI device is not covered by the tests. `tests/midi-test.html`.
+
+## SAA1099 (ZXM-SoundCard)
+
+`core/saa1099.js`, `Spectrum.setSaa`. **Settings → Audio → SAA1099**.
+
+- The ZXM-SoundCard mapping, as in Xpeccy and Unreal Speccy: `OUT $01FF` (A8 = 1, low byte `$FF`) selects a register, `OUT $00FF` (A8 = 0) writes it. It hears nothing while TR-DOS is paged in, and it is not offered on the Timex machines, whose `$FF` is the SCLD's.
+- An 8 MHz chip with six tone channels in stereo (amplitude low nibble left, high nibble right). The generators follow MAME's `sound/saa1099.cpp` (BSD-3-Clause, credited in the module header):
+  - **Tone:** half period `(511 - f) << (8 - octave)` clocks.
+  - **Noise:** two 18-bit LFSRs (x^18 + x^11 + x), clocked at 31.25 / 15.6 / 7.8 kHz or by tone 0 / 3. Tone and noise together give the tone at half amplitude while the noise is high.
+  - **Envelopes:** two, stepped on every half period of tone 1 / 4, or by any address write when external (bit 5). Zero, max, decay, attack and triangle, single or repeating, with an inverted right side and 3-bit resolution. **They act on channels 2 and 5 alone**, as the data sheet and SAASound have it, where MAME applies each to all three channels of its group — the one place the sources disagree.
+  - **Register `$1C`:** bit 0 enables all channels; bit 1 holds and resets the generators.
+- Envelope parameters written while an envelope is running wait for the end of its period (the data sheet, Xpeccy and SAASound; MAME restarts at once). One that is off or has finished, and one being switched off, takes them at once.
+- The writes are kept per frame with their T-state and played into the chip by the audio, like the AY's. Writes the audio does not take (sound off, high speed, or made between frames) go straight to the chip through `_saaFlush`, so it keeps its registers either way.
+- Checked: tone frequencies at two octaves, the stereo amplitude nibbles, six channels at full level reaching 1.0, the noise rate, a single decay running down and staying there, the external envelope clock with its inverted right side, buffered envelope parameters, that an envelope leaves channels 0/1 alone, and the port decoding (TR-DOS, Timex, off, reset). `tests/saa-test.html`.
+- Not done: a snapshot does not keep the SAA's registers.
+
+## General Sound
+
+`core/gs.js`, `Spectrum.setGs`. **Settings → Audio → General Sound**, with the firmware (`roms/gs105b.rom`, `gs105a.rom`, `gs104.rom`, 32KB each, gitignored) and the RAM. 128KB and 512KB are the classic boards; 2MB is a modern one.
+
+- **It is a computer, not a chip**: a Z80 of its own at 12 MHz with an INT every 320 of its T-states (37.5 kHz), its own ROM and RAM, and four 8-bit DACs with 6-bit volumes. Written after two emulators, taking the hardware behaviour each documents rather than its code: Xpeccy's `sound/gs.c` (`github.com/samstyle/Xpeccy`, MIT) for the card and its DACs, and unreal-ng's `soundchip_gs.cpp` (`github.com/alfishe/unreal-ng`, GPL-3.0 — no "or later", so only its account of the hardware is relied on) for port `$33`, the memory map and the reset policy.
+- **GS memory:**
+  - `$0000-$3FFF`: the ROM's first 16KB.
+  - `$4000-$7FFF`: RAM `$4000-$7FFF` (the upper half of page 1), where the sample buffers live.
+  - `$8000-$FFFF`: page *n* of GS port 0. Page 0 is the whole ROM; page *n* is 32KB of RAM, page *n*-1, **masked to the RAM fitted** — so 128KB wraps every 4 pages and 512KB every 16. That mask is not cosmetic: the firmware's own RAM test finds it, and a fixed 16 makes a 2MB board report itself as 512KB.
+- **DACs:** each takes the byte the Z80 reads from `$6000-$7FFF`, **A9-A8 picking the channel** (the player reads one sample per interrupt). Volumes are 6-bit, GS ports 6-9. Channels 1+2 go left, 3+4 right.
+- **GS ports** (A3-A0): 0 page, 1 command, 2 data in, 3 data out, 4 status, 5 command taken, 10 and 11 report a page bit and a volume bit back through the status register, both inverted.
+- **Spectrum ports:** `$BB` command out / status in (bit 7 data, bit 0 command), `$B3` data, `$33` control — bit 7 resets the card and leaves the mailbox, bit 6 sends it an NMI. Decoded as `(port & $F7) === $B3`, and only while a ROM is loaded.
+- **Timing:** the GS runs behind the Spectrum and is brought up to time (`syncTo`) at every access to its ports **and** at each frame's end. The frame-end sync alone would keep it working, a frame late; the per-access sync is what puts a mailbox write where it was written. Its clock is the Spectrum's own (3.5469 MHz on a 128K, 3.5 elsewhere), so the GS/Spectrum ratio follows the machine. DAC levels reach the audio as changes stamped in Spectrum frame T-states.
+- **Reset:** a Spectrum reset leaves the card running — it has its own reset line (`$33` bit 7, as in Unreal with `GSReset=0`) — so a program started after a reset finds it past its RAM test (0.5 s on 128KB, 2.5 s on 512KB, 10 s on 2MB). Switching it on in Settings is the power-on.
+- **Checked:** all three firmwares boot, test their own RAM and answer command `$23` (pages) and `$20` (free RAM) correctly — 128KB, 512KB and 2MB on gs105b, and gs104 and gs105a at 128KB, each also carrying its own version stamp after the entry jump (`F3 C3 48 01`, then `04 01` or `05 01`). That is an outside oracle: the firmware decides those numbers, not us. `tests/gs-test.html`.
+  - Marginal2k also reports SeaDragon (TR-DOS, Pentagon) uploading its module and playing, with the card in IM 2 and 768 interrupts a Pentagon frame; not checked here.
+- **Not done:** snapshots do not keep the card; there is no stereo cross-feed option (Unreal mixes 50% across).
 
 ## Didaktik Gama (80KB)
 
@@ -461,124 +566,24 @@ Machine `dgama` (group Didaktik; ROM `roms/dgama89.rom`, MAME CRC `45c29401`; th
 - Checked: the ROM boots ("© 1989 DIDAKTIK SKALICA"); the usual bank B detection routine (`OUT (127)` with 1/0 around a write to 50000) answers 80KB on the Gama and 48KB on a 48K. `tests/gama-test.html`.
 - Not done: what else the 8255 drives (printer, the joystick on port A); Kempston on `$1F` is left as it is.
 
-## TurboSound FM
-
-`core/ym2203.js`, `Spectrum.setTsfm`. **Settings → Audio → TurboSound FM**; it switches TurboSound on with it.
-
-- **What it is:** NedoPC TS-FM, as Unreal-NG plays it. The two AYs become two YM2203s. Each chip's SSG half is the emulator's AY; its FM half is a port of ymfm's OPN core (BSD-3-Clause, Aaron Giles), the core Unreal-NG uses. That FM half has:
-  - 3 channels of 4 operators, 8 algorithms, feedback;
-  - the OPN envelope with SSG-EG, detune / multiple;
-  - channel 3's multi-frequency mode and CSM.
-
-  There is no LFO; the YM2203 has none.
-- **Ports:**
-  - `OUT $FFFD,%11111xyz` is a control word. z picks the chip ($FF / $FE, as TurboSound); y = 0 makes `IN $FFFD` read the status; x = 0 turns FM on.
-  - Another value is an address. Below $10 it selects an SSG register. From $10 up it is an FM register, and the SSG keeps its own register.
-  - `OUT $BFFD` writes data to the selected register.
-- **Status:** `IN $FFFD` in status mode returns busy (bit 7, 32 × 6 master clocks after a write), timer B (bit 1) and timer A (bit 0). The timers count in T-states (the board's 3.5 MHz master clock): A every (1024 − TA) × 72, B every 16 × (256 − TB) × 72.
-- **Sound:** one FM sample every 72 master clocks (48.6 kHz). The FM writes are played into the chips at their T-state, as the AY's are. FM is mixed at the board's measured level: a carrier at TL 0 sounds as loud as one AY channel at 15 (Unreal-NG's calibration).
-- **Checked:**
-  - A carrier at fnum / block for 440 Hz gives 440 Hz and peaks at 8191; the release runs to silence.
-  - The timers and busy work; so do the control word and the FM / SSG address split.
-  - Tech Support (Moe-bius, the snapshot from Unreal-NG's test data) plays.
-  - `tests/tsfm-test.html`.
-- **Not done:**
-  - The prescaler registers $2D-$2F (the TS-FM board leaves them at /6).
-  - A snapshot does not keep the FM halves.
-
-## SAA1099
-
-`core/saa1099.js`, `Spectrum.setSaa`. **Settings → Audio → SAA1099**.
-
-- The ZXM-SoundCard mapping, as in Xpeccy and Unreal Speccy:
-  - `OUT $01FF` (A8 = 1, low byte `$FF`) selects a register; `OUT $00FF` (A8 = 0) writes it.
-  - It does not hear anything while TR-DOS is paged in.
-  - It is not on the Timex machines, whose `$FF` is the SCLD's.
-- The chip runs at 8 MHz and has 6 tone channels in stereo (amplitude low nibble left, high nibble right). The generators follow MAME's `saa1099.cpp` (BSD-3-Clause):
-  - **Tone:** half period `(511 - f) << (8 - octave)` clocks.
-  - **Noise:** two 18-bit LFSRs (x^18 + x^11 + x), clocked at 31.25 / 15.6 / 7.8 kHz or by tone 0 / 3. Tone and noise together give the tone at half amplitude while the noise is high.
-  - **Envelopes:** two, stepped on every half period of tone 1 / 4, or by any address write when external (bit 5). The modes are zero, max, decay, attack and triangle, single or repeating, with an inverted right side and 3-bit resolution. After the data sheet and SAASound, they act on channels 2 and 5 only; MAME applies them to all three channels of a group.
-  - **Register `$1C`:** bit 0 enables all channels; bit 1 holds and resets the generators.
-- The writes are kept per frame with their T-state and played into the chip by the audio, like the AY's. Writes the audio does not take (sound off, high speed) go straight to the chip, so it keeps its registers.
-- Checked: tone frequencies, stereo amplitudes, all six channels at full level, the noise rate, single decay, the external envelope clock, the buffered envelope parameters, the port decoding (TR-DOS, Timex, reset). `tests/saa-test.html`.
-- Envelope parameters written while an envelope runs wait for the end of its period, as in the data sheet (Xpeccy and SAASound do the same; MAME restarts at once); an envelope that is off or has finished, or one being switched off, takes them at once.
-- Not done: a snapshot does not keep the SAA's registers.
-
 ## Kempston Disc Interface (K-DOS)
 
-`core/kempdisc.js`, after MAME's `bus/spectrum/kempdisc.cpp` (BSD-3, MetalliC). **Settings → Disk interfaces → Kempston Disc**, with the ROM.
+`core/kempdisc.js` and `core/loaders/disk-kdos.js`, after MAME's `bus/spectrum/kempdisc.cpp` (BSD-3-Clause, MetalliC) — the hardware behaviour it documents, not its code. **Settings → Disk interfaces → Kempston Disc**, with the ROM.
 
-- **The stock board** (Abbeydale Designers 1985):
+- **The stock board** (Abbeydale Designers, 1985):
   - WD1770 on `$E5` (status/command), `$E7` (track), `$ED` (sector), `$EF` (data): register = A1 | A3 << 1.
-  - `$DF` out: bits 1-4 pick drive 0-3, bit 0 the side.
-  - The 8KB ROM is mirrored over `$0000-$3FFF`. It is paged in at reset and by `OUT $FD`, out by `OUT $D7`.
-  - K-DOS boots first, hooks stream #4 and pages itself out. A disk with a boot program in drive A starts it. Commands are `PRINT #4: CAT`, `LOAD "name"`, `COPY`, `FORMAT`.
-  - It is for a 48K: `$FD` is also the 128K's `$7FFD`. ROMs `kdos21.rom`, `kdos20.rom`, `kdos21it.rom` (MAME's CRCs).
-- **The 128A6 modification** (Mario Prato; schematic `KDI_128-A6_SCHEME`, ROM "KDI DOS 2.1 128A6", CRC `69405CFB`, from speccy4ever.speccy.org):
-  - The register select moves from A1 to A6, and A1 is always 1. The WD sits on `$A7`/`$E7`/`$AF`/`$EF`, and the ROM pages in with `OUT $BF`.
-  - Nothing of the board answers the 128K's paging port, so it works on 48K / 128K / +2.
-  - Its ROM starts with `OUT ($7FFD),$10` (48 BASIC). The `K128_*` disks and R-Type 2019 are for this board.
-- **The 2.1J ROMs** (Jane McKay) carry the DISCiPLE ROM's sector-write loop, which has twice the DRQ margin, for 128K contended banks. A1J is for the stock board and locks the 128K to 48K; A6J is for the 128A6 board.
-- **ROM files:** `kdos21-128a6.rom`, `kdos21-a6j.rom` and `kdos21-a1j.rom` go on a 128K too.
-- **Disks:** `.kdi` / `.dsk`, which are EDSK (x128's: 80 × 2 × 10 × 512, sectors 0-9), up to 4 drives. The controller is the FDD 3000's WD model (C/H/R from the DSK).
-- **One thing added for K-DOS:** it tests a drive with Read Address and waits for BUSY to drop without taking the ID bytes. A real WD ends the command when the ID field has gone by, with Lost Data, and so does this model: after 32 status reads with no byte taken.
-- **Checked:**
-  - K-DOS 2.1 boots on a 48K.
-  - Myth (K48), ChaseHQ (48K), R-Type 2019 and K128 ChaseHQ (128A6 on a 128K) load and run.
-  - `tests/kempdisc-test.html`.
-- **File system** (`core/loaders/disk-kdos.js`, agrees with the user's `KDOS_format.md`): the directory is on track 20 side 0. Its sector 0 holds:
-  - the label (3-12);
-  - the geometry ($1D tracks, $1F sides-1, $22 total blocks);
-  - the block map ($60-$FF; blocks past the end are set);
-  - one byte per directory slot from $100 (a name hash, 0 = free).
-
-  Sectors 1-9 hold 144 entries of 32 bytes: type, name, length and the two tape-header parameters; at 22 the block count, at 23-24 the first block (files are contiguous, 1KB blocks, both sides of a track in turn).
-- **Settings → Disk:** shows the disk and its directory. Drag and drop takes `.kdi`. **Blank KDI** inserts a formatted DS 80-track disk; DS 80 and SS 40 blanks are byte for byte the user's `kempston_dsdd.dsk` / `kempston_sssd.dsk`. K-DOS CATs it and SAVEs to it.
-- **The slot byte at $100** is the name hash of K-DOS 2.1 `$14D6`: C = 0, then for the 10 name bytes C = RLCA(char XOR C); a 0 becomes 1. Checked on 67 names of 5 disks.
-- **Explorer:** opens `.kdi` and K-DOS `.dsk` and edits them through the MDOS (D80) editor. `DidaktikLoader` hands a K-DOS EDSK to `KdosLoader`. You can:
-  - list, preview, view BASIC, disassemble, hex, extract;
-  - add (from a TAP or another panel), delete, rename, set the address, reorder, set the label;
-  - make a new disk with New → KDI (DS 80T / SS 40T);
-  - save as `.kdi`.
-
-  A copy of Myth assembled file by file with `addFile` boots and loads under K-DOS (`tests/kempdisc-test.html`).
-- **Not done:**
-  - FORMAT from K-DOS (Write Track on a DSK).
-  - The Kempston Centronics E printer port and joystick on the board.
-  - Watford SP-DOS.
-
-## General Sound
-
-`core/gs.js`, `Spectrum.setGs`. **Settings → Audio → General Sound**, with the ROM (`roms/gs105b.rom`, `gs105a.rom`, `gs104.rom`, 32KB) and the RAM. 128KB and 512KB are the classic boards; 2MB is a modern one.
-
-- A Z80 of its own at 12 MHz with an INT every 320 T-states (37.5 kHz), after Xpeccy's `sound/gs.c` (MIT). The memory map, `$33` and the reset policy follow Unreal-NG (`soundchip_gs.cpp`, GPL-3.0).
-- **GS memory:**
-  - `$0000-$3FFF`: the ROM's first 16KB.
-  - `$4000-$7FFF`: RAM `$4000-$7FFF` (the upper half of page 1), where the sample buffers live.
-  - `$8000-$FFFF`: page *n* of GS port 0. Page 0 is the whole ROM; page *n* is 32KB of RAM, page *n*-1, masked to the RAM fitted.
-- **DACs:** each takes the byte the Z80 reads from `$6000-$7FFF`, A9-A8 picking the channel. Volumes are 6-bit (GS ports 6-9). Channels 1+2 go left, 3+4 right.
-- **GS ports:** 1 command, 2 data in, 3 data out, 4 status, 5 command taken, 10 and 11 the flag tricks.
-- **Spectrum ports:**
-  - `$BB`: command / status (bit 7 data, bit 0 command).
-  - `$B3`: data.
-  - `$33`: control. Bit 7 resets the card; the mailbox stays. Bit 6 sends the card an NMI.
-- **Timing:** the GS runs behind the Spectrum and is brought up to time at every access to its ports and at each frame's end. Its DAC levels go to the audio with their T-states.
-- **Reset:** a Spectrum reset leaves the card running (its own reset line, as in Unreal with `GSReset=0`); switching it on is the power-on. The ROM's RAM test takes 0.5 s on 128KB, 2.5 s on 512KB and 10 s on 2MB, so a program started after a reset finds the card ready.
-- **Checked:**
-  - The ROM answers `$23` (pages) and `$20` (free RAM) right for 128KB, 512KB and 2MB.
-  - SeaDragon (TR-DOS, Pentagon) uploads its module and plays: the card in IM 2, 768 INTs a Pentagon frame, the DACs changing.
-  - `tests/gs-test.html`.
-- **Not done:** snapshots do not keep the card; there is no stereo cross-feed option (Unreal mixes 50% across).
-
-## Spectrum 128 MIDI out (AY register 14)
-
-`core/midi.js`, `Spectrum.setMidiOut` / `onMidiMessage`. **Settings → Audio → MIDI out**: off, *monitor only* (the byte count and the last bytes next to it, no sound), *built-in synth* (`ui/midi-synth.js`: a small Web Audio synth, one voice per note, the waveform by program family, channel 10 as noise drums; not a GM sound set), or a Web MIDI output (a synth, Microsoft GS Wavetable, loopMIDI...). *search MIDI devices…* asks the browser for MIDI access and lists the outputs; once access is granted they are listed when the page loads, and the list follows devices plugged in or out.
-
-- The 128K's MIDI OUT is RS232 TXD: bit 2 of AY register 14 (port A), while R7 bit 6 makes port A an output (otherwise the line idles high). The ROM's `PLAY` with a `Y` channel, and programs, bit-bang bytes at 31250 baud.
-- Every change of the line is recorded with its absolute T-state; `UartDecoder` samples each bit in its middle (bit time = CPU clock / 31250: 3.5469 MHz on the 128K family, 3.5 MHz elsewhere), a frame listener finishes bytes whose last bits change nothing. It starts from the line as it is (a low line is not a start bit until it has been high).
-- `MidiAssembler` makes whole messages for `send()`: running status, real-time bytes, SysEx.
-- Checked: `PLAY "Y1c"` on a 128K sends `90 3C 78` / `80 3C 40` (Note On / Note Off, middle C, channel 1). Output to a real Web MIDI device is not covered by the tests. `tests/midi-test.html`.
-- The new test pages keep their summary changing while they run (`running… n`), so `all-tests.html` does not take a long pause for the result.
+  - `$DF` out: bits 1-4 pick drive 0-3 (the lowest set wins), bit 0 the side.
+  - The 8KB ROM is mirrored over `$0000-$3FFF`, paged **in at reset** and by `OUT $FD`, out by `OUT $D7`. So K-DOS boots before the Spectrum ROM does, hooks stream #4 and pages itself out; its commands are `PRINT #4: CAT`, `LOAD "name"`, `COPY`, `FORMAT`.
+  - It is a 48K board, because `$xxFD` is also the 128K's `$7FFD`.
+- **The 128A6 modification** (Mario Prato; ROM "KDI DOS 2.1 128A6", CRC `69405CFB`): the register select moves from A1 to **A6** and A1 is always 1, so nothing on the board answers the 128K's paging port. The WD moves to `$A7`/`$E7`/`$AF`/`$EF` and ROM-in to `OUT $BF`; it works on a 48K, 128K or +2. The 2.1J ROMs (Jane McKay) carry the DISCiPLE ROM's sector-write loop, which has twice the DRQ margin for 128K contended banks — A1J for the stock board (it locks the machine to 48K), A6J for the 128A6 one. `Spectrum._kempdiscOk` offers only those three on a 128K.
+- **Disks:** `.kdi` / `.dsk` — EDSK, 80 × 2 × 10 × 512 with sectors 0-9 — up to four drives, read by C/H/R. The controller is the FDD 3000's WD model.
+- **One thing the board needs that no other does:** K-DOS tests a drive with Read Address and waits for BUSY to drop *without ever taking the six ID bytes*. A real WD ends the command when the ID field has gone past, with Lost Data, and so does this model — after 32 status reads with no byte taken (`KEMPDISC_RA_POLLS`).
+- **File system** (`core/loaders/disk-kdos.js`): the directory is **track 20, side 0**, five 1KB blocks. Its sector 0 holds the label (3-12), the geometry (`$1D` tracks, `$1E` sectors−1, `$1F` sides−1, `$22` total blocks), the block map (`$60-$FF`, LSB first, 1 = used, **and every block past the end of the disk marked used** so nothing is allocated there), and from `$100` one byte per directory slot — a hash of the name, 0 meaning free. Sectors 1-9 hold 144 entries of 32 bytes: type, name, length, the two tape-header parameters, the block count at 22 and the first block at 23-24. Files are contiguous, and **logical sector *n* is track *n*/(10×sides), side (*n*/10) mod sides, sector *n* mod 10** — both sides of a track before the next one.
+- **The slot byte** is K-DOS 2.1's own routine at `$14D6`: C = 0, then for each of the ten name bytes C = RLCA(char XOR C), and a 0 result is stored as 1 because 0 marks a free slot. `AUTO` hashes to `$93` on every disk, which is the oracle for it.
+- **Settings → Disk** shows the disk and its directory; drag and drop takes `.kdi`; **Blank KDI** inserts a formatted DS 80-track disk. **Explorer** opens `.kdi` and K-DOS `.dsk` through the MDOS (D80) editor — list, preview, BASIC, disassemble, hex, extract, and add / delete / rename / set the address / reorder / set the label / New → KDI / save as `.kdi`.
+- **Checked here:** the port decode on both boards, `$D7`/`$FD`/`$BF` paging and the 128K conflict, drive and side select, and then the file system end to end with no ROM at all — `FORMAT`'s layout for DS 80 and SS 40 including *which* five blocks the directory takes, the logical-to-physical sector mapping read off marked physical sectors (a round trip cannot check it: `addFile` and `readFile` both go through the same mapping, so any consistent permutation survives), `addFile` packing from block 0, a 3000-byte file read back across the side boundary, delete / rename / swap / label / param1, the refusals, and the Explorer view. `tests/kempdisc-test.html`, 34 asserts; `tests/disk-boot-test.html` has its section too.
+- **NOT checked here — no ROM.** K-DOS lives in an 8KB ROM that no emulator distribution bundles: MAME is the only emulator supporting the board and ships CRCs rather than images (`kd20` `244816a7`, `kd21` `3a0705eb`, `kd21it` `f8ccdf8a`; the 128A6 one is not in MAME). So everything needing the firmware waits for `roms/kdos21.rom`: Marginal2k reports K-DOS 2.1 booting on a 48K, Myth (K48) and ChaseHQ loading, and R-Type 2019 and K128 ChaseHQ running on a 128A6 board, and reports the DS 80 / SS 40 blanks being byte for byte his own `kempston_dsdd.dsk` / `kempston_sssd.dsk` — none of which is reproducible here. The suites run those sections the moment the ROM and `headless/kdi/` are present.
+- **Not done:** FORMAT from K-DOS itself (Write Track on a DSK), the Kempston Centronics E printer port and joystick on the board, Watford SP-DOS.
 
 ## Didaktik 40/80 (MDOS D40/D80 images)
 

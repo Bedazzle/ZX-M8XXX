@@ -1584,7 +1584,12 @@
         section('SZX - Machine type mapping');
 
         {
-            // szxMachineId values from MACHINE_PROFILES: 48k=1, 128k=2, +2=3, +2a=4, +3=5, pentagon=7, scorpion=8
+            // szxMachineId values from MACHINE_PROFILES. These are the zx-state
+            // format's own ids, which run 0-16: 16K=0, 48K=1, 128K=2, +2=3,
+            // +2A=4, +3=5, +3E=6, PENTAGON128=7, TC2048=8, TC2068=9,
+            // SCORPION=10, SE=11, TS2068=12, PENTAGON512=13, PENTAGON1024=14,
+            // NTSC48K=15, 128KE=16. The Scorpion was 8 here, which is the
+            // TC2048's number.
             // getMachineType uses getMachineBySzxId() which matches profile szxMachineId, NOT linear index
             assert(SZXLoader.getMachineType(0) === '48k', 'machine 0 = 48k (fallback)');
             assert(SZXLoader.getMachineType(1) === '48k', 'machine 1 = 48k (szxMachineId:1)');
@@ -1593,7 +1598,9 @@
             assert(SZXLoader.getMachineType(4) === '+2a', 'machine 4 = +2a (szxMachineId:4)');
             assert(SZXLoader.getMachineType(5) === '+3', 'machine 5 = +3 (szxMachineId:5)');
             assert(SZXLoader.getMachineType(7) === 'pentagon', 'machine 7 = pentagon (szxMachineId:7)');
-            assert(SZXLoader.getMachineType(8) === 'scorpion', 'machine 8 = scorpion (szxMachineId:8)');
+            assert(SZXLoader.getMachineType(8) === 'tc2048', 'machine 8 = tc2048 (szxMachineId:8)');
+            assert(SZXLoader.getMachineType(9) === 'tc2068', 'machine 9 = tc2068 (szxMachineId:9)');
+            assert(SZXLoader.getMachineType(10) === 'scorpion', 'machine 10 = scorpion (szxMachineId:10)');
         }
 
         section('SZX - Parse minimal header');

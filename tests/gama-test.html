@@ -23,6 +23,9 @@
     <script type="module">
         // Didaktik Gama: 80KB -- two 32KB banks at $8000 picked by PC0 of its
         // 8255 (ports $1F/$3F/$5F/$7F), after ZEsarUX's didaktikgama.c.
+        import { Memory } from '../core/memory.js';
+        import { Spectrum } from '../core/spectrum.js';
+        import { getMachineProfile } from '../core/machines.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -38,7 +41,7 @@
         setInterval(() => { if (!finished) render(); }, 300);
         function render() {
             if (!finished) {
-                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
                 return;
             }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
@@ -61,7 +64,69 @@
         }
 
 
+        // The 8255 and the second bank, with NO ROM. Everything below needs
+        // roms/dgama89.rom and skips without it, and that ROM is not in FUSE or
+        // ZEsarUX's distribution -- so this suite ran 0 asserts and still
+        // reported green, which looks exactly like passing. The 80KB IS the
+        // layer, so it is pinned here where it always runs.
+        function banking() {
+            section('the 8255 and the second 32KB bank (no ROM needed)');
+            const canvas = document.createElement('canvas');
+            const sp = new Spectrum(canvas, { machineType: 'dgama' });
+            const m = sp.memory;
+
+            assert(getMachineProfile('dgama').gama80k === true && !!m.gamaBank1 &&
+                   m.gamaBank1.length === 32768,
+                'a Gama has a second 32KB bank; the profile says so',
+                m.gamaBank1 ? m.gamaBank1.length : 'none');
+            assert(!new Memory('48k').gamaBank1 && !new Memory('128k').gamaBank1,
+                'and nothing else has one');
+
+            // Power-on is mode $9B: every port an input, so PC0 cannot select
+            // and is pulled low. Bank 0 whatever port C holds.
+            sp.reset();
+            assert(m.gamaBank === 0, 'after reset: mode $9B, all inputs, bank 0');
+            sp._gama8255Write(3, 0x01);                  // BSR: set PC0
+            assert(m.gamaBank === 0,
+                'PC0 set while C is an INPUT still reads bank 0',
+                'bank ' + m.gamaBank);
+
+            // $92 is what the ROM leaves: the low half of C an output, so PC0
+            // counts. Setting the mode clears the outputs, hence bank 0 first.
+            sp._gama8255Write(3, 0x92);
+            assert(m.gamaBank === 0, 'a mode set clears port C, so bank 0');
+            sp._gama8255Write(3, 0x01);                  // BSR: PC0 = 1
+            assert(m.gamaBank === 1, 'then PC0 = 1 selects bank 1', 'bank ' + m.gamaBank);
+            sp._gama8255Write(3, 0x00);                  // BSR: PC0 = 0
+            assert(m.gamaBank === 0, 'and PC0 = 0 comes back to bank 0');
+
+            // The two banks are genuinely separate storage at $8000.
+            sp._gama8255Write(3, 0x00);
+            m.write(0x8000, 0xA5);
+            m.write(0xFFFF, 0x5A);
+            sp._gama8255Write(3, 0x01);
+            m.write(0x8000, 0x3C);
+            const inBank1 = m.read(0x8000);
+            sp._gama8255Write(3, 0x00);
+            assert(inBank1 === 0x3C && m.read(0x8000) === 0xA5 && m.read(0xFFFF) === 0x5A,
+                '$8000-$FFFF is two separate 32KB banks, not one',
+                `bank1 $${inBank1.toString(16)}, bank0 $${m.read(0x8000).toString(16)}`);
+
+            // $4000-$7FFF is the machine's own contended RAM in both banks
+            sp._gama8255Write(3, 0x00);
+            m.write(0x4000, 0x11);
+            sp._gama8255Write(3, 0x01);
+            assert(m.read(0x4000) === 0x11, '$4000 is the same RAM whichever bank is in');
+
+            // BSR addresses a bit by D3-D1, so only bit 0 moves the bank
+            sp._gama8255Write(3, 0x92);
+            sp._gama8255Write(3, 0x03);                  // set PC1, not PC0
+            assert(m.gamaBank === 0, 'a BSR for another port C bit leaves the bank alone',
+                'bank ' + m.gamaBank);
+        }
+
         async function runTests() {
+            banking();
             section('Didaktik Gama');
             const ok = async (u) => fetch(u).then(r => r.ok, () => false);
             if (!(await ok('../roms/dgama89.rom'))) { skip('roms/dgama89.rom not present'); return; }

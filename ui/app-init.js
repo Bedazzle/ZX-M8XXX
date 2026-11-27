@@ -113,7 +113,7 @@ import { findKeyScanTables, findCharTables, findWordTables,
 import { compareRuns, firstDivergence, divergenceContext,
          diffMemoryImages, diffRegisters } from '../core/divergence.js';
 import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } from '../core/api-manifest.js';
-    const APP_VERSION = '26.11.04';
+    const APP_VERSION = '26.11.09';
 
     // A static deploy has no hashed filenames, so a browser can serve a fresh
     // index.html with cached JavaScript: the title shows the new version while the
@@ -3067,6 +3067,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
         updateDidaktikStatus();
         updateMouseStatus();   // the HC-2000 takes the Kempston mouse away
         updateHcIf1Status();   // and brings its own disk interface
+        updateTkmemStatus();   // a TKMEM-128 II is for a 48K only
         diskActivityAPI.setup();
         // Which disk interfaces exist has just changed, so the catalogue and
         // its drive tabs are stale: they were left showing the old machine's
@@ -3098,7 +3099,7 @@ import { API, API_VERSION, API_CATEGORIES, buildCapabilities, checkRequired } fr
     });
     
     // Input & Mouse Settings (extracted to ui/input-settings.js)
-    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateHcIf1Status, updateMouseStatus, gamepadAPI, bootAPI } =
+    const { saveInputSettings, updateBetaDiskStatus, updatePlusDStatus, updateIF1Status, updateOpusStatus, updateDidaktikStatus, updateHcIf1Status, updateTkmemStatus, updateMouseStatus, gamepadAPI, bootAPI } =
         initInputSettings({
             getSpectrum: () => spectrum,
             getCanvas: () => canvas,

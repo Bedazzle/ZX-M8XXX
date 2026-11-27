@@ -1280,7 +1280,7 @@ export function initExplorerViews(xp) {
                 const previewIcon = !previewable ? '' : file.size === SCREEN_ATTR_SIZE ? '\uD83D\uDD24' : '\uD83D\uDDBC\uFE0F';
                 const dirChildClass = (afterDir && !isDir) ? ' dir-child' : '';
 
-                const displayName = isDir ? file.name : `${file.name}${file.ext ? '.' + file.ext : ''}`;
+                const displayName = escapeHtml(isDir ? file.name : `${file.name}${file.ext ? '.' + file.ext : ''}`);
 
                 html += `<div class="explorer-file-entry${dirChildClass}" data-index="${i}">
                     <span class="explorer-file-num">${i + 1}</span>
@@ -1337,7 +1337,7 @@ export function initExplorerViews(xp) {
             html += `<div class="explorer-block explorer-zip-file" data-zip-index="${i}" style="cursor:pointer">
                 <span class="explorer-block-num">${i + 1}</span>
                 <span class="explorer-block-type">${ext.toUpperCase()}</span>
-                <span class="explorer-block-name">${file.name}${extraInfo}</span>
+                <span class="explorer-block-name">${escapeHtml(file.name)}${extraInfo}</span>
                 <span class="explorer-block-size">${file.size.toLocaleString()} bytes</span>
             </div>`;
         }
@@ -1785,7 +1785,7 @@ export function initExplorerViews(xp) {
             const isMgt = xp.explorerParsed.type === 'mgt';
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const displayName = isMgt ? `${file.name} [${file.typeName}]` : `${file.name}.${file.ext}`;
+                const displayName = escapeHtml(isMgt ? `${file.name} [${file.typeName}]` : `${file.name}.${file.ext}`);
                 if (file.ext === 'B') {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
@@ -1801,7 +1801,7 @@ export function initExplorerViews(xp) {
             const files = xp.explorerParsed.files;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const displayName = `${file.name} [${file.typeName}]`;
+                const displayName = escapeHtml(`${file.name} [${file.typeName}]`);
                 if (file.ext === 'B') {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
@@ -1815,7 +1815,7 @@ export function initExplorerViews(xp) {
             const files = xp.explorerParsed.files;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const displayName = `${file.name} [${file.typeName}]`;
+                const displayName = escapeHtml(`${file.name} [${file.typeName}]`);
                 if (file.ext === 'B') {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
@@ -1832,7 +1832,7 @@ export function initExplorerViews(xp) {
             const files = xp.explorerParsed.files;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const displayName = `${file.name} [${file.typeName}]`;
+                const displayName = escapeHtml(`${file.name} [${file.typeName}]`);
                 if (file.type === 'P') {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);
                     basicSources.push(i.toString());
@@ -1847,7 +1847,7 @@ export function initExplorerViews(xp) {
         } else if (xp.explorerParsed.type === 'hobeta') {
             if (!xp.explorerParsed.error) {
                 const f = xp.explorerParsed.file;
-                const trimName = f.name.replace(/\s+$/, '');
+                const trimName = escapeHtml(f.name.replace(/\s+$/, ''));
                 if (f.ext === 'B') {
                     basicOpts.push(`<option value="0">${trimName}.${f.ext}</option>`);
                     basicSources.push('0');
@@ -1861,7 +1861,7 @@ export function initExplorerViews(xp) {
             const files = xp.explorerParsed.files;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const displayName = file.name + (file.ext ? '.' + file.ext : '');
+                const displayName = escapeHtml(file.name + (file.ext ? '.' + file.ext : ''));
                 const addrStr = file.loadAddress !== undefined ? ` @ ${fmtAddr(file.loadAddress)}` : '';
                 if (file.plus3Type === 0) {
                     basicOpts.push(`<option value="${i}">${displayName}</option>`);

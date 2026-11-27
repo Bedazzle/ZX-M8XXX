@@ -1354,8 +1354,9 @@ import { xorChecksum } from './common.js';
                 // so `RUN` and `CAT 1` returned from the trap with carry clear
                 // instead of reading the filename, and the Opus answered
                 // "C Nonsense in BASIC" to a command it had built itself.
-                if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
-                    this.memory.if1Active || this.memory.didaktikActive) {
+                if (this.memory.plusDActive || this.memory.discipleActive ||
+                    this.memory.opusActive || this.memory.if1Active ||
+                    this.memory.didaktikActive) {
                     return false;
                 }
                 // No tape data or no blocks - return error immediately (no EAR emulation)
@@ -1455,8 +1456,9 @@ import { xorChecksum } from './common.js';
             if (this.memory.trdosActive) return false;
             if (this.memory.beta48On && this.memory.beta48Latch) return false;
             if (this.memory.fdd3000Active || this.memory.kempdiscActive) return false;
-            if (this.memory.plusDActive || this.memory.discipleActive || this.memory.opusActive ||
-                this.memory.if1Active || this.memory.didaktikActive) return false;
+            if (this.memory.plusDActive || this.memory.discipleActive ||
+                this.memory.opusActive || this.memory.if1Active ||
+                this.memory.didaktikActive) return false;
 
             // Note: no carry flag check. Unlike LD_BYTES (0x0556) which uses carry
             // to distinguish LOAD (carry set) from VERIFY (carry clear), SA_BYTES is

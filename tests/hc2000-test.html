@@ -40,7 +40,17 @@
             const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
         }
         function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result). This suite
+        // boots a real disk over many frames and runFrames is synchronous, so
+        // without it a long stretch looks like a finished run.
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
         function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
                 `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
                 (skipped ? ` | Skipped: ${skipped}` : '');
@@ -284,6 +294,21 @@
             // HC: nothing or HC IF1 — a Beta (or any add-on) set in Settings stays off
             assert(!sp.memory.beta48On && !sp._betaDiskPagingEnabled && !sp._plusDPagingEnabled &&
                 !sp._opusPagingEnabled && !sp._disciplePagingEnabled, 'no add-on disk interface on the HC');
+            // ...and that is a guard, not an accident of this machine having
+            // no ROMs loaded for them. Give it a TR-DOS ROM and switch the
+            // Beta Disk on: it must still stand down, because the HC IF1
+            // pages in at the same $0008.
+            {
+                const was = { rom: sp.memory.trdosRom, on: sp.betaDiskEnabled };
+                sp.memory.trdosRom = new Uint8Array(16384).fill(0xC9);
+                sp.betaDiskEnabled = true;
+                sp.updateBetaDiskPagingFlag();
+                assert(!sp._betaDiskPagingEnabled && !sp._isBetaDiskActive(),
+                    'a Beta 128 stands down beside the HC IF1 even with trdos.rom and the interface on');
+                sp.memory.trdosRom = was.rom;
+                sp.betaDiskEnabled = was.on;
+                sp.updateBetaDiskPagingFlag();
+            }
             assert(sp.machineType === 'hc2000' && !!sp.hcIf1 && sp.memory.hasHcIf1Rom(), 'HC-2000 with HC IF1 ROM');
             assert(sp.fdc === sp.hcIf1.fdc, 'the HC IF1 controller is the machine\'s FDC');
             await zx.runFrames(150);
@@ -406,6 +431,7 @@
             } catch (e) {
                 assert(false, 'suite threw', e && e.stack || String(e));
             }
+            finished = true;
             render();
         })();
     </script>

@@ -169,6 +169,15 @@
                 'the DOS ran: its banner is up, or it has handed over to BASIC',
                 t.split('\n').filter(l => l.trim()).slice(0, 4).join(' | '));
             assert(sp.triggerBetaMagic() && sp.memory.beta48Latch, 'magic button: NMI with the ROM latched');
+            // The system port's whole job, driven through the real port path:
+            // bit 7 = 0 pages the DOS ROM in, bit 7 = 1 pages it out. Nothing
+            // above notices if that sense is inverted, because reset and the
+            // magic button both set the latch directly.
+            sp._beta48Master = 0;          // the DOS may have switched I/O off
+            sp.portWrite(0x00FF, 0x00);
+            assert(sp.memory.beta48Latch, 'system port bit 7 = 0: the DOS ROM pages in');
+            sp.portWrite(0x00FF, 0x80);
+            assert(!sp.memory.beta48Latch, 'system port bit 7 = 1: and pages out again');
             sp.betaDiskEnabled = prev.en; sp.betaVariant = prev.v; sp.opusEnabled = prev.opus;
             sp.updateBetaDiskPagingFlag();
         }

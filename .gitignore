@@ -12,6 +12,9 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
+# Python bytecode (run-tests.py, run-app-tests.py, serve.py)
+__pycache__/
+
 roms/*
 CLAUDE.md
 .claude

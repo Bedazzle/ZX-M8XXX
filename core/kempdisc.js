@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - Kempston Disc Interface (K-DOS)
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * After MAME's bus/spectrum/kempdisc.cpp (BSD-3-Clause, MetalliC).
  * Abbeydale Designers 1985: a WD1770 and an 8KB ROM (K-DOS 2.0 / 2.1 / 2.1

@@ -405,7 +405,13 @@
                         <label id="covoxPortLabel" style="margin-left: 10px;" title="Covox port (low byte, hex): $FB on the Pentagon, $DD on the Scorpion">
                             port $<input type="text" id="txtCovoxPort" maxlength="2" style="width: 2.5em;" value="FB">
                         </label>
-                        <label style="margin-left: 15px;" title="Spectrum 128 MIDI out: the ROM (PLAY &quot;Y1...&quot;) and programs send MIDI on AY register 14 bit 2 at 31250 baud; the bytes go to the Web MIDI output chosen here (a synth, Microsoft GS Wavetable, loopMIDI...)">
+                        <label id="stereoCovoxLabel" style="margin-left: 10px;" title="Stereo Covox ports (low byte, hex): left and right">
+                            L $<input type="text" id="txtStereoCovoxL" maxlength="2" style="width: 2.5em;" value="0F">
+                            R $<input type="text" id="txtStereoCovoxR" maxlength="2" style="width: 2.5em;" value="4F">
+                        </label>
+                    </div>
+                    <div class="settings-row">
+                        <label title="Spectrum 128 MIDI out: the ROM (PLAY &quot;Y1...&quot;) and programs send MIDI on AY register 14 bit 2 at 31250 baud; the bytes go to the Web MIDI output chosen here (a synth, Microsoft GS Wavetable, loopMIDI...)">
                             MIDI out
                             <select id="selMidiOut" style="margin-left: 4px; max-width: 14em;">
                                 <option value="">off</option>
@@ -415,10 +421,6 @@
                             </select>
                         </label>
                         <span id="midiStatus" class="iface-status" style="margin-left: 6px;"></span>
-                        <label id="stereoCovoxLabel" style="margin-left: 10px;" title="Stereo Covox ports (low byte, hex): left and right">
-                            L $<input type="text" id="txtStereoCovoxL" maxlength="2" style="width: 2.5em;" value="0F">
-                            R $<input type="text" id="txtStereoCovoxR" maxlength="2" style="width: 2.5em;" value="4F">
-                        </label>
                     </div>
                     <div class="settings-row">
                         <label for="volumeSlider" style="min-width: 60px;">Volume:</label>
@@ -481,15 +483,13 @@
                         <span id="betaDiskStatus" class="iface-status"></span>
                     </div>
                     <div class="iface-row" id="betaVariantRow">
-                        <label class="iface-name" style="margin-left: 15px;" title="Which Beta Disk an add-on Beta is. Beta 48 = the 48K-era Beta Disk plus (TR-DOS 4.x) and its clones, e.g. the Brazilian CBI-95 / IDS / AR-20 and the Vision boards. Pentagon and Scorpion keep their built-in Beta 128.">
-                            Type
-                            <select id="selBetaVariant" style="margin-left: 4px;">
+                        <label class="checkbox-label iface-name" for="selBetaVariant" style="margin-left: 15px;" title="Which Beta Disk an add-on Beta is. Beta 48 = the 48K-era Beta Disk plus (TR-DOS 4.x) and its clones, e.g. the Brazilian CBI-95 / IDS / AR-20 and the Vision boards. Pentagon and Scorpion keep their built-in Beta 128.">Type</label>
+                        <select id="selBetaVariant">
                                 <option value="128">Beta 128 (TR-DOS 5.x)</option>
                                 <option value="auto">Beta 48 — from the ROM</option>
                                 <option value="plus">Beta 48 — Beta Disk plus / Vision</option>
                                 <option value="cbi">Beta 48 — CBI-95 / IDS / AR-20</option>
-                            </select>
-                        </label>
+                        </select>
                         <button id="btnLoadBeta48Rom" class="control-btn iface-rom-btn" title="Load the Beta 48 ROM (beta48.rom: TR-DOS 4.x, Vision, CBI-95, IDS, AR-20...; 8KB or 16KB, D0/D7-swapped dumps are straightened)">Load ROM</button>
                         <input type="file" id="romBeta48Input" class="file-input" accept=".rom,.bin" style="display:none">
                         <span id="beta48RomName" class="iface-rom-name"></span>
@@ -561,7 +561,7 @@
                     </div>
 
                     <div class="iface-row">
-                        <label class="checkbox-label iface-name" title="HC IF1: the HC-2000's Interface 1 with an i8272 floppy controller (DSK/IMG disks). HC-2000 only. Most machines had it built in; switch it off for an HC-2000 without one. No other disk interface works on an HC-2000.">
+                        <label class="checkbox-label iface-name" title="HC IF1: the HC-2000's Interface 1 with an i8272 floppy controller (DSK/IMG disks). HC-2000 only. Most machines had it built in; switch it off for an HC-2000 without one (then +D, Opus, Interface 1 etc. can be used instead).">
                             <input type="checkbox" id="chkHcIf1"> HC IF1 (HC-2000)
                         </label>
                         <button id="btnLoadHcIf1Rom" class="control-btn iface-rom-btn" title="Load HC IF1 ROM file (hc-if1.rom, 16KB)">Load ROM</button>
@@ -605,21 +605,17 @@
                     <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Memory expansion</div>
 
                     <div class="iface-row">
-                        <label class="iface-name wide" title="TKMEM-128 II (github.com/lrrosa/tkmem128-ii): external 128K (or 512K) RAM for a 48K / TK90X / TK95. Port 7FFD (A15=0, A5=1, A1=0): bits 0-2 = bank at $C000, bit 5 = lock, bits 6-7 = upper banks in 512K mode; $8000 is bank 2. No shadow screen (bit 3 ignored), the 48K ROM stays. Enough for most 128K games. 48K or TK-90X/TK-95 only; changing it resets the machine.">
-                            TKMEM-128 II
-                            <select id="selTkmem" style="margin-left: 4px;">
+                        <label class="checkbox-label iface-name wide" for="selTkmem" title="TKMEM-128 II (github.com/lrrosa/tkmem128-ii): external 128K (or 512K) RAM for a 48K / TK90X / TK95. Port 7FFD (A15=0, A5=1, A1=0): bits 0-2 = bank at $C000, bit 5 = lock, bits 6-7 = upper banks in 512K mode; $8000 is bank 2. No shadow screen (bit 3 ignored), the 48K ROM stays. Enough for most 128K games. 48K or TK-90X/TK-95 only; changing it resets the machine.">TKMEM-128 II</label>
+                        <select id="selTkmem">
                                 <option value="0">off</option>
                                 <option value="128">128K</option>
                                 <option value="512">512K</option>
-                            </select>
-                        </label>
-                        <label class="iface-name" style="margin-left: 10px;" title="Which address lines select the latch. The board's GAL (A15=0, A5=1, A1=0) also answers $00FC/$07FC, which every Beta 48 DOS writes on each call (OUT ($FC),A with A = 0 / 7): bank 0/7 is paged in under its stack and the DOS hangs. Adding A14=1 keeps 7FFD and leaves those ports alone.">
-                            decode
-                            <select id="selTkmemDecode" style="margin-left: 4px;">
+                        </select>
+                        <label class="checkbox-label" for="selTkmemDecode" style="margin-left: 10px;" title="Which address lines select the latch. The board's GAL (A15=0, A5=1, A1=0) also answers $00FC/$07FC, which every Beta 48 DOS writes on each call (OUT ($FC),A with A = 0 / 7): bank 0/7 is paged in under its stack and the DOS hangs. Adding A14=1 keeps 7FFD and leaves those ports alone.">decode</label>
+                        <select id="selTkmemDecode">
                                 <option value="a14">A15 A14 A5 A1 (works with Beta 48)</option>
                                 <option value="gal">A15 A5 A1 (board GAL as is)</option>
-                            </select>
-                        </label>
+                        </select>
                         <span id="tkmemStatus" class="iface-status"></span>
                     </div>
 

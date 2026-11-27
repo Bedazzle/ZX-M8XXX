@@ -1,8 +1,11 @@
 /**
  * ZX-M8XXX - HC IF1: the HC-2000's Interface 1 with a floppy controller
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
- * Port of Alex Badea's FUSE if1_fdc.c (fuse-emulator-svn, branch hc2000-v2).
+ * Derived from if1_fdc.c by Alex Badea, in FUSE (the Free Unix Spectrum
+ * Emulator), fuse-emulator-svn branch hc2000-v2. That file is
+ * GPL-2.0-or-later and its copyright stays with its authors; the "or later"
+ * clause is what lets it be carried into this GPL-3.0-or-later work.
  *
  * The HC IF1 is an Interface 1 whose microdrive was replaced by an i8272
  * (µPD765) floppy controller. It pages in exactly like an Interface 1

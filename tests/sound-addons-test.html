@@ -38,7 +38,7 @@
         setInterval(() => { if (!finished) render(); }, 300);
         function render() {
             if (!finished) {
-                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
                 return;
             }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
@@ -98,6 +98,13 @@
             sp.portWrite(0x00FB, 0x10);
             sp.portWrite(0x00DD, 0x40);
             assert(sp.dacLevels[0] === 0x40, 'Covox on a set port ($DD) and not on $FB');
+            // $DD against $FB differ in nearly every bit, so a port compare that
+            // ignored bit 0 would still pass above. The neighbour that differs
+            // ONLY in bit 0 is what pins a full 8-bit compare.
+            sp.portWrite(0x00DC, 0x60);
+            assert(sp.dacLevels[0] === 0x40,
+                'and not on $DC, the port one bit away',
+                'level $' + sp.dacLevels[0].toString(16));
             sp.setDac('stereocovox', 0xFB, [0x22, 0x3A]);
             sp.portWrite(0x0022, 0x30); sp.portWrite(0x003A, 0xD0); sp.portWrite(0x00FB, 0x11);
             assert(sp.dacLevels.join() === '48,48,208,208', 'Stereo Covox: left port to both left channels, right port to both right');
@@ -127,6 +134,17 @@
             sp.setDac('none');
             sp.portWrite(0x00FB, 0x77);
             assert(sp.dacLevels.every(v => v === 0x80), 'DAC off: no levels change');
+            // Reset must put the DACs back to SILENCE, which is $80 and not 0 --
+            // a DAC held at 0 is a full-scale offset, not quiet. The assert above
+            // cannot see this: with the DAC off the levels were never moved from
+            // the $80 they start at, so reset had nothing to restore.
+            sp.setDac('covox', 0xFB);
+            sp.portWrite(0x00FB, 0x1234 & 0xFF);
+            const moved = sp.dacLevels.every(v => v === 0x34);
+            sp.reset();
+            assert(moved && sp.dacLevels.every(v => v === 0x80),
+                'reset returns the DACs to silence ($80, not 0)',
+                'moved ' + moved + ', now ' + sp.dacLevels.join());
 
             sp.setTurboSound(prev.ts);
             sp.setDac(prev.dac, prev.port, [0x0F, 0x4F]);

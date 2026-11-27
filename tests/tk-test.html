@@ -24,6 +24,10 @@
         // Microdigital TK-90X / TK-95: 48K clones with the Microdigital ULA (228
         // T-states a line, 312 lines at 50 Hz), no floating bus; TKMEM-128 II and
         // the Brazilian Beta 48 clones work on them.
+        import { ULA } from '../core/ula.js';
+        import { Memory } from '../core/memory.js';
+        import { Spectrum } from '../core/spectrum.js';
+        import { getMachineProfile } from '../core/machines.js';
 
         const TEST_VERSION = '0.1.0';
         const logEl = document.getElementById('log');
@@ -39,7 +43,7 @@
         setInterval(() => { if (!finished) render(); }, 300);
         function render() {
             if (!finished) {
-                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                summaryEl.textContent = `running\u2026 pass ${passed}, fail ${failed} (${++beat})`;
                 return;
             }
             summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
@@ -62,7 +66,88 @@
         }
 
 
+        // The Microdigital ULA's line time, with NO ROM. Everything below this
+        // needs roms/tk90x.rom and skips without it, so on a tree that does not
+        // have those ROMs -- they are not in FUSE, which does not emulate these
+        // machines -- the suite ran 0 asserts and still reported green. The
+        // 228 T-states a line IS the layer, so it is pinned here where it can
+        // always run, together with the thing the generalisation could break:
+        // the 48K itself must still be 224.
+        function timing() {
+            section('the Microdigital ULA line time (no ROM needed)');
+            const fakeMemory = (mt) => ({
+                profile: getMachineProfile(mt), currentRamBank: 0,
+                read: () => 0, write: () => {}, readScreen: () => 0
+            });
+            const of = (mt) => {
+                const u = new ULA(fakeMemory(mt), mt);
+                return { line: u.TSTATES_PER_LINE, frame: u.TSTATES_PER_FRAME,
+                         lines: u.LINES_PER_FRAME, topLeft: u.TOP_LEFT_PIXEL_TSTATE };
+            };
+            const t90 = of('tk90x'), t95 = of('tk95'), f48 = of('48k');
+            assert(t90.line === 228 && t95.line === 228,
+                'TK-90X and TK-95: 228 T-states a line',
+                `${t90.line} / ${t95.line}`);
+            assert(t90.lines === 312 && t90.frame === 228 * 312 && t90.frame === 71136,
+                'and 312 lines, so 71136 T a frame',
+                `${t90.lines} lines, ${t90.frame} T`);
+            // TOP_LEFT_PIXEL_TSTATE used to be the constant 14336; the layer
+            // derives it as 64 * the line time. If that were left written down,
+            // every TK screen would be drawn a third of a frame out of step.
+            assert(t90.topLeft === 64 * 228 && t90.topLeft === 14592,
+                'the first pixel at 64 lines in, derived from the line time',
+                String(t90.topLeft));
+            assert(f48.line === 224 && f48.frame === 69888 && f48.topLeft === 14336,
+                'and the 48K is untouched: 224, 69888, 14336',
+                `${f48.line} / ${f48.frame} / ${f48.topLeft}`);
+            // The default is what makes the 48K branch work for both: a profile
+            // without tstatesPerLine must fall back to 224, not to nothing.
+            assert(getMachineProfile('tk90x').tstatesPerLine === 228 &&
+                   getMachineProfile('48k').tstatesPerLine === undefined,
+                'the TK profiles declare the line time and the 48K does not',
+                String(getMachineProfile('48k').tstatesPerLine));
+
+            // TKMEM-128 II is the other half of the layer: the board was sold
+            // for the TK-90X and TK-95 as well as the 48K, and setTkmem decides
+            // who may have one. Nothing asserted that before -- narrowing it
+            // back to the 48K alone failed no test at all.
+            const fits = (mt, kb) => {
+                const m = new Memory(mt);
+                m.setTkmem(kb);
+                return { ram: m.tkmemRam ? m.tkmemRam.length : 0, big: m.tkmem512 };
+            };
+            const k90 = fits('tk90x', 128), k95 = fits('tk95', 512), k48 = fits('48k', 128);
+            assert(k90.ram === 128 * 1024 && k95.ram === 512 * 1024 && k95.big &&
+                   k48.ram === 128 * 1024,
+                'TKMEM-128 II fits a TK-90X and a TK-95 as well as a 48K',
+                `tk90x ${k90.ram}, tk95 ${k95.ram}, 48k ${k48.ram}`);
+            assert(fits('128k', 128).ram === 0 && fits('pentagon', 128).ram === 0 &&
+                   fits('tc2048', 128).ram === 0,
+                'and still nothing else, the Timex included',
+                `128k ${fits('128k', 128).ram}, tc2048 ${fits('tc2048', 128).ram}`);
+
+            // "AY in 48K" is the third relaxation, and the one most easily lost:
+            // which machines may have an AY added is a hardcoded list inside
+            // _ayOnPorts(), not a profile field like ayDefault, so adding a
+            // machine means remembering to edit it. Taking the TKs back out
+            // failed nothing either.
+            const canvas = document.createElement('canvas');
+            const ayOn = (mt) => {
+                const sp = new Spectrum(canvas, { machineType: mt });
+                sp.ayEnabled = false;
+                sp.ay48kEnabled = true;
+                return sp._ayOnPorts();
+            };
+            assert(ayOn('tk90x') && ayOn('tk95') && ayOn('48k'),
+                'an AY can be added to a TK-90X and a TK-95, as to a 48K',
+                `tk90x ${ayOn('tk90x')}, tk95 ${ayOn('tk95')}`);
+            assert(!ayOn('pentagon') && !ayOn('tc2068'),
+                'and the switch does nothing where there is an AY already',
+                `pentagon ${ayOn('pentagon')}, tc2068 ${ayOn('tc2068')}`);
+        }
+
         async function runTests() {
+            timing();
             section('TK-90X / TK-95');
             const ok = async (u) => fetch(u).then(r => r.ok, () => false);
             if (!(await ok('../roms/tk90x.rom'))) { skip('roms/tk90x.rom not present'); return; }

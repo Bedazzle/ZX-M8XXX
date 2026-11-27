@@ -287,7 +287,6 @@ import {
             }
         }
 
-        // Load TR-DOS ROM (separate 16KB ROM for Beta Disk interface)
         // Beta 48 ROM: already prepared by core/beta48.js (16KB, bits straight)
         loadBeta48Rom(rom16k) {
             this.beta48Rom = new Uint8Array(16384);
@@ -304,6 +303,7 @@ import {
                 (this.beta48Latch || ((addr & 0xFF00) === 0x3C00 && !this.beta48WindowOff));
         }
 
+        // Load TR-DOS ROM (separate 16KB ROM for Beta Disk interface)
         loadTrdosRom(data) {
             if (this.trdosRom) {
                 const src = new Uint8Array(data);
@@ -367,7 +367,6 @@ import {
             return this.discipleRom[(this.discipleRom.length > 8192 ? this.discipleRomBank * 8192 : 0) + off];
         }
 
-        // Load Interface 1 ROM (8KB)
         // Load the HC IF1 ROM (16KB). Only the HC-2000 has one.
         loadHcIf1Rom(data) {
             this.hcIf1Rom = new Uint8Array(16384);
@@ -390,6 +389,7 @@ import {
                 (this.hcConfig & 0x02) === 0;
         }
 
+        // Load Interface 1 ROM (8KB)
         loadIF1Rom(data) {
             this.if1Rom = new Uint8Array(8192);
             const src = new Uint8Array(data);

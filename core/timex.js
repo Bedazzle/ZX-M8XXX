@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - Timex SCLD display modes (TC2048)
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * After FUSE's peripherals/scld.c and display.c. Port $FF (DEC):
  *   bits 0-2  screen mode

@@ -1,6 +1,6 @@
 /**
  * ZX-M8XXX - Spectrum 128 MIDI out (AY register 14, bit 2)
- * @license GPL-3.0
+ * @license GPL-3.0-or-later
  *
  * The 128K's RS232/MIDI socket is driven by I/O port A of the AY (register 14):
  * bit 2 is RS232 TXD and MIDI OUT. The ROM (PLAY with a "Y" MIDI channel, and
