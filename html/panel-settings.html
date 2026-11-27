@@ -631,6 +631,12 @@
                         </select>
                         <span id="turboStatus" class="iface-status"></span>
                     </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="MC146818 real-time clock with its CMOS RAM, showing the host's time. Pentagon / Pentagon 1024: the Gluk clock (#EFF7 bit 7 switches it on, #DFF7 picks the register, #BFF7 reads and writes it). Scorpion: SMUC's clock (TR-DOS paged in: #DFBA, register or data by #FFBA bit 7), with SMUC itself answering version 1.2 and no hard disk. The CMOS RAM is kept in the browser.">
+                            <input type="checkbox" id="chkRtc"> CMOS clock (Gluk / SMUC)
+                        </label>
+                        <span id="rtcStatus" class="iface-status"></span>
+                    </div>
 
                     <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Emulation accuracy</div>
 

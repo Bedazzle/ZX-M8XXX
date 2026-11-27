@@ -104,7 +104,7 @@
             await zx.ready({ machine: 'scorpiontb' });
             sp = frame.contentWindow.spectrum;
             zx.pause();
-            const m = sp.memory;
+            let m = sp.memory;
             assert(sp.machineType === 'scorpiontb' && m.ram.length === 64 && m.rom.length === 16,
                 '1MB of RAM, 16 ROM banks (the 256KB ProfROM)', m.ram.length + ' / ' + m.rom.length);
             sp.reset();
@@ -164,6 +164,52 @@
             sp.portWrite(0x1FFD, 0x00);
             assert(m.read(0x0000) === m.rom[3][0], 'without it, the DOS shows TR-DOS (bank 3)');
             m.trdosActive = false;
+
+            section('CMOS clock: SMUC');
+            const prevRtc = sp.rtcEnabled;
+            sp.setRtc(true);
+            sp.rtc.fixedTime = new Date(2026, 10, 27, 21, 45, 37).getTime();   // Fri 27.11.2026
+            m.trdosActive = true;
+            assert(sp.portRead(0x5FBA) === 0x3F && sp.portRead(0x5FBE) === 0x57, 'SMUC answers version 1.2 (#3F / #57)');
+            sp.portWrite(0xFFBA, 0x77);                         // SYS bit 7 = 0: #DFBA is the address
+            const rd = (a) => { sp.portWrite(0xDFBA, a); return sp.portRead(0xDFBA); };
+            assert(rd(0x00) === 0x37 && rd(0x02) === 0x45 && rd(0x04) === 0x21,
+                'time in BCD: 21:45:37', [rd(4), rd(2), rd(0)].map(v => v.toString(16)).join(':'));
+            assert(rd(0x07) === 0x27 && rd(0x08) === 0x11 && rd(0x09) === 0x26 && rd(0x06) === 6,
+                'date: 27.11.26, Friday = 6', [rd(7), rd(8), rd(9), rd(6)].map(v => v.toString(16)).join(' '));
+            sp.portWrite(0xDFBA, 0x20);
+            sp.portWrite(0xFFBA, 0xF7);                         // SYS bit 7 = 1: #DFBA is the data
+            sp.portWrite(0xDFBA, 0xA5);
+            sp.portWrite(0xFFBA, 0x77);
+            assert(rd(0x20) === 0xA5, 'CMOS RAM: written with SYS bit 7 up, read back');
+            sp.portWrite(0xFFBA, 0x77);
+            sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x06); sp.portWrite(0xFFBA, 0x77);
+            assert(rd(0x00) === 37 && rd(0x04) === 21, 'register B bit 2: binary');
+            sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x02); sp.portWrite(0xFFBA, 0x77);
+            m.trdosActive = false;
+            assert(sp.portRead(0x5FBA) !== 0x3F, 'DOS off: SMUC does not answer');
+            sp.rtc.data[0x20] = 0;
+
+            section('CMOS clock: Gluk');
+            await zx.ready({ machine: 'pentagon' });
+            const pp = frame.contentWindow.spectrum;
+            zx.pause();
+            pp.setRtc(true);
+            pp.rtc.fixedTime = new Date(2026, 10, 27, 9, 5, 7).getTime();
+            pp.portWrite(0xDFF7, 0x04);
+            assert(pp.portRead(0xBFF7) !== 0x09, 'with #EFF7 bit 7 down the clock is not there');
+            pp.portWrite(0xEFF7, 0x80);
+            const g = (a) => { pp.portWrite(0xDFF7, a); return pp.portRead(0xBFF7); };
+            assert(g(0x04) === 0x09 && g(0x02) === 0x05 && g(0x00) === 0x07, 'Gluk: #DFF7 register, #BFF7 data: 09:05:07');
+            pp.portWrite(0xDFF7, 0x40); pp.portWrite(0xBFF7, 0x3C);
+            assert(g(0x40) === 0x3C, 'Gluk: CMOS RAM written and read');
+            pp.portWrite(0xEFF7, 0x00);
+            pp.setRtc(prevRtc);
+            pp.rtc.fixedTime = null;
+            await zx.ready({ machine: 'scorpiontb' });
+            sp = frame.contentWindow.spectrum;
+            m = sp.memory;
+            zx.pause();
 
             section('ProfROM boot and a disk');
             sp.reset();

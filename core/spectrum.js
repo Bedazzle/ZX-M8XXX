@@ -30,7 +30,7 @@ import {
     DIDAKTIK_PORT_COMMAND, DIDAKTIK_PORT_TRACK, DIDAKTIK_PORT_SECTOR,
     DIDAKTIK_PORT_DATA, DIDAKTIK_PORT_AUX, DIDAKTIK_PORT_AUX_MASK
 } from './constants.js';
-import { hex8, hex16, storageGet } from './utils.js';
+import { hex8, hex16, storageGet, storageSet } from './utils.js';
 import { fmtAddr, fmtPort } from './addr-format.js';
 
 // Ticks from the start of an I/O instruction to its I/O cycle, keyed by the
@@ -81,6 +81,7 @@ import { SAA1099, SAA_CLOCK } from './saa1099.js';
 import { GeneralSound } from './gs.js';
 import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
+import { Mc146818 } from './cmos.js';
 
     export class Spectrum {
         constructor(canvas, options = {}) {
@@ -159,6 +160,27 @@ import { Disassembler } from './disasm.js';
             // $7FFD / $1FFD); turboForce, from the settings, overrides it (0 =
             // follow the machine).
             this.turboHw = 1;
+            // CMOS clock (core/cmos.js): the Gluk on a Pentagon (#EFF7 bit 7 on,
+            // #DFF7 register, #BFF7 data), SMUC's on a Scorpion (TR-DOS on:
+            // #DFBA, address or data by #FFBA bit 7). Its RAM is kept.
+            this.rtc = new Mc146818();
+            this.rtcEnabled = storageGet('zxm8_rtc') !== 'false';
+            this._glukOn = 0;
+            this._smucSys = 0;
+            this._smucFdd = 0xC0;           // #7FBA, the virtual-FDD latch
+            try {
+                const saved = storageGet('zxm8_cmos');
+                if (saved) this.rtc.loadRam(Uint8Array.from(saved.match(/../g).map(h => parseInt(h, 16))));
+            } catch (e) { /* none kept */ }
+            let rtcSaveTimer = null;
+            this.rtc.onChange = (data) => {
+                clearTimeout(rtcSaveTimer);
+                rtcSaveTimer = setTimeout(() => {
+                    try {
+                        storageSet('zxm8_cmos', Array.from(data, b => b.toString(16).padStart(2, '0')).join(''));
+                    } catch (e) { /* storage off */ }
+                }, 500);
+            };
             this.turboForce = [1, 2, 4].includes(+storageGet('zxm8_turbo')) ? +storageGet('zxm8_turbo') : 0;
             this._turboMul = 1;
             this._turboAcc = 0;
@@ -1617,6 +1639,7 @@ import { Disassembler } from './disasm.js';
         reset() {
             this.cpu.reset();
             this.setHwTurbo(1);
+            this._glukOn = 0;               // #EFF7 is cleared by reset; SMUC's SYS is not
             this.memory.reset();
             this.ula.reset();
             this.tapeLoader.rewind();
@@ -1845,6 +1868,37 @@ import { Disassembler } from './disasm.js';
                 this._midiUart.edge(this.absTStates(), level);
             }
         }
+
+        /**
+         * SMUC 1.x ports (Xpeccy+ hdd.c): TR-DOS space 1x?11xxx 101xx?10, only
+         * with the DOS paged in; Scorpion only. A15, A13 and A2 pick the register.
+         */
+        _smucPort(port) {
+            return this.profile.pagingModel === 'scorpion' && this.memory.trdosActive &&
+                (port & 0x18E3) === 0x18A2;
+        }
+
+        /**
+         * SMUC with its clock and no drive: version 1.2 (#5FBA #3F, #5FBE #57, as
+         * ProfROM reads them), the virtual FDD and PIC bytes Unreal gives, SYS
+         * with no NVRAM answering (SDA high), the clock at #DFBA, and the IDE
+         * registers ($F8BE-$FFBE, $D8BE) as a cable with no drive: the ATA
+         * pull-down on D7 reads not busy, so "HDD not found" comes at once.
+         */
+        _smucRead(port) {
+            switch (port & 0xA004) {
+                case 0x0000: return 0x3F;              // #5FBA version
+                case 0x0004: return 0x57;              // #5FBE revision
+                case 0x2000: return this._smucFdd | 0x37;   // #7FBA virtual FDD
+                case 0x2004: return 0x57;              // #7xBE PIC socket
+                case 0x8000: return this.rtc.readData();   // #DFBA clock
+                case 0xA000: return 0xFF;              // #FFBA SYS: no NVRAM
+                default: return 0x7F;                  // IDE, no drive
+            }
+        }
+
+        /** Gluk / SMUC clock on or off (Settings > Machines) */
+        setRtc(on) { this.rtcEnabled = !!on; if (!on) this._glukOn = 0; }
 
         /** The multiplier in force: the settings' if set, else the machine's */
         turboMultiplier() { return this.turboForce || this.turboHw; }
@@ -2397,12 +2451,15 @@ import { Disassembler } from './disasm.js';
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
                     // keyboard does not answer here; FUSE reads the latch back.
                     result = this.memory.hcConfig;
+                } else if (this.rtcEnabled && this.profile.ulaProfile === 'pentagon' &&
+                           this._glukOn && (port & 0xF008) === 0xB000) {
+                    result = this.rtc.readData();       // Gluk #BFF7
+                } else if (this.rtcEnabled && this._smucPort(port)) {
+                    result = this._smucRead(port);
                 } else if (this.profile.profRomPlanes && this.memory.trdosActive && lowByte === 0xBE) {
-                    // SMUC's IDE registers ($F8BE-$FFBE, DOS on; the ULA does not
-                    // answer then) with no drive on the cable: the ATA pull-down
-                    // on D7 reads as not busy, so the ProfROM says "HDD not
-                    // found" at once instead of waiting a minute for BUSY to
-                    // drop off a floating bus
+                    // No SMUC fitted: its IDE registers ($F8BE-$FFBE) still read
+                    // as a cable with no drive (see _smucRead), or the ProfROM
+                    // waits a minute for BUSY to drop off a floating bus
                     result = 0x7F;
                 } else if ((lowByte & 0x01) === 0 && !(this.profile.timex && lowByte !== 0xFE)) {
                     // Port 0xFE: keyboard + EAR input
@@ -2698,6 +2755,25 @@ import { Disassembler } from './disasm.js';
 
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
+
+            // CMOS clock: Gluk (Pentagon) and SMUC (Scorpion)
+            if (this.rtcEnabled) {
+                if (this.profile.ulaProfile === 'pentagon') {
+                    const g = port & 0xF008;            // A15-A12 and A3
+                    if (g === 0xE000) this._glukOn = val & 0x80;      // #EFF7 (the P1024 has its bits too)
+                    else if (g === 0xD000 && this._glukOn) { this.rtc.writeAddress(val); return; }
+                    else if (g === 0xB000 && this._glukOn) { this.rtc.writeData(val); return; }
+                } else if (this._smucPort(port)) {
+                    const reg = port & 0xA004;
+                    if (reg === 0xA000) this._smucSys = val;          // #FFBA
+                    else if (reg === 0x2000) this._smucFdd = val & 0xC8;   // #7FBA
+                    else if (reg === 0x8000) {                       // #DFBA
+                        if (this._smucSys & 0x80) this.rtc.writeData(val);
+                        else this.rtc.writeAddress(val);
+                    }
+                    return;
+                }
+            }
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);

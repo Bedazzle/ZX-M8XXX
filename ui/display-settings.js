@@ -175,6 +175,15 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             showTurbo();
             setInterval(showTurbo, 1000);
         }
+        const chkRtc = document.getElementById('chkRtc');
+        if (chkRtc) {
+            chkRtc.checked = !!getSpectrum().rtcEnabled;
+            chkRtc.addEventListener('change', () => {
+                getSpectrum().setRtc(chkRtc.checked);
+                storageSet('zxm8_rtc', chkRtc.checked);
+                showMessage(chkRtc.checked ? 'CMOS clock on (Gluk on a Pentagon, SMUC on a Scorpion)' : 'CMOS clock off');
+            });
+        }
         const chkSaa = document.getElementById('chkSaa');
         chkSaa.checked = !!getSpectrum().saaOn;
         chkSaa.addEventListener('change', () => {
