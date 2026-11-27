@@ -1865,6 +1865,13 @@ import { Disassembler } from './disasm.js';
          * CPU cycles, which are spent / mul cycles of the machine clock. The
          * remainder carries over, so in the long run it is exact.
          */
+        /** CPU time outside an instruction (INT / NMI acceptance), turbo applied */
+        _addCpuT(t) {
+            const before = this.cpu.tStates;
+            this.cpu.tStates += t;
+            if (this._turboMul > 1) this._turboSpend(before);
+        }
+
         _turboSpend(before) {
             const spent = this.cpu.tStates - before;
             if (spent <= 0) return;
@@ -2215,7 +2222,7 @@ import { Disassembler } from './disasm.js';
         triggerDiscipleNmi() {
             if (!this._isDiscipleActive()) return;
             this.memory.discipleActive = true;
-            this.cpu.tStates += this.cpu.nmi();
+            this._addCpuT(this.cpu.nmi());
         }
 
         // DISCiPLE port read: FDC $1B/$5B/$9B/$DB, $BB pages in, $7B sets the
@@ -2266,7 +2273,7 @@ import { Disassembler } from './disasm.js';
             // one of these six call sites used to drop the number on the floor,
             // so an NMI cost the machine nothing at all. Invisible at the scale
             // of a frame; not invisible against a DRQ due 112 T out.
-            this.cpu.tStates += this.cpu.nmi();
+            this._addCpuT(this.cpu.nmi());
         }
 
         portRead(port, instructionTiming = 12) {
@@ -3143,7 +3150,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_intOldPC, _intOldSP);
                 intFired = true;
 
@@ -3293,7 +3300,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hintOldPC, _hintOldSP);
                         intFired = true;
                         if (this.rzxRecordPending) {
@@ -3371,14 +3378,14 @@ import { Disassembler } from './disasm.js';
                             // DRQ is a level, not a pulse: if the transfer
                             // finished while the NMI was queued there is no
                             // edge left to deliver.
-                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
+                            if (this.opus.hasDataRequest()) this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
                         if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.tStates += this.cpu.nmi();
+                            this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -3431,7 +3438,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_mintOldPC, _mintOldSP);
                         intFired = true;
                         if (this.rzxRecordPending) {
@@ -3571,7 +3578,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_rzxIntOldPC, _rzxIntOldSP);
             }
 
@@ -3861,7 +3868,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_hlIntOldPC, _hlIntOldSP);
                 intFired = true;
             }
@@ -3966,7 +3973,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hlHintOldPC, _hlHintOldSP);
                         intFired = true;
                         continue;
@@ -4009,14 +4016,14 @@ import { Disassembler } from './disasm.js';
                             this._opusNmiPending = false;
                             // see runFrame: a request that has gone away
                             // delivers no NMI
-                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
+                            if (this.opus.hasDataRequest()) this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
                         if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.tStates += this.cpu.nmi();
+                            this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -4052,7 +4059,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hlMintOldPC, _hlMintOldSP);
                         intFired = true;
                     }
@@ -4081,7 +4088,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_hlRzxIntOldPC, _hlRzxIntOldSP);
             }
 
