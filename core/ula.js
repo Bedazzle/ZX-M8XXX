@@ -369,7 +369,15 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 paletteModified: false,   // True if any palette entry was written
                 register: 0,              // Currently selected register (0-64)
                 palette: new Uint8Array(64),  // 64 palette entries (GRB 332 format)
-                palette32: new Uint32Array(64) // Pre-computed 32-bit RGBA
+                palette32: new Uint32Array(64), // Pre-computed 32-bit RGBA
+                // Radastan 128x96x16 (ZX-UNO), see _renderRadastan
+                mode: 0,                  // register 64 as written (3 = Radastan)
+                unoReg: 0,                // ZX-UNO register selected at #FC3B
+                radasMode: 0,             // ZX-UNO #40 (3 = Radastan)
+                radasOffset: 0,           // ZX-UNO #41: start in the screen bank (14 bits)
+                radasOffsetHi: false,     //   its writes alternate low / high byte
+                radasPadding: 0,          // ZX-UNO #42: extra bytes a line
+                radasPalBank: 0           // ZX-UNO #43: b1-0 palette bank, b2 border half
             };
             this.initULAplusPalette();
 
@@ -623,8 +631,10 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 this.ulaplus.paletteModified = true;
                 this.updateULAplusPalette32();
             } else if (reg === 64) {
-                // Mode register: bit 0 = palette enabled
+                // Mode register: bit 0 = palette enabled; 3 = Radastan (the
+                // ZX-UNO's first way in, which es.pectrum takes on a plain 128)
                 this.ulaplus.paletteEnabled = (val & 0x01) !== 0;
+                this.ulaplus.mode = val & 0x3F;
             }
         }
 
@@ -634,9 +644,93 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             if (reg < 64) {
                 return this.ulaplus.palette[reg];
             } else if (reg === 64) {
-                return this.ulaplus.paletteEnabled ? 0x01 : 0x00;
+                return this.ulaplus.mode | (this.ulaplus.paletteEnabled ? 0x01 : 0x00);
             }
             return 0xff;
+        }
+
+        /**
+         * ZX-UNO register file, the part Radastan needs (#FC3B selects, #FD3B
+         * is the data): #40 the mode (3 = Radastan), #41 the start offset (low
+         * byte, then high), #42 the line padding, #43 the palette bank. After
+         * ZEsarUX's zxuno.c. Only with ULAplus present, as on the ZX-UNO.
+         */
+        zxunoSelect(val) {
+            this.ulaplus.unoReg = val & 0xFF;
+            if (this.ulaplus.unoReg === 0x41) this.ulaplus.radasOffsetHi = false;
+        }
+
+        zxunoWrite(val) {
+            const u = this.ulaplus;
+            switch (u.unoReg) {
+                case 0x40: u.radasMode = val & 0xFF; break;
+                case 0x41:
+                    u.radasOffset = u.radasOffsetHi
+                        ? (u.radasOffset & 0x00FF) | (val << 8)
+                        : (u.radasOffset & 0xFF00) | val;
+                    u.radasOffset &= 0x3FFF;
+                    u.radasOffsetHi = !u.radasOffsetHi;
+                    break;
+                case 0x42: u.radasPadding = val & 0xFF; break;
+                case 0x43: u.radasPalBank = val & 0x07; break;
+            }
+        }
+
+        zxunoRead() {
+            const u = this.ulaplus;
+            switch (u.unoReg) {
+                case 0x40: return u.radasMode;
+                case 0x41: return u.radasOffsetHi ? (u.radasOffset >> 8) : (u.radasOffset & 0xFF);
+                case 0x42: return u.radasPadding;
+                case 0x43: return u.radasPalBank;
+            }
+            return 0xFF;
+        }
+
+        /** Radastan 128x96 is on: by the ULAplus mode register or the ZX-UNO's #40 */
+        radastanActive() {
+            const u = this.ulaplus;
+            return u.enabled && ((u.mode & 3) === 3 || (u.radasMode & 3) === 3);
+        }
+
+        /** The first ULAplus entry the border indexes: 8 normally; in Radastan the
+         *  palette bank, plus 8 with #43 bit 2 */
+        _ulaplusBorderBase() {
+            if (!this.radastanActive()) return 8;
+            const pb = this.ulaplus.radasPalBank;
+            return (pb & 3) * 16 + ((pb & 4) ? 8 : 0);
+        }
+
+        /**
+         * Radastan 128x96, 16 colours (ZX-UNO; ZEsarUX's
+         * screen_store_scanline_rainbow_solo_display_ulaplus_lineal, mode 3):
+         * the current screen bank from the offset, 64 bytes (+ padding) a line,
+         * each byte two pixels (high nibble left), each pixel 2x2, colours from
+         * the ULAplus palette's bank. Drawn over the paper at the frame's end,
+         * so a palette change in mid-frame is not seen there.
+         */
+        _renderRadastan() {
+            if (!this.radastanActive()) return;
+            const u = this.ulaplus, pal = u.palette32;
+            const pb = (u.radasPalBank & 3) * 16;
+            const changes = this.screenBankChanges;
+            const bank = (changes && changes.length) ? changes[changes.length - 1].bank : 5;
+            const ram = this.memory.getRamBank(bank);
+            if (!ram) return;
+            const fb32 = this.frameBuffer32, W = this.TOTAL_WIDTH;
+            const bpl = 64 + u.radasPadding;
+            for (let y = 0; y < 192; y++) {
+                const visY = this.BORDER_TOP + y;
+                if (visY < 0 || visY >= this.TOTAL_HEIGHT) continue;
+                let addr = u.radasOffset + bpl * (y >> 1);
+                let o = visY * W + this.BORDER_LEFT;
+                for (let col = 0; col < 64; col++) {
+                    const b = ram[(addr + col) & 0x3FFF];
+                    const c1 = pal[pb + (b >> 4)], c2 = pal[pb + (b & 15)];
+                    fb32[o] = c1; fb32[o + 1] = c1; fb32[o + 2] = c2; fb32[o + 3] = c2;
+                    o += 4;
+                }
+            }
         }
 
         // Get ULAplus color for attribute byte
@@ -658,6 +752,8 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             this.ulaplus.paletteEnabled = false;
             this.ulaplus.paletteModified = false;
             this.ulaplus.register = 0;
+            Object.assign(this.ulaplus, { mode: 0, unoReg: 0, radasMode: 0, radasOffset: 0,
+                radasOffsetHi: false, radasPadding: 0, radasPalBank: 0 });
             this.initULAplusPalette();
             // Reset debug counter for new file loads
             this._paletteDebugFrames = 0;
@@ -931,9 +1027,9 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
         // When ULAplus paletteEnabled=true, uses palette entry 8 (PAPER 0 from CLUT 0)
         // Otherwise uses standard palette with borderColor index
         getBorderColor32() {
-            if (this.ulaplus.enabled && this.ulaplus.paletteEnabled) {
+            if (this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive())) {
                 // Border uses CLUT 0 PAPER entries (8-15), indexed by port $FE border color
-                return this.ulaplus.palette32[8 + this.borderColor];
+                return this.ulaplus.palette32[this._ulaplusBorderBase() + this.borderColor];
             }
             return this.palette32[this.borderColor];
         }
@@ -944,7 +1040,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             if (this.ulaplus.enabled && this.ulaplus.paletteEnabled && this.hadPaletteChanges) {
                 // Build palette at this T-state and return border entry
                 this.getPalette32AtTState(tState, this.paletteTempLine);
-                return this.paletteTempLine[8 + this.borderColor];
+                return this.paletteTempLine[this._ulaplusBorderBase() + this.borderColor];
             }
             return this.getBorderColor32();
         }
@@ -1522,7 +1618,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             const borderLineOffset = this.hadScreenBankChanges ? 2 : 0;
 
             // ULAplus: border uses CLUT 0 PAPER entries 8-15 (indexed by borderColor)
-            const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
+            const ulaPlusBorder = this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive());
 
             if (screenLine < 0 || screenLine >= 192) {
                 // Pure border line (top/bottom border)
@@ -1895,7 +1991,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
             const fb32 = this.frameBuffer32;
             // ULAplus: border uses CLUT 0 PAPER entries 8-15 (indexed by borderColor)
-            const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
+            const ulaPlusBorder = this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive());
             const borderColor32 = ulaPlusBorder ? this.getBorderColor32AtTState(lineStartTstate) : this.palette32[startColor];
             const rowOffset = visY * this.TOTAL_WIDTH;
 
@@ -1950,7 +2046,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             const timingMask = noQuantization ? ~0 : ~3;  // ~0 = no mask, ~3 = clear lower 2 bits
 
             // ULAplus: border uses CLUT 0 PAPER entries 8-15 (indexed by borderColor)
-            const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
+            const ulaPlusBorder = this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive());
 
             // Use palette32 for consistency with paper fast path
             const fb32 = this.frameBuffer32;
@@ -2001,6 +2097,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             }
 
             this.frameCounter++;
+            this._renderRadastan();
             this._applyPalComposite();
             return this.frameBuffer;
         }
@@ -2601,6 +2698,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     }
                 }
             }
+            this._renderRadastan();
             this._applyPalComposite();
             return this.frameBuffer;
         }
@@ -2635,7 +2733,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 const isScreenLine = visY >= this.BORDER_TOP && visY < this.BORDER_TOP + this.SCREEN_HEIGHT;
 
                 // ULAplus: border uses CLUT 0 PAPER entries 8-15 (indexed by borderColor)
-                const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
+                const ulaPlusBorder = this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive());
 
                 if (lineChanges.length === 0) {
                     // No changes during this line - solid color using 32-bit writes
@@ -2669,7 +2767,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             let changeIdx = 0;
 
             // ULAplus: border uses CLUT 0 PAPER entries 8-15 (indexed by borderColor)
-            const ulaPlusBorder = this.ulaplus.enabled && this.ulaplus.paletteEnabled;
+            const ulaPlusBorder = this.ulaplus.enabled && (this.ulaplus.paletteEnabled || this.radastanActive());
 
             // Use palette32 for consistency
             const fb32 = this.frameBuffer32;

@@ -82,6 +82,11 @@
             assert(h.machine === 'scorpiongmx' && !h.storage.zxm8_betaDisk, 'gmx: the Scorpion GMX, whatever else is listed');
             h = resolveHardware(['scorpion', 'smuc'], 'game.trd');
             assert(h.machine === 'scorpiontb' && h.storage.zxm8_rtc === 'true', 'scorpion + smuc: the TURBO+ with the clock on');
+            h = resolveHardware(['zxuno', 'radastan'], 'game.tap');
+            assert(h.machine === '128k' && h.storage.zxm8_ulaplus === 'true' && !h.unsupported.length,
+                'zxuno + radastan: a 128K with ULAplus (Radastan rides on it)');
+            h = resolveHardware(['zx128', 'flashcolor'], 'game.trd');
+            assert(h.storage.zxm8_flashColor === 'true' && !h.unsupported.length, 'flashcolor: FLASH-COLOUR on');
             h = resolveHardware(['zx128', 'betadisk'], 'game.scl');
             assert(h.machine === '128k' && h.storage.zxm8_betaDisk === 'true', 'a TRD on zx128 only: a 128K with a Beta Disk');
             h = resolveHardware(['zx48', 'trdos4x'], 'game.trd');

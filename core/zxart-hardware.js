@@ -23,6 +23,9 @@ const MACHINES = [
     ['zx48', '48k'], ['zx16', '48k'],
     ['timex2068', 'tc2068'], ['timex2048', 'tc2048'],
     ['tk9x', 'tk90x'], ['didaktik80', 'dgama'],
+    // ZX-UNO: a 128 with ULAplus (and its Radastan mode), which is what its
+    // releases use of it
+    ['zxuno', '128k'],
 ];
 
 // TR-DOS machines, in preference for a TR-DOS disk
@@ -32,7 +35,7 @@ const JOYSTICKS = { kempston: 'kempston', cursor: 'cursor', int2_1: 'sinclair1',
 
 // Codes that need nothing (the machine has it) or are about the release, not
 // the machine
-const NOTHING_TO_FIT = new Set(['beeper', 'tape', 'flashcolor', 'cpm']);
+const NOTHING_TO_FIT = new Set(['beeper', 'tape', 'cpm']);
 
 export function fileExt(name) {
     const m = /\.([a-z0-9]+)$/i.exec(name || '');
@@ -141,8 +144,9 @@ export function resolveHardware(codes = [], fileName = '') {
         spectrum.kempstonMouseEnabled = true;
         spectrum.kempstonMouseWheelEnabled = true;   // the wheel in the buttons port's top bits
     }
-    if (use('ulaplus')) storage.zxm8_ulaplus = 'true';
-    // Our own code, not zxart's: FLASH-COLOUR (bit 7 = black paper, mixed ink)
+    // ULAplus; Radastan 128x96 rides on it, and a ZX-UNO has both
+    if (use('ulaplus') | use('radastan') | has.has('zxuno')) storage.zxm8_ulaplus = 'true';
+    // FLASH-COLOUR (bit 7 = black paper, mixed ink)
     if (use('flashcolor')) storage.zxm8_flashColor = 'true';
 
     // 128 MIDI out (AY port A): played on the player's built-in synth

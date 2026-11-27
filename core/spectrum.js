@@ -2736,6 +2736,9 @@ import { Nvram24c16 } from './nvram.js';
                 } else if (this.ula.ulaplus.enabled && port === PORT_ULAPLUS_REG) {
                     // ULAplus data port read
                     result = this.ula.ulaplusReadData();
+                } else if (this.ula.ulaplus.enabled && (port === 0xFC3B || port === 0xFD3B)) {
+                    // ZX-UNO register file, the Radastan part (ula.zxunoWrite)
+                    result = port === 0xFC3B ? this.ula.ulaplus.unoReg : this.ula.zxunoRead();
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
@@ -3246,6 +3249,10 @@ import { Nvram24c16 } from './nvram.js';
                 } else if (port === PORT_ULAPLUS_REG) {
                     // ULAplus data write - pass T-states for raster effect tracking
                     this.ula.ulaplusWriteData(val, this.cpu.tStates);
+                } else if (port === 0xFC3B) {
+                    this.ula.zxunoSelect(val);            // ZX-UNO register select
+                } else if (port === 0xFD3B) {
+                    this.ula.zxunoWrite(val);             // ZX-UNO register data (Radastan)
                 }
             }
         }

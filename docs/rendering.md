@@ -208,6 +208,19 @@ sit between the ULA and that measurement, and gamma tends to expand a mid-grey
 difference, so the true value may be smaller still. We blend in the same encoded byte
 space the display uses, so matching the encoded delta is the right target.
 
+## Radastan 128x96 (with ULAplus on)
+
+The ZX-UNO's 16-colour mode, kept on any machine with ULAplus, as es.pectrum does: the
+games run on a plain 128. On by the ULAplus mode register (`#BF3B` = `#40`, `#FF3B` = 3)
+or the ZX-UNO's register `#40` = 3 (`#FC3B` selects, `#FD3B` is the data; ZEsarUX's way).
+128x96 from the current screen bank: 64 bytes a line (plus `#42`, padding), each byte two
+pixels (high nibble left), each pixel 2x2, colours from the ULAplus palette (bank: `#43`
+bits 1-0). The border takes ULAplus entries 0-7 of that bank (8-15 with `#43` bit 2)
+instead of 8-15. `#41` is the start offset, low byte then high. `core/ula.js`
+`_renderRadastan`, drawn over the paper from `endFrame` / `renderFrame`, so a palette
+change in mid-frame (a raster effect) does not show in the picture, only in the border.
+After ZEsarUX's `screen.c` and `zxuno.c`.
+
 ## FlashColor (Settings -> Machines -> "FlashColor", off by default)
 
 FLASH-COLOUR, a board modification: attribute bit 7 no longer blinks. In a cell with it
@@ -218,8 +231,7 @@ with the cell's BRIGHT); a cell without it is ordinary. That is how zxart.ee dra
 instead, which does not match those pictures. The mix is a byte-wise average
 (`mixColours`). Done in `renderCell` (`ctx.flashColor`) and in the per-pixel bank-switch
 path of `core/ula.js`; ULAplus, when on, wins. There is no port for it: the option is
-the switch. Unreal-NG reads `FlashColor=` from its ini but does not use it. The player turns it on with the hardware code `flashcolor` (ours; zxart.ee
-has no such code).
+the switch. Unreal-NG reads `FlashColor=` from its ini but does not use it. The player turns it on with zxart.ee's hardware code `flashcolor`.
 
 ## PAL composite (RF) simulation (Settings -> Machines -> "PAL Composite (RF)", off by default)
 
