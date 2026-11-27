@@ -200,8 +200,19 @@ export const InputHandling = {
             case 'Numpad3': return 0x05; // Down+Right
             case 'Numpad7': return 0x0a; // Up+Left
             case 'Numpad9': return 0x09; // Up+Right
-            default:  return null;
         }
+        // The player can give the cursor keys to the joystick (Right Ctrl fires):
+        // people who play in a browser reach for the arrows, not the numpad
+        if (this.arrowsAsJoystick) {
+            switch (code) {
+                case 'ArrowUp':    return 0x08;
+                case 'ArrowDown':  return 0x04;
+                case 'ArrowLeft':  return 0x02;
+                case 'ArrowRight': return 0x01;
+                case 'ControlRight': return 0x10;
+            }
+        }
+        return null;
     },
 
     getExtendedKempstonBit(code) {

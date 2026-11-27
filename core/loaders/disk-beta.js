@@ -667,6 +667,8 @@ import { createRotationClock } from './disk-rotation.js';
                     // TR-DOS to miss INTRQ when it reads status (error check)
                     // before polling port $FF. INTRQ is already cleared when
                     // a new command is issued (executeCommand), which is sufficient.
+                    // ...but the line itself, as lines() shows it, does drop
+                    if (this.intrq) this._intrqAcked = true;
                     if (!this.currentDisk.diskData) {
                         return this.NOT_READY;
                     }
@@ -792,6 +794,22 @@ import { createRotationClock } from './disk-rotation.js';
             }
         }
 
+        /**
+         * The INTRQ and DRQ lines as bits 7 and 6, read without touching
+         * anything (no lost-data counting, unlike the system register). INTRQ
+         * drops once the status register has been read, as on the WD1793 —
+         * TR-DOS always reads it after a command, so after a load the line is
+         * low. The Scorpion wires both lines into its Kempston port (#1F with
+         * the DOS off), where a game reads them along with the stick.
+         */
+        lines() {
+            let v = (this.intrq && !this._intrqAcked) ? 0x80 : 0;
+            const notDue = this.formatting && this.rotation &&
+                this.rotation.now() < this._fmtByteDue;
+            if ((this.reading || this.writing) && !notDue) v |= 0x40;
+            return v;
+        }
+
         // Port write
         write(port, value) {
             const reg = port & 0xFF;
@@ -873,6 +891,7 @@ import { createRotationClock } from './disk-rotation.js';
             this.drqNotBefore = 0;
             this.dataBuffer = null;
             this.intrq = false;
+            this._intrqAcked = false;
         }
 
         executeCommand(cmd) {
@@ -887,6 +906,7 @@ import { createRotationClock } from './disk-rotation.js';
             this.command = cmd;
             this.status = 0;
             this.intrq = false;
+            this._intrqAcked = false;
             this._sysReadsSinceData = 0;  // Reset lost data counter for new command
 
             if (!this.currentDisk.diskData) {

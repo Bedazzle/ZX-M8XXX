@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Scorpion TURBO+ Tests</title>
+    <style>
+        body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; padding: 16px; }
+        #summary { margin: 8px 0 16px; font-size: 15px; }
+        .pass { color: #a6e3a1; }
+        .fail { color: #f38ba8; }
+        .skip { color: #f9e2af; }
+        .section { color: #89b4fa; font-weight: bold; margin-top: 12px; }
+        #log div { white-space: pre; }
+        iframe { width: 1000px; height: 500px; border: 1px solid #444; margin-top: 16px; }
+    </style>
+</head>
+<body>
+    <h2>Scorpion TURBO+ Tests</h2>
+    <div id="summary">running…</div>
+    <div id="log"></div>
+    <iframe id="app"></iframe>
+
+    <script type="module">
+        // CPU turbo (core/spectrum.js _turboSpend) and the Scorpion ZS 256
+        // TURBO+ with 1MB (machine 'scorpiontb'): ProfROM planes, 1FFD bits 6-7,
+        // turbo on IN from $7FFD / off from $1FFD, AY R14 readback, $1F with the
+        // DOS off, SMUC's IDE with no drive, and a disk started from the menu.
+        const TEST_VERSION = '0.1.0';
+        const logEl = document.getElementById('log');
+        const summaryEl = document.getElementById('summary');
+        let passed = 0, failed = 0, skipped = 0;
+        function log(msg, cls = '') {
+            const d = document.createElement('div'); d.className = cls; d.textContent = msg; logEl.appendChild(d);
+        }
+        function section(name) { log('\n ' + name + ' ', 'section'); }
+        // Until the end the summary keeps changing (all-tests.html takes a
+        // summary that holds still for a second as the result)
+        let finished = false, beat = 0;
+        setInterval(() => { if (!finished) render(); }, 300);
+        function render() {
+            if (!finished) {
+                summaryEl.textContent = `running… pass ${passed}, fail ${failed} (${++beat})`;
+                return;
+            }
+            summaryEl.innerHTML = `v${TEST_VERSION} | <span class="pass">Pass: ${passed}</span> | ` +
+                `<span class="fail">Fail: ${failed}</span> | Total: ${passed + failed}` +
+                (skipped ? ` | Skipped: ${skipped}` : '');
+        }
+        function assert(cond, name, detail = '') {
+            if (cond) { passed++; log('  ' + name, 'pass'); }
+            else { failed++; log('  ' + name + (detail ? ': ' + detail : ''), 'fail'); }
+            render();
+        }
+        function skip(name) { skipped++; log('  (skipped) ' + name, 'skip'); render(); }
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        async function until(fn, tries = 400, gap = 25) {
+            for (let i = 0; i < tries; i++) {
+                try { const v = fn(); if (v) return v; } catch (e) {}
+                await wait(gap);
+            }
+            return null;
+        }
+
+        async function runTests() {
+            const frame = document.getElementById('app');
+            frame.src = '../index.html';
+            const zx = await until(() => frame.contentWindow.zxDebug, 400, 50);
+            if (!zx) { assert(false, 'app came up'); return; }
+
+            section('CPU turbo');
+            await zx.ready({ machine: '128k' });
+            let sp = frame.contentWindow.spectrum;
+            zx.pause();
+            // JR $ in RAM with interrupts off: 12 T a loop, so the loops in a
+            // frame count the CPU's cycles
+            const loopsPerFrame = async () => {
+                sp.cpu.iff1 = sp.cpu.iff2 = false;
+                sp.cpu.halted = false;
+                sp.memory.write(0x8000, 0x18); sp.memory.write(0x8001, 0xFE);
+                sp.cpu.pc = 0x8000;
+                await zx.runFrames(2);
+                const a = sp.cpu.instructionCount;
+                await zx.runFrames(10);
+                return (sp.cpu.instructionCount - a) / 10;
+            };
+            const tpf = sp.timing.tstatesPerFrame;
+            sp.setTurboForce(1);
+            const x1 = await loopsPerFrame();
+            sp.setTurboForce(2);
+            const x2 = await loopsPerFrame();
+            sp.setTurboForce(4);
+            const x4 = await loopsPerFrame();
+            sp.setTurboForce(0);
+            assert(x1 === tpf / 12, 'x1: a frame is the machine\'s own T-states', x1 + ' loops');
+            assert(x2 === 2 * x1 && x4 === 4 * x1, 'x2 and x4: two and four times the instructions in the same frame',
+                x2 + ' / ' + x4);
+            assert(sp.turboMultiplier() === 1, 'the setting back on "machine": a 128K has none');
+            sp.setTurboForce(2);
+            sp.reset();
+            assert(sp.turboMultiplier() === 2, 'a forced turbo survives a reset');
+            sp.setTurboForce(0);
+
+            section('Scorpion ZS 256 TURBO+ (1MB): ports');
+            await zx.ready({ machine: 'scorpiontb' });
+            sp = frame.contentWindow.spectrum;
+            zx.pause();
+            let m = sp.memory;
+            assert(sp.machineType === 'scorpiontb' && m.ram.length === 64 && m.rom.length === 16,
+                '1MB of RAM, 16 ROM banks (the 256KB ProfROM)', m.ram.length + ' / ' + m.rom.length);
+            sp.reset();
+            sp.portRead(0x7FFD);
+            assert(sp.turboHw === 2 && sp.turboMultiplier() === 2, 'IN from $7FFD: turbo on');
+            sp.portRead(0x1FFD);
+            assert(sp.turboHw === 1, 'IN from $1FFD: turbo off');
+            sp.portRead(0x7FFD); sp.reset();
+            assert(sp.turboHw === 1, 'reset: turbo off');
+            // RAM page = 7FFD bits 0-2 | 1FFD bit 4 -> 3 | 1FFD bits 6-7 -> 4-5
+            sp.portWrite(0x1FFD, 0xD0); sp.portWrite(0x7FFD, 0x05);
+            sp.memory.write(0xC000, 0x5A);
+            assert(m.currentRamBank === 61 && m.ram[61][0] === 0x5A, '1FFD bits 6-7: pages 16-63 at $C000',
+                'page ' + m.currentRamBank);
+            sp.portWrite(0x1FFD, 0x00); sp.portWrite(0x7FFD, 0x05);
+            assert(m.currentRamBank === 5, 'and back to page 5');
+            sp.portWrite(0xFFFD, 14);
+            sp.portWrite(0x1FFD, 0x10); sp.portWrite(0x7FFD, 0x13);
+            const r14 = sp.portRead(0xFFFD);
+            assert(r14 === ((0x10 << 1) | 0x10 | 0x03), 'AY register 14 reads the paging back',
+                r14.toString(16));
+            sp.portWrite(0x1FFD, 0x00); sp.portWrite(0x7FFD, 0x00);
+
+            section('ProfROM planes');
+            m.romPlane = 0;
+            sp.portWrite(0x1FFD, 0x02);                     // the service ROM
+            m.peek(0x0104);
+            assert(m.romPlane === 0, 'a debugger peek does not switch');
+            m.read(0x0104);
+            assert(m.romPlane === 3, 'read of $0104 from plane 0: plane 3', m.romPlane);
+            m.read(0x0108);
+            assert(m.romPlane === 1, 'read of $0108 from plane 3: plane 1', m.romPlane);
+            m.read(0x0100);
+            assert(m.romPlane === 1, 'read of $0100 from plane 1: stays', m.romPlane);
+            m.read(0x010C);
+            assert(m.romPlane === 0, 'read of $010C from plane 1: plane 0', m.romPlane);
+            sp.portWrite(0x1FFD, 0x00);
+            m.read(0x0104);
+            assert(m.romPlane === 0, 'not in the service ROM: no switch');
+            m.romPlane = 1;
+            assert(m.read(0x0000) === m.rom[4 + m.currentRomBank][0], 'the ROM read comes from the plane');
+            m.romPlane = 0;
+
+            section('Beta Disk and SMUC');
+            sp.betaDisk.intrq = true;
+            m.trdosActive = false;
+            const p1f = sp.portRead(0x001F);
+            assert((p1f & 0xC0) === 0x80, 'DOS off: $1F has the Beta INTRQ in bit 7', p1f.toString(16));
+            sp.betaDisk.read(0x1F);                             // TR-DOS reads the status...
+            assert((sp.portRead(0x001F) & 0x80) === 0 && sp.betaDisk.intrq,
+                '...and INTRQ drops on $1F, as on the WD1793 (TR-DOS still sees its own flag)');
+            sp.betaDisk.executeCommand(0xD0);                   // Force Interrupt: a new command
+            sp.betaDisk.intrq = true;
+            assert((sp.portRead(0x001F) & 0x80) === 0x80, 'a new command raises it again');
+            sp.betaDisk.intrq = false;
+            m.trdosActive = true;
+            assert(sp.portRead(0xFFBE) === 0x7F, 'DOS on: SMUC IDE status with no drive is $7F (not busy)');
+            m.trdosActive = false;
+            // Service ROM over the DOS, as the ProfROM runs its disk code
+            m.trdosActive = true;
+            sp.portWrite(0x7FFD, 0x10); sp.portWrite(0x1FFD, 0x02);
+            assert(m.read(0x0000) === m.rom[2][0], '1FFD bit 1 shows the service ROM even with the DOS on');
+            sp.portWrite(0x1FFD, 0x00);
+            assert(m.read(0x0000) === m.rom[3][0], 'without it, the DOS shows TR-DOS (bank 3)');
+            m.trdosActive = false;
+
+            section('CMOS clock: SMUC');
+            const prevRtc = sp.rtcEnabled;
+            sp.setRtc(true);
+            sp.rtc.fixedTime = new Date(2026, 10, 27, 21, 45, 37).getTime();   // Fri 27.11.2026
+            m.trdosActive = true;
+            assert(sp.portRead(0x5FBA) === 0x3F && sp.portRead(0x5FBE) === 0x57, 'SMUC answers version 1.2 (#3F / #57)');
+            sp.portWrite(0xFFBA, 0x77);                         // SYS bit 7 = 0: #DFBA is the address
+            const rd = (a) => { sp.portWrite(0xDFBA, a); return sp.portRead(0xDFBA); };
+            assert(rd(0x00) === 0x37 && rd(0x02) === 0x45 && rd(0x04) === 0x21,
+                'time in BCD: 21:45:37', [rd(4), rd(2), rd(0)].map(v => v.toString(16)).join(':'));
+            assert(rd(0x07) === 0x27 && rd(0x08) === 0x11 && rd(0x09) === 0x26 && rd(0x06) === 6,
+                'date: 27.11.26, Friday = 6', [rd(7), rd(8), rd(9), rd(6)].map(v => v.toString(16)).join(' '));
+            sp.portWrite(0xDFBA, 0x20);
+            sp.portWrite(0xFFBA, 0xF7);                         // SYS bit 7 = 1: #DFBA is the data
+            sp.portWrite(0xDFBA, 0xA5);
+            sp.portWrite(0xFFBA, 0x77);
+            assert(rd(0x20) === 0xA5, 'CMOS RAM: written with SYS bit 7 up, read back');
+            sp.portWrite(0xFFBA, 0x77);
+            sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x06); sp.portWrite(0xFFBA, 0x77);
+            assert(rd(0x00) === 37 && rd(0x04) === 21, 'register B bit 2: binary');
+            sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x02); sp.portWrite(0xFFBA, 0x77);
+            // NVRAM: a 24C16 on I2C, SDA = SYS bit 4, SCL = SYS bit 6, SDA in = bit 6
+            {
+                const sys = (sda, scl) => sp.portWrite(0xFFBA, 0x07 | (sda ? 0x10 : 0) | (scl ? 0x40 : 0));
+                const sdaIn = () => (sp.portRead(0xFFBA) & 0x40) ? 1 : 0;
+                const start = () => { sys(1, 1); sys(0, 1); sys(0, 0); };
+                const stop = () => { sys(0, 0); sys(0, 1); sys(1, 1); };
+                const sendByte = (b) => {
+                    for (let i = 7; i >= 0; i--) { const d = (b >> i) & 1; sys(d, 0); sys(d, 1); sys(d, 0); }
+                    sys(1, 0); sys(1, 1); const ack = sdaIn(); sys(1, 0); return ack === 0;
+                };
+                const recvByte = (last) => {
+                    let b = 0;
+                    for (let i = 0; i < 8; i++) { sys(1, 0); sys(1, 1); b = (b << 1) | sdaIn(); }
+                    sys(last ? 1 : 0, 0); sys(last ? 1 : 0, 1); sys(1, 0);
+                    return b;
+                };
+                start();
+                const acks = [sendByte(0xA2), sendByte(0x34), sendByte(0x5C)];   // block 1, $134 = $5C
+                stop();
+                start(); sendByte(0xA2); sendByte(0x34);                       // set the address
+                start(); sendByte(0xA3);                                        // read
+                const back = recvByte(true);
+                stop();
+                assert(acks.every(Boolean) && back === 0x5C && sp.smucNv.mem[0x134] === 0x5C,
+                    'NVRAM 24C16: a byte written and read back over I2C on #FFBA', 'acks ' + acks + ' read ' + back.toString(16));
+                sp.smucNv.mem[0x134] = 0;
+            }
+            m.trdosActive = false;
+            assert(sp.portRead(0x5FBA) !== 0x3F, 'DOS off: SMUC does not answer');
+            sp.rtc.data[0x20] = 0;
+
+            section('CMOS clock: Gluk');
+            await zx.ready({ machine: 'pentagon' });
+            const pp = frame.contentWindow.spectrum;
+            zx.pause();
+            pp.setRtc(true);
+            pp.rtc.fixedTime = new Date(2026, 10, 27, 9, 5, 7).getTime();
+            pp.portWrite(0xDFF7, 0x04);
+            assert(pp.portRead(0xBFF7) !== 0x09, 'with #EFF7 bit 7 down the clock is not there');
+            pp.portWrite(0xEFF7, 0x80);
+            const g = (a) => { pp.portWrite(0xDFF7, a); return pp.portRead(0xBFF7); };
+            assert(g(0x04) === 0x09 && g(0x02) === 0x05 && g(0x00) === 0x07, 'Gluk: #DFF7 register, #BFF7 data: 09:05:07');
+            pp.portWrite(0xDFF7, 0x40); pp.portWrite(0xBFF7, 0x3C);
+            assert(g(0x40) === 0x3C, 'Gluk: CMOS RAM written and read');
+            pp.portWrite(0xEFF7, 0x00);
+            pp.setRtc(prevRtc);
+            pp.rtc.fixedTime = null;
+            await zx.ready({ machine: 'scorpiontb' });
+            sp = frame.contentWindow.spectrum;
+            m = sp.memory;
+            zx.pause();
+
+            section('Scorpion GMX');
+            await zx.ready({ machine: 'scorpiongmx' });
+            {
+                const gp = frame.contentWindow.spectrum, gm = gp.memory;
+                zx.pause();
+                gp.reset();
+                assert(gm.ram.length === 128 && gm.rom.length === 32, '2MB RAM, 512KB ROM (32 banks)');
+                gp.portWrite(0x1FFD, 0x10); gp.portWrite(0x7FFD, 0x05); gp.portWrite(0xDFFD, 0x03);
+                assert(gm.currentRamBank === (3 << 4 | 8 | 5), '#DFFD bits 0-2: RAM page bits 4-6 at $C000', gm.currentRamBank);
+                const r7a = gp.portRead(0x7AFD) & 0x7F;
+                assert(r7a === ((3 << 4) | 8 | 5), '#7AFD reads the page back', r7a.toString(16));
+                gp.portWrite(0xDFFD, 0); gp.portWrite(0x1FFD, 0); gp.portWrite(0x7FFD, 0);
+                assert(gm.slot2Page === 2, '#78FD 0: page 2 at $8000');
+                gp.portWrite(0x78FD, 0x47);
+                gm.write(0x8000, 0x6B);
+                assert(gm.slot2Page === 0x45 && gm.ram[0x45][0] === 0x6B, '#78FD XOR 2: page #45 at $8000');
+                gp.portWrite(0x78FD, 0);
+                gp.portWrite(0x7EFD, 0x80 | (5 << 4) | 0x08);
+                assert(gp.turboMultiplier() === 2 && gm.romPlane === 5 && gp.gmxGfx === 1,
+                    '#7EFD: turbo, ROM plane 5, the 640x200 mode');
+                const r7e = gp.portRead(0x7EFD);
+                assert((r7e & 0x0C) === 0x0C, '#7EFD reads back turbo and the mode', r7e.toString(16));
+                assert(gm.read(0x0000) === gm.rom[(5 << 2) | gm.currentRomBank][0], 'the ROM comes from that plane');
+                gp.portWrite(0x7EFD, 0x00);
+                gp.portWrite(0x7AFD, 0xA0); gp.portWrite(0x7CFD, 0x01);
+                assert(gp.gmxScroll === 0x1A0, '#7AFD / #7CFD: the scroll', gp.gmxScroll.toString(16));
+                gp.portWrite(0x1FFD, 0x04);
+                assert(gm.trdosActive && gm.read(0) === gm.rom[3][0], '1FFD bit 2: TR-DOS paged in');
+                gp.portWrite(0x1FFD, 0x00); gm.trdosActive = false;
+                gp.portWrite(0x0000, 0x20);                         // BLKEXT
+                gp.portWrite(0x7EFD, 0x08);
+                assert(gp.gmxGfx === 0 && !gp._isGmxPort(0x7EFD), '#00 bit 5: the GMX ports are off');
+                gp.portWrite(0x0000, 0x00);
+                // RAM over the ROM: $0556 is the program's own code, not LD-BYTES
+                // (Edge Grinder GMX runs it every frame from RAM page 0)
+                gp.reset();
+                gp.portWrite(0x7FFD, 0x10);
+                const c = gp.cpu, trapWas = gp.tapeTrap.enabled;
+                gp.tapeTrap.enabled = true;
+                const trapAt = () => { c.pc = 0x0556; c.sp = 0xFF00; return gp.tapeTrap.checkTrap(); };
+                const romTrap = trapAt();
+                gp.portWrite(0x1FFD, 0x01);
+                const ramTrap = trapAt();
+                assert(romTrap && !ramTrap && c.pc === 0x0556 && c.sp === 0xFF00,
+                    'the tape trap at $0556 fires on the BASIC ROM, not with RAM paged over it (1FFD bit 0)',
+                    'rom ' + romTrap + ' ram ' + ramTrap);
+                gp.portWrite(0x1FFD, 0x02);
+                assert(!trapAt(), '...nor with the service ROM (1FFD bit 1)');
+                gp.portWrite(0x1FFD, 0x00);
+                gp.tapeTrap.enabled = trapWas;
+                gp.reset();
+                if (gm.rom[0].some(b => b !== 0)) {
+                    let menu = -1;
+                    for (let f = 0; f < 800; f += 10) {
+                        await zx.runFrames(10);
+                        if (gp.cpu.pc >= 0x3600 && gp.cpu.pc < 0x3700 && gm.currentRomBank === 0) { menu = f; break; }
+                    }
+                    assert(menu > 0, 'the GMX ROM reaches its menu', 'frame ' + menu);
+                    let pb = null;
+                    try { const res = await fetch('../headless/gmx/Puzzle_Bobble_2024.08.08.TRD'); if (res.ok) pb = new Uint8Array(await res.arrayBuffer()); } catch (e) {}
+                    if (pb) {
+                        await zx.loadFile(pb, 'pb.trd');
+                        await zx.autoLoad({ type: 'trd', settleFrames: 900 });
+                        assert(gp.gmxGfx === 1 && gp.canvas.width === 2 * gp.ula.getDimensions().width,
+                            'Puzzle Bobble (GMX) boots into 640x200 on the wide canvas');
+                    } else skip('headless/gmx/Puzzle_Bobble_2024.08.08.TRD is not there');
+                } else skip('roms/gmx.rom is not there: no boot');
+            }
+            await zx.ready({ machine: 'scorpiontb' });
+            sp = frame.contentWindow.spectrum;
+            m = sp.memory;
+            zx.pause();
+
+            section('ProfROM boot and a disk');
+            sp.reset();
+            const hasRom = m.rom[2].some(b => b !== 0);
+            if (!hasRom) {
+                skip('roms/profrom.rom is not there: no boot');
+            } else {
+                let menuAt = -1;
+                for (let f = 0; f < 800; f += 10) {
+                    await zx.runFrames(10);
+                    if (sp.cpu.pc >= 0x3600 && sp.cpu.pc < 0x3700 && m.currentRomBank === 0 && m.romPlane === 0) {
+                        menuAt = f; break;
+                    }
+                }
+                assert(menuAt > 0 && menuAt < 600, 'the ProfROM reaches its menu (no minute of waiting on SMUC)',
+                    'frame ' + menuAt);
+                let disk = null;
+                try {
+                    const res = await fetch('../headless/beta48/Pang.scl');
+                    if (res.ok) disk = new Uint8Array(await res.arrayBuffer());
+                } catch (e) {}
+                if (!disk) {
+                    skip('headless/beta48/Pang.scl is not there: no disk run');
+                } else {
+                    await zx.loadFile(disk, 'Pang.scl');
+                    const r = await zx.autoLoad({ type: 'trd', diskRun: 'Pang', settleFrames: 900 });
+                    assert(!r.timedOut && sp.cpu.pc >= 0x4000, 'disk autostart: menu, 128 TR-DOS, RUN "Pang" runs it',
+                        'pc ' + sp.cpu.pc.toString(16));
+                }
+            }
+            sp.reset();
+        }
+
+        (async () => {
+            try {
+                await runTests();
+            } catch (e) {
+                assert(false, 'suite threw', e && e.stack || String(e));
+            }
+            finished = true;
+            render();
+        })();
+    </script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 // rom-selector.js — ROM selector modal, auto-load, validation, drag & drop (extracted from index.html)
 
+import { applyRoms } from '../core/rom-loader.js';
+
 export function initRomSelector({ getSpectrum, getShowMessage, labelManager, getMachineProfile, MACHINE_PROFILES, getDisplayAPI, getUpdateBetaDiskStatus, getUpdatePlusDStatus, getUpdateIF1Status, getRefreshIfaceStatuses, getUpdateRomFileNames, getUpdateDriveSelector }) {
     // Every disk interface's status line at once. This used to be three
     // separate getters, and adding Opus and Didaktik silently missed both —
@@ -216,70 +218,7 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
     // Profile-driven ROM loader — works for any machine type
     // Can operate on any spectrum instance (used by test runner too)
     function loadRomsForMachineType(spec, machineType) {
-        const profile = getMachineProfile(machineType);
-        const rom = romData[profile.romFile];
-        if (!rom) return false;
-        for (let bank = 0; bank < profile.romBanks; bank++) {
-            spec.memory.loadRom(rom.slice(bank * 16384, (bank + 1) * 16384), bank);
-        }
-        // Load TR-DOS ROM if available (for Beta Disk interface)
-        // Skip for machines with TR-DOS built into main ROM (e.g. Scorpion)
-        if (!profile.trdosInRom && romData['trdos.rom'] && (profile.betaDiskDefault || spec.betaDiskEnabled)) {
-            spec.memory.loadTrdosRom(romData['trdos.rom']);
-        }
-        // Beta 48 ROM (TR-DOS 4.x / Vision / CBI-95...) for an add-on Beta set to a
-        // Beta 48 variant; identified and straightened by core/beta48.js
-        if (romData['beta48.rom'] && !profile.betaDiskDefault && spec.betaDiskEnabled &&
-            spec.betaVariant !== '128' && spec.loadBeta48Rom) {
-            try { spec.loadBeta48Rom(romData['beta48.rom']); }
-            catch (e) { console.warn('[Beta 48] ' + e.message); }
-        }
-        // Update TR-DOS ROM flag for trap handler (must be called for all machines,
-        // including Scorpion where TR-DOS is in main ROM bank)
-        if (spec.trdosTrap) spec.trdosTrap.updateTrdosRomFlag();
-        // Load +D ROM if available and +D is enabled
-        if (romData['plusd.rom'] && spec.plusDEnabled) {
-            spec.memory.loadPlusDRom(romData['plusd.rom']);
-        }
-        // Load DISCiPLE ROM if available and the DISCiPLE is enabled
-        if (romData['disciple.rom'] && spec.discipleEnabled) {
-            spec.memory.loadDiscipleRom(romData['disciple.rom']);
-        }
-        // Load Interface 1 ROM if available and IF1 is enabled
-        if (romData['if1.rom'] && spec.if1Enabled) {
-            spec.memory.loadIF1Rom(romData['if1.rom']);
-        }
-        // Load Opus Discovery ROM if available and the Opus is enabled
-        if (romData['opus.rom'] && spec.opusEnabled) {
-            spec.memory.loadOpusRom(romData['opus.rom']);
-        }
-        // Load Didaktik 80 ROM if available and the Didaktik is enabled
-        if (romData['didaktik.rom'] && spec.didaktikEnabled) {
-            spec.memory.loadDidaktikRom(romData['didaktik.rom']);
-        }
-        // Timex FDD 3000: the interface ROM (fdd3stavi.rom for a Spectrum, or
-        // fdd3timex.rom) and the station's boot ROM
-        if (spec.fdd3000 && spec.fdd3000Enabled) {
-            const ifr = romData[spec.fdd3000RomFile], boot = romData['fdd3000-boot.rom'];
-            try {
-                if (ifr) spec.fdd3000.loadRom(new Uint8Array(ifr));
-                if (boot) spec.fdd3000.loadBootRom(new Uint8Array(boot));
-            } catch (e) { console.warn('[FDD 3000] ' + e.message); }
-        }
-        // Kempston Disc: K-DOS
-        if (spec.kempdisc && spec.kempdiscEnabled) {
-            const kd = romData[spec.kempdiscRomFile];
-            try { if (kd) spec.kempdisc.loadRom(new Uint8Array(kd)); }
-            catch (e) { console.warn('[Kempston Disc] ' + e.message); }
-        }
-        // HC-2000: its HC IF1 is built in, so its ROM goes with the machine
-        if (romData['hc-if1.rom'] && profile.pagingModel === 'hc2000' && spec.hcIf1) {
-            spec.memory.loadHcIf1Rom(romData['hc-if1.rom']);
-        }
-        // Recalculate paging flags AFTER all ROMs are loaded — hasPlusDRom()/hasIF1Rom()
-        // must return true for _plusDPagingEnabled/_if1PagingEnabled to be set
-        spec.updateBetaDiskPagingFlag();
-        spec.romLoaded = true;
+        if (!applyRoms(spec, machineType, romData)) return false;
         // Peripheral ROM availability may have changed — refresh the Disk tab
         // system selector (e.g. if1.rom arriving via async auto-load makes
         // Microdrive appear in the System dropdown)
@@ -545,6 +484,12 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         } else if (name.includes('plus2') || name.includes('+2')) {
             await loadRomFile(data, 'plus2');
             showMessage('+2 ROM loaded');
+        } else if (data.byteLength === 524288 && (name.includes('gmx') || name.includes('prof'))) {
+            // GMX boot ROM / ProfROM+GMX (512KB): the Scorpion GMX
+            loadRomForMachineById('scorpiongmx', data, file.name);
+        } else if (name.includes('prof') && data.byteLength === 262144) {
+            // ProfROM 4.xx (256KB): the Scorpion ZS 256 TURBO+
+            loadRomForMachineById('scorpiontb', data, file.name);
         } else if (name.includes('scorpion')) {
             await loadRomFile(data, 'scorpion');
             showMessage('Scorpion ROM loaded');

@@ -145,6 +145,46 @@
                 up.paletteEnabled = false;         // leave the machine as we found it
             } catch (e) { assert(false, 'ULAplus section threw', e.message); }
 
+            section('Radastan 128x96 (ZX-UNO) over ULAplus');
+            try {
+                const u = sp.ula, up = u.ulaplus, wasOn = up.enabled;
+                up.enabled = true;
+                u.resetULAplus();
+                for (let i = 0; i < 64; i++) { sp.portWrite(0xBF3B, i); sp.portWrite(0xFF3B, (i * 37) & 0xFF); }
+                sp.portWrite(0xBF3B, 0x40); sp.portWrite(0xFF3B, 0x03);
+                assert(u.radastanActive(), 'ULAplus mode register 3 turns Radastan on');
+                const ram = sp.memory.getRamBank(5);
+                const keep = ram.slice(0, 0x100);
+                ram[0] = 0x12;
+                u._renderRadastan();
+                const fb = u.frameBuffer32, W = u.TOTAL_WIDTH, o = u.BORDER_TOP * W + u.BORDER_LEFT;
+                const p = up.palette32;
+                assert(fb[o] === p[1] && fb[o + 1] === p[1] && fb[o + 2] === p[2] && fb[o + 3] === p[2],
+                    'a byte is two pixels, high nibble left, each two wide, from the ULAplus palette');
+                assert(fb[o + W] === p[1] && fb[o + W + 3] === p[2], '...and two high');
+                u.borderColor = 3;
+                assert(u.getBorderColor32() === p[3], 'the border takes entries 0-7 in Radastan (8-15 otherwise)');
+
+                sp.portWrite(0xBF3B, 0x40); sp.portWrite(0xFF3B, 0x01);
+                assert(!u.radastanActive(), 'mode 1 is plain ULAplus again');
+                sp.portWrite(0xFC3B, 0x40); sp.portWrite(0xFD3B, 0x03);
+                assert(u.radastanActive(), 'or the ZX-UNO way: register #40 = 3 at #FC3B / #FD3B');
+                sp.portWrite(0xFC3B, 0x41); sp.portWrite(0xFD3B, 0x40); sp.portWrite(0xFD3B, 0x00);
+                sp.portWrite(0xFC3B, 0x43); sp.portWrite(0xFD3B, 0x05);
+                ram[0x40] = 0x3F;
+                u._renderRadastan();
+                assert(fb[o] === p[16 + 3] && fb[o + 2] === p[16 + 15],
+                    '#41 moves the start (low, then high byte), #43 picks the palette bank');
+                assert(u.getBorderColor32() === p[16 + 8 + 3], '#43 bit 2: the border from the bank\'s top half');
+                sp.portWrite(0xFC3B, 0x43);
+                assert(sp.portRead(0xFD3B) === 0x05, 'the ZX-UNO register reads back');
+
+                ram.set(keep, 0);
+                u.resetULAplus();
+                assert(!u.radastanActive(), 'a reset turns it off');
+                up.enabled = wasOn;
+            } catch (e) { assert(false, 'Radastan section threw', e.message); }
+
             section('Snapshots without the new chunks still load');
             try {
                 // A file written by the old code (or another emulator) has no AY,

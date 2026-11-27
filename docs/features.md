@@ -17,6 +17,10 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Port I/O contention | `core/spectrum.js` (`applyIOTimings`, `applyIOTimingsForRead`, `IO_OFFSET_READ/WRITE`) | — | — | `contention-timing-test`, `timingtest-00fe/7ffe/…` | `docs/machines.md` |
 | Floating bus | `core/spectrum.js` (`getFloatingBusValue`, `_ioCycleT`, `IO_CYCLE_READ_T`), `core/machines.js` (`hasFloatingBus`) | — | — | `float48k`, `float128k`, `ctprobe-*` | `docs/machines.md` |
 | Scorpion Even M1 + attribute bus | `core/spectrum.js` (`evenM1` in `setupContention`, `getAttrBusValue`), `core/memory.js` (`isRomAt`), `core/machines.js` (`evenM1`, `attrBusPorts`) | — | — | `ctprobe-scorpion`, `TactMeterV1.0` | `docs/machines.md#cpu-variant` |
+| CPU turbo | `core/spectrum.js` (`_turboSpend`, `setTurboForce`, `setHwTurbo`) | `ui/display-settings.js` | `selTurbo` | `scorpion-test` | `docs/machines.md` |
+| CMOS clock (Gluk, SMUC) | `core/cmos.js`, `core/spectrum.js` (`rtc`, `_smucPort`, `_smucRead`, `setRtc`) | `ui/display-settings.js` | `chkRtc` | `scorpion-test` | `docs/machines.md` |
+| Scorpion TURBO+ (ProfROM, 1MB) | `core/machines.js` (`scorpiontb`), `core/memory.js` (`_scorpionRomRead`, `romPlane`, `_scorpionPage`), `core/spectrum.js` (turbo ports, AY R14, $1F, SMUC $BE), `ui/auto-loader.js` (`startProfRomTrdos`) | `ui/rom-selector.js` | `machineSelect` | `scorpion-test` | `docs/machines.md` |
+| Scorpion GMX (2MB, 640x200) | `core/machines.js` (`scorpiongmx`), `core/memory.js` (`slot2Page`, `writeGmxDffd`, `writeGmx78fd`), `core/spectrum.js` (`_gmxWrite`, `_gmxRead`, `_blitGmx`) | `ui/rom-selector.js` | `machineSelect` | `scorpion-test` | `docs/machines.md` |
 | Video, border | `core/ula.js` | `ui/display-settings.js` | `screen`, `borderSizeSelect` | `system-test` | `docs/rendering.md` |
 | ULAplus | `core/ula.js` (`ulaplus`) | `ui/display-settings.js` | `chkULAplus`, `ulaplusPalette*` | `system-test`, `szx-peripherals-test` | `docs/rendering.md` |
 | Sound (beeper, AY) | `core/ay.js`, `core/audio-processor.js` | `ui/display-settings.js` | `chkSound`, `volumeSlider`, `stereoMode` | `tape-test` | `docs/rendering.md` |
@@ -24,7 +28,9 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Keyboard ghosting | `core/ula.js` (`_ghostedRows`, `setKeyboardGhosting`) | `ui/input-settings.js` | `chkKeyboardGhosting` | `system-test` | `docs/peripherals.md` |
 | Scripted key presses | `core/ula.js` (`hasKey`, `keyNames`, `resolveKeyName`) | `ui/app-init.js` (`assertZXKey`) | — | `system-test` | `docs/automation.md` |
 | ULA snow | `core/ula-snow.js`, `core/ula.js` (`_displayRam`, `_snowFetchStartTstate`) | `ui/display-settings.js` | `chkUlaSnow` | `snow-test`, app tests `snowtest-*` | `docs/rendering.md` |
+| Radastan 128x96 (ZX-UNO) | `core/ula.js` (`_renderRadastan`, `zxunoWrite`) | `ui/display-settings.js` (with ULAplus) | `chkULAplus` | `szx-peripherals-test` | `docs/rendering.md` |
 | ULA ink edge skew | `core/ula-inkskew.js`, `core/ula.js` (`inkSkew`) | `ui/display-settings.js` | `chkInkSkew` | `inkskew-test` | `docs/rendering.md` |
+| FlashColor (FLASH = colour mix) | `core/ula-blit.js` (`flashColor`), `core/ula.js` (`setFlashColor`) | `ui/display-settings.js` | `chkFlashColor` | `ula-blit-test` | `docs/rendering.md` |
 | PAL composite (RF) | `core/pal-composite.js`, `core/ula.js` (`setPalComposite`) | `ui/display-settings.js` | `chkPalComposite` | `pal-test`, `chromatrons`, `chromatrons-pentagon` | `docs/rendering.md` |
 | Joysticks | `core/joystick.js`, `core/spectrum.js` | `ui/input-settings.js`, `ui/gamepad.js` | `selJoystickType`, `joyCustomKeys`, `chkKempston` | `joystick-test` | `docs/peripherals.md` |
 | Kempston mouse | `core/spectrum.js` | `ui/input-settings.js` | `chkKempstonMouse` | `system-test` | `docs/peripherals.md` |

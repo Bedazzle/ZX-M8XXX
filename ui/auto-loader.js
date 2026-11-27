@@ -19,6 +19,8 @@ const AUTO_LOAD_READY_SETTLE  = 20;  // ~400ms after the ROM starts scanning
 const AUTO_LOAD_READY_TIMEOUT = 300; // ~6.0s  give up waiting and type anyway
 const AUTO_LOAD_SCORPION_FLOOR = 180; // Scorpion scans during its 256K RAM test, so
                                       // it needs a floor too (+ settle = the old 200)
+const AUTO_LOAD_PROFROM_FLOOR = 300;  // ProfROM: its self-test scans the keyboard too;
+                                      // the menu is up at ~240 (4.27, no SMUC drives)
 
 // Frame-based timing constants (~50 frames/sec)
 const AUTO_LOAD_KEY_HOLD      = 5;   // ~100ms key held down
@@ -31,9 +33,11 @@ const AUTO_LOAD_KEY_GAP_SLOW  = 8;   // ~150ms
 const AUTO_LOAD_SCORPION_BASIC_WAIT = 75; // ~1.5s after choosing 128 BASIC
 
 export function initAutoLoader({ getSpectrum }) {
-    const chkAutoLoad = document.getElementById('chkAutoLoad');
-    const chkFlashLoad = document.getElementById('chkFlashLoad');
-    const tapeLoadModeEl = document.getElementById('tapeLoadMode');
+    // The player page has none of these controls: auto load is always on there
+    const chkAutoLoad = document.getElementById('chkAutoLoad') ||
+        { checked: true, addEventListener() {} };
+    const chkFlashLoad = document.getElementById('chkFlashLoad') || { checked: false };
+    const tapeLoadModeEl = document.getElementById('tapeLoadMode') || {};
     let autoLoadQueue = [];          // pending [{frame, fn}], sorted by absolute frame
     let autoLoadStartFrame = 0;      // spectrum.totalFrames when the sequence began
     let autoLoadActive = false;
@@ -150,7 +154,8 @@ export function initAutoLoader({ getSpectrum }) {
         // that started the load and the typed keys did nothing.
         // The 48K-shaped machines (Timex, TK-90X/TK-95...) start in keyword
         // BASIC, as the 48K does.
-        const isMenuMachine = machType !== 'scorpion' && spectrum.profile.pagingModel !== 'none';
+        const isScorpion = spectrum.profile.pagingModel === 'scorpion';
+        const isMenuMachine = !isScorpion && spectrum.profile.pagingModel !== 'none';
         const ula = spectrum.ula;
 
         // Reset (tape data survives reset - only rewinds)
@@ -203,9 +208,9 @@ export function initAutoLoader({ getSpectrum }) {
             return;
         }
 
-        if (machType === 'scorpion') {
+        if (isScorpion) {
             autoLoadWhenReady(() => scheduleScorpionTape(spectrum, ula, finishTape),
-                              { floor: AUTO_LOAD_SCORPION_FLOOR });
+                              { floor: spectrum.profile.scorpionTurbo ? AUTO_LOAD_PROFROM_FLOOR : AUTO_LOAD_SCORPION_FLOOR });
             return;
         }
 
@@ -298,6 +303,13 @@ export function initAutoLoader({ getSpectrum }) {
             }
         }
 
+        const ula = spectrum.ula;
+        if (spectrum.profile.scorpionTurbo) {
+            // ProfROM: TR-DOS only from its menu (its 48K ROM is its own), so
+            // reset, wait for the menu, Enter on "128 TR-DOS", then type
+            startProfRomTrdos(spectrum, headless, (t0) => typeRun(t0));
+            return;
+        }
         if (!spectrum.bootTrdos()) {
             // Restore boot entry on failure
             if (bootEntryOffset >= 0) diskData[bootEntryOffset] = savedBootByte;
@@ -305,65 +317,86 @@ export function initAutoLoader({ getSpectrum }) {
         }
         if (!headless) spectrum.start();
         beginAutoLoad();
-        const ula = spectrum.ula;
-
         // No readiness gate here: TR-DOS scans the keyboard well before it can
         // accept a typed command, so gating on the scan types too early and the
         // RUN is lost (verified). This path keeps its fixed, known-good wait.
-        let t = AUTO_LOAD_TRDOS_WAIT;
+        typeRun(AUTO_LOAD_TRDOS_WAIT);
 
-        // Restore boot entry after TR-DOS has finished initialization
-        if (bootEntryOffset >= 0) {
-            autoLoadAt(() => { diskData[bootEntryOffset] = savedBootByte; }, t - 25);
-        }
+        function typeRun(t) {
 
-        const H = AUTO_LOAD_KEY_HOLD, G = AUTO_LOAD_KEY_GAP;
-
-        // R = RUN keyword in TR-DOS
-        t = pressKeyTimed(ula, 'r', t, H, G);
-
-        // Space between RUN and "
-        t = pressKeyTimed(ula, ' ', t, H, G);
-
-        // Opening quote: Symbol + P
-        t = pressSymbolKeyTimed(ula, 'p', t, H, G);
-
-        // Symbol Shift character → base key mapping
-        const symbolKeys = {
-            '.': 'm', ',': 'n', ';': 'o', '/': 'v', '-': 'j', '+': 'k',
-            '=': 'l', '*': 'b', '?': 'c', ':': 'z', '<': 'r', '>': 't',
-            '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '&': '6',
-            "'": '7', '(': '8', ')': '9', '_': '0', '^': 'h'
-        };
-
-        // Type filename characters
-        for (const ch of filename) {
-            if (ch >= 'A' && ch <= 'Z') {
-                t = pressShiftKeyTimed(ula, ch.toLowerCase(), t, H, G);
-            } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === ' ') {
-                t = pressKeyTimed(ula, ch, t, H, G);
-            } else if (symbolKeys[ch]) {
-                t = pressSymbolKeyTimed(ula, symbolKeys[ch], t, H, G);
+            // Restore boot entry after TR-DOS has finished initialization
+            if (bootEntryOffset >= 0) {
+                autoLoadAt(() => { diskData[bootEntryOffset] = savedBootByte; }, t - 25);
             }
+
+            const H = AUTO_LOAD_KEY_HOLD, G = AUTO_LOAD_KEY_GAP;
+
+            // R = RUN keyword in TR-DOS
+            t = pressKeyTimed(ula, 'r', t, H, G);
+
+            // Space between RUN and "
+            t = pressKeyTimed(ula, ' ', t, H, G);
+
+            // Opening quote: Symbol + P
+            t = pressSymbolKeyTimed(ula, 'p', t, H, G);
+
+            // Symbol Shift character → base key mapping
+            const symbolKeys = {
+                '.': 'm', ',': 'n', ';': 'o', '/': 'v', '-': 'j', '+': 'k',
+                '=': 'l', '*': 'b', '?': 'c', ':': 'z', '<': 'r', '>': 't',
+                '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '&': '6',
+                "'": '7', '(': '8', ')': '9', '_': '0', '^': 'h'
+            };
+
+            // Type filename characters
+            for (const ch of filename) {
+                if (ch >= 'A' && ch <= 'Z') {
+                    t = pressShiftKeyTimed(ula, ch.toLowerCase(), t, H, G);
+                } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === ' ') {
+                    t = pressKeyTimed(ula, ch, t, H, G);
+                } else if (symbolKeys[ch]) {
+                    t = pressSymbolKeyTimed(ula, symbolKeys[ch], t, H, G);
+                }
+            }
+
+            // Closing quote: Symbol + P
+            t = pressSymbolKeyTimed(ula, 'p', t, H, G);
+
+            // Enter
+            autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
+            t += H;
+            autoLoadAt(() => {
+                if (!autoLoadActive) return;
+                ula.keyUp('Enter');
+                ula.keyboardState.fill(0xFF);
+                autoLoadActive = false;
+            }, t);
         }
+    }
 
-        // Closing quote: Symbol + P
-        t = pressSymbolKeyTimed(ula, 'p', t, H, G);
-
-        // Enter
-        autoLoadAt(() => { if (!autoLoadActive) return; ula.keyDown('Enter'); }, t);
-        t += H;
-        autoLoadAt(() => {
-            if (!autoLoadActive) return;
-            ula.keyUp('Enter');
-            ula.keyboardState.fill(0xFF);
-            autoLoadActive = false;
-        }, t);
+    // Scorpion TURBO+ (ProfROM): reset, wait for the boot menu, Enter on its
+    // first entry, "128 TR-DOS" (which runs the disk's boot); then(t) types on
+    // from frame t, if there is more to type
+    function startProfRomTrdos(spectrum, headless, then) {
+        spectrum.stop();
+        spectrum.reset();
+        if (!headless) spectrum.start();
+        beginAutoLoad();
+        autoLoadWhenReady(() => {
+            const ula = spectrum.ula;
+            let t = pressKeyTimed(ula, 'Enter', 0, AUTO_LOAD_KEY_HOLD_SLOW, AUTO_LOAD_KEY_GAP_SLOW);
+            if (then) then(t + AUTO_LOAD_TRDOS_WAIT);
+            else autoLoadAt(() => { autoLoadActive = false; }, t);
+        }, { floor: AUTO_LOAD_PROFROM_FLOOR });
     }
 
     function startAutoLoadDisk({ headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
+        if (spectrum.profile.scorpionTurbo) {
+            startProfRomTrdos(spectrum, headless, null);
+            return;
+        }
         if (spectrum.bootTrdos()) {
             if (!headless) spectrum.start();
         }

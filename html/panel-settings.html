@@ -619,6 +619,25 @@
                         <span id="tkmemStatus" class="iface-status"></span>
                     </div>
 
+                    <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">CPU</div>
+
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" for="selTurbo" title="CPU turbo: the Z80 runs 2 or 4 times as fast while the screen, sound, tape and disks keep the machine's own clock. 'As the machine' leaves it to the hardware: the Scorpion ZS 256 TURBO+ switches 7 MHz on by IN from $7FFD and off by IN from $1FFD; the other machines have none. Tape loaders time themselves on the CPU, so tapes load at x1 only.">Turbo</label>
+                        <select id="selTurbo">
+                                <option value="0">as the machine</option>
+                                <option value="1">off (x1)</option>
+                                <option value="2">x2</option>
+                                <option value="4">x4</option>
+                        </select>
+                        <span id="turboStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="MC146818 real-time clock with its CMOS RAM, showing the host's time. Pentagon / Pentagon 1024: the Gluk clock (#EFF7 bit 7 switches it on, #DFF7 picks the register, #BFF7 reads and writes it). Scorpion: SMUC's clock (TR-DOS paged in: #DFBA, register or data by #FFBA bit 7), with SMUC itself answering version 1.2 and no hard disk. The CMOS RAM is kept in the browser.">
+                            <input type="checkbox" id="chkRtc"> CMOS clock (Gluk / SMUC)
+                        </label>
+                        <span id="rtcStatus" class="iface-status"></span>
+                    </div>
+
                     <div style="color: var(--text-secondary); font-size: 11px; margin: 10px 0 4px; font-weight: bold;">Emulation accuracy</div>
 
                     <div class="iface-row">
@@ -648,6 +667,11 @@
                             <input type="checkbox" id="chkPalComposite"> PAL Composite (RF)
                         </label>
                         <span id="palCompositeStatus" class="iface-status"></span>
+                    </div>
+                    <div class="iface-row">
+                        <label class="checkbox-label iface-name wide" title="FLASH-COLOUR (a board modification, Unreal Speccy's FlashColor=1): attribute bit 7 no longer blinks. In such a cell the paper is black and the ink is a mix of the ink and paper colours, as gigascreen would show it. Some releases and pictures are drawn for it (zxart.ee calls them Flash); on an ordinary Spectrum they flash.">
+                            <input type="checkbox" id="chkFlashColor"> FlashColor (FLASH = colour mix)
+                        </label>
                     </div>
 
                 </div>

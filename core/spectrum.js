@@ -30,7 +30,7 @@ import {
     DIDAKTIK_PORT_COMMAND, DIDAKTIK_PORT_TRACK, DIDAKTIK_PORT_SECTOR,
     DIDAKTIK_PORT_DATA, DIDAKTIK_PORT_AUX, DIDAKTIK_PORT_AUX_MASK
 } from './constants.js';
-import { hex8, hex16, storageGet } from './utils.js';
+import { hex8, hex16, storageGet, storageSet } from './utils.js';
 import { fmtAddr, fmtPort } from './addr-format.js';
 
 // Ticks from the start of an I/O instruction to its I/O cycle, keyed by the
@@ -81,6 +81,8 @@ import { SAA1099, SAA_CLOCK } from './saa1099.js';
 import { GeneralSound } from './gs.js';
 import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
+import { Mc146818 } from './cmos.js';
+import { Nvram24c16 } from './nvram.js';
 
     export class Spectrum {
         constructor(canvas, options = {}) {
@@ -153,6 +155,54 @@ import { Disassembler } from './disasm.js';
             this.loadedKempdiscDiskFiles = [null, null, null, null];   // the K-DOS directory
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
+            // CPU turbo: the Z80 runs `_turboMul` times faster than the machine
+            // clock (the screen, sound, tape and disks keep theirs). turboHw is
+            // what the machine itself has switched on (Scorpion TURBO+: IN from
+            // $7FFD / $1FFD); turboForce, from the settings, overrides it (0 =
+            // follow the machine).
+            this.turboHw = 1;
+            // CMOS clock (core/cmos.js): the Gluk on a Pentagon (#EFF7 bit 7 on,
+            // #DFF7 register, #BFF7 data), SMUC's on a Scorpion (TR-DOS on:
+            // #DFBA, address or data by #FFBA bit 7). Its RAM is kept.
+            this.rtc = new Mc146818();
+            this.rtcEnabled = storageGet('zxm8_rtc') !== 'false';
+            this._glukOn = 0;
+            this._smucSys = 0;
+            this._smucFdd = 0xC0;           // #7FBA, the virtual-FDD latch
+            this._gmxReset();
+            // SMUC's NVRAM (24C16 on I2C, SYS bits 4/6): the ProfROM's settings
+            this.smucNv = new Nvram24c16();
+            try {
+                const nv = storageGet('zxm8_smucnv');
+                if (nv && nv.length === 2 * this.smucNv.mem.length) {
+                    this.smucNv.mem.set(nv.match(/../g).map(h => parseInt(h, 16)));
+                }
+            } catch (e) { /* none kept */ }
+            let nvSaveTimer = null;
+            this.smucNv.onChange = (mem) => {
+                clearTimeout(nvSaveTimer);
+                nvSaveTimer = setTimeout(() => {
+                    try {
+                        storageSet('zxm8_smucnv', Array.from(mem, b => b.toString(16).padStart(2, '0')).join(''));
+                    } catch (e) { /* storage off */ }
+                }, 500);
+            };
+            try {
+                const saved = storageGet('zxm8_cmos');
+                if (saved) this.rtc.loadRam(Uint8Array.from(saved.match(/../g).map(h => parseInt(h, 16))));
+            } catch (e) { /* none kept */ }
+            let rtcSaveTimer = null;
+            this.rtc.onChange = (data) => {
+                clearTimeout(rtcSaveTimer);
+                rtcSaveTimer = setTimeout(() => {
+                    try {
+                        storageSet('zxm8_cmos', Array.from(data, b => b.toString(16).padStart(2, '0')).join(''));
+                    } catch (e) { /* storage off */ }
+                }, 500);
+            };
+            this.turboForce = [1, 2, 4].includes(+storageGet('zxm8_turbo')) ? +storageGet('zxm8_turbo') : 0;
+            this._turboMul = 1;
+            this._turboAcc = 0;
 
             // µPD765 FDC (ZX Spectrum +3)
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
@@ -1536,7 +1586,7 @@ import { Disassembler } from './disasm.js';
             const dims = this.ula.getDimensions();
             // Timex: the canvas is twice as wide so 512-pixel hi-res rows fit;
             // the frame buffer and everything that reads it stay as they are
-            this.canvasScaleX = this.profile.timex ? 2 : 1;
+            this.canvasScaleX = (this.profile.timex || this.profile.gmx) ? 2 : 1;
             this.canvas.width = dims.width * this.canvasScaleX;
             this.canvas.height = dims.height;
             this.imageData = this.ctx.createImageData(dims.width * this.canvasScaleX, dims.height);
@@ -1567,12 +1617,42 @@ import { Disassembler } from './disasm.js';
                 }
             }
             const ula = this.ula;
+            if (this.profile.gmx && this.gmxGfx) { this._blitGmx(dst, W2, H, dims); return; }
             if (ula.hiresBuf) {
                 for (let y = 0; y < 192; y++) {
                     const vy = dims.borderTop + y;
                     if (ula.hiresRows[y] && vy >= 0 && vy < H) {
                         dst.set(ula.hiresBuf.subarray(y * 512, y * 512 + 512), vy * W2 + 2 * dims.borderLeft);
                     }
+                }
+            }
+        }
+
+        /**
+         * Scorpion GMX 640x200 (MAME spectrum_update_screen): pixels from RAM page
+         * #39 (#3B with 7FFD bit 3), 80 bytes a line; the attribute of each byte
+         * 64 pages up: ink = bits 0-2 + bit 6 as bright, paper = bits 3-6; bit 7
+         * flashes. #7AFD/#7CFD give the start address: byte (y * 80 + x + start)
+         * mod 16000 (Unreal-NG, after the GMX manual; MAME scrolls whole lines). Drawn whole
+         * at the frame's end, centred, the rest in the border colour.
+         */
+        _blitGmx(dst, W2, H, dims) {
+            const m = this.memory, ula = this.ula, pal = ula.palette32;
+            const page = (m.scorpionPort7FFD & 0x08) ? 0x3B : 0x39;
+            const pix = m.ram[page % m.ram.length], att = m.ram[(page + 0x40) % m.ram.length];
+            dst.fill(pal[ula.borderColor & 7]);
+            const x0 = Math.max(0, (W2 - 640) >> 1);
+            const y0 = Math.max(0, dims.borderTop + 96 - 100);
+            const start = this.gmxScroll;
+            const invert = ula.flashState ? 1 : 0;
+            for (let v = 0; v < 200 && y0 + v < H; v++) {
+                const d0 = (y0 + v) * W2 + x0;
+                for (let col = 0; col < 80 && col * 8 + x0 < W2; col++) {
+                    const o = (v * 80 + col + start) % 16000;
+                    const a = att[o], b = pix[o];
+                    let fg = pal[((a >> 3) & 8) | (a & 7)], bg = pal[(a >> 3) & 0x0F];
+                    if ((a & 0x80) && invert) { const t = fg; fg = bg; bg = t; }
+                    for (let i = 0; i < 8; i++) dst[d0 + col * 8 + i] = (b & (0x80 >> i)) ? fg : bg;
                 }
             }
         }
@@ -1607,6 +1687,9 @@ import { Disassembler } from './disasm.js';
 
         reset() {
             this.cpu.reset();
+            this.setHwTurbo(1);
+            this._glukOn = 0;               // #EFF7 is cleared by reset; SMUC's SYS is not
+            this._gmxReset();
             this.memory.reset();
             this.ula.reset();
             this.tapeLoader.rewind();
@@ -1836,10 +1919,156 @@ import { Disassembler } from './disasm.js';
             }
         }
 
+        /**
+         * SMUC 1.x ports (Xpeccy+ hdd.c): TR-DOS space 1x?11xxx 101xx?10, only
+         * with the DOS paged in; Scorpion only. A15, A13 and A2 pick the register.
+         */
+        _smucPort(port) {
+            return this.profile.pagingModel === 'scorpion' && this.memory.trdosActive &&
+                (port & 0x18E3) === 0x18A2;
+        }
+
+        /**
+         * SMUC with its clock and no drive: version 1.2 (#5FBA #3F, #5FBE #57, as
+         * ProfROM reads them), the virtual FDD and PIC bytes Unreal gives, SYS
+         * with no NVRAM answering (SDA high), the clock at #DFBA, and the IDE
+         * registers ($F8BE-$FFBE, $D8BE) as a cable with no drive: the ATA
+         * pull-down on D7 reads not busy, so "HDD not found" comes at once.
+         */
+        _smucRead(port) {
+            switch (port & 0xA004) {
+                case 0x0000: return 0x3F;              // #5FBA version
+                case 0x0004: return 0x57;              // #5FBE revision
+                case 0x2000: return this._smucFdd | 0x37;   // #7FBA virtual FDD
+                case 0x2004: return 0x57;              // #7xBE PIC socket
+                case 0x8000: return this.rtc.readData();   // #DFBA clock
+                case 0xA000: return this.smucNv.read() ? 0xFF : 0xBF;   // #FFBA SYS: b6 = SDA
+                default: return 0x7F;                  // IDE, no drive
+            }
+        }
+
+        /** Gluk / SMUC clock on or off (Settings > Machines) */
+        setRtc(on) { this.rtcEnabled = !!on; if (!on) this._glukOn = 0; }
+
+        // ========== Scorpion GMX (MAME scorpiongmx_state) ==========
+
+        _gmxReset() {
+            this.gmx00 = 0;             // #00: b3 magic, b4 FIXROM, b5 BLKEXT (GMX ports off), b7
+            this.gmxGfx = 0;            // #7EFD b3: the 640x200 mode
+            this.gmxScroll = 0;         // #7CFD (b5-0) << 8 | #7AFD (b7-4)
+            this._gmxMagicShift = 0;
+            this._gmxMagicOff = 0;
+            if (this.memory && this.profile.gmx) {
+                this.memory.gmxDffd = 0;
+                this.memory.writeGmx78fd(0);
+            }
+        }
+
+        /** One of the GMX's own ports, while #00 bit 5 leaves them on */
+        _isGmxPort(port) {
+            if (!this.profile.gmx || (this.gmx00 & 0x20)) return false;
+            const q = port & 0xFFFF;
+            return q === 0x78FD || q === 0x7AFD || q === 0x7EFD;
+        }
+
+        _gmxRead(q) {
+            const m = this.memory, brd = this.ula.borderColor & 7;
+            const p7 = m.scorpionPort7FFD, p1 = m.scorpionPort1FFD;
+            switch (q) {
+                case 0x78FD: {
+                    const v = ((brd & 2) << 6) | (m.gmx78fd & 0x7F) | (this._gmxMagicShift & 1);
+                    this._gmxMagicShift >>= 1;
+                    return v;
+                }
+                case 0x7AFD:
+                    return ((brd & 1) << 7) | ((m.gmxDffd & 7) << 4) | ((p1 & 0x10) >> 1) | (p7 & 7);
+                case 0x7EFD:
+                    return ((brd & 4) << 5) | ((p1 & 1) << 6) | ((this.gmx00 & 0x20)) |
+                        ((this.gmx00 & 0x80) >> 3) | (this.gmxGfx << 3) | ((this.turboHw > 1 ? 1 : 0) << 2) |
+                        (p7 & 0x08 ? 2 : 0) | ((p7 & 0x20) ? 1 : 0);
+            }
+            return 0xFF;
+        }
+
+        /** A write to a GMX port; true when it was one (nothing else takes it) */
+        _gmxWrite(q, val) {
+            if ((q & 0xFF) === 0x00) {                          // #00, any high byte
+                this.gmx00 = val;
+                if (val & 0x08) {
+                    this._gmxMagicShift = 0x88 | (val & 7);
+                    if (!(val & 0x10)) {                        // not FIXROM: the CPU restarts
+                        const t = this.cpu.tStates, n = this.cpu.instructionCount;
+                        this.cpu.reset();
+                        this.cpu.tStates = t; this.cpu.instructionCount = n;
+                    }
+                }
+                return true;
+            }
+            if (this.gmx00 & 0x20) return false;                // BLKEXT
+            const m = this.memory;
+            switch (q) {
+                case 0x78FD: m.writeGmx78fd(val); return true;
+                case 0x7AFD: this.gmxScroll = (this.gmxScroll & 0x3F00) | (val & 0xF0); return true;
+                case 0x7CFD: this.gmxScroll = ((val & 0x3F) << 8) | (this.gmxScroll & 0xF0); return true;
+                case 0x7EFD:
+                    this.setHwTurbo((val & 0x80) ? 2 : 1);
+                    if (!(this.gmx00 & 0x10)) m.romPlane = (val >> 4) & 7;    // D4-D6: A16-A18
+                    this.gmxGfx = (val >> 3) & 1;
+                    this._gmxMagicOff = (val >> 2) & 1;
+                    return true;
+                case 0xDFFD: m.writeGmxDffd(val); return true;
+            }
+            return false;
+        }
+
+        /** The multiplier in force: the settings' if set, else the machine's */
+        turboMultiplier() { return this.turboForce || this.turboHw; }
+
+        _updateTurbo() {
+            const m = this.turboMultiplier();
+            if (m !== this._turboMul) { this._turboMul = m; this._turboAcc = 0; }
+        }
+
+        /** The machine's own turbo (1 = off): Scorpion TURBO+ switches 1 / 2 */
+        setHwTurbo(m) { this.turboHw = m > 1 ? m : 1; this._updateTurbo(); }
+
+        /** From the settings: 0 follows the machine, 1 forces it off, 2 / 4 force it on */
+        setTurboForce(m) { this.turboForce = [1, 2, 4].includes(m) ? m : 0; this._updateTurbo(); }
+
+        /**
+         * Called after an instruction under turbo: the instruction took `spent`
+         * CPU cycles, which are spent / mul cycles of the machine clock. The
+         * remainder carries over, so in the long run it is exact.
+         */
+        /** CPU time outside an instruction (INT / NMI acceptance), turbo applied */
+        _addCpuT(t) {
+            const before = this.cpu.tStates;
+            this.cpu.tStates += t;
+            if (this._turboMul > 1) this._turboSpend(before);
+        }
+
+        _turboSpend(before) {
+            const spent = this.cpu.tStates - before;
+            if (spent <= 0) return;
+            const m = this._turboMul;
+            this._turboAcc += spent * (m - 1);
+            const back = Math.floor(this._turboAcc / m);
+            this._turboAcc -= back * m;
+            this.cpu.tStates -= back;
+        }
+
         // ========== Port I/O ==========
 
+        // The Beta Disk answers its ports only while the TR-DOS ROM is paged in
+        // (the DOS signal), as on a real Beta 128 / Pentagon. Answering them
+        // whenever a disk was in the drive took port $1F from the Kempston
+        // joystick ($1F is also the WD1793's command/status register), so no
+        // game could read a joystick on a Pentagon with its disk inserted.
+        // TR-DOS code in RAM reaches the ports through the ROM ($3D2F), which
+        // pages it in.
         _isBetaDiskActive() {
             return this.betaDiskEnabled && !this.memory.beta48On && !this.hcIf1 &&
+                this.memory.trdosActive &&
                 this.betaDisk && this.betaDisk.hasAnyDisk() && this.memory.hasTrdosRom();
         }
 
@@ -2168,7 +2397,7 @@ import { Disassembler } from './disasm.js';
         triggerDiscipleNmi() {
             if (!this._isDiscipleActive()) return;
             this.memory.discipleActive = true;
-            this.cpu.tStates += this.cpu.nmi();
+            this._addCpuT(this.cpu.nmi());
         }
 
         // DISCiPLE port read: FDC $1B/$5B/$9B/$DB, $BB pages in, $7B sets the
@@ -2219,7 +2448,7 @@ import { Disassembler } from './disasm.js';
             // one of these six call sites used to drop the number on the floor,
             // so an NMI cost the machine nothing at all. Invisible at the scale
             // of a frame; not invisible against a DRQ due 112 T out.
-            this.cpu.tStates += this.cpu.nmi();
+            this._addCpuT(this.cpu.nmi());
         }
 
         portRead(port, instructionTiming = 12) {
@@ -2244,6 +2473,14 @@ import { Disassembler } from './disasm.js';
                 if (ioDelay > 4) {
                     this.cpu.tStates += (ioDelay - 4);
                 }
+            }
+
+            // Scorpion TURBO+: reading the paging ports switches the turbo, IN
+            // from $1FFD off and from $7FFD on (decode 00/01xxxxxxxx1xxx01)
+            if (this.profile.scorpionTurbo && !this._isGmxPort(port)) {
+                const dec = port & 0xC023;
+                if (dec === 0x0021) this.setHwTurbo(1);
+                else if (dec === 0x4021) this.setHwTurbo(2);
             }
 
             // Debug: log first 50 port reads after halted INT detected
@@ -2304,7 +2541,9 @@ import { Disassembler } from './disasm.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                if (this._isGmxPort(port)) {
+                    result = this._gmxRead(port & 0xFFFF);
+                } else if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
                     // General Sound: $BB status, $B3 data from the GS
                     this.gs.syncTo(this.cpu.tStates);
                     result = this.gs.portIn(lowByte);
@@ -2335,6 +2574,16 @@ import { Disassembler } from './disasm.js';
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
                     // keyboard does not answer here; FUSE reads the latch back.
                     result = this.memory.hcConfig;
+                } else if (this.rtcEnabled && this.profile.ulaProfile === 'pentagon' &&
+                           this._glukOn && (port & 0xF008) === 0xB000) {
+                    result = this.rtc.readData();       // Gluk #BFF7
+                } else if (this.rtcEnabled && this._smucPort(port)) {
+                    result = this._smucRead(port);
+                } else if (this.profile.scorpionTurbo && this.memory.trdosActive && lowByte === 0xBE) {
+                    // No SMUC fitted: its IDE registers ($F8BE-$FFBE) still read
+                    // as a cable with no drive (see _smucRead), or the ProfROM
+                    // waits a minute for BUSY to drop off a floating bus
+                    result = 0x7F;
                 } else if ((lowByte & 0x01) === 0 && !(this.profile.timex && lowByte !== 0xFE)) {
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
@@ -2441,6 +2690,17 @@ import { Disassembler } from './disasm.js';
                 } else if (betaDiskActive && lowByte === PORT_WD_SYS) {
                     // Beta Disk system register
                     result = this.betaDisk.read(port);
+                } else if (this.profile.pagingModel === 'scorpion' && !this.memory.trdosActive &&
+                           (port & 0x00A3) === 0x0003) {
+                    // Scorpion, DOS off: $1F (xxxxxxxx0x0xxx11) gives the Beta
+                    // Disk's INTRQ / DRQ in bits 7-6 (MAME scorpion_io); the
+                    // ProfROM waits on them from its service ROM. The Kempston
+                    // stick, when fitted, in bits 0-4. INTRQ is low once the
+                    // status was read (Edge Grinder GMX takes bit 7 for a key).
+                    result = this.betaDisk ? this.betaDisk.lines() : 0;
+                    if (this.kempstonEnabled && !this._joystickIsTimex()) {
+                        result |= (this.kempstonState | this.gamepadState) & 0x1f;
+                    }
                 } else if (this.kempstonEnabled && !this._joystickIsTimex() &&
                            (lowByte & DECODE_KEMPSTON_MASK) === DECODE_KEMPSTON) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
@@ -2476,6 +2736,9 @@ import { Disassembler } from './disasm.js';
                 } else if (this.ula.ulaplus.enabled && port === PORT_ULAPLUS_REG) {
                     // ULAplus data port read
                     result = this.ula.ulaplusReadData();
+                } else if (this.ula.ulaplus.enabled && (port === 0xFC3B || port === 0xFD3B)) {
+                    // ZX-UNO register file, the Radastan part (ula.zxunoWrite)
+                    result = port === 0xFC3B ? this.ula.ulaplus.unoReg : this.ula.zxunoRead();
                 } else if ((port & DECODE_AY_MASK) === DECODE_AY_REG && !this.profile.timexAy) {
                     // Port 0xFFFD: AY register read (128K/Pentagon, or 48K with AY enabled)
                     if (this._ayOnPorts()) {
@@ -2485,6 +2748,11 @@ import { Disassembler } from './disasm.js';
                             result = this.fmTimers[this._aySel].readStatus();
                         } else if (this.tsfm && this._fmAddr[this._aySel] >= 0x10) {
                             result = 0xFF;      // an FM address latched: nothing to read
+                        } else if (this.profile.scorpionTurbo && this._curAy().selectedRegister === 14) {
+                            // TURBO+: register 14 reads the paging back (MAME
+                            // ay_data_r): 7FFD bit 4 -> bit 5, 1FFD bit 4, 7FFD bits 0-3
+                            const m = this.memory, p7 = m.scorpionPort7FFD, p1 = m.scorpionPort1FFD;
+                            result = ((p7 & 0x10) << 1) | (p1 & 0x10) | (p7 & 0x0F);
                         } else {
                             result = this._curAy().readRegister();
                         }
@@ -2614,6 +2882,31 @@ import { Disassembler } from './disasm.js';
 
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
+
+            // Scorpion GMX: #00 (any high byte) and its #xxFD ports
+            if (this.profile.gmx && this._gmxWrite(port & 0xFFFF, val)) return;
+
+            // CMOS clock: Gluk (Pentagon) and SMUC (Scorpion)
+            if (this.rtcEnabled) {
+                if (this.profile.ulaProfile === 'pentagon') {
+                    const g = port & 0xF008;            // A15-A12 and A3
+                    if (g === 0xE000) this._glukOn = val & 0x80;      // #EFF7 (the P1024 has its bits too)
+                    else if (g === 0xD000 && this._glukOn) { this.rtc.writeAddress(val); return; }
+                    else if (g === 0xB000 && this._glukOn) { this.rtc.writeData(val); return; }
+                } else if (this._smucPort(port)) {
+                    const reg = port & 0xA004;
+                    if (reg === 0xA000) {                            // #FFBA
+                        this._smucSys = val;
+                        this.smucNv.write(val & 0x10, val & 0x40);   // SDA, SCL
+                    }
+                    else if (reg === 0x2000) this._smucFdd = val & 0xC8;   // #7FBA
+                    else if (reg === 0x8000) {                       // #DFBA
+                        if (this._smucSys & 0x80) this.rtc.writeData(val);
+                        else this.rtc.writeAddress(val);
+                    }
+                    return;
+                }
+            }
 
             // DAC (Covox / Specdrum / Soundrive): write-only, not exclusive
             if (this.dacType !== 'none') this._dacWrite(lowByte, val);
@@ -2956,6 +3249,10 @@ import { Disassembler } from './disasm.js';
                 } else if (port === PORT_ULAPLUS_REG) {
                     // ULAplus data write - pass T-states for raster effect tracking
                     this.ula.ulaplusWriteData(val, this.cpu.tStates);
+                } else if (port === 0xFC3B) {
+                    this.ula.zxunoSelect(val);            // ZX-UNO register select
+                } else if (port === 0xFD3B) {
+                    this.ula.zxunoWrite(val);             // ZX-UNO register data (Radastan)
                 }
             }
         }
@@ -3066,7 +3363,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_intOldPC, _intOldSP);
                 intFired = true;
 
@@ -3195,6 +3492,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const _haltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
+                    if (this._turboMul > 1) this._turboSpend(_haltTsBefore);
                     this.cpu.incR();
                     if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
@@ -3215,7 +3513,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hintOldPC, _hintOldSP);
                         intFired = true;
                         if (this.rzxRecordPending) {
@@ -3274,6 +3572,7 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    if (this._turboMul > 1) this._turboSpend(_tsBefore);
                     // FDD 3000: out once the RET at $0604 has run; its station's
                     // Z80 runs along, one instruction per ours (two every fifth)
                     if (this._fdd3000PagingEnabled) {
@@ -3292,14 +3591,14 @@ import { Disassembler } from './disasm.js';
                             // DRQ is a level, not a pulse: if the transfer
                             // finished while the NMI was queued there is no
                             // edge left to deliver.
-                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
+                            if (this.opus.hasDataRequest()) this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
                         if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.tStates += this.cpu.nmi();
+                            this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -3352,7 +3651,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_mintOldPC, _mintOldSP);
                         intFired = true;
                         if (this.rzxRecordPending) {
@@ -3492,7 +3791,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_rzxIntOldPC, _rzxIntOldSP);
             }
 
@@ -3782,7 +4081,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_hlIntOldPC, _hlIntOldSP);
                 intFired = true;
             }
@@ -3869,6 +4168,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const _hlHaltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
+                    if (this._turboMul > 1) this._turboSpend(_hlHaltTsBefore);
                     this.cpu.incR();
                     if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
@@ -3886,7 +4186,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hlHintOldPC, _hlHintOldSP);
                         intFired = true;
                         continue;
@@ -3911,6 +4211,7 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    if (this._turboMul > 1) this._turboSpend(_hlTsBefore);
                     // FDD 3000: out once the RET at $0604 has run; its station's
                     // Z80 runs along, one instruction per ours (two every fifth)
                     if (this._fdd3000PagingEnabled) {
@@ -3928,14 +4229,14 @@ import { Disassembler } from './disasm.js';
                             this._opusNmiPending = false;
                             // see runFrame: a request that has gone away
                             // delivers no NMI
-                            if (this.opus.hasDataRequest()) this.cpu.tStates += this.cpu.nmi();
+                            if (this.opus.hasDataRequest()) this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Didaktik DRQ/INTRQ, same deal
                     if (this._didaktikNmiPending) {
                         if (this.diskClockNow() >= this._didaktikDrqDue) {
                             this._didaktikNmiPending = false;
-                            this.cpu.tStates += this.cpu.nmi();
+                            this._addCpuT(this.cpu.nmi());
                         }
                     }
                     // Opus paging is checked AFTER the instruction, not before it
@@ -3971,7 +4272,7 @@ import { Disassembler } from './disasm.js';
                         this._suppressWatchpoints = true;
                         const intTstates = this.cpu.interrupt();
                         this._suppressWatchpoints = false;
-                        this.cpu.tStates += intTstates;
+                        this._addCpuT(intTstates);
                         this._trackInterruptCall(_hlMintOldPC, _hlMintOldSP);
                         intFired = true;
                     }
@@ -4000,7 +4301,7 @@ import { Disassembler } from './disasm.js';
                 this._suppressWatchpoints = true;
                 const intTstates = this.cpu.interrupt();
                 this._suppressWatchpoints = false;
-                this.cpu.tStates += intTstates;
+                this._addCpuT(intTstates);
                 this._trackInterruptCall(_hlRzxIntOldPC, _hlRzxIntOldSP);
             }
 
@@ -5295,7 +5596,12 @@ import { Disassembler } from './disasm.js';
                 // For 128K: only activate when ROM 1 (48K BASIC) is selected
                 // For 48K: always activate (only one ROM)
                 if (!this.memory.trdosActive) {
-                    if (this.profile.pagingModel === 'none' || this.memory.currentRomBank === this.profile.basicRomBank) {
+                    // Scorpion: the 48K ROM SELECTED (7FFD bit 4), even with the
+                    // service ROM over it (1FFD bit 1) -- MAME beta_enable_r
+                    const rom1 = this.profile.pagingModel === 'scorpion'
+                        ? (this.memory.scorpionPort7FFD & 0x10) !== 0
+                        : this.memory.currentRomBank === this.profile.basicRomBank;
+                    if (this.profile.pagingModel === 'none' || rom1) {
                         this.memory.trdosActive = true;
                     }
                 }
@@ -8647,6 +8953,9 @@ import { Disassembler } from './disasm.js';
             // On real Pentagon, the 128K menu switches to ROM bank 1 before entering TR-DOS.
             // On +2A, BASIC ROM is bank 3 (not bank 1).
             this.memory.currentRomBank = this.profile.basicRomBank;
+            // Scorpion: the DOS shows TR-DOS over the 48K ROM only when 7FFD
+            // bit 4 selects it (else the service ROM), as OUT (#7FFD),#10 does
+            if (this.profile.pagingModel === 'scorpion') this.memory.scorpionPort7FFD = 0x10;
 
             // Page in TR-DOS ROM and start from address 0.
             // The TR-DOS ROM at address 0x0000 contains its own initialization code
@@ -9991,6 +10300,7 @@ import { Disassembler } from './disasm.js';
             // null means "whatever the new machine's profile says", which is the point
             const oldInkSkew = this.ula ? this.ula.inkSkewOverride : undefined;
             const oldPalComposite = this.ula ? this.ula.palCompositeEnabled : undefined;
+            const oldFlashColor = this.ula ? this.ula.flashColor : false;
             // Use persistent setting, not runtime state (which may be modified by test runner)
             const ulaplusSetting = storageGet('zxm8_ulaplus') === 'true';
 
@@ -10040,6 +10350,7 @@ import { Disassembler } from './disasm.js';
             if (oldPalComposite !== undefined) {
                 this.ula.setPalComposite(oldPalComposite);
             }
+            this.ula.setFlashColor(oldFlashColor);
             if (this.lateTimings !== undefined) {
                 this.ula.setLateTimings(this.lateTimings);
             }

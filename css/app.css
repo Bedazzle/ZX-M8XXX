@@ -7,6 +7,7 @@
  */
 
 @import url('base.css');
+@import url('vkbd.css');
 @import url('tabs.css');
 @import url('asm.css');
 @import url('opcodes.css');

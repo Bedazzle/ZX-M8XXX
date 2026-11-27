@@ -29,8 +29,17 @@ export function downloadFile(filename, content) {
     setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
 }
 
-// Safe localStorage wrappers — handle quota errors, private browsing, missing storage
+// Safe localStorage wrappers — handle quota errors, private browsing, missing storage.
+// The embeddable player (player.html) switches them to an in-memory store: an
+// embedded emulator takes its settings from the page that hosts it, and must
+// neither read the full app's saved settings nor leave its own behind.
+let memoryStore = null;
+export function setStorageMemory(values) {
+    memoryStore = new Map(Object.entries(values || {}).map(([k, v]) => [k, String(v)]));
+}
+
 export function storageGet(key, fallback = null) {
+    if (memoryStore) return memoryStore.has(key) ? memoryStore.get(key) : fallback;
     try {
         const val = localStorage.getItem(key);
         return val !== null ? val : fallback;
@@ -40,6 +49,7 @@ export function storageGet(key, fallback = null) {
 }
 
 export function storageSet(key, value) {
+    if (memoryStore) { memoryStore.set(key, String(value)); return true; }
     try {
         localStorage.setItem(key, value);
         return true;
@@ -49,6 +59,7 @@ export function storageSet(key, value) {
 }
 
 export function storageRemove(key) {
+    if (memoryStore) { memoryStore.delete(key); return; }
     try {
         localStorage.removeItem(key);
     } catch (e) {

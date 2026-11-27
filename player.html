@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZX-M8XXX Player</title>
+    <!--
+      The embeddable player: one program, no debugger. Meant for an iframe:
+
+        player.html?url=/file/123/game.zip&hw=pentagon128,ts,kempston&launch=GAME.TRD
+
+      url      the file (TAP TZX SNA Z80 SZX TRD SCL UDI DSK MGT OPD D80 MDR KDI DCK, or a ZIP)
+      name     its file name, when the URL does not end in it
+      launch   the file in the archive to run (zxart's launchFilePath)
+      hw       zxart hardware codes, comma separated
+      machine  a machine id to use instead (48k 128k +2 +2a +3 pentagon pentagon1024 scorpion ...)
+      arrows   1 / 0: the cursor keys drive the joystick (default: when hw has one)
+      flash    0: real-time tape loading
+      sound    0: start muted
+      controls 0: no button bar
+      touch    1 / 0: show the on-screen joystick (default: on a touch screen)
+      joy      its type: kempston, kempston8b, sinclair1, sinclair2, cursor
+      roms     the ROM directory URL (default roms/)
+      boot5    a boot (TRD with a "boot", or Hobeta) to add to a TR-DOS 5.x disk without one
+      boot4    the same for TR-DOS 4.x (default data/boot/trdos5.* / trdos4.*)
+
+      The host can send it messages: {zxm8: 'restart' | 'fullscreen' | 'sound', on?}
+      and {zxm8: 'screenshot', type?} (answered with {zxm8: 'screenshot', blob}).
+      It posts {zxm8: 'status', text, kind} to the host as it goes. See docs/player.md.
+    -->
+    <link rel="stylesheet" href="css/vkbd.css">
+    <link rel="stylesheet" href="css/player.css">
+    <script src="lib/pako.min.js"></script>
+</head>
+<body>
+    <div id="player"></div>
+    <script type="module">
+        import { create } from './ui/player.js';
+
+        const q = new URLSearchParams(location.search);
+        const flag = (k) => q.has(k) ? q.get(k) !== '0' : undefined;
+        const host = window.parent !== window ? window.parent : null;
+        const tell = (m) => { if (host) host.postMessage(Object.assign({ zxm8: 'status' }, m), '*'); };
+
+        const player = await create(document.getElementById('player'), {
+            url: q.get('url') || q.get('file') || '',
+            fileName: q.get('name') || '',
+            launchFilePath: q.get('launch') || '',
+            hardware: (q.get('hw') || '').split(',').map(s => s.trim()).filter(Boolean),
+            machine: q.get('machine') || '',
+            arrowsAsJoystick: flag('arrows'),
+            flashLoad: flag('flash'),
+            sound: flag('sound'),
+            controls: flag('controls'),
+            touch: flag('touch'),
+            touchType: q.get('joy') || '',
+            romBase: q.get('roms') || 'roms/',
+            boot5: q.get('boot5') || '',
+            boot4: q.get('boot4') || '',
+            onStatus: (text, kind) => tell({ text, kind }),
+        });
+        window.zxm8Player = player;
+
+        // Commands from the page that holds the iframe. Only the parent may send
+        // them; nothing here reaches outside the emulator.
+        window.addEventListener('message', async (e) => {
+            if (!host || e.source !== host || !e.data || typeof e.data.zxm8 !== 'string') return;
+            const d = e.data;
+            if (d.zxm8 === 'restart') player.restart();
+            else if (d.zxm8 === 'fullscreen') player.setFullscreen(d.on !== false);
+            else if (d.zxm8 === 'sound') player.setSound(d.on !== false);
+            else if (d.zxm8 === 'screenshot') {
+                const blob = await player.screenshot(d.type || 'image/png');
+                e.source.postMessage({ zxm8: 'screenshot', blob }, e.origin === 'null' ? '*' : e.origin);
+            }
+        });
+    </script>
+</body>
+</html>
