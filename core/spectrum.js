@@ -10293,6 +10293,7 @@ import { Nvram24c16 } from './nvram.js';
             // null means "whatever the new machine's profile says", which is the point
             const oldInkSkew = this.ula ? this.ula.inkSkewOverride : undefined;
             const oldPalComposite = this.ula ? this.ula.palCompositeEnabled : undefined;
+            const oldFlashColor = this.ula ? this.ula.flashColor : false;
             // Use persistent setting, not runtime state (which may be modified by test runner)
             const ulaplusSetting = storageGet('zxm8_ulaplus') === 'true';
 
@@ -10342,6 +10343,7 @@ import { Nvram24c16 } from './nvram.js';
             if (oldPalComposite !== undefined) {
                 this.ula.setPalComposite(oldPalComposite);
             }
+            this.ula.setFlashColor(oldFlashColor);
             if (this.lateTimings !== undefined) {
                 this.ula.setLateTimings(this.lateTimings);
             }

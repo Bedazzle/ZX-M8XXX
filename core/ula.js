@@ -8,7 +8,7 @@
 import { getMachineProfile, is128kCompat } from './machines.js';
 import { applySnow, applySnowLine, snowActive, snowRange, DISPLAY_BYTES, M1Log, SnowCalibration } from './ula-snow.js';
 import { inkSkewFor } from './ula-inkskew.js';
-import { renderCell, cellContext } from './ula-blit.js';
+import { renderCell, cellContext, mixColours } from './ula-blit.js';
 import { timexHiresAttr, timexLoresCell, timexHiresWord } from './timex.js';
 import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
@@ -109,6 +109,9 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
             // machine profile like hasSnow does (console: spectrum.ula.setInkSkew(x))
             this.inkSkewOverride = null;
             this.inkSkew = inkSkewFor(this.profile, null);
+            // FlashColor (Unreal Speccy's `FlashColor=1`, a board mod): attribute
+            // bit 7 no longer blinks: black paper, the ink mixed with it. Off by default.
+            this.flashColor = false;
             // PAL composite (RF) simulation — off by default; it is a whole-frame
             // filter, and it is only faithful for a TV, not for an RGB monitor.
             this.palCompositeEnabled = false;
@@ -1336,7 +1339,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                 const inkSkew = this.inkSkew;
                 let prevInkBit = 0;
-                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaplus.palette32 : null, flashActive, inkSkew);
+                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaplus.palette32 : null, flashActive, inkSkew, this.flashColor);
                 for (let col = 0; col < 32; col++) {
                     prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
                         screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
@@ -1441,7 +1444,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 return;
             }
             this.hiresRows[y] = 0;
-            const cellCtx = cellContext(fb32, pal32, null, this.flashState, 0);
+            const cellCtx = cellContext(fb32, pal32, null, this.flashState, 0, this.flashColor);
             for (let col = 0; col < 32; col++) {
                 const [data, attr] = timexLoresCell(ram, dec, y, col);
                 renderCell(cellCtx, rowOffset + (col << 3), data, attr, 0);
@@ -1625,7 +1628,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                         // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                         const inkSkew = this.inkSkew;
                         let prevInkBit = 0;
-                        const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+                        const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew, this.flashColor);
                         for (let col = 0; col < 32; col++) {
                             const pixelByte = screenRam[pixelAddr + col];
                             const attrOffset = attrRowOffset + col;
@@ -1684,7 +1687,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                         const linePal = ulaPlusActive
                             ? (this.hadPaletteChanges ? ulaPal32ForLine : ulaplus.palette32)
                             : null;
-                        const cellCtx = cellContext(fb32, pal32, linePal, flashActive, inkSkew);
+                        const cellCtx = cellContext(fb32, pal32, linePal, flashActive, inkSkew, this.flashColor);
                         for (let col = 0; col < 32; col++) {
                             prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
                                 screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
@@ -1780,7 +1783,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
-                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew, this.flashColor);
                     for (let col = 0; col < 32; col++) {
                         const pixelByte = screenRam[pixelAddr + col];
                         const attrOffset = attrRowOffset + col;
@@ -1812,7 +1815,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
-                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew, this.flashColor);
                     for (let col = 0; col < 32; col++) {
                         prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
                             screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);
@@ -1837,12 +1840,18 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     let ink = attr & 0x07;
                     let paper = (attr >> 3) & 0x07;
                     const bright = (attr & 0x40) ? 8 : 0;
+                    const isInk = !!(pixelByte & (0x80 >> bit));
 
-                    if ((attr & 0x80) && flashActive) {
+                    if (this.flashColor && (attr & 0x80)) {
+                        // FLASH-COLOUR: black paper, the ink mixed (see ula-blit.js)
+                        fb32[rowOffset + px] = isInk ? mixColours(pal32[ink + bright], pal32[paper + bright]) : pal32[0];
+                        continue;
+                    }
+                    if (!this.flashColor && (attr & 0x80) && flashActive) {
                         const tmp = ink; ink = paper; paper = tmp;
                     }
 
-                    const pixel = (pixelByte & (0x80 >> bit)) ? ink + bright : paper + bright;
+                    const pixel = isInk ? ink + bright : paper + bright;
                     fb32[rowOffset + px] = pal32[pixel];
                 }
             }
@@ -2055,7 +2064,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                 const inkSkew = this.inkSkew;
                 let prevInkBit = 0;
-                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+                const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew, this.flashColor);
                 for (let col = 0; col < 32; col++) {
                     // T-state at column start (each column = 4 T-states = 8 pixels at 2 pixels/T-state)
                     const colTstate = paperStartTstate + (col * 4);
@@ -2107,6 +2116,11 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
 
         setKeyboardGhosting(enabled) {
             this.keyboardGhosting = !!enabled;
+        }
+
+        /** FLASH-COLOUR: a bit-7 cell has a black paper and a mixed ink, nothing blinks */
+        setFlashColor(on) {
+            this.flashColor = !!on;
         }
 
         // Ink/paper edge skew. Pass a fraction of a pixel (0 = a pixel-exact
@@ -2570,7 +2584,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                     // Ferranti ULA: an ink run loses a sliver of its leading edge (ula-inkskew.js)
                     const inkSkew = this.inkSkew;
                     let prevInkBit = 0;
-                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew);
+                    const cellCtx = cellContext(fb32, pal32, ulaPlusActive ? ulaPal32 : null, flashActive, inkSkew, this.flashColor);
                     for (let col = 0; col < 32; col++) {
                         prevInkBit = renderCell(cellCtx, rowOffset + (col << 3),
                             screenRam[pixelAddr + col], screenRam[attrAddr + col], prevInkBit);

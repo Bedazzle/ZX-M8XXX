@@ -97,6 +97,7 @@ export async function create(container, opts = {}) {
     const spectrum = new Spectrum(canvas, { machineType: machine, tapeTrapsEnabled: true });
     spectrum.betaDiskEnabled = spectrum.profile.betaDiskDefault || hw.storage.zxm8_betaDisk === 'true';
     Object.assign(spectrum, hw.spectrum);
+    spectrum.ula.setFlashColor(hw.storage.zxm8_flashColor === 'true');
     if (hw.joystick) spectrum.setJoystickType(hw.joystick);
     // MIDI out to the built-in synth, as the app's "Built-in synth" output
     let midiSynth = null, midiTimer = null;

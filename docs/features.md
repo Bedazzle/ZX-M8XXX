@@ -29,6 +29,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | Scripted key presses | `core/ula.js` (`hasKey`, `keyNames`, `resolveKeyName`) | `ui/app-init.js` (`assertZXKey`) | — | `system-test` | `docs/automation.md` |
 | ULA snow | `core/ula-snow.js`, `core/ula.js` (`_displayRam`, `_snowFetchStartTstate`) | `ui/display-settings.js` | `chkUlaSnow` | `snow-test`, app tests `snowtest-*` | `docs/rendering.md` |
 | ULA ink edge skew | `core/ula-inkskew.js`, `core/ula.js` (`inkSkew`) | `ui/display-settings.js` | `chkInkSkew` | `inkskew-test` | `docs/rendering.md` |
+| FlashColor (FLASH = colour mix) | `core/ula-blit.js` (`flashColor`), `core/ula.js` (`setFlashColor`) | `ui/display-settings.js` | `chkFlashColor` | `ula-blit-test` | `docs/rendering.md` |
 | PAL composite (RF) | `core/pal-composite.js`, `core/ula.js` (`setPalComposite`) | `ui/display-settings.js` | `chkPalComposite` | `pal-test`, `chromatrons`, `chromatrons-pentagon` | `docs/rendering.md` |
 | Joysticks | `core/joystick.js`, `core/spectrum.js` | `ui/input-settings.js`, `ui/gamepad.js` | `selJoystickType`, `joyCustomKeys`, `chkKempston` | `joystick-test` | `docs/peripherals.md` |
 | Kempston mouse | `core/spectrum.js` | `ui/input-settings.js` | `chkKempstonMouse` | `system-test` | `docs/peripherals.md` |

@@ -121,6 +121,9 @@ to fit.
   - `kempstonmouse` fits the mouse, with its wheel (the top four bits of the
     buttons port). A click on the screen captures it, and Esc lets it go.
   - `ulaplus` turns on ULAplus.
+  - `flashcolor` (our own code; zxart.ee has none) turns on FLASH-COLOUR:
+    attribute bit 7 no longer blinks; such a cell has a black paper and an
+    ink mixed from its ink and paper (as zxart.ee shows Flash pictures).
   - `tmxhires` and `tmxhicol` (Timex video modes) need a Timex: the one the
     release lists, or else the TC2048.
 

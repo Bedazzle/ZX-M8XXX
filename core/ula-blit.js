@@ -26,6 +26,11 @@
 
 import { applyInkSkew } from './ula-inkskew.js';
 
+/** The average of two packed colours, byte by byte (alpha stays $FF) */
+export function mixColours(a, b) {
+    return (((a >>> 1) & 0x7F7F7F7F) + ((b >>> 1) & 0x7F7F7F7F) + (a & b & 0x01010101)) >>> 0;
+}
+
 /**
  * One 8-pixel cell.
  *
@@ -58,11 +63,23 @@ export function renderCell(ctx, baseOffset, pixelByte, attr, prevInkBit) {
         let ink = attr & 0x07;
         let paper = (attr >> 3) & 0x07;
         const bright = (attr & 0x40) ? 8 : 0;
-        if ((attr & 0x80) && ctx.flashActive) {
-            const tmp = ink; ink = paper; paper = tmp;
+        if (ctx.flashColor) {
+            // FLASH-COLOUR: nothing blinks. A cell with bit 7 has a black paper
+            // and an ink that is the gigascreen mix of its ink and paper colours
+            // (Unreal Speccy's attr_tables, zxart.ee's FlashPixelRenderer).
+            inkColor = pal32[ink + bright];
+            paperColor = pal32[paper + bright];
+            if (attr & 0x80) {
+                inkColor = mixColours(inkColor, paperColor);
+                paperColor = pal32[0];
+            }
+        } else {
+            if ((attr & 0x80) && ctx.flashActive) {
+                const tmp = ink; ink = paper; paper = tmp;
+            }
+            inkColor = pal32[ink + bright];
+            paperColor = pal32[paper + bright];
         }
-        inkColor = pal32[ink + bright];
-        paperColor = pal32[paper + bright];
     }
 
     fb32[baseOffset]     = (pixelByte & 0x80) ? inkColor : paperColor;
@@ -92,6 +109,6 @@ export function renderCell(ctx, baseOffset, pixelByte, attr, prevInkBit) {
  * a per-scanline one rebuilt for a raster effect, or a per-group one for HAM256 --
  * and that choice is not this module's business.
  */
-export function cellContext(fb32, pal32, ulaPal32, flashActive, inkSkew) {
-    return { fb32, pal32, ulaPal32: ulaPal32 || null, flashActive, inkSkew };
+export function cellContext(fb32, pal32, ulaPal32, flashActive, inkSkew, flashColor = false) {
+    return { fb32, pal32, ulaPal32: ulaPal32 || null, flashActive, inkSkew, flashColor: !!flashColor };
 }

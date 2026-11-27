@@ -27,7 +27,7 @@
         // space: 256 attributes x 256 pixel bytes, flash on and off, ULAplus on and
         // off, checked against the decode written out longhand here. 262,144 cells
         // per configuration, and it runs in well under a second.
-        import { renderCell, cellContext } from '../core/ula-blit.js';
+        import { renderCell, cellContext, mixColours } from '../core/ula-blit.js';
         import { applyInkSkew } from '../core/ula-inkskew.js';
 
         const TEST_VERSION = '1.0.0';
@@ -131,6 +131,23 @@
             fb.fill(0);
             renderCell(ctxFlash, 0, 0b10000000, (5 << 3) | 3, 0);
             assert(fb[0] === pal32[3], 'a cell without the FLASH bit is left alone on the on phase');
+
+            // FLASH-COLOUR (zxart.ee's Flash pictures): bit 7 = black paper,
+            // the ink a gigascreen mix of ink and paper; nothing blinks
+            const ctxFc = cellContext(fb, pal32, null, true, 0, true);
+            fb.fill(0);
+            renderCell(ctxFc, 0, 0b10000000, 0x80 | (5 << 3) | 3, 0);
+            assert(fb[0] === mixColours(pal32[3], pal32[5]) && fb[1] === pal32[0],
+                'FlashColor: bit 7 gives a black paper and the ink+paper mix, with no swap on the flash phase');
+            fb.fill(0);
+            renderCell(ctxFc, 0, 0b10000000, 0xC0 | (5 << 3) | 3, 0);
+            assert(fb[0] === mixColours(pal32[3 + 8], pal32[5 + 8]), 'FlashColor: BRIGHT brightens both halves of the mix');
+            fb.fill(0);
+            renderCell(ctxFc, 0, 0b10000000, 0x40 | (5 << 3) | 3, 0);
+            assert(fb[0] === pal32[3 + 8] && fb[1] === pal32[5 + 8],
+                'FlashColor: a cell without bit 7 is an ordinary one');
+            const mx = mixColours(0xFF0000FF, 0xFF00FFFF);
+            assert(mx === 0xFF007FFF, 'mixColours averages each byte (rounding down)', mx.toString(16));
         }
 
         section('ULAplus takes a different route entirely');

@@ -142,6 +142,8 @@ export function resolveHardware(codes = [], fileName = '') {
         spectrum.kempstonMouseWheelEnabled = true;   // the wheel in the buttons port's top bits
     }
     if (use('ulaplus')) storage.zxm8_ulaplus = 'true';
+    // Our own code, not zxart's: FLASH-COLOUR (bit 7 = black paper, mixed ink)
+    if (use('flashcolor')) storage.zxm8_flashColor = 'true';
 
     // 128 MIDI out (AY port A): played on the player's built-in synth
     const midi = !!use('midi');

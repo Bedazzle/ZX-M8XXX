@@ -208,6 +208,19 @@ sit between the ULA and that measurement, and gamma tends to expand a mid-grey
 difference, so the true value may be smaller still. We blend in the same encoded byte
 space the display uses, so matching the encoded delta is the right target.
 
+## FlashColor (Settings -> Machines -> "FlashColor", off by default)
+
+FLASH-COLOUR, a board modification: attribute bit 7 no longer blinks. In a cell with it
+the paper is black and the ink is the gigascreen mix of the ink and paper colours (each
+with the cell's BRIGHT); a cell without it is ordinary. That is how zxart.ee draws its
+"Flash" pictures (`FlashPixelRenderer` in moroz1999/zx-image) and how Unreal Speccy's
+`attr_tables()` did it. Unreal's current `make_colortab()` makes bit 7 the paper's BRIGHT
+instead, which does not match those pictures. The mix is a byte-wise average
+(`mixColours`). Done in `renderCell` (`ctx.flashColor`) and in the per-pixel bank-switch
+path of `core/ula.js`; ULAplus, when on, wins. There is no port for it: the option is
+the switch. Unreal-NG reads `FlashColor=` from its ini but does not use it. The player turns it on with the hardware code `flashcolor` (ours; zxart.ee
+has no such code).
+
 ## PAL composite (RF) simulation (Settings -> Machines -> "PAL Composite (RF)", off by default)
 
 A Spectrum plugged into a TV hands it **one wire** carrying luminance and the

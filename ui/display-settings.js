@@ -808,6 +808,20 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
         });
     }
 
+    // ===== FlashColor (bit 7 = black paper, ink mixed with it) =====
+
+    const chkFlashColor = document.getElementById('chkFlashColor');
+    if (chkFlashColor) {
+        const savedFc = storageGet('zxm8_flashColor') === 'true';      // Default false
+        chkFlashColor.checked = savedFc;
+        getSpectrum().ula.setFlashColor(savedFc);
+        chkFlashColor.addEventListener('change', () => {
+            getSpectrum().ula.setFlashColor(chkFlashColor.checked);
+            storageSet('zxm8_flashColor', chkFlashColor.checked);
+            showMessage(chkFlashColor.checked ? 'FlashColor on: FLASH cells mix ink and paper' : 'FlashColor off');
+        });
+    }
+
     // ===== Pentagon attribute prefetch checkbox =====
 
     const chkPentagonPrefetch = document.getElementById('chkPentagonPrefetch');
