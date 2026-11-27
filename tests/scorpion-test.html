@@ -186,6 +186,33 @@
             sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x06); sp.portWrite(0xFFBA, 0x77);
             assert(rd(0x00) === 37 && rd(0x04) === 21, 'register B bit 2: binary');
             sp.portWrite(0xDFBA, 0x0B); sp.portWrite(0xFFBA, 0xF7); sp.portWrite(0xDFBA, 0x02); sp.portWrite(0xFFBA, 0x77);
+            // NVRAM: a 24C16 on I2C, SDA = SYS bit 4, SCL = SYS bit 6, SDA in = bit 6
+            {
+                const sys = (sda, scl) => sp.portWrite(0xFFBA, 0x07 | (sda ? 0x10 : 0) | (scl ? 0x40 : 0));
+                const sdaIn = () => (sp.portRead(0xFFBA) & 0x40) ? 1 : 0;
+                const start = () => { sys(1, 1); sys(0, 1); sys(0, 0); };
+                const stop = () => { sys(0, 0); sys(0, 1); sys(1, 1); };
+                const sendByte = (b) => {
+                    for (let i = 7; i >= 0; i--) { const d = (b >> i) & 1; sys(d, 0); sys(d, 1); sys(d, 0); }
+                    sys(1, 0); sys(1, 1); const ack = sdaIn(); sys(1, 0); return ack === 0;
+                };
+                const recvByte = (last) => {
+                    let b = 0;
+                    for (let i = 0; i < 8; i++) { sys(1, 0); sys(1, 1); b = (b << 1) | sdaIn(); }
+                    sys(last ? 1 : 0, 0); sys(last ? 1 : 0, 1); sys(1, 0);
+                    return b;
+                };
+                start();
+                const acks = [sendByte(0xA2), sendByte(0x34), sendByte(0x5C)];   // block 1, $134 = $5C
+                stop();
+                start(); sendByte(0xA2); sendByte(0x34);                       // set the address
+                start(); sendByte(0xA3);                                        // read
+                const back = recvByte(true);
+                stop();
+                assert(acks.every(Boolean) && back === 0x5C && sp.smucNv.mem[0x134] === 0x5C,
+                    'NVRAM 24C16: a byte written and read back over I2C on #FFBA', 'acks ' + acks + ' read ' + back.toString(16));
+                sp.smucNv.mem[0x134] = 0;
+            }
             m.trdosActive = false;
             assert(sp.portRead(0x5FBA) !== 0x3F, 'DOS off: SMUC does not answer');
             sp.rtc.data[0x20] = 0;

@@ -82,6 +82,7 @@ import { GeneralSound } from './gs.js';
 import { YM2203FM, YM2203Timers } from './ym2203.js';
 import { Disassembler } from './disasm.js';
 import { Mc146818 } from './cmos.js';
+import { Nvram24c16 } from './nvram.js';
 
     export class Spectrum {
         constructor(canvas, options = {}) {
@@ -168,6 +169,23 @@ import { Mc146818 } from './cmos.js';
             this._glukOn = 0;
             this._smucSys = 0;
             this._smucFdd = 0xC0;           // #7FBA, the virtual-FDD latch
+            // SMUC's NVRAM (24C16 on I2C, SYS bits 4/6): the ProfROM's settings
+            this.smucNv = new Nvram24c16();
+            try {
+                const nv = storageGet('zxm8_smucnv');
+                if (nv && nv.length === 2 * this.smucNv.mem.length) {
+                    this.smucNv.mem.set(nv.match(/../g).map(h => parseInt(h, 16)));
+                }
+            } catch (e) { /* none kept */ }
+            let nvSaveTimer = null;
+            this.smucNv.onChange = (mem) => {
+                clearTimeout(nvSaveTimer);
+                nvSaveTimer = setTimeout(() => {
+                    try {
+                        storageSet('zxm8_smucnv', Array.from(mem, b => b.toString(16).padStart(2, '0')).join(''));
+                    } catch (e) { /* storage off */ }
+                }, 500);
+            };
             try {
                 const saved = storageGet('zxm8_cmos');
                 if (saved) this.rtc.loadRam(Uint8Array.from(saved.match(/../g).map(h => parseInt(h, 16))));
@@ -1892,7 +1910,7 @@ import { Mc146818 } from './cmos.js';
                 case 0x2000: return this._smucFdd | 0x37;   // #7FBA virtual FDD
                 case 0x2004: return 0x57;              // #7xBE PIC socket
                 case 0x8000: return this.rtc.readData();   // #DFBA clock
-                case 0xA000: return 0xFF;              // #FFBA SYS: no NVRAM
+                case 0xA000: return this.smucNv.read() ? 0xFF : 0xBF;   // #FFBA SYS: b6 = SDA
                 default: return 0x7F;                  // IDE, no drive
             }
         }
@@ -2765,7 +2783,10 @@ import { Mc146818 } from './cmos.js';
                     else if (g === 0xB000 && this._glukOn) { this.rtc.writeData(val); return; }
                 } else if (this._smucPort(port)) {
                     const reg = port & 0xA004;
-                    if (reg === 0xA000) this._smucSys = val;          // #FFBA
+                    if (reg === 0xA000) {                            // #FFBA
+                        this._smucSys = val;
+                        this.smucNv.write(val & 0x10, val & 0x40);   // SDA, SCL
+                    }
                     else if (reg === 0x2000) this._smucFdd = val & 0xC8;   // #7FBA
                     else if (reg === 0x8000) {                       // #DFBA
                         if (this._smucSys & 0x80) this.rtc.writeData(val);
