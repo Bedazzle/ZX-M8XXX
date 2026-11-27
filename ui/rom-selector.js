@@ -484,6 +484,9 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         } else if (name.includes('plus2') || name.includes('+2')) {
             await loadRomFile(data, 'plus2');
             showMessage('+2 ROM loaded');
+        } else if (name.includes('prof') && data.byteLength === 262144) {
+            // ProfROM 4.xx (256KB): the Scorpion ZS 256 TURBO+
+            loadRomForMachineById('scorpiontb', data, file.name);
         } else if (name.includes('scorpion')) {
             await loadRomFile(data, 'scorpion');
             showMessage('Scorpion ROM loaded');

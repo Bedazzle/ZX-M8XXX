@@ -17,6 +17,10 @@ import {
     DIDAKTIK_ROM_SIZE, DIDAKTIK_RAM_START
 } from './constants.js';
 
+// ProfROM plane switch (MAME scorpion.cpp prof_plane_map): indexed by
+// (address & $0C) | current plane, for reads of $0100/$0104/$0108/$010C
+const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
+
     export class Memory {
         constructor(machineType = '48k') {
             this.machineType = machineType;
@@ -80,6 +84,10 @@ import {
             this.scorpionPort1FFD = 0;          // Last value written to port 0x1FFD
             this.scorpionPort7FFD = 0;          // Last value written to port 0x7FFD (for ROM bank fallback)
             this.scorpionRamInRomMode = false;  // true = RAM page 0 mapped at 0x0000-0x3FFF
+            // Scorpion TURBO+ ProfROM: four 64KB planes of four 16KB ROMs each;
+            // the ROM read is rom[plane * 4 + bank] (0 on every other machine)
+            this.romPlane = 0;
+            this.inspecting = false;   // peek(): a read without side effects
 
             // +D (DISCiPLE/+D) interface state
             this.plusDActive = false;     // True when +D ROM/RAM paged in at 0x0000-0x3FFF
@@ -195,6 +203,7 @@ import {
             this.scorpionPort1FFD = 0;
             this.scorpionPort7FFD = 0;
             this.scorpionRamInRomMode = false;
+            this.romPlane = 0;
             this.plusDActive = false;
             this.plusDRam.fill(0);
             // DISCiPLE: the reset button sets the ROM low and pages out; the
@@ -551,7 +560,9 @@ import {
                 val = this.ram[this.specialBanks[slot]][addr & BANK_MASK];
             } else {
                 if (addr < SLOT1_START) {
-                    if (this.trdosActive) {
+                    if (this.profile.pagingModel === 'scorpion') {
+                        val = this._scorpionRomRead(addr);
+                    } else if (this.trdosActive) {
                         // TR-DOS ROM paged in: Scorpion uses ROM bank, others use separate chip
                         val = this.profile.trdosInRom
                             ? this.rom[this.profile.trdosRomBank][addr]
@@ -584,7 +595,10 @@ import {
                 if (this.onRead) this.onRead(addr, val);
                 return val;
             }
-            return this.read(addr);
+            this.inspecting = true;            // nor the ProfROM's plane switch
+            const val = this.read(addr);
+            this.inspecting = false;
+            return val;
         }
 
         write(addr, val) {
@@ -726,7 +740,7 @@ import {
                 if (this.profile.ramPages === 1) {
                     this.rom[0][addr] = val;
                 } else {
-                    this.rom[this.currentRomBank][addr] = val;
+                    this.rom[(this.romPlane << 2) | this.currentRomBank][addr] = val;
                 }
                 return true;
             }
@@ -743,8 +757,7 @@ import {
                 // Per FUSE, ZXMAK2, UnrealSpeccy, and official Scorpion programmer's guide:
                 // page = ((1FFD & 0x10) >> 1) | (7FFD & 0x07) → pages 0-15
                 this.scorpionPort7FFD = val;  // Store for ROM bank fallback in writeScorpion1FFD
-                let page = ((this.scorpionPort1FFD & 0x10) >> 1) | (val & P7FFD_RAM_MASK);
-                this.currentRamBank = page % this.profile.ramPages;
+                this.currentRamBank = this._scorpionPage(this.scorpionPort1FFD, val);
                 this.screenBank = (val & P7FFD_SCREEN_BIT) ? 7 : 5;
                 // ROM bank selection (per FUSE): 1FFD bit 1 set → ROM 2; else 7FFD bit 4 → ROM 0/1
                 if (this.scorpionPort1FFD & 0x02) {
@@ -806,6 +819,7 @@ import {
                 state.scorpionPort1FFD = this.scorpionPort1FFD;
                 state.scorpionPort7FFD = this.scorpionPort7FFD;
                 state.scorpionRamInRomMode = this.scorpionRamInRomMode;
+                state.romPlane = this.romPlane;
             }
             if (this.profile.pagingModel === 'hc2000') {
                 state.hcConfig = this.hcConfig;
@@ -834,6 +848,7 @@ import {
                 this.scorpionPort1FFD = state.scorpionPort1FFD || 0;
                 this.scorpionPort7FFD = state.scorpionPort7FFD || 0;
                 this.scorpionRamInRomMode = state.scorpionRamInRomMode || false;
+                this.romPlane = state.romPlane || 0;
             }
             if (this.profile.pagingModel === 'hc2000') {
                 this.hcConfig = state.hcConfig || 0;
@@ -868,8 +883,36 @@ import {
                 this.currentRomBank = (this.scorpionPort7FFD & P7FFD_ROM_BIT) ? 1 : 0;
             }
             // Recalculate RAM page: 1FFD bit 4 (high bit) + 7FFD bits 0-2 (low bits)
-            let page = ((val & 0x10) >> 1) | (this.currentRamBank & P7FFD_RAM_MASK);
-            this.currentRamBank = page % this.profile.ramPages;
+            this.currentRamBank = this._scorpionPage(val, this.scorpionPort7FFD);
+        }
+
+        /**
+         * Scorpion $0000-$3FFF, as MAME's scorpion_update_memory: 1FFD bit 0
+         * puts RAM page 0 there before anything else; 1FFD bit 1 the service
+         * ROM (2) even while the DOS is on, as the ProfROM runs its disk code
+         * from there; else the DOS gives TR-DOS (3); else 7FFD bit 4 picks 0 / 1.
+         */
+        _scorpionRomRead(addr) {
+            if (this.scorpionRamInRomMode) return this.ram[0][addr];
+            let bank;
+            if (this.scorpionPort1FFD & 0x02) bank = 2;
+            else if (this.trdosActive) bank = 3;
+            else bank = this.currentRomBank;
+            const val = this.rom[(this.romPlane << 2) | bank][addr];
+            // ProfROM: reading $0100/$0104/$0108/$010C in the service ROM
+            // moves to another plane (MAME scorpiontb read tap)
+            if (bank === 2 && this.profile.profRomPlanes && (addr & 0xFFF3) === 0x0100 && !this.inspecting) {
+                this.romPlane = PROF_PLANE_MAP[(addr & 0x0C) | this.romPlane];
+            }
+            return val;
+        }
+
+        // Scorpion RAM page at $C000: 7FFD bits 0-2, 1FFD bit 4 as bit 3 and,
+        // with 1MB, 1FFD bits 6-7 as bits 4-5 (MAME scorpion_update_memory)
+        _scorpionPage(p1ffd, p7ffd) {
+            let page = ((p1ffd & 0x10) >> 1) | (p7ffd & P7FFD_RAM_MASK);
+            if (this.profile.ramPages > 16) page |= (p1ffd & 0xC0) >> 2;
+            return page % this.profile.ramPages;
         }
 
         // Port 0x1FFD handler for +2A
@@ -1050,6 +1093,7 @@ import {
             if (this.profile.pagingModel === 'scorpion') {
                 state.scorpionPort1FFD = this.scorpionPort1FFD;
                 state.scorpionRamInRomMode = this.scorpionRamInRomMode;
+                state.romPlane = this.romPlane;
             }
 
             // HC-2000 state

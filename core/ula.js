@@ -142,6 +142,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'pentagon': { top: 80, left: 48, right: 48, bottom: 48 },
                 'pentagon1024': { top: 80, left: 48, right: 48, bottom: 48 },
                 'scorpion': { top: 80, left: 48, right: 48, bottom: 48 },
+                'scorpiontb': { top: 80, left: 48, right: 48, bottom: 48 },
                 'hc2000':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
                 'tc2048':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
                 'tc2068':  { top: 64, left: 48, right: 48, bottom: 56 },  // 48K timing
@@ -161,6 +162,7 @@ import { createPalFilter, isLocked as palLocked } from './pal-composite.js';
                 'pentagon': { top: 24, left: 32, right: 32, bottom: 24 },
                 'pentagon1024': { top: 24, left: 32, right: 32, bottom: 24 },
                 'scorpion': { top: 24, left: 32, right: 32, bottom: 24 },
+                'scorpiontb': { top: 24, left: 32, right: 32, bottom: 24 },
                 'hc2000':  { top: 24, left: 32, right: 32, bottom: 24 },
                 'tc2048':  { top: 24, left: 32, right: 32, bottom: 24 },
                 'tc2068':  { top: 24, left: 32, right: 32, bottom: 24 },

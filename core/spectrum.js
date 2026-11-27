@@ -153,6 +153,15 @@ import { Disassembler } from './disasm.js';
             this.loadedKempdiscDiskFiles = [null, null, null, null];   // the K-DOS directory
             this.memory.setTkmem(this.tkmemSize);
             this._beta48Master = 0;       // last write to a port xxxxxx00
+            // CPU turbo: the Z80 runs `_turboMul` times faster than the machine
+            // clock (the screen, sound, tape and disks keep theirs). turboHw is
+            // what the machine itself has switched on (Scorpion TURBO+: IN from
+            // $7FFD / $1FFD); turboForce, from the settings, overrides it (0 =
+            // follow the machine).
+            this.turboHw = 1;
+            this.turboForce = [1, 2, 4].includes(+storageGet('zxm8_turbo')) ? +storageGet('zxm8_turbo') : 0;
+            this._turboMul = 1;
+            this._turboAcc = 0;
 
             // µPD765 FDC (ZX Spectrum +3)
             this.fdc = this.profile.hasFDC ? new UPD765() : null;
@@ -1607,6 +1616,7 @@ import { Disassembler } from './disasm.js';
 
         reset() {
             this.cpu.reset();
+            this.setHwTurbo(1);
             this.memory.reset();
             this.ula.reset();
             this.tapeLoader.rewind();
@@ -1834,6 +1844,35 @@ import { Disassembler } from './disasm.js';
                 this._midiLevel = level;
                 this._midiUart.edge(this.absTStates(), level);
             }
+        }
+
+        /** The multiplier in force: the settings' if set, else the machine's */
+        turboMultiplier() { return this.turboForce || this.turboHw; }
+
+        _updateTurbo() {
+            const m = this.turboMultiplier();
+            if (m !== this._turboMul) { this._turboMul = m; this._turboAcc = 0; }
+        }
+
+        /** The machine's own turbo (1 = off): Scorpion TURBO+ switches 1 / 2 */
+        setHwTurbo(m) { this.turboHw = m > 1 ? m : 1; this._updateTurbo(); }
+
+        /** From the settings: 0 follows the machine, 1 forces it off, 2 / 4 force it on */
+        setTurboForce(m) { this.turboForce = [1, 2, 4].includes(m) ? m : 0; this._updateTurbo(); }
+
+        /**
+         * Called after an instruction under turbo: the instruction took `spent`
+         * CPU cycles, which are spent / mul cycles of the machine clock. The
+         * remainder carries over, so in the long run it is exact.
+         */
+        _turboSpend(before) {
+            const spent = this.cpu.tStates - before;
+            if (spent <= 0) return;
+            const m = this._turboMul;
+            this._turboAcc += spent * (m - 1);
+            const back = Math.floor(this._turboAcc / m);
+            this._turboAcc -= back * m;
+            this.cpu.tStates -= back;
         }
 
         // ========== Port I/O ==========
@@ -2254,6 +2293,14 @@ import { Disassembler } from './disasm.js';
                 }
             }
 
+            // Scorpion TURBO+: reading the paging ports switches the turbo, IN
+            // from $1FFD off and from $7FFD on (decode 00/01xxxxxxxx1xxx01)
+            if (this.profile.scorpionTurbo) {
+                const dec = port & 0xC023;
+                if (dec === 0x0021) this.setHwTurbo(1);
+                else if (dec === 0x4021) this.setHwTurbo(2);
+            }
+
             // Debug: log first 50 port reads after halted INT detected
             if (this.debugFloatingBus && this._floatBusLogActive && this._floatBusLogCount < 50) {
                 const t = this.cpu.tStates;
@@ -2343,6 +2390,13 @@ import { Disassembler } from './disasm.js';
                     // ULA port with A7=1 too ("HC Ports", A. D. Ioan), so the
                     // keyboard does not answer here; FUSE reads the latch back.
                     result = this.memory.hcConfig;
+                } else if (this.profile.profRomPlanes && this.memory.trdosActive && lowByte === 0xBE) {
+                    // SMUC's IDE registers ($F8BE-$FFBE, DOS on; the ULA does not
+                    // answer then) with no drive on the cable: the ATA pull-down
+                    // on D7 reads as not busy, so the ProfROM says "HDD not
+                    // found" at once instead of waiting a minute for BUSY to
+                    // drop off a floating bus
+                    result = 0x7F;
                 } else if ((lowByte & 0x01) === 0 && !(this.profile.timex && lowByte !== 0xFE)) {
                     // Port 0xFE: keyboard + EAR input
                     // Bits 0-4: keyboard (active low)
@@ -2449,6 +2503,16 @@ import { Disassembler } from './disasm.js';
                 } else if (betaDiskActive && lowByte === PORT_WD_SYS) {
                     // Beta Disk system register
                     result = this.betaDisk.read(port);
+                } else if (this.profile.pagingModel === 'scorpion' && !this.memory.trdosActive &&
+                           (port & 0x00A3) === 0x0003) {
+                    // Scorpion, DOS off: $1F (xxxxxxxx0x0xxx11) gives the Beta
+                    // Disk's INTRQ / DRQ in bits 7-6 (MAME scorpion_io); the
+                    // ProfROM waits on them from its service ROM. The Kempston
+                    // stick, when fitted, in bits 0-4.
+                    result = this.betaDisk ? (this.betaDisk.read(0xFF) & 0xC0) : 0;
+                    if (this.kempstonEnabled && !this._joystickIsTimex()) {
+                        result |= (this.kempstonState | this.gamepadState) & 0x1f;
+                    }
                 } else if (this.kempstonEnabled && !this._joystickIsTimex() &&
                            (lowByte & DECODE_KEMPSTON_MASK) === DECODE_KEMPSTON) {
                     // Port 0x1F: Kempston joystick (only when no Beta Disk)
@@ -2493,6 +2557,11 @@ import { Disassembler } from './disasm.js';
                             result = this.fmTimers[this._aySel].readStatus();
                         } else if (this.tsfm && this._fmAddr[this._aySel] >= 0x10) {
                             result = 0xFF;      // an FM address latched: nothing to read
+                        } else if (this.profile.scorpionTurbo && this._curAy().selectedRegister === 14) {
+                            // TURBO+: register 14 reads the paging back (MAME
+                            // ay_data_r): 7FFD bit 4 -> bit 5, 1FFD bit 4, 7FFD bits 0-3
+                            const m = this.memory, p7 = m.scorpionPort7FFD, p1 = m.scorpionPort1FFD;
+                            result = ((p7 & 0x10) << 1) | (p1 & 0x10) | (p7 & 0x0F);
                         } else {
                             result = this._curAy().readRegister();
                         }
@@ -3203,6 +3272,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const _haltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
+                    if (this._turboMul > 1) this._turboSpend(_haltTsBefore);
                     this.cpu.incR();
                     if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
@@ -3282,6 +3352,7 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    if (this._turboMul > 1) this._turboSpend(_tsBefore);
                     // FDD 3000: out once the RET at $0604 has run; its station's
                     // Z80 runs along, one instruction per ours (two every fifth)
                     if (this._fdd3000PagingEnabled) {
@@ -3877,6 +3948,7 @@ import { Disassembler } from './disasm.js';
                     }
                     const _hlHaltTsBefore = this.cpu.tStates;
                     this.cpu.tStates += 4;
+                    if (this._turboMul > 1) this._turboSpend(_hlHaltTsBefore);
                     this.cpu.incR();
                     if (this._fdd3000PagingEnabled) this.fdd3000.step();   // the station keeps going
                     this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
@@ -3919,6 +3991,7 @@ import { Disassembler } from './disasm.js';
                     this._inCpuExecution = true;
                     this.cpu.execute();
                     this._inCpuExecution = false;
+                    if (this._turboMul > 1) this._turboSpend(_hlTsBefore);
                     // FDD 3000: out once the RET at $0604 has run; its station's
                     // Z80 runs along, one instruction per ours (two every fifth)
                     if (this._fdd3000PagingEnabled) {
@@ -5303,7 +5376,12 @@ import { Disassembler } from './disasm.js';
                 // For 128K: only activate when ROM 1 (48K BASIC) is selected
                 // For 48K: always activate (only one ROM)
                 if (!this.memory.trdosActive) {
-                    if (this.profile.pagingModel === 'none' || this.memory.currentRomBank === this.profile.basicRomBank) {
+                    // Scorpion: the 48K ROM SELECTED (7FFD bit 4), even with the
+                    // service ROM over it (1FFD bit 1) -- MAME beta_enable_r
+                    const rom1 = this.profile.pagingModel === 'scorpion'
+                        ? (this.memory.scorpionPort7FFD & 0x10) !== 0
+                        : this.memory.currentRomBank === this.profile.basicRomBank;
+                    if (this.profile.pagingModel === 'none' || rom1) {
                         this.memory.trdosActive = true;
                     }
                 }
@@ -8655,6 +8733,9 @@ import { Disassembler } from './disasm.js';
             // On real Pentagon, the 128K menu switches to ROM bank 1 before entering TR-DOS.
             // On +2A, BASIC ROM is bank 3 (not bank 1).
             this.memory.currentRomBank = this.profile.basicRomBank;
+            // Scorpion: the DOS shows TR-DOS over the 48K ROM only when 7FFD
+            // bit 4 selects it (else the service ROM), as OUT (#7FFD),#10 does
+            if (this.profile.pagingModel === 'scorpion') this.memory.scorpionPort7FFD = 0x10;
 
             // Page in TR-DOS ROM and start from address 0.
             // The TR-DOS ROM at address 0x0000 contains its own initialization code

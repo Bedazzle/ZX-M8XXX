@@ -156,6 +156,25 @@ export function initDisplaySettings({ getSpectrum, showMessage, getHandleLoadRes
             if (chkTsfm.checked) { chkTurboSound.checked = true; storageSet('zxm8_turboSound', true); }
             showMessage(chkTsfm.checked ? 'TurboSound FM on (2 x YM2203)' : 'TurboSound FM off');
         });
+        const selTurbo = document.getElementById('selTurbo');
+        const turboStatus = document.getElementById('turboStatus');
+        const showTurbo = () => {
+            const sp = getSpectrum();
+            if (turboStatus) turboStatus.textContent = 'now x' + sp.turboMultiplier() +
+                (sp.turboForce ? '' : (sp.profile.scorpionTurbo ? ' (set by the machine)' : ''));
+        };
+        if (selTurbo) {
+            selTurbo.value = String(getSpectrum().turboForce || 0);
+            selTurbo.addEventListener('change', () => {
+                const sp = getSpectrum();
+                sp.setTurboForce(parseInt(selTurbo.value, 10) || 0);
+                storageSet('zxm8_turbo', String(sp.turboForce));
+                showTurbo();
+                showMessage(sp.turboForce ? 'CPU turbo x' + sp.turboForce : 'CPU turbo as the machine sets it');
+            });
+            showTurbo();
+            setInterval(showTurbo, 1000);
+        }
         const chkSaa = document.getElementById('chkSaa');
         chkSaa.checked = !!getSpectrum().saaOn;
         chkSaa.addEventListener('change', () => {
