@@ -344,6 +344,46 @@ const MACHINE_PROFILES = {
             trdosInRom: true,
             trdosRomBank: 3,
         },
+        // Scorpion GMX (MAME scorpiongmx): 2MB, a 512KB flash ROM in eight 64KB
+        // planes picked by #7EFD bits 4-6, the TURBO+ turbo and AY R14, and its
+        // own ports #00, #78FD (RAM at $8000), #7AFD/#7CFD (scroll), #7EFD
+        // (turbo, ROM plane, 640x200 mode), #DFFD (RAM page bits 4-6).
+        'scorpiongmx': {
+            id: 'scorpiongmx',
+            name: 'Scorpion GMX (2MB)',
+            group: 'Scorpion',
+            ramPages: 128,
+            romBanks: 32,
+            romFile: 'gmx.rom',
+            romSize: 524288,
+            basicRomBank: 1,
+            pagingModel: 'scorpion',
+            ulaProfile: 'scorpion',
+            gmx: true,                 // GMX ports, 640x200, ROM plane from #7EFD
+            scorpionTurbo: true,
+            hasSnow: false,
+            ulaInkSkew: 0,
+            ulaSubcarrierLock: false,
+            hasContention: false,
+            evenM1: false,
+            attrBusPorts: true,
+            hasIOContention: false,
+            hasFloatingBus: false,
+            hasInternalContention: false,
+            contentionPattern: 'none',
+            borderQuantization: false,
+            intPulseDuration: 36,
+            earlyIntTiming: false,
+            ayDefault: true,
+            ayClockHz: 1750000,
+            betaDiskDefault: true,
+            hasFDC: false,
+            z80HwMode: 9,
+            szxMachineId: 106,         // private id, as the TURBO+
+            is128kCompat: false,
+            trdosInRom: true,
+            trdosRomBank: 3,
+        },
         // Romanian clone by ICE Felix (1985+). 64KB RAM, a 32KB ROM chip holding
         // BASIC (bank 0) and CP/M (bank 1), a config latch at $7E and a CP/M
         // memory map. Port of Alex Badea's FUSE hc2000.c (fuse-emulator-svn,

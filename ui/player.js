@@ -160,10 +160,11 @@ export async function create(container, opts = {}) {
     function fitCanvas() {
         const d = spectrum.ula.getDimensions();
         const w = d.width * (spectrum.canvasScaleX || 1), h = d.height;
-        if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w; canvas.height = h;
-            screen.style.aspectRatio = `${d.width} / ${h}`;
-        }
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        // the core may have resized the canvas itself (a Timex or the GMX,
+        // twice as wide): the shape follows the machine's, not the canvas's
+        const ar = `${d.width} / ${h}`;
+        if (screen.style.aspectRatio !== ar) screen.style.aspectRatio = ar;
     }
     spectrum.addFrameListener(fitCanvas);
 
@@ -321,7 +322,7 @@ export async function create(container, opts = {}) {
     }
     // Into BASIC from reset: a 128K's menu goes to 128 BASIC, where words are
     // typed letter by letter; a 48K types keywords as single keys
-    const isMenuMachine = () => spectrum.profile.pagingModel !== 'none' && spectrum.machineType !== 'scorpion';
+    const isMenuMachine = () => spectrum.profile.pagingModel !== 'none' && spectrum.profile.pagingModel !== 'scorpion';
     function basicSteps() {
         return isMenuMachine()
             ? [{ ready: true }, { keys: ['ArrowDown'] }, { keys: ['Enter'] }, { ready: true }]

@@ -169,6 +169,7 @@ import { Nvram24c16 } from './nvram.js';
             this._glukOn = 0;
             this._smucSys = 0;
             this._smucFdd = 0xC0;           // #7FBA, the virtual-FDD latch
+            this._gmxReset();
             // SMUC's NVRAM (24C16 on I2C, SYS bits 4/6): the ProfROM's settings
             this.smucNv = new Nvram24c16();
             try {
@@ -1585,7 +1586,7 @@ import { Nvram24c16 } from './nvram.js';
             const dims = this.ula.getDimensions();
             // Timex: the canvas is twice as wide so 512-pixel hi-res rows fit;
             // the frame buffer and everything that reads it stay as they are
-            this.canvasScaleX = this.profile.timex ? 2 : 1;
+            this.canvasScaleX = (this.profile.timex || this.profile.gmx) ? 2 : 1;
             this.canvas.width = dims.width * this.canvasScaleX;
             this.canvas.height = dims.height;
             this.imageData = this.ctx.createImageData(dims.width * this.canvasScaleX, dims.height);
@@ -1616,12 +1617,41 @@ import { Nvram24c16 } from './nvram.js';
                 }
             }
             const ula = this.ula;
+            if (this.profile.gmx && this.gmxGfx) { this._blitGmx(dst, W2, H, dims); return; }
             if (ula.hiresBuf) {
                 for (let y = 0; y < 192; y++) {
                     const vy = dims.borderTop + y;
                     if (ula.hiresRows[y] && vy >= 0 && vy < H) {
                         dst.set(ula.hiresBuf.subarray(y * 512, y * 512 + 512), vy * W2 + 2 * dims.borderLeft);
                     }
+                }
+            }
+        }
+
+        /**
+         * Scorpion GMX 640x200 (MAME spectrum_update_screen): pixels from RAM page
+         * #39 (#3B with 7FFD bit 3), 80 bytes a line; the attribute of each byte
+         * 64 pages up: ink = bits 0-2 + bit 6 as bright, paper = bits 3-6; bit 7
+         * flashes. #7AFD/#7CFD scroll it by whole lines (offset / 80). Drawn whole
+         * at the frame's end, centred, the rest in the border colour.
+         */
+        _blitGmx(dst, W2, H, dims) {
+            const m = this.memory, ula = this.ula, pal = ula.palette32;
+            const page = (m.scorpionPort7FFD & 0x08) ? 0x3B : 0x39;
+            const pix = m.ram[page % m.ram.length], att = m.ram[(page + 0x40) % m.ram.length];
+            dst.fill(pal[ula.borderColor & 7]);
+            const x0 = Math.max(0, (W2 - 640) >> 1);
+            const y0 = Math.max(0, dims.borderTop + 96 - 100);
+            const scrollLines = Math.floor(this.gmxScroll / 80);
+            const invert = ula.flashState ? 1 : 0;
+            for (let v = 0; v < 200 && y0 + v < H; v++) {
+                const y = (v + scrollLines) % 200;
+                const d0 = (y0 + v) * W2 + x0;
+                for (let col = 0; col < 80 && col * 8 + x0 < W2; col++) {
+                    const a = att[y * 80 + col], b = pix[y * 80 + col];
+                    let fg = pal[((a >> 3) & 8) | (a & 7)], bg = pal[(a >> 3) & 0x0F];
+                    if ((a & 0x80) && invert) { const t = fg; fg = bg; bg = t; }
+                    for (let i = 0; i < 8; i++) dst[d0 + col * 8 + i] = (b & (0x80 >> i)) ? fg : bg;
                 }
             }
         }
@@ -1658,6 +1688,7 @@ import { Nvram24c16 } from './nvram.js';
             this.cpu.reset();
             this.setHwTurbo(1);
             this._glukOn = 0;               // #EFF7 is cleared by reset; SMUC's SYS is not
+            this._gmxReset();
             this.memory.reset();
             this.ula.reset();
             this.tapeLoader.rewind();
@@ -1917,6 +1948,77 @@ import { Nvram24c16 } from './nvram.js';
 
         /** Gluk / SMUC clock on or off (Settings > Machines) */
         setRtc(on) { this.rtcEnabled = !!on; if (!on) this._glukOn = 0; }
+
+        // ========== Scorpion GMX (MAME scorpiongmx_state) ==========
+
+        _gmxReset() {
+            this.gmx00 = 0;             // #00: b3 magic, b4 FIXROM, b5 BLKEXT (GMX ports off), b7
+            this.gmxGfx = 0;            // #7EFD b3: the 640x200 mode
+            this.gmxScroll = 0;         // #7CFD (b5-0) << 8 | #7AFD (b7-4)
+            this._gmxMagicShift = 0;
+            this._gmxMagicOff = 0;
+            if (this.memory && this.profile.gmx) {
+                this.memory.gmxDffd = 0;
+                this.memory.writeGmx78fd(0);
+            }
+        }
+
+        /** One of the GMX's own ports, while #00 bit 5 leaves them on */
+        _isGmxPort(port) {
+            if (!this.profile.gmx || (this.gmx00 & 0x20)) return false;
+            const q = port & 0xFFFF;
+            return q === 0x78FD || q === 0x7AFD || q === 0x7EFD;
+        }
+
+        _gmxRead(q) {
+            const m = this.memory, brd = this.ula.borderColor & 7;
+            const p7 = m.scorpionPort7FFD, p1 = m.scorpionPort1FFD;
+            switch (q) {
+                case 0x78FD: {
+                    const v = ((brd & 2) << 6) | (m.gmx78fd & 0x7F) | (this._gmxMagicShift & 1);
+                    this._gmxMagicShift >>= 1;
+                    return v;
+                }
+                case 0x7AFD:
+                    return ((brd & 1) << 7) | ((m.gmxDffd & 7) << 4) | ((p1 & 0x10) >> 1) | (p7 & 7);
+                case 0x7EFD:
+                    return ((brd & 4) << 5) | ((p1 & 1) << 6) | ((this.gmx00 & 0x20)) |
+                        ((this.gmx00 & 0x80) >> 3) | (this.gmxGfx << 3) | ((this.turboHw > 1 ? 1 : 0) << 2) |
+                        (p7 & 0x08 ? 2 : 0) | ((p7 & 0x20) ? 1 : 0);
+            }
+            return 0xFF;
+        }
+
+        /** A write to a GMX port; true when it was one (nothing else takes it) */
+        _gmxWrite(q, val) {
+            if ((q & 0xFF) === 0x00) {                          // #00, any high byte
+                this.gmx00 = val;
+                if (val & 0x08) {
+                    this._gmxMagicShift = 0x88 | (val & 7);
+                    if (!(val & 0x10)) {                        // not FIXROM: the CPU restarts
+                        const t = this.cpu.tStates, n = this.cpu.instructionCount;
+                        this.cpu.reset();
+                        this.cpu.tStates = t; this.cpu.instructionCount = n;
+                    }
+                }
+                return true;
+            }
+            if (this.gmx00 & 0x20) return false;                // BLKEXT
+            const m = this.memory;
+            switch (q) {
+                case 0x78FD: m.writeGmx78fd(val); return true;
+                case 0x7AFD: this.gmxScroll = (this.gmxScroll & 0x3F00) | (val & 0xF0); return true;
+                case 0x7CFD: this.gmxScroll = ((val & 0x3F) << 8) | (this.gmxScroll & 0xF0); return true;
+                case 0x7EFD:
+                    this.setHwTurbo((val & 0x80) ? 2 : 1);
+                    if (!(this.gmx00 & 0x10)) m.romPlane = (val >> 4) & 7;    // D4-D6: A16-A18
+                    this.gmxGfx = (val >> 3) & 1;
+                    this._gmxMagicOff = (val >> 2) & 1;
+                    return true;
+                case 0xDFFD: m.writeGmxDffd(val); return true;
+            }
+            return false;
+        }
 
         /** The multiplier in force: the settings' if set, else the machine's */
         turboMultiplier() { return this.turboForce || this.turboHw; }
@@ -2374,7 +2476,7 @@ import { Nvram24c16 } from './nvram.js';
 
             // Scorpion TURBO+: reading the paging ports switches the turbo, IN
             // from $1FFD off and from $7FFD on (decode 00/01xxxxxxxx1xxx01)
-            if (this.profile.scorpionTurbo) {
+            if (this.profile.scorpionTurbo && !this._isGmxPort(port)) {
                 const dec = port & 0xC023;
                 if (dec === 0x0021) this.setHwTurbo(1);
                 else if (dec === 0x4021) this.setHwTurbo(2);
@@ -2438,7 +2540,9 @@ import { Nvram24c16 } from './nvram.js';
                 const betaDiskActive = this._isBetaDiskActive();
 
 
-                if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
+                if (this._isGmxPort(port)) {
+                    result = this._gmxRead(port & 0xFFFF);
+                } else if (this.gsOn && this.gs.rom && (lowByte & 0xF7) === 0xB3) {
                     // General Sound: $BB status, $B3 data from the GS
                     this.gs.syncTo(this.cpu.tStates);
                     result = this.gs.portIn(lowByte);
@@ -2474,7 +2578,7 @@ import { Nvram24c16 } from './nvram.js';
                     result = this.rtc.readData();       // Gluk #BFF7
                 } else if (this.rtcEnabled && this._smucPort(port)) {
                     result = this._smucRead(port);
-                } else if (this.profile.profRomPlanes && this.memory.trdosActive && lowByte === 0xBE) {
+                } else if (this.profile.scorpionTurbo && this.memory.trdosActive && lowByte === 0xBE) {
                     // No SMUC fitted: its IDE registers ($F8BE-$FFBE) still read
                     // as a cable with no drive (see _smucRead), or the ProfROM
                     // waits a minute for BUSY to drop off a floating bus
@@ -2773,6 +2877,9 @@ import { Nvram24c16 } from './nvram.js';
 
             // Beta Disk ports (when enabled and any disk inserted)
             const betaDiskActive = this._isBetaDiskActive();
+
+            // Scorpion GMX: #00 (any high byte) and its #xxFD ports
+            if (this.profile.gmx && this._gmxWrite(port & 0xFFFF, val)) return;
 
             // CMOS clock: Gluk (Pentagon) and SMUC (Scorpion)
             if (this.rtcEnabled) {

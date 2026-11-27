@@ -76,6 +76,12 @@
             assert(h.machine === 'pentagon' && !h.storage.zxm8_betaDisk, 'a TRD on pentagon128: the Pentagon, its own Beta');
             h = resolveHardware(['zx48', 'trdos'], 'game.trd');
             assert(h.machine === '48k' && h.storage.zxm8_betaDisk === 'true' && !h.storage.zxm8_betaVariant, 'TR-DOS 5 on zx48: the 48K with a Beta 128');
+            h = resolveHardware(['scorpion1024'], 'game.trd');
+            assert(h.machine === 'scorpiontb' && !h.storage.zxm8_betaDisk, 'scorpion1024: the Scorpion TURBO+ (1MB, ProfROM), its own TR-DOS');
+            h = resolveHardware(['pentagon128', 'gmx'], 'game.trd');
+            assert(h.machine === 'scorpiongmx' && !h.storage.zxm8_betaDisk, 'gmx: the Scorpion GMX, whatever else is listed');
+            h = resolveHardware(['scorpion', 'smuc'], 'game.trd');
+            assert(h.machine === 'scorpiontb' && h.storage.zxm8_rtc === 'true', 'scorpion + smuc: the TURBO+ with the clock on');
             h = resolveHardware(['zx128', 'betadisk'], 'game.scl');
             assert(h.machine === '128k' && h.storage.zxm8_betaDisk === 'true', 'a TRD on zx128 only: a 128K with a Beta Disk');
             h = resolveHardware(['zx48', 'trdos4x'], 'game.trd');

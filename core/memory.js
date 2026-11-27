@@ -88,6 +88,11 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
             // the ROM read is rom[plane * 4 + bank] (0 on every other machine)
             this.romPlane = 0;
             this.inspecting = false;   // peek(): a read without side effects
+            // RAM page at $8000 (2 everywhere; the Scorpion GMX picks it with #78FD)
+            this.slot2Page = 2;
+            // Scorpion GMX: #DFFD bits 0-2 (RAM page bits 4-6) and #78FD
+            this.gmxDffd = 0;
+            this.gmx78fd = 0;
 
             // +D (DISCiPLE/+D) interface state
             this.plusDActive = false;     // True when +D ROM/RAM paged in at 0x0000-0x3FFF
@@ -204,6 +209,9 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
             this.scorpionPort7FFD = 0;
             this.scorpionRamInRomMode = false;
             this.romPlane = 0;
+            this.slot2Page = 2;
+            this.gmxDffd = 0;
+            this.gmx78fd = 0;
             this.plusDActive = false;
             this.plusDRam.fill(0);
             // DISCiPLE: the reset button sets the ROM low and pages out; the
@@ -575,7 +583,7 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
                     }
                 }
                 else if (addr < SLOT2_START) val = this.ram[5][addr & BANK_MASK];
-                else if (addr < SLOT3_START) val = this.ram[2][addr & BANK_MASK];
+                else if (addr < SLOT3_START) val = this.ram[this.slot2Page][addr & BANK_MASK];
                 else val = this.ram[this.currentRamBank][addr & BANK_MASK];
             }
             if (this.onRead) this.onRead(addr, val);
@@ -690,7 +698,7 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
                 return;
             }
             if (addr < SLOT2_START) this.ram[5][addr & BANK_MASK] = val;
-            else if (addr < SLOT3_START) this.ram[2][addr & BANK_MASK] = val;
+            else if (addr < SLOT3_START) this.ram[this.slot2Page][addr & BANK_MASK] = val;
             else this.ram[this.currentRamBank][addr & BANK_MASK] = val;
         }
         
@@ -820,6 +828,9 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
                 state.scorpionPort7FFD = this.scorpionPort7FFD;
                 state.scorpionRamInRomMode = this.scorpionRamInRomMode;
                 state.romPlane = this.romPlane;
+                state.gmxDffd = this.gmxDffd;
+                state.gmx78fd = this.gmx78fd;
+                state.slot2Page = this.slot2Page;
             }
             if (this.profile.pagingModel === 'hc2000') {
                 state.hcConfig = this.hcConfig;
@@ -849,6 +860,9 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
                 this.scorpionPort7FFD = state.scorpionPort7FFD || 0;
                 this.scorpionRamInRomMode = state.scorpionRamInRomMode || false;
                 this.romPlane = state.romPlane || 0;
+                this.gmxDffd = state.gmxDffd || 0;
+                this.gmx78fd = state.gmx78fd || 0;
+                this.slot2Page = state.slot2Page === undefined ? 2 : state.slot2Page;
             }
             if (this.profile.pagingModel === 'hc2000') {
                 this.hcConfig = state.hcConfig || 0;
@@ -884,6 +898,20 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
             }
             // Recalculate RAM page: 1FFD bit 4 (high bit) + 7FFD bits 0-2 (low bits)
             this.currentRamBank = this._scorpionPage(val, this.scorpionPort7FFD);
+            // GMX: bit 2 pages TR-DOS in and switches the Beta Disk on (MAME)
+            if (this.profile.gmx && (val & 0x04)) this.trdosActive = true;
+        }
+
+        /** Scorpion GMX #DFFD: RAM page bits 4-6 at $C000 */
+        writeGmxDffd(val) {
+            this.gmxDffd = val & 0x07;
+            this.currentRamBank = this._scorpionPage(this.scorpionPort1FFD, this.scorpionPort7FFD);
+        }
+
+        /** Scorpion GMX #78FD: the RAM page at $8000, XOR 2 (so 0 is page 2) */
+        writeGmx78fd(val) {
+            this.gmx78fd = val & 0x7F;
+            this.slot2Page = (this.gmx78fd ^ 2) % this.profile.ramPages;
         }
 
         /**
@@ -893,8 +921,12 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
          * from there; else the DOS gives TR-DOS (3); else 7FFD bit 4 picks 0 / 1.
          */
         _scorpionRomRead(addr) {
-            if (this.scorpionRamInRomMode) return this.ram[0][addr];
             let bank;
+            if (this.profile.gmx && (this.scorpionPort1FFD & 0x04)) {
+                bank = 3;                       // GMX: 1FFD bit 2, TR-DOS over all (even RAM)
+                return this.rom[(this.romPlane << 2) | bank][addr];
+            }
+            if (this.scorpionRamInRomMode) return this.ram[0][addr];
             if (this.scorpionPort1FFD & 0x02) bank = 2;
             else if (this.trdosActive) bank = 3;
             else bank = this.currentRomBank;
@@ -911,7 +943,8 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
         // with 1MB, 1FFD bits 6-7 as bits 4-5 (MAME scorpion_update_memory)
         _scorpionPage(p1ffd, p7ffd) {
             let page = ((p1ffd & 0x10) >> 1) | (p7ffd & P7FFD_RAM_MASK);
-            if (this.profile.ramPages > 16) page |= (p1ffd & 0xC0) >> 2;
+            if (this.profile.gmx) page |= (this.gmxDffd & 7) << 4;     // GMX: #DFFD bits 0-2
+            else if (this.profile.ramPages > 16) page |= (p1ffd & 0xC0) >> 2;
             return page % this.profile.ramPages;
         }
 

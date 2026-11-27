@@ -484,6 +484,9 @@ export function initRomSelector({ getSpectrum, getShowMessage, labelManager, get
         } else if (name.includes('plus2') || name.includes('+2')) {
             await loadRomFile(data, 'plus2');
             showMessage('+2 ROM loaded');
+        } else if (data.byteLength === 524288 && (name.includes('gmx') || name.includes('prof'))) {
+            // GMX boot ROM / ProfROM+GMX (512KB): the Scorpion GMX
+            loadRomForMachineById('scorpiongmx', data, file.name);
         } else if (name.includes('prof') && data.byteLength === 262144) {
             // ProfROM 4.xx (256KB): the Scorpion ZS 256 TURBO+
             loadRomForMachineById('scorpiontb', data, file.name);

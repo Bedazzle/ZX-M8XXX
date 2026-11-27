@@ -210,7 +210,7 @@ export function initAutoLoader({ getSpectrum }) {
 
         if (isScorpion) {
             autoLoadWhenReady(() => scheduleScorpionTape(spectrum, ula, finishTape),
-                              { floor: spectrum.profile.profRomPlanes ? AUTO_LOAD_PROFROM_FLOOR : AUTO_LOAD_SCORPION_FLOOR });
+                              { floor: spectrum.profile.scorpionTurbo ? AUTO_LOAD_PROFROM_FLOOR : AUTO_LOAD_SCORPION_FLOOR });
             return;
         }
 
@@ -304,7 +304,7 @@ export function initAutoLoader({ getSpectrum }) {
         }
 
         const ula = spectrum.ula;
-        if (spectrum.profile.profRomPlanes) {
+        if (spectrum.profile.scorpionTurbo) {
             // ProfROM: TR-DOS only from its menu (its 48K ROM is its own), so
             // reset, wait for the menu, Enter on "128 TR-DOS", then type
             startProfRomTrdos(spectrum, headless, (t0) => typeRun(t0));
@@ -393,7 +393,7 @@ export function initAutoLoader({ getSpectrum }) {
     function startAutoLoadDisk({ headless = false } = {}) {
         const spectrum = getSpectrum();
         cancelAutoLoad();
-        if (spectrum.profile.profRomPlanes) {
+        if (spectrum.profile.scorpionTurbo) {
             startProfRomTrdos(spectrum, headless, null);
             return;
         }

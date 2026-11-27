@@ -18,7 +18,7 @@ const MACHINES = [
     ['zx128', '128k'], ['zx128+2', '+2'], ['pentagon128', 'pentagon'],
     ['pentagon512', 'pentagon1024'], ['pentagon1024', 'pentagon1024'],
     ['pentagon2666', 'pentagon1024'],
-    ['scorpion', 'scorpion'], ['scorpion1024', 'scorpion'],
+    ['scorpion', 'scorpion'], ['scorpion1024', 'scorpiontb'],
     ['zx128+2b', '+2a'], ['zx128+3', '+3'],
     ['zx48', '48k'], ['zx16', '48k'],
     ['timex2068', 'tc2068'], ['timex2048', 'tc2048'],
@@ -26,7 +26,7 @@ const MACHINES = [
 ];
 
 // TR-DOS machines, in preference for a TR-DOS disk
-const TRDOS_MACHINES = ['pentagon', 'pentagon1024', 'scorpion'];
+const TRDOS_MACHINES = ['pentagon', 'pentagon1024', 'scorpion', 'scorpiontb', 'scorpiongmx'];
 
 const JOYSTICKS = { kempston: 'kempston', cursor: 'cursor', int2_1: 'sinclair1', int2_2: 'sinclair2' };
 
@@ -81,6 +81,14 @@ export function resolveHardware(codes = [], fileName = '') {
     if (use('tmxhires') | use('tmxhicol')) {
         const timex = listed.filter(m => m === 'tc2068' || m === 'tc2048');
         listed = timex.length ? timex : ['tc2048'];
+    }
+    // Scorpion GMX (an expansion on zxart, a machine here): it, whatever else
+    // is listed. SMUC: the Scorpion with the ProfROM that works with it (the
+    // TURBO+), its clock on; its hard disk is not emulated.
+    if (use('gmx')) listed = ['scorpiongmx'];
+    if (use('smuc')) {
+        storage.zxm8_rtc = 'true';
+        if (!listed.length || listed[0] === 'scorpion') listed = ['scorpiontb'];
     }
     let machine;
     if (kdi128 && !needMachine) {

@@ -238,6 +238,62 @@
             m = sp.memory;
             zx.pause();
 
+            section('Scorpion GMX');
+            await zx.ready({ machine: 'scorpiongmx' });
+            {
+                const gp = frame.contentWindow.spectrum, gm = gp.memory;
+                zx.pause();
+                gp.reset();
+                assert(gm.ram.length === 128 && gm.rom.length === 32, '2MB RAM, 512KB ROM (32 banks)');
+                gp.portWrite(0x1FFD, 0x10); gp.portWrite(0x7FFD, 0x05); gp.portWrite(0xDFFD, 0x03);
+                assert(gm.currentRamBank === (3 << 4 | 8 | 5), '#DFFD bits 0-2: RAM page bits 4-6 at $C000', gm.currentRamBank);
+                const r7a = gp.portRead(0x7AFD) & 0x7F;
+                assert(r7a === ((3 << 4) | 8 | 5), '#7AFD reads the page back', r7a.toString(16));
+                gp.portWrite(0xDFFD, 0); gp.portWrite(0x1FFD, 0); gp.portWrite(0x7FFD, 0);
+                assert(gm.slot2Page === 2, '#78FD 0: page 2 at $8000');
+                gp.portWrite(0x78FD, 0x47);
+                gm.write(0x8000, 0x6B);
+                assert(gm.slot2Page === 0x45 && gm.ram[0x45][0] === 0x6B, '#78FD XOR 2: page #45 at $8000');
+                gp.portWrite(0x78FD, 0);
+                gp.portWrite(0x7EFD, 0x80 | (5 << 4) | 0x08);
+                assert(gp.turboMultiplier() === 2 && gm.romPlane === 5 && gp.gmxGfx === 1,
+                    '#7EFD: turbo, ROM plane 5, the 640x200 mode');
+                const r7e = gp.portRead(0x7EFD);
+                assert((r7e & 0x0C) === 0x0C, '#7EFD reads back turbo and the mode', r7e.toString(16));
+                assert(gm.read(0x0000) === gm.rom[(5 << 2) | gm.currentRomBank][0], 'the ROM comes from that plane');
+                gp.portWrite(0x7EFD, 0x00);
+                gp.portWrite(0x7AFD, 0xA0); gp.portWrite(0x7CFD, 0x01);
+                assert(gp.gmxScroll === 0x1A0, '#7AFD / #7CFD: the scroll', gp.gmxScroll.toString(16));
+                gp.portWrite(0x1FFD, 0x04);
+                assert(gm.trdosActive && gm.read(0) === gm.rom[3][0], '1FFD bit 2: TR-DOS paged in');
+                gp.portWrite(0x1FFD, 0x00); gm.trdosActive = false;
+                gp.portWrite(0x0000, 0x20);                         // BLKEXT
+                gp.portWrite(0x7EFD, 0x08);
+                assert(gp.gmxGfx === 0 && !gp._isGmxPort(0x7EFD), '#00 bit 5: the GMX ports are off');
+                gp.portWrite(0x0000, 0x00);
+                gp.reset();
+                if (gm.rom[0].some(b => b !== 0)) {
+                    let menu = -1;
+                    for (let f = 0; f < 800; f += 10) {
+                        await zx.runFrames(10);
+                        if (gp.cpu.pc >= 0x3600 && gp.cpu.pc < 0x3700 && gm.currentRomBank === 0) { menu = f; break; }
+                    }
+                    assert(menu > 0, 'the GMX ROM reaches its menu', 'frame ' + menu);
+                    let pb = null;
+                    try { const res = await fetch('../headless/gmx/Puzzle_Bobble_2024.08.08.TRD'); if (res.ok) pb = new Uint8Array(await res.arrayBuffer()); } catch (e) {}
+                    if (pb) {
+                        await zx.loadFile(pb, 'pb.trd');
+                        await zx.autoLoad({ type: 'trd', settleFrames: 900 });
+                        assert(gp.gmxGfx === 1 && gp.canvas.width === 2 * gp.ula.getDimensions().width,
+                            'Puzzle Bobble (GMX) boots into 640x200 on the wide canvas');
+                    } else skip('headless/gmx/Puzzle_Bobble_2024.08.08.TRD is not there');
+                } else skip('roms/gmx.rom is not there: no boot');
+            }
+            await zx.ready({ machine: 'scorpiontb' });
+            sp = frame.contentWindow.spectrum;
+            m = sp.memory;
+            zx.pause();
+
             section('ProfROM boot and a disk');
             sp.reset();
             const hasRom = m.rom[2].some(b => b !== 0);

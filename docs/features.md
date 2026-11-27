@@ -20,6 +20,7 @@ suite, and the user-facing docs. "—" means that layer doesn't exist for it.
 | CPU turbo | `core/spectrum.js` (`_turboSpend`, `setTurboForce`, `setHwTurbo`) | `ui/display-settings.js` | `selTurbo` | `scorpion-test` | `docs/machines.md` |
 | CMOS clock (Gluk, SMUC) | `core/cmos.js`, `core/spectrum.js` (`rtc`, `_smucPort`, `_smucRead`, `setRtc`) | `ui/display-settings.js` | `chkRtc` | `scorpion-test` | `docs/machines.md` |
 | Scorpion TURBO+ (ProfROM, 1MB) | `core/machines.js` (`scorpiontb`), `core/memory.js` (`_scorpionRomRead`, `romPlane`, `_scorpionPage`), `core/spectrum.js` (turbo ports, AY R14, $1F, SMUC $BE), `ui/auto-loader.js` (`startProfRomTrdos`) | `ui/rom-selector.js` | `machineSelect` | `scorpion-test` | `docs/machines.md` |
+| Scorpion GMX (2MB, 640x200) | `core/machines.js` (`scorpiongmx`), `core/memory.js` (`slot2Page`, `writeGmxDffd`, `writeGmx78fd`), `core/spectrum.js` (`_gmxWrite`, `_gmxRead`, `_blitGmx`) | `ui/rom-selector.js` | `machineSelect` | `scorpion-test` | `docs/machines.md` |
 | Video, border | `core/ula.js` | `ui/display-settings.js` | `screen`, `borderSizeSelect` | `system-test` | `docs/rendering.md` |
 | ULAplus | `core/ula.js` (`ulaplus`) | `ui/display-settings.js` | `chkULAplus`, `ulaplusPalette*` | `system-test`, `szx-peripherals-test` | `docs/rendering.md` |
 | Sound (beeper, AY) | `core/ay.js`, `core/audio-processor.js` | `ui/display-settings.js` | `chkSound`, `volumeSlider`, `stereoMode` | `tape-test` | `docs/rendering.md` |

@@ -25,7 +25,7 @@ and leaves none of its own.
 | `name`     | The file's name, when the URL does not end in it (the format is told partly by extension). |
 | `launch`   | The file in the archive to run (zxart's `launchFilePath`): the whole path, or just the name, in any case. |
 | `hw`       | zxart hardware codes, separated by commas (see below). |
-| `machine`  | A machine to use instead: `48k` `128k` `+2` `+2a` `+3` `pentagon` `pentagon1024` `scorpion` `tc2048` `tc2068` `tk90x` `tk95` `dgama` `hc2000`. |
+| `machine`  | A machine to use instead: `48k` `128k` `+2` `+2a` `+3` `pentagon` `pentagon1024` `scorpion` `scorpiontb` `scorpiongmx` `tc2048` `tc2068` `tk90x` `tk95` `dgama` `hc2000`. |
 | `arrows`   | `1`/`0`: the cursor keys work the joystick, and Right Ctrl fires. The default is on when `hw` names a joystick. |
 | `flash`    | `0`: tapes load in real time. The default is instant loading where the ROM traps allow it. |
 | `sound`    | `0`: start muted. |
@@ -69,7 +69,8 @@ to fit.
 
 - **Machine.** If the release lists several machines, the player takes the
   first available in this order:
-  - zx128, +2, Pentagon 128, Pentagon 512/1024 (as the 1024), Scorpion;
+  - zx128, +2, Pentagon 128, Pentagon 512/1024 (as the 1024), Scorpion,
+    Scorpion 1024 (as the TURBO+ with its ProfROM);
   - then +2B (as the +2A) and +3;
   - then zx48 and zx16;
   - then TC2068, TC2048, TK-90X and Didaktik 80 (as the Gama).
@@ -77,6 +78,9 @@ to fit.
   A machine with a ROM of its own comes after the 48K: a 48K game that also
   lists one is still best off on a Spectrum. With no machine listed, the
   player uses the 128K.
+  `gmx` (an expansion on zxart.ee) takes the Scorpion GMX whatever else is
+  listed; `smuc` takes the TURBO+ (when no other machine or a plain Scorpion
+  is listed) with the CMOS clock on. SMUC's hard disk is not emulated.
 - **What the file demands.**
   - A TRD, SCL or UDI, or the codes `trdos` / `betadisk`, mean TR-DOS 5.
     The disk goes to the machine the release names (zx48 to a 48K, zx128 to
