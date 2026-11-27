@@ -1060,6 +1060,22 @@ const PROF_PLANE_MAP = [0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0];
             return !(this.ramInRomMode || this.scorpionRamInRomMode);
         }
 
+        /**
+         * Is the 48K BASIC ROM what the CPU sees at $0000? The ROM traps (tape
+         * LD-BYTES / SA-BYTES) count only then: a program with RAM paged over
+         * the ROM (+2A/+3 all-RAM, Pentagon 1024 / Scorpion RAM-in-ROM), or the
+         * Scorpion's service ROM, has its own code at $0556. Edge Grinder GMX
+         * runs from RAM page 0 and passes through $0556 every frame; the trap
+         * took it for LD-BYTES and returned into the screen.
+         */
+        basicRomAtZero() {
+            if (this.specialPagingMode || this.ramInRomMode || this.scorpionRamInRomMode) return false;
+            if (this.profile.pagingModel === 'scorpion' && (this.scorpionPort1FFD & 0x02)) return false;
+            if (this.profile.gmx && (this.scorpionPort1FFD & 0x04)) return false;
+            if (this.profile.ramPages > 1 && this.currentRomBank !== this.profile.basicRomBank) return false;
+            return true;
+        }
+
         isContended(addr) {
             if (!this.contentionEnabled) return false;
             if (!this.profile.hasContention) return false;

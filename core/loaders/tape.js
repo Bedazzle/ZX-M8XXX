@@ -1302,6 +1302,16 @@ import { xorChecksum } from './common.js';
         return !!((m.timexHsr & 1) && (m.timexDec & 0x80) && !(m.timexExrom && m.timexExrom[0]));
     }
 
+    // The 48K BASIC ROM's routines are what the CPU runs: the TC2068's EXROM
+    // keeps the old bank check (exromAtZero does the rest); everything else
+    // asks the memory, which knows about RAM paged over the ROM
+    function basicRomIn(m) {
+        if (m.profile.exromTapeTraps || typeof m.basicRomAtZero !== 'function') {
+            return !(m.profile.ramPages > 1 && m.currentRomBank !== m.profile.basicRomBank);
+        }
+        return m.basicRomAtZero();
+    }
+
     export class TapeTrapHandler {
         constructor(cpu, memory, tapeLoader) {
             this.cpu = cpu;
@@ -1329,15 +1339,9 @@ import { xorChecksum } from './common.js';
                 mid = pc === 0x0569;
             }
             if (hit) {
-                // In 128K mode, only trap when ROM 1 (48K BASIC) is active
-                // ROM 0 is the 128K editor which has different code at these addresses
-                if (this.memory.profile.ramPages > 1) {
-                    // Check that the current ROM bank is the 48K BASIC ROM
-                    const basicRomBank = this.memory.profile.basicRomBank;
-                    if (this.memory.currentRomBank !== basicRomBank) {
-                        return false;  // Don't trap - wrong ROM bank
-                    }
-                }
+                // Only with the 48K BASIC ROM at $0000: not the 128K editor
+                // (ROM 0), nor RAM paged over the ROM (see basicRomAtZero)
+                if (!basicRomIn(this.memory)) return false;
                 // Also don't trap if TR-DOS ROM is active (or a Beta 48's, by latch)
                 if (this.memory.trdosActive || (this.memory.beta48On && this.memory.beta48Latch) || this.memory.fdd3000Active ||
                     this.memory.kempdiscActive) {
@@ -1447,10 +1451,8 @@ import { xorChecksum } from './common.js';
                 if (this.cpu.pc !== EXROM_SA_BYTES || !exromAtZero(this.memory)) return false;
             } else if (this.cpu.pc !== 0x04C2) return false;
 
-            // In 128K mode, only trap in BASIC ROM
-            if (this.memory.profile.ramPages > 1) {
-                if (this.memory.currentRomBank !== this.memory.profile.basicRomBank) return false;
-            }
+            // Only with the 48K BASIC ROM at $0000 (see LD-BYTES)
+            if (!basicRomIn(this.memory)) return false;
             // Don't trap under TR-DOS, or with another interface's ROM paged in
             // over the bottom of the address space (see LD-BYTES)
             if (this.memory.trdosActive) return false;

@@ -153,6 +153,12 @@
             m.trdosActive = false;
             const p1f = sp.portRead(0x001F);
             assert((p1f & 0xC0) === 0x80, 'DOS off: $1F has the Beta INTRQ in bit 7', p1f.toString(16));
+            sp.betaDisk.read(0x1F);                             // TR-DOS reads the status...
+            assert((sp.portRead(0x001F) & 0x80) === 0 && sp.betaDisk.intrq,
+                '...and INTRQ drops on $1F, as on the WD1793 (TR-DOS still sees its own flag)');
+            sp.betaDisk.executeCommand(0xD0);                   // Force Interrupt: a new command
+            sp.betaDisk.intrq = true;
+            assert((sp.portRead(0x001F) & 0x80) === 0x80, 'a new command raises it again');
             sp.betaDisk.intrq = false;
             m.trdosActive = true;
             assert(sp.portRead(0xFFBE) === 0x7F, 'DOS on: SMUC IDE status with no drive is $7F (not busy)');
@@ -271,6 +277,23 @@
                 gp.portWrite(0x7EFD, 0x08);
                 assert(gp.gmxGfx === 0 && !gp._isGmxPort(0x7EFD), '#00 bit 5: the GMX ports are off');
                 gp.portWrite(0x0000, 0x00);
+                // RAM over the ROM: $0556 is the program's own code, not LD-BYTES
+                // (Edge Grinder GMX runs it every frame from RAM page 0)
+                gp.reset();
+                gp.portWrite(0x7FFD, 0x10);
+                const c = gp.cpu, trapWas = gp.tapeTrap.enabled;
+                gp.tapeTrap.enabled = true;
+                const trapAt = () => { c.pc = 0x0556; c.sp = 0xFF00; return gp.tapeTrap.checkTrap(); };
+                const romTrap = trapAt();
+                gp.portWrite(0x1FFD, 0x01);
+                const ramTrap = trapAt();
+                assert(romTrap && !ramTrap && c.pc === 0x0556 && c.sp === 0xFF00,
+                    'the tape trap at $0556 fires on the BASIC ROM, not with RAM paged over it (1FFD bit 0)',
+                    'rom ' + romTrap + ' ram ' + ramTrap);
+                gp.portWrite(0x1FFD, 0x02);
+                assert(!trapAt(), '...nor with the service ROM (1FFD bit 1)');
+                gp.portWrite(0x1FFD, 0x00);
+                gp.tapeTrap.enabled = trapWas;
                 gp.reset();
                 if (gm.rom[0].some(b => b !== 0)) {
                     let menu = -1;

@@ -1632,7 +1632,8 @@ import { Nvram24c16 } from './nvram.js';
          * Scorpion GMX 640x200 (MAME spectrum_update_screen): pixels from RAM page
          * #39 (#3B with 7FFD bit 3), 80 bytes a line; the attribute of each byte
          * 64 pages up: ink = bits 0-2 + bit 6 as bright, paper = bits 3-6; bit 7
-         * flashes. #7AFD/#7CFD scroll it by whole lines (offset / 80). Drawn whole
+         * flashes. #7AFD/#7CFD give the start address: byte (y * 80 + x + start)
+         * mod 16000 (Unreal-NG, after the GMX manual; MAME scrolls whole lines). Drawn whole
          * at the frame's end, centred, the rest in the border colour.
          */
         _blitGmx(dst, W2, H, dims) {
@@ -1642,13 +1643,13 @@ import { Nvram24c16 } from './nvram.js';
             dst.fill(pal[ula.borderColor & 7]);
             const x0 = Math.max(0, (W2 - 640) >> 1);
             const y0 = Math.max(0, dims.borderTop + 96 - 100);
-            const scrollLines = Math.floor(this.gmxScroll / 80);
+            const start = this.gmxScroll;
             const invert = ula.flashState ? 1 : 0;
             for (let v = 0; v < 200 && y0 + v < H; v++) {
-                const y = (v + scrollLines) % 200;
                 const d0 = (y0 + v) * W2 + x0;
                 for (let col = 0; col < 80 && col * 8 + x0 < W2; col++) {
-                    const a = att[y * 80 + col], b = pix[y * 80 + col];
+                    const o = (v * 80 + col + start) % 16000;
+                    const a = att[o], b = pix[o];
                     let fg = pal[((a >> 3) & 8) | (a & 7)], bg = pal[(a >> 3) & 0x0F];
                     if ((a & 0x80) && invert) { const t = fg; fg = bg; bg = t; }
                     for (let i = 0; i < 8; i++) dst[d0 + col * 8 + i] = (b & (0x80 >> i)) ? fg : bg;
@@ -2694,8 +2695,9 @@ import { Nvram24c16 } from './nvram.js';
                     // Scorpion, DOS off: $1F (xxxxxxxx0x0xxx11) gives the Beta
                     // Disk's INTRQ / DRQ in bits 7-6 (MAME scorpion_io); the
                     // ProfROM waits on them from its service ROM. The Kempston
-                    // stick, when fitted, in bits 0-4.
-                    result = this.betaDisk ? (this.betaDisk.read(0xFF) & 0xC0) : 0;
+                    // stick, when fitted, in bits 0-4. INTRQ is low once the
+                    // status was read (Edge Grinder GMX takes bit 7 for a key).
+                    result = this.betaDisk ? this.betaDisk.lines() : 0;
                     if (this.kempstonEnabled && !this._joystickIsTimex()) {
                         result |= (this.kempstonState | this.gamepadState) & 0x1f;
                     }
